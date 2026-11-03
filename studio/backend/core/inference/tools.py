@@ -14660,8 +14660,7 @@ def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
 
-    with _WEB_PDF_LOCK:
-        pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
+    pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
     page_limit_reached = total_pages > _MAX_WEB_PDF_PAGES
     parts: list[str] = []
     length = 0
@@ -15737,7 +15736,12 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", content_type
             try:
-                pdf_text = _extract_pdf_text(raw_bytes)
+                queued_at = time.monotonic()
+                with _WEB_PDF_LOCK:
+                    # Time queued behind another read's PDF is not spent on this read.
+                    if deadline is not None:
+                        deadline += time.monotonic() - queued_at
+                    pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type

@@ -594,6 +594,26 @@ def test_local_loop_extracts_started_pdfs_one_at_a_time(monkeypatch, local_sites
     assert state["peak"] == 1
 
 
+def test_local_loop_pdf_read_does_not_time_out_waiting_for_another(monkeypatch, local_sites):
+    from core.rag import parsers
+
+    calls = [_local_url(0, "pdfa", local_sites), _local_url(1, "pdfb", local_sites)]
+
+    def parse(data, max_pages = None):
+        time.sleep(0.4)
+        return [], 1
+
+    monkeypatch.setattr(parsers, "parse_pdf_bytes", parse)
+    monkeypatch.setattr(tools, "_url_read_timeout", lambda timeout: 0.6)
+    slow = _SlowPages(monkeypatch)
+
+    events, _, _ = _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 2
+    ends = [e["result"] for e in events if e["type"] == "tool_end"]
+    assert ends == ["(PDF contains no extractable text)"] * 2
+
+
 def test_local_loop_reads_of_one_host_stay_serial(monkeypatch, local_sites):
     calls = [
         _local_url(0, "a", local_sites),
