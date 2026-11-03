@@ -14478,6 +14478,11 @@ class LlamaCppBackend:
         """Free/total per NVIDIA GPU via NVML in a child for hosts whose nvidia-smi is absent or hung; a row without memory voids the answer."""
         if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
             return []
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None and not cvd.strip():
+            # A blank mask hides every GPU: _nvml_rows_visible keeps no row of any payload,
+            # and every reader of _NVML_ROWS filters through it or needs a non-blank mask.
+            return []
         script = LlamaCppBackend._nvidia_probe_script()
         if script is None:
             return []
