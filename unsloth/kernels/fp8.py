@@ -2006,6 +2006,14 @@ if hasattr(torch._dynamo, "assume_constant_result"):
 # torch < 2.14 rowwise CUTLASS takes its output type from the bias dtype: no bias + fp16 out = bf16 bits (garbage).
 # 2.14 dispatches on out.dtype, where a bf16 detour would lose precision and overflow 65408..65504. Pre-releases keep it.
 _SCALED_MM_FP16_OUT_BROKEN = torch.__version__ < "2.14.0"
+# 2.10-2.13 CUTLASS has an fp16-bias specialization with an fp16 epilogue; a zero fp16 bias selects it, so fp16 keeps
+# its range (the bf16 detour turns finite 65408..65504 into inf). Older CUTLASS and hipBLASLt rowwise write bf16 only.
+_SCALED_MM_FP16_BIAS_OUT = torch.__version__ >= "2.10.0" and torch.version.hip is None
+# Folded once (tests patch these): 2.10-2.13 CUDA passes a zero fp16 bias; where rowwise writes bf16 only
+# (torch < 2.10, ROCm before 2.14) a bf16 detour rounds 65450..65504 up to 65536 = fp16 inf, so fp16 always
+# takes the exact dequant + fp16 GEMM there.
+_SCALED_MM_FP16_ZERO_BIAS = _SCALED_MM_FP16_OUT_BROKEN and _SCALED_MM_FP16_BIAS_OUT
+_SCALED_MM_FP16_DEQUANT_ONLY = _SCALED_MM_FP16_OUT_BROKEN and not _SCALED_MM_FP16_BIAS_OUT
 
 
 @functools.lru_cache(maxsize = None)
@@ -2028,9 +2036,52 @@ if hasattr(torch._dynamo, "assume_constant_result"):
     _scaled_mm_float32_out = torch._dynamo.assume_constant_result(_scaled_mm_float32_out)
 
 
+def _scaled_mm_fp16_dequant_only(dtype):
+    """fp16 where rowwise _scaled_mm cannot write fp16: the scaled_mm backend dequantizes at every row count."""
+    return dtype == torch.float16 and _SCALED_MM_FP16_DEQUANT_ONLY
+
+
+def _scaled_mm_dtype_supported(x):
+    """Whether rowwise torch._scaled_mm can write x.dtype here."""
+    dtype = x.dtype
+    if dtype != torch.float32:
+        return not _scaled_mm_fp16_dequant_only(dtype)
+    # Before torch 2.14 float32 output exists only where the device probe finds cuBLAS, not CUTLASS.
+    return not _SCALED_MM_FP16_OUT_BROKEN or _scaled_mm_float32_out(x.device)
+
+
 def _scaled_mm_out_dtype(dtype):
-    """Rowwise torch._scaled_mm out dtype: bf16 for fp16 on torch < 2.14 (caller casts back), else `dtype`."""
-    return torch.bfloat16 if dtype == torch.float16 and _SCALED_MM_FP16_OUT_BROKEN else dtype
+    """Rowwise torch._scaled_mm out dtype: bf16 for fp16 where only bf16 exists (routed to dequant), else `dtype`."""
+    return torch.bfloat16 if _scaled_mm_fp16_dequant_only(dtype) else dtype
+
+
+# Zero fp16 biases by (rows, device), so eager calls do not allocate + fill one per forward. Bounded: cleared when full.
+_SCALED_MM_FP16_ZERO_BIAS_CACHE = {}
+_SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX = 64
+
+
+def _scaled_mm_fp16_bias(x, weight):
+    """Zero fp16 bias that makes torch 2.10-2.13 rowwise CUTLASS write fp16 (no bias = bf16 bits), else None."""
+    if not _SCALED_MM_FP16_ZERO_BIAS or x.dtype != torch.float16:
+        return None
+    n = weight.shape[0]
+    device = x.device
+    if torch.compiler.is_compiling():
+        # Traced: a constant in the graph, no Python cache lookup to guard on.
+        return torch.zeros(n, dtype = torch.float16, device = device)
+    key = (n, device)
+    bias = _SCALED_MM_FP16_ZERO_BIAS_CACHE.get(key)
+    if bias is None:
+        with torch.inference_mode(False), torch.no_grad():
+            bias = torch.zeros(n, dtype = torch.float16, device = device)
+        # Never cache a fake tensor, or one made during CUDA graph capture (its fill only runs on replay).
+        if type(bias) is torch.Tensor and not (
+            device.type == "cuda" and torch.cuda.is_current_stream_capturing()
+        ):
+            if len(_SCALED_MM_FP16_ZERO_BIAS_CACHE) >= _SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX:
+                _SCALED_MM_FP16_ZERO_BIAS_CACHE.clear()
+            _SCALED_MM_FP16_ZERO_BIAS_CACHE[key] = bias
+    return bias
 
 
 def _parse_fp8_dequant_max_rows(value):
@@ -2135,14 +2186,17 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
             and rowwise
             and (weight.shape[0] % 16 == 0 and weight.shape[1] % 16 == 0)
             and x.shape[-1] == weight.shape[1]
+            # Traced, a dtype that always dequantizes must not guard on the row count (an extra graph, and a
+            # strict mark_dynamic range violation); eager, rows go first so decode calls never probe float32.
+            and (
+                x.dtype == torch.bfloat16
+                or not torch.compiler.is_compiling()
+                or _scaled_mm_dtype_supported(x)
+            )
             # Decode-sized calls: dequant + 16-bit GEMM beats quantizing the activation unless the weight
             # spills L2.
             and x.numel() > _fp8_dequant_max_rows(x.device, weight.numel()) * x.shape[-1]
-            and (
-                x.dtype != torch.float32
-                or not _SCALED_MM_FP16_OUT_BROKEN
-                or _scaled_mm_float32_out(x.device)
-            )
+            and _scaled_mm_dtype_supported(x)
         ):
             output_shape = (*x.shape[:-1], -1)
             x_quantized, x_scale = _quantize_fp8_per_row(
@@ -2155,11 +2209,12 @@ class FbgemmFp8Linear_matmul(torch.autograd.Function):
                 weight.t(),
                 scale_a = x_scale,
                 scale_b = weight_scale.to(torch.float32).view(1, -1),
+                bias = _scaled_mm_fp16_bias(x, weight),
                 out_dtype = _scaled_mm_out_dtype(x.dtype),
                 use_fast_accum = True,
             )
             output = output + bias if bias is not None else output
-            # fp16 comes back as bf16 (_scaled_mm_out_dtype) and FbgemmFp8Linear keeps its bias in float32:
+            # FbgemmFp8Linear keeps its bias in float32:
             # cast only when the dtype differs (a no-op .to() aliases).
             if output.dtype != x.dtype:
                 output = output.to(x.dtype)
@@ -2334,6 +2389,7 @@ def _fp8_rowwise_direct_route(X, weight, weight_scale):
         and N % 16 == 0
         and K % 16 == 0
         and X.numel() > _fp8_dequant_max_rows(X.device, N * K) * K
+        and not _scaled_mm_fp16_dequant_only(X.dtype)
     ):
         scale_ub = getattr(weight, "input_scale_ub", None)
         if scale_ub is not None and (
@@ -2379,6 +2435,7 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
             scale_b = (
                 weight_scale if weight_scale.dtype == torch.float32 else weight_scale.float()
             ).view(1, -1),
+            bias = _scaled_mm_fp16_bias(X, weight),
             out_dtype = _scaled_mm_out_dtype(X.dtype),
             use_fast_accum = True,
         )
@@ -2399,7 +2456,7 @@ def _fp8_rowwise_direct(X, weight, weight_scale, bias, route):
         output = torch_matmul(X, W_deq.t())
     if bias is not None:
         output = output + bias
-    # fp16 comes back as bf16 (_scaled_mm_out_dtype) and FbgemmFp8Linear keeps its bias in float32:
+    # FbgemmFp8Linear keeps its bias in float32:
     # cast only when the dtype differs (a no-op .to() aliases).
     if output.dtype != X.dtype:
         output = output.to(X.dtype)
