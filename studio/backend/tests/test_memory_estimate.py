@@ -4900,7 +4900,7 @@ class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
     def test_a_model_whose_attention_cannot_read_the_converted_cache_is_priced_full_width(self):
         import mlx.core as mx
 
-        # moondream2 passes the fetched TurboQuant state straight to mx.fast, which the load refuses.
+        # moondream2 hands the fetched TurboQuant state straight to mx.fast.
         config = {
             "model_type": "moondream2",
             "text_config": {

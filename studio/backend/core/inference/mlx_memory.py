@@ -760,7 +760,7 @@ def weightless_forward():
 
 
 def _turboquant_runs(model, make_prompt_cache, kv_bits) -> bool:
-    """Whether attention reads a TurboQuant cache, as the load checks before keeping it."""
+    # The load keeps TurboQuant only after two decode steps over a converted cache succeed.
     import mlx.core as mx
 
     if not isinstance(kv_bits, MlxTurboQuant):
