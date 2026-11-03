@@ -4897,6 +4897,34 @@ class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
         from mlx_lm.models.cache import KVCache
         assert mm._quantize_like_runtime([KVCache() for _ in range(3)], mm.MlxTurboQuant(4)) is None
 
+    def test_a_model_whose_attention_cannot_read_the_converted_cache_is_priced_full_width(self):
+        import mlx.core as mx
+
+        # moondream2 passes the fetched TurboQuant state straight to mx.fast, which the load refuses.
+        config = {
+            "model_type": "moondream2",
+            "text_config": {
+                "hidden_size": 64,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "intermediate_size": 128,
+                "vocab_size": 512,
+            },
+            "vision_config": {
+                "hidden_size": 32,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "intermediate_size": 64,
+            },
+        }
+        probed = mm._probe(config, mx.bfloat16, 8, None)
+        with mm.weightless_forward():
+            build, make_prompt_cache, _ = next(iter(mm._probe_models(config, mx.bfloat16)))
+            cache = make_prompt_cache(build())
+        assert mm._quantize_like_runtime(cache, mm.MlxTurboQuant(4)) is not None
+        assert mm._probe(config, mx.bfloat16, 8, mm.MlxTurboQuant(4)) == probed
+
 
 @pytest.mark.skipif(not _HAVE_MLX, reason = "imports architecture modules")
 class TestProbeFollowsTheLoadersRoute:

@@ -759,6 +759,23 @@ def weightless_forward():
         _DEFERRED_EVAL.depth -= 1
 
 
+def _turboquant_runs(model, make_prompt_cache, kv_bits) -> bool:
+    """Whether attention reads a TurboQuant cache, as the load checks before keeping it."""
+    import mlx.core as mx
+
+    if not isinstance(kv_bits, MlxTurboQuant):
+        return True
+    try:
+        trial = _quantize_like_runtime(make_prompt_cache(model), kv_bits)
+        if trial is not None:
+            for _ in range(2):
+                model(mx.zeros((1, 1), dtype = mx.int32), cache = trial)
+    except Exception as exc:
+        logger.debug("MLX estimate prices a refused TurboQuant cache at full width: %s", exc)
+        return False
+    return True
+
+
 def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     import mlx.core as mx
 
@@ -783,6 +800,8 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits):
         if cache is None:
             raise failure
         quantized = _quantize_like_runtime(cache, kv_bits)
+        if quantized is not None and not _turboquant_runs(model, make_prompt_cache, kv_bits):
+            quantized = None
     entries = _entries(cache, quantized)
     if quantized is not None:
         converted = [leaf for entry in quantized for leaf in _sub_caches(entry)]
