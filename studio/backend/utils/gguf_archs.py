@@ -10,6 +10,9 @@ from typing import Optional
 # Architectures no Unsloth runtime can decode; all Hub spellings of CSM are listed.
 SPEECH_GGUF_ARCHS = frozenset({"llama-csm", "csm", "csm-tts", "mimi"})
 
+# Foreign ASR GGUFs (e.g. mudler/parakeet.cpp). Not audiocpp, not llama.cpp; Studio cannot run them (#16273).
+FOREIGN_ASR_GGUF_ARCHS = frozenset({"parakeet"})
+
 # The Mimi vocoder GGUF puts a sentence in general.architecture; match the flag.
 _VOCODER_MARKERS = ("--model-vocoder", "cannot be used as llm")
 
@@ -22,6 +25,11 @@ def is_speech_gguf_architecture(architecture: Optional[str]) -> bool:
     if normalized in SPEECH_GGUF_ARCHS:
         return True
     return any(marker in normalized for marker in _VOCODER_MARKERS)
+
+
+def is_foreign_asr_gguf_architecture(architecture: Optional[str]) -> bool:
+    """Whether ``general.architecture`` names an ASR GGUF no Unsloth runtime can load (e.g. parakeet.cpp)."""
+    return bool(architecture) and architecture.strip().lower() in FOREIGN_ASR_GGUF_ARCHS
 
 
 DIFFUSION_IMAGE_GGUF_ARCHS = frozenset(

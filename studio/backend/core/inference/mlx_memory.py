@@ -51,9 +51,8 @@ _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
 _RECURRENT_DTYPE_SIZE = 4
 
-_QUANT_SCORE_DTYPE_SIZE = 4
-
-_QUANT_SCORE_LIVE = 1.0
+# Score copies an unfused call holds at the queries' width; Metal measured 1.03 to 1.15 (mlx 0.32.4).
+_SCORE_LIVE = 1.25
 
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
@@ -995,13 +994,102 @@ def _compute_bytes(
     recurrent_width = sum(int(entry["conv_width"]) for entry in plan) * _RECURRENT_DTYPE_SIZE
     total = _COMPUTE_BASE_BYTES + prefill_chunk * (attention_width + recurrent_width)
     if quant_boundary is not None:
-        score = heads * _QUANT_SCORE_DTYPE_SIZE * _QUANT_SCORE_LIVE
+        score = heads * dtype_size * _SCORE_LIVE
         row = _dequantized_row_bytes(widths, dtype_size, kv_bits, kv_group_size, prefill_chunk)
         if row is None:
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
         else:
             total += max(row * n_ctx, (n_ctx + 1) * score)
+    elif not any(entry.get("bound_spec") for entry in plan):
+        # Windowed models are skipped: the config's head_dim need not be the full-context layers' width.
+        score = heads * dtype_size * _SCORE_LIVE
+        total += _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk) * score
     return int(total)
+
+
+def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: int) -> int:
+    """Query x key cells of the widest call mlx leaves unfused over every prompt the context admits."""
+    heads, kv_heads, head_dim = (*widths[2:], 0, 0, 0)[:3]
+    route = _zoo_route() if heads and kv_heads and head_dim else None
+    if route is None:
+        return 0
+    widths, chunk = tuple(widths), prefill_chunk
+
+    def unfused(queries, keys):
+        return not _attention_fuses(route, widths, dtype_size, queries, keys)
+
+    def longest_tail(whole, limit):
+        # The tail of a prompt holding no whole chunk is its first call, so it is square.
+        short, first_fused = _unfused_tails(route, widths, dtype_size, chunk if whole else 0)
+        if limit > 8 and first_fused > 9:
+            return min(limit, first_fused - 1)
+        return max((r for r in short if r <= limit), default = 0)
+
+    whole, rest = divmod(max(n_ctx - 1, 0), chunk)
+    cells = [n_ctx + 1 if unfused(1, 2) or unfused(1, n_ctx + 1) else 0]
+    if whole and unfused(chunk, chunk):
+        cells.append(chunk * chunk)
+    if whole >= 2 and unfused(chunk, whole * chunk):
+        cells.append(chunk * whole * chunk)
+    r = longest_tail(whole, rest)
+    cells.append(r * (whole * chunk + r))
+    if whole:
+        r = longest_tail(whole - 1, chunk - 1)
+        cells.append(r * ((whole - 1) * chunk + r))
+    return max(cells)
+
+
+# Past any context: a shape still unfused here never fuses.
+_TAIL_MAX = 1 << 24
+
+
+@functools.lru_cache(maxsize = 64)
+def _unfused_tails(route, widths, dtype_size: int, later: int):
+    """Unfused tails of up to 8 queries, and the first longer one that fuses.
+
+    Past 8 queries mlx's kernels only switch on as queries grow, so one boundary splits the two."""
+
+    def unfused(r):
+        return not _attention_fuses(route, widths, dtype_size, r, r + later)
+
+    short = tuple(r for r in range(1, 9) if unfused(r))
+    lo, hi = 8, 9
+    while hi < _TAIL_MAX and unfused(hi):
+        lo, hi = hi, min(hi * 2, _TAIL_MAX)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if unfused(mid) else (lo, mid)
+    return short, hi
+
+
+def _zoo_route():
+    try:
+        import mlx.core  # noqa: F401
+
+        from unsloth_zoo.mlx.attention import fused_kernel_exists
+    except Exception:
+        return None
+    return fused_kernel_exists
+
+
+def _attention_fuses(route, widths, dtype_size: int, queries: int, keys: int) -> bool:
+    """Whether mlx fuses a full-width causal call; elsewhere it materializes the scores."""
+    import mlx.core as mx
+
+    _heads, kv_heads, head_dim, value_dim = (*widths[2:], 0, 0, 0, 0)[:4]
+    try:
+        dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
+
+        # zoo reads only shapes and dtypes; a group of one makes the scales the cache's width.
+        def cache(width):
+            scales = mx.zeros((1, kv_heads, keys, width), dtype = dtype)
+            return scales, scales, scales
+
+        q = mx.zeros((1, widths[2], queries, head_dim), dtype = dtype)
+        return bool(route(q, cache(head_dim), cache(value_dim or head_dim), 1, "causal"))
+    except Exception as exc:
+        logger.debug("MLX estimate cannot route the attention: %s", exc)
+        return True
 
 
 def _load_is_refused(model_dir: str, config: dict, load_in_4bit: bool) -> Optional[str]:

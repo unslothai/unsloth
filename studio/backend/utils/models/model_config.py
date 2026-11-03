@@ -287,6 +287,13 @@ MODEL_NAME_MAPPING = {
         "LiquidAI/LFM2-1.2B",
         "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
     ],
+    "LiquidAI_LFM3-Omni-2B.yaml": [
+        "LiquidAI/LFM3-Omni-2B",
+        "LiquidAI/LFM3-1.7B",
+        "LiquidAI/LFM3-1.7B-Base",
+        "LiquidAI/LFM3-VL-2B",
+        "LiquidAI/LFM3-Audio-2B",
+    ],
     "unsloth_llama-3-8b-bnb-4bit.yaml": [
         "unsloth/llama-3-8b",
         "meta-llama/Meta-Llama-3-8B",
@@ -3765,7 +3772,7 @@ def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, st
     outputs_path = resolve_output_dir(outputs_dir)
 
     if not outputs_path.exists():
-        logger.warning(f"Outputs directory not found: {outputs_dir}")
+        logger.warning(f"Outputs directory not found: {outputs_path}")
         return trained_models
 
     try:

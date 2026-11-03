@@ -287,18 +287,28 @@ def _import_session(source: Source, path: Path, project_id: str, summary: Import
 
     existing = studio_db.get_chat_thread(thread_id) or {}
     try:
-        studio_db.upsert_chat_thread(_thread_row(transcript, existing, project_id))
+        studio_db.upsert_chat_thread(
+            _thread_row(transcript, existing, project_id),
+            external_import_session = (source.key, session_id) if not existing else None,
+        )
     except studio_db.ChatThreadDeletedError:
         summary.skipped += 1
         return False
     pending = _pending_messages(source, transcript, bool(existing))
     if existing:
         pending = _late_tool_results(transcript) + pending
-    if pending:
-        studio_db.sync_chat_messages(thread_id, pending, prune_missing = False)
-    studio_db.record_external_import_mark(
-        source.key, session_id, len(transcript.messages), transcript.revision
+    mark = studio_db.ExternalImportMark(
+        source = source.key,
+        session_id = session_id,
+        turns = len(transcript.messages),
+        revision = transcript.revision,
     )
+    if pending:
+        studio_db.sync_chat_messages(
+            thread_id, pending, prune_missing = False, external_import_mark = mark
+        )
+    else:
+        studio_db.record_external_import_mark(*mark)
     summary.new_chats += 0 if existing else 1
     summary.messages += len(pending)
     return True

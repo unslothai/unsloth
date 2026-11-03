@@ -26,7 +26,6 @@ import { toast } from "@/lib/toast";
 import {
   Cancel01Icon,
   FlimSlateIcon,
-  Delete02Icon,
   Download01Icon,
   ImageIcon,
   MoreHorizontalIcon,
@@ -35,7 +34,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Folder01Icon, FolderClosedIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { ChevronRightStandardIcon } from "@/lib/chevron-icons";
-import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, MessageCircleIcon, StarPointedIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate, useRouter, useSearch } from "@tanstack/react-router";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1133,7 +1132,7 @@ function LibraryView({ search }: { search: LibrarySearch }) {
                 "bg-destructive/10 text-destructive transition-colors hover:bg-destructive/15",
               )}
             >
-              <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
               {t("common.delete")}
             </button>
             <DropdownMenu>
