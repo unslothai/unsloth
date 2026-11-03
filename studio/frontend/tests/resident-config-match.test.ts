@@ -885,6 +885,17 @@ test("the arch-gate excuse reads the resolved split, not the toggle", () => {
   );
 });
 
+test("manual GPU layer keywords adopt a matching resident model", () => {
+  for (const flag of ["-ngl", "--gpu-layers", "--n-gpu-layers"]) {
+    for (const [value, layers] of [["auto", -1], ["all", 2147483647]] as const) {
+      assert.equal(matches(
+        { ...DEFAULTS, is_gguf: true, gpu_memory_mode: "manual", gpu_layers: layers },
+        { ...BLANK, gpuMemoryMode: "manual", llamaExtraArgs: [flag, value] },
+      ), true, `${flag} ${value}`);
+    }
+  }
+});
+
 test("a malformed manual layer override declines rather than normalizing away", () => {
   // parse_gpu_layers_override raises on these, so they must not fold into no override.
   const running = {

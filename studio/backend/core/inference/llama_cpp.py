@@ -3054,6 +3054,17 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Only a validation guard: a plain membership branch can group levels or reject the ones it names.
+_REASONING_EFFORT_ALLOWLIST_RE = re.compile(
+    r"\{%-?\s*if\s+reasoning_effort\s+not\s+in\s+\[([^\]]*)\]\s*-?%\}\s*\{\{-?\s*raise_exception\("
+)
+
+
+def _reasoning_effort_allowlist(chat_template: str) -> list:
+    match = _REASONING_EFFORT_ALLOWLIST_RE.search(chat_template)
+    return _extract_reasoning_effort_levels(match.group(1)) if match else []
+
+
 # Log each substitution once per (levels, requested) pair.
 _REASONING_EFFORT_CLAMPS_LOGGED: set = set()
 
@@ -3156,7 +3167,10 @@ def detect_reasoning_flags(
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "reasoning_effort"
         scanned = _extract_reasoning_effort_levels(tpl)
-        if "low" in scanned and "high" in scanned:
+        allowed = _reasoning_effort_allowlist(tpl)
+        if any(level != "none" for level in allowed):
+            flags["reasoning_effort_levels"] = allowed
+        elif "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned
         _log(
             f"{prefix}model supports reasoning "

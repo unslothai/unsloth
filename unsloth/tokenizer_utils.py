@@ -536,6 +536,9 @@ def _apply_post_load_tokenizer_fixes(
     tokenizer = _repair_tokenizer_backend_from_json(
         tokenizer, cache_dir = cache_dir, revision = revision
     )
+    from .models.loader_utils import _mark_loaded_revision
+
+    _mark_loaded_revision(tokenizer, revision, cache_dir = cache_dir, load_kwargs = {})
     tokenizer = _fix_llava_num_additional_image_tokens(tokenizer, config = config)
     if not fix_tokenizer:
         return tokenizer
