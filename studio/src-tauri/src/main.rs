@@ -19,6 +19,7 @@ mod commands;
 mod debian_update;
 mod desktop_auth;
 mod desktop_backend_owner;
+mod desktop_port;
 mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
