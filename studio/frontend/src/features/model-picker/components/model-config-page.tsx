@@ -1244,6 +1244,81 @@ function VisionRow({
   );
 }
 
+const GGUF_REASONING_BUDGET_HINT =
+  "Maximum thinking tokens. Leave blank for unlimited; 0 turns reasoning off.";
+
+const MLX_REASONING_BUDGET_HINT =
+  "Maximum thinking tokens per reply. Leave blank for unlimited; 0 closes the " +
+  "thinking block as soon as it opens. While a budget is set, replies decode " +
+  "without a speculative drafter.";
+
+function ReasoningBudgetRows({
+  config,
+  update,
+  hint,
+}: {
+  config: PerModelConfig;
+  update: (patch: Partial<PerModelConfig>) => void;
+  hint: string;
+}) {
+  return (
+    <>
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Reasoning Budget</span>
+          <InfoHint>{hint}</InfoHint>
+        </div>
+        {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
+        <input
+          type="number"
+          min={-1}
+          max={2_147_483_647}
+          step={1}
+          value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
+          placeholder="unlimited"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ reasoningBudget: -1 });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({
+                reasoningBudget: Math.max(-1, Math.min(2_147_483_647, parsed)),
+              });
+            }
+          }}
+          aria-label="Reasoning Budget"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
+          <InfoHint>
+            Optional text added before the end-of-thinking tag when the budget
+            runs out.
+          </InfoHint>
+        </div>
+        <input
+          type="text"
+          value={config.reasoningBudgetMessage}
+          placeholder="None"
+          onChange={(event) => {
+            if (isReasoningBudgetMessageValid(event.target.value)) {
+              update({ reasoningBudgetMessage: event.target.value });
+            }
+          }}
+          aria-label="Reasoning Budget Message"
+          className={TEXT_INPUT_CLASS}
+        />
+      </div>
+    </>
+  );
+}
+
 const GGUF_PARALLEL_HINT =
   "Decode slots (--parallel) for concurrent requests. Leave blank for the server " +
   "default. More slots share the context pool and use more VRAM.";
@@ -1758,6 +1833,13 @@ function MlxAdvancedSettings({
       )}
       {servedByMlx && (
         <ParallelSlotsRow config={config} update={update} hint={MLX_PARALLEL_HINT} />
+      )}
+      {servedByMlx && (
+        <ReasoningBudgetRows
+          config={config}
+          update={update}
+          hint={MLX_REASONING_BUDGET_HINT}
+        />
       )}
       {servedByMlx && (
         <MlxOffloadSettings
@@ -2357,66 +2439,11 @@ function GgufAdvancedSettings({
 
       <AdvancedGroup title="Output">
       {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS}>Reasoning Budget</span>
-            <InfoHint>
-              Maximum thinking tokens. Leave blank for unlimited; 0 turns
-              reasoning off.
-            </InfoHint>
-          </div>
-          {/* Blank, not -1: a literal -1 made the next digit typed read -15 and clamp back. */}
-          <input
-            type="number"
-            min={-1}
-            max={2_147_483_647}
-            step={1}
-            value={config.reasoningBudget === -1 ? "" : config.reasoningBudget}
-            placeholder="unlimited"
-            onChange={(event) => {
-              const raw = event.target.value;
-              if (raw === "") {
-                update({ reasoningBudget: -1 });
-                return;
-              }
-              const parsed = Number.parseInt(raw, 10);
-              if (Number.isFinite(parsed)) {
-                update({
-                  reasoningBudget: Math.max(
-                    -1,
-                    Math.min(2_147_483_647, parsed),
-                  ),
-                });
-              }
-            }}
-            aria-label="Reasoning Budget"
-            className={NUMBER_INPUT_CLASS}
-          />
-        </div>
-      )}
-
-      {!isDiffusion && (
-        <div className={ROW_CLASS}>
-          <div className="flex min-w-0 items-center gap-1.5">
-            <span className={LABEL_CLASS_WRAP}>Reasoning Budget Message</span>
-            <InfoHint>
-              Optional text added before the end-of-thinking tag when the budget
-              runs out.
-            </InfoHint>
-          </div>
-          <input
-            type="text"
-            value={config.reasoningBudgetMessage}
-            placeholder="None"
-            onChange={(event) => {
-              if (isReasoningBudgetMessageValid(event.target.value)) {
-                update({ reasoningBudgetMessage: event.target.value });
-              }
-            }}
-            aria-label="Reasoning Budget Message"
-            className={TEXT_INPUT_CLASS}
-          />
-        </div>
+        <ReasoningBudgetRows
+          config={config}
+          update={update}
+          hint={GGUF_REASONING_BUDGET_HINT}
+        />
       )}
 
       <ChatTemplateSetting config={config} onEditTemplate={onEditTemplate} />

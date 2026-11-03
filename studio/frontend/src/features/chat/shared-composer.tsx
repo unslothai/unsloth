@@ -1920,6 +1920,7 @@ export function SharedComposer({
           ...llamaServerLoadFields(ownConfig, {
             isGguf: targetIsGguf,
             isDiffusion: resolvedIsDiffusion === true,
+            isMlx: targetIsMlx,
           }),
           // GGUF-only: a non-GGUF target must not inherit a hidden GGUF GPU pick. A manual DiffusionGemma
           // split keeps its layer count, or it is judged a full-GGUF occupant.
@@ -2144,27 +2145,27 @@ export function SharedComposer({
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
           reasoningBudget:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
               : -1,
           loadedReasoningBudget:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget ?? ownConfig.reasoningBudget)
               : -1,
           reasoningBudgetMessage:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget_message ??
                 ownConfig.reasoningBudgetMessage)
               : "",
           loadedReasoningBudgetMessage:
-            targetIsGguf && !(resp.is_diffusion ?? false)
+            (targetIsGguf || targetIsMlx) && !(resp.is_diffusion ?? false)
               ? (resp.reasoning_budget_message ??
                 ownConfig.reasoningBudgetMessage)
               : "",
-          loadedReasoningBudgetRequested: targetIsGguf && !resp.is_diffusion
+          loadedReasoningBudgetRequested: (targetIsGguf || targetIsMlx) && !resp.is_diffusion
             ? (resp.requested_reasoning_budget ?? ownConfig.reasoningBudget)
             : -1,
-          loadedReasoningBudgetMessageRequested: targetIsGguf && !resp.is_diffusion
+          loadedReasoningBudgetMessageRequested: (targetIsGguf || targetIsMlx) && !resp.is_diffusion
             ? (resp.requested_reasoning_budget_message ?? ownConfig.reasoningBudgetMessage)
             : "",
           nBatch: committedNBatch,

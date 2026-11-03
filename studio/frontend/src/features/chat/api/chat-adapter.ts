@@ -3888,7 +3888,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       // Remembered pass-through args: nothing is resident at startup to inherit them from.
       ...llamaServerLoadFields(
         { ...config, llamaExtraArgs: resolvedExtraArgs },
-        { isGguf: candidate.kind === "gguf", isDiffusion },
+        { isGguf: candidate.kind === "gguf", isDiffusion, isMlx: candidateIsMlx },
       ),
       // GGUF-only. A remembered manual DiffusionGemma split (0 especially) must not be refused as a
       // full-GGUF occupant.

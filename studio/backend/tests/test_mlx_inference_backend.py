@@ -4023,7 +4023,7 @@ def test_a_raw_vision_prompt_decodes_on_its_own_even_when_zoo_could_batch_it(mon
     monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.generate", engine)
     sys.modules["unsloth_zoo"].mlx = package
     monkeypatch.setattr(mlx_inference, "_batched_vision_engine_gap", lambda _e: None)
-    monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r: None)
+    monkeypatch.setattr(mlx_inference, "_row_processor_gap", lambda _e, _r, **_k: None)
     backend = mlx_inference.MLXInferenceBackend()
     backend._model = SimpleNamespace(_is_vlm_model = True)
     assert backend._vlm_batch_unavailable_reason([{}, {}]) is None
@@ -12851,3 +12851,72 @@ def test_a_flushed_tail_releases_its_text_before_a_stop_it_completes():
     plain = _RowStream(sequences = ("HALT",))
     plain.feed(text = "all ")
     assert plain.flush("of it") == ["all of it"] and plain.settle() == []
+
+
+class _BudgetTokenizer:
+    VOCAB = {"<think>": [1], "</think>": [2], "Wrap up.": [3, 4], "<ch>": [5, 6], "</ch>": [7]}
+
+    def encode(self, text, **_kwargs):
+        return list(self.VOCAB[text])
+
+
+# The model prefers wants[i] at step i (1 opens a block itself).
+@pytest.mark.parametrize(
+    "budget,message,markers,prompt,wants,expected",
+    [
+        (2, "Wrap up.", None, "user<think>\n", [9] * 6, [9, 9, 3, 4, 2, 9]),
+        (0, "", None, "user<think>", [9] * 6, [2, 9, 9, 9, 9, 9]),
+        (1, "", ("<ch>", "</ch>"), "user<ch>", [9] * 6, [9, 7, 9, 9, 9, 9]),
+        (3, "", None, "user", [9] * 6, [9] * 6),
+        (1, "", None, "user", [1, 9, 9, 9, 9], [1, 9, 2, 9, 9]),
+    ],
+)
+def test_a_reasoning_budget_forces_the_closer_once_spent(
+    budget, message, markers, prompt, wants, expected
+):
+    mx = pytest.importorskip("mlx.core")
+    from core.inference.mlx_reasoning_budget import make_reasoning_budget_processor
+
+    make = lambda b, m: make_reasoning_budget_processor(_BudgetTokenizer(), b, message, m, prompt)
+    processor, tokens = make(budget, markers), [10, 11, 12]
+    for want in wants:
+        logits = mx.zeros((1, 16))
+        logits[:, want] = 1.0
+        tokens.append(int(mx.argmax(processor(mx.array(tokens), logits), axis = -1).item()))
+    assert tokens[3:] == expected
+    # Muse Glimmer's markers name block recipients; "user" is no closer to force.
+    assert make(-1, markers) is None and make(budget, ("self", "user")) is None
+
+
+def test_a_reasoning_budget_runs_last_on_a_text_reply_and_a_change_reloads(monkeypatch):
+    from core.inference import mlx_inference, mlx_reasoning_budget
+    from models.inference import LoadRequest
+    from routes.inference import _mlx_runtime_settings_match, _unsloth_serving_fields
+
+    budget, captured, made = (lambda _tokens, logits: logits), [], []
+    for window in (None, 0):
+        kwargs = dict(presence_penalty = 0.5, penalty_window = window, reasoning_budget = budget)
+        assert mlx_inference._mlx_sampling_processors(**kwargs)[-1] is budget
+    backend = _install_fake_text_stack(monkeypatch, {"generated": [7]}, captured)
+    monkeypatch.setattr(
+        mlx_reasoning_budget,
+        "make_reasoning_budget_processor",
+        lambda _tok, n, message, _markers, prompt: made.append((n, message)) or budget,
+    )
+    for n in (-1, 3):
+        backend._reasoning_budget, backend._reasoning_budget_message = n, "Wrap up."
+        list(backend.generate_chat_response(messages = [{"role": "user", "content": "p"}]))
+    assert captured[0].get("logits_processors") in (None, [])
+    assert captured[1]["logits_processors"][-1] is budget and made == [(3, "Wrap up.")]
+
+    entry = {
+        "mlx_kv_quant_requested": "auto",
+        "reasoning_budget": 64,
+        "reasoning_budget_message": "x",
+    }
+    be = SimpleNamespace(active_model_name = "m", models = {"m": entry})
+    req = lambda **knobs: LoadRequest(model = "m", model_path = "m", **knobs)
+    assert _mlx_runtime_settings_match(be, req(reasoning_budget = 64, reasoning_budget_message = "x"))
+    assert not _mlx_runtime_settings_match(be, req(reasoning_budget = 64))
+    assert not _mlx_runtime_settings_match(be, req(reasoning_budget_message = "x"))
+    assert _unsloth_serving_fields(entry)["requested_reasoning_budget"] == 64

@@ -115,6 +115,11 @@ export type StandingConfigDefaults = {
   normalizeSpeculative: (value: string | null | undefined) => string | null;
 };
 
+/** A transformers resident reads neither the reasoning budget nor the vision switch; GGUF and MLX do. */
+function readsNoLoadSwitches(s: ResidentRuntime): boolean {
+  return s.is_gguf === false && s.is_mlx !== true;
+}
+
 type SettingCheck = {
   placement?: true;
   mlxComparable?: true;
@@ -347,19 +352,23 @@ const SETTING_CHECKS: SettingCheck[] = [
   {
     // Status echoes the effective budget, so env-shaped servers read as a reload (safe side).
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
       (c.reasoningBudget ?? -1) ===
-      (s.requested_reasoning_budget ?? s.reasoning_budget ?? -1),
+        (s.requested_reasoning_budget ?? s.reasoning_budget ?? -1),
   },
   {
     chatOnly: true,
+    mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
+      readsNoLoadSwitches(s) ||
       (c.reasoningBudgetMessage ?? "") ===
-      (s.requested_reasoning_budget_message ??
-        s.reasoning_budget_message ??
-        ""),
+        (s.requested_reasoning_budget_message ??
+          s.reasoning_budget_message ??
+          ""),
   },
   {
     pinned: () => true,
@@ -373,13 +382,12 @@ const SETTING_CHECKS: SettingCheck[] = [
         s.tensor_parallel_dropped_by_arch_gate === true),
   },
   {
-    // Backend reloads on mismatch, so adopting would keep projector VRAM spent. Only GGUF and MLX read it.
+    // Backend reloads on mismatch, so adopting would keep projector VRAM spent.
     chatOnly: true,
     mlxComparable: true,
     pinned: () => true,
     agrees: (c, s) =>
-      (s.is_gguf === false && s.is_mlx !== true) ||
-      c.disableVision === (s.disable_vision ?? false),
+      readsNoLoadSwitches(s) || c.disableVision === (s.disable_vision ?? false),
   },
   {
     // The table is part of the weights, so a different one is a different load.

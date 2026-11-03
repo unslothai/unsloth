@@ -669,6 +669,8 @@ test("MLX-only load settings are judged on an MLX resident, not on a transformer
   const mlx = { ...DEFAULTS, is_gguf: false, is_mlx: true };
   for (const [chosen, running] of [
     [{ disableVision: true }, { disable_vision: true }],
+    [{ reasoningBudget: 64 }, { requested_reasoning_budget: 64 }],
+    [{ reasoningBudgetMessage: "Done." }, { requested_reasoning_budget_message: "Done." }],
   ] as [object, object][]) {
     const config = { ...BLANK, ...chosen };
     const resident = { ...mlx, ...running };

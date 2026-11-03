@@ -150,6 +150,17 @@ test("llama-server's knobs reach a GGUF llama-server and nothing else", () => {
   );
 });
 
+test("an MLX load carries the reasoning budget and none of llama-server's own knobs", () => {
+  assert.deepEqual(
+    llamaServerLoadFields(TUNED, { isGguf: false, isDiffusion: false, isMlx: true }),
+    { reasoning_budget: 512, reasoning_budget_message: "stop" },
+  );
+  assert.deepEqual(
+    llamaServerLoadFields(TUNED, { isGguf: false, isDiffusion: true, isMlx: true }),
+    { reasoning_budget: -1, reasoning_budget_message: "" },
+  );
+});
+
 test("blank knobs are omitted, and pass-through args only once the config has read them", () => {
   const llama = { isGguf: true, isDiffusion: false };
   assert.deepEqual(

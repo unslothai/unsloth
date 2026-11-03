@@ -2398,7 +2398,7 @@ export function useChatModelRuntime() {
                   llamaExtraArgs: loadLlamaExtraArgs,
                   ...loadServerTuning,
                 },
-                { isGguf, isDiffusion: targetIsDiffusion },
+                { isGguf, isDiffusion: targetIsDiffusion, isMlx: targetIsMlx },
               ),
               tensor_parallel: loadTensorParallel,
               disable_vision: loadDisableVision,
@@ -2825,33 +2825,33 @@ export function useChatModelRuntime() {
               nParallel: committedSlots,
               loadedNParallel: committedSlots,
               reasoningBudget:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
                   : -1,
               loadedReasoningBudget:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget ?? loadReasoningBudget)
                   : -1,
               reasoningBudgetMessage:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget_message ??
                     loadReasoningBudgetMessage)
                   : "",
               loadedReasoningBudgetMessage:
-                (loadResponse.is_gguf ?? false) &&
+                ((loadResponse.is_gguf ?? false) || (loadResponse.is_mlx ?? false)) &&
                 !(loadResponse.is_diffusion ?? false)
                   ? (loadResponse.reasoning_budget_message ??
                     loadReasoningBudgetMessage)
                   : "",
               loadedReasoningBudgetRequested:
-                loadResponse.is_gguf && !loadResponse.is_diffusion
+                (loadResponse.is_gguf || loadResponse.is_mlx) && !loadResponse.is_diffusion
                   ? (loadResponse.requested_reasoning_budget ?? loadReasoningBudget)
                   : -1,
               loadedReasoningBudgetMessageRequested:
-                loadResponse.is_gguf && !loadResponse.is_diffusion
+                (loadResponse.is_gguf || loadResponse.is_mlx) && !loadResponse.is_diffusion
                   ? (loadResponse.requested_reasoning_budget_message ?? loadReasoningBudgetMessage)
                   : "",
               nBatch: committedNBatch,

@@ -19,12 +19,14 @@ export interface LlamaServerLoadSettings extends ServerTuningValues {
 // Omit blank knobs: a sent null strips inherited flags via model_fields_set.
 export function llamaServerLoadFields(
   settings: LlamaServerLoadSettings,
-  target: { isGguf: boolean; isDiffusion: boolean },
+  target: { isGguf: boolean; isDiffusion: boolean; isMlx?: boolean },
 ): Partial<LoadModelRequest> {
   const llamaServer = target.isGguf && !target.isDiffusion;
+  // MLX enforces the budget itself, per reply.
+  const budgeted = llamaServer || (target.isMlx === true && !target.isDiffusion);
   return {
-    reasoning_budget: llamaServer ? (settings.reasoningBudget ?? -1) : -1,
-    reasoning_budget_message: llamaServer
+    reasoning_budget: budgeted ? (settings.reasoningBudget ?? -1) : -1,
+    reasoning_budget_message: budgeted
       ? (settings.reasoningBudgetMessage ?? "")
       : "",
     ...(target.isGguf && settings.nBatch != null

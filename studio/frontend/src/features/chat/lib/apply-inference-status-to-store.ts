@@ -364,7 +364,8 @@ export function applyActiveModelStatusToStore(
     loadedPin: prevState.loadedCustomContextLength ?? null,
   });
   const reasoningBudgetApplicable =
-    status.is_gguf === true && status.is_diffusion !== true;
+    (status.is_gguf === true || status.is_mlx === true) &&
+    status.is_diffusion !== true;
   const incomingReasoningBudget = reasoningBudgetApplicable
     ? (status.reasoning_budget ?? -1)
     : -1;

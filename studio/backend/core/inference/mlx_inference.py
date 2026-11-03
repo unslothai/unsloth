@@ -4296,6 +4296,7 @@ def _mlx_sampling_processors(
     grammar_constraint = None,
     penalty_window = None,
     penalty_prompt = None,
+    reasoning_budget = None,
 ):
     """Logits processors for the sampling knobs, or ``None`` when all are inert. Bias runs before
     the penalties, matching llama-server's sampler order. mlx_lm supplies only the repetition
@@ -4303,15 +4304,17 @@ def _mlx_sampling_processors(
     prompt*, while the penalties below score the whole completion and exclude it, so using them
     would make the same request sample differently depending on the backend. ``penalty_window``
     is llama-server's ``repeat_last_n``: one window for all three penalties, ``0`` disabling them.
-    ``penalty_prompt`` is the full prompt, so the window reaches the part the runtime withholds."""
+    ``penalty_prompt`` is the full prompt, so the window reaches the part the runtime withholds.
+    ``reasoning_budget`` runs last, so the token it forces is never penalized away."""
     processors = []
     if grammar_constraint is not None:
         from core.inference.grammar_constraint import make_grammar_logits_processor
         processors.append(make_grammar_logits_processor(grammar_constraint))
     if logit_bias:
         processors.append(_make_mlx_logit_bias_processor(logit_bias))
+    budget = [reasoning_budget] if reasoning_budget is not None else []
     if penalty_window == 0:
-        return processors or None
+        return [*processors, *budget] or None
     penalties = []
     if repetition_penalty is not None and float(repetition_penalty) not in (0.0, 1.0):
         from mlx_lm.sample_utils import make_logits_processors
@@ -4334,6 +4337,7 @@ def _mlx_sampling_processors(
             _with_prompt_history(penalty, penalty_prompt, penalty_window) for penalty in penalties
         ]
     processors.extend(penalties)
+    processors.extend(budget)
     return processors or None
 
 
@@ -4546,9 +4550,13 @@ def _asks_for_row_processors(request):
     )
 
 
-def _row_processor_gap(engine, requests):
+def _row_processor_gap(
+    engine,
+    requests,
+    needed = False,
+):
     """Why these replies' penalties cannot travel into a batch, or None."""
-    if not any(_asks_for_row_processors(request) for request in requests):
+    if not needed and not any(_asks_for_row_processors(request) for request in requests):
         return None
     unavailable = getattr(engine, "row_logits_processors_unavailable_reason", None)
     return unavailable() if callable(unavailable) else None
@@ -5357,6 +5365,8 @@ class MLXInferenceBackend:
         self._speculative_draft = None
         self._prefill_step = None
         self._prefill_layer_step = None
+        self._reasoning_budget = -1
+        self._reasoning_budget_message = ""
         self._multi_image_marker = None
         self._config = {}
         self._distributed_group = None
@@ -5853,6 +5863,19 @@ class MLXInferenceBackend:
             return step
         return vlm_prefill_step()
 
+    def _budgets_reasoning(self) -> bool:
+        return getattr(self, "_reasoning_budget", -1) >= 0
+
+    def _reasoning_budget_processor(self, prompt, markers):
+        """The load's reasoning budget for one templated reply; a raw prompt has no reasoning block."""
+        if not isinstance(prompt, str) or not self._budgets_reasoning():
+            return None
+        from core.inference.mlx_reasoning_budget import make_reasoning_budget_processor
+
+        return make_reasoning_budget_processor(
+            self._tokenizer, self._reasoning_budget, self._reasoning_budget_message, markers, prompt
+        )
+
     def _prefill_step_kwargs(
         self,
         target = None,
@@ -6104,6 +6127,8 @@ class MLXInferenceBackend:
         spec_drafters_allowed = None,
         offload = (None, None),
         disable_vision = False,
+        reasoning_budget = -1,
+        reasoning_budget_message = "",
     ) -> bool:
         import mlx.core as mx
 
@@ -6587,6 +6612,8 @@ class MLXInferenceBackend:
             )
 
         self.active_model_name = model_name
+        self._reasoning_budget = -1 if reasoning_budget is None else int(reasoning_budget)
+        self._reasoning_budget_message = reasoning_budget_message or ""
         try:
             self._resume_files = self._resume_weight_files()
         except OSError:
@@ -6652,6 +6679,8 @@ class MLXInferenceBackend:
             "spec_draft_model": spec_draft_model or None,
             "spec_drafter_kind": spec_kind,
             "spec_fallback_reason": spec_reason,
+            "reasoning_budget": self._reasoning_budget,
+            "reasoning_budget_message": self._reasoning_budget_message,
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
         self._populate_chat_template_info(model_name, native_template)
@@ -6864,6 +6893,7 @@ class MLXInferenceBackend:
         self._speculative_draft = None
         self._prefill_step = None
         self._prefill_layer_step = None
+        self._reasoning_budget = -1
         self._model = None
         self._tokenizer = None
         self._processor = None
@@ -7368,6 +7398,7 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
+            reasoning_budget = self._reasoning_budget_processor(prompt, reasoning_channel_markers),
         )
         recorded = token_logprobs = None
         if n_probs:
@@ -7693,6 +7724,7 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
+            reasoning_budget = self._reasoning_budget_processor(prompt, reasoning_channel_markers),
         )
 
         normalizer = (
@@ -8099,6 +8131,7 @@ class MLXInferenceBackend:
             grammar_constraint = constraint,
             penalty_window = penalty_window,
             penalty_prompt = prompt_ids,
+            reasoning_budget = self._reasoning_budget_processor(prompt, markers),
         )
         if processors:
             # Not the repetition_penalty shortcut: mlx-vlm would build it outside our narrowing
@@ -8270,6 +8303,8 @@ class MLXInferenceBackend:
             recorder, recorded = _make_mlx_raw_logprob_recorder()
             token_logprobs = []
         draft = self._speculative_draft
+        # Not settle-able, so a budgeted reply decodes without the drafter.
+        budget = self._reasoning_budget_processor(prompt, vlm_reasoning_markers)
         if (
             presence_penalty
             or frequency_penalty
@@ -8278,6 +8313,7 @@ class MLXInferenceBackend:
             or (_rep_active and draft is not None)
             or penalty_window is not None
             or recorded is not None
+            or budget is not None
         ):
             # These need custom processors: pass the full list (repetition + the rest) instead of the
             # repetition_penalty shortcut so all apply.
@@ -8289,6 +8325,7 @@ class MLXInferenceBackend:
                 grammar_constraint = constraint,
                 penalty_window = penalty_window,
                 penalty_prompt = prompt_ids,
+                reasoning_budget = budget,
             )
             if recorded is not None:
                 # Not history_only, so no draft runs: its verify pass would record rejected tokens.
@@ -8706,7 +8743,7 @@ class MLXInferenceBackend:
         gap = _batched_vision_engine_gap(engine)
         if gap is not None:
             return gap
-        gap = _row_processor_gap(engine, requests)
+        gap = _row_processor_gap(engine, requests, needed = self._budgets_reasoning())
         if gap is not None:
             return gap
         # Only the resident session decodes rows from their ids, as the one-at-a-time decode does.

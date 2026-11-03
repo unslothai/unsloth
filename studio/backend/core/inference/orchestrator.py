@@ -294,6 +294,8 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_offload",
     "disable_vision",
     "vision_disabled_by_user",
+    "reasoning_budget",
+    "reasoning_budget_message",
     "chat_template_override_requested",
     "chat_template_override_reason",
     "speculative_type",
@@ -2255,6 +2257,8 @@ class InferenceOrchestrator:
         spec_drafters_allowed: Optional[list] = None,
         chat_template_override: Optional[str] = None,
         disable_vision: bool = False,
+        reasoning_budget: int = -1,
+        reasoning_budget_message: str = "",
         load_cancel_event: Optional[threading.Event] = None,
         post_handoff_expected_free_gb: Optional[dict[int, float]] = None,
         audio_device: Optional[str] = None,
@@ -2337,6 +2341,8 @@ class InferenceOrchestrator:
                 "spec_drafters_allowed": spec_drafters_allowed,
                 "chat_template_override": chat_template_override,
                 "disable_vision": bool(disable_vision),
+                "reasoning_budget": reasoning_budget,
+                "reasoning_budget_message": reasoning_budget_message,
                 # Read in the worker, which hides the accelerators before detection.
                 "audio_device": audio_device,
             }

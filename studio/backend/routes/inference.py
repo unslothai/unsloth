@@ -8761,6 +8761,11 @@ def _unsloth_serving_fields(model_info: dict) -> dict:
         "spec_fallback_reason": model_info.get("spec_fallback_reason"),
         "disable_vision": bool(model_info.get("disable_vision")),
         "vision_disabled_by_user": bool(model_info.get("vision_disabled_by_user")),
+        **{
+            f"{prefix}{name}": model_info.get(name, default)
+            for name, default in (("reasoning_budget", -1), ("reasoning_budget_message", ""))
+            for prefix in ("", "requested_")
+        },
     }
 
 
@@ -18321,6 +18326,8 @@ def _mlx_runtime_settings_match(backend, request) -> bool:
         and bool(entry.get("mlx_fast_verify_requested"))
         == bool(getattr(request, "mlx_fast_verify", False))
         and bool(entry.get("disable_vision")) == bool(getattr(request, "disable_vision", False))
+        and entry.get("reasoning_budget", -1) == request.reasoning_budget
+        and entry.get("reasoning_budget_message", "") == request.reasoning_budget_message
         and all(
             normalize_mlx_offload(
                 ((entry.get("mlx_offload") or {}).get(part) or {}).get("requested")
@@ -20841,6 +20848,8 @@ async def _load_model_impl(
                 ),
                 chat_template_override = request.chat_template_override,
                 disable_vision = request.disable_vision,
+                reasoning_budget = request.reasoning_budget,
+                reasoning_budget_message = request.reasoning_budget_message,
                 load_cancel_event = load_cancel_event,
                 on_prior_worker_released = _release_chat_after_teardown,
                 post_handoff_expected_free_gb = post_chat_handoff_expected_free_gb,
