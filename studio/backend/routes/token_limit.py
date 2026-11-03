@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Token usage limiter settings, status and the one-time override. Changes need a UI session, so an
-API key cannot lift the limit it is held to."""
-
 import asyncio
 from typing import Any, Literal, Optional
 
@@ -28,7 +25,6 @@ class TokenLimitUpdate(BaseModel):
     localLimit: Optional[int] = Field(None, gt = 0, le = token_limit.MAX_LIMIT)
     apiLimit: Optional[int] = Field(None, gt = 0, le = token_limit.MAX_LIMIT)
     timezone: Optional[str] = Field(None, max_length = 64)
-    # Required once a password is set. ``newPassword`` sets or changes it; an empty string removes it.
     password: Optional[str] = Field(None, max_length = 256)
     newPassword: Optional[str] = Field(None, max_length = 256)
 

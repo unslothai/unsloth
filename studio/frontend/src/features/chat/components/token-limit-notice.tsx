@@ -36,7 +36,6 @@ const PERIOD_KEYS = {
   month: "settings.profile.tokenLimit.periodNameMonth",
 } as const;
 
-/** The pool to show: a reached one first, else the closest to its cap. */
 function pickPool(status: TokenLimitStatus): TokenLimitPoolStatus | null {
   const shown = status.pools.filter((pool) => pool.warning);
   if (shown.length === 0) return null;
@@ -46,8 +45,6 @@ function pickPool(status: TokenLimitStatus): TokenLimitPoolStatus | null {
   });
 }
 
-/** Header chip that warns as the token usage limit nears and offers the one-time override once
- * it is reached. Renders nothing while the limiter is off or usage is well under the cap. */
 export function TokenLimitNotice({ active }: { active: boolean }) {
   const t = useT();
   const [status, setStatus] = useState<TokenLimitStatus | null>(null);
@@ -64,7 +61,6 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
           if (!cancelled) setStatus(next);
         })
         .catch(() => {
-          // An older backend has no limiter; stay hidden.
         });
     };
     const onHistoryUpdated = () => {

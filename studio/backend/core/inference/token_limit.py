@@ -1,11 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Token usage limiter: an optional cap on the tokens all chats and API requests use per day, week or
-month. Usage comes from studio.db (the chat token ledger plus API receipts), so every open window,
-API key and restart shares one counter. A request is checked before it starts, never mid-stream: the
-reply that crosses the cap finishes, and the next request is refused."""
-
 from __future__ import annotations
 
 import hashlib
@@ -35,7 +30,6 @@ PERIODS: tuple[str, ...] = ("day", "week", "month")
 MODES: tuple[str, ...] = ("combined", "split")
 METHODS: tuple[str, ...] = ("total", "incremental")
 MAX_LIMIT = 1 << 40
-# Share of a cap at which the chat starts warning that the limit is near.
 WARNING_FRACTION = 0.8
 
 _PASSWORD_ITERATIONS = 200_000
@@ -53,7 +47,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "passwordHash": None,
 }
 
-# Serializes override grants and their one-shot use, so two racing requests cannot share one override.
 _override_lock = threading.Lock()
 
 
@@ -81,7 +74,6 @@ def verify_password(password: str, stored: str) -> bool:
 
 
 def _clean_settings(raw: Any) -> dict[str, Any]:
-    """Stored settings with every field present and in range; anything unreadable falls back."""
     settings = dict(DEFAULT_SETTINGS)
     if not isinstance(raw, dict):
         return settings
@@ -106,7 +98,6 @@ def load_settings() -> dict[str, Any]:
 
 
 def public_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    """Settings as the UI sees them: the password hash never leaves the backend."""
     visible = {key: value for key, value in settings.items() if key != "passwordHash"}
     visible["passwordProtected"] = bool(settings.get("passwordHash"))
     return visible
@@ -126,8 +117,6 @@ def period_window(
     tz_name: str,
     now_ms: Optional[int] = None,
 ) -> tuple[int, int]:
-    """Start and end of the current period in epoch ms, in the timezone the limit was saved from.
-    Weeks start on Monday. The limit resets on its own when the window rolls over."""
     zone = _zone(tz_name)
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     now = datetime.fromtimestamp(now_ms / 1000, zone)
@@ -144,7 +133,6 @@ def period_window(
     else:
         start = day
         end = start + timedelta(days = 1)
-    # Rebuild from wall-clock fields so a DST change inside the window lands on local midnight.
     start = start.replace(tzinfo = None).replace(tzinfo = zone)
     end = end.replace(tzinfo = None).replace(tzinfo = zone)
     return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
@@ -157,8 +145,6 @@ def _pools(settings: dict[str, Any]) -> dict[str, int]:
 
 
 def request_pool(settings: dict[str, Any], *, api: bool) -> str:
-    """The pool a request draws from: chats with a local model are ``local``; API-key requests and
-    external providers are ``api``. Combined mode has a single pool."""
     if settings["mode"] != "split":
         return "combined"
     return "api" if api else "local"
@@ -203,7 +189,6 @@ def _overrides() -> dict[str, Any]:
 
 
 def _override_state(overrides: dict[str, Any], pool: str, start_ms: int) -> Optional[str]:
-    """``granted`` or ``used`` for this pool in the current period; an older period's entry is spent."""
     entry = overrides.get(pool)
     if isinstance(entry, dict) and entry.get("periodStart") == start_ms:
         state = entry.get("state")
@@ -240,8 +225,6 @@ def status() -> dict[str, Any]:
 def update_settings(
     patch: dict[str, Any], *, password: Optional[str], new_password: Optional[str]
 ) -> dict[str, Any]:
-    """Apply a settings change. Once a password is set, every change (including turning the limiter
-    off or removing the password) needs it, so whoever holds it controls the limit."""
     current = load_settings()
     stored_hash = current.get("passwordHash")
     if stored_hash and not (password and verify_password(password, stored_hash)):
@@ -254,7 +237,6 @@ def update_settings(
 
 
 def grant_override(pool: str) -> dict[str, Any]:
-    """Allow one more request in a pool that hit its cap; one override per pool per period."""
     settings = load_settings()
     if not settings["enabled"]:
         raise HTTPException(status_code = 409, detail = "The token limit is off.")
@@ -281,8 +263,6 @@ def _period_label(period: str) -> str:
 
 
 def enforce(*, api: bool) -> None:
-    """Refuse a new request once its pool is at the cap (HTTP 429). A granted override lets exactly
-    one request through and is then spent until the next reset."""
     settings = load_settings()
     if not settings["enabled"]:
         return

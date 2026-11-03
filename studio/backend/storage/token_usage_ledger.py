@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Append-only token ledger behind the usage limiter. Triggers copy each assistant reply's token
-counts out of chat_messages, so deleting a chat cannot hand its tokens back to the limit."""
-
 from __future__ import annotations
 
 import sqlite3
@@ -11,12 +8,8 @@ from dataclasses import dataclass, field
 
 LEDGER_TABLE = "token_usage_ledger"
 
-# Same fallbacks as the Profile stats fold: the usage chunk first, llama.cpp's serverTimings when no
-# usage chunk was sent, and the adapter's own token count for the completion as a last resort.
-
 
 def _count(row: str, path: str) -> str:
-    """A non-negative integer at ``path``, or 0 for anything that is not a JSON number."""
     return (
         f"(CASE WHEN json_type({row}, '{path}') IN ('integer', 'real') "
         f"THEN MAX(CAST(json_extract({row}, '{path}') AS INTEGER), 0) ELSE 0 END)"
@@ -43,10 +36,7 @@ def _usage_columns(row: str) -> str:
 
 
 def _ledger_insert(message: str, rows: str = "") -> str:
-    """INSERT .. SELECT of chat_messages rows: ``NEW`` in a trigger, or alias ``m`` over ``rows`` in the
-    backfill. Fork copies keep their source's timestamps, which predate the fork thread; the original
-    row already counted them, so they are skipped. MAX on conflict keeps a rewrite from shrinking a
-    counted reply."""
+    # Fork copies predate their thread; MAX prevents edits from refunding usage.
     return f"""
         INSERT INTO {LEDGER_TABLE}
             (message_id, thread_id, created_at, source,
@@ -76,7 +66,6 @@ def _ledger_insert(message: str, rows: str = "") -> str:
 
 
 def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
-    """Create the ledger and its triggers; the first creation backfills from the stored history."""
     existed = (
         conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (LEDGER_TABLE,)
@@ -103,7 +92,6 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
         f"CREATE INDEX IF NOT EXISTS idx_{LEDGER_TABLE}_thread_created_at "
         f"ON {LEDGER_TABLE}(thread_id, created_at)"
     )
-    # json_valid in WHEN: a malformed metadata blob must never abort the chat write that carries it.
     for event, timing in (
         ("insert", "AFTER INSERT ON chat_messages"),
         ("update", "AFTER UPDATE OF metadata_json ON chat_messages"),
@@ -129,9 +117,6 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
 
 @dataclass
 class WindowUsage:
-    """Tokens since a period start, per source: ``local`` and ``external`` chat replies and ``api``
-    requests made with an API key."""
-
     total: dict[str, int] = field(default_factory = lambda: {"local": 0, "external": 0, "api": 0})
     incremental: dict[str, int] = field(
         default_factory = lambda: {"local": 0, "external": 0, "api": 0}
@@ -139,9 +124,6 @@ class WindowUsage:
 
 
 def window_usage(conn: sqlite3.Connection, start_ms: int) -> WindowUsage:
-    """Usage from ``start_ms`` on. Incremental counting charges a chat reply only for the prompt tokens
-    the previous reply in its thread had not already seen, plus its completion; API requests are
-    stateless, so both methods charge them in full."""
     usage = WindowUsage()
     rows = conn.execute(
         f"""

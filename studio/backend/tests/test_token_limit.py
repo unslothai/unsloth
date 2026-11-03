@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Token usage limiter: the chat token ledger, the period caps, the one-time override and the
-password lock, over a real studio.db."""
-
 import sqlite3
 import time
 from datetime import datetime, timezone
@@ -169,7 +166,6 @@ def test_incremental_counting_skips_history_the_previous_reply_saw(limiter_db):
     now = _now_ms()
     _thread("t1", now)
     _reply("a1", "t1", now + 1, prompt = 100, completion = 50)
-    # The second turn resends the first exchange (150 tokens) plus a 20-token question.
     _reply("a2", "t1", now + 2, prompt = 170, completion = 30)
     _enable(limit = 10_000, method = "total")
     assert _pools()["combined"]["used"] == 150 + 200
@@ -205,12 +201,10 @@ def test_usage_before_the_period_does_not_count(limiter_db):
     _reply("yesterday", "t1", start - 5_000, prompt = 5000, completion = 0)
     _reply("today", "t1", start + 1, prompt = 5100, completion = 50)
     _enable(limit = 1000, method = "incremental")
-    # Only the 100 new prompt tokens and the completion count today.
     assert _pools()["combined"]["used"] == 150
 
 
 def test_periods_start_at_local_midnight_monday_and_the_first(limiter_db):
-    # 2026-11-04 (a Wednesday) 10:30 in Kolkata.
     now = int(datetime(2026, 11, 4, 5, 0, tzinfo = timezone.utc).timestamp() * 1000)
     tz = "Asia/Kolkata"
     for period, start, end in (

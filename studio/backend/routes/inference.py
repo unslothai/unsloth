@@ -3631,10 +3631,7 @@ def _request_used_api_key(request: Any) -> bool:
 
 
 async def _enforce_token_limit(request: Any, *, external: bool) -> None:
-    """Refuse a new request once the token usage limit is reached (429). Checked once per incoming
-    request, before generation, so the reply that crosses the cap still finishes."""
     from core.inference import token_limit
-
     api = external or _request_used_api_key(request)
     await asyncio.to_thread(token_limit.enforce, api = api)
 

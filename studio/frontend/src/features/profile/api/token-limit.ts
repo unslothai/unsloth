@@ -27,7 +27,6 @@ export type TokenLimitPoolStatus = {
   limit: number;
   reached: boolean;
   warning: boolean;
-  /** This period's one-time override: granted and waiting, used, or not taken. */
   override: "granted" | "used" | null;
 };
 
@@ -35,7 +34,6 @@ export type TokenLimitStatus = {
   settings: TokenLimitSettings;
   periodStart: number;
   resetsAt: number;
-  /** Empty while the limiter is off. */
   pools: TokenLimitPoolStatus[];
 };
 
@@ -47,7 +45,6 @@ export type TokenLimitUpdate = Partial<
   newPassword?: string;
 };
 
-/** Fired after a save or an override so every open view refetches at once. */
 export const TOKEN_LIMIT_CHANGED_EVENT = "unsloth:token-limit-changed";
 
 function announce(status: TokenLimitStatus): TokenLimitStatus {
