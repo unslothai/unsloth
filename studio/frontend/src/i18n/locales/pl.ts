@@ -2774,7 +2774,7 @@ export const pl = {
         gpuUnusableDetail: "Wykryty, ale PyTorch nie może go używać",
         detailedView: "Widok szczegółowy",
         detailedViewDescription:
-          "Pokazuj w oknie pływającym obciążenie CPU oraz obciążenie, temperaturę i pobór mocy każdego GPU.",
+          "Pokazuj w oknie pływającym obciążenie, temperaturę i pobór mocy każdego GPU.",
         gpuLoad: "Obciążenie GPU",
         temperature: "Temperatura",
         power: "Pobór mocy",

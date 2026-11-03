@@ -2783,7 +2783,7 @@ export const es419 = {
         gpuUnusableDetail: "Detectada, pero PyTorch no puede usarla",
         detailedView: "Vista detallada",
         detailedViewDescription:
-          "Muestra la carga de la CPU y la carga, temperatura y consumo de cada GPU en la ventana flotante.",
+          "Muestra la carga, temperatura y consumo de cada GPU en la ventana flotante.",
         gpuLoad: "Carga de GPU",
         temperature: "Temperatura",
         power: "Consumo",

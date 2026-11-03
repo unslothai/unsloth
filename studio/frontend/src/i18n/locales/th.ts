@@ -2630,7 +2630,7 @@ export const th = {
         gpuUnusableDetail: "ตรวจพบ แต่ PyTorch ใช้งานไม่ได้",
         detailedView: "มุมมองแบบละเอียด",
         detailedViewDescription:
-          "แสดงโหลด CPU และโหลด อุณหภูมิ และพลังงานของ GPU แต่ละตัวในหน้าต่างลอย",
+          "แสดงโหลด อุณหภูมิ และพลังงานของ GPU แต่ละตัวในหน้าต่างลอย",
         gpuLoad: "โหลด GPU",
         temperature: "อุณหภูมิ",
         power: "พลังงาน",

@@ -2618,7 +2618,7 @@ export const zhTW = {
         gpuUnusableDetail: "已偵測到，但 PyTorch 無法使用",
         detailedView: "詳細檢視",
         detailedViewDescription:
-          "在浮動視窗中顯示 CPU 負載，以及每個 GPU 的負載、溫度和功耗。",
+          "在浮動視窗中顯示每個 GPU 的負載、溫度和功耗。",
         gpuLoad: "GPU 負載",
         temperature: "溫度",
         power: "功耗",

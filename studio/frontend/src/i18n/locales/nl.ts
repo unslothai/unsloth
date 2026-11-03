@@ -2779,7 +2779,7 @@ export const nl = {
         gpuUnusableDetail: "Gedetecteerd, maar PyTorch kan hem niet gebruiken",
         detailedView: "Gedetailleerde weergave",
         detailedViewDescription:
-          "CPU-belasting en per GPU de belasting, temperatuur en het vermogen tonen in het zwevende venster.",
+          "Per GPU de belasting, temperatuur en het vermogen tonen in het zwevende venster.",
         gpuLoad: "GPU-belasting",
         temperature: "Temperatuur",
         power: "Vermogen",

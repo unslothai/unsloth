@@ -2745,7 +2745,7 @@ export const vi = {
         gpuUnusableDetail: "Đã phát hiện nhưng PyTorch không thể sử dụng",
         detailedView: "Chế độ xem chi tiết",
         detailedViewDescription:
-          "Hiển thị tải CPU cùng tải, nhiệt độ và công suất của từng GPU trong cửa sổ nổi.",
+          "Hiển thị tải, nhiệt độ và công suất của từng GPU trong cửa sổ nổi.",
         gpuLoad: "Tải GPU",
         temperature: "Nhiệt độ",
         power: "Công suất",

@@ -2540,7 +2540,7 @@ export const en = {
         gpuUnusableDetail: "Detected, but PyTorch cannot use it",
         detailedView: "Detailed view",
         detailedViewDescription:
-          "Show CPU load and each GPU's load, temperature and power in the floating window.",
+          "Show each GPU's load, temperature and power in the floating window.",
         gpuLoad: "GPU load",
         temperature: "Temperature",
         power: "Power",

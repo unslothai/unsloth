@@ -2730,7 +2730,7 @@ export const fa = {
         gpuUnusableDetail: "شناسایی شد، اما PyTorch نمی‌تواند از آن استفاده کند",
         detailedView: "نمای جزئی",
         detailedViewDescription:
-          "بار CPU و بار، دما و توان هر GPU در پنجرهٔ شناور نمایش داده شود.",
+          "بار، دما و توان هر GPU در پنجرهٔ شناور نمایش داده شود.",
         gpuLoad: "بار GPU",
         temperature: "دما",
         power: "توان",

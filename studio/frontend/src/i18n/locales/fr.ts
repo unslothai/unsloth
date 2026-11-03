@@ -2555,7 +2555,7 @@ export const fr = {
         gpuUnusableDetail: "Détecté, mais PyTorch ne peut pas l'utiliser",
         detailedView: "Vue détaillée",
         detailedViewDescription:
-          "Affiche la charge du CPU ainsi que la charge, la température et la consommation de chaque GPU dans la fenêtre flottante.",
+          "Affiche la charge, la température et la consommation de chaque GPU dans la fenêtre flottante.",
         gpuLoad: "Charge GPU",
         temperature: "Température",
         power: "Puissance",

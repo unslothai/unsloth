@@ -2557,7 +2557,7 @@ export const de = {
         gpuUnusableDetail: "Erkannt, aber PyTorch kann sie nicht nutzen",
         detailedView: "Detailansicht",
         detailedViewDescription:
-          "Zeigt CPU-Last sowie Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster.",
+          "Zeigt Last, Temperatur und Leistungsaufnahme jeder GPU im schwebenden Fenster.",
         gpuLoad: "GPU-Last",
         temperature: "Temperatur",
         power: "Leistung",

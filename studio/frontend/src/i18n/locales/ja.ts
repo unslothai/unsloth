@@ -2507,7 +2507,7 @@ export const ja = {
         gpuUnusableDetail: "検出されましたが、PyTorch から利用できません",
         detailedView: "詳細表示",
         detailedViewDescription:
-          "フローティングウィンドウに、CPU 負荷と各 GPU の負荷、温度、消費電力を表示します。",
+          "フローティングウィンドウに、各 GPU の負荷、温度、消費電力を表示します。",
         gpuLoad: "GPU 負荷",
         temperature: "温度",
         power: "消費電力",

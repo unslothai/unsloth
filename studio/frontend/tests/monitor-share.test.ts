@@ -157,3 +157,21 @@ test("CPU is a core row, so Detailed view offers no CPU load option that would d
   assert.deepEqual([...selectedDetailMetrics(["cpuLoad", "gpuLoad"])], ["gpuLoad"]);
   assert.match(readSrc("components/floating-monitor.tsx"), /testId="floating-monitor-cpu"/);
 });
+
+test("an inflated image estimate shrinks before a measured chat model does", () => {
+  // Colab L4: image status says 13.26 GiB, chat buffers 4.35 GiB, the card has 14.04 GiB of Unsloth's in use.
+  const models = modelShares(
+    [
+      { id: "img", name: "sdxl-turbo", source: "image", residentMib: 13579, residentOnGpu: true },
+      { id: "chat", name: "Qwen3-8B", source: "chat", residentMib: 4455, residentOnGpu: true },
+    ],
+    true,
+  );
+  const segments = memorySegments(memoryShare(14.04, 22.5, 14.04)!, modelBreakdown(null, models, false), false);
+  const gb = Object.fromEntries(segments.map((segment) => [segment.id, segment.gb]));
+  assert.ok(Math.abs(gb["model:chat"] - 4455 / 1024) < 1e-9);
+  assert.ok(Math.abs(gb["model:img"] - (14.04 - 4455 / 1024)) < 1e-9);
+  // Measured rows alone over the share are still scaled to fit.
+  const over = memorySegments(memoryShare(2, 8, 2)!, modelBreakdown(null, [{ ...models[1], gb: 4 }], false), false);
+  assert.ok(Math.abs(over[0].gb - 2) < 1e-9);
+});

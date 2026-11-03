@@ -2743,7 +2743,7 @@ export const id = {
           "Terdeteksi, tetapi PyTorch tidak dapat menggunakannya",
         detailedView: "Tampilan terperinci",
         detailedViewDescription:
-          "Tampilkan beban CPU serta beban, suhu, dan daya setiap GPU di jendela mengambang.",
+          "Tampilkan beban, suhu, dan daya setiap GPU di jendela mengambang.",
         gpuLoad: "Beban GPU",
         temperature: "Suhu",
         power: "Daya",

@@ -2736,7 +2736,7 @@ export const tr = {
         gpuUnusableDetail: "Algılandı, ancak PyTorch kullanamıyor",
         detailedView: "Ayrıntılı görünüm",
         detailedViewDescription:
-          "Kayan pencerede CPU yükünü ve her GPU'nun yükünü, sıcaklığını ve güç tüketimini gösterin.",
+          "Kayan pencerede her GPU'nun yükünü, sıcaklığını ve güç tüketimini gösterin.",
         gpuLoad: "GPU yükü",
         temperature: "Sıcaklık",
         power: "Güç",

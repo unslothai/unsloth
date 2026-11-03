@@ -301,6 +301,24 @@ export function describeInferenceStatus(
   return entries;
 }
 
+/** A kept chat model's size, from its own slot's status; ignored unless that slot answered for it. */
+export function withServingResident(
+  entry: LoadedModelEntry,
+  status: InferenceStatusResponse | null,
+): LoadedModelEntry {
+  if (!status || !entry.servingCheckpoint) return entry;
+  // By checkpoint when known: the primary wins a routing tie and may share this row's label.
+  const answered = status.model_identifier
+    ? status.model_identifier === entry.servingCheckpoint
+    : status.active_model === entry.name;
+  if (!answered) return entry;
+  return {
+    ...entry,
+    ...residentMib(status.resident_mib),
+    ...(status.resident_on_gpu === true ? { residentOnGpu: true } : {}),
+  };
+}
+
 /** Unrecognised values are shown upper-cased, which keeps quants like "Q8_0" readable. */
 export function precisionLabel(value: string | null | undefined): string | null {
   if (!value || value === "none") return null;

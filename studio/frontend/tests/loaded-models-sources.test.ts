@@ -18,6 +18,7 @@ import {
   withPendingLoads,
   shortModelLabel,
   verifyResident,
+  withServingResident,
 } from "../src/features/loaded-models/loaded-models-sources.ts";
 
 function inferenceStatus(
@@ -693,4 +694,32 @@ test("only a model known to sit on the reported GPUs counts toward VRAM", () => 
   assert.equal(image("cuda:0").residentOnGpu, true);
   assert.equal(image("cpu").residentOnGpu, undefined);
   assert.equal(image(null).residentOnGpu, undefined);
+});
+
+test("a kept chat model takes its size from its own slot, never from a primary that answered instead", () => {
+  const [, kept] = describeInferenceStatus(
+    inferenceStatus({
+      active_model: "unsloth/gemma-3-4b-it-GGUF",
+      model_identifier: "unsloth/gemma-3-4b-it-GGUF",
+      serving: ["unsloth/gemma-3-4b-it-GGUF", "unsloth/Qwen3-4B-GGUF"],
+      serving_checkpoints: ["unsloth/gemma-3-4b-it-GGUF", "unsloth/Qwen3-4B-GGUF"],
+    }),
+  );
+  assert.equal(kept.residentMib, undefined);
+  const slot = inferenceStatus({
+    active_model: "unsloth/Qwen3-4B-GGUF",
+    model_identifier: "unsloth/Qwen3-4B-GGUF",
+    resident_mib: 2376,
+    resident_on_gpu: true,
+  });
+  const sized = withServingResident(kept, slot);
+  assert.equal(sized.residentMib, 2376);
+  assert.equal(sized.residentOnGpu, true);
+  const primary = inferenceStatus({
+    active_model: "unsloth/Qwen3-4B-GGUF",
+    model_identifier: "unsloth/gemma-3-4b-it-GGUF",
+    resident_mib: 6617,
+  });
+  assert.equal(withServingResident(kept, primary), kept);
+  assert.equal(withServingResident(kept, null), kept);
 });

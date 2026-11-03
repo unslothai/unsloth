@@ -2580,7 +2580,7 @@ export const he = {
         gpuUnusableDetail: "זוהה, אך PyTorch אינו יכול להשתמש בו",
         detailedView: "תצוגה מפורטת",
         detailedViewDescription:
-          "הצגת עומס המעבד ועומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
+          "הצגת עומס, טמפרטורה וצריכת חשמל של כל GPU בחלון הצף.",
         gpuLoad: "עומס GPU",
         temperature: "טמפרטורה",
         power: "הספק",

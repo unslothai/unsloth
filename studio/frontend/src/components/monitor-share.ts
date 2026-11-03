@@ -11,6 +11,8 @@ export interface ModelShare {
   id: string;
   name: string;
   gb: number;
+  /** Read off the running server (llama.cpp's buffers or RSS), not a load-time estimate. */
+  measured?: boolean;
 }
 
 export interface ModelBreakdown {
@@ -73,6 +75,7 @@ export function modelShares(
       // "unsloth/Qwen3.5-0.8B-GGUF" -> "Qwen3.5-0.8B-GGUF": the owner only eats the row's width.
       name: entry.label || entry.name.split("/").pop() || entry.name,
       gb: (entry.residentMib ?? 0) / MIB_PER_GIB,
+      ...(entry.source === "chat" ? { measured: true } : {}),
     }))
     .sort((a, b) => b.gb - a.gb);
 }
@@ -133,17 +136,26 @@ export function memorySegments(
           kind: "model" as const,
           name: model.name,
           gb: model.gb,
+          measured: model.measured === true,
         })),
         ...(breakdown.app !== null
-          ? [{ id: "app", kind: "app" as const, gb: breakdown.app }]
+          ? [{ id: "app", kind: "app" as const, gb: breakdown.app, measured: false }]
           : []),
       ]
     : null;
-  // Model status can be fresher than the memory sample: scale the split into the measured share.
-  const partsGb = parts?.reduce((sum, part) => sum + part.gb, 0) ?? 0;
-  const scale = partsGb > share.unsloth && partsGb > 0 ? share.unsloth / partsGb : 1;
+  // Status can be fresher than the memory sample, and image/video sizes are estimates: fit the split
+  // into the measured share, shrinking the estimates first so an inflated one leaves exact rows alone.
+  const sum = (list: { gb: number }[]) => list.reduce((total, part) => total + part.gb, 0);
+  const exactGb = sum(parts?.filter((part) => part.measured) ?? []);
+  const restGb = sum(parts?.filter((part) => !part.measured) ?? []);
+  const fit = (gb: number, room: number) => (gb > room && gb > 0 ? Math.max(0, room) / gb : 1);
+  const exactScale = fit(exactGb, share.unsloth);
+  const restScale = fit(restGb, share.unsloth - exactGb * exactScale);
   const unsloth: MemorySegment[] = parts
-    ? parts.map((part) => ({ ...part, gb: part.gb * scale }))
+    ? parts.map(({ measured, ...part }) => ({
+        ...part,
+        gb: part.gb * (measured ? exactScale : restScale),
+      }))
     : [{ id: "unsloth", kind: "unsloth", gb: share.unsloth }];
   return [
     ...unsloth,
