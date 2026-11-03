@@ -1385,6 +1385,25 @@ def _has_cache(args, kwargs):
     return any(isinstance(arg, Cache) for arg in args)
 
 
+def _shared_kv_scratch(layer, kwargs):
+    """Gemma-4 / Gemma-3n layers that store KV for later layers write into the model's
+    `shared_kv_states`, and dynamo guards on that dict being empty. A checkpoint recompute sees it
+    filled (by this layer and the ones after it), so it compiled a second graph whose saved tensors
+    differ from the forward's (CheckpointError). Writers get an empty scratch dict, copied back."""
+    shared = kwargs.get("shared_kv_states")
+    if shared is None or not hasattr(shared, "update"):
+        return kwargs, None
+    attn = getattr(layer, "self_attn", None)
+    # Readers keep the real dict: every key is already present in both forward and recompute.
+    if attn is None or getattr(attn, "is_kv_shared_layer", False):
+        return kwargs, None
+    try:
+        scratch = type(shared)()
+    except Exception:
+        return kwargs, None
+    return {**kwargs, "shared_kv_states": scratch}, (shared, scratch)
+
+
 def _layer_kind(layer):
     attn = (
         getattr(layer, "self_attn", None)
@@ -1472,6 +1491,13 @@ def _wrap(
     graph_shapes = set()
 
     def run(self, hidden_states, args, kwargs, mode):
+        kwargs, shared = _shared_kv_scratch(self, kwargs)
+        out = _run(self, hidden_states, args, kwargs, mode)
+        if shared is not None:
+            shared[0].update(shared[1])
+        return out
+
+    def _run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode

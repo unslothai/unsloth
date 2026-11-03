@@ -1785,3 +1785,88 @@ def test_graphs_off_compile_gets_the_same_region_limit(monkeypatch):
     for kwargs in seen:
         assert kwargs["isolate_recompiles"] is True
         assert kwargs["recompile_limit"] == M._region_recompile_limit(2) == 48
+
+
+def test_shared_kv_writer_recompute_reuses_the_forward_graph(monkeypatch):
+    """Gemma-4 E2B: the KV-storing layer's checkpoint recompute saw `shared_kv_states` already filled,
+    failed dynamo's `not shared_kv_states.data` guard and compiled a second graph in backward whose
+    saved tensors differ from the forward's (CheckpointError: [680, 2048] vs [2, 340, 8, 256])."""
+    from collections import UserDict
+    from torch._dynamo.testing import CompileCounter
+    from torch.utils.checkpoint import checkpoint
+
+    M = _load()
+    counter = CompileCounter()
+    real_compile = torch.compile
+    monkeypatch.setattr(
+        torch,
+        "compile",
+        lambda fn, **kwargs: real_compile(fn, backend = counter, fullgraph = False, dynamic = None),
+    )
+    torch._dynamo.reset()
+
+    class Attn(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.store_full_length_kv, self.is_kv_shared_layer = store, shared
+            self.q = torch.nn.Linear(8, 8)
+            self.k = torch.nn.Linear(8, 8)
+
+        def forward(self, x, shared_kv_states):
+            if self.is_kv_shared_layer:
+                k = shared_kv_states["sliding"]
+            else:
+                k = self.k(x)
+            if self.store_full_length_kv:
+                shared_kv_states["sliding"] = k
+            return self.q(x) * k
+
+    class KvDecoderLayer(torch.nn.Module):
+        def __init__(self, store, shared):
+            super().__init__()
+            self.self_attn = Attn(store, shared)
+
+        def forward(
+            self,
+            hidden_states,
+            shared_kv_states = None,
+            **kwargs,
+        ):
+            return hidden_states + self.self_attn(hidden_states, shared_kv_states)
+
+    torch.manual_seed(0)
+    layers = [
+        KvDecoderLayer(False, False),
+        KvDecoderLayer(True, False),
+        KvDecoderLayer(False, True),
+    ]
+    stock = [KvDecoderLayer(False, False), KvDecoderLayer(True, False), KvDecoderLayer(False, True)]
+    for a, b in zip(stock, layers):
+        b.load_state_dict(a.state_dict())
+    M._wrap(KvDecoderLayer, {})
+    for layer in layers + stock:
+        layer.train()
+    for layer in stock:
+        layer.__dict__["_unsloth_block_mode"] = M._OFF
+
+    def step(stack, x):
+        shared = UserDict()
+        h = x
+        for layer in stack:
+            h = checkpoint(layer, h, shared_kv_states = shared, use_reentrant = False)
+        return h, shared
+
+    x = torch.randn(2, 5, 8)
+    ref, ref_shared = step(stock, x)
+    ref.sum().backward()
+    out, shared = step(layers, x)
+    forward_frames = counter.frame_count
+    out.sum().backward()
+    recompute_frames = counter.frame_count - forward_frames
+    torch._dynamo.reset()
+    assert recompute_frames == 0
+    assert list(shared.keys()) == ["sliding"]
+    torch.testing.assert_close(out, ref)
+    for a, b in zip(stock, layers):
+        for pa, pb in zip(a.parameters(), b.parameters()):
+            torch.testing.assert_close(pa.grad, pb.grad)
