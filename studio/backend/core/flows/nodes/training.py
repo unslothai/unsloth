@@ -815,22 +815,44 @@ def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:
 
 
 def _auto_eval_split(dataset: dict, train_split: str, token: Any) -> Optional[str]:
-    """The split the trainer would pick for a blank eval split: the first named candidate the Hub has."""
-    from datasets import get_dataset_split_names
+    """The split the trainer would pick for a blank eval split: the first candidate the Hub has with
+    enough rows."""
+    from datasets import get_dataset_split_names, load_dataset, load_dataset_builder
 
-    from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES
+    from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES, MIN_EVAL_ROWS
+    from utils.hf_dataset_options import hf_dataset_split_instruction_names
 
+    ref, subset = str(dataset["ref"]), dataset.get("subset") or None
     try:
-        names = get_dataset_split_names(
-            str(dataset["ref"]), dataset.get("subset") or None, token = token
-        )
+        names = get_dataset_split_names(ref, subset, token = token)
     except Exception:
         return None
-    base = re.match(r"[\w.-]+", train_split)
-    return next(
-        (c for c in EVAL_SPLIT_CANDIDATES if c in names and c != (base and base.group(0))),
-        None,
-    )
+    try:
+        sizes = load_dataset_builder(ref, subset, token = token).info.splits or {}
+    except Exception:
+        sizes = {}
+    # Every split the training instruction reads is excluded, as the trainer excludes them.
+    trained = set(hf_dataset_split_instruction_names(train_split)) or {
+        m.group(0) for m in [re.match(r"[\w.-]+", train_split)] if m
+    }
+    for candidate in EVAL_SPLIT_CANDIDATES:
+        if candidate not in names or candidate in trained:
+            continue
+        known = getattr(sizes.get(candidate), "num_examples", None)
+        try:
+            rows = known or sum(
+                1
+                for _ in load_dataset(
+                    ref, subset, split = candidate, token = token, streaming = True
+                ).take(MIN_EVAL_ROWS)
+            )
+        except Exception:
+            # Uncounted: the eval upload reads it anyway and reports a failure there.
+            return candidate
+        # The trainer skips a split too small to evaluate on and tries the next.
+        if rows >= MIN_EVAL_ROWS:
+            return candidate
+    return None
 
 
 async def hub_eval_upload(ctx: NodeContext, dataset: dict, split: str) -> str:
