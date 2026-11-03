@@ -11,7 +11,7 @@ import {
 } from "./helpers/kit.ts";
 
 registerStoreStubResolver();
-const { store, fireWindowEvent } = installLocalStorageFake();
+const { store, storage, fireWindowEvent } = installLocalStorageFake();
 Object.assign(globalThis.window, {
   dispatchEvent: (event: Event) => {
     fireWindowEvent(event.type, event);
@@ -23,8 +23,13 @@ const { forgetRunSettings, rememberedRunSettings, subscribeRememberedRunSettings
   await import(
     "../src/features/model-picker/model-config/remembered-run-settings.ts"
   );
-const { DEFAULT_PER_MODEL_CONFIG, resolveInitialConfig, savePerModelConfig } =
-  await import("../src/features/model-picker/model-config/per-model-config.ts");
+const {
+  DEFAULT_PER_MODEL_CONFIG,
+  deletePerModelConfigsForOverrideKeys,
+  perModelConfigSnapshot,
+  resolveInitialConfig,
+  savePerModelConfig,
+} = await import("../src/features/model-picker/model-config/per-model-config.ts");
 const { modelConfigTarget } = await import(
   "../src/features/model-picker/model-config/model-config-handoff.ts"
 );
@@ -455,6 +460,29 @@ test("an identical re-save from another tab before the forget's response keeps t
   } finally {
     setAuthFetchHandler(null);
   }
+});
+
+test("a forget's cleanup between another tab's two writes keeps an identical re-save", () => {
+  store.clear();
+  savePerModelConfig(REPO, QUANT, tuned());
+  const snapshot = perModelConfigSnapshot();
+  const setItem = storage.setItem;
+  let cleaned = false;
+  // The cleanup lands right after the re-save's first write, before its second.
+  storage.setItem = (key: string, value: string) => {
+    setItem(key, value);
+    if (!cleaned) {
+      cleaned = true;
+      deletePerModelConfigsForOverrideKeys([`${REPO}:${QUANT}`], snapshot);
+    }
+  };
+  try {
+    assert.ok(savePerModelConfig(REPO, QUANT, tuned()));
+  } finally {
+    storage.setItem = setItem;
+  }
+  assert.ok(cleaned);
+  assert.equal(resolveInitialConfig(REPO, QUANT).remembered, true);
 });
 
 test("an unsubscribed read returns the same snapshot until the store changes", () => {

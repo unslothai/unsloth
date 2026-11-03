@@ -1449,9 +1449,12 @@ export function savePerModelConfig(
   if (!enforceStorageBudget(map, new Set([key]), evictedKeys)) {
     return false;
   }
+  // Stamp first: a forget's cleanup in another tab between the two writes then keeps
+  // an identical re-save instead of reading it as the record it snapshotted.
+  const previousStamps = stampWrite(key, map);
   const written = writeMap(map);
-  if (written) {
-    stampWrite(key, map);
+  if (!written) {
+    restoreStamps(previousStamps);
   }
   if (written && evicted) {
     for (const evictedKey of evictedKeys) {
@@ -1563,7 +1566,13 @@ function readStamps(): Record<string, string> {
   }
 }
 
-function stampWrite(key: string, map: StoredMap): void {
+function stampWrite(key: string, map: StoredMap): string | null {
+  let previous: string | null = null;
+  try {
+    previous = canUseStorage() ? localStorage.getItem(WRITE_STAMPS_KEY) : null;
+  } catch {
+    // Unreadable storage: the record write fails next and there is nothing to restore.
+  }
   const stamps: Record<string, string> = {};
   for (const [k, v] of Object.entries(readStamps())) {
     if (k in map) {
@@ -1575,6 +1584,19 @@ function stampWrite(key: string, map: StoredMap): void {
     localStorage.setItem(WRITE_STAMPS_KEY, JSON.stringify(stamps));
   } catch {
     // Best-effort: without it a forget's cleanup falls back to comparing contents.
+  }
+  return previous;
+}
+
+function restoreStamps(previous: string | null): void {
+  try {
+    if (previous === null) {
+      localStorage.removeItem(WRITE_STAMPS_KEY);
+    } else {
+      localStorage.setItem(WRITE_STAMPS_KEY, previous);
+    }
+  } catch {
+    // Best-effort, as in stampWrite.
   }
 }
 
