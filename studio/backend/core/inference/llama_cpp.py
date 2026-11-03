@@ -87,6 +87,7 @@ from core.inference.llama_video_input import video_tools
 from core.inference.lookup_tables import (
     HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
+    LAZY_READ_AUTO_MIN_BYTES as _LOOKUP_LAZY_READ_AUTO_MIN_BYTES,
     LAZY_READ_TENSORS as _LOOKUP_LAZY_READ_TENSORS,
     is_per_layer_embedding as _is_per_layer_embedding,
     lazy_read_bytes as _lookup_lazy_read_bytes,
