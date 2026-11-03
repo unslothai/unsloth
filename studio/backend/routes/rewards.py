@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import json
-from typing import Annotated, Any, Literal, Optional, Union
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    StrictBool,
-    StrictStr,
-    field_validator,
-)
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, StrictBool, StrictStr
 
 from auth.authentication import get_current_subject
 from utils.account_context import current_account_id
@@ -73,27 +64,12 @@ class RewardPreviewRequest(BaseModel):
 
     rewards: list[RewardPreviewItem] = Field(..., min_length = 1, max_length = 16)
     completion: StrictStr = Field(..., max_length = 64 * 1024)
-    # The dataset cell as is; score_rule converts it with str(), as training does.
-    reference: JsonValue = None
-
-    @field_validator("reference")
-    @classmethod
-    def _reference_size(cls, value: JsonValue) -> JsonValue:
-        if value is not None and len(json.dumps(value)) > 16 * 1024:
-            raise ValueError("reference is longer than 16 KB.")
-        return value
-
-    # Row 1 of the dataset with its own value types, as a Python reward gets it in training.
-    # Training keeps every column for Python rewards; the cap only bounds the request.
+    # One raw dataset row and the run's role mapping: the backend builds the reward inputs the
+    # way training does. With no row, a sample answer stands in.
     row: Optional[dict[StrictStr, JsonValue]] = Field(None, max_length = 1024)
-    # The mapped prompt cell as the dataset holds it (text or chat turns), plus the system prompt
-    # the run adds, so a reward sees the same turns as in training.
-    prompt: Optional[
-        Union[
-            Annotated[StrictStr, Field(max_length = 16 * 1024)],
-            Annotated[list[dict[StrictStr, JsonValue]], Field(max_length = 64)],
-        ]
-    ] = None
+    mapping: Optional[dict[StrictStr, StrictStr]] = Field(None, max_length = 1024)
+    # Try it's edited answer, in place of the row's answer cell.
+    reference: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
     system_prompt: Optional[StrictStr] = Field(None, max_length = 16 * 1024)
     # Same choice as a run's grpo_python_reward_isolation: no OS sandbox, no Python preview.
     python_reward_isolation: Literal["required", "auto"] = "required"
@@ -160,12 +136,12 @@ def preview_rewards(
         results, isolation = preview_scores(
             specs,
             payload.completion,
-            payload.reference,
             payload.row,
-            payload.prompt,
+            payload.mapping,
+            payload.reference,
+            payload.system_prompt,
             owner = current_account_id(),
             python_isolation = payload.python_reward_isolation,
-            system_prompt = payload.system_prompt,
         )
     except RewardError as exc:
         raise _http_error(exc) from exc
