@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-# Fused batch-1 NF4 decode: 4 launches per layer (qkv, o, gate_up, down). Split RMSNorm: producer writes
-# xg = h * gamma + sum(h^2) partials, consumer scales by rstd (fixed-order sum: deterministic, no atomics).
-
 import functools
+from typing import List, Union
 
 import torch
 import triton
@@ -12,7 +10,7 @@ import triton.language as tl
 
 from .nf4 import _HAS_MUL_RN, _mul, _nf4_lut
 from .nf4_gemv import _lut_mode
-from .triton_launch import launch
+from .triton_launch import launch, tag_compile_cache
 
 __all__ = [
     "EPI_ROPE_KV",
@@ -32,8 +30,112 @@ EPI_PLAIN, EPI_ROPE_KV, EPI_SWIGLU, EPI_RESNORM = 0, 1, 2, 3
 PRE_NONE, PRE_SCALED, PRE_INLOOP = 0, 1, 2
 
 
+@torch.library.custom_op("unsloth::nf4_decode_fused_launch", mutates_args = ("outputs",))
+def _opaque_launch(
+    kind: int,
+    grid: List[int],
+    inputs: List[torch.Tensor],
+    outputs: List[torch.Tensor],
+    tensor_order: List[int],
+    ints: List[int],
+    constant_names: str,
+    constant_types: str,
+    integer_constants: List[int],
+    float_constants: List[float],
+    option_names: str,
+    options: List[Union[int, float, bool]],
+) -> None:
+    kernels = (_nf4_decode_fused_kernel, _lora_shrink_kernel, _final_norm_kernel)
+    tensors = tuple(inputs[i] if i >= 0 else outputs[-i - 1] for i in tensor_order)
+    integers, floats = iter(integer_constants), iter(float_constants)
+    constants = [
+        next(floats) if kind == "f" else bool(next(integers)) if kind == "b" else next(integers)
+        for kind in constant_types
+    ]
+    constexprs = dict(zip(constant_names.split(","), constants))
+    launch_options = dict(zip(option_names.split(","), options))
+    # Inductor re-emission changes rounding; keep the eager binary inside the graph.
+    with torch.cuda.device(tensors[0].device):
+        launch(
+            kernels[kind],
+            tuple(grid),
+            tensors + tuple(ints),
+            len(tensors),
+            constexprs,
+            tensors[0].device.index,
+            **launch_options,
+        )
+
+
+@_opaque_launch.register_fake
+def _opaque_launch_fake(
+    kind,
+    grid,
+    inputs,
+    outputs,
+    tensor_order,
+    ints,
+    constant_names,
+    constant_types,
+    integer_constants,
+    float_constants,
+    option_names,
+    options,
+):
+    return None
+
+
+def _launch(kind, kernel, grid, args, n_tensors, constexprs, device_index, **options):
+    if not torch.compiler.is_compiling():
+        launch(kernel, grid, args, n_tensors, constexprs, device_index, **options)
+        return
+    if kind == 0:
+        epi = constexprs["EPI"]
+        mutable = (2, 3, 5) if epi == EPI_RESNORM else (17, 18, 19) if epi == EPI_ROPE_KV else (17,)
+    elif kind == 1:
+        mutable = (6, 7, 8)
+    else:
+        mutable = (3,)
+    inputs, outputs, tensor_order = [], [], []
+    for i in range(n_tensors):
+        if i in mutable:
+            outputs.append(args[i])
+            tensor_order.append(-len(outputs))
+        else:
+            tensor_order.append(len(inputs))
+            inputs.append(args[i])
+    constant_types, integer_constants, float_constants = [], [], []
+    for value in constexprs.values():
+        if isinstance(value, float):
+            constant_types.append("f")
+            float_constants.append(value)
+        else:
+            constant_types.append("b" if isinstance(value, bool) else "i")
+            integer_constants.append(int(value))
+    _opaque_launch(
+        kind,
+        list(grid),
+        inputs,
+        outputs,
+        tensor_order,
+        list(args[n_tensors:]),
+        ",".join(constexprs),
+        "".join(constant_types),
+        integer_constants,
+        float_constants,
+        ",".join(options),
+        list(options.values()),
+    )
+
+
 @triton.jit
-def _rstd_from_partials(SS, n_ss, K, EPS: tl.constexpr, SS_BLOCK: tl.constexpr):
+def _rstd_from_partials(
+    SS,
+    n_ss,
+    K,
+    EPS: tl.constexpr,  # norm epsilon
+    SS_BLOCK: tl.constexpr,  # partial reduction size
+):
     j = tl.arange(0, SS_BLOCK)
     ss = tl.sum(tl.load(SS + j, mask = j < n_ss, other = 0.0), axis = 0)
     return tl.math.rsqrt(ss / K + EPS)
@@ -46,15 +148,17 @@ def _nf4_decode_fused_kernel(
     LB0, LB1, LB2, LORA_H,
     OUT, K_CACHE, V_CACHE, COS, SIN, POS, SLOT,
     lora_rank, N, K, HALF, seg1, seg2, n_ss, stride_cache_h, stride_cache_l, stride_cos, head_dim,
-    EPS: tl.constexpr,
-    BLOCK_P: tl.constexpr, BLOCK_K: tl.constexpr,
-    BLOCKSIZE: tl.constexpr, BLOCKSIZE2: tl.constexpr, NESTED: tl.constexpr, USE_MUL_RN: tl.constexpr,
-    EVEN_K: tl.constexpr, LUT_MODE: tl.constexpr,
-    PRE: tl.constexpr, LORA: tl.constexpr, RANK_PAD: tl.constexpr, EPI: tl.constexpr, SS_BLOCK: tl.constexpr,
+    EPS: tl.constexpr,  # norm epsilon
+    BLOCK_P: tl.constexpr, BLOCK_K: tl.constexpr,  # row pairs and input tile
+    BLOCKSIZE: tl.constexpr, BLOCKSIZE2: tl.constexpr,  # NF4 quantization block sizes
+    NESTED: tl.constexpr, USE_MUL_RN: tl.constexpr,  # double quantization and rounding
+    EVEN_K: tl.constexpr, LUT_MODE: tl.constexpr,  # input divisibility and code lookup
+    PRE: tl.constexpr, LORA: tl.constexpr,  # norm mode and adapter presence
+    RANK_PAD: tl.constexpr, EPI: tl.constexpr, SS_BLOCK: tl.constexpr,  # rank, epilogue and reduction size
 ):  # fmt: skip
     W = W.to(tl.pointer_type(tl.uint8))
     pid = tl.program_id(0)
-    R2: tl.constexpr = 2 * BLOCK_P
+    R2: tl.constexpr = 2 * BLOCK_P  # output rows per program
     i = tl.arange(0, R2)
     p = pid * BLOCK_P + i % BLOCK_P
     rows = (p // HALF) * (2 * HALF) + p % HALF + (i // BLOCK_P) * HALF
@@ -64,8 +168,8 @@ def _nf4_decode_fused_kernel(
     s1 = (rows >= seg1) & (rows < seg2)
     if NESTED:
         offset = tl.load(SEG_OFFSET + tl.where(s0, 0, tl.where(s1, 1, 2)))
-    HALF_K: tl.constexpr = BLOCK_K // 2
-    NB: tl.constexpr = BLOCK_K // BLOCKSIZE
+    HALF_K: tl.constexpr = BLOCK_K // 2  # packed input bytes
+    NB: tl.constexpr = BLOCK_K // BLOCKSIZE  # quantization blocks per tile
     half_k = tl.arange(0, HALF_K)
     ks = tl.arange(0, BLOCK_K)
     nbs = tl.arange(0, NB)
@@ -85,10 +189,11 @@ def _nf4_decode_fused_kernel(
         xm = (xk < K) | EVEN_K
         x = tl.load(X + xk, mask = xm, other = 0.0).to(tl.float32)
         if PRE == 2:
-            ss += x * x
+            ss += _mul(x, x, USE_MUL_RN)
             x = x * tl.load(G + xk, mask = xm, other = 0.0).to(tl.float32)
         # Each quantization block is summed before it is scaled, as gemv_nf4 does.
-        part = tl.sum(tl.reshape(w * x[None, :], (R2, NB, BLOCKSIZE)), axis = 2)
+        # RN products keep butterfly lanes bit-identical before shared stores (triton#7264).
+        part = tl.sum(tl.reshape(_mul(w, x[None, :], USE_MUL_RN), (R2, NB, BLOCKSIZE)), axis = 2)
         bmask = rmask[:, None] & (((k0 + nbs * BLOCKSIZE) < K) | EVEN_K)[None, :]
         blk = rows[:, None] * blocks_per_row + (k0 // BLOCKSIZE + nbs)[None, :]
         if NESTED:
@@ -99,13 +204,12 @@ def _nf4_decode_fused_kernel(
             a = a + offset[:, None]
         else:
             a = tl.load(ABSMAX + blk, mask = bmask, other = 0.0)
-        acc += tl.sum(part * a, axis = 1)
+        acc += tl.sum(_mul(part, a, USE_MUL_RN), axis = 1)
     if PRE == 1:
         acc = acc * _rstd_from_partials(SS_IN, n_ss, K, EPS, SS_BLOCK)
     if PRE == 2:
         acc = acc * tl.math.rsqrt(tl.sum(ss, axis = 0) / K + EPS)
     if LORA:
-        # B read through each segment's own tensor: in-place adapter updates are seen.
         seg = tl.where(s0, 0, tl.where(s1, 1, 2))
         lr = rows - tl.where(s0, 0, tl.where(s1, seg1, seg2)).to(tl.int64)
         j = tl.arange(0, RANK_PAD)
@@ -113,7 +217,7 @@ def _nf4_decode_fused_kernel(
         brow = tl.where(s0, LB0, tl.where(s1, LB1, LB2)) + lr * lora_rank
         bw = tl.load(brow[:, None] + j[None, :], mask = rmask[:, None] & jm[None, :], other = 0.0)
         hv = tl.load(LORA_H + seg[:, None] * RANK_PAD + j[None, :], mask = jm[None, :], other = 0.0)
-        acc += tl.sum(bw.to(tl.float32) * hv, axis = 1)
+        acc += tl.sum(_mul(bw.to(tl.float32), hv, USE_MUL_RN), axis = 1)
 
     out_ty = OUT.dtype.element_ty
     if EPI == 3:
@@ -124,7 +228,7 @@ def _nf4_decode_fused_kernel(
         h = h.to(R.dtype.element_ty)
         tl.store(R + ri, h, mask = rm)
         hf = tl.where(rm, h.to(tl.float32), 0.0)
-        tl.store(SS_OUT + pid, tl.sum(hf * hf, axis = 0))
+        tl.store(SS_OUT + pid, tl.sum(_mul(hf, hf, USE_MUL_RN), axis = 0))
         g = tl.load(G_NEXT + ri, mask = rm, other = 0.0).to(tl.float32)
         tl.store(XG_OUT + ri, (hf * g).to(XG_OUT.dtype.element_ty), mask = rm)
     else:
@@ -172,8 +276,10 @@ def _nf4_decode_fused_kernel(
 def _lora_shrink_kernel(
     X, G, SS_IN, A0, A1, A2, P, H, COUNTER,
     n_rows, K, lora_rank, n_ss, n_splits,
-    SCALING: tl.constexpr, EPS: tl.constexpr, RANK_PAD: tl.constexpr, BLOCK_R: tl.constexpr,
-    SPLIT_K: tl.constexpr, PRE: tl.constexpr, SS_BLOCK: tl.constexpr,
+    SCALING: tl.constexpr, EPS: tl.constexpr,  # adapter scale and norm epsilon
+    RANK_PAD: tl.constexpr, BLOCK_R: tl.constexpr,  # padded rank and shrink rows
+    SPLIT_K: tl.constexpr, PRE: tl.constexpr, SS_BLOCK: tl.constexpr,  # input tile, norm mode and reduction size
+    USE_MUL_RN: tl.constexpr,  # reduction product rounding
 ):  # fmt: skip
     # Split-K: the last program (acq_rel counter) sums in order and re-arms the counter for graph replay.
     pid = tl.program_id(0)
@@ -183,12 +289,14 @@ def _lora_shrink_kernel(
     km = ks < K
     x = tl.load(X + ks, mask = km, other = 0.0).to(tl.float32)
     if PRE == 2:
-        tl.store(P + n_splits * BLOCK_R + pid, tl.sum(x * x, axis = 0))
+        tl.store(P + n_splits * BLOCK_R + pid, tl.sum(_mul(x, x, USE_MUL_RN), axis = 0))
         x = x * tl.load(G + ks, mask = km, other = 0.0).to(tl.float32)
     sg = rows // lora_rank
     arow = tl.where(sg == 0, A0, tl.where(sg == 1, A1, A2)) + (rows % lora_rank).to(tl.int64) * K
     a = tl.load(arow[:, None] + ks[None, :], mask = rm[:, None] & km[None, :], other = 0.0)
-    tl.store(P + pid * BLOCK_R + rows, tl.sum(a.to(tl.float32) * x[None, :], axis = 1))
+    tl.store(
+        P + pid * BLOCK_R + rows, tl.sum(_mul(a.to(tl.float32), x[None, :], USE_MUL_RN), axis = 1)
+    )
     count = tl.atomic_add(COUNTER, 1, sem = "acq_rel")
     if count == n_splits - 1:
         acc = tl.zeros([BLOCK_R], dtype = tl.float32)
@@ -209,7 +317,15 @@ def _lora_shrink_kernel(
 
 @triton.jit
 def _final_norm_kernel(
-    R, SS, W, OUT, n_ss, K, EPS: tl.constexpr, SS_BLOCK: tl.constexpr, BLOCK: tl.constexpr
+    R,
+    SS,
+    W,
+    OUT,
+    n_ss,
+    K,
+    EPS: tl.constexpr,
+    SS_BLOCK: tl.constexpr,
+    BLOCK: tl.constexpr,  # epsilon, partial count and hidden tile
 ):
     k = tl.arange(0, BLOCK)
     km = k < K
@@ -280,7 +396,6 @@ class FusedSite:
         self.seg_offset = seg_offset if self.nested else absmax
         self.lora = lora is not None
         if self.lora:
-            # lora: per segment (A [r, K], B [N_seg, r]), same rank and dtypes, contiguous.
             pad = lambda xs: tuple(xs) + (xs[-1],) * (3 - len(xs))
             r = lora[0][0].shape[0]
             self.rank = r
@@ -334,8 +449,11 @@ def _lora_shrink(site, x, pre, norm_weight, ss_in, n_ss, eps, device_index):
         SPLIT_K = site.split_k,
         PRE = pre,
         SS_BLOCK = max(16, triton.next_power_of_2(max(n_ss, 1))),
+        USE_MUL_RN = _HAS_MUL_RN,
     )
-    launch(_lora_shrink_kernel, (site.n_splits,), args, 9, constexprs, device_index, num_warps = 4)
+    _launch(
+        1, _lora_shrink_kernel, (site.n_splits,), args, 9, constexprs, device_index, num_warps = 4
+    )
 
 
 def fused_site(
@@ -442,7 +560,8 @@ def fused_site(
         EPI = epi,
         SS_BLOCK = max(16, triton.next_power_of_2(max(n_ss, 1))),
     )
-    launch(
+    _launch(
+        0,
         _nf4_decode_fused_kernel,
         (nprog,),
         tensors + ints,
@@ -464,5 +583,8 @@ def final_norm(residual, ss, n_ss, weight, eps, out):
         SS_BLOCK = max(16, triton.next_power_of_2(max(n_ss, 1))),
         BLOCK = triton.next_power_of_2(K),
     )
-    launch(_final_norm_kernel, (1,), args, 4, constexprs, residual.device.index, num_warps = 8)
+    _launch(2, _final_norm_kernel, (1,), args, 4, constexprs, residual.device.index, num_warps = 8)
     return out
+
+
+tag_compile_cache(__file__)
