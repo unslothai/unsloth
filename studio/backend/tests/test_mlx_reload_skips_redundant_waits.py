@@ -94,7 +94,14 @@ def test_only_the_mlx_load_holds_the_answers():
         < source.index("mlx_refusal(model_name")
         < source.index("_handle_load(backend, config")
     )
-    closed = source.index("hub_answers.close()")
+    closed = source.rindex("hub_answers.close()")
+    assert (
+        source.index("read_hub_model_info_ahead(model_name")
+        < source.index("_hw.detect_hardware()")
+        < source.index("hub_answers.close()")
+        < source.index("model_info_ahead.join()")
+        < source.index("mlx_refusal(model_name")
+    )
     assert (
         source.index("_handle_load(backend, config")
         < closed

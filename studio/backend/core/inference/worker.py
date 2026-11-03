@@ -2140,6 +2140,9 @@ def run_inference_process(
             _offline = hf_env_offline()
             if not _offline:
                 _offline = hf_dns_dead()
+            if not _offline and is_apple_silicon():
+                from utils.transformers_version import read_activation_files_ahead
+                read_activation_files_ahead(_probe_model, _config_hf_token(config))
             if not _offline and not hf_probe_disabled():
                 from utils.transformers_version import hf_endpoint_unreachable
 
@@ -2208,10 +2211,26 @@ def run_inference_process(
             )
 
     from utils.hardware import hardware as _hw
+    from utils.utils import hf_env_offline
+
+    hub_answers = contextlib.ExitStack()
+    model_info_ahead = None
+    if (
+        is_apple_silicon()
+        and not _native_audio_worker
+        and not hf_env_offline()
+        and (_probe_needs_hub or not _hub_targets_are_local(_probe_model, _probe_base))
+    ):
+        from utils.models.model_config import read_hub_model_info_ahead, shared_hub_model_info
+
+        # The imports in detect_hardware outlast this read, so the wait for it disappears.
+        hub_answers.enter_context(shared_hub_model_info())
+        model_info_ahead = read_hub_model_info_ahead(model_name, _config_hf_token(config))
 
     _hw.detect_hardware()
+    if _hw.DEVICE != _hw.DeviceType.MLX or _native_audio_worker:
+        hub_answers.close()
     if _hw.DEVICE == _hw.DeviceType.MLX and not _native_audio_worker:
-        hub_answers = contextlib.ExitStack()
         try:
             from core.inference.mlx_inference import MLXInferenceBackend, _init_mlx_distributed
             from utils.models.diffusion_lm import mlx_refusal
@@ -2221,6 +2240,8 @@ def run_inference_process(
             # One load is one request: its checks read the Hub's answer once, and only the load holds it.
             hub_answers.enter_context(pinned_hf_reachability(_probed_offline))
             hub_answers.enter_context(shared_hub_model_info())
+            if model_info_ahead is not None:
+                model_info_ahead.join()
             refusal = mlx_refusal(model_name, _config_hf_token(config))
             if refusal:
                 raise RuntimeError(refusal)

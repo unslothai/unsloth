@@ -57,7 +57,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 import functools
 import os
 import platform
@@ -1336,6 +1336,20 @@ def _hub_model_info(
     if scope is not None:
         scope[key] = info
     return info
+
+
+def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> threading.Thread:
+    """Fill the open scope from a thread. Join it before the first probe; a failed read leaves the answer to that probe."""
+
+    def read():
+        try:
+            _hub_model_info(repo_id, hf_token)
+        except Exception as exc:
+            logger.debug("model_info read ahead failed for %s: %s", repo_id, exc)
+
+    thread = threading.Thread(target = copy_context().run, args = (read,), daemon = True)
+    thread.start()
+    return thread
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
