@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The deferred-write RAM gate credits only reclaimable cgroup page cache, never tmpfs / shared memory."""
-
 from __future__ import annotations
 
 import builtins
@@ -38,7 +36,6 @@ def _fake_cgroup(monkeypatch, tmp_path, *, limit, used, file, shmem):
 
 
 def test_shared_memory_is_not_counted_as_available(monkeypatch, tmp_path):
-    # 16 GiB cap, 15 GiB charged, 8 GiB of it /dev/shm: only 1 GiB is actually free.
     _fake_cgroup(monkeypatch, tmp_path, limit = 16 * GiB, used = 15 * GiB, file = 8 * GiB, shmem = 8 * GiB)
     limit, avail = C._cgroup_memory_bytes()
     assert limit == 16 * GiB
