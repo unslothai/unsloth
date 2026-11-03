@@ -1453,6 +1453,11 @@ def _wrap(
         from unsloth_zoo.temporary_patches.misc import output_capture_scratch as capture_scratch
     except Exception:
         capture_scratch = contextlib.nullcontext
+    try:
+        # Newer zoo replays the collector layout for a checkpoint recompute when told the layer.
+        scratch_takes_owner = "owner" in inspect.signature(capture_scratch).parameters
+    except (TypeError, ValueError):
+        scratch_takes_owner = False
     # First call per grad mode compiles with errors raised: on failure retry with flex outside,
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
@@ -1516,7 +1521,8 @@ def _wrap(
                 if varlen is not None:
                     kwargs = {**kwargs, packed_module.BLOCK_VARLEN_KWARG: varlen}
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
-            with capture_scratch(), _no_ddp_graph_split():
+            scratch = capture_scratch(owner = self) if scratch_takes_owner else capture_scratch()
+            with scratch, _no_ddp_graph_split():
                 use_graphs = graphs
                 if auto and _CUDAGRAPH_STATE["auto"]["phase"] != "off":
                     verdict = _auto_observe(self, hidden_states, args, kwargs)
