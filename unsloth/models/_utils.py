@@ -1960,10 +1960,6 @@ def _get_flash_attention_disable_reason(config):
     return None
 
 
-def _is_flash_attention_disabled(config):
-    return _get_flash_attention_disable_reason(config) is not None
-
-
 def _is_flash_attention_requested(attn_implementation):
     return isinstance(attn_implementation, str) and attn_implementation.startswith(
         "flash_attention"
@@ -4842,20 +4838,6 @@ try:
                 "```\n"
             )
 
-    if False:
-        raise ImportError(
-            "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "
-            "then press Disconnect Runtime and then Restart it.\n"
-            "\n"
-            "%%capture\n"
-            "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
-            '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-            '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'
-            "\n"
-            f"Otherwise in local machines, your xformers version of {xformers_version} is too new.\n"
-            'Please downgrade xformers via `pip install --force-reinstall "xformers<=0.0.27"'
-        )
-
     if Version(torch_version) < Version("2.2.0") and Version(xformers_version) >= Version("0.0.24"):
         raise ImportError(
             f"Unsloth: You have torch = {torch_version} but xformers = {xformers_version}.\n"
@@ -4929,21 +4911,6 @@ except Exception as e:
     xformers_version = None
 
 from trl import __version__ as trl_version
-
-if False:
-    raise ImportError(
-        "Unsloth: If you are in Colab, we updated the top cell install instructions - please change it to below "
-        "then press Disconnect Runtime and then Restart it.\n"
-        "\n"
-        "%%capture\n"
-        "# Installs Unsloth, Xformers (Flash Attention) and all other packages!\n"
-        '!pip install "unsloth[colab-new] @ git+https://github.com/unslothai/unsloth.git"\n'
-        '!pip install --no-deps "xformers<=0.0.27" trl peft accelerate bitsandbytes\n'
-        "\n"
-        f"Otherwise in local machines, your TRL version of {trl_version} is too new.\n"
-        "Please downgrade TRL via `pip install --force-reinstall trl"
-    )
-
 
 import transformers.generation.configuration_utils
 
@@ -5240,10 +5207,6 @@ def _download_statistics(names):
         except Exception:
             logger.debug("Unsloth: stats_check failed with an exception.")
             # Do not retry without a time limit: it would freeze offline.
-
-
-def _get_statistics(statistics = None, force_download = True):
-    _download_statistics([_statistics_environment(statistics)])
 
 
 def get_statistics(local_files_only = False):

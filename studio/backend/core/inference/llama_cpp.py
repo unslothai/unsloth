@@ -87,7 +87,6 @@ from core.inference.llama_video_input import video_tools
 from core.inference.lookup_tables import (
     HOST_FORCED_TABLE_ARCHS as _HOST_FORCED_TABLE_ARCHS,
     HOST_FORCED_TABLE_MARKER as _HOST_FORCED_TABLE_MARKER,
-    LAZY_READ_AUTO_MIN_BYTES as _LOOKUP_LAZY_READ_AUTO_MIN_BYTES,
     LAZY_READ_TENSORS as _LOOKUP_LAZY_READ_TENSORS,
     is_per_layer_embedding as _is_per_layer_embedding,
     lazy_read_bytes as _lookup_lazy_read_bytes,
@@ -1393,17 +1392,6 @@ def _has_unclosed_code_fence(text: str) -> bool:
             # A list marker is the container, so its width is the baseline; mid-sentence the baseline is 0.
             active_base = indent if in_list else 0
     return active_char is not None
-
-
-def _has_unclosed_markup_block(text: str) -> bool:
-    """Counted rather than matched, so a closed block followed by an open one still counts as unclosed."""
-    opens_html = len(re.findall(r"<html\b", text, re.IGNORECASE))
-    closes_html = len(re.findall(r"</html\s*>", text, re.IGNORECASE))
-    if opens_html > closes_html:
-        return True
-    opens_svg = len(re.findall(r"<svg\b", text, re.IGNORECASE))
-    closes_svg = len(re.findall(r"</svg\s*>", text, re.IGNORECASE))
-    return opens_svg > closes_svg
 
 
 # "First, I'll create an <html></html> skeleton" is a plan, not a page.
@@ -7260,7 +7248,6 @@ _MOE_CACHE_ERROR_RE = re.compile(
 )
 
 _LAZY_READ_TENSORS = _LOOKUP_LAZY_READ_TENSORS
-_LAZY_READ_AUTO_MIN_BYTES = _LOOKUP_LAZY_READ_AUTO_MIN_BYTES
 _LAZY_RESIDENT_MARGIN_FRAC = 0.10
 # Embedded NextN/MTP heads llama.cpp skips at load unless --spec-type draft-mtp, measured:
 # Nemotron 3.5 Super loads 2987 MiB less with MTP off (b11642 + ggml-org#30520).
