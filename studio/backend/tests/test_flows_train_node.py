@@ -7,7 +7,7 @@ import json
 import pytest
 
 from core.flows.nodes import training
-from core.flows.registry import FlowNodeError
+from core.flows.registry import FlowCancelled, FlowNodeError
 from core.flows.specs import SPECS_BY_TYPE
 
 
@@ -18,6 +18,11 @@ class _Ctx:
         self.params = {p["id"]: p["default"] for p in SPECS_BY_TYPE["train.finetune"]["params"]}
         self.params.update(params)
         self.seed, self.caller = 1, object()
+        self.cancelled = False
+
+    def check_cancelled(self):
+        if self.cancelled:
+            raise FlowCancelled()
 
     async def call(
         self,
@@ -828,3 +833,36 @@ def test_local_holdout_streams_only_the_slice_and_checks_the_cap_first(tmp_path,
         with pytest.raises(FlowNodeError, match = "10 rows"):
             training._load_rows(local, None, 9)
         assert len(training._load_rows(local, None, None, 16)) == 4
+
+
+def test_stop_gives_up_on_a_blocked_holdout_read(monkeypatch):
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def stuck(*args, **kwargs):
+        release.wait(30)
+        return ROWS
+
+    monkeypatch.setattr(training, "_load_rows", stuck)
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/big"}}
+
+    async def run():
+        task = asyncio.ensure_future(training.finetune(ctx))
+        await asyncio.sleep(0.3)
+        ctx.cancelled = True
+        began = time.monotonic()
+        try:
+            with pytest.raises(FlowCancelled):
+                await task
+            return time.monotonic() - began
+        finally:
+            release.set()  # the loop waits for its worker threads when it closes
+
+    try:
+        assert asyncio.run(run()) < 5
+    finally:
+        release.set()

@@ -14,7 +14,7 @@ from typing import Any, Optional
 
 from core.flows.nodes._common import FLOW_CHAT_CONTEXT, as_text, note_loaded, poll_job, strip_think
 from core.flows.nodes.data import recipe_artifact
-from core.flows.registry import FlowNodeError, NodeContext, cache_hook, handler
+from core.flows.registry import FlowCancelled, FlowNodeError, NodeContext, cache_hook, handler
 
 POLL_S = 5.0
 BUSY_WAIT_S = 180.0
@@ -679,6 +679,19 @@ def _jsonable(rows: list[dict]) -> list[dict]:
     return [json.loads(json.dumps(row, default = str), parse_constant = lambda _: None) for row in rows]
 
 
+async def _off_thread(ctx: NodeContext, fn: Any, *args: Any) -> Any:
+    """``fn`` on a worker thread, given up on Stop: a running read cannot be interrupted, and waiting it
+    out would keep the run (and the Flows GPU lane) busy until it ends."""
+    task = asyncio.ensure_future(asyncio.to_thread(fn, *args))
+    while True:
+        done, _ = await asyncio.wait({task}, timeout = 0.25)
+        if done:
+            return task.result()
+        if ctx.cancelled:
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            ctx.check_cancelled()
+
+
 async def holdout_split(
     ctx: NodeContext, dataset: dict, percent: int, seed: int
 ) -> tuple[dict, dict]:
@@ -703,8 +716,8 @@ async def holdout_split(
         # The request's own Hub token, as /api/train/start gets it; managed accounts never borrow the server's.
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            rows = await asyncio.to_thread(_load_rows, dataset, token, end, start)
-        except FlowNodeError:
+            rows = await _off_thread(ctx, _load_rows, dataset, token, end, start)
+        except (FlowNodeError, FlowCancelled):
             raise
         except Exception as exc:
             raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
@@ -736,8 +749,8 @@ async def hub_eval_upload(ctx: NodeContext, dataset: dict, split: str) -> str:
 
     token = account_hf_token(getattr(ctx.caller, "hf_token", None))
     try:
-        rows = await asyncio.to_thread(_eval_rows, dataset, token, split)
-    except FlowNodeError:
+        rows = await _off_thread(ctx, _eval_rows, dataset, token, split)
+    except (FlowNodeError, FlowCancelled):
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not read the evaluation split {split!r}: {exc}") from None
