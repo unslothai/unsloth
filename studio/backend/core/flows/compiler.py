@@ -631,7 +631,11 @@ def _check_benchmark(nid: str, nodes: dict, specs: dict, inputs: dict) -> list[d
             )
         ]
     picked = (nodes[nid].get("params") or {}).get("model")
-    if isinstance(picked, dict) and picked.get("repo") and ("checkpoint" in wired or "model" in wired):
+    if (
+        isinstance(picked, dict)
+        and picked.get("repo")
+        and ("checkpoint" in wired or "model" in wired)
+    ):
         # The wired model would be scored, not the pick.
         return [
             issue(
