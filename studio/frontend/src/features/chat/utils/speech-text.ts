@@ -85,7 +85,10 @@ function collectBlocks(
       return;
     case "table":
       for (const row of node.children) {
-        out.push(sentence(row.children.map(inline).join(", ")));
+        const cells = row.children.map((cell) => removeTtsEmojis(inline(cell)));
+        if (cells.some((cell) => cell.trim())) {
+          out.push(sentence(cells.join(", ")));
+        }
       }
       return;
     // The sanitizer unwraps raw HTML, so its text shows on the page.
@@ -155,7 +158,7 @@ function htmlText(html: string): string {
 }
 
 function sentence(text: string): string {
-  const trimmed = text.trim();
+  const trimmed = removeTtsEmojis(text).trim();
   if (!trimmed || /[.!?:;,…]$/.test(trimmed)) return trimmed;
   return `${trimmed}.`;
 }

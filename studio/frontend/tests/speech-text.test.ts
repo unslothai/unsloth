@@ -129,6 +129,14 @@ test("read-aloud skips emoji sequences but preserves surrounding words", () => {
 
 test("read-aloud handles emoji-only messages", () => {
   assert.equal(markdownToSpeechText("😀 👨‍💻 🇯🇵").trim(), "");
+  for (const input of [
+    "# 😀",
+    "- 😀\n- 👍",
+    "1. 😀",
+    "| 😀 | 😘 |\n| --- | --- |\n| 🥰 | ❤️ |",
+  ]) {
+    assert.equal(markdownToSpeechText(input), "", input);
+  }
 });
 
 test("read-aloud preserves word boundaries around emojis", () => {
