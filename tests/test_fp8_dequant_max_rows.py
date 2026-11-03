@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""scaled_mm rowwise FP8 backend: 17-64 rows go to torch._scaled_mm only when the 16-bit weight spills L2 (CPU)."""
-
 import pytest
 import torch
 from torch._subclasses.fake_tensor import FakeTensorMode
@@ -16,7 +14,6 @@ LARGE = (14336, 4096)  # Llama-3.1-8B MLP: 112 MiB in bf16
 
 @pytest.fixture
 def route(monkeypatch):
-    # NVIDIA routing; on ROCm the direct path is off and every call keeps the compiled path.
     monkeypatch.setattr(torch.version, "hip", None, raising = False)
     monkeypatch.setattr(F8, "_fp8_rowwise_backend", lambda device: "scaled_mm")
     monkeypatch.setattr(F8, "_FP8_ROWWISE_DIRECT", True)
@@ -60,7 +57,6 @@ def test_row_bounds_are_unchanged(route):
 def test_autocast_in_another_dtype_keeps_the_compiled_path(
     route, monkeypatch, autocast_dtype, expected
 ):
-    # The direct path would round the dequantized weight into X's dtype before autocast's GEMM.
     monkeypatch.setattr(
         torch, "is_autocast_enabled", lambda device_type = None: autocast_dtype is not None
     )
@@ -97,8 +93,6 @@ def test_l2_probe_falls_back_to_zero(monkeypatch):
     [((8, 9), L2, L2), ((9, 0), 50 * 1024 * 1024, 0), ((12, 0), 128 * 1024 * 1024, 0)],
 )
 def test_l2_probe_only_reports_measured_arches(monkeypatch, capability, l2, expected):
-    """Only sm89 was measured: H100 without FBGEMM (50 MiB L2) keeps the 64 row default."""
-
     class Props:
         major, minor = capability
         L2_cache_size = l2
@@ -116,7 +110,6 @@ def test_l2_probe_only_reports_measured_arches(monkeypatch, capability, l2, expe
     [
         (LARGE, True, torch.bfloat16, True),
         (SMALL, False, torch.bfloat16, True),
-        # Rowwise scaled_mm cannot write float32 before torch 2.14 off cuBLAS (sm89 here): float32 keeps dequant.
         (LARGE, False, torch.float32, True),
         (LARGE, True, torch.float32, False),
     ],
@@ -148,8 +141,6 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype,
 
 
 def test_scaled_mm_asks_for_bf16_when_activations_are_fp16(monkeypatch):
-    """torch < 2.14's rowwise CUTLASS kernel writes bf16 bits into an fp16 output when there is no
-    bias: fp16 calls request bf16 and cast back; bf16 / fp32 are unchanged."""
     monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", True)
     assert F8._scaled_mm_out_dtype(torch.float16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
@@ -157,7 +148,6 @@ def test_scaled_mm_asks_for_bf16_when_activations_are_fp16(monkeypatch):
 
 
 def test_scaled_mm_keeps_fp16_output_where_torch_writes_fp16(monkeypatch):
-    """torch >= 2.14 honours out.dtype; a bf16 detour would lose precision and overflow 65408..65504."""
     monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", False)
     assert F8._scaled_mm_out_dtype(torch.float16) is torch.float16
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
@@ -170,7 +160,6 @@ def test_scaled_mm_fp16_workaround_follows_the_installed_torch():
     broken = torch.__version__ < "2.14.0"
     assert F8._SCALED_MM_FP16_OUT_BROKEN is broken
     assert F8._scaled_mm_out_dtype(torch.float16) is (torch.bfloat16 if broken else torch.float16)
-    # 2.14 pre-releases keep the workaround.
     assert TorchVersion("2.13.9+cu130") < "2.14.0"
     assert TorchVersion("2.14.0a0+git0") < "2.14.0"
     assert not TorchVersion("2.14.0+cu130") < "2.14.0"
@@ -194,7 +183,6 @@ def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
         for kw in node.keywords:
             if kw.arg == "out_dtype":
                 out[node.lineno] = ast.unparse(kw.value)
-    # The probes ask for bf16 / float32 directly; every activation-dtype call goes through the helper.
     data_calls = {
         line: v for line, v in out.items() if v not in ("torch.bfloat16", "torch.float32")
     }
@@ -204,8 +192,6 @@ def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
 
 @pytest.mark.parametrize("float32_out, expected", [(True, "scaled_mm"), (False, "dequant")])
 def test_float32_keeps_scaled_mm_where_rowwise_writes_float32(monkeypatch, float32_out, expected):
-    """torch 2.10 - 2.13 write float32 rowwise through cuBLAS on sm90 with CUDA 12.9+ (CUTLASS elsewhere
-    cannot): float32 activations dequantize only where the probe says _scaled_mm cannot write float32."""
     calls = []
 
     def fake_scaled_mm(a, b, **kwargs):
@@ -233,7 +219,6 @@ def test_float32_keeps_scaled_mm_where_rowwise_writes_float32(monkeypatch, float
 
 @pytest.mark.parametrize("cutlass", [True, False])
 def test_float32_probe_asks_scaled_mm_for_float32(monkeypatch, cutlass):
-    """The probe runs one rowwise float32 _scaled_mm: CUTLASS raises (sm89, sm100, CUDA < 12.9), cuBLAS answers."""
     seen = []
 
     def fake_scaled_mm(a, b, scale_a, scale_b, out_dtype, **kwargs):
