@@ -3942,7 +3942,7 @@ export const pl = {
         desktopAvailableDescription:
           "Zaktualizuj teraz, a aplikacja komputerowa uruchomi się ponownie po zakończeniu.",
         desktopExternalServer:
-          "Aplikacja połączyła się z już działającym serwerem Unsloth i nie może go zaktualizować. Zatrzymaj ten serwer, a następnie zamknij i ponownie otwórz aplikację komputerową, aby ją zaktualizować.",
+          "Aplikacja jest połączona z serwerem Unsloth na porcie {port}, którego sama nie uruchomiła, na przykład z `unsloth studio` uruchomionym w terminalu. Aplikacja nie może zatrzymać ani zaktualizować tego serwera. Zatrzymaj go tam, gdzie został uruchomiony, a następnie zamknij i ponownie otwórz aplikację komputerową, aby ją zaktualizować.",
         desktopManualInstall:
           "Otwórz stronę wydania, aby zainstalować najnowszy pakiet dla systemu Linux.",
         desktopCheckFailed: "Nie udało się sprawdzić aktualizacji",
@@ -5833,6 +5833,9 @@ export const pl = {
     nearlyDone: "Prawie gotowe...",
     finishingUpdate: "Kończenie aktualizacji...",
     serverStopped: "Serwer zatrzymany",
+    serverDisconnected: "Rozłączono z serwerem na porcie {port}",
+    serverDisconnectedDescription:
+      "Ten serwer nadal działa. Ta aplikacja go nie uruchomiła, więc nie może go zatrzymać. Zatrzymaj go tam, gdzie został uruchomiony, na przykład w terminalu, w którym działa `unsloth studio`, a następnie kliknij Uruchom serwer.",
     startServer: "Uruchom serwer",
     somethingWrong: "Coś poszło nie tak",
     diagnostics: {

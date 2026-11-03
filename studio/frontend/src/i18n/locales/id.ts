@@ -3893,7 +3893,7 @@ export const id = {
         desktopAvailableDescription:
           "Perbarui sekarang dan aplikasi desktop akan dimulai ulang setelah selesai.",
         desktopExternalServer:
-          "Aplikasi terhubung ke server Unsloth yang sudah berjalan dan tidak dapat memperbaruinya. Hentikan server tersebut, lalu tutup dan buka kembali aplikasi desktop untuk memperbarui.",
+          "Aplikasi terhubung ke server Unsloth di port {port} yang tidak dijalankannya sendiri, misalnya `unsloth studio` yang dijalankan di terminal. Aplikasi tidak dapat menghentikan atau memperbarui server tersebut. Hentikan server itu di tempat ia dijalankan, lalu tutup dan buka kembali aplikasi desktop untuk memperbarui.",
         desktopManualInstall:
           "Buka halaman rilis untuk menginstal paket Linux terbaru.",
         desktopCheckFailed: "Tidak dapat memeriksa pembaruan",
@@ -5782,6 +5782,9 @@ export const id = {
     nearlyDone: "Hampir selesai...",
     finishingUpdate: "Menyelesaikan pembaruan...",
     serverStopped: "Server berhenti",
+    serverDisconnected: "Terputus dari server di port {port}",
+    serverDisconnectedDescription:
+      "Server tersebut masih berjalan. Aplikasi ini tidak menjalankannya, jadi tidak dapat menghentikannya. Hentikan server itu di tempat ia dijalankan, misalnya di terminal yang menjalankan `unsloth studio`, lalu klik Mulai Server.",
     startServer: "Mulai Server",
     somethingWrong: "Terjadi kesalahan",
     diagnostics: {

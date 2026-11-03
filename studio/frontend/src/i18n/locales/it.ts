@@ -3540,7 +3540,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "L’app si è connessa a un server Unsloth già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
+          "L’app è connessa a un server Unsloth sulla porta {port} che non ha avviato lei, per esempio `unsloth studio` eseguito in un terminale. L’app non può arrestare né aggiornare quel server. Arrestalo dove è stato avviato, poi chiudi e riapri l’app desktop per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:
@@ -5445,6 +5445,9 @@ export const it = {
     nearlyDone: "Quasi fatto...",
     finishingUpdate: "Completamento dell’aggiornamento...",
     serverStopped: "Server arrestato",
+    serverDisconnected: "Disconnesso dal server sulla porta {port}",
+    serverDisconnectedDescription:
+      "Quel server è ancora in esecuzione. Questa app non lo ha avviato, quindi non può arrestarlo. Arrestalo dove è stato avviato, per esempio nel terminale in cui è in esecuzione `unsloth studio`, poi fai clic su Avvia server.",
     startServer: "Avvia server",
     somethingWrong: "Qualcosa è andato storto",
     diagnostics: {

@@ -3896,7 +3896,7 @@ export const vi = {
         desktopAvailableDescription:
           "Cập nhật ngay, ứng dụng máy tính sẽ khởi động lại khi hoàn tất.",
         desktopExternalServer:
-          "Ứng dụng đã kết nối với một máy chủ Unsloth đang chạy sẵn và không thể cập nhật máy chủ đó. Hãy dừng máy chủ đó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
+          "Ứng dụng đang kết nối với một máy chủ Unsloth trên cổng {port} mà ứng dụng không tự khởi động, ví dụ `unsloth studio` chạy trong terminal. Ứng dụng không thể dừng hoặc cập nhật máy chủ đó. Hãy dừng máy chủ tại nơi đã khởi động nó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
         desktopManualInstall:
           "Mở trang phát hành để cài đặt gói Linux mới nhất.",
         desktopCheckFailed: "Không thể kiểm tra bản cập nhật",
@@ -5783,6 +5783,9 @@ export const vi = {
     nearlyDone: "Sắp xong...",
     finishingUpdate: "Đang hoàn tất cập nhật...",
     serverStopped: "Máy chủ đã dừng",
+    serverDisconnected: "Đã ngắt kết nối khỏi máy chủ trên cổng {port}",
+    serverDisconnectedDescription:
+      "Máy chủ đó vẫn đang chạy. Ứng dụng này không khởi động nó nên không thể dừng nó. Hãy dừng máy chủ tại nơi đã khởi động nó, ví dụ trong terminal đang chạy `unsloth studio`, rồi nhấp vào Khởi động máy chủ.",
     startServer: "Khởi động máy chủ",
     somethingWrong: "Đã xảy ra lỗi",
     diagnostics: {
