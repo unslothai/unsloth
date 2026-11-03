@@ -854,13 +854,18 @@ def test_studio_fallback_releases_the_preview_busy_guard(studio_embedder):
 
 
 def test_cancelled_request_closes_its_monitor_row(studio_embedder):
-    # Running rows dodge retention trimming, so a request cancelled while queued closes its own row.
     closed = []
     gate = threading.Event()
+    started = asyncio.Event()
     studio_embedder.setattr(
         inference_route, "get_llama_cpp_backend", lambda: SimpleNamespace(is_loaded = False)
     )
-    studio_embedder.setattr(inference_route.api_monitor, "start", lambda **_kwargs: "entry-1")
+
+    def start(**_kwargs):
+        started.set()
+        return "entry-1"
+
+    studio_embedder.setattr(inference_route.api_monitor, "start", start)
     studio_embedder.setattr(
         inference_route.api_monitor,
         "finish",
@@ -876,7 +881,7 @@ def test_cancelled_request_closes_its_monitor_row(studio_embedder):
         request = _Request({"input": "alpha"})
         request.state.skip_api_monitor = False
         task = asyncio.create_task(inference_route.openai_embeddings(request, "tester"))
-        await asyncio.sleep(0.1)
+        await asyncio.wait_for(started.wait(), timeout = 5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1252,7 +1257,9 @@ def test_local_path_aliases_match_case_exactly(studio_embedder, tmp_path):
     )
     assert inference_route._names_studio_embedder(model_dir)
     assert not inference_route._names_studio_embedder(str(tmp_path / "foo"))
-    assert inference_route._names_studio_embedder(f"sentence-transformers:{model_dir}")
+    assert inference_route._names_studio_embedder(
+        rag_config.embedding_identity("sentence-transformers", model_dir)
+    )
 
 
 def test_untagged_aliases_never_probe_the_backend(studio_embedder):
