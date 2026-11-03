@@ -485,13 +485,22 @@ test("a forget's cleanup between another tab's two writes keeps an identical re-
   assert.equal(resolveInitialConfig(REPO, QUANT).remembered, true);
 });
 
-/** Run `save` once, right after the first storage read inside `read`. */
-function saveBetweenReads<T>(read: () => T, save: () => void): T {
+/** Run `save` once, right after the `nth` storage read (of `onlyKey`, if given) inside `read`. */
+function saveBetweenReads<T>(
+  read: () => T,
+  save: () => void,
+  nth = 1,
+  onlyKey?: string,
+): T {
   const getItem = storage.getItem;
   let saved = false;
+  let reads = 0;
   storage.getItem = (key: string) => {
     const value = getItem(key);
-    if (!saved) {
+    if (!onlyKey || key === onlyKey) {
+      reads += 1;
+    }
+    if (!saved && reads === nth) {
       saved = true;
       storage.getItem = getItem;
       save();
@@ -522,6 +531,20 @@ test("an identical save between the cleanup's two reads is kept", () => {
   saveBetweenReads(
     () => deletePerModelConfigsForOverrideKeys([`${REPO}:${QUANT}`], snapshot),
     () => assert.ok(savePerModelConfig(REPO, QUANT, tuned())),
+  );
+  assert.equal(resolveInitialConfig(REPO, QUANT).remembered, true);
+});
+
+test("an identical save after the cleanup listed its owners is kept", () => {
+  store.clear();
+  savePerModelConfig(REPO, QUANT, tuned());
+  const snapshot = perModelConfigSnapshot();
+  // The second read of the record map: the save lands after the owners were listed.
+  saveBetweenReads(
+    () => deletePerModelConfigsForOverrideKeys([`${REPO}:${QUANT}`], snapshot),
+    () => assert.ok(savePerModelConfig(REPO, QUANT, tuned())),
+    2,
+    "unsloth_model_configs",
   );
   assert.equal(resolveInitialConfig(REPO, QUANT).remembered, true);
 });

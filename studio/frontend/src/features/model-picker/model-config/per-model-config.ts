@@ -1500,8 +1500,21 @@ export function listPerModelConfigs(): {
 export function deletePerModelConfig(
   modelId: string,
   ggufVariant?: string | null,
+  /** Keep the record under `storageKey` if it was saved after `since`. */
+  unchanged?: { storageKey: string; since: PerModelConfigSnapshot },
 ): boolean {
   const map = readMap();
+  // Checked against the map this delete writes back, records then stamps, so the only
+  // window left is the store's own synchronous read-modify-write.
+  if (
+    unchanged &&
+    perModelConfigChangedSince(unchanged.storageKey, unchanged.since, {
+      records: map,
+      stamps: readStamps(),
+    })
+  ) {
+    return true;
+  }
   if (hasFutureConfigForModelVariant(map, modelId, ggufVariant)) {
     return false;
   }
@@ -1643,15 +1656,11 @@ export function deletePerModelConfigsForOverrideKeys(
   unchangedSince?: PerModelConfigSnapshot,
 ): boolean {
   let deleted = true;
-  const current = unchangedSince ? currentPerModelConfigSnapshot() : undefined;
   for (const owner of modelOverrideKeyOwners(overrideKeys)) {
-    if (
-      unchangedSince &&
-      perModelConfigChangedSince(owner.storageKey, unchangedSince, current)
-    ) {
-      continue;
-    }
-    if (!deletePerModelConfig(owner.modelId, owner.ggufVariant)) {
+    const unchanged = unchangedSince
+      ? { storageKey: owner.storageKey, since: unchangedSince }
+      : undefined;
+    if (!deletePerModelConfig(owner.modelId, owner.ggufVariant, unchanged)) {
       deleted = false;
     }
   }
