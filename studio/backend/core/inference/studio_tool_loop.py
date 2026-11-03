@@ -1589,7 +1589,8 @@ async def _stream_with_studio_tools(
         # Hold the turn-ending chunk until finalize() says whether a call was promoted, then arm the headerless stripper; arming at promotion is too late.
         held_final: str | None = None
 
-        active_tools = controller.active_tools()
+        # External APIs cannot separate decoding schemas from the prompt's tools.
+        active_tools = controller.active_tools(include_deferred = True)
         tools_available = (
             tool_choice != "none" and bool(active_tools) and (unlimited or remaining > 0)
         )
