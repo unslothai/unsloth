@@ -177,31 +177,39 @@ export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): s
   return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
 }
 
-/** Where group offload keeps the denoiser: "group" alone covers both a near-resident and a per-step streamed run. */
-const DENOISER_OFFLOAD_LABELS: Record<string, string> = {
-  resident: "transformer on GPU",
-  partial: "transformer partly streamed",
-  streamed: "transformer streamed",
+/** Where group offload keeps the transformer: "group" alone covers both a near-resident and a per-step streamed run. */
+const DENOISER_PLACEMENTS: Record<string, { label: string; detail: string }> = {
+  resident: {
+    label: "Transformer on GPU",
+    detail:
+      "The transformer stays on the GPU, so every denoise step runs at resident speed. Only components used once per prompt, such as the text encoders, stream from CPU.",
+  },
+  partial: {
+    label: "Transformer partly streamed",
+    detail:
+      "Part of the transformer stays on the GPU and the rest streams from CPU on every denoise step, which is slower than resident.",
+  },
+  streamed: {
+    label: "Transformer streamed",
+    detail:
+      "Every transformer block streams from CPU on every denoise step, which is slower than resident.",
+  },
 };
 
-/** `group offload, transformer streamed`; the policy alone when the backend reported no denoiser placement. */
-export function offloadLabel(
-  offloadPolicy: string,
-  denoiserOffload?: string | null,
-): string {
-  const where = denoiserOffload ? DENOISER_OFFLOAD_LABELS[denoiserOffload] : undefined;
-  return where ? `${offloadPolicy} offload, ${where}` : `${offloadPolicy} offload`;
+/** Group offload placement for its own row; null for other policies and for records without the field. */
+export function denoiserPlacement(
+  denoiserOffload: string | null | undefined,
+): { label: string; detail: string } | null {
+  return (denoiserOffload && DENOISER_PLACEMENTS[denoiserOffload]) || null;
 }
 
 /** sd.cpp never runs the memory planner, so an absent `memory_mode` reports the offload alone. */
 export function memoryRecipeValue(
   memoryMode: string | null | undefined,
   offloadPolicy: string | null | undefined,
-  denoiserOffload?: string | null,
 ): string {
   const offloading = offloadPolicy != null && offloadPolicy !== "" && offloadPolicy !== "none";
   if (!offloading) return memoryMode ?? "";
-  const offload = offloadLabel(offloadPolicy, denoiserOffload);
-  if (!memoryMode) return offload;
-  return `${memoryMode} (${offload})`;
+  if (!memoryMode) return `${offloadPolicy} offload`;
+  return `${memoryMode} (${offloadPolicy} offload)`;
 }
