@@ -10,7 +10,6 @@
 # limitations under the License.
 
 import functools
-import hashlib
 import os
 import warnings
 import triton
@@ -678,6 +677,8 @@ def _multirow_checked(X, W, eps, gemma):
     if verdict is None:
         if X.device.type == "cuda" and torch.cuda.is_current_stream_capturing():
             return None  # check on a later uncaptured call
+        # Real self-check launches need concrete dimensions, even during dynamic tracing.
+        n_cols, multirow = int(n_cols), tuple(int(v) for v in multirow)
         try:
             verdict = _multirow_self_check(X.device, X.dtype, W.dtype, n_cols, eps, gemma, multirow)
             reason = f"self-check mismatch for {key}"
@@ -1034,16 +1035,7 @@ def _bf16_traceable():
 _BF16_TRACEABLE = _TRACEABLE and _bf16_traceable()
 
 
-def _tag_compile_cache(path):
-    # Inductor's FX cache keys a triton_op without its source; key on the file so upgrades miss.
-    config = getattr(torch.compiler, "config", None)
-    if config is None or not hasattr(config, "cache_key_tag"):
-        return
-    with open(path, "rb") as file:
-        tag = f"unsloth/{os.path.basename(path)}:{hashlib.sha256(file.read()).hexdigest()[:16]}"
-    tags = [t for t in config.cache_key_tag.split(",") if t]
-    if tag not in tags:
-        config.cache_key_tag = ",".join(tags + [tag])
+_tag_compile_cache = triton_launch.tag_compile_cache
 
 
 def _traced_kernel(kernel):

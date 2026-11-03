@@ -29,6 +29,8 @@ export interface DiffusionResolvedControl {
 
 export interface DiffusionStatus {
   loaded: boolean;
+  // False when the resident model belongs to another account; the response then carries nothing else.
+  yours?: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
   resident_mib?: number | null;
@@ -446,6 +448,7 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
     /** Only the planner knows: a gated pick is staged from an ungated mirror under another repo id. */
     checkpoint?: boolean;
+    hosted_denoiser?: boolean;
   }[];
   total_bytes: number;
   required_bytes?: number;

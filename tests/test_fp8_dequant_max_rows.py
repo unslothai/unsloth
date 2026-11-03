@@ -53,6 +53,21 @@ def test_row_bounds_are_unchanged(route):
     assert route(65, SMALL) == "scaled_mm"
 
 
+@pytest.mark.parametrize(
+    "autocast_dtype, expected",
+    [(None, "scaled_mm"), (torch.bfloat16, "scaled_mm"), (torch.float16, None)],
+)
+def test_autocast_in_another_dtype_keeps_the_compiled_path(
+    route, monkeypatch, autocast_dtype, expected
+):
+    # The direct path would round the dequantized weight into X's dtype before autocast's GEMM.
+    monkeypatch.setattr(
+        torch, "is_autocast_enabled", lambda device_type = None: autocast_dtype is not None
+    )
+    monkeypatch.setattr(torch, "get_autocast_dtype", lambda device_type: autocast_dtype)
+    assert route(32, LARGE) == expected
+
+
 def test_unknown_l2_keeps_the_64_row_default(route):
     assert route(32, LARGE, l2 = 0) == "dequant"
     assert route(65, LARGE, l2 = 0) == "scaled_mm"
@@ -96,8 +111,17 @@ def test_l2_probe_only_reports_measured_arches(monkeypatch, capability, l2, expe
         F8._probe_fp8_l2_cache_bytes.cache_clear()
 
 
-@pytest.mark.parametrize("shape, scaled", [(LARGE, True), (SMALL, False)])
-def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
+@pytest.mark.parametrize(
+    "shape, scaled, dtype, out_broken",
+    [
+        (LARGE, True, torch.bfloat16, True),
+        (SMALL, False, torch.bfloat16, True),
+        # Rowwise scaled_mm cannot write float32 before torch 2.14: float32 keeps dequant there.
+        (LARGE, False, torch.float32, True),
+        (LARGE, True, torch.float32, False),
+    ],
+)
+def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype, out_broken):
     calls = []
 
     def fake_scaled_mm(a, b, **kwargs):
@@ -111,9 +135,10 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled):
     monkeypatch.setattr(torch, "_scaled_mm", fake_scaled_mm)
     monkeypatch.setattr(F8, "weight_dequant", fake_dequant)
     monkeypatch.setattr(F8, "_fp8_l2_cache_bytes", lambda device: L2)
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", out_broken)
     N, K = shape
     with FakeTensorMode(), torch.no_grad():
-        X = torch.empty(1, 32, K, device = "cuda", dtype = torch.bfloat16)
+        X = torch.empty(1, 32, K, device = "cuda", dtype = dtype)
         w = torch.empty(N, K, device = "cuda", dtype = torch.float8_e4m3fn)
         s = torch.empty(N, 1, device = "cuda", dtype = torch.float32)
         y = F8.FbgemmFp8Linear_matmul.apply(X, w, s, None, "scaled_mm")

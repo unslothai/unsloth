@@ -533,6 +533,36 @@ def _negative_prompt_guidance_threshold(family: DiffusionFamily) -> Optional[flo
     return None
 
 
+# ``{path: (size, mtime_ns)}`` of the adapter files the generation-time path last loaded onto a pipe.
+_LORA_FILE_SIGS_ATTR = "_unsloth_lora_file_sigs"
+
+
+def _lora_file_sigs(loras: Any) -> Optional[dict]:
+    """Size and mtime of each adapter file, or None when one cannot be read."""
+    sigs: dict = {}
+    for _name, path, _weight in loras:
+        try:
+            st = os.stat(path)
+        except OSError:
+            return None
+        sigs[path] = (st.st_size, st.st_mtime_ns)
+    return sigs
+
+
+def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any) -> bool:
+    """Same adapter names and files in the same order, each file unchanged on disk since its load, and no
+    block-streamed graph: ``set_adapters`` alone then reaches the scales a full reload would set."""
+    if not current or len(current) != len(desired):
+        return False
+    if any((n, p) != (dn, dp) for (n, p, _w), (dn, dp, _dw) in zip(current, desired)):
+        return False
+    loaded = getattr(pipe, _LORA_FILE_SIGS_ATTR, None)
+    if not loaded or loaded != _lora_file_sigs(desired):
+        return False
+    handles = getattr(state, "cuda_graphs", ()) or ()
+    return not any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles)
+
+
 def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     """Recapturing a block-streamed graph after a LoRA weight change fails, and the eager fallback then fails every
     later generate, so such a load keeps its baked weights until a reload."""
@@ -988,6 +1018,23 @@ def decode_b64_image(
     max_pixels: Optional[int] = None,
 ) -> Any:
     """Decode a base64 or data: URL image; masks decode as single-channel L, source images as RGB."""
+    return decode_b64_image_sized(data, mode = mode, max_side = max_side, max_pixels = max_pixels)[0]
+
+
+def refuse_oversized_image(w: int, h: int, max_side: int, max_pixels: Optional[int]) -> None:
+    if w > max_side or h > max_side:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
+    if max_pixels is not None and w * h > max_pixels:
+        raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels.")
+
+
+def decode_b64_image_sized(
+    data: str,
+    *,
+    mode: str = "RGB",
+    max_side: int = 4096,
+    max_pixels: Optional[int] = None,
+) -> tuple[Any, tuple[int, int]]:
     import base64
     import binascii
     import io
@@ -1005,12 +1052,7 @@ def decode_b64_image(
         img = Image.open(io.BytesIO(blob))
         # Reject from the header before img.load() so a huge-dimension file cannot spike memory
         w, h = img.size
-        if w > max_side or h > max_side:
-            raise ValueError(f"Image is too large ({w}x{h}); maximum is {max_side}px per side.")
-        if max_pixels is not None and w * h > max_pixels:
-            raise ValueError(
-                f"Image is too large ({w}x{h}); maximum is {max_pixels:,} source pixels."
-            )
+        refuse_oversized_image(w, h, max_side, max_pixels)
         img.load()
         # Below the size guard because the transpose needs the pixels the guard exists to not read.
         img = exif_upright(img)
@@ -1018,7 +1060,7 @@ def decode_b64_image(
         raise  # the size guard's own message; don't wrap it as a decode error
     except Exception as exc:  # noqa: BLE001 - surfaced as a 400 to the client
         raise ValueError(f"Could not decode image: {exc}") from exc
-    return flattened_rgb(img) if mode == "RGB" else img.convert(mode)
+    return (flattened_rgb(img) if mode == "RGB" else img.convert(mode)), (w, h)
 
 
 def _snap_to_multiple(img: Any, multiple: int = 16) -> Any:
@@ -1443,6 +1485,21 @@ def _generation_chunks(
 def _base_manifest_name(fam: Any) -> str:
     """The pipeline index a base repo carries: FLUX.3 ships only ``modular_model_index.json``."""
     return FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
+
+
+def _cached_mirror_manifest(base: str, manifest: str) -> tuple[str, ...]:
+    """Offline mirror probe: the manifest when the mirror's cache holds it, else ().
+
+    With no file list, ``prefer_ungated_mirror`` keeps the upstream for ANY cached weight, so a stray single-file
+    checkpoint in the upstream snapshot pinned offline loads there although the pipeline was staged under the mirror.
+    """
+
+    from .diffusion_families import mirror_repo
+
+    mirror = mirror_repo(base)
+    if mirror and mirror.lower() != (base or "").lower() and cache_holds_files(mirror, (manifest,)):
+        return (manifest,)
+    return ()
 
 
 def _te_quant_for_supplied_encoders(requested: Optional[str]) -> Optional[str]:
@@ -3741,6 +3798,25 @@ def _wait_or_pause_bg_compile(bg: Any, state: Any, loras: Any, cancel: Any) -> A
         return None
     pipe = getattr(state, "pipe", None)
     if bg.yields() and not _has_active_lora(loras) and not getattr(pipe, "_unsloth_loras", ()):
+        if getattr(bg, "idle", False):
+            # Freeze only a resident denoiser: its eager forward moves no weight
+            freeze = getattr(state, "offload_policy", OFFLOAD_NONE) == OFFLOAD_NONE
+            waited, paused = bg.pause(cancel, budget_s = 0.0, freeze = freeze)
+            if paused:
+                logger.info(
+                    "diffusion.bg_compile: render stopped the background compile in %.3f s (%s); it resumes "
+                    "once no render runs",
+                    waited,
+                    "frozen mid-trace"
+                    if getattr(bg, "_frozen", False)
+                    else "parked at a block boundary"
+                    if getattr(bg, "_parked", False)
+                    else "stops at its next Python call"
+                    if getattr(bg, "_freeze_ok", False)
+                    else "stops at the next block boundary",
+                )
+                return bg
+            return None
         budget = bg_compile.slice_seconds(getattr(pipe, "_unsloth_eager_render_s", None))
         waited, paused = bg.pause(cancel, budget_s = budget)
         if paused:
@@ -5436,7 +5512,7 @@ class DiffusionBackend:
                     kind,
                     base,
                     kwargs.get("gpu_ordinal"),
-                    kwargs.get("hf_token"),
+                    kwargs.get("_hub_token", kwargs.get("hf_token")),
                     local_files_only,
                 )
             )
@@ -5558,7 +5634,9 @@ class DiffusionBackend:
             ) or _local_base_transformer_present(base)
             # One mirror decision per load, so staging and assembly use the same repo.
             fetch_base = fetch_repos.get(base) or prefer_ungated_mirror(
-                base, kwargs.get("hf_token"), files = base_files
+                base,
+                kwargs.get("hf_token"),
+                files = base_files or _cached_mirror_manifest(base, _base_manifest_name(fam)),
             )
             kwargs["_fetch_base"] = fetch_base
             # Catch a gated base before the prefetch moves any bytes; probes fetch_base.
@@ -6892,6 +6970,7 @@ class DiffusionBackend:
         scoped_files: dict[str, list[str]] = {}
         scoped_gguf: dict[str, Optional[str]] = {}
         missing_checkpoints: set[str] = set()
+        missing_denoisers: set[str] = set()
 
         def add_missing_entry(
             repo: str,
@@ -6900,6 +6979,7 @@ class DiffusionBackend:
             *,
             gguf: Optional[str] = None,
             checkpoint: bool = False,
+            hosted_denoiser: bool = False,
         ) -> None:
             """Adds only files neither cache root resolves, probed at the plan's revision; one entry per repo, else two jobs fight over progress and cancel."""
 
@@ -6946,6 +7026,8 @@ class DiffusionBackend:
             )
             if checkpoint:
                 missing_checkpoints.add(repo)
+            if hosted_denoiser:
+                missing_denoisers.add(repo)
             for entry in entries:
                 if entry["repo_id"] != repo:
                     continue
@@ -6957,6 +7039,7 @@ class DiffusionBackend:
                 )
                 entry["gguf_filename"] = scoped_gguf[repo]
                 entry["checkpoint"] = repo in missing_checkpoints
+                entry["hosted_denoiser"] = repo in missing_denoisers
                 return
             entries.append(
                 {
@@ -6968,6 +7051,7 @@ class DiffusionBackend:
                     ),
                     "gguf_filename": scoped_gguf[repo],
                     "checkpoint": repo in missing_checkpoints,
+                    "hosted_denoiser": repo in missing_denoisers,
                 }
             )
 
@@ -7007,7 +7091,14 @@ class DiffusionBackend:
         if dit_prequant is not None:
             # Staged, not just counted: leaving it out means a multi-GB inline pull under the load lock.
             prequant_repo, prequant_file, prequant_size = dit_prequant
-            add_missing_entry(prequant_repo, [prequant_file], {prequant_file: prequant_size})
+            # Part of a pipeline pick, replacing its dense denoiser; a GGUF pick keeps it a required asset.
+            add_missing_entry(
+                prequant_repo,
+                [prequant_file],
+                {prequant_file: prequant_size},
+                checkpoint = skip_transformer_weights,
+                hosted_denoiser = skip_transformer_weights,
+            )
         for ref in component_overrides.files.values() if component_overrides else ():
             if not ref.is_hub:
                 continue
@@ -9025,8 +9116,8 @@ class DiffusionBackend:
                                     "torch_dtype": dtype,
                                     "cache_dir": hub_cache_dir(),
                                 }
-                                if hf_token:
-                                    pipe_kwargs["token"] = hf_token
+                                if hub_token is not None:
+                                    pipe_kwargs["token"] = hub_token
                                 # fp16 load with a twin for every component reads the twins (bit-identical after cast).
                                 _te_replaced = te_precast_components(
                                     fam, fetch_base, text_encoder_quant, target
@@ -9117,7 +9208,7 @@ class DiffusionBackend:
                                             fetch_base,
                                             kind = kind,
                                             dtype = dtype,
-                                            hf_token = hf_token,
+                                            hf_token = hub_token,
                                             local_files_only = local_files_only,
                                             config_source = _base_local_dir,
                                             cache_dir = hub_cache_dir(),
@@ -9130,24 +9221,29 @@ class DiffusionBackend:
                                         denoiser_prequant_pipe_kwargs,
                                     )
 
-                                    seeded = denoiser_prequant_pipe_kwargs(
-                                        fam,
-                                        fetch_base,
-                                        scheme = pipeline_seed_scheme,
-                                        dtype = dtype,
-                                        device = device,
-                                        # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
-                                        placement_device = prequant_seed_device(
-                                            plan, device, pipeline_seed_scheme
-                                        ),
-                                        hf_token = hf_token,
-                                        target = target,
-                                        path_override = transformer_prequant_path,
-                                        fast_accum = transformer_quant_fast_accum,
-                                        local_files_only = local_files_only,
-                                        cache_dir = hub_cache_dir(),
-                                        logger = logger,
+                                    # streamed plans int8 the seed's bf16 text stream / modulations, like an in-place build
+                                    _seed_scope = int8_text_stream_scope(
+                                        not plan_keeps_transformer_resident(plan)
                                     )
+                                    with _seed_scope:
+                                        seeded = denoiser_prequant_pipe_kwargs(
+                                            fam,
+                                            fetch_base,
+                                            scheme = pipeline_seed_scheme,
+                                            dtype = dtype,
+                                            device = device,
+                                            # offloading plans seed it on the host: a GPU seed OOMed 8 GB cards
+                                            placement_device = prequant_seed_device(
+                                                plan, device, pipeline_seed_scheme
+                                            ),
+                                            hf_token = hf_token,
+                                            target = target,
+                                            path_override = transformer_prequant_path,
+                                            fast_accum = transformer_quant_fast_accum,
+                                            local_files_only = local_files_only,
+                                            cache_dir = hub_cache_dir(),
+                                            logger = logger,
+                                        )
                                     pipe_kwargs.update(seeded)
                                     if seeded:
                                         transformer_quant_engaged = pipeline_seed_scheme
@@ -9301,6 +9397,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
+                                            checkpoint = base,
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -11597,6 +11694,7 @@ class DiffusionBackend:
                 text_encoder = moss_te,
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
+                checkpoint = base,
             )
             check_cancelled()
             pipe.to(device)
@@ -12212,9 +12310,58 @@ class DiffusionBackend:
                 )
             if load_token is not None:
                 self._raise_if_load_cancelled(load_token)
+        if not resident:
+            self._small_host_encoders_resident(pipe, decision, info, logger, load_token)
         mark(pipe, info)
         logger.info("diffusion.small_host: %s", info["components"])
         return self._small_host_plan(pipe, plan, fam, logger)
+
+    def _small_host_encoders_resident(
+        self,
+        pipe: Any,
+        decision: Any,
+        info: dict,
+        logger: Any,
+        load_token: Any = None,
+    ) -> None:
+        """Copy routed encoders' mmapped weights into host RAM if it fits; must run after the DiT is placed."""
+        from .diffusion_small_host import (
+            decide_encoder_resident,
+            materialize_streamed_encoder_,
+            streamed_encoder_mib,
+        )
+
+        cancel = None if load_token is None else (lambda: self._raise_if_load_cancelled(load_token))
+        for name in decision.storage_dtypes:
+            if not name.startswith("text_encoder"):
+                continue
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            try:
+                need = streamed_encoder_mib(module)
+            except Exception:  # noqa: BLE001 - an unsizeable encoder stays memory-mapped
+                continue
+            if need <= 0:
+                continue
+            total, available = host_ram_mib()
+            ok, why = decide_encoder_resident(
+                need,
+                host_total_mib = total,
+                host_available_mib = available,
+                host_commit_mib = host_commit_mib(),
+                int8_spill = bool(getattr(decision, "int8_spill", False)),
+            )
+            logger.info(
+                "diffusion.small_host: %s weights %s in host RAM (%s)",
+                name,
+                "copied" if ok else "stay memory-mapped",
+                why,
+            )
+            if not ok:
+                continue
+            mib = materialize_streamed_encoder_(module, cancel)
+            info["components"][name] = f"anonymous host RAM, layerwise cast ({mib} MiB)"
 
     def _small_host_plan(self, pipe: Any, plan: Any, fam: Any, logger: Any) -> Any:
         """Group offload, routed encoders streamed; the denoiser keeps what fits after the runtime reserve resident."""
@@ -12723,6 +12870,48 @@ class DiffusionBackend:
         return pipe
 
     @staticmethod
+    def _pipeline_compute_dtype(pipe: Any) -> Any:
+        """Best-effort floating dtype for a GGUF pipe whose denoiser params are packed uint8 only."""
+        dtype = getattr(pipe, "dtype", None)
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return dtype
+        for name in ("text_encoder", "text_encoder_2", "transformer", "unet"):
+            mod = getattr(pipe, name, None)
+            if mod is None:
+                continue
+            try:
+                found = next(
+                    (p.dtype for p in mod.parameters() if p.dtype.is_floating_point),
+                    None,
+                )
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                found = None
+            if found is not None:
+                return found
+        return None
+
+    @staticmethod
+    def _vae_running_dtype(vae: Any) -> Any:
+        """Dtype of the layer that first consumes the encode input (``encoder.conv_in``), else the first floating
+        encoder / VAE weight; None when it cannot be read, so the input is left as is (#16375)."""
+        encoder = getattr(vae, "encoder", None)
+        first = getattr(getattr(encoder, "conv_in", None), "weight", None)
+        dtype = getattr(first, "dtype", None)
+        if dtype is not None and getattr(dtype, "is_floating_point", False):
+            return dtype
+        for mod in (encoder, vae):
+            if mod is None:
+                continue
+            try:
+                found = next((p.dtype for p in mod.parameters() if p.dtype.is_floating_point), None)
+            except (AttributeError, RuntimeError, StopIteration, TypeError):
+                found = None
+            if found is not None:
+                return found
+        dtype = getattr(vae, "dtype", None)
+        return dtype if dtype is not None and getattr(dtype, "is_floating_point", False) else None
+
+    @staticmethod
     def _align_vae_dtype(pipe: Any, denoiser_attr: str = "transformer") -> None:
         """A prior txt2img decode can leave the VAE upcast to fp32; re-align it to the denoiser's dtype."""
         denoiser = getattr(pipe, denoiser_attr, None)
@@ -12735,6 +12924,9 @@ class DiffusionBackend:
                 (p.dtype for p in denoiser.parameters() if p.dtype.is_floating_point),
                 None,
             )
+            # Packed-uint8 GGUF denoisers carry no float dtype (#16375).
+            if target_dtype is None:
+                target_dtype = DiffusionBackend._pipeline_compute_dtype(pipe)
             if target_dtype is None:
                 return
             if next(vae.parameters()).dtype != target_dtype:
@@ -12744,8 +12936,8 @@ class DiffusionBackend:
 
     @staticmethod
     def _make_vae_encode_dtype_safe(pipe: Any) -> None:
-        """Casts encode inputs to the VAE's dtype; img2img uses the text encoder's dtype, which can
-        mismatch."""
+        """Casts encode inputs to the VAE's dtype; img2img / Qwen Edit use the TE dtype, which can
+        mismatch (#16375)."""
         vae = getattr(pipe, "vae", None)
         if vae is None or getattr(vae, "_unsloth_dtype_safe_encode", False):
             return
@@ -12756,16 +12948,18 @@ class DiffusionBackend:
 
             @functools.wraps(original)
             def _encode(x: Any, *args: Any, **kwargs: Any) -> Any:
-                try:
-                    if isinstance(x, torch.Tensor):
-                        target = next(
-                            (p.dtype for p in vae.parameters() if p.dtype.is_floating_point),
-                            None,
-                        )
+                if isinstance(x, torch.Tensor):
+                    target = None
+                    try:
+                        target = DiffusionBackend._vae_running_dtype(vae)
+                    except (AttributeError, RuntimeError, StopIteration, TypeError):
+                        target = None
+                    try:
+                        # An unreadable dtype leaves the input alone: guessing fp32 breaks a half encoder.
                         if target is not None and x.dtype != target:
                             x = x.to(dtype = target)
-                except (AttributeError, RuntimeError, StopIteration, TypeError):
-                    pass
+                    except (AttributeError, RuntimeError, TypeError):
+                        pass
                 return original(x, *args, **kwargs)
 
             vae.encode = _encode
@@ -12837,6 +13031,7 @@ class DiffusionBackend:
                 except Exception:  # noqa: BLE001 -- best-effort clear
                     pass
                 pipe._unsloth_loras = ()
+                setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
                 invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             return
@@ -12860,17 +13055,30 @@ class DiffusionBackend:
             hf_token = state.hf_token,
             cancel = cancel,
         )
-        uniq = list(desired)
         if desired == current:
             return
+        names = [name for name, _p, _w in desired]
+        weights = [w for _n, _p, w in desired]
+        if _lora_weights_only_change(state, pipe, current, desired):
+            try:
+                pipe.set_adapters(names, adapter_weights = weights)
+            except Exception:  # noqa: BLE001 -- the full reload below sets the same scales or fails cleanly
+                pass
+            else:
+                pipe._unsloth_loras = desired
+                # A captured graph bakes the scales in.
+                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+                return
+        # Read before loading, so a file rewritten during the load reads as changed next time.
+        file_sigs = _lora_file_sigs(desired)
         try:
             if current:
                 pipe.unload_lora_weights()
-            for name, path, _weight in uniq:
+            setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
+            for name, path, _weight in desired:
                 pipe.load_lora_weights(path, adapter_name = name)
-            pipe.set_adapters(
-                [name for name, _p, _w in uniq], adapter_weights = [w for _n, _p, w in uniq]
-            )
+            pipe.set_adapters(names, adapter_weights = weights)
         except Exception as exc:  # noqa: BLE001 -- surface as a clean 400
             try:
                 pipe.unload_lora_weights()
@@ -12882,6 +13090,7 @@ class DiffusionBackend:
             invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
             raise ValueError(f"Failed to apply LoRA: {exc}") from exc
         pipe._unsloth_loras = desired
+        setattr(pipe, _LORA_FILE_SIGS_ATTR, file_sigs)
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
@@ -12974,6 +13183,12 @@ class DiffusionBackend:
     def _engage_deferred_speed(self, state: _LoadState) -> None:
         """The deferred `default` profile plus its auto static skip; a failed profile takes the skip back off."""
         object.__setattr__(state, "speed_deferred", False)
+        if getattr(getattr(state, "pipe", None), "_unsloth_unet_streamed", False):
+            logger.info(
+                "diffusion.speed: deferred profile skipped (the UNet streams leaf by leaf; its weights must stay "
+                "under the offload hooks)"
+            )
+            return
         plan = state.deferred_static_plan
         object.__setattr__(state, "deferred_static_plan", None)
         tc = (state.resolved or {}).get("transformer_cache")
@@ -13020,6 +13235,7 @@ class DiffusionBackend:
     def _engage_deferred_profile(self, state: _LoadState) -> None:
         """Runs the deferred speed profile at the 3rd generation under _generate_lock; the flag clears first so it never retries."""
         object.__setattr__(state, "speed_deferred", False)
+        bg_compile.wait_prewarm()
         from .diffusion_qwenimage21_eager import demote
 
         demote(getattr(state, "pipe", None))
@@ -13354,8 +13570,8 @@ class DiffusionBackend:
                     and not aux_pass
                     and str(getattr(state, "device", "")).startswith("cuda")
                 ):
-                    # 2nd image: warm inductor's workers so the deferred compile does not wait on them.
-                    bg_compile.warm_compile_pool(logger)
+                    # 2nd image: warm inductor's workers and Triton's key off this render's thread.
+                    bg_compile.start_deferred_prewarm(logger)
                 if (
                     state.speed_deferred
                     and state.generation_count >= 2
