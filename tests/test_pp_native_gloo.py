@@ -762,7 +762,6 @@ def test_layer_call_format_reads_tuple_loops():
 
 
 def test_non_last_stage_compiles_as_one_graph():
-    # A non-last stage ends by raising its output from the first layer it does not own.
     from torch._dynamo.utils import counters
 
     class Toy(torch.nn.Module):
