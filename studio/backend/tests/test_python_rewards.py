@@ -310,7 +310,7 @@ def test_superseded_previews_are_bounded_and_not_kept_warm(monkeypatch):
         return [{"name": "r", "entry": "reward", "code": f"# {n}"}]
 
     def run(n):
-        python_rewards.preview_python_scores(spec(n), "x", {}, owner = "acct")
+        python_rewards.preview_python_scores(spec(n), [[]], [[]], {}, owner = "acct")
 
     threads = [threading.Thread(target = run, args = (n,)) for n in range(2)]
     for t in threads:
@@ -523,7 +523,6 @@ def test_import_and_preview_a_python_reward(client):
             "rewards": [{"name": "correctness", "weight": 1.5}, {"name": "strict-xml-format"}],
             "completion": GOOD,
             "row": {"answer": "72", "question": "q"},
-            "prompt": "q",
         },
     )
     assert response.status_code == 200, response.text
@@ -638,20 +637,89 @@ def test_a_preview_row_keeps_its_value_types(client):
     payload = {
         "rewards": [{"markdown": md}],
         "completion": "x",
-        "row": {"level": 3, "meta": {"bonus": 2}},
+        "row": {"question": "q", "level": 3, "meta": {"bonus": 2}},
     }
     assert _preview_as(client, "acct-a", payload) == 5.0
 
 
-@pytest.mark.parametrize("answer, text", [(True, "True"), ({"x": 1}, "{'x': 1}"), (None, None)])
-def test_a_preview_answer_is_text_as_training_makes_it(client, answer, text):
-    # rl.py keeps the answer role as str(cell), so a JSON true is "True", not "true".
-    md = _python_md(
-        "answer-text",
-        f"def reward(completions, answer, **kw):\n    return [float(answer[0] == {text!r})] * len(completions)\n",
+_MISSING = object()
+
+
+@pytest.mark.parametrize("rendered", [False, True])
+@pytest.mark.parametrize("column", ["answer", "cell"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("72", id = "str"),
+        pytest.param("", id = "empty"),
+        pytest.param(None, id = "none"),
+        pytest.param(True, id = "bool"),
+        pytest.param(5, id = "int"),
+        pytest.param(2.5, id = "float"),
+        pytest.param([1, 2], id = "list"),
+        pytest.param({"x": 1}, id = "object"),
+        pytest.param(_MISSING, id = "missing"),
+    ],
+)
+def test_try_it_gives_python_rewards_the_inputs_training_does(monkeypatch, value, column, rendered):
+    from datasets import Dataset
+
+    class Tok:
+        # enable_thinking makes render_grpo_prompts render the prompt to text, as for Qwen3.
+        chat_template = "{% if enable_thinking is defined %}{% endif %}" if rendered else ""
+
+        def apply_chat_template(self, messages, tokenize, add_generation_prompt, **kw):
+            return "".join(f"<{m['role']}>{m['content']}" for m in messages)
+
+    seen = []
+
+    class Worker:
+        isolation = {}
+
+        def score(self, names, prompts, completions, kwargs):
+            seen.append((prompts, completions, kwargs))
+            return {names[0]: [1.0]}
+
+        def score_each(self, names, prompts, completions, kwargs):
+            seen.append((prompts, completions, kwargs))
+            return {names[0]: [1.0]}, {}
+
+        def close(self):
+            pass
+
+    raw = {"question": "q", "answer": "7", "cell": "7"}
+    if value is _MISSING:
+        del raw[column]
+    else:
+        raw[column] = value
+    specs = [{"name": "r", "kind": "python", "entry": "reward", "code": "# r"}]
+    mapping = {"question": "prompt"}
+    system = "be brief"
+    completion = [[{"role": "assistant", "content": "7"}]]
+
+    # Training: the dataset through format_rl_dataset and render_grpo_prompts, then TRL's call.
+    shaped, _ = rl.format_rl_dataset(
+        Dataset.from_list([raw]),
+        "grpo",
+        mapping,
+        rl.reward_keep_columns(specs),
+        system_prompt = system,
     )
-    payload = {"rewards": [{"markdown": md}], "completion": "x", "row": {"answer": answer}}
-    assert _preview_as(client, "acct-a", payload) == 1.0
+    shaped, _ = rl.render_grpo_prompts(shaped, Tok(), False, keep_turns = True)
+    row = shaped[0]
+    (fn,) = python_rewards.make_python_reward_funcs(specs, Worker())
+    fn(prompts = [row.pop("prompt")], completions = completion, **{k: [v] for k, v in row.items()})
+
+    # Try it: the dataset preview's row as JSON, through the preview route's path.
+    monkeypatch.setattr(python_rewards, "_start_preview_worker", lambda specs, mode: Worker())
+    monkeypatch.setattr(python_rewards, "_previews", {})
+    preview_row = json.loads(json.dumps(Dataset.from_list([raw])[0]))
+    prompts, kwargs = rl.grpo_reward_inputs(preview_row, specs, mapping, system)
+    python_rewards.preview_python_scores(specs, prompts, completion, kwargs, owner = "acct")
+    python_rewards._close_preview()
+
+    trained, previewed = seen
+    assert previewed == trained
 
 
 ONE = "def reward(completions, **kw):\n    return [1.0] * len(completions)\n"
@@ -812,7 +880,7 @@ def test_kept_columns_skip_the_schema_keys_trl_reinterprets():
 
 def test_a_preview_row_can_carry_a_wide_dataset(client):
     md = _python_md("wide", "def reward(completions, c99, **kw):\n    return [float(c99[0])]\n")
-    row = {f"c{i}": i for i in range(100)}
+    row = {"prompt": "q", **{f"c{i}": i for i in range(100)}}
     payload = {"rewards": [{"markdown": md}], "completion": "x", "row": row}
     assert _preview_as(client, "acct-a", payload) == 99.0
 
@@ -933,7 +1001,7 @@ def test_a_preview_prompt_has_the_turns_training_gives_the_reward(client):
     payload = {
         "rewards": [{"markdown": md}],
         "completion": "x",
-        "prompt": turns,
+        "row": {"question": turns, "answer": "a"},
         "system_prompt": "be brief",
     }
     trained = rl.format_rl_dataset(

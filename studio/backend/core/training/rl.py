@@ -261,6 +261,48 @@ def _split_conversation(value: Any) -> tuple[list[dict], list[dict]]:
     ]
 
 
+def reward_keep_columns(reward_specs) -> tuple[str, ...]:
+    """Columns the selected rewards read by name, which format_rl_dataset must keep."""
+    # "*": a Python reward can read any column.
+    return tuple(
+        "*" if spec.get("kind") == "python" else spec["rule"]["compare_to"]
+        for spec in reward_specs or []
+        if spec.get("kind") == "python" or (spec.get("rule") or {}).get("compare_to")
+    )
+
+
+def grpo_reward_inputs(
+    row: dict,
+    reward_specs,
+    mapping: Optional[dict] = None,
+    system_prompt: Optional[str] = None,
+    answer: Optional[str] = None,
+) -> tuple[list, dict[str, list]]:
+    """(prompts, kwargs) a GRPO reward gets for ``row`` in training: the row run through
+    format_rl_dataset as a one-row dataset (Arrow types included), each column but the prompt
+    as a list, as TRL passes them. ``answer`` replaces the answer role's cell (Try it's edit)."""
+    from datasets import Dataset
+
+    if answer is not None:
+        roles = resolve_role_columns(list(row), "grpo", mapping)
+        if "answer" in roles:
+            row = {**row, roles["answer"]: answer}
+    formatted, _ = format_rl_dataset(
+        Dataset.from_list([row]),
+        "grpo",
+        mapping,
+        reward_keep_columns(reward_specs),
+        system_prompt = system_prompt,
+    )
+    out = formatted[0]
+    # render_grpo_prompts drops the schemas; Python rewards get them, and the prompt's turns,
+    # as it stores them.
+    if any(spec.get("kind") == "python" for spec in reward_specs or []):
+        out.update(python_reward_columns(out, keep_tools = "tools" in out))
+    out.pop("tools", None)
+    return [out.pop("prompt")], {k: [v] for k, v in out.items()}
+
+
 def format_rl_dataset(
     dataset,
     objective: str,
@@ -412,6 +454,21 @@ def _has_null_fields(dataset) -> bool:
     )
 
 
+def python_reward_columns(row: dict, keep_tools: bool) -> dict:
+    """The prompt turns (and tool schemas) Python rewards read, as JSON since Arrow would pad
+    them again. The turns are already set when the system turn was folded."""
+    from core.training.rewards import PROMPT_TURNS_COLUMN, TOOLS_COLUMN
+
+    row_tools = _row_tools(row)
+    out = {}
+    if PROMPT_TURNS_COLUMN not in row:
+        messages = _without_padded_arguments(_without_nulls(row["prompt"]), row_tools)
+        out[PROMPT_TURNS_COLUMN] = json.dumps(messages, default = str)
+    if keep_tools:
+        out[TOOLS_COLUMN] = json.dumps(row_tools)
+    return out
+
+
 def render_grpo_prompts(
     dataset,
     tokenizer,
@@ -474,12 +531,8 @@ def render_grpo_prompts(
         }
         if prefills:
             out[PREFILL_COLUMN] = (prompt[-1].get("content") or "") if prefill else ""
-        if keep_turns and PROMPT_TURNS_COLUMN not in row:
-            # Python rewards read roles and the last user turn, as Try it gives them. JSON, since
-            # Arrow would pad the cleaned turns again. Already set when the system turn was folded.
-            out[PROMPT_TURNS_COLUMN] = json.dumps(messages, default = str)
-        if keep_tools:
-            out[TOOLS_COLUMN] = json.dumps(row_tools)
+        if keep_turns:
+            out.update(python_reward_columns(row, keep_tools))
         return out
 
     map_kwargs = {"num_proc": num_proc} if num_proc and num_proc > 1 else {}

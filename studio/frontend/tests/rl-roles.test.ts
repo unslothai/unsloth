@@ -9,13 +9,9 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 const {
   RL_IGNORE,
-  alpacaPromptCell,
   effectiveTrainingObjective,
   missingRlRoles,
-  pythonRewardRow,
   resolveRlMapping,
-  rewardPreviewReference,
-  rowAnswer,
   syncRlMapping,
 } = await import("../src/features/training/lib/rl-roles.ts");
 
@@ -72,42 +68,6 @@ test("explicit roles win over name matching, and a stale column is ignored", () 
     resolveRlMapping("orpo", ["prompt", "chosen", "good", "bad"], mapping),
     { good: "chosen", bad: "rejected", prompt: "prompt" },
   );
-});
-
-test("a Python reward preview row keeps mapped columns and value types, as GRPO training does", () => {
-  // solution is mapped to answer: training keeps it under its own name for a Python reward.
-  assert.deepEqual(
-    pythonRewardRow(
-      {
-        question: "q",
-        solution: "72",
-        prompt: "p",
-        level: [3],
-        meta: { a: 1 },
-      },
-      "72",
-    ),
-    { question: "q", solution: "72", level: [3], meta: { a: 1 }, answer: "72" },
-  );
-});
-
-test("a prompt-only GRPO dataset gives a Python reward no answer", () => {
-  assert.deepEqual(pythonRewardRow({ prompt: "p", id: 7 }, undefined), {
-    id: 7,
-  });
-  assert.deepEqual(
-    pythonRewardRow(
-      { messages: [], completion: "c", label: true, id: 7 },
-      undefined,
-    ),
-    { id: 7 },
-  );
-  // An empty answer cell is still an answer kwarg, as None.
-  assert.deepEqual(pythonRewardRow({ sol: null, id: 7 }, null), {
-    sol: null,
-    id: 7,
-    answer: null,
-  });
 });
 
 test("GRPO reward reference columns must come from the dataset", async () => {
@@ -228,67 +188,4 @@ test("auto-mapping prefers the higher-priority alias over column order", () => {
   );
   assert.equal(mapping.instruction, "prompt");
   assert.equal(mapping.input, undefined);
-});
-
-test("Try it joins an Alpaca input onto the instruction, as training does", () => {
-  const row = { instruction: "Add these.", input: "2 and 2", output: "4" };
-  assert.equal(
-    alpacaPromptCell(row, { instruction: "prompt" }, "instruction"),
-    "Add these.\n\n2 and 2",
-  );
-  assert.equal(
-    alpacaPromptCell(
-      row,
-      { instruction: "prompt", input: RL_IGNORE },
-      "instruction",
-    ),
-    "Add these.",
-  );
-  assert.equal(
-    alpacaPromptCell(
-      { ...row, input: " " },
-      { instruction: "prompt" },
-      "instruction",
-    ),
-    "Add these.",
-  );
-  assert.equal(alpacaPromptCell(row, { input: "prompt" }, "input"), "2 and 2");
-  // A role GRPO doesn't read, left over from DPO: the backend still joins the input.
-  assert.equal(
-    alpacaPromptCell(
-      row,
-      { instruction: "prompt", input: "chosen" },
-      "instruction",
-    ),
-    "Add these.\n\n2 and 2",
-  );
-  assert.equal(
-    alpacaPromptCell(
-      row,
-      { instruction: "prompt", input: "answer" },
-      "instruction",
-    ),
-    "Add these.",
-  );
-});
-
-test("a reward preview reads a blank mapped answer as blank, as GRPO training does", () => {
-  assert.equal(rowAnswer({ answer: "72" }, "answer"), "72");
-  assert.equal(rowAnswer({ answer: null }, "answer"), null);
-  assert.equal(rowAnswer({ answer: "" }, "answer"), "");
-  assert.equal(rowAnswer({ answer: 5 }, "answer"), 5);
-  // A structured cell goes as is; the backend str()s it as training does, not JSON.stringify.
-  assert.deepEqual(rowAnswer({ answer: { x: 1 } }, "answer"), { x: 1 });
-  // Only no row or no answer role leaves the preview to its sample answer.
-  assert.equal(rowAnswer(null, "answer"), undefined);
-  assert.equal(rowAnswer({ answer: "72" }, undefined), undefined);
-});
-
-test("a reward preview scores a blank reference as blank and a null one as missing", () => {
-  const row = { answer: "", sol: "", gold: null };
-  assert.equal(rewardPreviewReference(row, "sol", "72"), "");
-  assert.equal(rewardPreviewReference(row, "gold", "72"), null);
-  assert.equal(rewardPreviewReference(row, undefined, ""), "");
-  assert.equal(rewardPreviewReference(row, "answer", null), null);
-  assert.equal(rewardPreviewReference(null, "sol", "72"), null);
 });
