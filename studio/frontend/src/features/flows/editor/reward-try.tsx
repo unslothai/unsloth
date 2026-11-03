@@ -8,6 +8,7 @@ import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label"
 import { useEffect, useState } from "react";
 import { useDocStore } from "../stores/doc-store";
 import type { FlowNode } from "../types";
+import { roleColumn } from "./reward-roles";
 import { rewardMax } from "./train-status";
 
 const PROMPT_NAMES = ["prompt", "question", "instruction", "problem", "query", "input"];
@@ -31,12 +32,6 @@ function pick(row: Record<string, unknown>, named: unknown, names: string[]) {
 }
 
 /** The column mapped to `role` in the node's own column mapping, if any. */
-function mapped(params: Record<string, unknown>, role: string): string | undefined {
-  const mapping = params.custom_format_mapping;
-  if (!mapping || typeof mapping !== "object") return undefined;
-  return Object.entries(mapping as Record<string, unknown>).find(([, r]) => r === role)?.[0];
-}
-
 function sampleCompletion(reference: string): string {
   const final = reference.split("####").pop()?.trim() ?? "";
   return `<reasoning>\n...\n</reasoning>\n<answer>\n${final}\n</answer>`;
@@ -88,9 +83,9 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
         const first = found.preview_samples?.[0];
         if (!alive || !first) return;
         const params = node.params;
-        const answer = pick(first, params.answer_column || mapped(params, "answer"), ANSWER_NAMES);
+        const answer = pick(first, roleColumn(params, "answer"), ANSWER_NAMES);
         setRow(first);
-        setPrompt(pick(first, params.prompt_column || mapped(params, "prompt"), PROMPT_NAMES));
+        setPrompt(pick(first, roleColumn(params, "prompt"), PROMPT_NAMES));
         setReference(answer);
         setCompletion((c) => c || sampleCompletion(answer));
       })

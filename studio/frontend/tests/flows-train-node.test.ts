@@ -242,3 +242,12 @@ test("Try the rewards reads the reward training uses, not one a user reward shad
   );
   assert.match(src, /library\.filter\(\(r\) => !r\.shadowed\)\.map\(\(r\) => \[r\.name, r\.rule\]\)/);
 });
+
+test("Try the rewards reads the columns training reads: the Advanced mapping wins", async () => {
+  const { roleColumn } = await import("../src/features/flows/editor/reward-roles.ts");
+  const params = { answer_column: "draft", custom_format_mapping: { gold: "answer", q: "prompt" } };
+  assert.equal(roleColumn(params, "answer"), "gold");
+  assert.equal(roleColumn(params, "prompt"), "q");
+  assert.equal(roleColumn({ answer_column: "draft" }, "answer"), "draft");
+  assert.equal(roleColumn({ answer_column: "draft", custom_format_mapping: {} }, "answer"), "draft");
+});
