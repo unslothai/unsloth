@@ -334,3 +334,11 @@ test("Reasoning Effort hides when a JSON schema is set: JSON output runs with th
     /has\("reasoning_effort"\) &&\s+node\.params\.thinking === true &&\s+!node\.params\.json_schema/,
   );
 });
+
+test("extra llama-server arguments commit as they are typed, so a keyboard run sends them", () => {
+  const src = readSrc("features/flows/editor/llm-load-settings.tsx");
+  const field = src.slice(src.indexOf("function ExtraArgsField"), src.indexOf("export function LlmLoadSettings"));
+  assert.match(field, /onChange=\{\(e\) => edit\(e\.target\.value\)\}/);
+  assert.match(field, /if \(!found\.unterminatedQuote\)\s*onChange\(/);
+  assert.doesNotMatch(field, /onBlur/);
+});
