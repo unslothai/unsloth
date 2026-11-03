@@ -896,3 +896,60 @@ def test_first_adapter_invalidates_plain_projection_bindings(monkeypatch, batch)
         owner.q_proj.lora_B["default"].weight.fill_(1)
     assert (owner.q_proj(x) - before).abs().max() >= 15
     assert D._plan_stale(plan)
+
+
+@pytest.mark.parametrize("plan_key", ["_PLAN", "_BATCH_PLAN"])
+def test_loaded_saved_norm_moves_release_the_current_root(tmp_path, plan_key):
+    import weakref
+
+    peft = pytest.importorskip("peft")
+    D = _driver()
+
+    def make():
+        return torch.nn.ModuleDict(
+            {"proj": torch.nn.Linear(8, 8, bias = False), "norm": torch.nn.LayerNorm(8)}
+        )
+
+    trained = peft.get_peft_model(
+        make(),
+        peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["proj"], modules_to_save = ["norm"]),
+    )
+    checkpoint = tmp_path / "adapter"
+    trained.save_pretrained(checkpoint)
+    owner = make()
+    D._track_moves(owner)
+    model = peft.PeftModel.from_pretrained(owner, checkpoint, torch_device = "cpu")
+    assert model.base_model.model is owner
+    norm = owner.norm.modules_to_save["default"]
+    key = getattr(D, plan_key)
+    held = torch.ones(8)
+    ref = weakref.ref(held)
+    setattr(owner, key, held)
+    del held
+    D._track_moves(owner)
+    norm.to(dtype = torch.float64)
+    assert norm.weight.dtype == torch.float64
+    assert owner.proj.get_base_layer().weight.dtype == torch.float32
+    assert key not in owner.__dict__ and ref() is None
+    assert norm.__dict__["_apply"].root_ref() is owner
+    assert norm.__dict__["_apply"].module_ref() is norm
+
+
+def test_partial_module_copy_does_not_copy_its_root():
+    import copy
+
+    D = _driver()
+    owner = torch.nn.Sequential(torch.nn.Linear(4, 4), torch.nn.Linear(4, 4))
+    D._track_moves(owner)
+    held = torch.ones(8)
+    owner.__dict__[D._PLAN] = held
+    memo = {}
+    cloned = copy.deepcopy(owner[0], memo)
+    assert id(owner) not in memo and id(owner[1]) not in memo
+    assert cloned is not owner[0]
+    assert cloned.__dict__["_apply"].root_ref() is None
+    cloned.to(dtype = torch.float64)
+    assert cloned.weight.dtype == torch.float64
+    assert owner[0].weight.dtype == torch.float32
+    assert owner.__dict__[D._PLAN] is held
+    assert owner[0].__dict__["_apply"].root_ref() is owner

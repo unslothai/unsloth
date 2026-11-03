@@ -64,11 +64,19 @@ class _ApplyReleasing:
         # Copies and pickle must bind the hook to the restored modules.
         return type(self), (self.root_ref(), self.module_ref())
 
+    def __deepcopy__(self, memo):
+        # Saving a submodule must not clone the rest of the model through its owner hook.
+        return type(self)(memo.get(id(self.root_ref())), memo.get(id(self.module_ref())))
+
 
 def _track_moves(model):
     # Reloaded adapters add modules after the root has already been tracked.
     for module in model.modules():
-        if "_apply" not in module.__dict__:
+        binding = module.__dict__.get("_apply")
+        if binding is None or (
+            isinstance(binding, _ApplyReleasing)
+            and (binding.root_ref() is not model or binding.module_ref() is not module)
+        ):
             module.__dict__["_apply"] = _ApplyReleasing(model, module)
 
 
