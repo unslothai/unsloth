@@ -5,6 +5,7 @@
 every rank takes it at the same forward, and that DDP training is unchanged by the plan."""
 
 import datetime
+import math
 import multiprocessing
 import os
 import sys
@@ -173,28 +174,62 @@ def _ddp_scenario(rank, scenario, usable):
 
 
 def _fsdp2_grad_bytes_scenario(rank, scenario, usable):
-    """The planner's gradient byte count after one FSDP2 backward, against the rank's own shards."""
     from torch.distributed.device_mesh import init_device_mesh
     from torch.distributed.fsdp import fully_shard
 
+    root_only, mode = scenario
     mesh = init_device_mesh("cpu", (torch.distributed.get_world_size(),))
     T, ns = _load()
     model = T._model(layers = 2)
+    global_bytes = sum(p.numel() * p.element_size() for p in model.parameters())
+    memory = {"allocated": 0}
+    _spoof_cuda(ns, usable, memory)
     for layer in model.model.layers:
-        fully_shard(layer, mesh = mesh)
+        layer.register_forward_hook(
+            lambda m, a, o: memory.__setitem__(
+                "allocated", memory["allocated"] + (GIB // 16 if torch.is_grad_enabled() else 0)
+            )
+        )
+    ns["skip_checkpointing"](model, "auto")
+    planner = model._unsloth_auto_skip
+    if not root_only:
+        for layer in model.model.layers:
+            fully_shard(layer, mesh = mesh)
     fully_shard(model, mesh = mesh)
+    optimizer = torch.optim.AdamW(model.parameters(), lr = 0.001)
+    # Only the planner's CUDA predicates are spoofed; AdamW still runs on CPU.
+    optimizer._accelerator_graph_capture_health_check = lambda: None
+    parameters = list(model.parameters())
+    local_numel = sum(p.to_local().numel() for p in parameters)
+    if mode != "sync":
+        model.set_requires_gradient_sync(False)
+        model.set_reshard_after_backward(mode != "defer")
     ids = torch.randint(0, 128, (2, 16), generator = torch.Generator().manual_seed(rank))
     model(input_ids = ids, labels = ids).loss.backward()
-    _spoof_cuda(ns, usable, {"allocated": 0})
-    layers = list(model.model.layers)
-    planner = ns["_AutoCheckpointSkip"](model, layers, layers[-1])
-    planner.fresh_grads = [p for p in model.parameters() if p.grad is not None]
-    grads = [p.grad for p in planner.fresh_grads]
+    expected_grad = (
+        sum(p.grad.to_local().numel() * p.grad.element_size() for p in parameters)
+        if mode == "sync"
+        else global_bytes
+    )
+    measured_grad = planner._fresh_grad_bytes(torch.device("cpu"))
+    memory["allocated"] += expected_grad
+    if mode == "sync":
+        optimizer.step()
+        optimizer.zero_grad(set_to_none = True)
+        memory["allocated"] -= expected_grad
+    model.set_requires_gradient_sync(True)
+    model.set_reshard_after_backward(True)
+    activation = 2 * (GIB // 16) * 4 + (expected_grad if mode == "sync" else 0)
+    optimizer_bytes = local_numel * (4 if mode == "sync" else 12)
+    available = math.ceil(activation + optimizer_bytes + (GIB + GIB // 4) / 0.75) + 128
+    ns["usable_cuda_bytes"] = lambda device: available
+    model(input_ids = ids, labels = ids).loss.backward()
+    optimizer.step()
     return {
         "utils": T.UTILS,
-        "planner": planner._fresh_grad_bytes(torch.device("cpu")),
-        "local": sum(g.to_local().numel() * g.element_size() for g in grads),
-        "global": sum(g.numel() * g.element_size() for g in grads),
+        "planner": measured_grad,
+        "expected": expected_grad,
+        "kept": planner.kept,
     }
 
 
@@ -403,13 +438,14 @@ def test_fsdp2_training_unchanged_and_ranks_agree(accumulation):
 
 
 @pytest.mark.skipif(not _fsdp2_runs_on_cpu(), reason = "this torch has no CPU FSDP2 path")
-def test_fsdp2_gradient_bytes_are_rank_local():
-    # The planner subtracts gradient bytes from this rank's allocator peak, so it must count the
-    # rank's shards, not the DTensor's global size (2x on two ranks).
-    for rank, r in _launch("fsdp2_grad_bytes", None, [8 * GIB, 8 * GIB]).items():
+@pytest.mark.parametrize("root_only", [False, True])
+@pytest.mark.parametrize("mode", ["sync", "skip", "defer"])
+def test_fsdp2_gradient_bytes_are_rank_local(root_only, mode):
+    results = _launch("fsdp2_grad_bytes", (root_only, mode), [8 * GIB, 8 * GIB])
+    for rank, r in results.items():
         print("FSDP2_GRAD_BYTES", rank, r)
-        assert r["global"] > r["local"] > 0, r
-        assert r["planner"] == r["local"], r
+        assert r["planner"] == r["expected"] > 0, r
+        assert r["kept"] == [1], r
 
 
 def test_ddp_join_with_uneven_inputs_keeps_every_layer_checkpointed():

@@ -10681,6 +10681,7 @@ class _AutoCheckpointSkip:
         self.optimizers = []
         self.fresh_grads = None
         self.grad_bytes = None
+        self.fsdp_params = {}
 
     @classmethod
     def _no_cuda(cls):
@@ -10762,6 +10763,53 @@ class _AutoCheckpointSkip:
                     return p.device
         return None
 
+    def _parameters(self):
+        """Resolve optimizer-owned shards while FSDP exposes temporary gathered parameters."""
+        aliases = {}
+        seen = set()
+        for module in self.model.modules():
+            get_state = getattr(module, "_get_fsdp_state", None)
+            if not callable(get_state):
+                continue
+            state = get_state()
+            if id(state) in seen:
+                continue
+            seen.add(id(state))
+            groups = getattr(state, "_fsdp_param_groups", None)
+            if groups is None:
+                group = getattr(state, "_fsdp_param_group", None)
+                groups = () if group is None else (group,)
+            for group in groups:
+                for fp in group.fsdp_params:
+                    for name in (
+                        "sharded_param",
+                        "_unsharded_param",
+                        "_sharded_post_forward_param",
+                    ):
+                        param = getattr(fp, name, None)
+                        if param is not None:
+                            aliases[id(param)] = fp
+        self.fsdp_params = {}
+        parameters = {}
+        for param in self.model.parameters():
+            fp = aliases.get(id(param))
+            if fp is not None:
+                param = fp.sharded_param
+                self.fsdp_params[id(param)] = fp
+            parameters[id(param)] = param
+        return parameters.values()
+
+    def _gradient(self, param):
+        if param.grad is not None:
+            return param.grad
+        fp = self.fsdp_params.get(id(param))
+        if fp is None:
+            return None
+        accumulated = getattr(fp, "unsharded_accumulated_grad", None)
+        if accumulated is not None:
+            return accumulated
+        return getattr(getattr(fp, "_unsharded_param", None), "grad", None)
+
     def _model_pre_hook(self, module, args):
         # Planning under torch.compile breaks fullgraph/dynamic tracing; compiled models stay fully checkpointed.
         if torch.compiler.is_compiling():
@@ -10777,7 +10825,7 @@ class _AutoCheckpointSkip:
             self.started = torch.cuda.memory_allocated(device)
             # Grads the first backward allocates persist: they are not sequence-dependent.
             self.fresh_grads = [
-                p for p in self.model.parameters() if p.requires_grad and p.grad is None
+                p for p in self._parameters() if p.requires_grad and self._gradient(p) is None
             ]
             return
         if self.layer_bytes is not None:
@@ -10837,7 +10885,7 @@ class _AutoCheckpointSkip:
     def _optimizer_pre_hook(self, optimizer, args, kwargs):
         if self.started is None or self.stepped:
             return
-        trainable = {id(p) for p in self.model.parameters() if p.requires_grad}
+        trainable = {id(p) for p in self._parameters() if p.requires_grad}
         if not any(id(p) in trainable for group in optimizer.param_groups for p in group["params"]):
             return
         if not any(o() is optimizer for o in self.optimizers):
@@ -10854,9 +10902,9 @@ class _AutoCheckpointSkip:
     def _fresh_grad_bytes(self, device):
         # Only grads on the planned card are in its step peak (a vision tower may sit on another GPU).
         return sum(
-            _local_numel(p.grad) * p.grad.element_size()
+            _local_numel(grad) * grad.element_size()
             for p in (self.fresh_grads or ())
-            if p.grad is not None and p.grad.is_cuda and p.grad.device == device
+            if (grad := self._gradient(p)) is not None and grad.is_cuda and grad.device == device
         )
 
     def _has_optimizer_state(self, param):
@@ -10941,7 +10989,7 @@ class _AutoCheckpointSkip:
         self.fresh_grads = None
         # State an optimizer step already allocated is excluded by usable_cuda_bytes; reserve the rest
         # (sparse MoE experts, unused towers and gradient accumulation have none yet).
-        trainable = [p for p in self.model.parameters() if p.requires_grad]
+        trainable = [p for p in self._parameters() if p.requires_grad]
         optimizer = sum(
             _local_numel(p) * 8
             for p in trainable
@@ -10951,6 +10999,7 @@ class _AutoCheckpointSkip:
         # on each param's own card.
         optimizer += sum(_local_numel(p) * 4 for p in trainable if p.device == device)
         self.optimizers = []
+        self.fsdp_params.clear()
         headroom = usable_cuda_bytes(device) - activation_peak - optimizer
         budget = headroom * self.FRACTION - self.MARGIN
         per_layer = self.layer_bytes * scale
