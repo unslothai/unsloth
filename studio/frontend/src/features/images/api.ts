@@ -448,6 +448,7 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
     /** Only the planner knows: a gated pick is staged from an ungated mirror under another repo id. */
     checkpoint?: boolean;
+    hosted_denoiser?: boolean;
   }[];
   total_bytes: number;
   required_bytes?: number;

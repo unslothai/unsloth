@@ -737,6 +737,8 @@ export const vi = {
     plainText: "Khung soạn thảo văn bản thuần",
     plainTextDescription:
       "Giữ mã, Markdown và liên kết dưới dạng văn bản nguyên bản. Tắt để hiển thị bản xem trước có định dạng.",
+    richPaste: "Dán văn bản có định dạng",
+    richPasteDescription: "Dán liên kết, bảng và định dạng dưới dạng Markdown. {shortcut} dán văn bản thuần. Trình soạn văn bản định dạng đầy đủ sắp ra mắt.",
     showContext: "Mức sử dụng cửa sổ ngữ cảnh",
     sendShortcut: "Phím tắt gửi",
     sendMultiline: "{mod} + Enter cho lời nhắc nhiều dòng",
@@ -1164,6 +1166,7 @@ export const vi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Đặt mật khẩu của chủ sở hữu bản cài đặt trước khi thêm tài khoản khác. Bạn sẽ dùng mật khẩu này để đăng nhập khi bản cài đặt có nhiều tài khoản.",
       signsInAs: "Đăng nhập với tên {username}",
       signsInAsOwner: "Đăng nhập với tên {alias} hoặc {username}",
       signInName: "Tên đăng nhập của bạn",

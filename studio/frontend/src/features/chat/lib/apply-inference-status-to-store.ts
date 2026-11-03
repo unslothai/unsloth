@@ -1,16 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Barrel import (lint rule); the model-picker cycle is fine since the call is at runtime.
+import { loadedPlacementFrom } from "./partial-offload";
+// eslint-disable-next-line no-restricted-imports -- The model-picker index would put the pickers in the startup bundle.
 import {
   adoptCachedRepoConfig,
   loadedContextFields,
+  normalizeMlxKvQuant,
   resolveResidentInitialConfig,
   savedContextPin,
-} from "@/features/model-picker";
-import { loadedPlacementFrom } from "./partial-offload";
-// eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
-import { normalizeMlxKvQuant } from "@/features/model-picker/model-config/per-model-config";
+} from "@/features/model-picker/model-config/per-model-config";
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
 import { isSpeechOnlyStatus } from "./speech-only-status";

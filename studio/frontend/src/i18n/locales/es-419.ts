@@ -740,6 +740,8 @@ export const es419 = {
     plainText: "Redactor de texto sin formato",
     plainTextDescription:
       "Mantiene el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    richPaste: "Pegar texto con formato",
+    richPasteDescription: "Pega enlaces, tablas y formato como Markdown. {shortcut} pega texto sin formato. Pronto, un editor de texto enriquecido completo.",
     showContext: "Uso de la ventana de contexto",
     sendShortcut: "Atajo para enviar",
     sendMultiline: "{mod} + Enter en mensajes de varias líneas",
@@ -1169,6 +1171,7 @@ export const es419 = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Elige la contraseña del propietario de la instalación antes de agregar otra cuenta. La usarás para iniciar sesión cuando esta instalación tenga varias cuentas.",
       signsInAs: "Inicia sesión como {username}",
       signsInAsOwner: "Inicia sesión como {alias} o {username}",
       signInName: "Tu nombre de inicio de sesión",
