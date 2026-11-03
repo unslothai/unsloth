@@ -10004,6 +10004,8 @@ class TestApiMonitorSafetensorsUsage:
 
     def test_non_streaming_safetensors_tool_task_cancel_finalizes_monitor(self, monkeypatch):
         import routes.inference as inf_mod
+        from core.inference import token_limit
+
         async def _run():
             reset_tool_policy()
             reset_called = False
@@ -10033,6 +10035,7 @@ class TestApiMonitorSafetensorsUsage:
                     inf_mod.get_inference_backend,
                     inf_mod._loaded_satisfies,
                     inf_mod._trained_run_dir,
+                    token_limit.enforce,
                 ):
                     return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()

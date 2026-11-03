@@ -416,6 +416,13 @@ def _append_events_locked(
             ),
         )
         sequences.append(seq)
+        if (
+            event_type == "chunk"
+            and isinstance(payload, dict)
+            and (isinstance(payload.get("usage"), dict) or isinstance(payload.get("timings"), dict))
+        ):
+            from storage.token_usage_ledger import record_run_usage
+            record_run_usage(conn, run_id, payload)
     if sequences:
         conn.execute(
             "UPDATE chat_generation_runs SET last_event_seq=?, updated_at=? WHERE id=?",

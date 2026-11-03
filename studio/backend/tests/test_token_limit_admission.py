@@ -3,6 +3,7 @@
 
 import time
 
+import pytest
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
@@ -12,7 +13,8 @@ from routes import inference
 from storage import studio_db
 
 
-def test_token_cap_blocks_new_requests_and_preserves_disabled_behavior(tmp_path, monkeypatch):
+@pytest.fixture
+def admission(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "Projects"))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
@@ -20,7 +22,20 @@ def test_token_cap_blocks_new_requests_and_preserves_disabled_behavior(tmp_path,
 
     async def produce(payload, request, current_subject, *, cancel_on_disconnect):
         produced.append(payload.model)
-        return JSONResponse({"ok": True})
+        return JSONResponse(
+            {
+                "id": "chatcmpl-test",
+                "model": payload.model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "answer"},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100},
+            }
+        )
 
     monkeypatch.setattr(inference, "produce_openai_chat_completions", produce)
     monkeypatch.setattr(inference, "_request_used_api_key", lambda request: False)
@@ -51,28 +66,57 @@ def test_token_cap_blocks_new_requests_and_preserves_disabled_behavior(tmp_path,
         }
     )
     with TestClient(app) as client:
-        studio_db.upsert_app_settings({"token_limit": {"enabled": False, "limit": 100}})
-        before = client.post("/v1/chat/completions", json = body)
-        assert before.status_code == 200 and before.json() == {"ok": True}
+        yield client, body, produced
 
-        studio_db.upsert_app_settings(
-            {"token_limit": {"enabled": True, "limit": 100, "timezone": "UTC"}}
+
+def test_token_cap_blocks_new_requests_and_preserves_disabled_behavior(admission):
+    client, body, produced = admission
+    studio_db.upsert_app_settings({"token_limit": {"enabled": False, "limit": 100}})
+    before = client.post("/v1/chat/completions", json = body)
+    assert (
+        before.status_code == 200 and before.json()["choices"][0]["message"]["content"] == "answer"
+    )
+
+    studio_db.upsert_app_settings(
+        {"token_limit": {"enabled": True, "limit": 100, "timezone": "UTC"}}
+    )
+    refused = client.post("/v1/chat/completions", json = body)
+    assert refused.status_code == 429
+    assert "daily token limit" in refused.json()["detail"]
+    assert refused.headers["X-Unsloth-Token-Limit"] == "combined"
+    assert produced == [body["model"]]
+    for endpoint, extra in (
+        ("completions", {"prompt": "hi"}),
+        ("responses", {"input": "hi"}),
+        ("messages", {"messages": body["messages"], "max_tokens": 1}),
+    ):
+        assert (
+            client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra}).status_code
+            == 429
         )
-        refused = client.post("/v1/chat/completions", json = body)
-        assert refused.status_code == 429
-        assert "daily token limit" in refused.json()["detail"]
-        assert refused.headers["X-Unsloth-Token-Limit"] == "combined"
-        assert produced == [body["model"]]
-        for endpoint, extra in (
-            ("completions", {"prompt": "hi"}),
-            ("responses", {"input": "hi"}),
-            ("messages", {"messages": body["messages"], "max_tokens": 1}),
-        ):
-            assert (
-                client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra}).status_code
-                == 429
-            )
 
-        studio_db.upsert_app_settings({"token_limit": {"enabled": False, "limit": 100}})
-        after = client.post("/v1/chat/completions", json = body)
-        assert after.status_code == before.status_code and after.content == before.content
+    studio_db.upsert_app_settings({"token_limit": {"enabled": False, "limit": 100}})
+    after = client.post("/v1/chat/completions", json = body)
+    assert after.status_code == before.status_code and after.content == before.content
+
+
+@pytest.mark.parametrize(
+    "endpoint,extra",
+    [
+        ("responses", {"input": "hi"}),
+        ("messages", {"messages": [{"role": "user", "content": "hi"}], "max_tokens": 1}),
+    ],
+)
+def test_delegated_request_consumes_one_override(admission, monkeypatch, endpoint, extra):
+    from core.inference import token_limit
+
+    client, body, produced = admission
+    monkeypatch.setattr(inference, "_in_process_model_resident", lambda: True)
+    token_limit.update_settings(
+        {"enabled": True, "limit": 100, "timezone": "UTC"}, password = None, new_password = None
+    )
+    token_limit.grant_override("combined")
+    response = client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra})
+    assert response.status_code == 200, response.text
+    assert produced == [body["model"]]
+    assert client.post(f"/v1/{endpoint}", json = {"model": body["model"], **extra}).status_code == 429

@@ -249,6 +249,70 @@ def test_no_override_is_granted_below_the_cap(limiter_db):
     assert refused.value.status_code == 409
 
 
+@pytest.mark.parametrize("via_api_key", [False, True])
+def test_durable_usage_is_counted_before_a_browser_recovers_the_run(limiter_db, via_api_key):
+    from storage import chat_generation_runs_db as runs
+
+    now = _now_ms()
+    _thread("t1", now)
+    studio_db.upsert_chat_message(
+        {
+            "id": "user",
+            "threadId": "t1",
+            "role": "user",
+            "createdAt": now,
+            "content": [{"type": "text", "text": "hi"}],
+        }
+    )
+    runs.create_run(
+        run_id = "run",
+        owner_subject = "owner",
+        thread_id = "t1",
+        user_message_id = "user",
+        assistant_message_id = "assistant",
+        request_payload = {
+            "model": "local",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": True,
+            "api_monitor_via_api_key": via_api_key,
+        },
+    )
+    token = runs.get_worker_token("run")
+    runs.mark_running("run", token)
+    runs.append_events(
+        "run",
+        token,
+        [
+            (
+                "chunk",
+                {
+                    "usage": {
+                        "prompt_tokens": 90,
+                        "completion_tokens": 10,
+                        "total_tokens": 100,
+                    }
+                },
+            )
+        ],
+    )
+    runs.finish_run("run", worker_token = token, status = "completed")
+    if via_api_key:
+        _api_request("durable-receipt", now, 100)
+    _enable(limit = 100)
+    assert _pools()["combined"]["used"] == 100
+    if not via_api_key:
+        message = studio_db.get_chat_message("t1", "assistant")
+        message["metadata"]["contextUsage"] = {
+            "promptTokens": 90,
+            "completionTokens": 10,
+            "totalTokens": 100,
+        }
+        studio_db.upsert_chat_message(message)
+        assert _pools()["combined"]["used"] == 100
+    with pytest.raises(HTTPException):
+        token_limit.enforce(api = False)
+
+
 def test_a_password_locks_every_change_until_it_is_given(limiter_db):
     token_limit.update_settings(
         {"enabled": True, "limit": 1000}, password = None, new_password = "guardian"

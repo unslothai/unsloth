@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 LEDGER_TABLE = "token_usage_ledger"
@@ -111,6 +112,37 @@ def ensure_token_usage_ledger(conn: sqlite3.Connection) -> None:
                 "m",
                 "FROM chat_messages m WHERE m.role = 'assistant' AND json_valid(m.metadata_json)",
             )
+        )
+
+
+def record_run_usage(conn: sqlite3.Connection, run_id: str, chunk: dict) -> None:
+    metadata = {}
+    usage = chunk.get("usage")
+    if isinstance(usage, dict):
+        metadata["contextUsage"] = {
+            camel: usage.get(snake, 0)
+            for camel, snake in (
+                ("promptTokens", "prompt_tokens"),
+                ("completionTokens", "completion_tokens"),
+                ("totalTokens", "total_tokens"),
+            )
+        }
+    if isinstance(chunk.get("timings"), dict):
+        metadata["serverTimings"] = chunk["timings"]
+    if metadata:
+        conn.execute(
+            _ledger_insert(
+                "m",
+                """
+            FROM (
+                SELECT c.id, c.thread_id, c.created_at,
+                       json_patch(c.metadata_json, ?) AS metadata_json
+                FROM chat_messages c JOIN chat_generation_runs r ON r.assistant_message_id = c.id
+                WHERE r.id = ? AND COALESCE(json_extract(r.request_json, '$.api_monitor_via_api_key'), 0) = 0
+            ) m
+        """,
+            ),
+            (json.dumps(metadata), run_id),
         )
 
 

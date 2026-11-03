@@ -50,6 +50,7 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
   const [status, setStatus] = useState<TokenLimitStatus | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [selectedPool, setSelectedPool] = useState<string | null>(null);
 
   useEffect(() => {
     if (!active) return;
@@ -60,8 +61,7 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
         .then((next) => {
           if (!cancelled) setStatus(next);
         })
-        .catch(() => {
-        });
+        .catch(() => {});
     };
     const onHistoryUpdated = () => {
       clearTimeout(settleTimer);
@@ -84,8 +84,11 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
     };
   }, [active]);
 
-  const pool = status ? pickPool(status) : null;
-  if (!status || !pool) return null;
+  const warningPool = status ? pickPool(status) : null;
+  const pool =
+    status?.pools.find((candidate) => candidate.pool === selectedPool) ??
+    warningPool;
+  if (!status || !warningPool || !pool) return null;
 
   const period = t(PERIOD_KEYS[status.settings.period]);
   const percent = Math.min(100, Math.floor((pool.used / pool.limit) * 100));
@@ -106,6 +109,7 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
       );
       toast.success(t("settings.profile.tokenLimit.overrideGranted"));
       setOpen(false);
+      setSelectedPool(null);
     } catch (error) {
       toast.error(
         error instanceof Error
@@ -139,10 +143,36 @@ export function TokenLimitNotice({ active }: { active: boolean }) {
       <AlertDialog
         open={open}
         onOpenChange={(next) => {
-          if (!busy) setOpen(next);
+          if (!busy) {
+            setOpen(next);
+            if (!next) setSelectedPool(null);
+          }
         }}
       >
         <AlertDialogContent>
+          {status.pools.length > 1 ? (
+            <div className="flex gap-2">
+              {status.pools.map((candidate) => (
+                <Button
+                  key={candidate.pool}
+                  type="button"
+                  size="sm"
+                  variant={
+                    candidate.pool === pool.pool ? "secondary" : "outline"
+                  }
+                  aria-pressed={candidate.pool === pool.pool}
+                  disabled={busy}
+                  onClick={() => setSelectedPool(candidate.pool)}
+                >
+                  {t(
+                    candidate.pool === "local"
+                      ? "settings.profile.tokenLimit.poolLocal"
+                      : "settings.profile.tokenLimit.poolApi",
+                  )}
+                </Button>
+              ))}
+            </div>
+          ) : null}
           <AlertDialogHeader>
             <AlertDialogTitle>
               {canOverride
