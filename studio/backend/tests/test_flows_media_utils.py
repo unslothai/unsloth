@@ -255,3 +255,83 @@ def test_a_phone_clip_is_turned_upright():
     assert upright.shape == (64, 48, 3) and upright[63, 0].all() and upright.flags["C_CONTIGUOUS"]
     Frame.rotation = 0
     assert mu._upright(Frame()).shape == (48, 64, 3)
+
+
+def test_edit_video_keeps_variable_frame_rate_pacing():
+    from fractions import Fraction
+
+    import av
+    import numpy as np
+
+    buf = io.BytesIO()
+    out = av.open(buf, mode = "w", format = "mp4")
+    v = out.add_stream("mpeg4", rate = 10)
+    v.width, v.height, v.pix_fmt = 64, 48, "yuv420p"
+    v.codec_context.time_base = Fraction(1, 10)
+    for pts, gray in [(0, 0), (1, 40), (2, 80), (10, 200), (11, 240)]:
+        frame = av.VideoFrame.from_ndarray(
+            np.full((48, 64, 3), gray, dtype = np.uint8), format = "rgb24"
+        )
+        frame.pts, frame.time_base = pts, Fraction(1, 10)
+        for packet in v.encode(frame):
+            out.mux(packet)
+    for packet in v.encode():
+        out.mux(packet)
+    out.close()
+
+    src = av.open(io.BytesIO(mu.edit_video(buf.getvalue())))
+    shown = [
+        (float(f.time), int(f.to_ndarray(format = "rgb24")[10, 10, 0]))
+        for f in src.decode(src.streams.video[0])
+    ]
+    src.close()
+    # The bright frame is shot at 1.0 s; it must not appear before ~1.0 s in the edit.
+    first_bright = next(t for t, gray in shown if gray > 150)
+    assert first_bright >= 0.9, shown
+    assert shown[-1][0] >= 1.0, shown
+
+
+def test_edit_video_constant_rate_keeps_every_frame_once():
+    import av
+    clip = _clip(frames = 24, fps = 12)
+    for speed, expected in ((1.0, 24), (2.0, 12), (0.5, 48)):
+        src = av.open(io.BytesIO(mu.edit_video(clip, speed = speed)))
+        count = sum(1 for _ in src.decode(src.streams.video[0]))
+        src.close()
+        assert count == expected, (speed, count)
+
+
+def test_edit_video_keeps_every_picture_of_a_millisecond_timed_webm():
+    import av
+    import numpy as np
+
+    buf = io.BytesIO()
+    out = av.open(buf, mode = "w", format = "webm")
+    v = out.add_stream("libvpx", rate = 60)
+    v.width, v.height, v.pix_fmt = 64, 48, "yuv420p"
+    for i in range(12):
+        frame = av.VideoFrame.from_ndarray(
+            np.full((48, 64, 3), 10 + i * 20, dtype = np.uint8), format = "rgb24"
+        )
+        frame.pts = i
+        for packet in v.encode(frame):
+            out.mux(packet)
+    for packet in v.encode():
+        out.mux(packet)
+    out.close()
+    for speed, picks in ((1.0, range(12)), (2.0, range(0, 12, 2))):
+        src = av.open(io.BytesIO(mu.edit_video(buf.getvalue(), speed = speed)))
+        shown = [
+            round((int(f.to_ndarray(format = "rgb24")[10, 10, 0]) - 10) / 20)
+            for f in src.decode(src.streams.video[0])
+        ]
+        src.close()
+        assert shown == list(picks), (speed, shown)
+
+
+def test_edit_video_a_trim_shorter_than_a_frame_keeps_one_frame():
+    import av
+
+    src = av.open(io.BytesIO(mu.edit_video(_clip(frames = 12, fps = 12), end_s = 0.01)))
+    assert sum(1 for _ in src.decode(src.streams.video[0])) == 1
+    src.close()

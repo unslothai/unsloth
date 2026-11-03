@@ -287,6 +287,7 @@ async def _alongside(ctx: Any, repo: str, variant: Optional[str]) -> Optional[di
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
     ctx.resident.clear()
+    note_loaded(ctx, "llm", repo)
     ctx.chat_model = name
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
@@ -307,7 +308,16 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     return name
 
 
-_LOADED_VARIANT: dict[str, tuple[str, str]] = {}
+# slot -> (repo, variant, owner load count): a media reload outside Flows changes the count.
+_LOADED_VARIANT: dict[str, tuple[str, str, Optional[int]]] = {}
+
+
+def _media_load_count(slot: str) -> Optional[int]:
+    from core.inference import gpu_arbiter
+    owner = {"image": gpu_arbiter.DIFFUSION, "video": gpu_arbiter.VIDEO}.get(slot)
+    return gpu_arbiter.load_count(owner) if owner else None
+
+
 _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 
 
@@ -322,7 +332,12 @@ def options_hash(options: Optional[dict]) -> Optional[str]:
 async def _resident_variant(ctx: Any, slot: str, repo: str) -> Optional[str]:
     if slot != "llm":
         loaded = _LOADED_VARIANT.get(slot)
-        return loaded[1] if loaded and loaded[0] == repo.lower() else None
+        if not loaded or loaded[0] != repo.lower():
+            return None
+        if loaded[2] != _media_load_count(slot):
+            _LOADED_VARIANT.pop(slot, None)
+            return None
+        return loaded[1]
     from studio_mcp import loading
 
     try:
@@ -465,7 +480,7 @@ async def _ensure_model(
     ctx.resident.clear()
     ctx.resident[slot] = repo
     note_loaded(ctx, slot, repo)
-    _LOADED_VARIANT[slot] = wanted
+    _LOADED_VARIANT[slot] = (*wanted, _media_load_count(slot))
     if settings is None:
         _LOADED_OPTIONS.pop(slot, None)
     else:
@@ -574,6 +589,7 @@ async def llm_text(
     thinking: bool = False,
     seed: Optional[int] = None,
     stream_port: Optional[str] = "text",
+    use_adapter: Optional[bool] = None,
 ) -> str:
     from core.flows import caller as flow_caller
     from state.tool_policy import tools_force_disabled
@@ -591,6 +607,9 @@ async def llm_text(
         seed = seed,
         stream = bool(stream_port),
     )
+    if use_adapter is not None:
+        # The server keeps the last request's adapter switch (a Benchmark judge turns it off), so say it every time.
+        body["use_adapter"] = use_adapter
     ctx.check_cancelled()
     if not stream_port:
         with tools_force_disabled():

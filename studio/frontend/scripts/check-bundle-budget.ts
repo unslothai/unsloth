@@ -445,13 +445,25 @@ export const BUDGET = {
   // The Evals tab on the Benchmarks page (#12521) adds 6,058 B raw / 1,585 B transfer, its strings in the eager en
   // locale; its runtime driver is a React.lazy chunk. Raised by that on top of main.
   // Flows: +12,232 B raw / +6,300 B transfer over 1610b38cc4 (shared startup chunks); Flows itself stays lazy.
+  // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
+  // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
+  // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
+  // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
+  // budget, which keeps main's margin (re-added on top of main at 85d63e074). The GRPO prompt preview reading
+  // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
+  // Against d4f1ceb19 the PR adds 28,301 B raw / 8,690 B transfer (6,923,052 -> 6,951,353 B raw, 2,085,246 ->
+  // 2,093,936 B transfer, one machine and build, 98 chunks); main itself measured 509 B raw / 228 B transfer over
+  // its own budget there, so this is the head measurement plus about 700 B raw / 300 B transfer for CI builds.
+  // Re-added on top of main's #14582 budget at the e3d92b48e merge: main's +8,926 B raw / +2,367 B transfer
+  // since 85d63e074 on top of the line this replaced.
+  // Merged onto Flows (flows-base-rl): Flows' budget plus the #12601 growth measured against d4f1ceb19.
   // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
   // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
   // #12521 + Flows + the Studio theme stacked measure 2,110,771 B transfer at this merge (Node 26). Raised to that.
   // Recipe groups (with theme, look, runs, seeds), Fine-tune, Benchmark and the Loop stacked measure
   // 2063.6 KB transfer at this merge (Node 26, 134 chunks). Raised to that.
   transferBytes: 2_113_700,
-  rawBytes: 6_991_845,
+  rawBytes: 6_999_346,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

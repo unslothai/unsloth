@@ -12,6 +12,7 @@ import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import type { FlowNode } from "../types";
 import { type FieldRow, NodeFieldRows } from "./node-card";
 import type { NodeLook } from "./node-looks";
+import { rerollNode } from "./node-actions";
 import {
   TRAIN_STATE_LABEL,
   type TrainState,
@@ -60,11 +61,14 @@ function keyFields(node: FlowNode): FieldRow[] {
   const p = node.params;
   const model = String(p.base_model ?? "").trim();
   const rows: FieldRow[] = [];
+  const objective = String(p.objective ?? "sft");
+  if (objective !== "sft")
+    rows.push({ label: "Objective", value: objective.toUpperCase() });
   if (model) rows.push({ label: "Model", value: model.split("/").pop() ?? model });
   if (p.max_steps) rows.push({ label: "Steps", value: String(p.max_steps) });
   const held = Number(p.holdout_percent) || 0;
   if (held > 0) rows.push({ label: "Hold out", value: `${held}%` });
-  return rows;
+  return rows.slice(0, 3);
 }
 
 function TrainNodeBody({ node }: { node: FlowNode }) {
@@ -117,20 +121,44 @@ function TrainNodeBody({ node }: { node: FlowNode }) {
             </span>
           )}
         </div>
-        <Sparkline values={view.history} />
-        {view.state === "adapter_ready" && checkpoint && (
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            className="nodrag self-start"
-            onClick={(event) => {
-              event.stopPropagation();
-              void chat();
-            }}
-          >
-            Chat with it
-          </Button>
+        <Sparkline
+          values={view.history}
+          className={
+            view.reward
+              ? "stroke-emerald-600 dark:stroke-emerald-300"
+              : undefined
+          }
+        />
+        {view.state === "adapter_ready" && (
+          <div className="flex items-center gap-1">
+            {checkpoint && (
+              <Button
+                type="button"
+                size="xs"
+                variant="outline"
+                className="nodrag"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void chat();
+                }}
+              >
+                Chat with it
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="xs"
+              variant="ghost"
+              className="nodrag text-muted-foreground"
+              title="Train again with the same settings instead of reusing this adapter"
+              onClick={(event) => {
+                event.stopPropagation();
+                void rerollNode(node.id);
+              }}
+            >
+              Retrain
+            </Button>
+          </div>
         )}
       </div>
     </>

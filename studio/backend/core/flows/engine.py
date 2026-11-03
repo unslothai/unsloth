@@ -34,7 +34,7 @@ from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows import loop as loop_rounds
 from core.flows.compiler import FOR_EACH, LOOP, CompileError, Plan, compile_flow
-from core.flows.registry import FlowCancelled, FlowNodeError, load_handlers
+from core.flows.registry import CACHE_HOOKS, FlowCancelled, FlowNodeError, load_handlers
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
 from utils.account_context import AccountContext, arun_as, current_account
@@ -1614,13 +1614,16 @@ class FlowEngine:
 
     async def _unload_loaded(self, rs: RunState, wanted: dict[str, str]) -> None:
         from studio_mcp import loading
+
         slots = await asyncio.wait_for(loading.resident_slots(rs.caller), RESIDENT_PROBE_S)
+        wanted = {loading._repo(repo): nid for repo, nid in wanted.items()}
         for slot, names in (slots or {}).items():
             if slot not in rs.initial_resident:
                 continue
-            before = {n.lower() for n in rs.initial_resident[slot]}
+            before = {loading._repo(n).lower() for n in rs.initial_resident[slot]}
             for name in names or []:
-                if name.lower() in before or name.lower() not in wanted:
+                key = loading._repo(name).lower()
+                if key in before or key not in wanted:
                     continue
                 if slot == "llm":
                     await loading.unload_llm(rs.caller, name)
@@ -1630,7 +1633,7 @@ class FlowEngine:
                     continue
                 rs.emit(
                     "node.log",
-                    wanted[name.lower()],
+                    wanted[key],
                     {
                         "level": "info",
                         "message": f"Unloaded {name}: the run that loaded it ended",
@@ -1799,6 +1802,14 @@ class FlowEngine:
         cacheable = spec["cacheable"] and not (
             spec.get("model_kind") and not (isinstance(choice, dict) and choice.get("repo"))
         )
+        hook = CACHE_HOOKS.get(spec["type"]) if cacheable else None
+        extra = None
+        if hook is not None:
+            try:
+                extra = await hook.material(ctx)
+            except Exception:
+                logger.debug("flows: cache material failed", exc_info = True)
+            cacheable = extra is not None
         if cacheable and not forced:
             try:
                 model_key = await self._model_key(ctx, spec, params)
@@ -1810,6 +1821,7 @@ class FlowEngine:
                     model = model_key,
                     seed = seed,
                     flow_params = ctx.flow_params,
+                    extra = extra,
                 )
                 pending = rs.pending_cache(key)
                 hit = (
@@ -1823,6 +1835,8 @@ class FlowEngine:
                     from core.flows.nodes._common import gallery_media_present
                     if not await asyncio.to_thread(gallery_media_present, hit):
                         hit = None
+                if hit is not None and hook is not None and not await hook.valid(ctx, hit):
+                    hit = None
             except Exception:
                 logger.debug("flows: cache lookup failed", exc_info = True)
                 hit = None
@@ -1834,7 +1848,7 @@ class FlowEngine:
                 key = cache_key(
                     spec["type"], spec["v"], params, inputs,
                     model = await self._model_key(ctx, spec, params), seed = seed,
-                    flow_params = ctx.flow_params,
+                    flow_params = ctx.flow_params, extra = extra,
                 )  # fmt: skip
             except Exception:
                 key = None
@@ -1909,7 +1923,7 @@ class FlowEngine:
         finally:
             rs.cancel_hooks.pop((nid, iteration), None)
         outputs = dict(outputs or {})
-        if key is not None and spec["cacheable"]:
+        if key is not None and cacheable:
             if rs.persist:
                 rs._unsaved_cache[key] = (spec["type"], outputs)
             else:
