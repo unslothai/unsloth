@@ -1313,6 +1313,7 @@ if _STUDIO_ROOT_RESOLVED != _LEGACY_STUDIO_ROOT or _MASTER_ROOT is not None:
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 # Studio decides training / export / chat-only from its own hardware detection, so keep
 # `import unsloth` refusing on a GPU-less host here instead of loading the CPU training backend.
+# A training worker on a host Studio trains on CPU opts back in (core/training/worker.py).
 os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
 
 

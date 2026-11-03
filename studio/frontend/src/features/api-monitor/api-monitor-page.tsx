@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
@@ -44,7 +45,6 @@ import {
 import { AudioApiExamples } from "@/features/settings/components/audio-api-examples";
 import { DecisionApiSection } from "@/features/settings/components/decision-api-section";
 import { MediaApiExamples } from "@/features/settings/components/media-api-examples";
-import { TrainingApiExamples } from "@/features/settings/components/training-api-examples";
 import { useApiTunnelPref } from "@/features/settings/components/usage-examples";
 import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
@@ -58,18 +58,16 @@ import {
   Clock01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
-  Delete02Icon,
   FileSearchIcon,
   PlusSignIcon,
   Refresh01Icon,
   RemoveCircleIcon,
   Search01Icon,
-  Settings02Icon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
-import { SpeedMeterIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, SpeedMeterIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -154,14 +152,14 @@ const INSET_OPAQUE =
   "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
 function formatTime(value: number): string {
-  return new Date(value * 1000).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(value * 1000).toLocaleTimeString(
+    [],
+    withTimeFormat({ hour: "numeric", minute: "2-digit" }),
+  );
 }
 
 function formatFullTime(value: number): string {
-  return new Date(value * 1000).toLocaleString();
+  return new Date(value * 1000).toLocaleString(undefined, withTimeFormat());
 }
 
 function formatAgo(value: number, now: number): string {
@@ -551,6 +549,7 @@ const RequestRow = memo(function RequestRow({
   onSelect: (id: string) => void;
   now: number;
 }): ReactElement {
+  useTimeFormat();
   const age = (
     <span title={formatFullTime(entry.started_at)}>
       {formatAgo(entry.started_at, now)}
@@ -803,6 +802,7 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
+  useTimeFormat();
   // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
@@ -964,12 +964,6 @@ function QuickStart({
             />
           ) : kind === "audio" ? (
             <AudioApiExamples
-              apiKey={freshKey}
-              useTunnel={useTunnel}
-              showHeading={false}
-            />
-          ) : kind === "training" ? (
-            <TrainingApiExamples
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
@@ -1323,7 +1317,7 @@ export function ApiMonitorPage(): ReactElement {
         className="size-7 shrink-0 rounded-full p-0 text-muted-foreground hover:text-foreground dark:hover:bg-chat-icon-bg-hover"
       >
         <HugeiconsIcon
-          icon={Settings02Icon}
+          icon={Settings01Icon}
           strokeWidth={1.75}
           className="size-3.5"
         />
@@ -1559,7 +1553,7 @@ export function ApiMonitorPage(): ReactElement {
               className="size-8 rounded-full text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground dark:hover:bg-[color-mix(in_oklab,var(--foreground)_calc(14%*var(--contrast-wash-gain,1)),transparent)]"
             >
               <HugeiconsIcon
-                icon={Settings02Icon}
+                icon={Settings01Icon}
                 strokeWidth={1.75}
                 className="size-[calc(18px*var(--ui-space-scale,1))]"
               />
@@ -1915,7 +1909,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />
