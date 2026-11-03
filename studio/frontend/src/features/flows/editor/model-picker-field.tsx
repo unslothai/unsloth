@@ -103,6 +103,8 @@ export function FlowModelPicker({
       size="sm"
       placeholder={`Choose a ${kind === "tts" ? "speech" : kind} model`}
       className="nodrag -ml-2 h-8 w-fit max-w-[calc(100%+0.5rem)] !pl-2 !pr-1.5"
+      // Chat's header size and no-shrink name overflow an inspector column; the name truncates here.
+      triggerLabelClassName="shrink text-ui-13"
       contentClassName="nodrag nowheel"
       {...KIND_PROPS[kind]}
     />

@@ -66,3 +66,8 @@ test("a Flows model field's closed trigger reads like Chat's: ghost, name with f
   // Every other picker keeps the dot unless it asks.
   assert.match(selector, /loadedMark = "dot",/);
 });
+
+test("the closed picker's name shrinks at field size, so a long name truncates inside the inspector", () => {
+  const field = readSrc("features/flows/editor/model-picker-field.tsx");
+  assert.match(field, /triggerLabelClassName="shrink text-ui-13"/);
+});
