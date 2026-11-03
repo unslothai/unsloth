@@ -31,6 +31,8 @@ export interface FieldProps {
   spec: ParamSpec;
   value: unknown;
   onChange: (value: unknown) => void;
+  /** Sets this param with others in one edit (Fine-tune's base model and its picked copy). */
+  onPatch?: (patch: Record<string, unknown>) => void;
 }
 
 function JsonField({
@@ -340,7 +342,7 @@ function LoraListField({ spec, value, onChange }: FieldProps) {
   );
 }
 
-function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
+function ParamFieldImpl({ spec, value, onChange, onPatch }: FieldProps) {
   if (spec.options_from && (spec.kind === "text" || spec.kind === "select"))
     return <RemoteOptionsField spec={spec} value={value} onChange={onChange} />;
   switch (spec.kind) {
@@ -350,7 +352,11 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
         return (
           <FlowTrainModelPicker
             value={String(value ?? "")}
-            onChange={(model) => onChange(model)}
+            onChange={(model, cache) =>
+              onPatch
+                ? onPatch({ base_model: model, base_model_cache: cache })
+                : onChange(model)
+            }
           />
         );
       return <TextField spec={spec} value={value} onChange={onChange} />;

@@ -286,6 +286,8 @@ function resolveFreeformTrainingModelPick(
   };
 }
 
+export type TrainModelCachePick = { knownCached: true; localPath: string | null };
+
 export function TrainModelSelector({
   requiredModelType,
   value,
@@ -294,7 +296,8 @@ export function TrainModelSelector({
   requiredModelType?: ModelType;
   /** Controlled mode (Flows): show `value` and report picks instead of using the Train page's store. */
   value?: string | null;
-  onValueChange?: (model: string) => void;
+  /** `cache` names the On device copy picked, so training uses those weights as the Train page does. */
+  onValueChange?: (model: string, cache: TrainModelCachePick | null) => void;
 }) {
   const t = useT();
   const gpu = useGpuInfo();
@@ -315,7 +318,14 @@ export function TrainModelSelector({
   const selectedModelFormat = controlled ? null : store.modelFormat;
   const { trainingMethod } = store;
   const selectTrainingModel: typeof store.selectTrainingModel = controlled
-    ? (model) => model && onValueChange(model)
+    ? (model, _type, options) =>
+        model &&
+        onValueChange(
+          model,
+          options?.knownCached
+            ? { knownCached: true, localPath: options.localPath ?? null }
+            : null,
+        )
     : store.selectTrainingModel;
   const [selectedDeviceKey, setSelectedDeviceKey] = useState<string | null>(
     null,

@@ -12,7 +12,10 @@ import {
 } from "@/features/model-picker/components/model-selector/pickers";
 import { type ModelOption, ModelSelector } from "@/features/model-picker";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { TrainModelSelector } from "@/features/train-model-picker";
+import {
+  type TrainModelCachePick,
+  TrainModelSelector,
+} from "@/features/train-model-picker";
 import { type ComponentProps, useEffect, useState } from "react";
 import { choiceFromPick } from "./model-choice";
 import type { ModelChoice } from "../types";
@@ -111,13 +114,24 @@ export function FlowModelPicker({
   );
 }
 
-/** Fine-tune's base model: the Train page's own picker (trainable weights, VRAM fit), kept as a plain repo string. */
+/** The On device copy a Fine-tune base model was picked from, as the run sends it. */
+export type BaseModelCache = { known_cached: true; local_path: string | null };
+
+/** Fine-tune's base model: the Train page's own picker (trainable weights, VRAM fit), kept as a
+ * plain repo string, with the On device copy it was picked from beside it. */
 export function FlowTrainModelPicker({
   value,
   onChange,
 }: {
   value: string;
-  onChange: (model: string) => void;
+  onChange: (model: string, cache: BaseModelCache | null) => void;
 }) {
-  return <TrainModelSelector value={value} onValueChange={onChange} />;
+  return (
+    <TrainModelSelector
+      value={value}
+      onValueChange={(model, cache: TrainModelCachePick | null) =>
+        onChange(model, cache ? { known_cached: true, local_path: cache.localPath } : null)
+      }
+    />
+  );
 }
