@@ -2874,7 +2874,7 @@ html[data-chat-font] .aui-root {
 		box-shadow: none !important;
 	}
 	/* Account button hover/open matches the account menu. */
-	.dark .app-user-trigger:is(:hover, [data-state="open"], [aria-expanded="true"]) {
+	.dark:not([data-glass][data-chat-wallpaper-workspace-ready], [data-glass="macos"]) .app-user-trigger:is(:hover, [data-state="open"], [aria-expanded="true"]) {
 		background-color: color-mix(in srgb, var(--card), white 6.5%) !important;
 	}
 	/* More menu and its sub-menus use the sidebar colour. */
@@ -6199,6 +6199,24 @@ html[data-glass="macos"] .diffusion-surface {
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label),
 html[data-glass="macos"] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
   background-color: transparent;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .sidebar-footer-fade,
+html[data-glass="macos"] [data-slot="sidebar-inner"] .sidebar-footer-fade {
+  display: none;
+}
+/* The footer fade paints the opaque sidebar colour, so on glass the list masks its own bottom edge. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"]:has(.sidebar-footer-fade[data-visible="true"]) .sidebar-scroll-fade,
+html[data-glass="macos"] [data-slot="sidebar-inner"]:has(.sidebar-footer-fade[data-visible="true"]) .sidebar-scroll-fade {
+  -webkit-mask-image: linear-gradient(to bottom, var(--sidebar-fade-top, #000) 0, #000 14px, #000 calc(100% - 40px), transparent calc(100% - 8px)),
+    linear-gradient(var(--sidebar-rail-side, to left), #000 var(--sidebar-rail, 0px), transparent 0);
+  mask-image: linear-gradient(to bottom, var(--sidebar-fade-top, #000) 0, #000 14px, #000 calc(100% - 40px), transparent calc(100% - 8px)),
+    linear-gradient(var(--sidebar-rail-side, to left), #000 var(--sidebar-rail, 0px), transparent 0);
+}
+.sidebar-scroll-fade.is-scrolled {
+  --sidebar-fade-top: transparent;
+}
+[dir="rtl"] .sidebar-scroll-fade {
+  --sidebar-rail-side: to right;
 }
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
 html[data-glass] .wallpaper-preview-composer,
