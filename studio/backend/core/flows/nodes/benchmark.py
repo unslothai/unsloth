@@ -229,14 +229,23 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
 
 
 def _is_adapter(name: str) -> bool:
-    """A model Chat loaded from a LoRA folder, so the adapter-off comparison and judging apply to it too.
-    The status a flow reads names a local folder by its `ref:` handle; the folder is what is checked."""
+    """A model Chat loaded from a LoRA folder or Hub repo, so the adapter-off comparison and judging apply
+    to it too. The status a flow reads names a local folder by its `ref:` handle; the folder is what is
+    checked. A Hub repo Chat loaded is already in the Hub cache, which is read without a network call."""
     from hub.utils.host_paths import resolve_host_path_reference
 
     path = resolve_host_path_reference(name) or name
     try:
-        return (Path(path) / "adapter_config.json").is_file()
+        if (Path(path) / "adapter_config.json").is_file():
+            return True
     except (OSError, ValueError):
+        return False
+    if path != name or not re.fullmatch(r"[\w.-]+/[\w.-]+", name):
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        return isinstance(try_to_load_from_cache(name, "adapter_config.json"), str)
+    except Exception:
         return False
 
 

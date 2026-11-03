@@ -9,6 +9,8 @@ export interface LoopRound {
   probe_score: number | null;
   rows_from_failures: number;
   probe_failures: number;
+  /** Test rows the model or judge errored on: such a round's score does not count. */
+  test_errored?: number;
 }
 
 export interface LoopView {
@@ -51,14 +53,18 @@ function roundsOf(value: unknown): LoopRound[] {
 export function loopView(input: LoopInput): LoopView {
   const total = Math.max(1, num(input.params.rounds, 3));
   const target = num(input.params.target, 90);
-  const finished = input.outputs?.history;
-  const rounds = roundsOf(finished ?? input.partial?.history);
+  const live = input.status === "running" || input.status === "queued";
+  // A rerun keeps the last run's outputs until it ends: while it runs, only its own rounds show.
+  const finished = live ? undefined : input.outputs?.history;
+  const rounds = roundsOf(live ? input.partial?.history : (finished ?? input.partial?.history));
   const scores = rounds
     .map((r) => r.test_score)
     .filter((s): s is number => typeof s === "number");
+  // As the engine picks: a round whose test rows errored can neither be best nor meet the target.
   const best = rounds.reduce<LoopRound | null>(
     (top, r) =>
       typeof r.test_score === "number" &&
+      !r.test_errored &&
       (!top || r.test_score > (top.test_score ?? -1))
         ? r
         : top,
@@ -83,7 +89,16 @@ export function loopView(input: LoopInput): LoopView {
       done: true,
     };
   }
-  if (input.status === "running" || input.status === "queued") {
+  if (input.status === "done" && rounds.length)
+    return {
+      headline: "No round scored all its test rows",
+      detail,
+      rounds,
+      scores,
+      target,
+      done: true,
+    };
+  if (live) {
     const current = Math.min(total, rounds.length + 1);
     return {
       headline: `Round ${current} of ${total}`,

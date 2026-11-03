@@ -502,6 +502,21 @@ def test_an_adapter_chat_loaded_is_found_through_its_status_handle(tmp_path, mon
     assert not benchmark._is_adapter("ref:other")
 
 
+def test_a_hub_adapter_chat_loaded_is_found_in_the_hub_cache(tmp_path, monkeypatch):
+    import huggingface_hub
+
+    cached = tmp_path / "adapter_config.json"
+    cached.write_text("{}")
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo, name: str(cached) if repo == "me/my-lora" else None,
+    )
+    assert benchmark._is_adapter("me/my-lora")
+    assert not benchmark._is_adapter("me/merged-model")
+    assert not benchmark._is_adapter("unsloth/Qwen3-0.6B-GGUF (Q4_K_M)")
+
+
 @pytest.mark.parametrize(
     "serving, refused",
     [

@@ -100,3 +100,41 @@ test("the Loop card says which round it is on and plots the test score per round
     /feedback off/,
   );
 });
+
+test("a rerun shows only its own rounds, and an errored test round never shows as best", () => {
+  const params = { rounds: 3, target: 90 };
+  const round = (n: number, score: number) => ({
+    round: n,
+    test_score: score,
+    probe_score: score,
+    rows_from_failures: 0,
+    probe_failures: 0,
+  });
+  const old = { history: { rounds: [round(1, 50), round(2, 70), round(3, 95)], stopped: "target" } };
+  const rerun = loopView({
+    status: "running",
+    params,
+    outputs: old,
+    partial: { history: [round(1, 60)] },
+    partialStep: { step: 1, total: 3 },
+  });
+  assert.equal(rerun.headline, "Round 2 of 3");
+  assert.deepEqual(rerun.scores, [60]);
+  const errored = { ...round(1, 100), test_errored: 1 };
+  const done = loopView({
+    status: "done",
+    params,
+    outputs: { history: { rounds: [errored, round(2, 50)], stopped: "max_rounds" } },
+    partial: null,
+    partialStep: null,
+  });
+  assert.equal(done.headline, "Best 50% in round 2");
+  const none = loopView({
+    status: "done",
+    params,
+    outputs: { history: { rounds: [errored], stopped: "max_rounds" } },
+    partial: null,
+    partialStep: null,
+  });
+  assert.equal(none.headline, "No round scored all its test rows");
+});
