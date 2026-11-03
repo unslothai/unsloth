@@ -1429,7 +1429,7 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
         scans += 1
         return cached
 
-    monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(cache_inventory, "_inventory_scan_thread", fake_to_thread)
     monkeypatch.setattr(cache_inventory, scanner_name, scan)
     _shared_setup_11(epoch, monkeypatch)
 
@@ -1453,6 +1453,23 @@ def test_cached_inventory_requests_share_scan(monkeypatch, inventory_request, sc
 
     assert asyncio.run(run_requests()) == [{"cached": cached, "scan_confirmed": True}] * 2
     assert scans == 1 and cache_inventory._cached_inventory_flights == {}
+
+
+def test_cached_inventory_scan_keeps_off_the_default_executor(monkeypatch):
+    """The cache walk must not run on the loop's default executor (#14038)."""
+    threads = []
+
+    def scan(**_kwargs):
+        threads.append(threading.current_thread().name)
+        return [{"repo_id": "Org/Model"}]
+
+    _shared_setup_11([0], monkeypatch)
+    result = asyncio.run(cache_inventory._shared_cached_inventory_scan("gguf", scan))
+    assert result.rows == [{"repo_id": "Org/Model"}]
+    assert result.confirmed is True
+    assert threads and threads[0].startswith(
+        "cached-inventory-scan"
+    ), f"the cache walk ran on {threads}, the default executor"
 
 
 @pytest.mark.parametrize(
@@ -4443,6 +4460,120 @@ def test_unet_index_staged_by_the_config_prefetch_is_not_weight_evidence(tmp_pat
         "{}", encoding = "utf-8"
     )
     assert inventory_scan.snapshot_denoiser_has_weights(other) is True
+
+
+_QWEN_ENCODER_REPO = "unsloth/Qwen-Image-FP8"
+_QWEN_ENCODER_FILE = "Qwen-Image-text_encoder-FP8.safetensors"
+
+
+def _encoder_cache(
+    tmp_path,
+    names,
+    *,
+    repo_id = _QWEN_ENCODER_REPO,
+    ref = _SNAPSHOT_SHA,
+):
+    repo_dir = tmp_path / "hub" / f"models--{repo_id.replace('/', '--')}"
+    snapshot = repo_dir / "snapshots" / _SNAPSHOT_SHA
+    for name in names:
+        (snapshot / name).parent.mkdir(parents = True, exist_ok = True)
+        (snapshot / name).write_bytes(b"weights")
+    (repo_dir / "refs").mkdir(parents = True)
+    (repo_dir / "refs" / "main").write_text(ref)
+    return repo_dir, snapshot
+
+
+def test_hosted_encoder_cache_is_a_companion_in_both_inventories(monkeypatch, tmp_path):
+    real = cache_inventory.hf_cache_scan.is_snapshot_partial
+    _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        _QWEN_ENCODER_REPO,
+        [_file("text_encoder/model.safetensors", 4096)],
+        task = "text-to-image",
+    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", real)
+    (row,) = cache_inventory._scan_cached_models(active_hub_cache = tmp_path / "hub")
+    assert (row["partial"], row["companion_prefetch"], row["partial_transport"]) == (
+        True,
+        True,
+        None,
+    )
+    rows = local_inventory._scan_hf_cache(tmp_path / "hub")
+    assert rows and all(row.partial and row.companion_prefetch for row in rows)
+
+
+def test_interrupted_encoder_cache_keeps_partial_status(monkeypatch, tmp_path):
+    row = _diffusion_scan(
+        monkeypatch,
+        tmp_path,
+        _QWEN_ENCODER_REPO,
+        [_file("text_encoder/model.safetensors", 4096)],
+        task = "text-to-image",
+        download_partial = True,
+    )
+    assert (row["partial"], row["companion_prefetch"]) == (True, False)
+
+
+@pytest.mark.parametrize(
+    ("repo_id", "names", "expected"),
+    [
+        (_QWEN_ENCODER_REPO, [_QWEN_ENCODER_FILE], True),
+        (
+            _QWEN_ENCODER_REPO,
+            [_QWEN_ENCODER_FILE, "Qwen-Image-text_encoder-INT8-ConvRot.safetensors"],
+            True,
+        ),
+        (_QWEN_ENCODER_REPO, ["text_encoder/model.safetensors", "vae/model.safetensors"], True),
+        ("unsloth/LTX-2-FP8", ["LTX-2-text_encoder-FP8.safetensors"], True),
+        ("someone/unrecognized", [_QWEN_ENCODER_FILE], False),
+        (_QWEN_ENCODER_REPO, [_QWEN_ENCODER_FILE, "Qwen-Image-FP8.safetensors"], False),
+        (_QWEN_ENCODER_REPO, [_QWEN_ENCODER_FILE, "Qwen-Image.ckpt"], False),
+        (_QWEN_ENCODER_REPO, [_QWEN_ENCODER_FILE, "transformer/model.safetensors"], False),
+        (_QWEN_ENCODER_REPO, [_QWEN_ENCODER_FILE, "model_index.json"], False),
+        (_QWEN_ENCODER_REPO, ["text_encoder/model-00002-of-00002.safetensors"], False),
+    ],
+)
+def test_encoder_companion_requires_only_whole_hosted_files(tmp_path, repo_id, names, expected):
+    repo_dir, snapshot = _encoder_cache(tmp_path, names, repo_id = repo_id)
+    assert inventory_scan.snapshot_is_encoder_companion(repo_id, repo_dir, snapshot) is expected
+
+
+def test_encoder_companion_refuses_a_bad_index_and_an_empty_file(tmp_path):
+    repo_dir, snapshot = _encoder_cache(tmp_path, ["text_encoder/model.safetensors"])
+    check = lambda: inventory_scan.snapshot_is_encoder_companion(
+        _QWEN_ENCODER_REPO, repo_dir, snapshot
+    )
+    assert check() is True
+    index = snapshot / "text_encoder" / "model.safetensors.index.json"
+    index.write_text(json.dumps({"weight_map": {"x": "missing.safetensors"}}))
+    assert check() is False
+    index.unlink()
+    (snapshot / "text_encoder" / "model.safetensors").write_bytes(b"")
+    assert check() is False
+
+
+def test_encoder_companion_requires_the_index_of_numbered_shards(tmp_path):
+    shards = [f"text_encoder/model-0000{n}-of-00002.safetensors" for n in (1, 2)]
+    repo_dir, snapshot = _encoder_cache(tmp_path, shards)
+    check = lambda: inventory_scan.snapshot_is_encoder_companion(
+        _QWEN_ENCODER_REPO, repo_dir, snapshot
+    )
+    assert check() is False
+    (snapshot / "text_encoder" / "model.safetensors.index.json").write_text(
+        json.dumps({"weight_map": {str(n): Path(s).name for n, s in enumerate(shards)}})
+    )
+    assert check() is True
+
+
+def test_encoder_cache_behind_a_dangling_ref_stays_partial(tmp_path):
+    repo_dir, snapshot = _encoder_cache(tmp_path, [_QWEN_ENCODER_FILE], ref = "b" * 40)
+    assert (
+        inventory_scan.snapshot_is_encoder_companion(_QWEN_ENCODER_REPO, repo_dir, snapshot)
+        is False
+    )
+    (row,) = local_inventory._scan_hf_cache(tmp_path / "hub")
+    assert (row.partial, row.companion_prefetch) == (True, False)
 
 
 def test_hf_cache_scan_uses_gguf_partial_row_for_variant_state(monkeypatch, tmp_path):

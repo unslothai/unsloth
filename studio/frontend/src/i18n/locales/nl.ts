@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const nl = {
+  turns: {
+    label: "Beurt {number}",
+    bookmarkedLabel: "Beurt {number}, met bladwijzer",
+    bookmark: "Bladwijzer voor beurt",
+    removeBookmark: "Bladwijzer verwijderen",
+    navigator: "Beurten",
+  },
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
@@ -41,8 +48,8 @@ export const nl = {
     scopeChats: "Chats",
     scopeAll: "Alle pagina’s",
     positionValue: "Horizontaal {x}%, verticaal {y}%",
-    newChat: "Nieuwe chat",
-    conversation: "Gesprek",
+    newChat: "Voorbeeld nieuwe chat",
+    conversation: "Voorbeeld gesprek",
     prompt: "Wat wil je ontdekken?",
     response: "Je gesprek blijft goed leesbaar op de achtergrond.",
     storageError: "Kan de achtergrond niet opslaan. Controleer de beschikbare browseropslag.",
@@ -57,11 +64,19 @@ export const nl = {
     materialBlurred: "Vervaagd",
     materialLiquid: "Liquid Glass",
     materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS-systeemglas",
+    materialMacosNote: "Gebruikt het doorschijnende venstermateriaal van macOS, zodat je bureaublad doorschijnt.",
+    materialNativeFailed: "Deze versie van Unsloth Desktop kan het macOS-materiaal niet gebruiken. Werk de app bij om het in te schakelen.",
     glassTheme: "Glasthema",
     materialStyle: "Stijl",
     materialMenus: "Glazen menu's",
     materialMenusDescription: "Ook dropdowns, menu's en kiezers gebruiken glas.",
     materialStrength: "Glassterkte",
+    lens: "Glaslens",
+    lensDescription: "Buigt de afbeelding onder het invoerveld als echt glas.",
+    lensOff: "Uit",
+    lensMagnify: "Vergroten",
+    lensShrink: "Verkleinen",
   },
   linkMenu: {
     openInBrowser: "Openen in Unsloth-browser",
@@ -726,6 +741,8 @@ export const nl = {
     plainText: "Invoerveld met platte tekst",
     plainTextDescription:
       "Behoud code, Markdown en links als letterlijke tekst. Schakel uit om een opgemaakt voorbeeld te tonen.",
+    richPaste: "Opgemaakte tekst plakken",
+    richPasteDescription: "Plakt links, tabellen en opmaak als Markdown. {shortcut} plakt platte tekst. Volledige rich-text-editor volgt binnenkort.",
     showContext: "Gebruik van contextvenster",
     sendShortcut: "Sneltoets voor versturen",
     sendMultiline: "{mod} + Enter voor prompts met meerdere regels",
@@ -844,38 +861,6 @@ export const nl = {
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
-  },
-  halloween: {
-    navLabel: "Snoep of je leven…",
-    title: "Snoep of je leven?!",
-    description:
-      "We hebben een paar griezels voor Unsloth gebrouwen, hier voor de rest van oktober.",
-    chooseTheme: "Kies een griezelig thema",
-    spookyGreetings: "Spookachtige begroetingen",
-    spookyGreetingsDescription:
-      "De luiaard begroet nieuwe chats met een schrikmoment.",
-    decorations: "Spinnen en vleermuizen",
-    decorationsDescription:
-      "Spinnenwebben, plus af en toe een spin of vleermuis.",
-    surprise: "Snoep of je leven!",
-    surpriseDescription: "Laat de luiaard een thema voor je kiezen.",
-    themesTitle: "Griezelige thema's",
-    back: "Terug",
-    footer: "Unsloth wordt op 1 november om middernacht weer normaal.",
-    removeNow: "Nu verwijderen",
-    hideFromSidebar: "Verbergen in zijbalk",
-    greeting: {
-      pumpkins: "De pompoenen zijn uitgehold. Wat nu?",
-      brewing: "Laten we gaan brouwen",
-      trickOrTreat: "Snoep of je leven?",
-      manor: "Welkom in het landhuis",
-      manorName: "Welkom in het landhuis, {name}",
-      happyHalloween: "Fijne Halloween",
-      happyHalloweenName: "Fijne Halloween, {name}",
-      spirits: "De geesten luisteren mee…",
-      mysteries: "Welke mysteries gaan we vannacht ontrafelen?",
-      conjure: "Wat kan ik voor je tevoorschijn toveren?",
-    },
   },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
@@ -1193,6 +1178,7 @@ export const nl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Stel het wachtwoord van de installatie-eigenaar in voordat je een ander account toevoegt. Je gebruikt het om in te loggen zodra deze installatie meerdere accounts heeft.",
       signsInAs: "Logt in als {username}",
       signsInAsOwner: "Logt in als {alias} of {username}",
       signInName: "Je inlognaam",
@@ -2221,6 +2207,14 @@ export const nl = {
           full: "Voert elke toolaanroep uit zonder te vragen en schakelt de codesandbox uit, zodat Python- en terminalcode elk bestand kunnen lezen en wijzigen waartoe je account toegang heeft.",
         },
       },
+      display: {
+        title: "Weergave",
+        timeFormat: "Tijdnotatie",
+        timeFormatDescription: "Toon tijden in 12-uurs- of 24-uursnotatie.",
+        timeFormatSystem: "Systeemstandaard",
+        timeFormat12: "12-uurs",
+        timeFormat24: "24-uurs",
+      },
       notifications: {
         sectionTitle: "Meldingen",
         showLoadedModels: "Kaart met geladen modellen",
@@ -2460,6 +2454,13 @@ export const nl = {
       avatarShapeRounded: "Afgerond",
       greetingSloth: "Begroeting",
       greetingSlothDescription: "De begroeting tonen bij nieuwe chats.",
+      greetingDefault: "Standaard",
+      greetingCustom: "Aangepast",
+      greetingImage: "Afbeelding",
+      greetingText: "Begroetingstekst",
+      greetingTextDescription: "Laat leeg om de ingebouwde begroetingen te gebruiken.",
+      greetingFileError: "Kies een PNG, JPEG, WebP of GIF kleiner dan 10 MB.",
+      greetingImageError: "Deze afbeelding kan niet worden gebruikt. Probeer een kleinere.",
       chooseSloth: "Of kies een luiaard",
       noPicture: "Geen profielfoto",
       noneLabel: "Geen",
@@ -2584,12 +2585,9 @@ export const nl = {
           "Kleuren die in heel Unsloth worden gebruikt, in de lichte en donkere modus.",
         standard: "Standaard",
         moreThemes: "Meer thema's",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Snoep of je leven",
-        description:
-          "Halloweenthema's en griezelige begroetingen, tot 1 november.",
+      composer: {
+        title: "Invoerveld",
       },
       code: {
         title: "Code",
@@ -3240,6 +3238,8 @@ export const nl = {
         "Meldingen zijn geblokkeerd. Sta ze toe voor Unsloth in je browser- of systeeminstellingen en probeer het opnieuw.",
       replyNotificationKeywords:
         "melden melding waarschuwing klaar voltooid gereed antwoord reactie achtergrond geminimaliseerd bureaublad geluid notify notification alert done reply",
+      showLinkPreviews: "Linkvoorbeelden",
+      showLinkPreviewsDescription: "Toon voorbeelden wanneer je de muisaanwijzer boven bronlinks houdt.",
       showResponseModel: "Antwoordmodel",
       showResponseModelDescription:
         "Modelgegevens tonen in antwoorden van de assistent.",
@@ -3256,6 +3256,8 @@ export const nl = {
       inlineEditResponse: "Antwoord bewerken bij antwoorden",
       inlineEditResponseDescription:
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
+      turnNavigation: "Beurtnavigatie",
+      turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
       composerAtBottom: "Invoerveld onderaan",
       composerAtBottomDescription:
         "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",
@@ -3929,8 +3931,6 @@ export const nl = {
         repoCheckoutFallback:
           "Als je de repository-checkout nog hebt, voer je daaruit het lokale installatieprogramma uit:",
         restartAfterUpdate: "Start Unsloth opnieuw na het bijwerken.",
-        desktopManaged:
-          "De desktop-app controleert automatisch op nieuwe app-versies. Je kunt hier ook op elk moment controleren of bijwerken.",
         desktopReady: "Updates van de desktop-app",
         desktopReadyDescription:
           "Controleren of er een nieuwere versie van de desktop-app beschikbaar is.",
@@ -5925,5 +5925,60 @@ export const nl = {
     later: "Later",
     update: "Bijwerken",
     undo: "Ongedaan maken",
+  },
+  generationStats: {
+    working: "Bezig...",
+    processingPrompt: "Prompt verwerken {percent}%",
+    timeLeft: "nog {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "draft {accepted}/{drafted} geaccepteerd ({percent}%)",
+    timing: {
+      trigger: "Berichttiming",
+      firstToken: "Eerste token",
+      speedInStep: "Snelheid (binnen stap)",
+      effective: "Effectief",
+      output: "Uitvoer",
+      denoising: "Denoising",
+      stepsOne: "{count} stap",
+      steps: "{count} stappen",
+      blocksOne: "{count} blok",
+      blocks: "{count} blokken",
+      canvas: "Canvas",
+      generation: "Generatie",
+      answerTokens: "Antwoordtokens",
+      prompt: "Prompt",
+      total: "Totaal",
+      chunks: "Chunks",
+      promptEval: "Prompt-evaluatie",
+      promptSpeed: "Promptsnelheid",
+      speed: "Snelheid",
+      tokens: "Tokens",
+      draftAccepted: "Draft geaccepteerd",
+      denoisingSteps: "Denoisingstappen",
+      blocksLabel: "Blokken",
+      cacheHits: "Cachetreffers",
+      cacheWrites: "Cacheschrijfacties",
+      stopReason: "Stopreden",
+      stoppedByYou: "Door jou gestopt",
+      endOfTurn: "Einde van beurt",
+      lengthLimit: "Lengtelimiet",
+      toolCall: "Toolaanroep",
+      contentFilter: "Inhoudsfilter",
+    },
+    placement: {
+      title: "Plaatsing van gewichten",
+      allOnCpu: "Alle {total} lagen op de CPU",
+      split: "{gpu} van {total} lagen op de GPU, {cpu} op de CPU",
+      allOnGpu: "Alle {total} lagen op de GPU",
+      expertCache: "Alle {total} lagen op de GPU, alle experts in RAM ({amount} expertcache op de GPU)",
+      expertSpillOne: "Alle {total} lagen op de GPU, expertgewichten van {count} laag in RAM",
+      expertSpill: "Alle {total} lagen op de GPU, expertgewichten van {count} lagen in RAM",
+      inUnifiedMemory: "{amount} in unified memory",
+      inSharedMemory: "{amount} in gedeeld geheugen",
+      inVram: "{amount} in VRAM",
+      inRam: "{amount} in RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

@@ -63,9 +63,9 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { buildProjectsTourSteps } from "./tour";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import { NewProjectDialog } from "./components/new-project-dialog";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Archive03Icon,
-  Delete02Icon,
+  ArchiveIcon,
   Download01Icon,
   Edit03Icon,
   PencilEdit02Icon,
@@ -1032,7 +1032,7 @@ export function ProjectsPage({
                               <OpenChatFolderItem item={chat} />
                               <DropdownMenuSeparator />
                               <DropdownMenuItem onSelect={() => void archiveChat(chat)}>
-                                <HugeiconsIcon icon={Archive03Icon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={ArchiveIcon} strokeWidth={1.75} className="size-icon" />
                                 <span>{t("projectsPage.archive")}</span>
                               </DropdownMenuItem>
                               <DropdownMenuItem
@@ -1043,7 +1043,7 @@ export function ProjectsPage({
                                     : void deleteChat(chat, alwaysDeleteChatFiles)
                                 }
                               >
-                                <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-icon" />
+                                <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-icon" />
                                 <span>{t("common.delete")}</span>
                               </DropdownMenuItem>
                             </DropdownMenuContent>

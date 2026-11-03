@@ -25,10 +25,10 @@ import {
 import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Image01Icon,
+  HistoryIcon,
+  ImageIcon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -39,8 +39,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { History as HistoryIcon, Shuffle } from "lucide-react";
-import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { Shuffle } from "lucide-react";
+import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
@@ -4999,7 +4999,7 @@ export function ImagesPage({
               className="w-full"
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               Remove image {numberOf(i)}
             </Button>
           </div>
@@ -6260,7 +6260,7 @@ export function ImagesPage({
                           setMaskResetKey((k) => k + 1);
                         }}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Clear mask
                       </Button>
                       <Button
@@ -6489,7 +6489,7 @@ export function ImagesPage({
                         className="w-full"
                         onClick={() => handleInitChange(null)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Remove source image
                       </Button>
                     </div>
@@ -6785,7 +6785,7 @@ export function ImagesPage({
                           aria-label={`Remove LoRA ${i + 1}`}
                           onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
                         >
-                          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                          <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         </Button>
                       </div>
                       <SliderField
@@ -7041,7 +7041,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <HistoryIcon className="size-4" strokeWidth={1.5} />
+                      <HugeiconsIcon icon={HistoryIcon} className="size-4" strokeWidth={1.5} />
                     </Button>
                     </div>
                   </div>
@@ -7333,7 +7333,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image01Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={ImageIcon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."

@@ -211,6 +211,31 @@ def test_a_volatile_attribute_keeps_its_presence_even_though_its_value_is_droppe
     assert a == b
 
 
+def test_every_data_id_attribute_is_volatile():
+    """The turn navigator's data-turn-id carries message ids: a null control differed on every action
+    until it was dropped. Any data-*-id is an instance id; only its presence is structure."""
+    a, b, plain = sigs(
+        {"tag": "button", "attrs": {"data-turn-id": "Xk2pQ9a"}},
+        {"tag": "button", "attrs": {"data-turn-id": "Bm7rT4c"}},
+        {"tag": "button", "attrs": {}},
+    )
+    assert a == b
+    assert a != plain
+    one, two = sigs(
+        {"tag": "li", "attrs": {"data-queue-item-id": "q1"}},
+        {"tag": "li", "attrs": {"data-queue-item-id": "q2"}},
+    )
+    assert one == two
+
+
+def test_a_data_attribute_that_is_not_an_id_still_moves_the_signature():
+    one, two = sigs(
+        {"tag": "button", "attrs": {"data-turn": "1"}},
+        {"tag": "button", "attrs": {"data-turn": "2"}},
+    )
+    assert one != two
+
+
 def test_the_shared_signature_still_sees_virtualization_bookkeeping():
     """Visible-region digest drops aria-posinset and aria-setsize; the shared signature keeps them."""
     plain, numbered = sigs(

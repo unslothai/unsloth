@@ -6,11 +6,7 @@ import {
   isChatGgufTask,
   reconcileGgufPinsAfterDelete,
 } from "./reconcile-gguf-pins";
-import {
-  createTaskLimiter,
-  hubWithdrawsSoleQuant,
-  loadPickerGgufVariants,
-} from "./gguf-discovery";
+import { loadPickerGgufVariants } from "./gguf-discovery";
 import { firstIndexByKey } from "./option-index";
 
 import { ModelMemoryBar } from "@/components/model-memory-bar";
@@ -1877,6 +1873,69 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
   );
 });
 
+function renderDeviceGgufExpander({
+  repo: c,
+  optionKey,
+  loadedQuants,
+  updateDisabled,
+  expander,
+  actions,
+  callbacks,
+  canConfigure,
+}: {
+  repo: CachedGgufRepo;
+  optionKey: string;
+  loadedQuants: readonly string[];
+  updateDisabled: boolean;
+  expander: DeviceRowExpanderProps;
+  actions: DeviceRowActionsBox;
+  callbacks: ReturnType<typeof useDeviceExpanderCallbacks>;
+  canConfigure: boolean;
+}) {
+  return (
+    <GgufVariantExpander
+      diffusionLoad={expander.diffusionLoad}
+      hostPooledMemory={expander.hostPooledMemory}
+      gpuCount={expander.gpuCount}
+      repoId={c.repo_id}
+      loadedQuants={loadedQuants}
+      pipelineTag={c.task ?? null}
+      loadId={c.load_id}
+      cachePath={c.cache_path}
+      onDevice={true}
+      allowPin={true}
+      onHasVision={(v) => actions.get().reportVision(c.repo_id, v)}
+      onSelect={callbacks.onSelect}
+      resolveDownloadFootprint={expander.resolveDownloadFootprint}
+      onConfigure={canConfigure ? callbacks.onConfigure : undefined}
+      hfToken={expander.hfToken}
+      parentOptionKey={optionKey}
+      onNavigatePastStart={callbacks.onNavigatePastStart}
+      onNavigatePastEnd={callbacks.onNavigatePastEnd}
+      gpuGb={expander.gpuGb}
+      systemRamGb={expander.systemRamGb}
+      budgetKnown={expander.budgetKnown}
+      variantActions={{
+        onUpdate: (quant, expectedBytes) =>
+          actions.get().updateGgufVariant(c.repo_id, quant, expectedBytes),
+        updateDisabled,
+        onDelete: async (quant, cachePath) => {
+          const a = actions.get();
+          await deleteCachedModel(
+            c.repo_id,
+            quant,
+            a.hfToken || undefined,
+            cachePath ??
+              (mediaPageForTask(c.task) ? c.cache_path || undefined : undefined),
+          );
+          actions.get().prunePinnedQuantValidation(c.repo_id, quant);
+          actions.get().refreshCachedLists();
+        },
+      }}
+    />
+  );
+}
+
 // One quant on disk with "All quantizations" off: the row carries it as a chip.
 const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
   repo: c,
@@ -1887,6 +1946,10 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
   pinned: isPinned,
   ejectable,
   gpuGb,
+  loadedQuants,
+  expanderOpen,
+  updateDisabled,
+  expander,
   actions,
   optionEvents,
   optionId,
@@ -1902,7 +1965,12 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
   pinned: boolean;
   ejectable: boolean;
   gpuGb: number | undefined;
+  loadedQuants: readonly string[];
+  expanderOpen: boolean;
+  updateDisabled: boolean;
+  expander: DeviceRowExpanderProps;
 }) {
+  const callbacks = useDeviceExpanderCallbacks(actions, optionKey);
   const variant = sole.variant;
   const expectedBytes = ggufVariantExpectedBytes(variant);
   // Should never be partial, but if it is, state what is on disk rather than load a torn file.
@@ -1923,107 +1991,143 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
     pipelineTag: c.task ?? null,
   };
   return (
-    <div className={downloadedRowShellClassName(isSelected, true)}>
-      <div className="min-w-0 flex-1">
-        <ModelRow
-          label={onDeviceRepoLabel(c.repo_id)}
-          tooltipText={localPathTooltip(
-            c.repo_id,
-            c.cache_path,
-            ggufQuantDetailLabel(variant.quant),
-          )}
-          meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
-          quantChip={ggufQuantChipLabel(variant.quant)}
-          partial={isPartial}
-          // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
-          memory={
-            mediaPageForTask(c.task)
-              ? undefined
-              : {
-                  repoId: c.repo_id,
-                  quant: variant.quant,
-                  sizeBytes: variant.size_bytes,
-                  lookupTableBytes: ggufVariantLookupTableBytes(variant),
-                  loadId: c.load_id,
-                }
-          }
-          gpuGb={gpuGb}
-          showVision={c.has_vision || sole.hasVision}
-          selected={isSelected}
-          loaded={loaded}
-          alignMeta="device"
-          optionProps={rovingOptionProps(
-            optionEvents,
-            optionKey,
-            optionId,
-            optionActive,
-            isSelected,
-          )}
-          onClick={() => actions.get().select(c.repo_id, selectMeta)}
-          vramStatus={null}
-          className={downloadedRowButtonClassName}
-        />
-      </div>
-      <span className={ROW_ACTIONS_CLASS}>
-        {canConfigure && (
-          <ModelLoadSettingsAction
-            ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
-            onConfigure={() => actions.get().configure(c.repo_id, selectMeta)}
+    <div>
+      <div className={downloadedRowShellClassName(isSelected, true)}>
+        <div className="min-w-0 flex-1">
+          <ModelRow
+            label={onDeviceRepoLabel(c.repo_id)}
+            tooltipText={localPathTooltip(
+              c.repo_id,
+              c.cache_path,
+              ggufQuantDetailLabel(variant.quant),
+            )}
+            meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
+            quantChip={ggufQuantChipLabel(variant.quant)}
+            partial={isPartial}
+            // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
+            memory={
+              mediaPageForTask(c.task)
+                ? undefined
+                : {
+                    repoId: c.repo_id,
+                    quant: variant.quant,
+                    sizeBytes: variant.size_bytes,
+                    lookupTableBytes: ggufVariantLookupTableBytes(variant),
+                    loadId: c.load_id,
+                  }
+            }
+            gpuGb={gpuGb}
+            showVision={c.has_vision || sole.hasVision}
+            selected={isSelected}
+            loaded={loaded}
+            alignMeta="device"
+            optionProps={rovingOptionProps(
+              optionEvents,
+              optionKey,
+              optionId,
+              optionActive,
+              isSelected,
+            )}
+            onClick={() => actions.get().select(c.repo_id, selectMeta)}
+            onArrowDownIntoChildren={
+              expanderOpen ? () => focusFirstChildOption(optionKey) : undefined
+            }
+            vramStatus={null}
+            className={downloadedRowButtonClassName}
           />
-        )}
-        <ModelRowMenu
-          ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
-          cachePath={{ repoId: c.repo_id, variant: variant.quant }}
-          items={ejectMenuItemsFor(actions, c.repo_id, ejectable)}
-          pin={{
-            pinned: isPinned,
-            pinLabel: "Pin",
-            unpinLabel: "Unpin",
-            onToggle: () => actions.get().togglePinned(c.repo_id, variant.quant),
-          }}
-          del={{
-            title: "Delete cached model?",
-            impact: {
-              repoId: c.repo_id,
-              variant: variant.quant,
-              cachePath:
-                variant.cache_ref ??
-                variant.cache_path ??
-                (mediaPageForTask(c.task) ? c.cache_path : null),
-            },
-            description: (
-              <>
-                This will remove{" "}
-                <span className="font-medium text-foreground">
-                  {onDeviceRepoLabel(c.repo_id)} ({variant.quant})
-                </span>{" "}
-                from disk. You can re-download it later.
-              </>
-            ),
-            successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`,
-            disabled: deleteDisabled,
-            onConfirm: async () => {
-              const hfToken = actions.get().hfToken;
-              await deleteCachedModel(
-                c.repo_id,
-                variant.quant,
-                hfToken || undefined,
-                variant.cache_ref ??
+        </div>
+        <span className={ROW_ACTIONS_CLASS}>
+          {canConfigure && (
+            <ModelLoadSettingsAction
+              ariaLabel={`Inference settings for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
+              onConfigure={() => actions.get().configure(c.repo_id, selectMeta)}
+            />
+          )}
+          <ModelRowMenu
+            ariaLabel={`More options for ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`}
+            cachePath={{ repoId: c.repo_id, variant: variant.quant }}
+            // The expander reads Hub-only state (updates, companions); a collapsed row never asks.
+            items={[
+              ...(ejectMenuItemsFor(actions, c.repo_id, ejectable) ?? []),
+              {
+                key: "quantizations",
+                label: expanderOpen ? "Hide quantizations" : "Show quantizations",
+                icon: (
+                  <HugeiconsIcon
+                    icon={
+                      expanderOpen
+                        ? ChevronDownStandardIcon
+                        : ChevronRightStandardIcon
+                    }
+                    strokeWidth={1.75}
+                    className="size-icon"
+                  />
+                ),
+                onSelect: () =>
+                  actions.get().toggleGgufExpanded(c.repo_id, expanderOpen),
+              },
+            ]}
+            pin={{
+              pinned: isPinned,
+              pinLabel: "Pin",
+              unpinLabel: "Unpin",
+              onToggle: () => actions.get().togglePinned(c.repo_id, variant.quant),
+            }}
+            del={{
+              title: "Delete cached model?",
+              impact: {
+                repoId: c.repo_id,
+                variant: variant.quant,
+                cachePath:
+                  variant.cache_ref ??
                   variant.cache_path ??
-                  (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
-                  undefined,
-              );
-              if (isChatGgufTask(c.task)) {
-                await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
-              } else if (isPinned) {
-                actions.get().togglePinned(c.repo_id, variant.quant);
-              }
-              actions.get().prunePinnedQuantValidation(c.repo_id, variant.quant);
-              actions.get().refreshCachedLists();
-            },
-          }}
-        />
-      </span>
+                  (mediaPageForTask(c.task) ? c.cache_path : null),
+              },
+              description: (
+                <>
+                  This will remove{" "}
+                  <span className="font-medium text-foreground">
+                    {onDeviceRepoLabel(c.repo_id)} ({variant.quant})
+                  </span>{" "}
+                  from disk. You can re-download it later.
+                </>
+              ),
+              successMessage: `Deleted ${onDeviceRepoLabel(c.repo_id)} ${variant.quant}`,
+              disabled: deleteDisabled,
+              onConfirm: async () => {
+                const hfToken = actions.get().hfToken;
+                await deleteCachedModel(
+                  c.repo_id,
+                  variant.quant,
+                  hfToken || undefined,
+                  variant.cache_ref ??
+                    variant.cache_path ??
+                    (mediaPageForTask(c.task) ? c.cache_path : undefined) ??
+                    undefined,
+                );
+                if (isChatGgufTask(c.task)) {
+                  await reconcileGgufPinsAfterDelete(c.repo_id, hfToken || undefined);
+                } else if (isPinned) {
+                  actions.get().togglePinned(c.repo_id, variant.quant);
+                }
+                actions.get().prunePinnedQuantValidation(c.repo_id, variant.quant);
+                actions.get().refreshCachedLists();
+              },
+            }}
+          />
+        </span>
+      </div>
+      {expanderOpen &&
+        renderDeviceGgufExpander({
+          repo: c,
+          optionKey,
+          loadedQuants,
+          updateDisabled,
+          expander,
+          actions,
+          callbacks,
+          canConfigure,
+        })}
     </div>
   );
 });
@@ -2157,48 +2261,17 @@ const DownloadedGgufDeviceRow = memo(function DownloadedGgufDeviceRow({
           </span>
         )}
       </div>
-      {expanderOpen && (
-        <GgufVariantExpander
-          diffusionLoad={expander.diffusionLoad}
-          hostPooledMemory={expander.hostPooledMemory}
-          gpuCount={expander.gpuCount}
-          repoId={c.repo_id}
-          loadedQuants={loadedQuants}
-          pipelineTag={c.task ?? null}
-          loadId={c.load_id}
-          cachePath={c.cache_path}
-          onDevice={true}
-          allowPin={true}
-          onHasVision={(v) => actions.get().reportVision(c.repo_id, v)}
-          onSelect={callbacks.onSelect}
-          resolveDownloadFootprint={expander.resolveDownloadFootprint}
-          onConfigure={canConfigure ? callbacks.onConfigure : undefined}
-          hfToken={expander.hfToken}
-          parentOptionKey={optionKey}
-          onNavigatePastStart={callbacks.onNavigatePastStart}
-          onNavigatePastEnd={callbacks.onNavigatePastEnd}
-          gpuGb={expander.gpuGb}
-          systemRamGb={expander.systemRamGb}
-          budgetKnown={expander.budgetKnown}
-          variantActions={{
-            onUpdate: (quant, expectedBytes) =>
-              actions.get().updateGgufVariant(c.repo_id, quant, expectedBytes),
-            updateDisabled,
-            onDelete: async (quant, cachePath) => {
-              const a = actions.get();
-              await deleteCachedModel(
-                c.repo_id,
-                quant,
-                a.hfToken || undefined,
-                cachePath ??
-                  (mediaPageForTask(c.task) ? c.cache_path || undefined : undefined),
-              );
-              actions.get().prunePinnedQuantValidation(c.repo_id, quant);
-              actions.get().refreshCachedLists();
-            },
-          }}
-        />
-      )}
+      {expanderOpen &&
+        renderDeviceGgufExpander({
+          repo: c,
+          optionKey,
+          loadedQuants,
+          updateDisabled,
+          expander,
+          actions,
+          callbacks,
+          canConfigure,
+        })}
     </div>
   );
 });
@@ -2450,22 +2523,6 @@ async function readSoleQuant(
   }
 }
 
-function soleQuantNeedsExpander(
-  target: SoleQuantTarget,
-  quant: string,
-  hfToken?: string,
-): Promise<boolean> {
-  if (isHuggingFaceOffline()) return Promise.resolve(false);
-  return hubWithdrawsSoleQuant(
-    () =>
-      listGgufVariantsCached(target.repoId, hfToken, {
-        localPath: target.localSource,
-        includeCacheLocations: target.includeCacheLocations,
-      }),
-    quant,
-  );
-}
-
 const EMPTY_SOLE_QUANT_ENTRIES: ReadonlyMap<
   string,
   SoleQuantEntry<SoleDownloadedQuant>
@@ -2527,13 +2584,13 @@ function useSoleDownloadedQuants(
     };
   }, []);
 
-  const hubProbeLimitRef = useRef(createTaskLimiter(SOLE_QUANT_WORKERS));
   const readerRef = useRef<ReturnType<
     typeof createSoleQuantReader<SoleDownloadedQuant>
   > | null>(null);
   if (readerRef.current === null) {
     readerRef.current = createSoleQuantReader<SoleDownloadedQuant>({
       workers: SOLE_QUANT_WORKERS,
+      // Disk only: the Hub is asked when the row is expanded.
       read: (target) => readSoleQuant(target, hfTokenRef.current),
       commit: (target, quant) => {
         if (!mountedRef.current) return;
@@ -2541,23 +2598,6 @@ function useSoleDownloadedQuants(
           const next = new Map(prev);
           next.set(target.repoId, { key: target.key, quant });
           return next;
-        });
-        if (!quant) return;
-        // A later Hub answer may still send the row back to its expander.
-        void hubProbeLimitRef.current(() =>
-          soleQuantNeedsExpander(
-            target,
-            quant.variant.quant,
-            hfTokenRef.current,
-          ),
-        ).then((withdraw) => {
-          if (!withdraw || !mountedRef.current) return;
-          setEntries((prev) => {
-            if (prev.get(target.repoId)?.key !== target.key) return prev;
-            const next = new Map(prev);
-            next.set(target.repoId, { key: target.key, quant: null });
-            return next;
-          });
         });
       },
     });
@@ -7354,6 +7394,10 @@ export function HubModelPicker({
         pinned={pinnedSet.has(pinKey(c.repo_id, sole.variant.quant))}
         ejectable={ejectsKept && isKeptLoaded(c.repo_id)}
         gpuGb={expanderGpuGb}
+        loadedQuants={loadedQuantsFor(c.repo_id)}
+        expanderOpen={isGgufExpanded(c.repo_id)}
+        updateDisabled={loadedModelId === c.repo_id}
+        expander={deviceExpanderProps}
         {...deviceRowListProps(optionKey)}
       />
     );
