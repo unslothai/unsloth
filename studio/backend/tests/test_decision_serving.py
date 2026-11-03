@@ -1687,7 +1687,6 @@ def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, e
     assert laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = None)[0].backend == "mlx"
     with pytest.raises(laya_runtime.Unavailable, match = "does not hear audio here"):
         laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = [clip])
-    # No other entry of a GGUF layout gains media from the d1 rule.
     assert not laya_runtime._mlx_reads(catalog.CHECKPOINTS["kev-4b"], "images")
 
 
@@ -1711,15 +1710,12 @@ def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypa
     zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
     assert laya_runtime.input_modalities(tuned) == ["text", "image", "audio"]
     assert laya_runtime.select(tuned)[0].backend == "mlx"
-    # Elsewhere it is refused, not handed to the PyTorch Clef loader.
     for runtime in ("pytorch", "llama.cpp"):
         with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
             laya_runtime.select(tuned, preference = runtime)
-    # Named by its folder in the environment, it is the same d1.
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(folder))
     local = catalog.default_checkpoint()
     assert (local.name, local.layout, local.backend) == (catalog.LOCAL_NAME, "clef", "mlx")
-    # So are LiquidAI's d1-3B and d1-omni-600M, whose configs name no D1Model architecture.
     for stock in (
         {
             "model_type": "lfm2_vl",
@@ -1739,7 +1735,6 @@ def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypa
             "mlx",
             "d1",
         )
-    # A head on the same model makes it a Clef, not a d1 by name alone.
     plain = catalog.fine_tune(_clef_fine_tune(home, "clef_ft"))
     assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
 

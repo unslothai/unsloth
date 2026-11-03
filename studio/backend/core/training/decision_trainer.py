@@ -350,7 +350,6 @@ def _is_mlx() -> bool:
 
 
 def _lm_decision_head(model_name: str, token: str | None) -> str:
-    # LFM3-VL and LFM3-Omni train on MLX as what LiquidAI ships them as; a d1 needs no head of its own.
     if not _is_mlx():
         return "clef"
     try:
@@ -520,7 +519,6 @@ def _run(event_queue: Any, stop_queue: Any, config: dict, output_dir: str) -> No
 
     model_name = config["model_name"]
     subfolder = config.get("model_subfolder") or None
-    # "llm": a plain text or vision LLM that gets a fresh Clef joint schema head, or trains as a d1.
     llm = config.get("decision_layout") == "llm"
     clef = llm or config.get("decision_layout") == "clef"
     hf_token = _worker_hf_token(config)

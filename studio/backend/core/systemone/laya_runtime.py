@@ -163,7 +163,6 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     if not _engine_available():
         return None
     if _is_mlx(checkpoint):
-        # Only a catalog entry or a local folder (a d1 fine-tune) is its own MLX form; a target has none further.
         return (
             checkpoint
             if checkpoint.is_local or CHECKPOINTS.get(checkpoint.name) == checkpoint
@@ -217,7 +216,7 @@ def _mlx_reads(checkpoint: Checkpoint, media: str) -> bool:
         return False
     if not isinstance(config, dict):
         return False
-    # Qwen3-Omni keeps its towers under the thinker, Phi-4-multimodal under `embd_layer`; Nemotron Omni hears through a sound tower, LFM3-Omni an audio encoder.
+    # Qwen3-Omni: towers under thinker; Phi-4-mm: `embd_layer`; Nemotron Omni: sound tower; LFM3-Omni: audio encoder.
     parts = (config, config.get("thinker_config"), config.get("embd_layer"))
     towers = (
         ("vision_config", "image_embd_layer")
@@ -337,7 +336,6 @@ def _mlx_choice(
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a folder, a GGUF entry itself."""
     if checkpoint.layout == GGUF:
-        # An MLX-only entry has no GGUF.
         return None if _is_mlx(checkpoint) else checkpoint
     if checkpoint.layout != "clef" or _is_native(checkpoint):
         return None

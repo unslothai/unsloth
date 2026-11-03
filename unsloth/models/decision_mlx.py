@@ -453,7 +453,7 @@ def _clef_item(
     audio = (),
 ):
     if _is_d1(pipeline):
-        # A d1 reads its questions beside the whole state, so a record past the limit is skipped, not cut.
+        # A d1 reads questions beside the whole state: skip an over-limit record, never truncate.
         item = zoo.d1_training_item(pipeline, state, questions, images, audio)
         if max_length is not None and len(item["input_ids"]) > max_length:
             raise ValueError(f"{len(item['input_ids'])} tokens is past max_seq_length {max_length}")
@@ -526,7 +526,7 @@ def _decision_save_merged(
     FastDecisionModel.unfreeze_backbone(self)
     try:
         if _is_d1(self._unsloth_pipeline if _is_clef(self) else None):
-            # Fitted temperatures travel in the d1's own calibration, since it has no head to fold them into.
+            # A d1 has no head to fold temperatures into.
             common = _laya().common
             fitted = {
                 kind: config["head_temperature"] * common.clamp_temperature(value)
@@ -597,7 +597,6 @@ def _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpoint
             gradient_checkpointing = gradient_checkpointing,
         )
     elif _is_d1(pipeline):
-        # A d1 has no head: nothing trains until get_peft_model adds adapters.
         pipeline.model.freeze()
         network = zoo.D1Network(pipeline, gradient_checkpointing)
         network.train()
@@ -654,7 +653,7 @@ def _load_clef(
 
 
 def _d1_predicted(zoo, pipeline, question, probabilities) -> dict:
-    # A d1's score is its median level, so that level is its answer too, not the likeliest one.
+    # A d1's answer is its median level, not the argmax.
     answer = zoo.d1_answer(pipeline, question, probabilities)
     predicted = _predicted(question, answer, probabilities)
     if question["type"] == "score":
@@ -663,7 +662,6 @@ def _d1_predicted(zoo, pipeline, question, probabilities) -> dict:
 
 
 def _d1_temperatures(folder) -> dict:
-    # A checkpoint's calibration as predict and evaluate read it; training starts again from none.
     calibration = folder / "calibration.json" if folder else None
     if calibration is None or not calibration.is_file():
         return {"head_temperature": 1.0, "temperature": [1.0] * 3}
@@ -674,7 +672,7 @@ def _d1_temperatures(folder) -> dict:
         "score": score,
         "noul": buckets.get("noul", score),
     }
-    # Per-type temperatures are clamped to [0.5, 5] when read, so the smallest sits at the bottom of that range.
+    # Per-type temperatures are clamped to [0.5, 5] on read.
     head = min(served.values()) * 2
     return {
         "head_temperature": head,
@@ -730,8 +728,6 @@ def _load_lm_as_clef(
     head_config = None,
     **kwargs,
 ):
-    # A plain language model plus a new joint schema head, as unsloth/models/decision_from_lm.py builds one,
-    # or an LFM3 trained as a d1, which needs no head.
     if decision_head not in ("clef", "d1"):
         raise ValueError(
             f"Unsloth: decision_head must be one of ('clef', 'd1'), not {decision_head!r}."
@@ -757,7 +753,6 @@ def _load_lm_as_clef(
             "Merge them into the base model first."
         )
     zoo = _decision_zoo()
-    # A d1 stays what it is: a Clef head on it would ignore the answers it was built to read.
     d1 = getattr(zoo, "FAMILIES", {}).get("d1")
     if decision_head == "d1" or (d1 is not None and d1.matches(folder)):
         return _load_lm_as_d1(

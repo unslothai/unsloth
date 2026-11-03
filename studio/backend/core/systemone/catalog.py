@@ -593,7 +593,7 @@ def _fine_tune_in(root: Path, folder_name: str) -> Checkpoint | None:
             None,
             "d1 fine-tuned in Unsloth." if d1 else "Clef fine-tuned in Unsloth.",
             layout = "clef",
-            # Only unsloth-zoo's MLX engine reads a d1: the PyTorch Clef loader would add an untrained head.
+            # Only the MLX engine reads a d1; the PyTorch Clef loader would add an untrained head.
             backend = "mlx" if d1 else "pytorch",
         )
     else:

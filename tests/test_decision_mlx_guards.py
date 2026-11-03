@@ -103,7 +103,7 @@ def test_a_d1_trains_saves_and_tokenizes_as_one(decision_mlx, monkeypatch, tmp_p
     monkeypatch.setattr(decision_mlx, "_laya", lambda: types.SimpleNamespace(common = common))
     decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 64, ["image"], ["clip"])
     assert calls["item"] == (pipeline, "s", {"q": {}}, ["image"], ["clip"])
-    # Its 8 tokens fit 8 and not 7: a row past the limit is refused, and build_dataset skips it.
+    # 8 tokens: fits 8, not 7.
     decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 8, ["image"], ["clip"])
     with pytest.raises(ValueError, match = "past max_seq_length 7"):
         decision_mlx._clef_item(zoo, pipeline, "s", {"q": {}}, 7, ["image"], ["clip"])
@@ -114,7 +114,6 @@ def test_a_d1_trains_saves_and_tokenizes_as_one(decision_mlx, monkeypatch, tmp_p
     )
     decision_mlx._decision_save_merged(model, "out")
     assert calls["saved"] == (pipeline, "out", tmp_path, None)
-    # What calibrate fitted reaches the saved checkpoint, head and per-type together.
     model.decision_config.update(head_temperature = 2.0, temperature = [1.0, 1.5, 3.0])
     decision_mlx._decision_save_merged(model, "out")
     assert calls["saved"][3] == {"choice": 2.0, "score": 3.0, "noul": 6.0}
@@ -143,7 +142,6 @@ def test_a_reloaded_d1_answers_at_its_calibration_until_it_trains(
         "score": 4.0,
         "noul": 8.0,
     }
-    # As far apart as a head and clamped per-type temperatures can fit, in either direction.
     for fitted in (
         {"noul": 2.0, "choice:small": 10.0, "default": 1.0},
         {"noul": 10.0, "choice:small": 1.0, "default": 2.0},
