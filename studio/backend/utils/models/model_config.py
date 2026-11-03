@@ -1346,8 +1346,10 @@ def _hub_model_info(
     return info
 
 
-def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> threading.Thread:
+def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> Optional[threading.Thread]:
     """Fill the open scope from a thread. Join it before the first probe; a failed read leaves the answer to that probe."""
+    if is_local_path(repo_id):
+        return None
 
     def read():
         try:

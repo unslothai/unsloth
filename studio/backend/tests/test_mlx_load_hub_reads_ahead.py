@@ -73,6 +73,18 @@ def test_nothing_starts_offline_or_for_a_local_path(hub, monkeypatch, repo, offl
     assert hub == [] and tv._hf_json_ahead == {}
 
 
+def test_an_existing_relative_checkpoint_is_not_read_from_the_hub(hub, monkeypatch, tmp_path):
+    (tmp_path / "outputs" / "private-model").mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(mc, "_env_offline", lambda: False)
+    calls = []
+    monkeypatch.setattr("huggingface_hub.model_info", lambda repo, **kwargs: calls.append(repo))
+    tv.read_activation_files_ahead("outputs/private-model", "tok")
+    with mc.shared_hub_model_info():
+        assert mc.read_hub_model_info_ahead("outputs/private-model", None) is None
+    assert hub == [] and tv._hf_json_ahead == {} and calls == []
+
+
 def test_model_info_ahead_fills_the_open_scope(monkeypatch):
     calls = []
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)

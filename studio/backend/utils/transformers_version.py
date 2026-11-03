@@ -137,6 +137,10 @@ def read_activation_files_ahead(model_name: str, hf_token: str | None) -> None:
     """Start activation's raw Hub reads together so TLS handshakes overlap; each answer serves one read."""
     if not _is_canonical_repo_id(model_name) or _env_offline():
         return
+    from utils.paths import is_local_path
+
+    if is_local_path(model_name):
+        return
 
     def fill(future: Future, url: str) -> None:
         try:
