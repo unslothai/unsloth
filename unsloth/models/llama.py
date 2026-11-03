@@ -1817,7 +1817,7 @@ def _LlamaModel_fast_forward_inference(
         else:
             rotary_seq_len = max(kv_seq_len, int(position_ids.max().item()) + 1)
 
-        if fused_nf4 and bsz == 1 and _decode_fused_nf4.requested():
+        if fused_nf4 and bsz in (1, 2, 4) and _decode_fused_nf4.requested():
             # Opt-in fused 4bit decode (UNSLOTH_DECODE_FUSED_NF4=1); None leaves this step as below.
             fused = _decode_fused_nf4.decode_forward(
                 self, X, past_key_values, position_ids, attention_mask, rotary_seq_len,

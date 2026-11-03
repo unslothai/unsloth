@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Opt-in fused batch-1 NF4 Llama-shaped decode: UNSLOTH_DECODE_FUSED_NF4=1 (tuned GPUs) or =force.
+"""Opt-in fused NF4 Llama-shaped decode: UNSLOTH_DECODE_FUSED_NF4=1 (tuned GPUs) or =force.
 A failed check keeps the regular path; projection weights retain their original storage."""
 
 import os
@@ -29,6 +29,7 @@ STATS = {
     "refused": None,
 }
 _PLAN = "_unsloth_fused_nf4_plan"
+_BATCH_PLAN = "_unsloth_fused_nf4_batch_plan"
 _HOMES = "_unsloth_fused_nf4_homes"
 _FAMILIES = {
     "llama": (False, False),
@@ -47,6 +48,7 @@ def release(model):
     for module in model.modules():
         d = module.__dict__
         d.pop(_PLAN, None)
+        d.pop(_BATCH_PLAN, None)
         d.pop(_HOMES, None)
     _decode_graphs.invalidate(model)
 
@@ -58,7 +60,9 @@ class _ApplyReleasing:
 
     def __call__(self, fn, *args, **kwargs):
         root, module = self.root_ref(), self.module_ref()
-        if root is not None and (_PLAN in root.__dict__ or _HOMES in root.__dict__):
+        if root is not None and (
+            _PLAN in root.__dict__ or _BATCH_PLAN in root.__dict__ or _HOMES in root.__dict__
+        ):
             release(root)
         return type(module)._apply(module, fn, *args, **kwargs)
 
@@ -253,6 +257,7 @@ def _site(
     projs,
     K,
     allow_bias = False,
+    batch_size = 1,
 ):
     parts = [_proj_parts(p, K, allow_bias) for p in projs]
     for part in parts:
@@ -308,7 +313,7 @@ def _site(
         ]
         offsets += [offsets[-1]] * (3 - len(offsets))
         seg_offset = torch.stack(offsets).to(packed.device).contiguous()
-    return F.FusedSite(
+    site = F.FusedSite(
         kind,
         packed,
         absmax,
@@ -327,11 +332,13 @@ def _site(
             (W, qs.absmax, qs.state2.absmax if nested else None) for W, qs in zip(Ws, states)
         ),
     )
+    return site if batch_size == 1 else F.BatchSite(site, batch_size)
 
 
 def _build(model, X):
     if F is None:
         return "fused NF4 kernels unavailable (torch < 2.6)"
+    batch = X.shape[0]
     config = model.config
     model_type = getattr(config, "model_type", None)
     if model_type not in _FAMILIES:
@@ -346,6 +353,8 @@ def _build(model, X):
     if X.dtype not in (torch.float16, torch.bfloat16):
         return "dtype"
     capability = torch.cuda.get_device_capability(device)
+    if batch != 1 and capability != (7, 5) and os.environ.get(ENV) != "force":
+        return "batch NF4 decode is tuned on T4; use force for other GPUs"
     # T4 fusion adds compilation cost without a measured gain over segmented graphs.
     if (
         model_type in _decode_graphs._SUPPORTED_MODEL_TYPES
@@ -439,7 +448,19 @@ def _build(model, X):
             projs = [getattr(owner, name, None) for name in names]
             if any(p is None for p in projs):
                 return "projections"
-            site = _site(model, (idx, kind), kind, projs, K, allow_bias and kind == "qkv")
+            site = (
+                _site(model, (idx, kind), kind, projs, K, allow_bias and kind == "qkv")
+                if batch == 1
+                else _site(
+                    model,
+                    (idx, kind),
+                    kind,
+                    projs,
+                    K,
+                    allow_bias and kind == "qkv",
+                    batch_size = batch,
+                )
+            )
             if isinstance(site, str):
                 return f"{kind}: {site}"
             watch.extend(_site_watch(projs))
@@ -478,31 +499,61 @@ def _build(model, X):
     plan.final_norm = norm.weight
     plan.hidden = hidden
     plan.intermediate = config.intermediate_size
+    plan.batch_size = batch
+    plan.sdpa_gqa_with_batch_mask = batch == 1 or model_type != "qwen3"
+    hidden_shape = hidden if batch == 1 else (batch, hidden)
+    act_shape = config.intermediate_size if batch == 1 else (batch, config.intermediate_size)
     with _decode_graphs._no_inference_tensors():
-        plan.residual = torch.empty(hidden, dtype = torch.float32, device = device)
+        plan.residual = torch.empty(hidden_shape, dtype = torch.float32, device = device)
         # Unnormalized h * g: fp16 can overflow it before the consuming site applies rstd.
-        plan.xg = torch.empty(hidden, dtype = torch.float32, device = device)
+        plan.xg = torch.empty(hidden_shape, dtype = torch.float32, device = device)
         plan.ss = (
-            torch.zeros(hidden, dtype = torch.float32, device = device),
-            torch.zeros(hidden, dtype = torch.float32, device = device),
+            torch.zeros(hidden_shape, dtype = torch.float32, device = device),
+            torch.zeros(hidden_shape, dtype = torch.float32, device = device),
         )
-        plan.act = torch.empty(config.intermediate_size, dtype = X.dtype, device = device)
+        plan.act = torch.empty(act_shape, dtype = X.dtype, device = device)
         # Qwen3: the raw q|k|v row its per-head q / k norm reads.
         plan.qkv_raw = (
-            torch.empty(plan.layers[0].sites["qkv"].N, dtype = X.dtype, device = device)
+            torch.empty(
+                plan.layers[0].sites["qkv"].N
+                if batch == 1
+                else (batch, plan.layers[0].sites["qkv"].N),
+                dtype = X.dtype,
+                device = device,
+            )
             if qk_norm
             else None
         )
-        plan.pos = torch.zeros(1, dtype = torch.long, device = device)
+        plan.pos = torch.zeros(batch, dtype = torch.long, device = device)
         plan.slot = torch.zeros(1, dtype = torch.long, device = device)
     plan.signature = _signature(plan)
+    if batch != 1:
+        geometry = tuple((e.n_heads, e.n_kv_heads, e.head_dim) for e in plan.layers)
+        buffers = (plan.residual, plan.xg, *plan.ss, plan.act, plan.pos, plan.slot)
+        if getattr(plan, "qkv_raw", None) is not None:
+            buffers += (plan.qkv_raw,)
+        shapes = tuple(tuple(t.shape) for t in buffers)
+        workspaces = tuple(
+            (tuple(site.H.shape), tuple(site.partials.shape), tuple(site.counter.shape))
+            for entry in plan.layers
+            for site in entry.sites.values()
+            if site.lora
+        )
+        plan.signature = (
+            plan.signature,
+            batch,
+            geometry,
+            shapes,
+            workspaces,
+            plan.sdpa_gqa_with_batch_mask,
+        )
     STATS["plans"] += 1
     return plan
 
 
 def decode_forward(model, X, *args):
-    """The fused decode step: (normed last hidden state [1, 1, H], next cache), or None (regular path;
-    nothing was written). X: the [1, 1, H] embedding of the step's token."""
+    """The fused decode step: (normed last hidden state [B, 1, H], next cache), or None (regular path;
+    nothing was written). X: the [B, 1, H] embedding of the step's token."""
     if X.device.type != "cuda":
         return None
     # Triton launches run on the current device: a model on cuda:1 while cuda:0 is current needs this.
@@ -522,15 +573,36 @@ def _decode_forward(
 ):
     if torch.is_grad_enabled() or torch.compiler.is_compiling():
         return None
+    batch = X.shape[0]
+    if batch not in (1, 2, 4):
+        return None
+    row_shape = (-1,) if batch == 1 else (batch, -1)
+    plan_key = _PLAN if batch == 1 else _BATCH_PLAN
     static = _decode_graphs.static()
+    if batch != 1 and static is not None:
+        return None
+    if (
+        batch != 1
+        and model.config.model_type in _decode_graphs._SUPPORTED_MODEL_TYPES
+        and _decode_graphs.enabled()
+        and os.environ.get(ENV) != "force"
+    ):
+        return None
     # Whole-step graphs (UNSLOTH_DECODE_CUDA_GRAPHS_FULL) attend over a span with a device-side keep mask,
     # which this step does not read: let the regular path record that step.
     if static is not None and getattr(static, "span", None) is not None:
         return None
     layers = model.model.layers
     new_sequence = not hasattr(layers[0].self_attn, "paged_attention")
-    plan = model.__dict__.get(_PLAN)
-    if new_sequence or plan is None or (isinstance(plan, _Plan) and _plan_stale(plan)):
+    plan = model.__dict__.get(plan_key)
+    if (
+        new_sequence
+        or plan is None
+        or (
+            isinstance(plan, _Plan)
+            and (getattr(plan, "batch_size", 1) != batch or _plan_stale(plan))
+        )
+    ):
         built = _build(model, X)
         if isinstance(built, str):
             STATS["refused"] = built
@@ -544,9 +616,13 @@ def _decode_forward(
             if plan is not None:
                 # Captured decode steps read the previous plan's scratch buffers.
                 _decode_graphs.invalidate(model)
-            plan = model.__dict__[_PLAN] = built
+            plan = model.__dict__[plan_key] = built
     if isinstance(plan, _Refused) or X.device != plan.device or X.dtype != plan.dtype:
         return None
+    fused_site = F.fused_site if batch == 1 else F.batch_fused_site
+    final_norm = F.final_norm if batch == 1 else F.batch_final_norm
+    qk_norm_rope_kv = F.qk_norm_rope_kv if batch == 1 else F.batch_qk_norm_rope_kv
+    gqa_with_batch_mask = True if batch == 1 else plan.sdpa_gqa_with_batch_mask
     device = X.device
     capability = plan.capability
     ropes = {}
@@ -564,7 +640,15 @@ def _decode_forward(
 
     if position_ids.dim() == 2 and position_ids.shape[-1] > 1:
         position_ids = position_ids[:, -1:]
-    plan.pos.copy_(position_ids.reshape(-1)[-1:])
+    if batch == 1:
+        plan.pos.copy_(position_ids.reshape(-1)[-1:])
+    else:
+        positions = position_ids.reshape(-1)
+        if positions.numel() == 1:
+            positions = positions.expand(batch)
+        if positions.numel() != batch:
+            return None
+        plan.pos.copy_(positions)
     seq_len = past_key_values[0][0].shape[-2]
     kv_seq_len = seq_len + 1
     if static is None:
@@ -573,7 +657,7 @@ def _decode_forward(
     else:
         slot = static.slot
     residual = plan.residual
-    residual.copy_(X.view(-1))
+    residual.copy_(X.view(row_shape))
     xg, ss, act, eps = plan.xg, plan.ss, plan.act, plan.eps
     n_layers = len(plan.layers)
     n_ss = 0
@@ -585,12 +669,12 @@ def _decode_forward(
         if not hasattr(attn, "paged_attention"):
             K1, V1 = past_key_values[idx]
             _decode_graphs.alloc_decode_buffers(
-                attn, K1, V1, 1, n_heads, n_kv_heads, head_dim, plan.hidden, X.dtype, device,
+                attn, K1, V1, batch, n_heads, n_kv_heads, head_dim, plan.hidden, X.dtype, device,
                 kv_increment,
             )  # fmt: skip
         elif static is None and kv_seq_len >= attn.paged_attention.shape[0]:
             _decode_graphs.resize_decode_buffers(
-                attn, kv_increment, 1, n_heads, n_kv_heads, head_dim
+                attn, kv_increment, batch, n_heads, n_kv_heads, head_dim
             )
         cos, sin = ropes[id(entry.rope)]
         k_cache, v_cache = attn.paged_attention_K, attn.paged_attention_V
@@ -604,48 +688,50 @@ def _decode_forward(
             x_in = xg
         bias = sites["qkv"].bias
         if entry.qk_norm is None:
-            F.fused_site(
+            fused_site(
                 sites["qkv"], x_in, q, epi = F.EPI_ROPE_KV, k_cache = k_cache, v_cache = v_cache,
                 cache_strides = (k_cache.stride(2), k_cache.stride(0)), cos = cos, sin = sin,
                 pos = plan.pos, slot = slot, head_dim = head_dim, bias = bias, **pre_args, **common,
             )  # fmt: skip
         else:
             # Qwen3: q / k RMSNorm needs a whole head, so the rotation and cache writes are one more launch.
-            F.fused_site(
+            fused_site(
                 sites["qkv"], x_in, plan.qkv_raw, epi = F.EPI_PLAIN, bias = bias, **pre_args, **common
             )
             wq, wk, eps_q, eps_k = entry.qk_norm
-            F.qk_norm_rope_kv(
+            qk_norm_rope_kv(
                 plan.qkv_raw, q, wq, wk, eps_q, eps_k, cos, sin, plan.pos, slot, k_cache, v_cache,
                 n_heads, n_kv_heads, head_dim,
             )  # fmt: skip
-        Qn = q.view(1, 1, n_heads, head_dim).transpose(1, 2)
+        Qn = q.view(batch, 1, n_heads, head_dim).transpose(1, 2)
         if static is None:
-            A, Kn, Vn = attention_core(attn, Qn, kv_seq_len, attention_mask, 1, True)
+            A, Kn, Vn = attention_core(
+                attn, Qn, kv_seq_len, attention_mask, batch, gqa_with_batch_mask
+            )
             next_cache.append((Kn, Vn))
         else:
             A = static.attention(
                 lambda attn = attn, Qn = Qn: attention_core(
-                    attn, Qn, static.kv_len, static.mask, 1, True
+                    attn, Qn, static.kv_len, static.mask, batch, gqa_with_batch_mask
                 )[0]
             )
             next_cache.append((None, None))
-        A = A.transpose(1, 2).reshape(-1)
-        n1 = F.fused_site(
+        A = A.transpose(1, 2).reshape(row_shape)
+        n1 = fused_site(
             sites["o"], A, epi = F.EPI_RESNORM, residual = residual, ss_out = ss[1],
             xg_out = xg, next_norm_weight = entry.ln2, **common,
         )  # fmt: skip
-        F.fused_site(
+        fused_site(
             sites["gate_up"], xg, act, epi = F.EPI_SWIGLU, pre = F.PRE_SCALED, ss_in = ss[1],
             n_ss = n1, **common,
         )  # fmt: skip
         next_ln = plan.layers[idx + 1].ln1 if idx + 1 < n_layers else plan.final_norm
-        n_ss = F.fused_site(
+        n_ss = fused_site(
             sites["down"], act, epi = F.EPI_RESNORM, residual = residual, ss_out = ss[0],
             xg_out = xg, next_norm_weight = next_ln, **common,
         )  # fmt: skip
-    out = torch.empty((1, 1, plan.hidden), dtype = X.dtype, device = device)
-    F.final_norm(residual, ss[0], n_ss, plan.final_norm, eps, out.view(-1))
+    out = torch.empty((batch, 1, plan.hidden), dtype = X.dtype, device = device)
+    final_norm(residual, ss[0], n_ss, plan.final_norm, eps, out.view(row_shape))
     if static is None:
         STATS["steps"] += 1
         STATS["layers"] += n_layers

@@ -20,6 +20,10 @@ __all__ = [
     "PRE_SCALED",
     "PRE_INLOOP",
     "FusedSite",
+    "BatchSite",
+    "batch_fused_site",
+    "batch_final_norm",
+    "batch_qk_norm_rope_kv",
     "site_config",
     "fused_site",
     "final_norm",
@@ -51,6 +55,10 @@ def _opaque_launch(
         _lora_shrink_kernel,
         _final_norm_kernel,
         _qk_norm_rope_kv_kernel,
+        _batch_main_kernel,
+        _batch_shrink_kernel,
+        _batch_final_kernel,
+        _batch_qk_kernel,
     )
     tensors = tuple(inputs[i] if i >= 0 else outputs[-i - 1] for i in tensor_order)
     integers, floats = iter(integer_constants), iter(float_constants)
@@ -95,12 +103,12 @@ def _launch(kind, kernel, grid, args, n_tensors, constexprs, device_index, **opt
     if not torch.compiler.is_compiling():
         launch(kernel, grid, args, n_tensors, constexprs, device_index, **options)
         return
-    if kind == 0:
+    if kind in (0, 4):
         epi = constexprs["EPI"]
         mutable = (2, 3, 5) if epi == EPI_RESNORM else (17, 18, 19) if epi == EPI_ROPE_KV else (17,)
-    elif kind == 1:
+    elif kind in (1, 5):
         mutable = (6, 7, 8)
-    elif kind == 2:
+    elif kind in (2, 6):
         mutable = (3,)
     else:
         mutable = (7, 8, 9)
@@ -138,12 +146,10 @@ def _launch(kind, kernel, grid, args, n_tensors, constexprs, device_index, **opt
 
 @triton.jit
 def _rstd_from_partials(
-    SS,
-    n_ss,
-    K,
+    SS, n_ss, K,
     EPS: tl.constexpr,  # norm epsilon
-    SS_BLOCK: tl.constexpr,  # partial reduction size
-):
+    SS_BLOCK: tl.constexpr,  # partial reduction tile
+):  # fmt: skip
     j = tl.arange(0, SS_BLOCK)
     ss = tl.sum(tl.load(SS + j, mask = j < n_ss, other = 0.0), axis = 0)
     return tl.math.rsqrt(ss / K + EPS)
@@ -152,20 +158,28 @@ def _rstd_from_partials(
 @triton.jit
 def _nf4_decode_fused_kernel(
     X, G, R, XG_OUT, SS_IN, SS_OUT, G_NEXT,
-    W, ABSMAX, CODE2, ABSMAX2, SEG_OFFSET, LUT,
-    LB0, LB1, LB2, LORA_H,
-    OUT, K_CACHE, V_CACHE, COS, SIN, POS, SLOT,
-    W1, W2, ABSMAX1, ABSMAX_SEG2, NESTED1, NESTED2, BQ, BK, BV,
-    lora_rank, N, K, HALF, seg1, seg2, n_ss, stride_cache_h, stride_cache_l, stride_cos, head_dim,
+    W, ABSMAX, CODE2, ABSMAX2, SEG_OFFSET, LUT, LB0,
+    LB1, LB2, LORA_H, OUT, K_CACHE, V_CACHE, COS,
+    SIN, POS, SLOT, W1, W2, ABSMAX1, ABSMAX_SEG2,
+    NESTED1, NESTED2, BQ, BK, BV, lora_rank, N,
+    K, HALF, seg1, seg2, n_ss, stride_cache_h, stride_cache_l,
+    stride_cos, head_dim,
     EPS: tl.constexpr,  # norm epsilon
-    BLOCK_P: tl.constexpr, BLOCK_K: tl.constexpr,  # row pairs and input tile
-    BLOCKSIZE: tl.constexpr, BLOCKSIZE2: tl.constexpr,  # NF4 quantization block sizes
-    NESTED: tl.constexpr, USE_MUL_RN: tl.constexpr,  # double quantization and rounding
-    EVEN_K: tl.constexpr, LUT_MODE: tl.constexpr,  # input divisibility and code lookup
-    PRE: tl.constexpr, LORA: tl.constexpr,  # norm mode and adapter presence
-    RANK_PAD: tl.constexpr, EPI: tl.constexpr, SS_BLOCK: tl.constexpr,  # rank, epilogue and reduction size
-    SEPARATE: tl.constexpr,  # independent projection buffers
-    HAS_BIAS: tl.constexpr,  # projection bias presence
+    BLOCK_P: tl.constexpr,  # output row pairs
+    BLOCK_K: tl.constexpr,  # input tile
+    BLOCKSIZE: tl.constexpr,  # NF4 block size
+    BLOCKSIZE2: tl.constexpr,  # nested scale block size
+    NESTED: tl.constexpr,  # double quantization
+    USE_MUL_RN: tl.constexpr,  # reduction product rounding
+    EVEN_K: tl.constexpr,  # input divisibility
+    LUT_MODE: tl.constexpr,  # code lookup mode
+    PRE: tl.constexpr,  # input norm mode
+    LORA: tl.constexpr,  # adapter presence
+    RANK_PAD: tl.constexpr,  # padded adapter rank
+    EPI: tl.constexpr,  # output epilogue
+    SS_BLOCK: tl.constexpr,  # partial reduction tile
+    SEPARATE: tl.constexpr,  # separate projections
+    HAS_BIAS: tl.constexpr,  # bias presence
 ):  # fmt: skip
     W = W.to(tl.pointer_type(tl.uint8))
     pid = tl.program_id(0)
@@ -184,7 +198,9 @@ def _nf4_decode_fused_kernel(
     if SEPARATE:
         storage_rows = rows - tl.where(s0, 0, tl.where(s1, seg1, seg2))
         wbase = tl.where(
-            s0, W, tl.where(s1, W1.to(tl.pointer_type(tl.uint8)), W2.to(tl.pointer_type(tl.uint8)))
+            s0,
+            W,
+            tl.where(s1, W1.to(tl.pointer_type(tl.uint8)), W2.to(tl.pointer_type(tl.uint8))),
         )
         abase = tl.where(s0, ABSMAX, tl.where(s1, ABSMAX1, ABSMAX_SEG2))
         a2base = tl.where(s0, ABSMAX2, tl.where(s1, NESTED1, NESTED2))
@@ -305,11 +321,13 @@ def _nf4_decode_fused_kernel(
 
 @triton.jit
 def _qk_norm_rope_kv_kernel(
-    QKV, WQ, WK, COS, SIN, POS, SLOT, Q_OUT, K_CACHE, V_CACHE,
-    n_heads, n_kv_heads, stride_cos, stride_cache_h, stride_cache_l,
-    HEAD_DIM: tl.constexpr,  # attention head size
-    EPS_Q: tl.constexpr, EPS_K: tl.constexpr,  # per-head norm epsilons
-    ROUND_ROPE: tl.constexpr = False,  # regular mixed-dtype norm and rotary rounding
+    QKV, WQ, WK, COS, SIN, POS, SLOT,
+    Q_OUT, K_CACHE, V_CACHE, n_heads, n_kv_heads, stride_cos, stride_cache_h,
+    stride_cache_l,
+    HEAD_DIM: tl.constexpr,  # head size
+    EPS_Q: tl.constexpr,  # query epsilon
+    EPS_K: tl.constexpr,  # key epsilon
+    ROUND_ROPE: tl.constexpr = False,  # stock rounding
 ):  # fmt: skip
     h = tl.program_id(0)
     HALF: tl.constexpr = HEAD_DIM // 2  # rotary half size
@@ -326,7 +344,9 @@ def _qk_norm_rope_kv_kernel(
         w_ty = WQ.dtype.element_ty
         w0 = tl.where(is_q, tl.load(WQ + j).to(tl.float32), tl.load(WK + j).to(tl.float32))
         w1 = tl.where(
-            is_q, tl.load(WQ + HALF + j).to(tl.float32), tl.load(WK + HALF + j).to(tl.float32)
+            is_q,
+            tl.load(WQ + HALF + j).to(tl.float32),
+            tl.load(WK + HALF + j).to(tl.float32),
         )
         if ROUND_ROPE:
             y0 = (
@@ -372,14 +392,17 @@ def _qk_norm_rope_kv_kernel(
 
 @triton.jit
 def _lora_shrink_kernel(
-    X, G, SS_IN, A0, A1, A2, P, H, COUNTER,
-    n_rows, K, lora_rank, n_ss, n_splits,
-    SCALING: tl.constexpr, EPS: tl.constexpr,  # adapter scale and norm epsilon
-    RANK_PAD: tl.constexpr, BLOCK_R: tl.constexpr,  # padded rank and shrink rows
-    SPLIT_K: tl.constexpr, PRE: tl.constexpr, SS_BLOCK: tl.constexpr,  # input tile, norm mode and reduction size
+    X, G, SS_IN, A0, A1, A2, P,
+    H, COUNTER, n_rows, K, lora_rank, n_ss, n_splits,
+    SCALING: tl.constexpr,  # adapter scale
+    EPS: tl.constexpr,  # norm epsilon
+    RANK_PAD: tl.constexpr,  # padded adapter rank
+    BLOCK_R: tl.constexpr,  # adapter row tile
+    SPLIT_K: tl.constexpr,  # adapter input tile
+    PRE: tl.constexpr,  # input norm mode
+    SS_BLOCK: tl.constexpr,  # partial reduction tile
     USE_MUL_RN: tl.constexpr,  # reduction product rounding
 ):  # fmt: skip
-    # Split-K: the last program (acq_rel counter) sums in order and re-arms the counter for graph replay.
     pid = tl.program_id(0)
     rows = tl.arange(0, BLOCK_R)
     rm = rows < n_rows
@@ -393,7 +416,8 @@ def _lora_shrink_kernel(
     arow = tl.where(sg == 0, A0, tl.where(sg == 1, A1, A2)) + (rows % lora_rank).to(tl.int64) * K
     a = tl.load(arow[:, None] + ks[None, :], mask = rm[:, None] & km[None, :], other = 0.0)
     tl.store(
-        P + pid * BLOCK_R + rows, tl.sum(_mul(a.to(tl.float32), x[None, :], USE_MUL_RN), axis = 1)
+        P + pid * BLOCK_R + rows,
+        tl.sum(_mul(a.to(tl.float32), x[None, :], USE_MUL_RN), axis = 1),
     )
     count = tl.atomic_add(COUNTER, 1, sem = "acq_rel")
     if count == n_splits - 1:
@@ -415,23 +439,22 @@ def _lora_shrink_kernel(
 
 @triton.jit
 def _final_norm_kernel(
-    R,
-    SS,
-    W,
-    OUT,
-    n_ss,
-    K,
+    R, SS, W, OUT, n_ss, K,
     EPS: tl.constexpr,  # norm epsilon
-    SS_BLOCK: tl.constexpr,  # partial reduction size
+    SS_BLOCK: tl.constexpr,  # partial reduction tile
     BLOCK: tl.constexpr,  # hidden tile
-):
+):  # fmt: skip
     k = tl.arange(0, BLOCK)
     km = k < K
     rstd = _rstd_from_partials(SS, n_ss, K, EPS, SS_BLOCK)
     h = tl.load(R + k, mask = km, other = 0.0).to(tl.float32)
     out_ty = OUT.dtype.element_ty
     xn = (h * rstd).to(out_ty).to(tl.float32)
-    tl.store(OUT + k, (xn * tl.load(W + k, mask = km, other = 0.0).to(tl.float32)).to(out_ty), mask = km)
+    tl.store(
+        OUT + k,
+        (xn * tl.load(W + k, mask = km, other = 0.0).to(tl.float32)).to(out_ty),
+        mask = km,
+    )
 
 
 # Tuned on Llama 1B / 8B; other GPUs use gemv_nf4's config (lost on T4) and need =force.
@@ -741,6 +764,469 @@ def final_norm(residual, ss, n_ss, weight, eps, out):
     )
     _launch(2, _final_norm_kernel, (1,), args, 4, constexprs, residual.device.index, num_warps = 8)
     return out
+
+
+@triton.jit
+def _batch_main_kernel(
+    X, G, R, XG_OUT, SS_IN, SS_OUT, G_NEXT,
+    W, ABSMAX, CODE2, ABSMAX2, SEG_OFFSET, LUT, LB0,
+    LB1, LB2, LORA_H, OUT, K_CACHE, V_CACHE, COS,
+    SIN, POS, SLOT, W1, W2, ABSMAX1, ABSMAX_SEG2,
+    NESTED1, NESTED2, BQ, BK, BV, lora_rank, N,
+    K, HALF, seg1, seg2, n_ss, stride_cache_h, stride_cache_l,
+    stride_cos, head_dim, ss_stride, out_stride, residual_stride, xg_stride, cache_batch_stride,
+    EPS: tl.constexpr,  # norm epsilon
+    BLOCK_P: tl.constexpr,  # output row pairs
+    BLOCK_K: tl.constexpr,  # input tile
+    BLOCKSIZE: tl.constexpr,  # NF4 block size
+    BLOCKSIZE2: tl.constexpr,  # nested scale block size
+    NESTED: tl.constexpr,  # double quantization
+    USE_MUL_RN: tl.constexpr,  # reduction product rounding
+    EVEN_K: tl.constexpr,  # input divisibility
+    LUT_MODE: tl.constexpr,  # code lookup mode
+    PRE: tl.constexpr,  # input norm mode
+    LORA: tl.constexpr,  # adapter presence
+    RANK_PAD: tl.constexpr,  # padded adapter rank
+    EPI: tl.constexpr,  # output epilogue
+    SS_BLOCK: tl.constexpr,  # partial reduction tile
+    SEPARATE: tl.constexpr,  # separate projections
+    HAS_BIAS: tl.constexpr,  # bias presence
+):  # fmt: skip
+    row = tl.program_id(1).to(tl.int64)
+    X = X + row * K
+    R = R + row * residual_stride
+    XG_OUT = XG_OUT + row * xg_stride
+    SS_IN = SS_IN + row * ss_stride
+    SS_OUT = SS_OUT + row * ss_stride
+    LORA_H = LORA_H + row * (3 * RANK_PAD)
+    OUT = OUT + row * out_stride
+    K_CACHE = K_CACHE + row * cache_batch_stride
+    V_CACHE = V_CACHE + row * cache_batch_stride
+    POS = POS + row
+    _nf4_decode_fused_kernel(
+        X,
+        G,
+        R,
+        XG_OUT,
+        SS_IN,
+        SS_OUT,
+        G_NEXT,
+        W,
+        ABSMAX,
+        CODE2,
+        ABSMAX2,
+        SEG_OFFSET,
+        LUT,
+        LB0,
+        LB1,
+        LB2,
+        LORA_H,
+        OUT,
+        K_CACHE,
+        V_CACHE,
+        COS,
+        SIN,
+        POS,
+        SLOT,
+        W1,
+        W2,
+        ABSMAX1,
+        ABSMAX_SEG2,
+        NESTED1,
+        NESTED2,
+        BQ,
+        BK,
+        BV,
+        lora_rank,
+        N,
+        K,
+        HALF,
+        seg1,
+        seg2,
+        n_ss,
+        stride_cache_h,
+        stride_cache_l,
+        stride_cos,
+        head_dim,
+        EPS = EPS,
+        BLOCK_P = BLOCK_P,
+        BLOCK_K = BLOCK_K,
+        BLOCKSIZE = BLOCKSIZE,
+        BLOCKSIZE2 = BLOCKSIZE2,
+        NESTED = NESTED,
+        USE_MUL_RN = USE_MUL_RN,
+        EVEN_K = EVEN_K,
+        LUT_MODE = LUT_MODE,
+        PRE = PRE,
+        LORA = LORA,
+        RANK_PAD = RANK_PAD,
+        EPI = EPI,
+        SS_BLOCK = SS_BLOCK,
+        SEPARATE = SEPARATE,
+        HAS_BIAS = HAS_BIAS,
+    )
+
+
+@triton.jit
+def _batch_shrink_kernel(
+    X, G, SS_IN, A0, A1, A2, P,
+    H, COUNTER, n_rows, K, lora_rank, n_ss, n_splits,
+    ss_stride,
+    SCALING: tl.constexpr,  # adapter scale
+    EPS: tl.constexpr,  # norm epsilon
+    RANK_PAD: tl.constexpr,  # padded adapter rank
+    BLOCK_R: tl.constexpr,  # adapter row tile
+    SPLIT_K: tl.constexpr,  # adapter input tile
+    PRE: tl.constexpr,  # input norm mode
+    SS_BLOCK: tl.constexpr,  # partial reduction tile
+    USE_MUL_RN: tl.constexpr,  # reduction product rounding
+):  # fmt: skip
+    row = tl.program_id(1).to(tl.int64)
+    X = X + row * K
+    SS_IN = SS_IN + row * ss_stride
+    P = P + row * n_splits * (BLOCK_R + 1)
+    H = H + row * (3 * RANK_PAD)
+    COUNTER = COUNTER + row
+    _lora_shrink_kernel(
+        X,
+        G,
+        SS_IN,
+        A0,
+        A1,
+        A2,
+        P,
+        H,
+        COUNTER,
+        n_rows,
+        K,
+        lora_rank,
+        n_ss,
+        n_splits,
+        SCALING = SCALING,
+        EPS = EPS,
+        RANK_PAD = RANK_PAD,
+        BLOCK_R = BLOCK_R,
+        SPLIT_K = SPLIT_K,
+        PRE = PRE,
+        SS_BLOCK = SS_BLOCK,
+        USE_MUL_RN = USE_MUL_RN,
+    )
+
+
+@triton.jit
+def _batch_final_kernel(
+    R, SS, W, OUT, n_ss, K, ss_stride,
+    EPS: tl.constexpr,  # norm epsilon
+    SS_BLOCK: tl.constexpr,  # partial reduction tile
+    BLOCK: tl.constexpr,  # hidden tile
+):  # fmt: skip
+    row = tl.program_id(1).to(tl.int64)
+    R = R + row * K
+    SS = SS + row * ss_stride
+    OUT = OUT + row * K
+    _final_norm_kernel(R, SS, W, OUT, n_ss, K, EPS = EPS, SS_BLOCK = SS_BLOCK, BLOCK = BLOCK)
+
+
+@triton.jit
+def _batch_qk_kernel(
+    QKV, WQ, WK, COS, SIN, POS, SLOT,
+    Q_OUT, K_CACHE, V_CACHE, n_heads, n_kv_heads, stride_cos, stride_cache_h,
+    stride_cache_l, cache_batch_stride,
+    HEAD_DIM: tl.constexpr,  # head size
+    EPS_Q: tl.constexpr,  # query epsilon
+    EPS_K: tl.constexpr,  # key epsilon
+    ROUND_ROPE: tl.constexpr = False,  # stock rounding
+):  # fmt: skip
+    row = tl.program_id(1).to(tl.int64)
+    QKV = QKV + row * (n_heads + 2 * n_kv_heads) * HEAD_DIM
+    POS = POS + row
+    Q_OUT = Q_OUT + row * n_heads * HEAD_DIM
+    K_CACHE = K_CACHE + row * cache_batch_stride
+    V_CACHE = V_CACHE + row * cache_batch_stride
+    _qk_norm_rope_kv_kernel(
+        QKV,
+        WQ,
+        WK,
+        COS,
+        SIN,
+        POS,
+        SLOT,
+        Q_OUT,
+        K_CACHE,
+        V_CACHE,
+        n_heads,
+        n_kv_heads,
+        stride_cos,
+        stride_cache_h,
+        stride_cache_l,
+        HEAD_DIM = HEAD_DIM,
+        EPS_Q = EPS_Q,
+        EPS_K = EPS_K,
+        ROUND_ROPE = ROUND_ROPE,
+    )
+
+
+def _batch_lora_shrink(site, x, pre, norm_weight, ss_in, n_ss, eps, device_index):
+    d = x
+    args = (
+        x,
+        norm_weight if norm_weight is not None else d,
+        ss_in if ss_in is not None else d,
+        *site.A3,
+        site.partials,
+        site.H,
+        site.counter,
+        site.n_seg * site.rank,
+        site.K,
+        site.rank,
+        n_ss,
+        site.n_splits,
+        ss_in.stride(0) if ss_in is not None else 0,
+    )
+    constexprs = dict(
+        SCALING = site.scaling,
+        EPS = eps,
+        RANK_PAD = site.rank_pad,
+        BLOCK_R = site.block_r,
+        SPLIT_K = site.split_k,
+        PRE = pre,
+        SS_BLOCK = max(16, triton.next_power_of_2(max(n_ss, 1))),
+        USE_MUL_RN = _HAS_MUL_RN,
+    )
+    _launch(
+        5,
+        _batch_shrink_kernel,
+        (site.n_splits, x.shape[0]),
+        args,
+        9,
+        constexprs,
+        device_index,
+        num_warps = 4,
+    )
+
+
+def batch_fused_site(
+    site,
+    x,
+    out = None,
+    *,
+    epi,
+    pre = PRE_NONE,
+    capability,
+    norm_weight = None,
+    eps = 1e-06,
+    ss_in = None,
+    n_ss = 0,
+    residual = None,
+    ss_out = None,
+    xg_out = None,
+    next_norm_weight = None,
+    k_cache = None,
+    v_cache = None,
+    cache_strides = (0, 0),
+    cos = None,
+    sin = None,
+    pos = None,
+    slot = None,
+    head_dim = None,
+    config = None,
+    bias = None,
+):
+    K, N = (site.K, site.N)
+    block_p, block_k, num_warps, lut = config or site_config(
+        site.kind, N, K, site.blocksize, capability
+    )
+    if epi in (EPI_PLAIN, EPI_RESNORM):
+        half = block_p
+    elif epi == EPI_ROPE_KV:
+        half = head_dim // 2
+    else:
+        half = site.bounds[0]
+    nprog = site.n_programs(block_p, epi)
+    device_index = x.device.index
+    if site.lora:
+        _batch_lora_shrink(site, x, pre, norm_weight, ss_in, n_ss, eps, device_index)
+    seg1, seg2 = site.seg_bounds()
+    d = x
+    B3 = site.B3 if site.lora else (d, d, d)
+    tensors = (
+        x,
+        norm_weight if norm_weight is not None else d,
+        residual if residual is not None else d,
+        xg_out if xg_out is not None else d,
+        ss_in if ss_in is not None else d,
+        ss_out if ss_out is not None else d,
+        next_norm_weight if next_norm_weight is not None else d,
+        site.packed,
+        site.absmax,
+        site.code2,
+        site.absmax2,
+        site.seg_offset,
+        site.code,
+        B3[0],
+        B3[1],
+        B3[2],
+        site.H if site.lora else d,
+        out if out is not None else d,
+        k_cache if k_cache is not None else d,
+        v_cache if v_cache is not None else d,
+        cos if cos is not None else d,
+        sin if sin is not None else d,
+        pos if pos is not None else d,
+        slot if slot is not None else d,
+        site.W3[1],
+        site.W3[2],
+        site.scales3[1],
+        site.scales3[2],
+        site.state2scales3[1],
+        site.state2scales3[2],
+        *(bias if bias is not None else (d, d, d)),
+    )
+    ints = (
+        site.rank if site.lora else 0,
+        N,
+        K,
+        half,
+        seg1,
+        seg2,
+        n_ss,
+        cache_strides[0],
+        cache_strides[1],
+        cos.stride(0) if cos is not None else 0,
+        head_dim or 1,
+        (ss_in if ss_in is not None else ss_out).stride(0)
+        if ss_in is not None or ss_out is not None
+        else 0,
+        (out if out is not None else x).stride(0),
+        (residual if residual is not None else x).stride(0),
+        (xg_out if xg_out is not None else x).stride(0),
+        k_cache.stride(1) if k_cache is not None else 0,
+    )
+    constexprs = dict(
+        EPS = eps,
+        BLOCK_P = block_p,
+        BLOCK_K = block_k,
+        BLOCKSIZE = site.blocksize,
+        BLOCKSIZE2 = site.blocksize2 if site.nested else 1,
+        NESTED = site.nested,
+        USE_MUL_RN = _HAS_MUL_RN,
+        EVEN_K = K % block_k == 0,
+        LUT_MODE = lut,
+        PRE = pre,
+        LORA = site.lora,
+        RANK_PAD = site.rank_pad if site.lora else 16,
+        EPI = epi,
+        SS_BLOCK = max(16, triton.next_power_of_2(max(n_ss, 1))),
+        SEPARATE = site.separate,
+        HAS_BIAS = bias is not None,
+    )
+    _launch(
+        4,
+        _batch_main_kernel,
+        (nprog, x.shape[0]),
+        tensors + ints,
+        len(tensors),
+        constexprs,
+        device_index,
+        num_warps = num_warps,
+        enable_fp_fusion = True,
+    )
+    return nprog
+
+
+def batch_final_norm(residual, ss, n_ss, weight, eps, out):
+    K = residual.shape[-1]
+    args = (residual, ss, weight, out, n_ss, K, ss.stride(0))
+    constexprs = dict(
+        EPS = eps,
+        SS_BLOCK = max(16, triton.next_power_of_2(max(n_ss, 1))),
+        BLOCK = triton.next_power_of_2(K),
+    )
+    _launch(
+        6,
+        _batch_final_kernel,
+        (1, residual.shape[0]),
+        args,
+        4,
+        constexprs,
+        residual.device.index,
+        num_warps = 8,
+    )
+    return out
+
+
+def batch_qk_norm_rope_kv(
+    qkv,
+    q_out,
+    wq,
+    wk,
+    eps_q,
+    eps_k,
+    cos,
+    sin,
+    pos,
+    slot,
+    k_cache,
+    v_cache,
+    n_heads,
+    n_kv_heads,
+    head_dim,
+):
+    args = (
+        qkv,
+        wq,
+        wk,
+        cos,
+        sin,
+        pos,
+        slot,
+        q_out,
+        k_cache,
+        v_cache,
+        n_heads,
+        n_kv_heads,
+        cos.stride(0),
+        k_cache.stride(2),
+        k_cache.stride(0),
+        k_cache.stride(1),
+    )
+    constexprs = dict(
+        HEAD_DIM = head_dim,
+        EPS_Q = float(eps_q),
+        EPS_K = float(eps_k),
+        ROUND_ROPE = not qkv.dtype == wq.dtype == wk.dtype == cos.dtype == sin.dtype,
+    )
+    _launch(
+        7,
+        _batch_qk_kernel,
+        (n_heads + 2 * n_kv_heads, qkv.shape[0]),
+        args,
+        10,
+        constexprs,
+        qkv.device.index,
+        num_warps = 2,
+    )
+
+
+class BatchSite(FusedSite):
+    def __init__(self, original, batch):
+        if batch not in (2, 4):
+            raise ValueError("batch must be 2 or 4")
+        self.__dict__.update(vars(original))
+        self.batch_size = batch
+        if self.lora:
+            with torch.inference_mode(False), torch.no_grad():
+                self.H = torch.zeros(
+                    batch * 3 * self.rank_pad,
+                    device = self.packed.device,
+                    dtype = torch.float32,
+                )
+                self.partials = torch.zeros(
+                    batch * self.n_splits * (self.block_r + 1),
+                    device = self.packed.device,
+                    dtype = torch.float32,
+                )
+                self.counter = torch.zeros(batch, device = self.packed.device, dtype = torch.int32)
 
 
 tag_compile_cache(__file__)
