@@ -48,6 +48,15 @@ type Editor = Record<string, unknown> | undefined;
 
 const DEFAULT_SIZE = { width: 260, height: 140 };
 
+/** Ctrl+A: every block, plus each closed card, which is what the canvas shows and Delete acts on. */
+export function selectAllIds(
+  editor: Editor,
+  graph: Pick<DocGraph, "nodes" | "nodeOrder" | "groups">,
+): string[] {
+  const closed = readSuperCards(editor, graph).filter((c) => !c.open);
+  return [...graph.nodeOrder, ...closed.map((c) => SUPER_PREFIX + c.id)];
+}
+
 /** The selection with each closed super card replaced by the blocks in it, for copy and duplicate. */
 export function selectedBlocks(
   selected: readonly string[],
@@ -450,6 +459,9 @@ export function foldLayout(
   });
   const unfold = (result: LayoutResult): LayoutResult => {
     const next = { ...result };
+    type Area = [[number, number], [number, number, number, number]];
+    const frameAreas: Area[] = [];
+    const boxAreas: Area[] = [];
     for (const card of closed) {
       const at = result[SUPER_PREFIX + card.id];
       delete next[SUPER_PREFIX + card.id];
@@ -464,7 +476,6 @@ export function foldLayout(
       }
       // Frames and notes folded into the card move with it, as they do when it is dragged.
       const members = new Set(card.members);
-      const areas: [number, number, number, number][] = [];
       let right = x0;
       let bottom = y0;
       for (const id of card.members) {
@@ -473,7 +484,7 @@ export function foldLayout(
         right = Math.max(right, x + (size?.width ?? DEFAULT_SIZE.width));
         bottom = Math.max(bottom, y + (size?.height ?? DEFAULT_SIZE.height));
       }
-      areas.push([x0, y0, right - x0, bottom - y0]);
+      boxAreas.push([[dx, dy], [x0, y0, right - x0, bottom - y0]]);
       for (const groupId of graph.groupOrder) {
         const inGroup = graph.nodeOrder.filter(
           (id) => graph.nodes[id].group === groupId,
@@ -481,21 +492,20 @@ export function foldLayout(
         if (!inGroup.length || !inGroup.every((id) => members.has(id)))
           continue;
         const rect = graph.groups[groupId].rect;
-        areas.push(rect);
+        frameAreas.push([[dx, dy], rect]);
         next[GROUP_PREFIX + groupId] = [rect[0] + dx, rect[1] + dy];
       }
-      for (const noteId of graph.noteOrder) {
-        const [x, y, w, h] = graph.notes[noteId].rect;
-        const cx = x + w / 2;
-        const cy = y + h / 2;
-        if (
-          areas.some(
-            ([ax, ay, aw, ah]) =>
-              cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
-          )
-        )
-          next[NOTE_PREFIX + noteId] = [x + dx, y + dy];
-      }
+    }
+    // One owner per note, as the canvas folds it: a folded frame first, then a card's blocks.
+    for (const noteId of graph.noteOrder) {
+      const [x, y, w, h] = graph.notes[noteId].rect;
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+      const owner = [...frameAreas, ...boxAreas].find(
+        ([, [ax, ay, aw, ah]]) =>
+          cx >= ax && cy >= ay && cx <= ax + aw && cy <= ay + ah,
+      );
+      if (owner) next[NOTE_PREFIX + noteId] = [x + owner[0][0], y + owner[0][1]];
     }
     return next;
   };

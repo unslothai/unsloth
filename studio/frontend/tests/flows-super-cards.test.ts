@@ -600,3 +600,37 @@ test("tidy up keeps a card's blocks together when the card holds part of a group
   const [nx, ny] = patch.notes.n1;
   assert.deepEqual([nx - tx, ny - ty], [320 - 300, 100 - 40]);
 });
+
+test("Select All takes closed cards too, so Delete removes them", async () => {
+  const { selectAllIds } = await import("../src/features/flows/editor/super-cards.ts");
+  useDocStore.getState().load(comic());
+  select("tpl", "img");
+  combineSelection();
+  const { meta, graph } = useDocStore.getState();
+  const all = selectAllIds(meta.editor, graph);
+  assert.ok(all.includes("super:sc1") && all.includes("prompt"));
+  const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
+  assert.match(shortcuts, /selectAllIds\(doc\.meta\.editor, doc\.graph\)/);
+});
+
+test("a note inside one card's folded frame and another card's blocks moves only with the frame's card", () => {
+  const d = comic();
+  d.notes = [{ id: "n1", text: "both", rect: [880, 70, 60, 60] }];
+  useDocStore.getState().load(d);
+  select("tpl", "img");
+  combineSelection();
+  select("view", "raw");
+  combineSelection();
+  const state = useDocStore.getState();
+  const request = {
+    direction: "LR" as const,
+    nodes: state.graph.nodeOrder.map((id) => ({ id, width: 260, height: 140 })),
+    edges: [],
+  };
+  // sc1 moves by (100, 0), sc2 by (0, 500).
+  const result = foldLayout(request, state, () => undefined).unfold({
+    "super:sc1": [400, -0],
+    "super:sc2": [900, 500],
+  });
+  assert.deepEqual(result["note:n1"], [980, 70]);
+});

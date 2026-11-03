@@ -17,7 +17,7 @@ import { usePlacement } from "./placement";
 import { turnReroutes } from "./reroutes";
 import { runFlow } from "./run-controller";
 import { historyAction } from "./history-keys";
-import { selectedBlocks } from "./super-cards";
+import { selectAllIds, selectedBlocks } from "./super-cards";
 import { flushSave } from "./use-autosave";
 
 const CLIPBOARD_KIND = "unsloth-flow-fragment";
@@ -214,7 +214,10 @@ export function useEditorShortcuts(active: boolean): void {
         event.preventDefault();
         useUiStore
           .getState()
-          .setSelection([...doc.graph.nodeOrder], [...doc.graph.edgeOrder]);
+          .setSelection(
+            selectAllIds(doc.meta.editor, doc.graph),
+            [...doc.graph.edgeOrder],
+          );
       } else if (!mod && key === "i") {
         const ui = useUiStore.getState();
         const [only, ...rest] = ui.selectedNodes;
