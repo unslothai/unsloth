@@ -611,7 +611,6 @@ def test_a_partially_cached_snapshot_downloads_before_the_decision(tmp_path, mon
             partial, "transformer", 4096, "diffusion_pytorch_model-00001-of-00005.safetensors"
         )
     if cached == "one_dit_shard_no_index":
-        # Isolate the missing index: every other component and model config is cached.
         _header_only(partial, "text_encoder", 1000, "model.safetensors")
         _header_only(partial, "vae", 161)
         for name in ("transformer", "text_encoder", "vae"):
@@ -672,7 +671,6 @@ def test_numbered_shards_require_an_index_covering_them(tmp_path, stem, extensio
     assert not sh.snapshot_weights_complete(tmp_path, variant = variant)
     assert sh.snapshot_weights_complete(tmp_path, skip = ("transformer",), variant = variant)
     (sub / names[1]).touch()
-    # Even all numbered files require the index the loader opens.
     assert not sh.snapshot_weights_complete(tmp_path, variant = variant)
     shard_index = sub / f"{stem}.{extension}.index{mark}.json"
     orphan = f"{stem}{mark}.{extension}"

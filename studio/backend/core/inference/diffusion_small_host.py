@@ -269,9 +269,7 @@ def snapshot_weights_complete(
     skip: Any = (),
     variant: Optional[str] = None,
 ) -> bool:
-    """False for missing weights, unindexed numbered shards or missing index-listed shards.
-    True without ``model_index.json``.
-    ``skip`` names caller-supplied components; ``variant`` checks only that layout's files."""
+    """Check pipeline weights for the requested variant, excluding caller-supplied components."""
     try:
         root = Path(snapshot)
         index = json.loads((root / "model_index.json").read_text(encoding = "utf-8"))
@@ -308,8 +306,7 @@ def snapshot_weights_complete(
             if any(not (sub / shard).is_file() for shard in shards):
                 return False
             indexed_shards.update(shards)
-        # A shard may arrive before its index during a concurrent snapshot download.
-        # The loader needs that index even if all numbered files are already cached.
+        # All numbered shards still need the index the loader opens.
         if any(
             re.search(r"-\d{5}-of-\d{5}(?:\.[^.]+)?\.(?:safetensors|bin)$", f.name)
             and f.name not in indexed_shards
