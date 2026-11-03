@@ -279,3 +279,25 @@ def test_fp16_zero_bias_is_not_shared_across_cuda_streams(monkeypatch):
         assert F8._scaled_mm_fp16_bias(x, w) is other
     assert other is not bias
     assert F8._scaled_mm_fp16_bias(x, w) is bias
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+def test_fp16_zero_bias_is_graph_private_during_cuda_graph_capture(monkeypatch):
+    # Warmup on the capture stream fills the cache; capture must still get its own bias, not the evictable one.
+    _fp16_mode(monkeypatch, "bias")
+    x = torch.empty(4, 32, dtype = torch.float16, device = "cuda")
+    w = torch.empty(48, 32, dtype = torch.float8_e4m3fn, device = "cuda")
+    side = torch.cuda.Stream()
+    side.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(side):
+        warm = F8._scaled_mm_fp16_bias(x, w)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream = side):
+            captured = F8._scaled_mm_fp16_bias(x, w)
+            out = captured + 1
+    torch.cuda.current_stream().wait_stream(side)
+    graph.replay()
+    torch.cuda.synchronize()
+    assert captured is not warm
+    assert all(v is not captured for v in F8._SCALED_MM_FP16_ZERO_BIAS_CACHE.values())
+    assert torch.equal(out, torch.ones_like(out))

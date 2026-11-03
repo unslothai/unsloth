@@ -2072,20 +2072,16 @@ def _scaled_mm_fp16_bias(x, weight):
         # Traced: a constant in the graph, no Python cache lookup to guard on.
         return torch.zeros(n, dtype = torch.float16, device = device)
     # A real CUDA tensor means CUDA is initialized; a fake one (tests, tracing) must not initialize it.
-    stream = (
-        torch.cuda.current_stream(device).cuda_stream
-        if device.type == "cuda" and torch.cuda.is_initialized()
-        else None
-    )
-    key = (n, device, stream)
+    cuda = device.type == "cuda" and torch.cuda.is_initialized()
+    if cuda and torch.cuda.is_current_stream_capturing():
+        # Graph-private: a cached bias could be evicted and its memory reused while the graph still reads it.
+        return torch.zeros(n, dtype = torch.float16, device = device)
+    key = (n, device, torch.cuda.current_stream(device).cuda_stream if cuda else None)
     bias = _SCALED_MM_FP16_ZERO_BIAS_CACHE.get(key)
     if bias is None:
         with torch.inference_mode(False), torch.no_grad():
             bias = torch.zeros(n, dtype = torch.float16, device = device)
-        # Never cache a fake tensor, or one made during CUDA graph capture (its fill only runs on replay).
-        if type(bias) is torch.Tensor and not (
-            device.type == "cuda" and torch.cuda.is_current_stream_capturing()
-        ):
+        if type(bias) is torch.Tensor:  # never cache a fake tensor
             if len(_SCALED_MM_FP16_ZERO_BIAS_CACHE) >= _SCALED_MM_FP16_ZERO_BIAS_CACHE_MAX:
                 _SCALED_MM_FP16_ZERO_BIAS_CACHE.clear()
             _SCALED_MM_FP16_ZERO_BIAS_CACHE[key] = bias
