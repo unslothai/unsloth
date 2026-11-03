@@ -14,6 +14,7 @@ const {
   missingRlRoles,
   pythonRewardRow,
   resolveRlMapping,
+  rowAnswer,
   syncRlMapping,
 } = await import("../src/features/training/lib/rl-roles.ts");
 
@@ -90,14 +91,22 @@ test("a Python reward preview row keeps mapped columns and value types, as GRPO 
 });
 
 test("a prompt-only GRPO dataset gives a Python reward no answer", () => {
-  assert.deepEqual(pythonRewardRow({ prompt: "p", id: 7 }, null), { id: 7 });
+  assert.deepEqual(pythonRewardRow({ prompt: "p", id: 7 }, undefined), {
+    id: 7,
+  });
   assert.deepEqual(
     pythonRewardRow(
       { messages: [], completion: "c", label: true, id: 7 },
-      null,
+      undefined,
     ),
     { id: 7 },
   );
+  // An empty answer cell is still an answer kwarg, as None.
+  assert.deepEqual(pythonRewardRow({ sol: null, id: 7 }, null), {
+    sol: null,
+    id: 7,
+    answer: null,
+  });
 });
 
 test("GRPO reward reference columns must come from the dataset", async () => {
@@ -260,4 +269,14 @@ test("Try it joins an Alpaca input onto the instruction, as training does", () =
     ),
     "Add these.",
   );
+});
+
+test("a reward preview reads a blank mapped answer as blank, as GRPO training does", () => {
+  assert.equal(rowAnswer({ answer: "72" }, "answer"), "72");
+  assert.equal(rowAnswer({ answer: null }, "answer"), null);
+  assert.equal(rowAnswer({ answer: "" }, "answer"), "");
+  assert.equal(rowAnswer({ answer: 5 }, "answer"), "5");
+  // Only no row or no answer role leaves the preview to its sample answer.
+  assert.equal(rowAnswer(null, "answer"), undefined);
+  assert.equal(rowAnswer({ answer: "72" }, undefined), undefined);
 });

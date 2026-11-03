@@ -158,9 +158,10 @@ export function alpacaPromptCell(
   return cell;
 }
 
+/** ``answer`` undefined: no answer role, so no answer kwarg; null is an empty cell, kept as null. */
 export function pythonRewardRow(
   row: Record<string, unknown>,
-  answer: string | null,
+  answer: string | null | undefined,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(row)) {
@@ -168,7 +169,7 @@ export function pythonRewardRow(
       out[column] = value;
     }
   }
-  if (answer !== null) {
+  if (answer !== undefined) {
     out.answer = answer;
   }
   return out;
@@ -208,4 +209,20 @@ export function syncRlMapping(
     }
   }
   return next;
+}
+
+/** The answer GRPO training gets from this row's answer column: null for an empty cell, as
+ * training keeps it. Undefined when there is no row or no answer role to read. */
+export function rowAnswer(
+  row: Record<string, unknown> | null | undefined,
+  answerColumn: string | undefined,
+): string | null | undefined {
+  if (!row || !answerColumn) {
+    return undefined;
+  }
+  const value = row[answerColumn];
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return typeof value === "string" ? value : JSON.stringify(value);
 }

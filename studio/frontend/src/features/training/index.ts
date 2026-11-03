@@ -97,6 +97,7 @@ export {
   missingRlRoles,
   rlObjectiveSupported,
   resolveRlMapping,
+  rowAnswer,
   syncRlMapping,
 } from "./lib/rl-roles";
 export type { RlObjective, RlRole } from "./lib/rl-roles";
