@@ -300,7 +300,8 @@ class RewardWorker:
         # Without this a crashed trainer would leave the worker polling forever.
         while not self._closed.wait(HEARTBEAT_SECONDS):
             try:
-                Path(self._workdir, "alive").touch()
+                # Rewritten, not touched: touch() would follow a link the reward put there.
+                _worker_io.put(os.path.join(self._workdir, "alive"), {})
             except (OSError, TypeError):
                 return
 
@@ -389,7 +390,7 @@ class RewardWorker:
 
     def log_tail(self, limit: int = 2000) -> str:
         try:
-            text = Path(self._workdir, "worker.log").read_text("utf-8", errors = "replace")
+            text = _worker_io.read_text(os.path.join(self._workdir, "worker.log"))
         except (OSError, TypeError):
             return ""
         return text[-limit:].strip()
@@ -444,7 +445,7 @@ class RewardWorker:
                 _kill_tree(proc)
             else:
                 try:
-                    Path(self._workdir, "stop").touch()
+                    _worker_io.put(os.path.join(self._workdir, "stop"), {})
                     proc.wait(timeout = 5)
                 except Exception:  # noqa: BLE001
                     _kill_tree(proc)

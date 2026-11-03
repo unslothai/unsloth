@@ -1309,3 +1309,24 @@ def test_an_image_named_text_column_is_not_kept_for_python_rewards():
 
     rendered, _ = rl.render_grpo_prompts(out, Tok(), None)
     assert rendered[0]["prompt"] == "tools=True"
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink") or os.name == "nt", reason = "POSIX symlinks")
+def test_the_host_never_writes_or_reads_through_a_link_the_reward_planted(tmp_path):
+    # Reward code shares the workdir; a link at a name the host writes must not redirect it.
+    from core.training import reward_worker_main as io
+
+    target = tmp_path / "host-file"
+    target.write_text("keep")
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+    req = workdir / "req-1.json"
+    os.symlink(target, str(req) + ".tmp")
+    os.symlink(target, req)
+    io.put(str(req), {"x": 1})
+    assert target.read_text() == "keep"
+    assert not req.is_symlink() and json.loads(req.read_text()) == {"x": 1}
+    res = workdir / "res-1.json"
+    os.symlink(target, res)
+    with pytest.raises(OSError):
+        io.take(str(res))
