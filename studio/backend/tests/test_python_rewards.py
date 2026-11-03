@@ -643,6 +643,17 @@ def test_a_preview_row_keeps_its_value_types(client):
     assert _preview_as(client, "acct-a", payload) == 5.0
 
 
+@pytest.mark.parametrize("answer, text", [(True, "True"), ({"x": 1}, "{'x': 1}"), (None, None)])
+def test_a_preview_answer_is_text_as_training_makes_it(client, answer, text):
+    # rl.py keeps the answer role as str(cell), so a JSON true is "True", not "true".
+    md = _python_md(
+        "answer-text",
+        f"def reward(completions, answer, **kw):\n    return [float(answer[0] == {text!r})] * len(completions)\n",
+    )
+    payload = {"rewards": [{"markdown": md}], "completion": "x", "row": {"answer": answer}}
+    assert _preview_as(client, "acct-a", payload) == 1.0
+
+
 ONE = "def reward(completions, **kw):\n    return [1.0] * len(completions)\n"
 
 

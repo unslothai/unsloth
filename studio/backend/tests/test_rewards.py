@@ -203,6 +203,25 @@ def test_preview_scores_and_weights(client):
     assert body["total"] == 3.0
 
 
+@pytest.mark.parametrize(
+    "reference, completion",
+    [(True, "True"), ({"x": 1}, "{'x': 1}"), ([1, 2], "[1, 2]"), (5, "5"), ("", "")],
+)
+def test_preview_scores_a_structured_reference_as_training_does(client, reference, completion):
+    # Training hands score_rule the raw cell, which str() turns into Python's text, not JSON's.
+    md = _md("same", "type: exact_match\nscore: {match: 1, miss: -1}")
+    response = client.post(
+        "/api/rewards/preview",
+        json = {
+            "rewards": [{"markdown": md}],
+            "completion": completion,
+            "reference": reference,
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["scores"][0]["score"] == 1.0
+
+
 def test_bundled_root_is_packaged():
     pyproject = Path(rewards.__file__).parents[4] / "pyproject.toml"
     assert "backend/core/training/bundled_rewards/**/*.md" in pyproject.read_text("utf-8")
