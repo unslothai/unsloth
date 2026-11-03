@@ -374,6 +374,17 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             body = (
                 b"<html><body><main><h1>Page</h1><p>" + b"word " * 80 + b"</p></main></body></html>"
             )
+            if host.startswith("links"):
+                # Same-site links are kept only when the page fits the call's budget.
+                links = b"".join(
+                    b'<li><a href="/docs/' + b"section-%d/" % i * 12 + b'">part</a></li>'
+                    for i in range(12)
+                )
+                body = (
+                    b"<html><body><main><h1>Page</h1><ul>"
+                    + links
+                    + b"</ul><p>LAST_FACT_MARKER</p></main></body></html>"
+                )
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.send_header("Content-Length", str(len(body)))
@@ -413,7 +424,7 @@ class _SlowPages:
         self.running = 0
         self.peak = 0
         self.fetched = []
-        real = tools._fetch_page_text
+        real = tools._download_page
 
         def fetch(url, *args, **kwargs):
             with self.lock:
@@ -430,7 +441,7 @@ class _SlowPages:
                 return "Fetch cancelled."
             return real(url, *args, **kwargs)
 
-        monkeypatch.setattr(tools, "_fetch_page_text", fetch)
+        monkeypatch.setattr(tools, "_download_page", fetch)
 
 
 def _local_turn(
@@ -530,6 +541,27 @@ def test_local_loop_fits_each_started_read_to_its_own_turn(monkeypatch, local_si
     assert len(budgets) == 2 and all(budget is not None for budget in budgets)
     ends = [e["result"] for e in events if e["type"] == "tool_end"]
     assert len(ends) == 2 and all(len(result) < 400 for result in ends)
+
+
+def test_local_loop_renders_a_started_read_under_its_own_budget(monkeypatch, local_sites):
+    calls = [_local_url(0, "a", local_sites), _local_url(1, "links", local_sites)]
+    real = tools.execute_tool
+
+    def execute(name, arguments, **kwargs):
+        kwargs["result_budget_tokens"] = 200
+        return real(name, arguments, **kwargs)
+
+    monkeypatch.setattr(tools, "execute_tool", execute)
+    slow = _SlowPages(monkeypatch)
+    monkeypatch.setattr(loop_mod, "_WEB_FETCH_CONCURRENCY", 1, raising = False)
+    serial, _, _ = _local_turn(monkeypatch, calls)
+    assert slow.peak == 1
+    monkeypatch.setattr(loop_mod, "_WEB_FETCH_CONCURRENCY", 4, raising = False)
+    overlapped, _, _ = _local_turn(monkeypatch, calls)
+
+    assert slow.peak == 2
+    assert overlapped == serial
+    assert "LAST_FACT_MARKER" in [e["result"] for e in overlapped if e["type"] == "tool_end"][1]
 
 
 def test_local_loop_reads_of_one_host_stay_serial(monkeypatch, local_sites):

@@ -16299,8 +16299,18 @@ def _fetch_page_text(
     website_policy: dict | None = None,
 ) -> str:
     """Fetches a URL as readable text (HTML to Markdown); blocks private, loopback and link-local hosts"""
-    if max_chars is None:
-        max_chars = _page_char_budget()
+    page = _download_page(
+        url, timeout = timeout, cancel_event = cancel_event, website_policy = website_policy
+    )
+    return _render_page(page, max_chars)
+
+
+def _download_page(
+    url: str,
+    timeout: int = 30,
+    cancel_event = None,
+    website_policy: dict | None = None,
+):
     # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
     deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
@@ -16326,17 +16336,7 @@ def _fetch_page_text(
         )
         # A 200 README body is authoritative even when HTML; fall back only on failure.
         if err is None and body.strip():
-            readme_body = body
-            # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
-            if _looks_like_html_document(body):
-                from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
-                readme_body = converted if converted.strip() else body
-            if readme_body.strip():
-                return _truncate_page_text(
-                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
-                    max_chars,
-                )
+            return ("readme", url, body)
 
     raw_file_url = _github_blob_raw_url(url)
     if raw_file_url:
@@ -16348,7 +16348,7 @@ def _fetch_page_text(
             **policy_kwargs,
         )
         if err is None and body.strip():
-            return _truncate_page_text(body.strip(), max_chars)
+            return ("text", url, body.strip())
 
     meta: dict = {}
     err, body, content_type = _fetch_url_raw(
@@ -16368,13 +16368,33 @@ def _fetch_page_text(
         return err
 
     # Sniff the body when Content-Type is missing or wrong.
-    is_html = "html" in content_type or _looks_like_html(body)
-    if not is_html:
-        # Converting plain text through the HTML renderer would collapse whitespace.
-        return _truncate_page_text(body.strip(), max_chars)
+    if "html" in content_type or _looks_like_html(body):
+        return ("html", url, body)
+    # Converting plain text through the HTML renderer would collapse whitespace.
+    return ("text", url, body.strip())
 
-    # Convert HTML to Markdown with the builtin converter (no external deps).
+
+# Reads the call's budget context vars: run inside execute_tool, never on a prefetch thread.
+def _render_page(page, max_chars: int | None = None) -> str:
+    if isinstance(page, str):
+        return page
+    if max_chars is None:
+        max_chars = _page_char_budget()
+    kind, url, body = page
+    if kind == "text":
+        return _truncate_page_text(body, max_chars)
     from ._html_to_md import SiteLinks, html_to_markdown
+
+    if kind == "readme":
+        readme_body = body
+        # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
+        if _looks_like_html_document(body):
+            converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
+            readme_body = converted if converted.strip() else body
+        return _truncate_page_text(
+            f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+            max_chars,
+        )
 
     site_links = SiteLinks(url)
     # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
@@ -16707,10 +16727,9 @@ class StartedUrlRead:
 
     def _run(self, url, timeout, cancel_event, website_policy) -> None:
         try:
-            self._value = _web_search(
-                "",
-                url = url,
-                timeout = timeout,
+            self._value = _download_page(
+                url,
+                timeout = _url_read_timeout(timeout),
                 cancel_event = cancel_event,
                 website_policy = website_policy,
             )
@@ -16723,7 +16742,11 @@ class StartedUrlRead:
         self._done.wait()
         if self._error is not None:
             raise self._error
-        return self._value
+        return _render_page(self._value)
+
+
+def _url_read_timeout(timeout):
+    return 60 if timeout is None else min(timeout, 60)
 
 
 class _ImageSweep:
@@ -16905,10 +16928,9 @@ def _web_search(
     """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
-        fetch_timeout = 60 if timeout is None else min(timeout, 60)
         return _fetch_page_text(
             url.strip(),
-            timeout = fetch_timeout,
+            timeout = _url_read_timeout(timeout),
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
