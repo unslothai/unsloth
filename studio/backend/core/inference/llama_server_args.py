@@ -854,10 +854,17 @@ def parse_gpu_layers_override(args: Optional[Iterable[str]]) -> Optional[int]:
     raw_value = _last_flag_value(args, _GPU_LAYER_FLAGS)
     if raw_value is None:
         return None
+    if raw_value == "auto":
+        return -1
+    if raw_value == "all":
+        # Manual mode needs a fixed count; negative values enable fitting.
+        return 2**31 - 1
     try:
         value = int(raw_value)
     except ValueError as exc:
-        raise ValueError("llama-server GPU layers flag requires an integer value") from exc
+        raise ValueError(
+            "llama-server GPU layers flag requires an integer value, auto, or all"
+        ) from exc
     if value < -1:
         raise ValueError("llama-server GPU layers flag requires an integer value of at least -1")
     return value
