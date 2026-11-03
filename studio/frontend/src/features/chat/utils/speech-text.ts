@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { decodeNamedCharacterReference } from "decode-named-character-reference";
+import emojiRegex from "emoji-regex";
 import type { Nodes, Root, RootContent } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
@@ -11,7 +12,6 @@ import { math } from "micromark-extension-math";
 import { defaultRehypePlugins } from "streamdown";
 import { normalizeEscapedInlineMath } from "../../../lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../../../lib/latex.ts";
-import emojiRegex from "emoji-regex";
 
 // Tags the chat renders; any other `<tag>` (`Vec<T>`, `<script>`) stays on the page as text.
 const SCHEMA_TAGS = new Set(
@@ -25,25 +25,18 @@ const LINE_TAGS = new Set(
   ),
 );
 function removeTtsEmojis(text: string): string {
-  return text.replace(emojiRegex(), (emoji, offset, source) => {
-    // Preserve text-presentation symbols such as ©, ® and ™.
+  let removed = false;
+  const cleaned = text.replace(emojiRegex(), (emoji) => {
     if (/^[©®™ℹ]$/.test(emoji)) return emoji;
-
-    const before = source.slice(0, offset).at(-1);
-    const after = source.slice(offset + emoji.length).at(0);
-
-    // Avoid merging words when an emoji separates them.
-    if (
-      before &&
-      after &&
-      /[\p{L}\p{N}]$/u.test(before) &&
-      /^[\p{L}\p{N}]/u.test(after)
-    ) {
-      return " ";
-    }
-
-    return "";
+    removed = true;
+    return " ";
   });
+  return removed
+    ? cleaned
+        .replace(/[ \t]+([,.;:!?])/g, "$1")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim()
+    : text;
 }
 
 /** The words a markdown reply shows, for read-aloud: voices speak raw markup ("asterisk asterisk", #12547). */

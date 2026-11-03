@@ -132,8 +132,31 @@ test("read-aloud handles emoji-only messages", () => {
 });
 
 test("read-aloud preserves word boundaries around emojis", () => {
+  for (const input of [
+    "Hello😀world",
+    "Hello😀😀world",
+    "Hello👩‍💻👍🏽world",
+  ]) {
+    assert.equal(markdownToSpeechText(input), "Hello world", input);
+  }
+});
+
+test("read-aloud cleans the reported German and English replies", () => {
   assert.equal(
-    markdownToSpeechText("Hello😀world"),
-    "Hello world",
+    markdownToSpeechText("Hallo! 🥰❤️ Schön, dass du da bist. 😘"),
+    "Hallo! Schön, dass du da bist.",
   );
+  assert.equal(
+    markdownToSpeechText("Hello! 🥰❤️ It's wonderful to see you. 😘"),
+    "Hello! It's wonderful to see you.",
+  );
+});
+
+test("read-aloud preserves ordinary symbols and whitespace without emojis", () => {
+  assert.equal(
+    markdownToSpeechText("© 2026 ® ™ ℹ 123 # *"),
+    "© 2026 ® ™ ℹ 123 # *",
+  );
+  assert.equal(markdownToSpeechText("`two  spaces`"), "two  spaces");
+  assert.equal(markdownToSpeechText("word🥰❤️, next"), "word, next");
 });
