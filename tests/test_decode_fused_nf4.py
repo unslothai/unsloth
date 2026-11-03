@@ -1324,3 +1324,63 @@ def test_partial_module_copy_does_not_copy_its_root():
     assert owner[0].weight.dtype == torch.float32
     assert owner.__dict__[D._PLAN] is held
     assert owner[0].__dict__["_apply"].root_ref() is owner
+
+
+@pytest.mark.parametrize("plan_key", ["_PLAN", "_BATCH_PLAN"])
+def test_nf4_merge_unload_invalidates_restored_projection_weights(plan_key):
+    bnb = pytest.importorskip("bitsandbytes")
+    peft = pytest.importorskip("peft")
+    D = _driver()
+    projection = bnb.nn.Linear4bit(
+        64,
+        64,
+        bias = False,
+        compute_dtype = torch.float16,
+        compress_statistics = False,
+        quant_type = "nf4",
+    )
+    projection.weight = bnb.nn.Params4bit(
+        projection.weight.detach().half(),
+        requires_grad = False,
+        compress_statistics = False,
+        quant_type = "nf4",
+    )
+    projection.to("cpu")
+    if projection.weight.quant_state is None:
+        pytest.skip("bitsandbytes cannot quantize NF4 on CPU")
+    owner = torch.nn.ModuleDict({"proj": projection})
+    owner.is_loaded_in_4bit = True
+    cached_weight = projection.weight
+    cached_bytes = cached_weight.detach().clone()
+    x = torch.ones(1 if plan_key == "_PLAN" else 2, 64, dtype = torch.float16)
+    before = torch.nn.functional.linear(
+        x.float(),
+        bnb.functional.dequantize_4bit(cached_weight.data, cached_weight.quant_state).float(),
+    )
+    plan = types.SimpleNamespace(
+        watch = [],
+        adapter_state = (),
+        bindings = [(owner, "proj", projection)],
+        tensor_bindings = ((projection, "weight", cached_weight),),
+    )
+    key = getattr(D, plan_key)
+    setattr(owner, key, plan)
+    D._track_moves(owner)
+    adapted = peft.get_peft_model(
+        owner, peft.LoraConfig(r = 2, lora_alpha = 2, target_modules = ["proj"])
+    )
+    with torch.no_grad():
+        owner.proj.lora_A["default"].to(dtype = torch.float16)
+        owner.proj.lora_B["default"].to(dtype = torch.float16)
+        owner.proj.lora_A["default"].weight.fill_(1)
+        owner.proj.lora_B["default"].weight.fill_(0.25)
+        merged = adapted.merge_and_unload()
+    assert merged is owner and owner.proj is projection
+    assert getattr(owner, key) is plan
+    assert projection.weight is not cached_weight
+    assert torch.equal(cached_weight, cached_bytes)
+    assert not torch.equal(projection.weight, cached_bytes)
+    with torch.no_grad():
+        after = projection(x).float()
+    assert torch.isfinite(after).all() and (after - before).abs().max() > 1
+    assert D._plan_stale(plan)
