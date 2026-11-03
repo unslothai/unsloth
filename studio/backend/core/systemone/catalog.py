@@ -674,9 +674,13 @@ def default_checkpoint() -> Checkpoint | Connection:
     if (checkpoint := fine_tune(configured)) is not None:
         return checkpoint
     subfolder = os.environ.get("UNSLOTH_SYSTEMONE_SUBFOLDER", "").strip() or None
-    from utils.models.model_config import CLEF_MARKERS
+    from utils.models.model_config import CLEF_MARKERS, is_d1_folder
 
     folder = Path(configured).expanduser()
+    if subfolder is None and is_d1_folder(folder):
+        return Checkpoint(
+            LOCAL_NAME, configured, None, "Local d1 checkpoint.", layout = "clef", backend = "mlx"
+        )
     if subfolder is None and all((folder / name).is_file() for name in CLEF_MARKERS):
         return Checkpoint(LOCAL_NAME, configured, None, "Local Clef checkpoint.", layout = "clef")
     return Checkpoint(LOCAL_NAME, configured, subfolder, "Local Laya checkpoint.")

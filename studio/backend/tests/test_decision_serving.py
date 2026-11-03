@@ -1691,7 +1691,7 @@ def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, e
     assert not laya_runtime._mlx_reads(catalog.CHECKPOINTS["kev-4b"], "images")
 
 
-def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine):
+def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypatch):
     folder = home / "d1_ft"
     folder.mkdir()
     config = {
@@ -1715,6 +1715,10 @@ def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine):
     for runtime in ("pytorch", "llama.cpp"):
         with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
             laya_runtime.select(tuned, preference = runtime)
+    # Named by its folder in the environment, it is the same d1.
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(folder))
+    local = catalog.default_checkpoint()
+    assert (local.name, local.layout, local.backend) == (catalog.LOCAL_NAME, "clef", "mlx")
     # A head on the same model makes it a Clef, not a d1 by name alone.
     plain = catalog.fine_tune(_clef_fine_tune(home, "clef_ft"))
     assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
