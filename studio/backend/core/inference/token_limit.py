@@ -115,7 +115,7 @@ def period_window(
     zone = _zone(tz_name)
     now_ms = now_ms if now_ms is not None else int(time.time() * 1000)
     now = datetime.fromtimestamp(now_ms / 1000, zone)
-    day = now.replace(hour = 0, minute = 0, second = 0, microsecond = 0)
+    day = now.replace(hour = 0, minute = 0, second = 0, microsecond = 0, fold = 0)
     if period == "week":
         start = day - timedelta(days = day.weekday())
         end = start + timedelta(days = 7)

@@ -284,6 +284,10 @@ def test_periods_start_at_local_midnight_monday_and_the_first(limiter_db):
     december = int(datetime(2026, 12, 20, tzinfo = timezone.utc).timestamp() * 1000)
     _start, end = token_limit.period_window("month", "UTC", december)
     assert end == int(datetime(2027, 1, 1, tzinfo = timezone.utc).timestamp() * 1000)
+    for hour in (4, 5, 6):
+        repeated_hour = int(datetime(2026, 11, 1, hour, 30, tzinfo = timezone.utc).timestamp() * 1000)
+        start, _end = token_limit.period_window("day", "America/Havana", repeated_hour)
+        assert start == int(datetime(2026, 11, 1, 4, tzinfo = timezone.utc).timestamp() * 1000)
 
 
 def test_the_override_lets_exactly_one_request_through_per_period(limiter_db):
