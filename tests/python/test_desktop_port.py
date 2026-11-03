@@ -98,7 +98,9 @@ def test_custom_port_reaches_child_argv_and_discovery_on_repeated_launch(desktop
         assert len(discovered) == len(set(discovered))
 
 
-@pytest.mark.parametrize("value", ["0", "65536", "-1", "localhost:9123"])
+@pytest.mark.parametrize(
+    "value", ["0", "65536", "-1", "localhost:9123", "6000", "5999", "10080", "65535"]
+)
 def test_invalid_override_does_not_launch(desktop_port_binary, value):
     result = _run(desktop_port_binary, value)
     assert result.returncode == 2

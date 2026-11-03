@@ -4,12 +4,19 @@
 use std::ffi::OsStr;
 
 pub(crate) const PORT_ENV: &str = "UNSLOTH_DESKTOP_PORT";
+// Fetch forbids these HTTP ports: https://fetch.spec.whatwg.org/#port-blocking
+const BROWSER_BLOCKED_PORTS: &[u16] = &[
+    1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669,
+    6679, 6697, 10080,
+];
 
 pub(crate) fn configured_port(value: Option<&OsStr>) -> Result<Option<u16>, String> {
     let Some(value) = value else {
         return Ok(None);
     };
-    let invalid = || format!("{PORT_ENV} must be a port from 1 to 65535.");
+    let invalid = || {
+        format!("{PORT_ENV} must be between 1024 and 65515; the chosen port and its next 20 ports must be allowed by browsers.")
+    };
     let value = value.to_str().ok_or_else(invalid)?.trim();
     if value.is_empty() {
         return Ok(None);
@@ -17,7 +24,10 @@ pub(crate) fn configured_port(value: Option<&OsStr>) -> Result<Option<u16>, Stri
     value
         .parse::<u16>()
         .ok()
-        .filter(|port| *port != 0)
+        .filter(|&port| {
+            (1024..=65515).contains(&port)
+                && fallback_ports(port).all(|candidate| !BROWSER_BLOCKED_PORTS.contains(&candidate))
+        })
         .map(Some)
         .ok_or_else(invalid)
 }
@@ -67,11 +77,42 @@ mod tests {
 
     #[test]
     fn invalid_ports_are_rejected() {
-        for value in ["0", "65536", "-1", "localhost:9000", "abc"] {
+        for value in [
+            "0",
+            "80",
+            "65516",
+            "65535",
+            "65536",
+            "-1",
+            "localhost:9000",
+            "abc",
+        ] {
+            assert!(resolve_port(8888, Some(OsStr::new(value))).is_err());
+        }
+    }
+
+    #[test]
+    fn every_accepted_fallback_is_browser_reachable_and_in_range() {
+        for port in 1..=u16::MAX {
+            if let Ok(Some(start)) = configured_port(Some(OsStr::new(&port.to_string()))) {
+                assert_eq!(start, port);
+                let candidates: Vec<_> = fallback_ports(start).collect();
+                assert_eq!(candidates.len(), 21);
+                assert!(candidates
+                    .iter()
+                    .all(|p| !BROWSER_BLOCKED_PORTS.contains(p)));
+            }
+        }
+        for port in [1024, 3000, 8080, 9000, 65515] {
             assert_eq!(
-                resolve_port(8888, Some(OsStr::new(value))),
-                Err("UNSLOTH_DESKTOP_PORT must be a port from 1 to 65535.".to_string()),
+                configured_port(Some(OsStr::new(&port.to_string()))),
+                Ok(Some(port))
             );
+        }
+        for port in BROWSER_BLOCKED_PORTS {
+            for offset in 0..=20 {
+                assert!(configured_port(Some(OsStr::new(&(port - offset).to_string()))).is_err());
+            }
         }
     }
 
