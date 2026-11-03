@@ -3912,7 +3912,7 @@ export const cs = {
         desktopAvailableDescription:
           "Aktualizujte nyní; po dokončení se desktopová aplikace restartuje.",
         desktopExternalServer:
-          "Aplikace je připojena k serveru Unsloth na portu {port}, který sama nespustila, například k `unsloth studio` spuštěnému v terminálu. Aplikace tento server nemůže zastavit ani aktualizovat. Zastavte ho tam, kde byl spuštěn, potom desktopovou aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
+          "Připojeno k serveru Unsloth na portu {port}, který tato aplikace nespustila, například `unsloth studio` v terminálu. Aplikace ho nemůže zastavit ani aktualizovat. Zastavte ho tam, kde byl spuštěn, potom aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
         desktopManualInstall:
           "Otevřete stránku vydání a nainstalujte nejnovější balíček pro Linux.",
         desktopCheckFailed: "Aktualizace se nepodařilo zkontrolovat",
@@ -5802,7 +5802,7 @@ export const cs = {
     serverStopped: "Server je zastaven",
     serverDisconnected: "Odpojeno od serveru na portu {port}",
     serverDisconnectedDescription:
-      "Odpojení tento server nezastavilo. Tato aplikace ho nespustila, a proto ho nemůže zastavit. Zastavte ho tam, kde byl spuštěn, například v terminálu, ve kterém běží `unsloth studio`, a potom klikněte na Spustit server.",
+      "Odpojení tento server nezastavilo. Zastavte ho tam, kde byl spuštěn, například v terminálu, ve kterém běží `unsloth studio`, a potom klikněte na Spustit server.",
     startServer: "Spustit server",
     somethingWrong: "Něco se pokazilo",
     diagnostics: {

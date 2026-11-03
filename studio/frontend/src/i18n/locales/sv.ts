@@ -3782,7 +3782,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen är ansluten till en Unsloth-server på port {port} som den inte har startat själv, till exempel `unsloth studio` som körs i en terminal. Appen kan inte stoppa eller uppdatera den servern. Stoppa den där den startades, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Ansluten till en Unsloth-server på port {port} som den här appen inte har startat, till exempel `unsloth studio` i en terminal. Appen kan inte stoppa eller uppdatera den. Stoppa den där den startades, avsluta sedan appen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -5621,7 +5621,7 @@ export const sv = {
     serverStopped: "Servern har stoppats",
     serverDisconnected: "Frånkopplad från servern på port {port}",
     serverDisconnectedDescription:
-      "Frånkopplingen stoppade inte den servern. Den här appen startade den inte och kan därför inte stoppa den. Stoppa den där den startades, till exempel i terminalen som kör `unsloth studio`, och klicka sedan på Starta server.",
+      "Frånkopplingen stoppade inte den servern. Stoppa den där den startades, till exempel i terminalen som kör `unsloth studio`, och klicka sedan på Starta server.",
     startServer: "Starta server",
     somethingWrong: "Något gick fel",
     diagnostics: {

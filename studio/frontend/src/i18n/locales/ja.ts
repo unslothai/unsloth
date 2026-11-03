@@ -3563,7 +3563,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "アプリは、自身が起動していないポート {port} の Unsloth サーバー（ターミナルで実行した `unsloth studio` など）に接続しています。アプリはこのサーバーを停止することも更新することもできません。起動した場所でサーバーを停止し、デスクトップアプリを終了してから再度開いて更新してください。",
+          "このアプリが起動していないポート {port} の Unsloth サーバー（ターミナルで実行した `unsloth studio` など）に接続しています。アプリはこのサーバーを停止することも更新することもできません。起動した場所で停止してから、アプリを終了して再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",
@@ -5329,7 +5329,7 @@ export const ja = {
     serverStopped: "サーバーが停止しました",
     serverDisconnected: "ポート {port} のサーバーから切断しました",
     serverDisconnectedDescription:
-      "切断操作では、このサーバーは停止されませんでした。このアプリが起動したものではないため、アプリからは停止できません。起動した場所（`unsloth studio` を実行しているターミナルなど）で停止してから、「サーバーを起動」をクリックしてください。",
+      "切断操作では、このサーバーは停止されませんでした。起動した場所（`unsloth studio` を実行しているターミナルなど）で停止してから、「サーバーを起動」をクリックしてください。",
     startServer: "サーバーを起動",
     somethingWrong: "問題が発生しました",
     diagnostics: {

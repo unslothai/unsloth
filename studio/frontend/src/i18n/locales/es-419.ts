@@ -3957,7 +3957,7 @@ export const es419 = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación está conectada a un servidor de Unsloth en el puerto {port} que no inició ella misma, por ejemplo `unsloth studio` ejecutado en una terminal. La aplicación no puede detener ni actualizar ese servidor. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación de escritorio para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en una terminal. La aplicación no puede detenerlo ni actualizarlo. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudieron buscar actualizaciones",
@@ -5871,7 +5871,7 @@ export const es419 = {
     serverStopped: "Servidor detenido",
     serverDisconnected: "Desconectado del servidor en el puerto {port}",
     serverDisconnectedDescription:
-      "Desconectarse no detuvo ese servidor. Esta aplicación no lo inició, así que no puede detenerlo. Detenlo donde se inició, por ejemplo en la terminal que ejecuta `unsloth studio`, y luego haz clic en Iniciar servidor.",
+      "Desconectarse no detuvo ese servidor. Detenlo donde se inició, como la terminal que ejecuta `unsloth studio`, y luego haz clic en Iniciar servidor.",
     startServer: "Iniciar servidor",
     somethingWrong: "Algo salió mal",
     diagnostics: {

@@ -3642,7 +3642,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Die App ist mit einem Unsloth-Server auf Port {port} verbunden, den sie nicht selbst gestartet hat, zum Beispiel `unsloth studio` in einem Terminal. Die App kann diesen Server weder stoppen noch aktualisieren. Stoppen Sie ihn dort, wo er gestartet wurde, beenden Sie dann die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
+          "Verbunden mit einem Unsloth-Server auf Port {port}, den diese App nicht gestartet hat, zum Beispiel `unsloth studio` in einem Terminal. Die App kann ihn weder stoppen noch aktualisieren. Stoppen Sie ihn dort, wo er gestartet wurde, beenden Sie dann die App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",
@@ -5452,7 +5452,7 @@ export const de = {
     serverStopped: "Server gestoppt",
     serverDisconnected: "Verbindung zum Server auf Port {port} getrennt",
     serverDisconnectedDescription:
-      "Durch das Trennen wurde dieser Server nicht gestoppt. Diese App hat ihn nicht gestartet und kann ihn daher nicht stoppen. Stoppen Sie ihn dort, wo er gestartet wurde, zum Beispiel im Terminal, in dem `unsloth studio` läuft, und klicken Sie dann auf Server starten.",
+      "Durch das Trennen wurde dieser Server nicht gestoppt. Stoppen Sie ihn dort, wo er gestartet wurde, zum Beispiel im Terminal, in dem `unsloth studio` läuft, und klicken Sie dann auf Server starten.",
     startServer: "Server starten",
     somethingWrong: "Etwas ist schiefgelaufen",
     diagnostics: {

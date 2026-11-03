@@ -3606,7 +3606,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app is connected to an Unsloth server on port {port} that it did not start, for example `unsloth studio` run in a terminal. The app cannot stop or update that server. Stop it where it was started, then quit and reopen the desktop app to update.",
+          "Connected to an Unsloth server on port {port} that this app did not start, such as `unsloth studio` in a terminal. The app cannot stop or update it. Stop it where it was started, then quit and reopen the app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
@@ -5415,7 +5415,7 @@ export const en = {
     serverStopped: "Server stopped",
     serverDisconnected: "Disconnected from the server on port {port}",
     serverDisconnectedDescription:
-      "Disconnecting did not stop that server. This app did not start it, so it cannot stop it. Stop it where it was started, for example in the terminal running `unsloth studio`, then click Start Server.",
+      "Disconnecting did not stop that server. Stop it where it was started, such as the terminal running `unsloth studio`, then click Start Server.",
     startServer: "Start Server",
     somethingWrong: "Something went wrong",
     diagnostics: {

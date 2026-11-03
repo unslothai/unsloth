@@ -3891,7 +3891,7 @@ export const tr = {
         desktopAvailableDescription:
           "Şimdi güncelleyin; işlem bittiğinde masaüstü uygulaması yeniden başlar.",
         desktopExternalServer:
-          "Uygulama, kendisinin başlatmadığı {port} numaralı bağlantı noktasındaki bir Unsloth sunucusuna bağlı; örneğin bir terminalde çalıştırılan `unsloth studio`. Uygulama bu sunucuyu durduramaz veya güncelleyemez. Güncellemek için sunucuyu başlatıldığı yerden durdurun, ardından masaüstü uygulamasından çıkıp yeniden açın.",
+          "Bu uygulamanın başlatmadığı, {port} numaralı bağlantı noktasındaki bir Unsloth sunucusuna bağlı; örneğin bir terminaldeki `unsloth studio`. Uygulama bu sunucuyu durduramaz veya güncelleyemez. Güncellemek için sunucuyu başlatıldığı yerden durdurun, ardından uygulamadan çıkıp yeniden açın.",
         desktopManualInstall:
           "En son Linux paketini kurmak için sürüm sayfasını açın.",
         desktopCheckFailed: "Güncellemeler denetlenemedi",
@@ -5779,7 +5779,7 @@ export const tr = {
     serverStopped: "Sunucu durduruldu",
     serverDisconnected: "{port} numaralı bağlantı noktasındaki sunucuyla bağlantı kesildi",
     serverDisconnectedDescription:
-      "Bağlantıyı kesmek bu sunucuyu durdurmadı. Bu uygulama onu başlatmadığı için durduramaz. Sunucuyu başlatıldığı yerden, örneğin `unsloth studio` komutunu çalıştıran terminalden durdurun, ardından Sunucuyu Başlat'a tıklayın.",
+      "Bağlantıyı kesmek bu sunucuyu durdurmadı. Sunucuyu başlatıldığı yerden, örneğin `unsloth studio` komutunu çalıştıran terminalden durdurun, ardından Sunucuyu Başlat'a tıklayın.",
     startServer: "Sunucuyu Başlat",
     somethingWrong: "Bir sorun oluştu",
     diagnostics: {

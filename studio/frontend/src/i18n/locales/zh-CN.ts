@@ -3536,7 +3536,7 @@ export const zhCN = {
         desktopAvailable: "桌面应用 {version} 已可用",
         desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
         desktopExternalServer:
-          "应用已连接到端口 {port} 上并非由它启动的 Unsloth 服务器，例如在终端中运行的 `unsloth studio`。应用无法停止或更新该服务器。请在启动它的地方停止它，然后退出并重新打开桌面应用以进行更新。",
+          "已连接到端口 {port} 上并非由此应用启动的 Unsloth 服务器，例如在终端中运行的 `unsloth studio`。应用无法停止或更新该服务器。请在启动它的地方停止它，然后退出并重新打开应用以进行更新。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
         desktopCheckFailed: "无法检查更新",
         desktopCheckFailedDescription: "请检查网络连接后重试。",
@@ -5280,7 +5280,7 @@ export const zhCN = {
     serverStopped: "服务器已停止",
     serverDisconnected: "已断开与端口 {port} 上服务器的连接",
     serverDisconnectedDescription:
-      "断开连接并未停止该服务器。它不是由此应用启动的，因此此应用无法停止它。请在启动它的地方停止它，例如运行 `unsloth studio` 的终端，然后点击“启动服务器”。",
+      "断开连接并未停止该服务器。请在启动它的地方停止它，例如运行 `unsloth studio` 的终端，然后点击“启动服务器”。",
     startServer: "启动服务器",
     somethingWrong: "出现了问题",
     diagnostics: {
