@@ -259,6 +259,31 @@ def test_a_kept_model_is_reused_only_with_the_settings_it_was_loaded_with(monkey
     assert len(loads) == 1
 
 
+def test_a_reload_outside_the_flow_forgets_the_settings_a_kept_model_had(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    loads, state = _fakes(monkeypatch, "fit", [BIG])
+    count = [5]
+    monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: count[0])
+    real_load = loading.load_llm
+
+    async def counted_load(caller, ctx, **kwargs):
+        await real_load(caller, ctx, **kwargs)
+        count[0] += 1
+
+    monkeypatch.setattr(loading, "load_llm", counted_load)
+    options = {"max_seq_length": 8192}
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    # The flow's own loads, alongside or primary, keep what it knows.
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = dict(options)))
+    assert len(loads) == 1
+    # Chat unloads and reloads the kept model with its own settings.
+    count[0] += 2
+    with pytest.raises(FlowNodeError, match = "other load settings"):
+        asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}, options = options))
+    asyncio.run(_common.ensure_model(_Ctx(), "chat", {"repo": SMALL}))
+
+
 def test_unload_after_run_matches_a_gguf_listed_with_its_variant(monkeypatch):
     from core.flows import engine
     from studio_mcp import loading

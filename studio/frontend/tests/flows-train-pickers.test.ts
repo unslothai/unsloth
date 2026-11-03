@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { readSrc } from "./helpers/kit.ts";
-import { hfDatasetChoice } from "../src/features/flows/editor/dataset-choice.ts";
+import { hfDatasetChoice, pickedSplit, shownSplit } from "../src/features/flows/editor/dataset-choice.ts";
 
 test("Fine-tune's base model opens the Train page's picker and stores a plain string", () => {
   const fields = readSrc("features/flows/editor/param-fields.tsx");
@@ -66,4 +66,17 @@ test("the node's params map onto the picker's values, with an unset split runnin
     split: "test",
   });
   assert.deepEqual(hfDatasetChoice({ repo: "", subset: "", split: "" }), { repo: null, subset: null, split: null });
+});
+
+test("a saved split expression survives the dropdown, which lists only split names", () => {
+  assert.equal(shownSplit("train[:10%]"), "train");
+  assert.equal(shownSplit("train+test"), "train");
+  assert.equal(shownSplit(null), null);
+  // Auto-select of the split it shows keeps the slice; picking another split replaces it.
+  assert.equal(pickedSplit("train[:10%]", "train"), "train[:10%]");
+  assert.equal(pickedSplit("train[:10%]", "test"), "test");
+  assert.equal(pickedSplit("train", null), "");
+  const field = readSrc("features/flows/editor/dataset-picker-field.tsx");
+  assert.match(field, /datasetSplit=\{shownSplit\(split\)\}/);
+  assert.match(field, /onChange\(\{ split: pickedSplit\(saved\.current, v\) \}\)/);
 });
