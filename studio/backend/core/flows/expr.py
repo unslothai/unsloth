@@ -86,7 +86,13 @@ def _is_num(x: Any) -> bool:
     return isinstance(x, (int, float)) and not isinstance(x, bool)
 
 
+# Past the largest double the browser player has Infinity, and huge ints would hog the event loop.
+_MAX_DOUBLE = 1.7976931348623157e308
+
+
 def _norm(x: Any) -> Any:
+    if isinstance(x, int) and not isinstance(x, bool) and abs(x) > _MAX_DOUBLE:
+        raise ExprError("number out of range")
     if isinstance(x, float):
         if math.isnan(x) or math.isinf(x):
             raise ExprError("number out of range")
@@ -155,9 +161,18 @@ def _num(x: Any, op: str) -> float:
     return x
 
 
+# Past 10**308 the scale is infinite (the browser gives NaN); bound digits before computing 10 ** digits.
+_ROUND_DIGITS_MAX = 308
+
+
 def _round(x: float, digits: int = 0) -> Any:
+    if abs(int(digits)) > _ROUND_DIGITS_MAX:
+        raise ExprError("round digits out of range")
     f = 10 ** int(digits)
-    return _norm(math.floor(x * f + 0.5) / f)
+    try:
+        return _norm(math.floor(x * f + 0.5) / f)
+    except OverflowError:
+        raise ExprError("number out of range") from None
 
 
 class _Evaluator:
@@ -263,7 +278,15 @@ class _Evaluator:
         if op == "*":
             total = 1
             for a in args:
-                total *= _num(a, op)
+                # Bound each step without changing its type, so float chains match the browser player.
+                try:
+                    total = total * _num(a, op)
+                except OverflowError:
+                    raise ExprError("number out of range") from None
+                if isinstance(total, int) and abs(total) > _MAX_DOUBLE:
+                    raise ExprError("number out of range")
+                if isinstance(total, float) and (math.isnan(total) or math.isinf(total)):
+                    raise ExprError("number out of range")
             return _norm(total)
         if op in ("/", "%"):
             arity(2)
