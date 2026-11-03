@@ -627,6 +627,14 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
   ),
 );
 
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useAppearanceCustomStore.persist.getOptions().name) {
+      void useAppearanceCustomStore.persist.rehydrate();
+    }
+  });
+}
+
 /* ------------------------------ DOM applier ------------------------------ */
 // Platform default from index.css: Inter, or the system font on macOS.
 const DEFAULT_SANS_STACK = "var(--font-sans-default)";
