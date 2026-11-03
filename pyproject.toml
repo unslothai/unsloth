@@ -30,7 +30,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "unsloth_zoo>=2026.10.11",
+    "unsloth_zoo>=2026.11.1",
     "wheel>=0.42.0",
     "packaging",
     # Ceiling tracks the newest torch an extra pins: the cu126/cu130-torch2140 leaves ask
@@ -191,9 +191,11 @@ studio = [
     "av>=12.3.0",
     # No win_arm64 wheel or sdist; RAG treats a missing sqlite_vec as unavailable.
     "sqlite-vec==0.1.9 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel from 1.28 only.
+    # Mirrors studio.txt: HNSW for gigantic RAG scopes, wheels for every target incl. win_arm64.
+    "usearch==2.26.6",
+    # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel only for 1.28.2.
     "pymupdf==1.27.2.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    "pymupdf>=1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
+    "pymupdf==1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
     "pymupdf4llm==0.3.4",
     "python-docx==1.2.0",
     "markdown-it-py>=3.0",
@@ -211,7 +213,7 @@ triton = [
     "triton-windows>=3.8.0.post28 ; (sys_platform == 'win32') and platform_machine == 'ARM64'",
 ]
 huggingface = [
-    "unsloth_zoo>=2026.10.11",
+    "unsloth_zoo>=2026.11.1",
     "wheel>=0.42.0",
     "packaging",
     "torchvision",
@@ -243,7 +245,7 @@ huggingface = [
 # studio/backend/requirements/no-torch-runtime.txt, not plain pip resolution.
 # Kept byte-identical to main so the two branches can be diffed for drift.
 huggingfacenotorch = [
-    "unsloth_zoo>=2026.10.11",
+    "unsloth_zoo>=2026.11.1",
     "wheel>=0.42.0",
     "packaging",
     "numpy",
@@ -280,7 +282,7 @@ amd = [
     # install.sh and studio/install_python_stack.py.
     "bitsandbytes>=0.50.0 ; ('linux' in sys_platform) and (platform_machine == 'AMD64' or platform_machine == 'x86_64' or platform_machine == 'aarch64')",
     "bitsandbytes>=0.50.0 ; (sys_platform == 'win32') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
-    "unsloth_zoo>=2026.10.11",
+    "unsloth_zoo>=2026.11.1",
 ]
 # torchcodec ships wheels only for manylinux x86_64 (aarch64 from 0.11), macOS arm64 and win_amd64;
 # markers mirror PLATFORM_LACKS_TORCHCODEC_WHEEL in studio/install_python_stack.py.
@@ -773,7 +775,7 @@ colab-ampere-torch220 = [
     "unsloth[flashattention]",
 ]
 colab-new = [
-    "unsloth_zoo>=2026.10.11",
+    "unsloth_zoo>=2026.11.1",
     "packaging",
     "transformers>=4.52.4,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.17.0",
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,!=4.4.*,!=4.5.0,<5.0.0",

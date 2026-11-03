@@ -23,9 +23,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   ArrowRightDoubleIcon,
-  Delete02Icon,
   Edit03Icon,
   StarIcon,
 } from "@hugeicons/core-free-icons";
@@ -394,7 +394,7 @@ function BookmarkItem({
             >
               {t("browser.bookmarks.edit")}
             </MenuRow>
-            <MenuRow icon={Delete02Icon} onSelect={() => removeBookmarkWithUndo(bookmark, t)}>
+            <MenuRow icon={TrashIcon} onSelect={() => removeBookmarkWithUndo(bookmark, t)}>
               {t("browser.bookmarks.delete")}
             </MenuRow>
           </>

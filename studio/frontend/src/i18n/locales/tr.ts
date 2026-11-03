@@ -5,13 +5,23 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const tr = {
+  turns: {
+    label: "Tur {number}",
+    bookmarkedLabel: "Tur {number}, yer imli",
+    bookmark: "Turu yer imlerine ekle",
+    removeBookmark: "Yer imini kaldır",
+    navigator: "Turlar",
+  },
   chatBackground: {
     noBackground: "Arka plan yok",
     sizing: "Görüntü boyutlandırma",
+    sizingPosition: "Görüntü boyutu ve konumu",
     fill: "Doldur",
     fit: "Sığdır",
     stretch: "Uzat",
     original: "Özgün boyut",
+    fitWidth: "Genişliğe sığdır",
+    fitHeight: "Yüksekliğe sığdır",
     zoom: "Yakınlaştırma",
     outline: "Mesaj kutusu kenarlığı",
     fade: "Arka plana doğru soldur",
@@ -28,11 +38,18 @@ export const tr = {
     halftone: "Yarım ton",
     scanlines: "Tarama çizgileri",
     visibility: "Görünürlük",
+    conversationVisibility: "Sohbetlerde görünürlük",
     blur: "Görüntü bulanıklığı",
     position: "Konum",
+    horizontal: "Yatay konum",
+    vertical: "Dikey konum",
+    scope: "Gösterileceği yer",
+    scopeNewChat: "Yeni sohbet sayfası",
+    scopeChats: "Sohbetler",
+    scopeAll: "Tüm sayfalar",
     positionValue: "Yatay %{x}, dikey %{y}",
-    newChat: "Yeni sohbet",
-    conversation: "Sohbet",
+    newChat: "Yeni sohbet önizlemesi",
+    conversation: "Konuşma önizlemesi",
     prompt: "Ne keşfetmek istersiniz?",
     response: "Sohbetiniz arka plan üzerinde okunaklı kalır.",
     storageError: "Arka plan kaydedilemedi. Tarayıcının kullanılabilir depolama alanını kontrol edin.",
@@ -40,6 +57,26 @@ export const tr = {
     dimensionsError: "40 megapikselden küçük bir görüntü seçin.",
     decodeError: "Görüntünün kodu çözülemedi. Başka bir dosya deneyin.",
     effectError: "Efekt oluşturulamadı. Yok seçeneğini veya başka bir görüntü seçin.",
+    material: "Cam",
+    materialSolid: "Kapalı",
+    materialTransparent: "Saydam",
+    materialFrosted: "Buzlu",
+    materialBlurred: "Bulanık",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS sistem camı",
+    materialMacosNote: "macOS’un yarı saydam pencere malzemesini kullanır, böylece masaüstünüz arkadan görünür.",
+    materialNativeFailed: "Unsloth Desktop’ın bu sürümü macOS malzemesini kullanamıyor. Açmak için uygulamayı güncelleyin.",
+    glassTheme: "Cam teması",
+    materialStyle: "Stil",
+    materialMenus: "Cam menüler",
+    materialMenusDescription: "Açılır listeler, menüler ve seçiciler de camı kullanır.",
+    materialStrength: "Cam yoğunluğu",
+    lens: "Cam mercek",
+    lensDescription: "Yazma alanının altındaki görüntüyü gerçek cam gibi büker.",
+    lensOff: "Kapalı",
+    lensMagnify: "Büyüt",
+    lensShrink: "Küçült",
   },
   linkMenu: {
     openInBrowser: "Unsloth tarayıcısında aç",
@@ -698,6 +735,8 @@ export const tr = {
     plainText: "Düz metin yazma alanı",
     plainTextDescription:
       "Kod, Markdown ve bağlantılar olduğu gibi metin olarak kalır. Biçimlendirilmiş önizleme göstermek için kapatın.",
+    richPaste: "Biçimli metin yapıştırma",
+    richPasteDescription: "Bağlantıları, tabloları ve biçimlendirmeyi Markdown olarak yapıştırır. {shortcut} düz metin yapıştırır. Tam zengin metin düzenleyicisi yakında.",
     showContext: "Bağlam penceresi kullanımı",
     sendShortcut: "Gönderme kısayolu",
     sendMultiline: "Çok satırlı istemlerde {mod} + Enter",
@@ -807,37 +846,6 @@ export const tr = {
     compactEmpty: "Henüz sıkıştırılacak bir şey yok",
     compactUnsupported:
       "Sıkıştırma için araç desteği olan bir GGUF veya MLX modeli gerekir",
-  },
-  halloween: {
-    navLabel: "Şaka mı şeker mi…",
-    title: "Şaka mı şeker mi?!",
-    description:
-      "Unsloth için birkaç ürpertici sürpriz hazırladık; Ekim sonuna kadar burada.",
-    chooseTheme: "Ürkütücü bir tema seçin",
-    spookyGreetings: "Ürkütücü karşılamalar",
-    spookyGreetingsDescription:
-      "Tembel hayvan yeni sohbetleri bir korkuyla karşılar.",
-    decorations: "Örümcekler ve yarasalar",
-    decorationsDescription: "Ağlar ve arada bir örümcek ya da yarasa.",
-    surprise: "Şaka mı şeker mi!",
-    surpriseDescription: "Temayı tembel hayvan sizin için seçsin.",
-    themesTitle: "Ürkütücü temalar",
-    back: "Geri",
-    footer: "Unsloth, 1 Kasım gece yarısı normale döner.",
-    removeNow: "Şimdi kaldır",
-    hideFromSidebar: "Kenar çubuğundan gizle",
-    greeting: {
-      pumpkins: "Balkabakları oyuldu. Sırada ne var?",
-      brewing: "Hadi kazanı kaynatalım",
-      trickOrTreat: "Şaka mı şeker mi?",
-      manor: "Malikaneye hoş geldiniz",
-      manorName: "Malikaneye hoş geldiniz, {name}",
-      happyHalloween: "Cadılar Bayramınız kutlu olsun",
-      happyHalloweenName: "Cadılar Bayramınız kutlu olsun, {name}",
-      spirits: "Ruhlar dinliyor…",
-      mysteries: "Bu gece hangi gizemleri çözeceğiz?",
-      conjure: "Sizin için ne büyüleyebilirim?",
-    },
   },
   welcome: {
     goodToSeeYou: "Sizi görmek güzel",
@@ -1067,7 +1075,7 @@ export const tr = {
       deleteProjects: "Projeleri sil",
       deleteProjectsTitle: "Projeleri sil",
       deleteProjectsDescription:
-        "{count} proje silinsin mi? Projelerin sohbetleri kalıcı olarak silinir.",
+        "{count} proje ve tüm sohbetleri kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       deleteProjectsFilesDescription:
         "Her projenin çalışma alanı klasörü diskten kaldırılır.",
       countSelected: "{count} seçildi",
@@ -1078,7 +1086,7 @@ export const tr = {
       markRead: "Okundu olarak işaretle",
       deleteChats: "Sohbetleri sil",
       deleteTitle: "Sohbetleri sil",
-      deleteDescription: "{count} sohbet silinsin mi? Bu işlem geri alınamaz.",
+      deleteDescription: "{count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       deleteFilesDescription:
         "Her sohbetin kendi korumalı alan klasörü diskten kaldırılır. Sohbetlerin bir proje içinde yazdığı dosyalar o projenin çalışma alanında kalır.",
       deleteFilesLabel: "Dosyaları ve korumalı alan klasörünü sil",
@@ -1127,7 +1135,7 @@ export const tr = {
     dialog: {
       deleteChat: {
         title: "Sohbeti sil",
-        description: "“{name}” sohbetini silmek istediğinizden emin misiniz?",
+        description: "“{name}” sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
       },
       deleteRun: {
         title: "Eğitim çalıştırmasını sil",
@@ -1153,6 +1161,7 @@ export const tr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Başka bir hesap eklemeden önce kurulum sahibinin parolasını belirleyin. Bu kurulumda birden fazla hesap olduğunda oturum açmak için bu parolayı kullanacaksınız.",
       signsInAs: "{username} olarak oturum açar",
       signsInAsOwner: "{alias} veya {username} olarak oturum açar",
       signInName: "Oturum açma adınız",
@@ -2091,6 +2100,7 @@ export const tr = {
         loadError: "Otomatik model değiştirme ayarları yüklenemedi.",
         saveError: "Otomatik model değiştirme ayarları kaydedilemedi.",
         idleError: "Modeli yüklü tutmak için 0 veya en az 60 saniye girin.",
+        idleUnsaved: "Henüz kaydedilmedi.",
         keepKv: "Bellekten kaldırmalar arasında sohbet bağlamını koru",
         keepKvDescription:
           "Boşta bellekten kaldırmadan veya bir görüntü ya da video modeli GPU'yu almadan önce KV önbelleğini kaydedin; böylece devam ettirilen sohbetler geçmişi yeniden okumaz. Diskte en fazla 10 GB.",
@@ -2156,6 +2166,14 @@ export const tr = {
           off: "Her araç çağrısını sormadan çalıştırır. Python ve terminal kodu yine korumalı alanda çalışır; bu, bilgisayarınızda hangi dosyalara erişebileceklerini sınırlar. Çalışan bir işletim sistemi korumalı alanı yoksa riskli çağrılar önce onay ister.",
           full: "Her araç çağrısını sormadan çalıştırır ve kod korumalı alanını kapatır; böylece Python ve terminal kodu, hesabınızın erişebildiği her dosyayı okuyabilir ve değiştirebilir.",
         },
+      },
+      display: {
+        title: "Görünüm",
+        timeFormat: "Saat biçimi",
+        timeFormatDescription: "Saatleri 12 veya 24 saat biçiminde göster.",
+        timeFormatSystem: "Sistem varsayılanı",
+        timeFormat12: "12 saat",
+        timeFormat24: "24 saat",
       },
       notifications: {
         sectionTitle: "Bildirimler",
@@ -2341,10 +2359,14 @@ export const tr = {
         label: "Kurulum türü",
         description:
           "Yalnızca sohbet (GGUF). Tam kurulum; eğitim, dışa aktarma, video, safetensors modelleri ve ek görüntü üretme özellikleri ekler.",
+        descriptionCpu:
+          "Yalnızca sohbet (GGUF). Desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU üzerinde eğitim ekler.",
         action: "Tam kuruluma yükselt",
         confirmTitle: "Tam kuruluma yükseltilsin mi?",
         confirmDescription:
           "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Tam kurulum, bu makinenin GPU'su için PyTorch ekler; bu da eğitimi, dışa aktarmayı, videoyu, safetensors modellerini ve ek görüntü üretme özelliklerini etkinleştirir. Birkaç gigabayt indirir (en az 5 GB disk alanı) ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
+        confirmDescriptionCpu:
+          "Bu Yalnızca sohbet kurulumu GGUF modellerini çalıştırır. Bu makinede desteklenen bir GPU bulunamadı, bu nedenle tam kurulum CPU için PyTorch ekler; bu da CPU üzerinde eğitimi etkinleştirir. CPU üzerinde eğitim, GPU'ya göre çok daha yavaştır. En az 5 GB disk alanı gerektirir ve sunucuyu yeniden başlatır. Sohbetler, modeller ve ayarlar korunur. Bu işlem birkaç dakika sürebilir.",
         confirmAction: "Yükselt",
         keywords:
           "tam kurulum yükselt kurulum türü yalnızca sohbet gguf eğitim eğit ince ayar pytorch torch dışa aktar video görüntü üretme safetensors full install upgrade chat only training fine-tune export image generation",
@@ -2389,6 +2411,13 @@ export const tr = {
       avatarShapeRounded: "Yuvarlatılmış",
       greetingSloth: "Karşılama",
       greetingSlothDescription: "Yeni sohbetlerde karşılamayı gösterin.",
+      greetingDefault: "Varsayılan",
+      greetingCustom: "Özel",
+      greetingImage: "Görsel",
+      greetingText: "Karşılama metni",
+      greetingTextDescription: "Yerleşik karşılamaları kullanmak için boş bırakın.",
+      greetingFileError: "10 MB'den küçük bir PNG, JPEG, WebP veya GIF seçin.",
+      greetingImageError: "Bu görsel kullanılamadı. Daha küçük bir görsel deneyin.",
       chooseSloth: "Veya bir tembel hayvan seçin",
       noPicture: "Profil resmi yok",
       noneLabel: "Yok",
@@ -2511,21 +2540,32 @@ export const tr = {
         label: "Tema",
         description: "Unsloth genelinde açık ve koyu modda kullanılan renkler.",
         standard: "Standart",
-        classic: "Klasik",
-        minimal: "Minimal",
         moreThemes: "Diğer temalar",
-        halloween: "Cadılar Bayramı",
       },
-      trickOrTreat: {
-        label: "Şeker mi şaka mı",
-        description:
-          "1 Kasım'a kadar Cadılar Bayramı temaları ve ürkütücü selamlamalar.",
+      composer: {
+        title: "Mesaj kutusu",
+      },
+      code: {
+        title: "Kod",
+        fontDescription: "Sohbetteki kod blokları, dosya önizlemeleri ve API örnekleri.",
+        lineNumbers: {
+          label: "Satır numaraları",
+          description: "Sohbetteki kod bloklarının satırlarını numaralandırır.",
+        },
+        wordWrap: {
+          label: "Satır kaydırma",
+          description: "Kod bloklarındaki uzun satırları yana kaydırmak yerine alt satıra geçirir.",
+        },
+        ligatures: {
+          label: "Yazı tipi bitişik harfleri",
+          description: "Kod yazı tipi destekliyorsa => ve != gibi simgeleri tek bir karakterde birleştirir.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Sohbet genişliği",
           description: "Mesajların ve yazma alanının genişliği.",
-          standard: "Standart",
+          standard: "Varsayılan",
           wide: "Geniş",
           full: "Tam genişlik",
         },
@@ -3156,6 +3196,8 @@ export const tr = {
         "Bildirimler engellenmiş. Tarayıcınızın veya sisteminizin ayarlarından Unsloth için bildirimlere izin verin, ardından yeniden deneyin.",
       replyNotificationKeywords:
         "bildir bildirim uyarı bitti tamamlandı hazır yanıt cevap arka plan simge durumu masaüstü ses notification",
+      showLinkPreviews: "Bağlantı önizlemeleri",
+      showLinkPreviewsDescription: "Kaynak bağlantılarının üzerine gelindiğinde önizlemeleri göster.",
       showResponseModel: "Yanıt modeli",
       showResponseModelDescription:
         "Asistan yanıtlarında model ayrıntılarını gösterin.",
@@ -3172,6 +3214,8 @@ export const tr = {
       inlineEditResponse: "Yanıtlarda Yanıtı düzenle",
       inlineEditResponseDescription:
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",
+      turnNavigation: "Tur gezinmesi",
+      turnNavigationDescription: "Uzun sohbetlerin sol kenarında mesajlarınızı bir şerit olarak gösterir. Önizlemek için üzerine gelin, gitmek için tıklayın ve yeniden bulmak için yer imi ekleyin.",
       composerAtBottom: "Yazma alanı altta",
       composerAtBottomDescription:
         "Yeni sohbetleri, yazma alanı sayfanın ortası yerine altında olacak şekilde başlatın.",
@@ -3457,10 +3501,10 @@ export const tr = {
         moveFailed: "Sohbetler taşınamadı",
         deleteChatsTitle: "Sohbetleri sil ({count})",
         deleteChatsWarning:
-          "Seçilen sohbetler ({count}) silinsin mi? Bu işlem geri alınamaz.",
+          "{count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteArchivedTitle: "Arşivlenen {count} sohbeti sil",
         deleteArchivedWarning:
-          "Seçilen arşivlenmiş sohbetler ({count}) silinsin mi? Bu işlem geri alınamaz.",
+          "Arşivlenmiş {count} sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleting: "Siliniyor...",
       },
       title: "Veriler",
@@ -3838,8 +3882,6 @@ export const tr = {
         repoCheckoutFallback:
           "Depo checkout'u hâlâ duruyorsa yerel yükleyiciyi oradan çalıştırın:",
         restartAfterUpdate: "Güncellemeden sonra Unsloth'u yeniden başlatın.",
-        desktopManaged:
-          "Masaüstü uygulaması yeni uygulama sürümlerini otomatik olarak denetler. Ayrıca istediğiniz zaman buradan denetleyebilir veya güncelleyebilirsiniz.",
         desktopReady: "Masaüstü uygulaması güncellemeleri",
         desktopReadyDescription:
           "Daha yeni bir masaüstü uygulaması sürümü olup olmadığını denetleyin.",
@@ -3881,6 +3923,8 @@ export const tr = {
   },
   studio: {
     routeTitle: "Eğitim",
+    cpuTrainingNotice:
+      "GPU bulunamadı, bu nedenle eğitim CPU üzerinde çalışır. GPU eğitiminden çok daha yavaştır ve yalnızca metin modellerini destekler (LoRA veya tam ince ayar).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Model ve eğitim yöntemini seçin",
@@ -5032,7 +5076,7 @@ export const tr = {
       dialog: {
         renameChat: "Sohbeti yeniden adlandır",
         deleteChatDescription:
-          "Bu sohbet kalıcı olarak silinecek. Bu işlem geri alınamaz.",
+          "Sohbet ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteProjectDescription:
           "Proje ve sohbetleri ({count}) kalıcı olarak silinecek. Bu işlem geri alınamaz.",
         deleteFilesMany:
@@ -5527,7 +5571,7 @@ export const tr = {
     chatName: "Sohbet adı",
     deleteChat: "Sohbeti sil",
     deleteChatDescription:
-      "{name} sohbetini silmek istediğinizden emin misiniz? Mesajları kalıcı olarak silinecek.",
+      "“{name}” sohbeti ve mesajları kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     importChats: "Sohbetleri içe aktar",
     importDestination: "{name} öğesinin içe aktarılacağı yeri seçin:",
     selectDestination: "Hedef seçin",
@@ -5535,7 +5579,7 @@ export const tr = {
     import: "İçe aktar",
     deleteProject: "Projeyi sil",
     deleteProjectDescription:
-      "{name} projesini silmek istediğinizden emin misiniz? Sohbetleri kalıcı olarak silinecek.",
+      "“{name}” projesi ve tüm sohbetleri kalıcı olarak silinecek. Bu işlem geri alınamaz.",
     deleteProjectFiles: "Proje çalışma alanı klasörü diskten kaldırılacak.",
     deleteAll: "Tümünü sil",
     projectFallback: "proje",
@@ -5620,6 +5664,18 @@ export const tr = {
     flaggedIntro: "Otomatik tarayıcımız şunlar dahil sorunlar işaretledi:",
     nothingFlagged:
       "Otomatik tarayıcımız endişe verici bir dosya işaretlemedi, ancak lütfen yine de kontrol edin.",
+    unscannedTitle: "Model dosyaları taranamadı",
+    unscannedBody: "{model}, yüklenirken kod çalıştırabilen pickle ağırlıkları içeriyor ve bunlar için kötü amaçlı yazılım taraması yok, bu yüzden yüklenemiyor. {note}",
+    unscannedIntro: "Taranamayan dosyalar:",
+    switchSourceNote: "Yüklemek için Ayarlar'dan model kaynağını Hugging Face olarak değiştirin.",
+    reconnectNote: "Taramanın okunabilmesi için Hugging Face'e bağlanın ve yeniden deneyin.",
+    managedTitle: "Bu hesapta özel kod kapalı",
+    managedNote: "Yönetilen hesaplarda kapalıdır. Kurulum sahibinden etkinleştirmesini isteyin.",
+    notFoundTitle: "{source} üzerinde bulunamadı",
+    notFoundBody: "{model}, {source} üzerinde bulunamadı, bu yüzden güvenlik denetimleri çalıştırılamadı. Adı kontrol edin veya depo özelse erişimi olan bir belirteç ayarlayın.",
+    notOnModelScopeBody: "{model}, ModelScope'ta yok, bu yüzden güvenlik denetimleri çalıştırılamadı ve oradan yüklenemiyor. Kullanmak için Ayarlar'dan model kaynağını Hugging Face olarak değiştirin.",
+    checksFailedTitle: "Güvenlik denetimleri çalıştırılamadı",
+    checksFailedBody: "{model}, {source} kaynağından okunamadı, bu yüzden güvenlik denetimleri tamamlanamadı ve yüklenemiyor. Bağlantınızı ve belirtecinizi kontrol edip yeniden deneyin. {note}",
     enableAndContinue: "Etkinleştir ve devam et",
   },
   tour: {
@@ -5809,5 +5865,60 @@ export const tr = {
     later: "Daha sonra",
     update: "Güncelle",
     undo: "Geri al",
+  },
+  generationStats: {
+    working: "İşleniyor...",
+    processingPrompt: "İstem işleniyor %{percent}",
+    timeLeft: "{eta} kaldı",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "taslak {accepted}/{drafted} kabul edildi (%{percent})",
+    timing: {
+      trigger: "Mesaj zamanlaması",
+      firstToken: "İlk token",
+      speedInStep: "Hız (adım içi)",
+      effective: "Etkin",
+      output: "Çıktı",
+      denoising: "Gürültü giderme",
+      stepsOne: "{count} adım",
+      steps: "{count} adım",
+      blocksOne: "{count} blok",
+      blocks: "{count} blok",
+      canvas: "Tuval",
+      generation: "Oluşturma",
+      answerTokens: "Yanıt tokenları",
+      prompt: "İstem",
+      total: "Toplam",
+      chunks: "Parçalar",
+      promptEval: "İstem değerlendirme",
+      promptSpeed: "İstem hızı",
+      speed: "Hız",
+      tokens: "Token",
+      draftAccepted: "Kabul edilen taslak",
+      denoisingSteps: "Gürültü giderme adımları",
+      blocksLabel: "Bloklar",
+      cacheHits: "Önbellek isabetleri",
+      cacheWrites: "Önbellek yazmaları",
+      stopReason: "Durma nedeni",
+      stoppedByYou: "Siz durdurdunuz",
+      endOfTurn: "Tur sonu",
+      lengthLimit: "Uzunluk sınırı",
+      toolCall: "Araç çağrısı",
+      contentFilter: "İçerik filtresi",
+    },
+    placement: {
+      title: "Ağırlık yerleşimi",
+      allOnCpu: "{total} katmanın tümü CPU'da",
+      split: "{total} katmandan {gpu} tanesi GPU'da, {cpu} tanesi CPU'da",
+      allOnGpu: "{total} katmanın tümü GPU'da",
+      expertCache: "{total} katmanın tümü GPU'da, tüm uzmanlar RAM'de (GPU'da {amount} uzman önbelleği)",
+      expertSpillOne: "{total} katmanın tümü GPU'da, {count} katmanın uzman ağırlıkları RAM'de",
+      expertSpill: "{total} katmanın tümü GPU'da, {count} katmanın uzman ağırlıkları RAM'de",
+      inUnifiedMemory: "{amount} birleşik bellekte",
+      inSharedMemory: "{amount} paylaşılan bellekte",
+      inVram: "{amount} VRAM'de",
+      inRam: "{amount} RAM'de",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

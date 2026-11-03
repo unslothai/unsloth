@@ -45,9 +45,9 @@ function translate(key: string, values: Record<string, string> = {}) {
 type TabOptions = {
   stallRefresh?: boolean;
   accounts?: Record<string, unknown>[];
-  // What the sidebar footer shows: the local profile store.
   localProfile?: { displayName: string; avatarDataUrl: string | null };
   ownerPasswordPending?: boolean;
+  statusError?: boolean;
 };
 function tab(
   owner = true,
@@ -99,7 +99,13 @@ function tab(
         effects.push(effect);
       },
     },
-    "@/features/auth": { useIsAccountOwner: () => owner },
+    "@/features/auth": {
+      useIsAccountOwner: () => owner,
+      fetchAuthStatus: async () => {
+        if (options.statusError) throw new Error("Status unavailable");
+        return { requires_password_change: options.ownerPasswordPending ?? false };
+      },
+    },
     "@/features/profile": {
       UserAvatar: "UserAvatar",
       useUserProfileStore: (select: (state: unknown) => unknown) =>
@@ -110,6 +116,7 @@ function tab(
       useOwnPasswordPending: () => [options.ownerPasswordPending ?? false, () => {}],
     },
     "@hugeicons/core-free-icons": {},
+    "@/lib/hugeicons-derived": {},
     "@/lib/folder-icons": {},
     "@hugeicons/react": { HugeiconsIcon: "Icon" },
     "@/lib/tick-icon": {},
@@ -166,7 +173,6 @@ function tab(
     "../api/accounts": {
       fetchAccounts: async () => {
         calls.push("list");
-        // The first call is the initial load; a stall holds only later refreshes.
         if (options.stallRefresh && calls.filter((c) => c === "list").length > 1) {
           await new Promise<void>((resolve) => {
             releaseRefresh = resolve;
@@ -253,7 +259,6 @@ test("owner lists accounts without administrative actions on the owner row", asy
     (node) => node.props["data-testid"] === "account-unsloth",
   );
   assert.ok(ownerRow);
-  // Only its own password, in an icon menu like the managed rows so no label can overflow the row.
   const trigger = nodes(ownerRow).filter((node) => node.type === "Button");
   assert.equal(trigger.length, 1);
   assert.equal(content(trigger[0]).trim(), "");
@@ -311,6 +316,39 @@ test("create shows a copyable expiring setup code once and regeneration replaces
   await confirm(ui.render());
   assert.ok(ui.calls.includes("regenerate:alice-id"));
   assert.match(content(ui.render()), /regenerated-secret/);
+});
+
+test("creating an account completes the existing initial-password dialog first", async () => {
+  const ui = tab(true, null, { ownerPasswordPending: true });
+  let tree = await ui.initialize();
+  await click(tree, "Create account");
+  tree = ui.render();
+  const password = nodes(tree).find((node) => node.type === "ChangePasswordDialog");
+  assert.equal(password?.props.open, true);
+  assert.equal(password?.props.initial, true);
+  assert.equal(password?.props.forAccountCreation, true);
+  assert.equal(nodes(tree).find((node) => node.type === "Dialog")?.props.open, false);
+  assert.ok(!ui.calls.some((call) => call.startsWith("create:")));
+  (password?.props.onOpenChange as (open: boolean) => void)(false);
+  assert.equal(nodes(ui.render()).find((node) => node.type === "Dialog")?.props.open, false);
+  await click(ui.render(), "Create account");
+  const retry = nodes(ui.render()).find((node) => node.type === "ChangePasswordDialog");
+  (retry?.props.onOpenChange as (open: boolean) => void)(false);
+  (retry?.props.onDone as () => void)();
+  assert.equal(nodes(ui.render()).find((node) => node.type === "Dialog")?.props.open, true);
+  assert.ok(!ui.calls.some((call) => call.startsWith("create:")));
+});
+
+test("unavailable password status leaves account creation closed and retryable", async () => {
+  const ui = tab(true, null, { statusError: true });
+  await ui.initialize();
+  for (let i = 0; i < 2; i++) {
+    await click(ui.render(), "Create account");
+    const tree = ui.render();
+    assert.equal(nodes(tree).find((node) => node.type === "Dialog")?.props.open, false);
+    assert.match(content(tree), /Status unavailable/);
+    assert.ok(!ui.calls.some((call) => call.startsWith("create:")));
+  }
 });
 
 test("regenerating a setup code names what it destroys before it runs", async () => {
@@ -486,7 +524,6 @@ test("a one-time setup code can always be dismissed, even while its refresh is s
 });
 
 test("an account the API reports without a creation date shows a dash, not the epoch", async () => {
-  // created_at can be null after upgrade, and `new Date(null)` is the epoch, not invalid.
   const ui = tab(true, null, {
     accounts: [
       {
@@ -637,6 +674,5 @@ test("the owner row matches the sidebar's local profile before the server copy a
   assert.match(content(ownerRow), /Installation owner/);
   const aliceRow = nodes(tree).find((node) => node.props["data-testid"] === "account-alice");
   assert.ok(!content(aliceRow).includes("Change password"));
-  // A managed account's row never borrows the owner's local profile.
   assert.equal(nodes(aliceRow).find((node) => node.type === "UserAvatar")?.props.imageUrl, null);
 });

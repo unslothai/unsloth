@@ -5,13 +5,23 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fa = {
+  turns: {
+    label: "نوبت {number}",
+    bookmarkedLabel: "نوبت {number}، نشانک‌شده",
+    bookmark: "نشانک‌گذاری نوبت",
+    removeBookmark: "حذف نشانک",
+    navigator: "نوبت‌ها",
+  },
   chatBackground: {
     noBackground: "بدون پس‌زمینه",
     sizing: "اندازه‌بندی تصویر",
+    sizingPosition: "اندازه و موقعیت تصویر",
     fill: "پر کردن",
     fit: "جا دادن",
     stretch: "کشیدن",
     original: "اندازهٔ اصلی",
+    fitWidth: "هم‌اندازه با عرض",
+    fitHeight: "هم‌اندازه با ارتفاع",
     zoom: "بزرگ‌نمایی",
     outline: "کادر بخش نوشتن پیام",
     fade: "محو شدن در پس‌زمینه",
@@ -28,11 +38,18 @@ export const fa = {
     halftone: "نیم‌سایه",
     scanlines: "خطوط اسکن",
     visibility: "میزان نمایش",
+    conversationVisibility: "میزان نمایش در گفتگوها",
     blur: "تاری تصویر",
     position: "موقعیت",
+    horizontal: "موقعیت افقی",
+    vertical: "موقعیت عمودی",
+    scope: "نمایش در",
+    scopeNewChat: "صفحهٔ گفتگوی جدید",
+    scopeChats: "گفتگوها",
+    scopeAll: "همهٔ صفحه‌ها",
     positionValue: "افقی {x}٪، عمودی {y}٪",
-    newChat: "گفتگوی جدید",
-    conversation: "گفتگو",
+    newChat: "پیش‌نمایش گفتگوی جدید",
+    conversation: "پیش‌نمایش گفتگو",
     prompt: "می‌خواهید چه چیزی را بررسی کنید؟",
     response: "متن گفتگو روی پس‌زمینه خوانا می‌ماند.",
     storageError: "ذخیرهٔ پس‌زمینه ممکن نشد. فضای ذخیره‌سازی مرورگر را بررسی کنید.",
@@ -40,6 +57,26 @@ export const fa = {
     dimensionsError: "تصویری کوچک‌تر از 40 مگاپیکسل انتخاب کنید.",
     decodeError: "رمزگشایی تصویر ممکن نشد. فایل دیگری را امتحان کنید.",
     effectError: "رندر جلوه ممکن نشد. هیچ‌کدام یا تصویر دیگری را انتخاب کنید.",
+    material: "شیشه",
+    materialSolid: "خاموش",
+    materialTransparent: "شفاف",
+    materialFrosted: "مات",
+    materialBlurred: "محو",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "شیشهٔ سیستمی macOS",
+    materialMacosNote: "از مادهٔ نیمه‌شفاف پنجرهٔ macOS استفاده می‌کند، بنابراین دسکتاپ شما از پشت آن دیده می‌شود.",
+    materialNativeFailed: "این نسخه از Unsloth Desktop نمی‌تواند از مادهٔ macOS استفاده کند. برای روشن کردن آن برنامه را به‌روزرسانی کنید.",
+    glassTheme: "پوسته شیشه‌ای",
+    materialStyle: "سبک",
+    materialMenus: "منوهای شیشه‌ای",
+    materialMenusDescription: "منوهای کشویی، منوها و انتخابگرها هم از شیشه استفاده می‌کنند.",
+    materialStrength: "شدت شیشه",
+    lens: "عدسی شیشه",
+    lensDescription: "تصویر زیر کادر نوشتن را مانند شیشه واقعی خم می‌کند.",
+    lensOff: "خاموش",
+    lensMagnify: "بزرگ‌نمایی",
+    lensShrink: "کوچک‌نمایی",
   },
   linkMenu: {
     openInBrowser: "باز کردن در مرورگر Unsloth",
@@ -696,6 +733,8 @@ export const fa = {
     plainText: "کادر نوشتن متن ساده",
     plainTextDescription:
       "کد، Markdown و پیوندها به‌صورت متن خام نگه داشته شوند. برای نمایش پیش‌نمایش قالب‌بندی‌شده، خاموش کنید.",
+    richPaste: "چسباندن متن قالب‌دار",
+    richPasteDescription: "پیوندها، جدول‌ها و قالب‌بندی را به‌صورت Markdown می‌چسباند. {shortcut} متن ساده می‌چسباند. ویرایشگر کامل متن غنی به‌زودی.",
     showContext: "میزان استفاده از پنجرهٔ زمینه",
     sendShortcut: "میان‌بر ارسال",
     sendMultiline: "{mod} + Enter برای پرامپت‌های چندخطی",
@@ -809,37 +848,6 @@ export const fa = {
     compactEmpty: "هنوز چیزی برای فشرده‌سازی وجود ندارد",
     compactUnsupported:
       "فشرده‌سازی به یک مدل GGUF یا MLX با پشتیبانی از ابزار نیاز دارد",
-  },
-  halloween: {
-    navLabel: "حقه یا خوراکی…",
-    title: "حقه یا خوراکی؟!",
-    description:
-      "چند ترفند ترسناک برای Unsloth آماده کرده‌ایم که تا پایان ماه اکتبر اینجاست.",
-    chooseTheme: "یک پوستهٔ ترسناک انتخاب کنید",
-    spookyGreetings: "خوشامدهای ترسناک",
-    spookyGreetingsDescription:
-      "تنبل گفتگوهای جدید را با یک ترس کوچک خوشامد می‌گوید.",
-    decorations: "عنکبوت‌ها و خفاش‌ها",
-    decorationsDescription: "تار عنکبوت، به‌علاوهٔ گاه‌گاهی یک عنکبوت یا خفاش.",
-    surprise: "حقه یا خوراکی!",
-    surpriseDescription: "بگذارید تنبل برایتان یک پوسته انتخاب کند.",
-    themesTitle: "پوسته‌های ترسناک",
-    back: "بازگشت",
-    footer: "Unsloth در نیمه‌شب 1 نوامبر به حالت عادی برمی‌گردد.",
-    removeNow: "حذف همین حالا",
-    hideFromSidebar: "پنهان کردن از نوار کناری",
-    greeting: {
-      pumpkins: "کدوها تراشیده شده‌اند. قدم بعدی چیست؟",
-      brewing: "بیایید معجون را هم بزنیم",
-      trickOrTreat: "حقه یا خوراکی؟",
-      manor: "به عمارت خوش آمدید",
-      manorName: "به عمارت خوش آمدید، {name}",
-      happyHalloween: "هالووین مبارک",
-      happyHalloweenName: "هالووین مبارک، {name}",
-      spirits: "ارواح گوش می‌دهند…",
-      mysteries: "امشب چه رازهایی را کشف کنیم؟",
-      conjure: "چه چیزی برایتان احضار کنم؟",
-    },
   },
   welcome: {
     goodToSeeYou: "از دیدنتان خوشحالیم",
@@ -1065,7 +1073,7 @@ export const fa = {
       deleteProjects: "حذف پروژه‌ها",
       deleteProjectsTitle: "حذف پروژه‌ها",
       deleteProjectsDescription:
-        "{count} پروژه حذف شود؟ گفتگوهای آن‌ها برای همیشه حذف می‌شوند.",
+        "{count} پروژه و همه گفتگوهای آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       deleteProjectsFilesDescription:
         "پوشهٔ فضای کار هر پروژه از دیسک حذف می‌شود.",
       countSelected: "{count} مورد انتخاب شده",
@@ -1076,7 +1084,7 @@ export const fa = {
       markRead: "علامت‌گذاری به‌عنوان خوانده‌شده",
       deleteChats: "حذف گفتگوها",
       deleteTitle: "حذف گفتگوها",
-      deleteDescription: "{count} گفتگو حذف شود؟ این کار قابل بازگشت نیست.",
+      deleteDescription: "{count} گفتگو و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       deleteFilesDescription:
         "پوشهٔ سندباکس اختصاصی هر گفتگو از دیسک حذف می‌شود. فایل‌هایی که گفتگوها درون یک پروژه نوشته‌اند در فضای کار همان پروژه باقی می‌مانند.",
       deleteFilesLabel: "حذف فایل‌ها و پوشهٔ سندباکس",
@@ -1125,7 +1133,7 @@ export const fa = {
     dialog: {
       deleteChat: {
         title: "حذف گفتگو",
-        description: "آیا مطمئن هستید که می‌خواهید گفتگوی «{name}» را حذف کنید؟",
+        description: "گفتگوی «{name}» و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
       },
       deleteRun: {
         title: "حذف اجرای آموزش",
@@ -1150,6 +1158,7 @@ export const fa = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "پیش از افزودن حساب دیگر، گذرواژهٔ مالک این نصب را تعیین کنید. وقتی این نصب چند حساب داشته باشد، برای ورود از این گذرواژه استفاده خواهید کرد.",
       signsInAs: "ورود با نام {username}",
       signsInAsOwner: "ورود با نام {alias} یا {username}",
       signInName: "نام ورود شما",
@@ -2086,6 +2095,7 @@ export const fa = {
         loadError: "بارگذاری تنظیمات تعویض خودکار مدل ناموفق بود.",
         saveError: "ذخیرهٔ تنظیمات تعویض خودکار مدل ناموفق بود.",
         idleError: "برای بارگذاری‌شده ماندن مدل 0 یا دست‌کم 60 ثانیه وارد کنید.",
+        idleUnsaved: "هنوز ذخیره نشده است.",
         keepKv: "حفظ زمینهٔ گفتگو در میان تخلیه‌ها",
         keepKvDescription:
           "کش KV پیش از تخلیه در حالت بیکاری، یا پیش از آنکه مدل تصویر یا ویدیو GPU را بگیرد، ذخیره می‌شود تا گفتگوهای ازسرگرفته‌شده بازخوانی تاریخچه را رد کنند. حداکثر 10 GB روی دیسک.",
@@ -2151,6 +2161,14 @@ export const fa = {
           off: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند. کد Python و ترمینال همچنان در سندباکس اجرا می‌شود که محدود می‌کند به کدام فایل‌های رایانهٔ شما دسترسی داشته باشند. بدون سندباکس سیستم‌عامل فعال، فراخوانی‌های پرخطر ابتدا اجازه می‌گیرند.",
           full: "هر فراخوانی ابزار را بدون پرسیدن اجرا می‌کند و سندباکس کد را خاموش می‌کند، بنابراین کد Python و ترمینال می‌تواند هر فایلی را که حساب شما به آن دسترسی دارد بخواند و تغییر دهد.",
         },
+      },
+      display: {
+        title: "نمایش",
+        timeFormat: "قالب زمان",
+        timeFormatDescription: "نمایش زمان به صورت ۱۲ ساعته یا ۲۴ ساعته.",
+        timeFormatSystem: "پیش‌فرض سیستم",
+        timeFormat12: "۱۲ ساعته",
+        timeFormat24: "۲۴ ساعته",
       },
       notifications: {
         sectionTitle: "اعلان‌ها",
@@ -2337,10 +2355,14 @@ export const fa = {
         label: "نوع نصب",
         description:
           "فقط گفتگو (GGUF). نصب کامل، آموزش، خروجی گرفتن، ویدیو، مدل‌های safetensors و قابلیت‌های بیشتر تولید تصویر را اضافه می‌کند.",
+        descriptionCpu:
+          "فقط گفتگو (GGUF). هیچ GPU پشتیبانی‌شده‌ای پیدا نشد، بنابراین نصب کامل آموزش روی CPU را اضافه می‌کند.",
         action: "ارتقا به نصب کامل",
         confirmTitle: "به نصب کامل ارتقا داده شود؟",
         confirmDescription:
           "این نصبِ «فقط گفتگو» مدل‌های GGUF را اجرا می‌کند. نصب کامل، PyTorch را برای GPU این دستگاه اضافه می‌کند که آموزش، خروجی گرفتن، ویدیو، مدل‌های safetensors و قابلیت‌های بیشتر تولید تصویر را فعال می‌کند. چندین گیگابایت دانلود می‌کند (دست‌کم 5 GB فضای دیسک) و سرور را دوباره راه‌اندازی می‌کند. گفتگوها، مدل‌ها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
+        confirmDescriptionCpu:
+          "این نصبِ «فقط گفتگو» مدل‌های GGUF را اجرا می‌کند. هیچ GPU پشتیبانی‌شده‌ای روی این دستگاه پیدا نشد، بنابراین نصب کامل PyTorch را برای CPU اضافه می‌کند که آموزش روی CPU را فعال می‌کند. آموزش روی CPU بسیار کندتر از آموزش روی GPU است. دست‌کم 5 GB فضای دیسک لازم دارد و سرور را دوباره راه‌اندازی می‌کند. گفتگوها، مدل‌ها و تنظیمات حفظ می‌شوند. این کار ممکن است چند دقیقه طول بکشد.",
         confirmAction: "ارتقا",
         keywords:
           "نصب کامل ارتقا نوع نصب فقط گفتگو افزودن آموزش تنظیم دقیق خروجی ویدیو تولید تصویر full install upgrade chat only gguf training fine-tune pytorch torch export video image generation safetensors",
@@ -2385,6 +2407,13 @@ export const fa = {
       avatarShapeRounded: "گوشه‌گرد",
       greetingSloth: "خوشامدگویی",
       greetingSlothDescription: "نمایش خوشامدگویی در گفتگوهای جدید.",
+      greetingDefault: "پیش‌فرض",
+      greetingCustom: "سفارشی",
+      greetingImage: "تصویر",
+      greetingText: "متن خوشامدگویی",
+      greetingTextDescription: "برای استفاده از خوشامدگویی‌های داخلی، خالی بگذارید.",
+      greetingFileError: "یک تصویر PNG، JPEG، WebP یا GIF کمتر از ۱۰ مگابایت انتخاب کنید.",
+      greetingImageError: "این تصویر قابل استفاده نیست. تصویر کوچک‌تری را امتحان کنید.",
       chooseSloth: "یا یک تنبل انتخاب کنید",
       noPicture: "بدون تصویر نمایه",
       noneLabel: "هیچ",
@@ -2508,20 +2537,32 @@ export const fa = {
         description:
           "رنگ‌هایی که در سراسر Unsloth، در حالت روشن و تیره، استفاده می‌شوند.",
         standard: "استاندارد",
-        classic: "کلاسیک",
-        minimal: "مینیمال",
         moreThemes: "پوسته‌های بیشتر",
-        halloween: "هالووین",
       },
-      trickOrTreat: {
-        label: "حقه یا خوراکی",
-        description: "پوسته‌های هالووین و خوشامدگویی‌های ترسناک، تا 1 نوامبر.",
+      composer: {
+        title: "ویرایشگر پیام",
+      },
+      code: {
+        title: "کد",
+        fontDescription: "بلوک‌های کد در گفتگو، پیش‌نمایش فایل‌ها و نمونه‌های API.",
+        lineNumbers: {
+          label: "شمارهٔ خط",
+          description: "خط‌های بلوک‌های کد در گفتگو شماره‌گذاری شوند.",
+        },
+        wordWrap: {
+          label: "شکستن خط",
+          description: "خط‌های بلند در بلوک‌های کد به‌جای پیمایش افقی شکسته شوند.",
+        },
+        ligatures: {
+          label: "پیوندهای قلم",
+          description: "نمادهایی مانند => و != در صورت پشتیبانی قلم کد به یک نویسه تبدیل شوند.",
+        },
       },
       custom: {
         chatWidth: {
           label: "عرض گفتگو",
           description: "عرض پیام‌ها و کادر نوشتن.",
-          standard: "استاندارد",
+          standard: "پیش‌فرض",
           wide: "عریض",
           full: "تمام عرض",
         },
@@ -3144,6 +3185,8 @@ export const fa = {
         "اعلان‌ها مسدود هستند. آن‌ها را برای Unsloth در تنظیمات مرورگر یا سیستم مجاز کنید و دوباره تلاش کنید.",
       replyNotificationKeywords:
         "اعلان هشدار تمام پایان کامل آماده پاسخ پس‌زمینه کوچک‌شده دسکتاپ صدا notification",
+      showLinkPreviews: "پیش‌نمایش پیوندها",
+      showLinkPreviewsDescription: "نمایش پیش‌نمایش هنگام قرار گرفتن نشانگر روی پیوندهای منابع.",
       showResponseModel: "مدل پاسخ",
       showResponseModelDescription:
         "جزئیات مدل در پاسخ‌های دستیار نمایش داده شود.",
@@ -3160,6 +3203,8 @@ export const fa = {
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
+      turnNavigation: "پیمایش نوبت‌ها",
+      turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
       composerAtBottom: "کادر نوشتن در پایین",
       composerAtBottomDescription:
         "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
@@ -3444,10 +3489,10 @@ export const fa = {
         moveFailed: "انتقال گفتگوها انجام نشد",
         deleteChatsTitle: "حذف گفتگوها ({count})",
         deleteChatsWarning:
-          "گفتگوهای انتخاب‌شده ({count}) حذف شوند؟ این کار قابل بازگشت نیست.",
+          "{count} گفتگو و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteArchivedTitle: "حذف {count} گفتگوی بایگانی‌شده",
         deleteArchivedWarning:
-          "گفتگوهای بایگانی‌شدهٔ انتخاب‌شده ({count}) حذف شوند؟ این کار قابل بازگشت نیست.",
+          "{count} گفتگوی بایگانی‌شده و پیام‌های آن‌ها برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleting: "در حال حذف...",
       },
       title: "داده‌ها",
@@ -3827,8 +3872,6 @@ export const fa = {
           "اگر هنوز checkout مخزن را دارید، نصب‌کنندهٔ محلی را از همان‌جا اجرا کنید:",
         restartAfterUpdate:
           "پس از به‌روزرسانی، Unsloth را دوباره راه‌اندازی کنید.",
-        desktopManaged:
-          "برنامهٔ دسکتاپ به‌طور خودکار نسخه‌های جدید را بررسی می‌کند. همچنین می‌توانید هر زمان از اینجا بررسی یا به‌روزرسانی کنید.",
         desktopReady: "به‌روزرسانی‌های برنامهٔ دسکتاپ",
         desktopReadyDescription:
           "بررسی کنید که آیا نسخهٔ جدیدتری از برنامهٔ دسکتاپ در دسترس است.",
@@ -3869,6 +3912,8 @@ export const fa = {
   },
   studio: {
     routeTitle: "آموزش",
+    cpuTrainingNotice:
+      "هیچ GPU پیدا نشد، بنابراین آموزش روی CPU اجرا می‌شود. این کار بسیار کندتر از آموزش روی GPU است و فقط از مدل‌های متنی پشتیبانی می‌کند (LoRA یا تنظیم دقیق کامل).",
     wizard: {
       modelTitle: "مدل",
       modelDescription: "انتخاب مدل و روش آموزش",
@@ -5006,9 +5051,9 @@ export const fa = {
       dialog: {
         renameChat: "تغییر نام گفتگو",
         deleteChatDescription:
-          "این گفتگو برای همیشه حذف خواهد شد. این کار قابل بازگشت نیست.",
+          "این گفتگو و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteProjectDescription:
-          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف خواهند شد. این کار قابل بازگشت نیست.",
+          "پروژه و گفتگوهای آن ({count}) برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
         deleteFilesMany:
           "فایل‌ها و پوشه‌های سندباکسی که این گفتگوها ایجاد کرده‌اند نیز حذف شوند.",
         deleteProjectFilesLabel: "حذف پوشهٔ فضای کار پروژه",
@@ -5499,7 +5544,7 @@ export const fa = {
     chatName: "نام گفتگو",
     deleteChat: "حذف گفتگو",
     deleteChatDescription:
-      "آیا مطمئن هستید که می‌خواهید {name} را حذف کنید؟ پیام‌های آن برای همیشه حذف خواهند شد.",
+      "گفتگوی «{name}» و پیام‌های آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     importChats: "وارد کردن گفتگوها",
     importDestination: "محل وارد کردن {name} را انتخاب کنید:",
     selectDestination: "انتخاب مقصد",
@@ -5507,7 +5552,7 @@ export const fa = {
     import: "وارد کردن",
     deleteProject: "حذف پروژه",
     deleteProjectDescription:
-      "آیا مطمئن هستید که می‌خواهید {name} را حذف کنید؟ گفتگوهای آن برای همیشه حذف خواهند شد.",
+      "پروژه «{name}» و همه گفتگوهای آن برای همیشه حذف می‌شوند. این کار قابل بازگشت نیست.",
     deleteProjectFiles: "پوشهٔ فضای کار پروژه از دیسک حذف خواهد شد.",
     deleteAll: "حذف همه",
     projectFallback: "پروژه",
@@ -5594,6 +5639,18 @@ export const fa = {
       "اسکنر خودکار ما مشکلاتی از جمله موارد زیر را شناسایی کرده است:",
     nothingFlagged:
       "اسکنر خودکار ما هیچ فایل نگران‌کننده‌ای شناسایی نکرد، اما لطفاً دوباره بررسی کنید.",
+    unscannedTitle: "فایل‌های مدل اسکن نشدند",
+    unscannedBody: "{model} شامل وزن‌های pickle است که هنگام بارگذاری می‌توانند کد اجرا کنند و اسکن بدافزار برای آن‌ها در دسترس نیست، بنابراین بارگذاری نمی‌شود. {note}",
+    unscannedIntro: "فایل‌هایی که اسکن نشدند:",
+    switchSourceNote: "برای بارگذاری، منبع مدل را در تنظیمات به Hugging Face تغییر دهید.",
+    reconnectNote: "به Hugging Face متصل شوید تا نتیجهٔ اسکن خوانده شود، سپس دوباره تلاش کنید.",
+    managedTitle: "کد سفارشی برای این حساب خاموش است",
+    managedNote: "برای حساب‌های مدیریت‌شده خاموش است. از مالک نصب بخواهید آن را فعال کند.",
+    notFoundTitle: "در {source} پیدا نشد",
+    notFoundBody: "{model} در {source} پیدا نشد، بنابراین بررسی‌های امنیتی اجرا نشدند. نام را بررسی کنید یا اگر مخزن خصوصی است، توکنی با دسترسی تنظیم کنید.",
+    notOnModelScopeBody: "{model} در ModelScope موجود نیست، بنابراین بررسی‌های امنیتی اجرا نشدند و از آنجا بارگذاری نمی‌شود. برای استفاده، منبع مدل را در تنظیمات به Hugging Face تغییر دهید.",
+    checksFailedTitle: "بررسی‌های امنیتی اجرا نشدند",
+    checksFailedBody: "{model} از {source} خوانده نشد، بنابراین بررسی‌های امنیتی کامل نشدند و بارگذاری نمی‌شود. اتصال و توکن خود را بررسی کنید و دوباره تلاش کنید. {note}",
     enableAndContinue: "فعال کردن و ادامه",
   },
   tour: {
@@ -5780,5 +5837,60 @@ export const fa = {
     later: "بعداً",
     update: "به‌روزرسانی",
     undo: "واگرد",
+  },
+  generationStats: {
+    working: "در حال انجام...",
+    processingPrompt: "پردازش پرامپت {percent}%",
+    timeLeft: "{eta} مانده",
+    tokensOne: "{count} توکن",
+    tokens: "{count} توکن",
+    tokensOf: "{done} / {total} توکن",
+    draftAccepted: "پیش‌نویس {accepted}/{drafted} پذیرفته شد ({percent}%)",
+    timing: {
+      trigger: "زمان‌بندی پیام",
+      firstToken: "اولین توکن",
+      speedInStep: "سرعت (درون گام)",
+      effective: "مؤثر",
+      output: "خروجی",
+      denoising: "نویززدایی",
+      stepsOne: "{count} گام",
+      steps: "{count} گام",
+      blocksOne: "{count} بلوک",
+      blocks: "{count} بلوک",
+      canvas: "بوم",
+      generation: "تولید",
+      answerTokens: "توکن‌های پاسخ",
+      prompt: "پرامپت",
+      total: "کل",
+      chunks: "تکه‌ها",
+      promptEval: "ارزیابی پرامپت",
+      promptSpeed: "سرعت پرامپت",
+      speed: "سرعت",
+      tokens: "توکن‌ها",
+      draftAccepted: "پیش‌نویس پذیرفته‌شده",
+      denoisingSteps: "گام‌های نویززدایی",
+      blocksLabel: "بلوک‌ها",
+      cacheHits: "برخورد کش",
+      cacheWrites: "نوشتن در کش",
+      stopReason: "دلیل توقف",
+      stoppedByYou: "توسط شما متوقف شد",
+      endOfTurn: "پایان نوبت",
+      lengthLimit: "محدودیت طول",
+      toolCall: "فراخوانی ابزار",
+      contentFilter: "فیلتر محتوا",
+    },
+    placement: {
+      title: "محل قرارگیری وزن‌ها",
+      allOnCpu: "هر {total} لایه روی CPU",
+      split: "{gpu} از {total} لایه روی GPU، {cpu} روی CPU",
+      allOnGpu: "هر {total} لایه روی GPU",
+      expertCache: "هر {total} لایه روی GPU، همهٔ متخصص‌ها در RAM ({amount} کش متخصص روی GPU)",
+      expertSpillOne: "هر {total} لایه روی GPU، وزن‌های متخصص {count} لایه در RAM",
+      expertSpill: "هر {total} لایه روی GPU، وزن‌های متخصص {count} لایه در RAM",
+      inUnifiedMemory: "{amount} در حافظهٔ یکپارچه",
+      inSharedMemory: "{amount} در حافظهٔ مشترک",
+      inVram: "{amount} در VRAM",
+      inRam: "{amount} در RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

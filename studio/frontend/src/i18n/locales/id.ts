@@ -5,13 +5,23 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const id = {
+  turns: {
+    label: "Giliran {number}",
+    bookmarkedLabel: "Giliran {number}, ditandai",
+    bookmark: "Tandai giliran",
+    removeBookmark: "Hapus tanda",
+    navigator: "Giliran",
+  },
   chatBackground: {
     noBackground: "Tanpa latar belakang",
     sizing: "Ukuran gambar",
+    sizingPosition: "Ukuran dan posisi gambar",
     fill: "Isi",
     fit: "Sesuaikan",
     stretch: "Regangkan",
     original: "Ukuran asli",
+    fitWidth: "Sesuaikan lebar",
+    fitHeight: "Sesuaikan tinggi",
     zoom: "Zoom",
     outline: "Garis tepi kolom pesan",
     fade: "Pudarkan ke latar belakang",
@@ -28,11 +38,18 @@ export const id = {
     halftone: "Halftone",
     scanlines: "Garis pindai",
     visibility: "Visibilitas",
+    conversationVisibility: "Visibilitas dalam percakapan",
     blur: "Keburaman gambar",
     position: "Posisi",
+    horizontal: "Posisi horizontal",
+    vertical: "Posisi vertikal",
+    scope: "Tampilkan di",
+    scopeNewChat: "Halaman chat baru",
+    scopeChats: "Chat",
+    scopeAll: "Semua halaman",
     positionValue: "Horizontal {x}%, vertikal {y}%",
-    newChat: "Chat baru",
-    conversation: "Percakapan",
+    newChat: "Pratinjau chat baru",
+    conversation: "Pratinjau percakapan",
     prompt: "Apa yang ingin Anda jelajahi?",
     response: "Percakapan Anda tetap jelas di atas latar belakang.",
     storageError: "Tidak dapat menyimpan latar belakang. Periksa ruang penyimpanan browser.",
@@ -40,6 +57,26 @@ export const id = {
     dimensionsError: "Pilih gambar di bawah 40 megapiksel.",
     decodeError: "Tidak dapat mendekode gambar ini. Coba file lain.",
     effectError: "Tidak dapat merender efek. Pilih Tidak ada atau gambar lain.",
+    material: "Kaca",
+    materialSolid: "Mati",
+    materialTransparent: "Transparan",
+    materialFrosted: "Buram kaca",
+    materialBlurred: "Kabur",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Kaca sistem macOS",
+    materialMacosNote: "Menggunakan material jendela tembus cahaya macOS, sehingga desktop Anda terlihat di baliknya.",
+    materialNativeFailed: "Versi Unsloth Desktop ini tidak dapat menggunakan material macOS. Perbarui aplikasi untuk mengaktifkannya.",
+    glassTheme: "Tema kaca",
+    materialStyle: "Gaya",
+    materialMenus: "Menu kaca",
+    materialMenusDescription: "Dropdown, menu, dan pemilih juga menggunakan kaca.",
+    materialStrength: "Kekuatan kaca",
+    lens: "Lensa kaca",
+    lensDescription: "Membengkokkan gambar di bawah kotak tulis seperti kaca sungguhan.",
+    lensOff: "Mati",
+    lensMagnify: "Perbesar",
+    lensShrink: "Perkecil",
   },
   linkMenu: {
     openInBrowser: "Buka di browser Unsloth",
@@ -697,6 +734,8 @@ export const id = {
     plainText: "Kolom pesan teks biasa",
     plainTextDescription:
       "Pertahankan kode, Markdown, dan tautan sebagai teks literal. Nonaktifkan untuk menampilkan pratinjau berformat.",
+    richPaste: "Tempel teks berformat",
+    richPasteDescription: "Menempel tautan, tabel, dan format sebagai Markdown. {shortcut} menempel teks biasa. Composer teks kaya lengkap segera hadir.",
     showContext: "Penggunaan jendela konteks",
     sendShortcut: "Pintasan kirim",
     sendMultiline: "{mod} + Enter untuk prompt multibaris",
@@ -811,38 +850,6 @@ export const id = {
     compactEmpty: "Belum ada yang dapat dipadatkan",
     compactUnsupported:
       "Pemadatan memerlukan model GGUF atau MLX yang mendukung alat",
-  },
-  halloween: {
-    navLabel: "Trick or treat…",
-    title: "Trick or Treat?!",
-    description:
-      "Kami menyiapkan beberapa kejutan seram untuk Unsloth, tersedia hingga akhir Oktober.",
-    chooseTheme: "Pilih tema seram",
-    spookyGreetings: "Sapaan seram",
-    spookyGreetingsDescription:
-      "Si sloth menyapa chat baru dengan kejutan seram.",
-    decorations: "Laba-laba dan kelelawar",
-    decorationsDescription:
-      "Sarang laba-laba, ditambah sesekali laba-laba atau kelelawar.",
-    surprise: "Trick or treat!",
-    surpriseDescription: "Biarkan si sloth memilihkan tema untuk Anda.",
-    themesTitle: "Tema seram",
-    back: "Kembali",
-    footer: "Unsloth kembali normal pada tengah malam 1 November.",
-    removeNow: "Hapus sekarang",
-    hideFromSidebar: "Sembunyikan dari bilah sisi",
-    greeting: {
-      pumpkins: "Labu sudah diukir. Apa selanjutnya?",
-      brewing: "Mari mulai meramu",
-      trickOrTreat: "Trick or treat?",
-      manor: "Selamat datang di rumah tua",
-      manorName: "Selamat datang di rumah tua, {name}",
-      happyHalloween: "Selamat Halloween",
-      happyHalloweenName: "Selamat Halloween, {name}",
-      spirits: "Para arwah sedang mendengarkan…",
-      mysteries: "Misteri apa yang akan kita ungkap malam ini?",
-      conjure: "Apa yang bisa saya sihirkan untuk Anda?",
-    },
   },
   welcome: {
     goodToSeeYou: "Senang bertemu Anda",
@@ -1071,7 +1078,7 @@ export const id = {
       deleteProjects: "Hapus proyek",
       deleteProjectsTitle: "Hapus proyek",
       deleteProjectsDescription:
-        "Hapus {count} proyek? Chat di dalamnya akan dihapus secara permanen.",
+        "{count} proyek dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteProjectsFilesDescription:
         "Folder ruang kerja setiap proyek akan dihapus dari disk.",
       countSelected: "{count} dipilih",
@@ -1083,7 +1090,7 @@ export const id = {
       deleteChats: "Hapus chat",
       deleteTitle: "Hapus chat",
       deleteDescription:
-        "Hapus {count} chat? Tindakan ini tidak dapat diurungkan.",
+        "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
       deleteFilesDescription:
         "Folder sandbox milik setiap chat akan dihapus dari disk. File yang ditulisnya di dalam proyek tetap berada di ruang kerja proyek tersebut.",
       deleteFilesLabel: "Hapus file dan folder sandbox",
@@ -1131,7 +1138,7 @@ export const id = {
     dialog: {
       deleteChat: {
         title: "Hapus chat",
-        description: 'Yakin ingin menghapus chat "{name}" ini?',
+        description: 'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
       },
       deleteRun: {
         title: "Hapus proses pelatihan",
@@ -1157,6 +1164,7 @@ export const id = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Tetapkan kata sandi pemilik instalasi sebelum menambahkan akun lain. Anda akan menggunakannya untuk masuk setelah instalasi ini memiliki beberapa akun.",
       signsInAs: "Masuk sebagai {username}",
       signsInAsOwner: "Masuk sebagai {alias} atau {username}",
       signInName: "Nama masuk Anda",
@@ -2097,6 +2105,7 @@ export const id = {
         loadError: "Gagal memuat pengaturan peralihan model otomatis.",
         saveError: "Gagal menyimpan pengaturan peralihan model otomatis.",
         idleError: "Masukkan 0 agar model tetap dimuat, atau minimal 60 detik.",
+        idleUnsaved: "Belum disimpan.",
         keepKv: "Pertahankan konteks chat saat model dilepas",
         keepKvDescription:
           "Simpan cache KV sebelum pelepasan karena tidak aktif, atau sebelum model gambar atau video mengambil alih GPU, agar chat yang dilanjutkan tidak perlu membaca ulang riwayat. Hingga 10 GB di disk.",
@@ -2162,6 +2171,14 @@ export const id = {
           off: "Menjalankan setiap panggilan alat tanpa meminta izin. Kode Python dan terminal tetap berjalan di sandbox, yang membatasi file yang dapat dijangkau di komputer Anda. Tanpa sandbox OS yang berfungsi, panggilan berisiko akan meminta izin terlebih dahulu.",
           full: "Menjalankan setiap panggilan alat tanpa meminta izin dan menonaktifkan sandbox kode, sehingga kode Python dan terminal dapat membaca dan mengubah file apa pun yang dapat diakses akun Anda.",
         },
+      },
+      display: {
+        title: "Tampilan",
+        timeFormat: "Format waktu",
+        timeFormatDescription: "Tampilkan waktu dalam format 12 jam atau 24 jam.",
+        timeFormatSystem: "Default sistem",
+        timeFormat12: "12 jam",
+        timeFormat24: "24 jam",
       },
       notifications: {
         sectionTitle: "Notifikasi",
@@ -2347,10 +2364,14 @@ export const id = {
         label: "Jenis instalasi",
         description:
           "Hanya chat (GGUF). Instalasi lengkap menambahkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan.",
+        descriptionCpu:
+          "Hanya chat (GGUF). Tidak ditemukan GPU yang didukung, jadi instalasi lengkap menambahkan pelatihan di CPU.",
         action: "Tingkatkan ke instalasi lengkap",
         confirmTitle: "Tingkatkan ke instalasi lengkap?",
         confirmDescription:
           "Instalasi Hanya chat ini menjalankan model GGUF. Instalasi lengkap menambahkan PyTorch untuk GPU mesin ini, yang mengaktifkan pelatihan, ekspor, video, model safetensors, dan fitur pembuatan gambar tambahan. Proses ini mengunduh beberapa gigabyte (minimal 5 GB ruang disk) dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
+        confirmDescriptionCpu:
+          "Instalasi Hanya chat ini menjalankan model GGUF. Tidak ditemukan GPU yang didukung di mesin ini, jadi instalasi lengkap menambahkan PyTorch untuk CPU, yang mengaktifkan pelatihan di CPU. Pelatihan di CPU jauh lebih lambat daripada di GPU. Proses ini memerlukan ruang disk minimal 5 GB dan memulai ulang server. Chat, model, dan pengaturan tetap disimpan. Proses ini dapat memakan waktu beberapa menit.",
         confirmAction: "Tingkatkan",
         keywords:
           "full install upgrade install type chat only gguf add training train training fine-tune pytorch torch export video image generation safetensors instalasi lengkap tingkatkan pelatihan latih ekspor gambar",
@@ -2395,6 +2416,13 @@ export const id = {
       avatarShapeRounded: "Membulat",
       greetingSloth: "Sapaan",
       greetingSlothDescription: "Tampilkan sapaan di chat baru.",
+      greetingDefault: "Bawaan",
+      greetingCustom: "Kustom",
+      greetingImage: "Gambar",
+      greetingText: "Teks sapaan",
+      greetingTextDescription: "Kosongkan untuk memakai sapaan bawaan.",
+      greetingFileError: "Pilih PNG, JPEG, WebP, atau GIF di bawah 10 MB.",
+      greetingImageError: "Gambar ini tidak dapat digunakan. Coba yang lebih kecil.",
       chooseSloth: "Atau pilih sloth",
       noPicture: "Tidak ada foto profil",
       noneLabel: "Tidak ada",
@@ -2520,20 +2548,32 @@ export const id = {
         description:
           "Warna yang digunakan di seluruh Unsloth, dalam mode terang dan gelap.",
         standard: "Standar",
-        classic: "Klasik",
-        minimal: "Minimal",
         moreThemes: "Tema lainnya",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Trick or treat",
-        description: "Tema Halloween dan sapaan seram, hingga 1 November.",
+      composer: {
+        title: "Penyusun pesan",
+      },
+      code: {
+        title: "Kode",
+        fontDescription: "Blok kode di chat, pratinjau file, dan contoh API.",
+        lineNumbers: {
+          label: "Nomor baris",
+          description: "Beri nomor pada baris blok kode di chat.",
+        },
+        wordWrap: {
+          label: "Bungkus baris",
+          description: "Bungkus baris panjang di blok kode alih-alih menggulir ke samping.",
+        },
+        ligatures: {
+          label: "Ligatur font",
+          description: "Gabungkan simbol seperti => dan != menjadi satu glif jika font kode mendukungnya.",
+        },
       },
       custom: {
         chatWidth: {
           label: "Lebar chat",
           description: "Lebar pesan dan kolom pesan.",
-          standard: "Standar",
+          standard: "Bawaan",
           wide: "Lebar",
           full: "Lebar penuh",
         },
@@ -3158,6 +3198,8 @@ export const id = {
         "Notifikasi diblokir. Izinkan notifikasi untuk Unsloth di pengaturan browser atau sistem Anda, lalu coba lagi.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound notifikasi pemberitahuan selesai balasan latar belakang suara",
+      showLinkPreviews: "Pratinjau tautan",
+      showLinkPreviewsDescription: "Tampilkan pratinjau saat mengarahkan kursor ke tautan sumber.",
       showResponseModel: "Model respons",
       showResponseModelDescription:
         "Tampilkan detail model di respons asisten.",
@@ -3174,6 +3216,8 @@ export const id = {
       inlineEditResponse: "Edit respons pada respons",
       inlineEditResponseDescription:
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",
+      turnNavigation: "Navigasi giliran",
+      turnNavigationDescription: "Tampilkan prompt Anda sebagai bilah di tepi kiri chat panjang. Arahkan kursor untuk pratinjau giliran, klik untuk melompat ke sana, dan tandai giliran agar mudah ditemukan lagi.",
       composerAtBottom: "Kolom pesan di bagian bawah",
       composerAtBottomDescription:
         "Mulai chat baru dengan kolom pesan di bagian bawah halaman, bukan di tengah.",
@@ -3460,10 +3504,10 @@ export const id = {
         moveFailed: "Gagal memindahkan chat",
         deleteChatsTitle: "Hapus chat ({count})",
         deleteChatsWarning:
-          "Hapus chat yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteArchivedTitle: "Hapus {count} chat yang diarsipkan",
         deleteArchivedWarning:
-          "Hapus chat yang diarsipkan yang dipilih ({count})? Tindakan ini tidak dapat diurungkan.",
+          "{count} chat yang diarsipkan dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleting: "Menghapus...",
       },
       title: "Data",
@@ -3840,8 +3884,6 @@ export const id = {
         repoCheckoutFallback:
           "Jika Anda masih memiliki checkout repo, jalankan penginstal lokal dari sana:",
         restartAfterUpdate: "Mulai ulang Unsloth setelah memperbarui.",
-        desktopManaged:
-          "Aplikasi desktop memeriksa versi aplikasi baru secara otomatis. Anda juga dapat memeriksa atau memperbarui di sini kapan saja.",
         desktopReady: "Pembaruan aplikasi desktop",
         desktopReadyDescription:
           "Periksa apakah versi aplikasi desktop yang lebih baru tersedia.",
@@ -3882,6 +3924,8 @@ export const id = {
   },
   studio: {
     routeTitle: "Latih",
+    cpuTrainingNotice:
+      "Tidak ditemukan GPU, jadi pelatihan berjalan di CPU. Pelatihan ini jauh lebih lambat daripada di GPU dan hanya mendukung model teks (LoRA atau finetuning penuh).",
     wizard: {
       modelTitle: "Model",
       modelDescription: "Pilih model dan metode pelatihan",
@@ -5036,9 +5080,9 @@ export const id = {
       dialog: {
         renameChat: "Ganti nama chat",
         deleteChatDescription:
-          "Chat ini akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Chat dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteProjectDescription:
-          "Proyek beserta chat-nya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat diurungkan.",
+          "Proyek dan chat di dalamnya ({count}) akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.",
         deleteFilesMany:
           "Hapus juga file dan folder sandbox yang dibuat oleh chat ini.",
         deleteProjectFilesLabel: "Hapus folder ruang kerja proyek",
@@ -5532,7 +5576,7 @@ export const id = {
     chatName: "Nama chat",
     deleteChat: "Hapus chat",
     deleteChatDescription:
-      "Yakin ingin menghapus {name}? Pesan-pesannya akan dihapus secara permanen.",
+      'Chat "{name}" dan pesannya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     importChats: "Impor chat",
     importDestination: "Pilih tujuan impor {name}:",
     selectDestination: "Pilih tujuan",
@@ -5540,7 +5584,7 @@ export const id = {
     import: "Impor",
     deleteProject: "Hapus proyek",
     deleteProjectDescription:
-      "Yakin ingin menghapus {name}? Chat di dalamnya akan dihapus secara permanen.",
+      'Proyek "{name}" dan semua chat di dalamnya akan dihapus secara permanen. Tindakan ini tidak dapat dibatalkan.',
     deleteProjectFiles: "Folder ruang kerja proyek akan dihapus dari disk.",
     deleteAll: "Hapus semua",
     projectFallback: "proyek",
@@ -5625,6 +5669,18 @@ export const id = {
     flaggedIntro: "Pemindai otomatis kami menandai masalah, termasuk:",
     nothingFlagged:
       "Pemindai otomatis kami tidak menandai file yang mengkhawatirkan, tetapi harap periksa kembali.",
+    unscannedTitle: "File model tidak dapat dipindai",
+    unscannedBody: "{model} berisi bobot pickle, yang dapat menjalankan kode saat dimuat, dan tidak ada pemindaian malware yang tersedia untuknya, sehingga tidak dapat dimuat. {note}",
+    unscannedIntro: "File yang tidak dapat dipindai:",
+    switchSourceNote: "Ubah sumber model ke Hugging Face di Pengaturan untuk memuatnya.",
+    reconnectNote: "Hubungkan ke Hugging Face agar hasil pemindaiannya dapat dibaca, lalu coba lagi.",
+    managedTitle: "Kode kustom dinonaktifkan untuk akun ini",
+    managedNote: "Fitur ini dinonaktifkan untuk akun terkelola. Minta pemilik instalasi untuk mengaktifkannya.",
+    notFoundTitle: "Tidak ditemukan di {source}",
+    notFoundBody: "{model} tidak ditemukan di {source}, sehingga pemeriksaan keamanannya tidak dapat dijalankan. Periksa namanya, atau atur token dengan akses jika repositorinya privat.",
+    notOnModelScopeBody: "{model} tidak tersedia di ModelScope, sehingga pemeriksaan keamanannya tidak dapat dijalankan dan tidak dapat dimuat dari sana. Ubah sumber model ke Hugging Face di Pengaturan untuk menggunakannya.",
+    checksFailedTitle: "Pemeriksaan keamanan tidak dapat dijalankan",
+    checksFailedBody: "{model} tidak dapat dibaca dari {source}, sehingga pemeriksaan keamanannya tidak dapat diselesaikan dan tidak dapat dimuat. Periksa koneksi dan token Anda, lalu coba lagi. {note}",
     enableAndContinue: "Aktifkan dan lanjutkan",
   },
   tour: {
@@ -5813,5 +5869,60 @@ export const id = {
     later: "Nanti",
     update: "Perbarui",
     undo: "Urungkan",
+  },
+  generationStats: {
+    working: "Memproses...",
+    processingPrompt: "Memproses prompt {percent}%",
+    timeLeft: "{eta} lagi",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "draf {accepted}/{drafted} diterima ({percent}%)",
+    timing: {
+      trigger: "Waktu pesan",
+      firstToken: "Token pertama",
+      speedInStep: "Kecepatan (dalam langkah)",
+      effective: "Efektif",
+      output: "Output",
+      denoising: "Denoising",
+      stepsOne: "{count} langkah",
+      steps: "{count} langkah",
+      blocksOne: "{count} blok",
+      blocks: "{count} blok",
+      canvas: "Kanvas",
+      generation: "Pembuatan",
+      answerTokens: "Token jawaban",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Potongan",
+      promptEval: "Evaluasi prompt",
+      promptSpeed: "Kecepatan prompt",
+      speed: "Kecepatan",
+      tokens: "Token",
+      draftAccepted: "Draf diterima",
+      denoisingSteps: "Langkah denoising",
+      blocksLabel: "Blok",
+      cacheHits: "Cache hit",
+      cacheWrites: "Penulisan cache",
+      stopReason: "Alasan berhenti",
+      stoppedByYou: "Dihentikan oleh Anda",
+      endOfTurn: "Akhir giliran",
+      lengthLimit: "Batas panjang",
+      toolCall: "Panggilan alat",
+      contentFilter: "Filter konten",
+    },
+    placement: {
+      title: "Penempatan bobot",
+      allOnCpu: "Semua {total} lapisan di CPU",
+      split: "{gpu} dari {total} lapisan di GPU, {cpu} di CPU",
+      allOnGpu: "Semua {total} lapisan di GPU",
+      expertCache: "Semua {total} lapisan di GPU, semua expert di RAM (cache expert {amount} di GPU)",
+      expertSpillOne: "Semua {total} lapisan di GPU, bobot expert dari {count} lapisan di RAM",
+      expertSpill: "Semua {total} lapisan di GPU, bobot expert dari {count} lapisan di RAM",
+      inUnifiedMemory: "{amount} di memori terpadu",
+      inSharedMemory: "{amount} di memori bersama",
+      inVram: "{amount} di VRAM",
+      inRam: "{amount} di RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

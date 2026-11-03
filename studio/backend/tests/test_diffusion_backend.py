@@ -6952,8 +6952,7 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
 
 
 def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatch):
-    """Pipeline re-plans must price the quantised transformer, or offloaded runs never take the fast
-    path."""
+    """Pipeline replans price the quantized transformer."""
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
 
@@ -6962,7 +6961,7 @@ def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatc
     monkeypatch.setattr(
         dmod,
         "settled_snapshot_device_memory",
-        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
+        lambda t, **kwargs: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
     )
     monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
     monkeypatch.setattr(
@@ -8814,6 +8813,11 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
     assert prequant["checkpoint"] is False
+    assert prequant["hosted_denoiser"] is False
+    selected = [entry for entry in plan["entries"] if entry["checkpoint"]]
+    assert len(selected) == 1
+    assert selected[0]["repo_id"] == "unsloth/Z-Image-GGUF"
+    assert selected[0]["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
 
 
 def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
