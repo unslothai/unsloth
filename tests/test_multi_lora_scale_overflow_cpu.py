@@ -17,7 +17,7 @@ from torch.nn import functional as F
 
 def _load_experts():
     path = Path(__file__).resolve().parents[1] / "unsloth/kernels/multi_lora.py"
-    tree = ast.parse(path.read_text(), filename = str(path))
+    tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
     names = {"MultiLoraExpertParam", "MultiLoraExperts", "_expert_stack_shape"}
     tree.body = [
         n for n in tree.body if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names
