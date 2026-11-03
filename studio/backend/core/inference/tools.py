@@ -12846,13 +12846,30 @@ def mcp_fit_loaded(specs: list[dict]) -> list[dict]:
     return fitted
 
 
+def _mcp_search_result(found: list[dict]) -> str:
+    lines = [
+        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}\n"
+        f"  schema: {json.dumps(spec, separators=(',', ':'))}"
+        for spec in found
+    ]
+    return (
+        f"Loaded {len(found)} MCP tool{'s' if len(found) != 1 else ''}. Call the one that fits directly, "
+        "with the parameters in its schema:\n" + "\n".join(lines)
+    )
+
+
 def _mcp_search_matches(arguments) -> tuple[list[dict], list[dict]]:
     """(the cached MCP tools a mcp_tool_search call loads, the matches too large to)."""
     arguments = arguments if isinstance(arguments, dict) else {}
     specs = _cached_mcp_catalog()
     order, exact = _mcp_ranked(specs, arguments.get("query"))
     picked = [specs[i] for i in order[: max(_mcp_search_limit(arguments.get("limit")), exact)]]
-    fitted = mcp_fit_loaded(picked)
+    fitted = []
+    for spec in mcp_fit_loaded(picked):
+        candidate = _mcp_search_result([*fitted, spec])
+        # Price the complete response so the final result cap never cuts a schema in half.
+        if _fit_result_to_room(candidate, MCP_TOOL_SEARCH_NAME) == candidate:
+            fitted.append(spec)
     return fitted, [spec for spec in picked if spec not in fitted]
 
 
@@ -12875,15 +12892,7 @@ def _mcp_tool_search(arguments) -> str:
             f"No MCP tool matched '{query.strip()}'. Try other keywords, or one of the tool names "
             f"listed in the {MCP_TOOL_SEARCH_NAME} description."
         )
-    lines = [
-        f"- {spec['function']['name']}: {_mcp_summary(spec['function'].get('description') or '')}\n"
-        f"  schema: {json.dumps(spec, separators=(',', ':'))}"
-        for spec in found
-    ]
-    return (
-        f"Loaded {len(found)} MCP tool{'s' if len(found) != 1 else ''}. Call the one that fits directly, "
-        "with the parameters in its schema:\n" + "\n".join(lines)
-    )
+    return _mcp_search_result(found)
 
 
 def _mcp_tool_prefix(server: dict) -> str:

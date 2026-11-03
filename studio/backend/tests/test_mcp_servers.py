@@ -2732,3 +2732,37 @@ def test_deferred_mcp_calls_keep_catalog_coercion_on_every_call(monkeypatch, sea
     )
     assert unknown.action == "disabled"
     assert controller.active_tools() == before
+
+
+@pytest.mark.parametrize(
+    "schema_chars,context_tokens,result_tokens",
+    [(20_000, 32_768, 32_768), (3_000, 2_048, 2_048), (1_200, 32_768, 300)],
+)
+def test_search_returns_whole_schemas_within_the_result_budget(
+    tmp_path, monkeypatch, listing_window, schema_chars, context_tokens, result_tokens
+):
+    from core.inference import tools as tools_mod
+
+    big = {
+        "name": "large",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "x" * schema_chars}},
+        },
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [big, _PING])
+    listing_window(context_tokens)
+    result = tools_mod.execute_tool(
+        "mcp_tool_search",
+        {"query": "large ping"},
+        context_tokens = context_tokens,
+        result_budget_tokens = result_tokens,
+    )
+    assert result.startswith("Loaded 1 MCP tool.")
+    schemas = [
+        json.loads(line.removeprefix("  schema: "))
+        for line in result.splitlines()
+        if line.startswith("  schema: ")
+    ]
+    assert _names(schemas) == ["mcp__srv1__ping"]
+    assert "truncated" not in result
