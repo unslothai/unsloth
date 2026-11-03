@@ -38,8 +38,8 @@ needs_cpu_scaled_mm = pytest.mark.skipif(
     not _cpu_scaled_mm_works(), reason = "this torch build has no CPU torch._scaled_mm kernel"
 )
 
-FP8_FWD_TOL = 0.06  # tensorwise e4m3 x e4m3: ~0.037 relative on Gaussian data
-FP8_DGRAD_TOL = 0.09  # e5m2 dy x e4m3 W: ~0.059
+FP8_FWD_TOL = 0.06
+FP8_DGRAD_TOL = 0.09
 
 
 def _rel(a, b):
@@ -155,7 +155,7 @@ def test_quantized_once_and_requantized_after_an_in_place_change(monkeypatch):
     w8 = state.w8
     assert torch.equal(state.w8t.view(torch.uint8), w8.t().contiguous().view(torch.uint8))
     with torch.no_grad():
-        W.mul_(2.0)  # a LoRA merge / unmerge writes the base weight in place
+        W.mul_(2.0)
     state.refresh(W)
     assert state.quantizations == 2
     assert _rel(state.matmul(x, W), x.float() @ W.float().t()) < FP8_FWD_TOL
@@ -330,7 +330,7 @@ def test_enable_fp8_lora_on_a_peft_model():
     loss_ref, grads_ref = _loss_and_grads(model)
     f8t.mark_fp8_lora(model.base_model.model, f8t.FP8_LORA_RECIPE)
     converted = f8t.enable_fp8_lora(model, allow_cpu = True)
-    assert len(converted) == 2 * 7  # every LoRA'd projection; lm_head / embeddings untouched
+    assert len(converted) == 2 * 7
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == 14
     loss, grads = _loss_and_grads(model)
     assert FL.FP8_LORA_STATS["fwd"] == 14 and FL.FP8_LORA_STATS["dgrad"] == 11
@@ -345,7 +345,7 @@ def test_enable_fp8_lora_on_a_peft_model():
 
 def test_no_request_no_conversion_and_strict_zero_engagement(monkeypatch):
     model = _tiny_qwen3_peft()
-    assert f8t.enable_fp8_lora(model) == []  # loaded without float8_training: untouched
+    assert f8t.enable_fp8_lora(model) == []
     for module in model.modules():
         assert "_unsloth_fp8_lora" not in module.__dict__
     monkeypatch.setenv("UNSLOTH_STRICT_ENGAGE", "1")
@@ -376,9 +376,9 @@ def test_compile_aot_eager_fullgraph():
     FL.attach_fp8_lora_base(proj.base_layer)
 
     def step(x):
-        y = base(x)  # PEFT path
+        y = base(x)
         W, W_quant, A, B, S = FLK.get_lora_parameters(proj)
-        z = FLK.LoRA_W.apply(y[..., :256].contiguous(), W, W_quant, A, B, S)  # fast path
+        z = FLK.LoRA_W.apply(y[..., :256].contiguous(), W, W_quant, A, B, S)
         return z.float().square().mean()
 
     x = torch.randn(2, 16, 256).bfloat16().requires_grad_(True)
@@ -387,7 +387,7 @@ def test_compile_aot_eager_fullgraph():
     g_eager = x.grad.clone()
     x.grad = None
     FL.reset_fp8_lora_stats()
-    compiled = torch.compile(step, backend = "aot_eager", fullgraph = True)  # any graph break raises
+    compiled = torch.compile(step, backend = "aot_eager", fullgraph = True)
     out = compiled(x)
     out.backward()
     torch.testing.assert_close(out, eager)
@@ -400,9 +400,9 @@ def test_compile_aot_eager_fullgraph():
 def test_resolve_refusals_and_names():
     R = f8t.FP8_LORA_RECIPE
     with pytest.raises(P.PrecisionRefused, match = "fp8 tensor cores"):
-        f8t.resolve_fp8_lora("fp8_lora", gpu = "sm75")  # T4
+        f8t.resolve_fp8_lora("fp8_lora", gpu = "sm75")
     with pytest.raises(P.PrecisionRefused, match = "fp8 tensor cores"):
-        f8t.resolve_fp8_lora("fp8_lora", gpu = "sm80")  # A100
+        f8t.resolve_fp8_lora("fp8_lora", gpu = "sm80")
     with pytest.raises(P.PrecisionRefused, match = "ROCm"):
         f8t.resolve_fp8_lora("fp8_lora", gpu = "rocm")
     with pytest.raises(P.PrecisionRefused, match = "no CUDA device"):
@@ -420,7 +420,7 @@ def test_resolve_refusals_and_names():
     assert FL.scaling_for_class("sm120") == "row" and FL.scaling_for_class("sm89") == "tensor"
     assert f8t.resolve_fp8_lora(False) is None and f8t.resolve_fp8_lora(None) is None
     gate = P.get_recipe(R).gate("sm89").status
-    if gate != "named":  # explicit until the gates in the registry evidence are met
+    if gate != "named":
         with pytest.raises(P.PrecisionRefused, match = "not been measured faster"):
             f8t.resolve_fp8_lora(True, gpu = "sm89")
 
@@ -460,7 +460,7 @@ def rowwise(monkeypatch):
 def test_rowwise_numerics_and_outlier_tokens(rowwise):
     W = _weight()
     x = torch.randn(64, 256).bfloat16()
-    x[0] *= 1e5  # one massive-activation token: tensorwise pushes the rest into e4m3 subnormals
+    x[0] *= 1e5
     dy = torch.randn(64, 384).bfloat16()
     state = FL.Fp8LoRABaseState(W)
     assert state.w_inv_fwd.shape == (1, 384) and state.w_inv_dgrad.shape == (1, 256)
@@ -509,9 +509,7 @@ def test_default_no_transposed_cache_matches_cached(monkeypatch):
     W = _weight()
     dy = torch.randn(32, 384).bfloat16()
     lean = FL.Fp8LoRABaseState(W)
-    assert (
-        lean.w8t is None
-    )  # default: one fp8 copy (+1 byte / weight), transposed inside the dgrad op
+    assert lean.w8t is None
     monkeypatch.setattr(FL, "_CACHE_T", True)
     cached = FL.Fp8LoRABaseState(W)
     assert cached.w8t is not None
@@ -542,7 +540,7 @@ def test_compiled_graph_has_no_fp8_transpose_outside_the_ops():
 
     x = torch.randn(2, 16, 256).bfloat16().requires_grad_(True)
     torch.compile(step, backend = backend, fullgraph = True)(x).backward()
-    assert len(graphs) >= 2  # forward and backward
+    assert len(graphs) >= 2
     fp8 = (torch.float8_e4m3fn, torch.float8_e5m2)
     targets = []
     for g in graphs:
@@ -581,8 +579,8 @@ def test_host_master_leaves_only_fp8_bytes_on_the_compute_device(offload_on_cpu)
     state = FL.attach_fp8_lora_base(lin)
     ref_state = FL.attach_fp8_lora_base(ref, offload = False)
     assert state.offloaded and not ref_state.offloaded
-    assert lin.weight is param  # optimizer / PEFT / named_parameters keep the same Parameter
-    assert torch.equal(lin.weight, W0)  # the host master is the exact 16-bit weight
+    assert lin.weight is param
+    assert torch.equal(lin.weight, W0)
     numel = 256 * 384
     assert state.resident_bytes(lin) == {
         "fp8": numel + 4,
@@ -614,7 +612,7 @@ def test_host_master_gives_the_same_fp8_results(offload_on_cpu):
     yb.backward(dy)
     assert torch.equal(ya, yb) and torch.equal(xa.grad, xb.grad)
     assert FL.FP8_LORA_STATS["fwd"] == 2 and FL.FP8_LORA_STATS["dgrad"] == 2
-    assert FL.FP8_LORA_STATS["quantize"] == 2  # quantized once each, never again from the host copy
+    assert FL.FP8_LORA_STATS["quantize"] == 2
 
 
 def test_host_master_decode_rows_use_the_dequantized_fp8_weight(offload_on_cpu):
@@ -706,7 +704,7 @@ def test_module_moves_keep_or_restore_the_host_master(offload_on_cpu):
     assert not state.offloaded and lin.weight.dtype == torch.float16
     assert torch.equal(lin.weight, W0.half())
     x = torch.randn(32, 256).half()
-    y = lin(x)  # requantized from the converted weight
+    y = lin(x)
     assert (
         y.dtype == torch.float16
         and _rel(y, x.float() @ W0.float().t() + lin.bias.float()) < FP8_FWD_TOL
@@ -1204,7 +1202,7 @@ def test_rowwise_fp16_without_float32_out_stays_finite(rowwise, monkeypatch, err
     assert state.w_inv_fwd.dim() == 2
     x = torch.full((16, 64), 2047.0, dtype = torch.float16)
     assert torch.isfinite(state.matmul(x, W)).all()
-    assert torch.isfinite(state.matmul(x, W)).all()  # the refusal is remembered, still finite
+    assert torch.isfinite(state.matmul(x, W)).all()
     dy = torch.full((16, 32), 4094.0, dtype = torch.float16)
     assert torch.isfinite(state.dgrad(dy, W)).all()
     Wb = W.bfloat16()

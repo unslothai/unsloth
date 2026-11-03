@@ -468,7 +468,6 @@ class Fp8LoRABaseState:
         return self
 
     def _dgrad_weight(self):
-        """(fp8 weight, is it the K-major copy) for fp8_lora_dgrad."""
         return (self.w8t, True) if self.w8t is not None else (self.w8, False)
 
     def offload(self, module):
@@ -494,7 +493,6 @@ class Fp8LoRABaseState:
         return True
 
     def restore(self, module):
-        """Bring the exact 16-bit master back to the compute device."""
         if not self.offloaded:
             return False
         weight = module.weight
@@ -514,7 +512,6 @@ class Fp8LoRABaseState:
         return dense.t() if W is not None and _is_transposed(W) else dense
 
     def resident_bytes(self, module = None):
-        """{'fp8', 'master_device', 'master_host'} bytes."""
         fp8 = sum(
             t.numel() * t.element_size()
             for t in {
@@ -590,8 +587,6 @@ def has_fp8_dgrad(W_quant) -> bool:
 
 
 class _Fp8FrozenLinear(torch.autograd.Function):
-    """PEFT path (base_layer(x)): y = fp8(x) @ fp8(W).T, dx = fp8(dy) @ fp8(W); no weight gradient."""
-
     @staticmethod
     def forward(ctx, x, weight, w8, w8t, w_inv_fwd, w_inv_dgrad):
         ctx.w_is_t = w8t is not None
@@ -639,7 +634,6 @@ def _fp8_base_forward(self, x):
 
 
 def eligible_base(module) -> Optional[str]:
-    """None when `module` can take an fp8 frozen base, else why not."""
     if type(module) is not torch.nn.Linear:
         return f"{type(module).__name__} is not a plain nn.Linear"
     weight = module.weight

@@ -550,8 +550,7 @@ def _merge_with_master(
 
 
 def _has_variant(lora_module, adapter_name = None) -> bool:
-    """A PEFT LoRA variant (DoRA, BD-LoRA, VeLoRA, ...): DoRA reads the base weight in its forward, and variant
-    init (after the adapter is placed) allocates its own tensors on base_layer.weight's device."""
+    """Variants may read the master directly or initialize tensors on its device."""
     dora = getattr(lora_module, "use_dora", {}) or {}
     variants = getattr(lora_module, "lora_variant", {}) or {}
     if adapter_name is not None:
@@ -560,9 +559,7 @@ def _has_variant(lora_module, adapter_name = None) -> bool:
 
 
 def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
-    """PEFT puts a new adapter on base_layer.weight's device, which is the host for an offloaded master: place it
-    on the fp8 compute device. A variant adapter (DoRA, BD-LoRA, VeLoRA) brings the master back to that device
-    first, so PEFT places it and whatever its variant init builds there."""
+    """Place adapters on the compute device; variants also need their master there."""
     base = getattr(self, "base_layer", None)
     state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
     if state is not None and state.offloaded and _has_variant(self, adapter_name):
@@ -598,7 +595,6 @@ def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
 
 
 def _restore_master_before_merge(lora_module):
-    """PEFT merge / unmerge add to base.weight.data on the LoRA device: bring a host master back first."""
     import functools
     import types
 
@@ -618,8 +614,7 @@ _RAW_READS = {}
 
 
 def _reads_raw_weight(parent, leaf) -> bool:
-    """The parent's class source reads `<leaf>.weight` directly (fused Mamba / Falcon-H1 kernels, WavLM's
-    F.multi_head_attention_forward) instead of calling the child: that tensor must stay on the compute device."""
+    """Direct weight readers bypass the patched forward, so their masters must stay resident."""
     import inspect
     import re
 
@@ -650,7 +645,6 @@ def _mamba_raw_weight_leaf(model, name) -> bool:
 
 
 def _block_swapped_modules(model) -> set:
-    """ids of every module inside a decoder layer managed by block swap (install_block_swap)."""
     out = set()
     for module in model.modules():
         swapper = module.__dict__.get("_unsloth_block_swap")
