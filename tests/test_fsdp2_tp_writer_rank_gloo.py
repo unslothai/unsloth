@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""TP x FSDP2 gathered saves have one writer across named and flattened meshes."""
-
 import multiprocessing
 import os
 

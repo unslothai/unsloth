@@ -100,7 +100,6 @@ def _root_mesh(mesh):
 
 
 def _composed_writer_rank(meshes):
-    """Lowest rank of the common-root slice spanned by all participating meshes."""
     try:
         root = _root_mesh(meshes[0])
         if any(_root_mesh(m) is not root for m in meshes[1:]):
