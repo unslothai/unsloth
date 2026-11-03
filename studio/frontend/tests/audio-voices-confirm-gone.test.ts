@@ -74,6 +74,20 @@ test("a list request already in flight is not trusted for a newer voice", async 
   assert.equal(await check, false);
 });
 
+test("two checks waiting on the same old list both see a fresh one", async () => {
+  server = [];
+  let release!: () => void;
+  gate = new Promise((resolve) => (release = resolve));
+  const stale = store().refresh();
+  server = [{ id: "v-late" }];
+  const first = store().confirmGone("v-late");
+  const second = store().confirmGone("v-late");
+  gate = Promise.resolve();
+  release();
+  await stale;
+  assert.deepEqual([await first, await second], [false, false]);
+});
+
 test("a failed list keeps the selection", async () => {
   offline = true;
   assert.equal(await store().confirmGone("anything"), false);
