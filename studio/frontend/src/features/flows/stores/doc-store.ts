@@ -543,9 +543,17 @@ export const useDocStore = create<DocState>((set, get) => {
           edges,
           edgeOrder: [...order, edge.id],
         }).graph;
-        const dropped = s.graph.wireOrder.filter(
-          (id) => s.graph.edges[id] && !edges[id],
-        );
+        // A segment out of an empty reroute has no edge yet, but still holds the input it ends at.
+        const dropped = s.graph.wireOrder.filter((id) => {
+          const wire = s.graph.wires[id];
+          return (
+            (s.graph.edges[id] && !edges[id]) ||
+            (replaceSingleInput &&
+              edge.kind === "data" &&
+              wire.target === edge.target &&
+              wire.target_port === edge.target_port)
+          );
+        });
         if (!dropped.length) return { graph };
         const wires = { ...graph.wires };
         for (const id of dropped) delete wires[id];
