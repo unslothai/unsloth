@@ -15,7 +15,7 @@ export function hasServerStopIntent(): boolean {
   }
 }
 
-// A disconnect from a server this app did not start keeps its port, so a reload still says it runs.
+// A disconnect from a server this app did not start keeps its port for the stopped screen after a reload.
 const DISCONNECTED_PREFIX = "disconnected:";
 
 export function markServerStopIntent(disconnectedPort?: number): void {

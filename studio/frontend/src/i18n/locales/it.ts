@@ -5447,7 +5447,7 @@ export const it = {
     serverStopped: "Server arrestato",
     serverDisconnected: "Disconnesso dal server sulla porta {port}",
     serverDisconnectedDescription:
-      "Quel server è ancora in esecuzione. Questa app non lo ha avviato, quindi non può arrestarlo. Arrestalo dove è stato avviato, per esempio nel terminale in cui è in esecuzione `unsloth studio`, poi fai clic su Avvia server.",
+      "La disconnessione non ha arrestato quel server. Questa app non lo ha avviato, quindi non può arrestarlo. Arrestalo dove è stato avviato, per esempio nel terminale in cui è in esecuzione `unsloth studio`, poi fai clic su Avvia server.",
     startServer: "Avvia server",
     somethingWrong: "Qualcosa è andato storto",
     diagnostics: {

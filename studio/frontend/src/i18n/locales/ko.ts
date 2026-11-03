@@ -5369,7 +5369,7 @@ export const ko = {
     serverStopped: "서버가 중지됨",
     serverDisconnected: "포트 {port}의 서버에서 연결이 해제됨",
     serverDisconnectedDescription:
-      "해당 서버는 아직 실행 중입니다. 이 앱이 시작한 서버가 아니므로 앱에서 중지할 수 없습니다. 서버를 시작한 곳(예: `unsloth studio`를 실행 중인 터미널)에서 중지한 다음 서버 시작을 클릭하세요.",
+      "연결을 해제해도 해당 서버는 중지되지 않았습니다. 이 앱이 시작한 서버가 아니므로 앱에서 중지할 수 없습니다. 서버를 시작한 곳(예: `unsloth studio`를 실행 중인 터미널)에서 중지한 다음 서버 시작을 클릭하세요.",
     startServer: "서버 시작",
     somethingWrong: "문제가 발생했습니다",
     diagnostics: {

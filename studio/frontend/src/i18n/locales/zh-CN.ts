@@ -5280,7 +5280,7 @@ export const zhCN = {
     serverStopped: "服务器已停止",
     serverDisconnected: "已断开与端口 {port} 上服务器的连接",
     serverDisconnectedDescription:
-      "该服务器仍在运行。它不是由此应用启动的，因此此应用无法停止它。请在启动它的地方停止它，例如运行 `unsloth studio` 的终端，然后点击“启动服务器”。",
+      "断开连接并未停止该服务器。它不是由此应用启动的，因此此应用无法停止它。请在启动它的地方停止它，例如运行 `unsloth studio` 的终端，然后点击“启动服务器”。",
     startServer: "启动服务器",
     somethingWrong: "出现了问题",
     diagnostics: {

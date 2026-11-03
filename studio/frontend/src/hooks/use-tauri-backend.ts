@@ -153,7 +153,7 @@ export function useTauriBackend() {
   const [externalServerPort, setExternalServerPortState] = useState<number | null>(null);
   const externalServerPortRef = useRef<number | null>(null);
   const isExternalServer = externalServerPort !== null;
-  // Port of the external server the user disconnected from; it is still running.
+  // Port of the external server the user disconnected from; the disconnect did not stop it.
   const [disconnectedServerPort, setDisconnectedServerPort] = useState<number | null>(null);
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const externalPollAbortedRef = useRef(false);
@@ -516,7 +516,7 @@ export function useTauriBackend() {
   }
 
   async function runStopServer() {
-    // Only disconnects: the server keeps running, and the stopped screen says so.
+    // Only disconnects: the server is not stopped, and the stopped screen says so.
     const externalPort = externalServerPortRef.current;
     if (externalPort !== null) {
       startingRef.current = false;

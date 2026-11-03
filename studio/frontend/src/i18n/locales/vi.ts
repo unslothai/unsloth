@@ -5785,7 +5785,7 @@ export const vi = {
     serverStopped: "Máy chủ đã dừng",
     serverDisconnected: "Đã ngắt kết nối khỏi máy chủ trên cổng {port}",
     serverDisconnectedDescription:
-      "Máy chủ đó vẫn đang chạy. Ứng dụng này không khởi động nó nên không thể dừng nó. Hãy dừng máy chủ tại nơi đã khởi động nó, ví dụ trong terminal đang chạy `unsloth studio`, rồi nhấp vào Khởi động máy chủ.",
+      "Việc ngắt kết nối không dừng máy chủ đó. Ứng dụng này không khởi động nó nên không thể dừng nó. Hãy dừng máy chủ tại nơi đã khởi động nó, ví dụ trong terminal đang chạy `unsloth studio`, rồi nhấp vào Khởi động máy chủ.",
     startServer: "Khởi động máy chủ",
     somethingWrong: "Đã xảy ra lỗi",
     diagnostics: {

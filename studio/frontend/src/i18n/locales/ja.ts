@@ -5329,7 +5329,7 @@ export const ja = {
     serverStopped: "サーバーが停止しました",
     serverDisconnected: "ポート {port} のサーバーから切断しました",
     serverDisconnectedDescription:
-      "このサーバーはまだ実行中です。このアプリが起動したものではないため、アプリからは停止できません。起動した場所（`unsloth studio` を実行しているターミナルなど）で停止してから、「サーバーを起動」をクリックしてください。",
+      "切断してもこのサーバーは停止していません。このアプリが起動したものではないため、アプリからは停止できません。起動した場所（`unsloth studio` を実行しているターミナルなど）で停止してから、「サーバーを起動」をクリックしてください。",
     startServer: "サーバーを起動",
     somethingWrong: "問題が発生しました",
     diagnostics: {

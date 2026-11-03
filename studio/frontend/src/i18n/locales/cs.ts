@@ -5802,7 +5802,7 @@ export const cs = {
     serverStopped: "Server je zastaven",
     serverDisconnected: "Odpojeno od serveru na portu {port}",
     serverDisconnectedDescription:
-      "Tento server stále běží. Tato aplikace ho nespustila, a proto ho nemůže zastavit. Zastavte ho tam, kde byl spuštěn, například v terminálu, ve kterém běží `unsloth studio`, a potom klikněte na Spustit server.",
+      "Odpojení tento server nezastavilo. Tato aplikace ho nespustila, a proto ho nemůže zastavit. Zastavte ho tam, kde byl spuštěn, například v terminálu, ve kterém běží `unsloth studio`, a potom klikněte na Spustit server.",
     startServer: "Spustit server",
     somethingWrong: "Něco se pokazilo",
     diagnostics: {

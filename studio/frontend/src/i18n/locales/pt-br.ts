@@ -5407,7 +5407,7 @@ export const ptBR = {
     serverStopped: "Servidor parado",
     serverDisconnected: "Desconectado do servidor na porta {port}",
     serverDisconnectedDescription:
-      "Esse servidor continua em execução. Este aplicativo não o iniciou, então não pode pará-lo. Pare-o onde ele foi iniciado, por exemplo no terminal que executa o `unsloth studio`, e depois clique em Iniciar servidor.",
+      "Desconectar não parou esse servidor. Este aplicativo não o iniciou, então não pode pará-lo. Pare-o onde ele foi iniciado, por exemplo no terminal que executa o `unsloth studio`, e depois clique em Iniciar servidor.",
     startServer: "Iniciar servidor",
     somethingWrong: "Algo deu errado",
     diagnostics: {

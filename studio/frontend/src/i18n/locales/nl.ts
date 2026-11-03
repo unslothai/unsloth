@@ -5841,7 +5841,7 @@ export const nl = {
     serverStopped: "Server gestopt",
     serverDisconnected: "Verbinding met de server op poort {port} verbroken",
     serverDisconnectedDescription:
-      "Die server draait nog. Deze app heeft hem niet gestart en kan hem dus niet stoppen. Stop hem waar hij is gestart, bijvoorbeeld in de terminal waarin `unsloth studio` draait, en klik dan op Server starten.",
+      "Het verbreken van de verbinding heeft die server niet gestopt. Deze app heeft hem niet gestart en kan hem dus niet stoppen. Stop hem waar hij is gestart, bijvoorbeeld in de terminal waarin `unsloth studio` draait, en klik dan op Server starten.",
     startServer: "Server starten",
     somethingWrong: "Er is iets misgegaan",
     diagnostics: {

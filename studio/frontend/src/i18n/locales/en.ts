@@ -5415,7 +5415,7 @@ export const en = {
     serverStopped: "Server stopped",
     serverDisconnected: "Disconnected from the server on port {port}",
     serverDisconnectedDescription:
-      "That server is still running. This app did not start it, so it cannot stop it. Stop it where it was started, for example in the terminal running `unsloth studio`, then click Start Server.",
+      "Disconnecting did not stop that server. This app did not start it, so it cannot stop it. Stop it where it was started, for example in the terminal running `unsloth studio`, then click Start Server.",
     startServer: "Start Server",
     somethingWrong: "Something went wrong",
     diagnostics: {

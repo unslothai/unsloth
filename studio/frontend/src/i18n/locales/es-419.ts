@@ -5871,7 +5871,7 @@ export const es419 = {
     serverStopped: "Servidor detenido",
     serverDisconnected: "Desconectado del servidor en el puerto {port}",
     serverDisconnectedDescription:
-      "Ese servidor sigue en ejecución. Esta aplicación no lo inició, así que no puede detenerlo. Detenlo donde se inició, por ejemplo en la terminal que ejecuta `unsloth studio`, y luego haz clic en Iniciar servidor.",
+      "Desconectarse no detuvo ese servidor. Esta aplicación no lo inició, así que no puede detenerlo. Detenlo donde se inició, por ejemplo en la terminal que ejecuta `unsloth studio`, y luego haz clic en Iniciar servidor.",
     startServer: "Iniciar servidor",
     somethingWrong: "Algo salió mal",
     diagnostics: {

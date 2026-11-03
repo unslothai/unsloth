@@ -5452,7 +5452,7 @@ export const de = {
     serverStopped: "Server gestoppt",
     serverDisconnected: "Verbindung zum Server auf Port {port} getrennt",
     serverDisconnectedDescription:
-      "Dieser Server läuft weiter. Diese App hat ihn nicht gestartet und kann ihn daher nicht stoppen. Stoppen Sie ihn dort, wo er gestartet wurde, zum Beispiel im Terminal, in dem `unsloth studio` läuft, und klicken Sie dann auf Server starten.",
+      "Durch das Trennen wurde dieser Server nicht gestoppt. Diese App hat ihn nicht gestartet und kann ihn daher nicht stoppen. Stoppen Sie ihn dort, wo er gestartet wurde, zum Beispiel im Terminal, in dem `unsloth studio` läuft, und klicken Sie dann auf Server starten.",
     startServer: "Server starten",
     somethingWrong: "Etwas ist schiefgelaufen",
     diagnostics: {

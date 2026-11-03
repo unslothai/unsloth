@@ -5460,7 +5460,7 @@ export const zhTW = {
     serverStopped: "伺服器已停止",
     serverDisconnected: "已中斷與連接埠 {port} 上伺服器的連線",
     serverDisconnectedDescription:
-      "該伺服器仍在執行中。它不是由此應用程式啟動的，因此此應用程式無法停止它。請在啟動它的地方停止它，例如執行 `unsloth studio` 的終端機，然後點按「啟動伺服器」。",
+      "中斷連線並未停止該伺服器。它不是由此應用程式啟動的，因此此應用程式無法停止它。請在啟動它的地方停止它，例如執行 `unsloth studio` 的終端機，然後點按「啟動伺服器」。",
     startServer: "啟動伺服器",
     somethingWrong: "發生錯誤",
     diagnostics: {

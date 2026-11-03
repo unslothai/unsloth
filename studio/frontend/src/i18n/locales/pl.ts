@@ -5835,7 +5835,7 @@ export const pl = {
     serverStopped: "Serwer zatrzymany",
     serverDisconnected: "Rozłączono z serwerem na porcie {port}",
     serverDisconnectedDescription:
-      "Ten serwer nadal działa. Ta aplikacja go nie uruchomiła, więc nie może go zatrzymać. Zatrzymaj go tam, gdzie został uruchomiony, na przykład w terminalu, w którym działa `unsloth studio`, a następnie kliknij Uruchom serwer.",
+      "Rozłączenie nie zatrzymało tego serwera. Ta aplikacja go nie uruchomiła, więc nie może go zatrzymać. Zatrzymaj go tam, gdzie został uruchomiony, na przykład w terminalu, w którym działa `unsloth studio`, a następnie kliknij Uruchom serwer.",
     startServer: "Uruchom serwer",
     somethingWrong: "Coś poszło nie tak",
     diagnostics: {

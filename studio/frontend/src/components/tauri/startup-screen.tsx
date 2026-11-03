@@ -35,7 +35,7 @@ interface StartupScreenProps {
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
-  // On "stopped": the server we only disconnected from, which is still running.
+  // On "stopped": the server we only disconnected from, which the disconnect did not stop.
   disconnectedServerPort?: number | null;
   upgradingToFull?: boolean;
   onInstall: (options?: InstallOptions) => void;

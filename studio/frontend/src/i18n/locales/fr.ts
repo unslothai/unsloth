@@ -5462,7 +5462,7 @@ export const fr = {
     serverStopped: "Serveur arrêté",
     serverDisconnected: "Déconnecté du serveur sur le port {port}",
     serverDisconnectedDescription:
-      "Ce serveur est toujours en cours d’exécution. Cette application ne l’a pas démarré et ne peut donc pas l’arrêter. Arrêtez-le là où il a été démarré, par exemple dans le terminal qui exécute `unsloth studio`, puis cliquez sur Démarrer le serveur.",
+      "La déconnexion n’a pas arrêté ce serveur. Cette application ne l’a pas démarré et ne peut donc pas l’arrêter. Arrêtez-le là où il a été démarré, par exemple dans le terminal qui exécute `unsloth studio`, puis cliquez sur Démarrer le serveur.",
     startServer: "Démarrer le serveur",
     somethingWrong: "Un problème est survenu",
     diagnostics: {

@@ -5621,7 +5621,7 @@ export const sv = {
     serverStopped: "Servern har stoppats",
     serverDisconnected: "Frånkopplad från servern på port {port}",
     serverDisconnectedDescription:
-      "Den servern körs fortfarande. Den här appen startade den inte och kan därför inte stoppa den. Stoppa den där den startades, till exempel i terminalen som kör `unsloth studio`, och klicka sedan på Starta server.",
+      "Frånkopplingen stoppade inte den servern. Den här appen startade den inte och kan därför inte stoppa den. Stoppa den där den startades, till exempel i terminalen som kör `unsloth studio`, och klicka sedan på Starta server.",
     startServer: "Starta server",
     somethingWrong: "Något gick fel",
     diagnostics: {

@@ -5779,7 +5779,7 @@ export const tr = {
     serverStopped: "Sunucu durduruldu",
     serverDisconnected: "{port} numaralı bağlantı noktasındaki sunucuyla bağlantı kesildi",
     serverDisconnectedDescription:
-      "Bu sunucu hâlâ çalışıyor. Bu uygulama onu başlatmadığı için durduramaz. Sunucuyu başlatıldığı yerden, örneğin `unsloth studio` komutunu çalıştıran terminalden durdurun, ardından Sunucuyu Başlat'a tıklayın.",
+      "Bağlantıyı kesmek bu sunucuyu durdurmadı. Bu uygulama onu başlatmadığı için durduramaz. Sunucuyu başlatıldığı yerden, örneğin `unsloth studio` komutunu çalıştıran terminalden durdurun, ardından Sunucuyu Başlat'a tıklayın.",
     startServer: "Sunucuyu Başlat",
     somethingWrong: "Bir sorun oluştu",
     diagnostics: {

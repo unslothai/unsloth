@@ -5784,7 +5784,7 @@ export const id = {
     serverStopped: "Server berhenti",
     serverDisconnected: "Terputus dari server di port {port}",
     serverDisconnectedDescription:
-      "Server tersebut masih berjalan. Aplikasi ini tidak menjalankannya, jadi tidak dapat menghentikannya. Hentikan server itu di tempat ia dijalankan, misalnya di terminal yang menjalankan `unsloth studio`, lalu klik Mulai Server.",
+      "Memutuskan koneksi tidak menghentikan server tersebut. Aplikasi ini tidak menjalankannya, jadi tidak dapat menghentikannya. Hentikan server itu di tempat ia dijalankan, misalnya di terminal yang menjalankan `unsloth studio`, lalu klik Mulai Server.",
     startServer: "Mulai Server",
     somethingWrong: "Terjadi kesalahan",
     diagnostics: {
