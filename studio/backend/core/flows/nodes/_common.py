@@ -460,6 +460,9 @@ async def _ensure_model(
     from studio_mcp import loading
 
     slot = MODEL_SLOT.get(model_kind, model_kind)
+    if not (isinstance(choice, dict) and choice.get("repo")):
+        # An unset model whose saved settings were applied stays the model they belong to.
+        choice = getattr(ctx, "settings_model", None) or choice
     repo = choice.get("repo") if isinstance(choice, dict) else None
     variant = choice.get("variant") if isinstance(choice, dict) else None
     if not repo:

@@ -471,3 +471,30 @@ def test_a_model_unset_card_runs_before_cards_that_switch_to_another_repo(monkey
     assert engine._pick_gpu(rs, ["b", "c", "a"]) == "a"
     rs.plan = _plan({"b": {"model": other}, "c": {"model": other}})
     assert engine._pick_gpu(rs, ["b", "c"]) == "b"
+
+
+def test_a_model_unset_card_runs_on_the_model_whose_settings_it_took(monkeypatch):
+    other = "unsloth/gemma-3-4b-it-GGUF"
+    loads = _load_fakes(monkeypatch, [GGUF])
+
+    async def resident(ctx, kind):
+        return (await loading.resident_slots(None))["llm"][0]
+
+    monkeypatch.setattr(_common, "resident_name", resident)
+    monkeypatch.setattr(
+        model_settings, "read_saved", lambda model_id: SAVED if model_id == GGUF else {}
+    )
+    ctx = _LoadCtx(param_values(GENERATE, {"params": {"use_model_settings": True}}))
+    asyncio.run(engine_mod._apply_saved_settings(ctx, GENERATE, ctx.params, set()))
+    assert ctx.params["temperature"] == 0.3
+    # Another flow swaps the Chat model while this step waits for the GPU.
+    asyncio.run(_common.ensure_model(_LoadCtx({}), "chat", {"repo": other, "variant": None}))
+    asyncio.run(_common.ensure_model(ctx, "chat", None))
+    assert [l["model"] for l in loads] == [other, GGUF]
+    # With nothing saved for the loaded model, the card keeps following whatever is loaded.
+    asyncio.run(_common.ensure_model(_LoadCtx({}), "chat", {"repo": other, "variant": None}))
+    plain = _LoadCtx(param_values(GENERATE, {"params": {"use_model_settings": True}}))
+    asyncio.run(engine_mod._apply_saved_settings(plain, GENERATE, plain.params, set()))
+    asyncio.run(_common.ensure_model(_LoadCtx({}), "chat", {"repo": GGUF, "variant": None}))
+    asyncio.run(_common.ensure_model(plain, "chat", None))
+    assert [l["model"] for l in loads] == [other, GGUF, other, GGUF]
