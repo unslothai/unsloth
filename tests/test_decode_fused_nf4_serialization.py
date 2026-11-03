@@ -125,12 +125,16 @@ def _sites(model, monkeypatch):
         site = driver._site(model, kind, kind, projections, width, allow_bias = kind == "qkv")
         assert not isinstance(site, str), site
         assert len(site.segments) == len(projections)
-        assert len(site.tensor_bindings) == len(projections)
-        for (bound_projection, name, bound_weight), projection in zip(
-            site.tensor_bindings, projections
+        expected_bindings = [(projection, "weight") for projection in projections]
+        expected_bindings += [
+            (projection, "bias") for projection in projections if projection.bias is not None
+        ]
+        assert len(site.tensor_bindings) == len(expected_bindings)
+        for (owner, name, tensor), (projection, expected_name) in zip(
+            site.tensor_bindings, expected_bindings
         ):
-            assert bound_projection is projection and name == "weight"
-            assert bound_weight is projection.weight
+            assert owner is projection and name == expected_name
+            assert tensor is getattr(projection, expected_name)
         for segment, projection in zip(site.segments, projections):
             weight = projection.weight
             assert segment[0] is weight

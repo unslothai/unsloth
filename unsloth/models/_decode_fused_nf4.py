@@ -347,6 +347,10 @@ def _site(
     )
     site.tensor_bindings = tuple(
         (getattr(proj, "base_layer", proj), "weight", W) for proj, W in zip(projs, Ws)
+    ) + tuple(
+        (getattr(proj, "base_layer", proj), "bias", bias)
+        for proj, bias in zip(projs, biases)
+        if bias is not None
     )
     return site if batch_size == 1 else F.BatchSite(site, batch_size)
 
@@ -441,6 +445,7 @@ def _build(model, X):
             norms = (attn.q_norm, attn.k_norm)
             for name, module in zip(("q_norm", "k_norm"), norms):
                 bindings.append((attn, name, module))
+                tensor_bindings.append((module, "weight", module.weight))
                 if hasattr(module, "modules_to_save"):
                     watch.append(module)
             for w in (n.weight for n in norms):
