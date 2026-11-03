@@ -48883,7 +48883,6 @@ def _decode_external_images(encoded: list) -> list:
 async def _external_image_generation(
     body: DiffusionGenerateRequest, request: Request
 ) -> DiffusionGenerateResponse:
-    """Generate through an external provider and persist each image's request duration."""
     from core.inference import image_gallery
     from core.inference.llama_keepwarm import (
         untrack_current_media_request,
@@ -49030,7 +49029,6 @@ async def _external_image_generation(
         created_at = time.time()
 
         def _persist() -> list[dict]:
-            """Save every provider image with the elapsed time shared by the request."""
             return list(
                 image_gallery.save_many(
                     (
@@ -49147,7 +49145,6 @@ async def _generate_diffusion_image_core(
 async def _generate_diffusion_image_run(
     request: DiffusionGenerateRequest,
 ) -> DiffusionGenerateResponse:
-    """Generate a local image request and save its shared elapsed time with the images."""
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.diffusion_hires import record_fields as hires_record_fields
@@ -49330,7 +49327,6 @@ async def _generate_diffusion_image_run(
             _diffusion_persist_active -= 1
             raise
 
-    # The request may produce a batch; record its shared wall time rather than inventing per-image timings.
     generation_seconds = time.perf_counter() - generation_started
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
@@ -49339,7 +49335,6 @@ async def _generate_diffusion_image_run(
     list_driven = bool(request.prompts or request.seeds)
 
     def _persist() -> list[dict]:
-        """Persist the local batch and its shared request duration in gallery metadata."""
         items = []
         for index, image in enumerate(result["images"]):
             seed = (
@@ -51196,7 +51191,6 @@ async def _generate_openai_images(
     width: int,
     height: int,
 ):
-    """Run an OpenAI-compatible image request and record its elapsed time in the gallery."""
     from core.inference import image_gallery
     from core.inference.diffusion_engine_router import get_active_diffusion_engine
     from core.inference.gpu_arbiter import DIFFUSION
@@ -51333,7 +51327,6 @@ async def _generate_openai_images(
     per_image_seeds = result.get("seeds")
 
     def _persist() -> list[ImageGenerationData]:
-        """Save the API result and return the requested URL or encoded image response."""
         items: list[ImageGenerationData] = []
         saves = []
         for index, image in enumerate(result["images"]):

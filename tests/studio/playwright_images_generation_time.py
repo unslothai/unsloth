@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Check image generation timing in the real gallery UI without an accelerator."""
-
 import os
 from urllib.parse import parse_qs, urlparse
 
@@ -12,7 +10,6 @@ from playwright_image_model_footprint import BASE_URL, _api_payload, _json
 
 
 def main() -> None:
-    """Display the measured batch duration and leave old images without a timing row."""
     common = {
         "negative_prompt": None,
         "width": 64,
@@ -47,7 +44,6 @@ def main() -> None:
         context.add_init_script("localStorage.setItem('unsloth_auth_token', 'rendered-ui-test');")
 
         def route_request(route: Route) -> None:
-            """Serve gallery records and reuse the existing image-page API fixture."""
             parsed = urlparse(route.request.url)
             if parsed.netloc == "huggingface.co":
                 _json(route, [])

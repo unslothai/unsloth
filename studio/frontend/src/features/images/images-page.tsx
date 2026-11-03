@@ -1288,7 +1288,6 @@ async function buildOutpaint(
   return { image: ic.toDataURL("image/png"), mask: mc.toDataURL("image/png") };
 }
 
-/** Display one saved recipe value, optionally explaining it on hover. */
 function RecipeRow({
   label,
   value,
@@ -1319,7 +1318,6 @@ function RecipeRow({
   );
 }
 
-/** Show the selected image's recorded generation details and restore action. */
 function RecipePopover({
   image,
   onRestore,

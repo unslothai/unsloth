@@ -62,7 +62,6 @@ def test_save_embeds_recipe_and_round_trips():
 
 
 def test_generation_time_round_trips_and_old_images_remain_readable():
-    """Keep measured request timing in PNG metadata without requiring it on older images."""
     from models.inference import GalleryImage
 
     gallery.save(_img(), _meta(prompt = "new", generation_seconds = 1.25, generation_count = 2))

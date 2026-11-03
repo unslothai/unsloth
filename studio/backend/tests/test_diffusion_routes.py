@@ -509,14 +509,12 @@ def test_generate_batch_size_persists_each_image(client):
 
 
 def test_gallery_records_generation_time_for_the_whole_batch(client, monkeypatch):
-    """Expose elapsed request time without presenting it as a per-image measurement."""
     import time
 
     backend = diffusion_module.get_diffusion_backend()
     generate = backend.generate
 
     def _slow_generate(**kwargs):
-        """Delay the backend so the recorded elapsed time has an observable lower bound."""
         time.sleep(0.03)
         return generate(**kwargs)
 
