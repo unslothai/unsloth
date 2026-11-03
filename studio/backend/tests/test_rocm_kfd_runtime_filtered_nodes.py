@@ -93,6 +93,10 @@ def test_smi_fallback_does_not_restore_the_hidden_cards_memory(two_boards, monke
     assert hardware._amd_smi_ids_for_hip_ids([0]) is None
     assert video._h3_card_memory_bytes("cuda", 0) == (2 * 1024**3, 8 * 1024**3)
     assert queried == []
+    monkeypatch.setattr(hardware, "_rocm_linux_sysfs_vram_gb", lambda: (10.0, 32.0))
+    displayed = hardware.get_gpu_utilization()
+    assert displayed["vram_total_gb"] == 8.0
+    assert displayed["vram_used_gb"] == 6.0
 
 
 @pytest.mark.parametrize(
