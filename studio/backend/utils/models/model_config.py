@@ -3645,7 +3645,15 @@ def is_d1_folder(folder: Path) -> bool:
         config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(config, dict) and "D1Model" in (config.get("architectures") or ())
+    if not isinstance(config, dict):
+        return False
+    # The markers unsloth-zoo's d1 loader reads: LiquidAI's d1-3B names it only in auto_map, d1-omni by its model_type.
+    automodel = str((config.get("auto_map") or {}).get("AutoModel", ""))
+    return (
+        config.get("model_type") == "d1_omni"
+        or "D1Model" in (config.get("architectures") or ())
+        or automodel.endswith("D1Model")
+    )
 
 
 def clef_folder_kind(folder: Path) -> Optional[str]:

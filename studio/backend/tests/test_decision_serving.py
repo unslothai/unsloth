@@ -1719,6 +1719,26 @@ def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypa
     monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(folder))
     local = catalog.default_checkpoint()
     assert (local.name, local.layout, local.backend) == (catalog.LOCAL_NAME, "clef", "mlx")
+    # So are LiquidAI's d1-3B and d1-omni-600M, whose configs name no D1Model architecture.
+    for stock in (
+        {
+            "model_type": "lfm2_vl",
+            "architectures": ["Lfm2VlForConditionalGeneration"],
+            "auto_map": {"AutoModel": "modeling_d1.D1Model"},
+        },
+        {
+            "model_type": "d1_omni",
+            "architectures": ["D1OmniModel"],
+            "auto_map": {"AutoModel": "modeling_d1.D1OmniModel"},
+        },
+    ):
+        (folder / "config.json").write_text(json.dumps(stock), encoding = "utf-8")
+        local = catalog.default_checkpoint()
+        assert (local.layout, local.backend, laya_runtime._mlx_family(local)) == (
+            "clef",
+            "mlx",
+            "d1",
+        )
     # A head on the same model makes it a Clef, not a d1 by name alone.
     plain = catalog.fine_tune(_clef_fine_tune(home, "clef_ft"))
     assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
