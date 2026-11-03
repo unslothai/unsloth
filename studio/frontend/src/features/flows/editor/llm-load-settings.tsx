@@ -188,8 +188,26 @@ function ExtraArgsField({
 }) {
   const stored = Array.isArray(value) ? (value as string[]) : null;
   const [text, setText] = useState(formatExtraArgs(stored));
-  useEffect(() => setText(formatExtraArgs(stored)), [stored]);
+  // Another source (Undo, saved settings) replaces the text; this field's own commit keeps it as typed.
+  useEffect(
+    () =>
+      setText((current) => {
+        const mine = parseExtraArgs(current);
+        const same =
+          !mine.unterminatedQuote &&
+          mine.tokens.join("\0") === (stored ?? []).join("\0");
+        return same ? current : formatExtraArgs(stored);
+      }),
+    [stored],
+  );
   const parsed = parseExtraArgs(text);
+  // Committed as typed, not on blur, so a run started from the keyboard sends what is shown.
+  const edit = (next: string) => {
+    setText(next);
+    const found = parseExtraArgs(next);
+    if (!found.unterminatedQuote)
+      onChange(found.tokens.length > 0 ? found.tokens : undefined);
+  };
   return (
     <div className="flex flex-col gap-1">
       <textarea
@@ -198,11 +216,7 @@ function ExtraArgsField({
         spellCheck={false}
         aria-label="Extra llama-server arguments"
         placeholder="--flag value"
-        onChange={(e) => setText(e.target.value)}
-        onBlur={() => {
-          if (parsed.unterminatedQuote) return;
-          onChange(parsed.tokens.length > 0 ? parsed.tokens : undefined);
-        }}
+        onChange={(e) => edit(e.target.value)}
         className="panel-field min-h-16 w-full resize-y rounded-xl px-3 py-2 font-mono text-ui-12"
       />
       {parsed.unterminatedQuote && (

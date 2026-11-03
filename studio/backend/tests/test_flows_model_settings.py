@@ -509,3 +509,23 @@ def test_a_pinned_card_with_load_settings_reloads_the_model_it_took_them_from(mo
     assert model == {"repo": GGUF, "variant": None} and load["max_seq_length"] == 4096
     asyncio.run(_common.ensure_model(ctx, "chat", model, load))
     assert [l["model"] for l in loads] == [GGUF]
+
+
+def test_saved_settings_equal_to_the_cards_still_bind_the_model_they_came_from(monkeypatch):
+    other = "unsloth/gemma-3-4b-it-GGUF"
+    loads = _load_fakes(monkeypatch, [GGUF])
+
+    async def resident(ctx, kind):
+        return (await loading.resident_slots(None))["llm"][0]
+
+    monkeypatch.setattr(_common, "resident_name", resident)
+    ctx = _LoadCtx(param_values(GENERATE, {"params": {"use_model_settings": True}}))
+    same = {"temperature": ctx.params["temperature"]}
+    monkeypatch.setattr(
+        model_settings, "read_saved", lambda model_id: same if model_id == GGUF else {}
+    )
+    asyncio.run(engine_mod._apply_saved_settings(ctx, GENERATE, ctx.params, set()))
+    assert ctx.settings_model == {"repo": GGUF, "variant": None}
+    asyncio.run(_common.ensure_model(_LoadCtx({}), "chat", {"repo": other, "variant": None}))
+    asyncio.run(_common.ensure_model(ctx, "chat", None))
+    assert [l["model"] for l in loads] == [other, GGUF]
