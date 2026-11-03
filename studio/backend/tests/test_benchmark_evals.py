@@ -130,6 +130,10 @@ def test_run_targets_the_bound_studio_address():
     assert benchmark_routes._studio_base_url(req) == "http://[::1]:18921"
     req.app.state.server_port = None
     assert benchmark_routes._studio_base_url(req) is None
+    # Native TLS: server_port speaks HTTPS, so plain-HTTP self-calls go to the loopback listener.
+    req.app.state.server_port = 18921
+    req.app.state.loopback_http_port = 40123
+    assert benchmark_routes._studio_base_url(req) == "http://127.0.0.1:40123"
 
 
 def _orchestrator(monkeypatch, task):

@@ -367,7 +367,13 @@ def _run_model_label(model: str) -> str:
 
 def _studio_base_url(http_request: Request) -> Optional[str]:
     """The address this Studio actually listens on, for lm_eval's requests back to it."""
+    from utils.studio_tls import loopback_http_port
+
     state = http_request.app.state
+    # Under native TLS server_port speaks HTTPS; the plain loopback listener is the one to call.
+    loopback = loopback_http_port(state)
+    if loopback is not None:
+        return f"http://127.0.0.1:{loopback}"
     port = getattr(state, "server_port", None)
     if not isinstance(port, int) or port <= 0:
         return None

@@ -229,7 +229,14 @@ export function useEvalsModel(): EvalsModel {
       setSelectedGgufVariant(meta.ggufVariant ?? null);
       setSelectedModelIsDownloaded(meta.isDownloaded ?? null);
       setDownloadingForBenchmark(false);
-      if (value && value !== (inferenceParams.checkpoint ?? undefined)) {
+      // Another quant of the loaded repo is another model to load.
+      const otherQuant =
+        !!meta.ggufVariant &&
+        meta.ggufVariant.toLowerCase() !== (activeGgufVariant ?? "").toLowerCase();
+      if (
+        value &&
+        (value !== (inferenceParams.checkpoint ?? undefined) || otherQuant)
+      ) {
         void selectModel({
           id: value,
           source: meta.source,
@@ -246,6 +253,7 @@ export function useEvalsModel(): EvalsModel {
     [
       selectedModel,
       inferenceParams.checkpoint,
+      activeGgufVariant,
       selectModel,
       clearDownloadWatch,
     ],

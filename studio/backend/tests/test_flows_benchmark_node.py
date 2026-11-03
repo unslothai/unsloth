@@ -355,3 +355,31 @@ def test_the_score_output_is_a_percent_with_two_decimals(monkeypatch):
 
     out = asyncio.run(benchmark.benchmark(_Ctx(routes)))
     assert out["score"] == 60.67 and out["results"]["score"] == 60.67
+
+
+def test_a_reused_chat_model_is_scored_as_itself(monkeypatch, tmp_path):
+    lora = tmp_path / "my-lora"
+    lora.mkdir()
+    (lora / "adapter_config.json").write_text("{}")
+    serving = {"name": str(lora)}
+
+    async def resident(ctx, kind):
+        return serving["name"]
+
+    monkeypatch.setattr(benchmark, "resident_name", resident)
+    ctx = _Ctx(lambda *a: {})
+    ctx.inputs = {"dataset": ctx.inputs["dataset"]}
+    ctx.chat_model = None
+
+    async def ensure(kind, choice):
+        pass
+
+    ctx.ensure_model = ensure
+    # A LoRA loaded in Chat gets the adapter-off comparison and an adapter-free judge.
+    assert asyncio.run(benchmark._load_target(ctx)) == (str(lora), True)
+    serving["name"] = "unsloth/Qwen3-0.6B"
+    assert asyncio.run(benchmark._load_target(ctx)) == ("unsloth/Qwen3-0.6B", False)
+    # A pick kept beside the main model would not be the one the scoring requests reach.
+    ctx.chat_model = "unsloth/gemma-3-4b-it-GGUF:Q4_K_M"
+    with pytest.raises(FlowNodeError, match = "kept loaded beside"):
+        asyncio.run(benchmark._load_target(ctx))

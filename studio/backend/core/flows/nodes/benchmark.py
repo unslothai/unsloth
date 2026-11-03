@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 import time
 from typing import Any, Optional
 from urllib.parse import quote
@@ -154,12 +155,27 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
         return name, bool(trained.is_lora)
     model = ctx.params.get("model")
     await ctx.ensure_model("chat", model if isinstance(model, dict) and model.get("repo") else None)
+    kept = getattr(ctx, "chat_model", None)
+    if kept:
+        # The scoring requests reach Chat's main model, so a model kept beside it would not be the one scored.
+        raise FlowNodeError(
+            f"Benchmark scores Chat's main model, and {kept} is kept loaded beside it. Unload the main "
+            "model, or set Keep multiple models loaded to Off, then run again."
+        )
     label = await resident_name(ctx, "chat")
     if not label:
         raise FlowNodeError(
             "Wire a Fine-tune checkpoint in, pick a model, or load one in Chat first"
         )
-    return label, False
+    return label, await asyncio.to_thread(_is_adapter, label)
+
+
+def _is_adapter(name: str) -> bool:
+    """A model Chat loaded from a LoRA folder, so the adapter-off comparison and judging apply to it too."""
+    try:
+        return (Path(name) / "adapter_config.json").is_file()
+    except (OSError, ValueError):
+        return False
 
 
 def _head(dataset: dict, token: Any, limit: int) -> list[dict]:
