@@ -661,8 +661,98 @@ def _fp8_lora_owner(model):
     return getter() if getattr(model, "peft_config", None) and callable(getter) else model
 
 
+def _prepare_fp8_lora_loss(model):
+    import functools
+    import types
+
+    owner = _fp8_lora_owner(model)
+    if owner.__dict__.get("_unsloth_fp8_lora_loss_forwards"):
+        return
+    getter = getattr(owner, "get_output_embeddings", None)
+    if not callable(getter) or not isinstance(getter(), torch.nn.Module):
+        return
+    from unsloth_zoo.fused_losses import forward_adapter
+
+    original = forward_adapter.unsloth_fused_lm_head_loss
+
+    @functools.wraps(original)
+    def routed(hidden_states, lm_head, labels, *args, **kwargs):
+        # HF's fixed_cross_entropy ignores these flags; they must not select another loss.
+        kwargs.pop("output_attentions", None)
+        kwargs.pop("output_hidden_states", None)
+        return original(hidden_states, lm_head, labels, *args, **kwargs)
+
+    memo = {}
+
+    def isolate(function):
+        if not isinstance(function, types.FunctionType):
+            return function
+        if function in memo:
+            return memo[function]
+        memo[function] = function
+        inner = getattr(function, "__wrapped__", None)
+        changed_inner = isolate(inner)
+        closure = function.__closure__
+        # Decorators call their closure; changing __wrapped__ alone does not reroute them.
+        if changed_inner is not inner and closure:
+            closure = tuple(
+                types.CellType(changed_inner) if cell.cell_contents is inner else cell
+                for cell in closure
+            )
+        direct = (
+            "unsloth_fused_lm_head_loss" in function.__code__.co_names
+            and function.__globals__.get("unsloth_fused_lm_head_loss") is original
+        )
+        if not direct and closure == function.__closure__:
+            return function
+        namespace = function.__globals__
+        if direct:
+            namespace = {**namespace, "unsloth_fused_lm_head_loss": routed}
+            # Older Dynamo resolves named scopes through the original module instead of this copy.
+            namespace.pop("__name__", None)
+        replacement = types.FunctionType(
+            function.__code__,
+            namespace,
+            function.__name__,
+            function.__defaults__,
+            closure,
+        )
+        replacement.__dict__.update(function.__dict__)
+        for attribute in (
+            "__kwdefaults__",
+            "__annotations__",
+            "__qualname__",
+            "__module__",
+            "__doc__",
+        ):
+            setattr(replacement, attribute, getattr(function, attribute))
+        if changed_inner is not inner:
+            replacement.__wrapped__ = changed_inner
+        memo[function] = replacement
+        return replacement
+
+    forwards = []
+    for module in model.modules():
+        for name in ("forward", "_old_forward"):
+            method = getattr(module, name, None)
+            function = getattr(method, "__func__", method)
+            replacement = isolate(function)
+            if replacement is function:
+                continue
+            forwards.append((module, name, module.__dict__.get(name)))
+            if isinstance(method, types.MethodType):
+                replacement = types.MethodType(replacement, method.__self__)
+            setattr(module, name, replacement)
+    owner.__dict__["_unsloth_fp8_lora_loss_forwards"] = tuple(forwards)
+
+
 def restore_fp8_lora_for_inference(model):
     owner = _fp8_lora_owner(model)
+    for module, name, method in owner.__dict__.pop("_unsloth_fp8_lora_loss_forwards", ()):
+        if method is None:
+            module.__dict__.pop(name, None)
+        else:
+            setattr(module, name, method)
     bases = owner.__dict__.get("_unsloth_fp8_lora_bases", ())
     if not bases:
         return
@@ -739,6 +829,8 @@ def enable_fp8_lora(
         )
     else:
         print(f"Unsloth: fp8 LoRA base on {len(converted)} Linear layers.")
+    if converted:
+        _prepare_fp8_lora_loss(model)
     if converted and getattr(model, "_unsloth_block_compile_installed", False):
         from ._block_compile import patch_block_compile
         patch_block_compile(model)

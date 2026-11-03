@@ -373,6 +373,189 @@ def test_enable_fp8_lora_on_a_peft_model():
     assert FL.FP8_LORA_STATS["quantize"] == 14
 
 
+@pytest.mark.parametrize("flag", [None, False, True])
+@pytest.mark.parametrize("private_namespace", [False, True])
+def test_fp8_loss_ignores_model_output_flags_only_on_its_head(monkeypatch, flag, private_namespace):
+    import copy
+    import types
+    from unsloth_zoo.fused_losses import cross_entropy_loss as ce
+    from unsloth_zoo.fused_losses import forward_adapter
+
+    monkeypatch.setattr(ce, "_CHUNKED_CE", True)
+    monkeypatch.setattr(ce, "_FUSED_CE_COMPILE_DISABLED", False)
+    monkeypatch.setattr(ce, "TARGET_GB", 0)
+    monkeypatch.setattr(ce, "N_CHUNKS", 0)
+    monkeypatch.setattr(ce._chunked_logprob, "_FUSED_LINEAR", True)
+    routes = []
+
+    def observe_loss(**kwargs):
+        extras = {
+            k: kwargs[k] for k in ("output_attentions", "output_hidden_states") if k in kwargs
+        }
+        routes.append(ce._use_chunked_ce(extras, None))
+        return kwargs["hidden_states"].sum() * 0
+
+    monkeypatch.setattr(forward_adapter, "unsloth_fused_ce_loss", observe_loss)
+    model = _tiny_qwen3_peft()
+    owner = model.get_base_model()
+    ordinary = _tiny_qwen3_peft().get_base_model()
+    hidden = torch.zeros(2, 3, 128)
+    labels = torch.zeros(2, 3, dtype = torch.long)
+
+    def dispatch(self, hidden, labels):
+        return unsloth_fused_lm_head_loss(
+            hidden,
+            self.get_output_embeddings(),
+            labels,
+            output_attentions = flag,
+            output_hidden_states = flag,
+        )
+
+    original = forward_adapter.unsloth_fused_lm_head_loss
+    namespace = {"__builtins__": __builtins__} if private_namespace else dispatch.__globals__
+    monkeypatch.setitem(namespace, "unsloth_fused_lm_head_loss", original)
+    function = types.FunctionType(dispatch.__code__, namespace, closure = dispatch.__closure__)
+    attribute = "_old_forward" if private_namespace else "forward"
+    setattr(owner, attribute, types.MethodType(function, owner))
+    setattr(ordinary, attribute, types.MethodType(function, ordinary))
+
+    def run(target):
+        getattr(target, attribute)(hidden, labels)
+        return routes[-1]
+
+    assert not run(owner)
+    f8t.mark_fp8_lora(owner, f8t.FP8_LORA_RECIPE)
+    assert f8t.enable_fp8_lora(model, allow_cpu = True)
+    assert run(owner)
+    assert namespace["unsloth_fused_lm_head_loss"] is original
+    assert forward_adapter.unsloth_fused_lm_head_loss is original
+    assert getattr(ordinary, attribute).__func__ is function
+    assert not run(ordinary)
+    clone = copy.deepcopy(model)
+    assert run(clone.get_base_model())
+    f8t.restore_fp8_lora_for_inference(clone)
+    assert not run(clone.get_base_model())
+    assert run(owner)
+    f8t.restore_fp8_lora_for_inference(model)
+    assert not run(owner)
+
+
+@pytest.mark.parametrize("decorated", [False, True])
+@pytest.mark.parametrize("private_namespace", [False, True])
+def test_fp8_loss_route_traces_fullgraph_without_changing_loss_or_input_gradient(
+    monkeypatch, decorated, private_namespace
+):
+    import types
+    from transformers.loss.loss_utils import ForCausalLMLoss
+    from unsloth_zoo.fused_losses import forward_adapter
+
+    def cpu_reference(hidden_states, lm_head_weight, lm_head_bias, labels, n_items, **kwargs):
+        assert "output_attentions" not in kwargs
+        assert "output_hidden_states" not in kwargs
+        return ForCausalLMLoss(
+            logits = F.linear(hidden_states, lm_head_weight, lm_head_bias),
+            labels = labels,
+            vocab_size = lm_head_weight.shape[0],
+            num_items_in_batch = n_items,
+        )
+
+    monkeypatch.setattr(forward_adapter, "unsloth_fused_ce_loss", cpu_reference)
+    model = _tiny_qwen3_peft()
+    owner = model.get_base_model()
+    head = model.get_output_embeddings()
+    labels = torch.tensor([[1, 2, 3, -100], [-100, 3, 2, 1]])
+    x = torch.randn(2, 4, 128, dtype = torch.bfloat16, requires_grad = True)
+
+    def routed(self, hidden):
+        return unsloth_fused_lm_head_loss(
+            hidden,
+            self.get_output_embeddings(),
+            labels,
+            num_items_in_batch = 5,
+            output_attentions = None,
+            output_hidden_states = None,
+        )
+
+    namespace = {"__builtins__": __builtins__} if private_namespace else routed.__globals__
+    monkeypatch.setitem(
+        namespace, "unsloth_fused_lm_head_loss", forward_adapter.unsloth_fused_lm_head_loss
+    )
+    function = types.FunctionType(routed.__code__, namespace, closure = routed.__closure__)
+    if decorated:
+        from transformers.utils.generic import can_return_tuple
+        function = can_return_tuple(function)
+    owner.forward = types.MethodType(function, owner)
+    f8t.mark_fp8_lora(owner, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    expected = ForCausalLMLoss(
+        logits = head(x),
+        labels = labels,
+        vocab_size = 256,
+        num_items_in_batch = 5,
+    )
+    (expected_grad,) = torch.autograd.grad(expected, x)
+    torch._dynamo.reset()
+    actual = torch.compile(owner.forward, backend = "aot_eager", fullgraph = True)(x)
+    (actual_grad,) = torch.autograd.grad(actual, x)
+    assert torch.equal(actual, expected)
+    assert torch.equal(actual_grad, expected_grad)
+
+
+@pytest.mark.parametrize("return_dict", [False, True])
+def test_fp8_loss_route_preserves_installed_transformers_decorators(monkeypatch, return_dict):
+    from transformers.loss.loss_utils import ForCausalLMLoss
+    from unsloth_zoo.fused_losses import forward_adapter, forward_install
+
+    model = _tiny_qwen3_peft()
+    owner = model.get_base_model()
+    cls = type(owner)
+    original = cls.forward
+    monkeypatch.setattr(cls, "forward", original)
+    for name in ("_PATCHED", "_FAILED", "_UNMATCHED"):
+        monkeypatch.setattr(forward_install, name, dict(getattr(forward_install, name)))
+    monkeypatch.setenv("UNSLOTH_FUSED_FORWARD", "1")
+    monkeypatch.setenv("UNSLOTH_RETURN_LOGITS", "0")
+    assert forward_install.install_for_class(cls), forward_install.audit()
+    installed = cls.forward
+    calls = []
+
+    def cpu_reference(hidden_states, lm_head_weight, lm_head_bias, labels, n_items, **kwargs):
+        calls.append(kwargs)
+        assert "output_attentions" not in kwargs
+        assert "output_hidden_states" not in kwargs
+        return ForCausalLMLoss(
+            logits = F.linear(hidden_states, lm_head_weight, lm_head_bias),
+            labels = labels,
+            vocab_size = lm_head_weight.shape[0],
+            num_items_in_batch = n_items,
+        )
+
+    monkeypatch.setattr(forward_adapter, "unsloth_fused_ce_loss", cpu_reference)
+    monkeypatch.setattr(FL, "_MIN_ROWS", 1024)
+    owner.loss_function = forward_install._STOCK_CAUSAL_LM_LOSS
+    f8t.mark_fp8_lora(owner, f8t.FP8_LORA_RECIPE)
+    f8t.enable_fp8_lora(model, allow_cpu = True)
+    assert owner.__dict__.get("_unsloth_fp8_lora_loss_forwards")
+    ids = torch.tensor([[1, 3, 2, 5]])
+    result = owner(
+        input_ids = ids,
+        labels = ids,
+        use_cache = False,
+        return_dict = return_dict,
+        output_attentions = False,
+        output_hidden_states = False,
+    )
+    assert calls
+    assert isinstance(result, tuple) is (not return_dict)
+    loss = result.loss if return_dict else result[0]
+    assert torch.isfinite(loss)
+    assert cls.forward is installed
+    assert FL.FP8_LORA_STATS["fwd"] == 0
+    assert FL.FP8_LORA_STATS["fwd_16bit"] > 0
+    f8t.restore_fp8_lora_for_inference(model)
+    assert owner.forward.__func__ is installed
+
+
 def test_no_request_no_conversion_and_strict_zero_engagement(monkeypatch):
     model = _tiny_qwen3_peft()
     assert f8t.enable_fp8_lora(model) == []
