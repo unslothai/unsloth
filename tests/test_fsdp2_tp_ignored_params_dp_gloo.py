@@ -20,7 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_tp_native_oracle import LLAMA, _batch, build, tpn  # noqa: E402
 import test_tp_native_gloo as gloo  # noqa: E402
 
-_MAX_NORM = 0.05  # small enough that every step clips
+_MAX_NORM = 0.05
 
 
 def _ignored_names(model, ignore_all = False):
