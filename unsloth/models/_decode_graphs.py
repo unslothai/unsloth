@@ -280,7 +280,9 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
     """The eager growth of the KV cache by `increment` rows (new rows zeroed with graphs on)."""
     global BUFFER_EPOCH
     rows = attn.paged_attention.shape[0]
-    if "_unsloth_graph_buffers" in attn.__dict__:
+    store = attn.__dict__.get("_unsloth_graph_buffers") or {}
+    graph_backed = any(bufs[0] is attn.paged_attention for bufs in store.values())
+    if graph_backed:
         # Each growth re-captures: double, capped at the hint, so O(log n) re-captures.
         grown = max(rows + increment, 2 * rows)
         if MAX_LEN_HINT + 1 > rows:
@@ -290,7 +292,7 @@ def resize_decode_buffers(attn, increment, bsz, n_heads, n_kv_heads, head_dim):
     attn.paged_attention_K = attn.paged_attention[:, 0]
     attn.paged_attention_V = attn.paged_attention[:, 1]
     attn.attention.resize_((bsz, n_heads, 1, attn.attention.shape[-1] + increment))
-    if "_unsloth_graph_buffers" in attn.__dict__:
+    if graph_backed:
         attn.paged_attention[rows:].zero_()
         BUFFER_EPOCH += 1
 
@@ -615,9 +617,10 @@ def decode_step(
     attn0 = layers[0].self_attn
     paged = attn0.__dict__.get("paged_attention")
     bsz = input_ids.shape[0]
+    store = attn0.__dict__.get("_unsloth_graph_buffers") or {}
     if (
         paged is None
-        or "_unsloth_graph_buffers" not in attn0.__dict__
+        or not any(bufs[0] is paged for bufs in store.values())
         or paged.shape[2] != bsz
         or input_ids.shape[1] != 1
     ):
