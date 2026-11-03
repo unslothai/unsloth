@@ -267,7 +267,6 @@ export function endBrowserAgentRun(runKey: string): void {
   }
 }
 
-/** The agent bar's Stop: the action running now ends too, not just the ones after it. */
 export function stopBrowserAgent(chat: string): void {
   const { runKey, question, stoppedRun } = agentChat(chat);
   patchAgentChat(chat, { stoppedRun: runKey ?? stoppedRun, working: false, step: null });

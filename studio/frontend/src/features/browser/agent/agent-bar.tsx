@@ -11,7 +11,6 @@ import { shareAgentTab } from "./tab-sharing";
 
 const NAMED_STEPS = new Set<AgentStep["kind"]>(["open", "find", "click", "type", "select", "press"]);
 
-/** Above the agent's tab while it works in the chat on screen: what it is doing, its questions, and Stop. */
 export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
   const t = useT();
   const chat = useBrowserStore((state) => state.chat);
