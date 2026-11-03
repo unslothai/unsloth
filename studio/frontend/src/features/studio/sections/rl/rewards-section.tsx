@@ -41,6 +41,7 @@ import {
   previewCell,
   previewRewards,
   readRewardHead,
+  rowAnswer,
   summarizeRule,
   useRlWorkspaceStore,
   useTrainingConfigStore,
@@ -180,9 +181,7 @@ function ScoreChip({
   }
   if (value === null) {
     return (
-      <span
-        className={cn(SCORE_CHIP_CLASS, "bg-muted text-muted-foreground")}
-      >
+      <span className={cn(SCORE_CHIP_CLASS, "bg-muted text-muted-foreground")}>
         {t("rl.rewards.scoreNone")}
       </span>
     );
@@ -468,10 +467,11 @@ export function RewardsSection(): ReactElement {
   const answerColumn = Object.entries(mapping).find(
     ([, role]) => role === "answer",
   )?.[0];
-  const rowReference = answerColumn
-    ? previewCell(previewRow?.[answerColumn])
-    : "";
-  const reference = referenceEdit ?? (rowReference || "72");
+  // A blank answer in the row stays blank, as in training; the sample is for no row at all.
+  const mappedAnswer = rowAnswer(previewRow, answerColumn);
+  const rowReference = mappedAnswer ?? "";
+  const reference =
+    referenceEdit ?? (mappedAnswer === undefined ? "72" : rowReference);
 
   const active = library.filter((r) => !r.shadowed);
   const byName = new Map(active.map((r) => [r.name, r]));
@@ -504,7 +504,11 @@ export function RewardsSection(): ReactElement {
       // No answer role, no answer kwarg in training; with no dataset yet, assume one.
       const row = pythonRewardRow(
         previewRow ?? {},
-        answerColumn || !previewRow ? reference : null,
+        !answerColumn && previewRow
+          ? undefined
+          : referenceEdit === null && mappedAnswer === null
+            ? null
+            : reference,
       );
       const { prompt, systemPrompt } = previewPrompt(
         previewRow,
