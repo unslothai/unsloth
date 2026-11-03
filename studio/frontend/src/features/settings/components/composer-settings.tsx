@@ -146,7 +146,7 @@ export function ComposerSettings({ embedded = false }: { embedded?: boolean }) {
           </SettingsRow>
           <SettingsRow
             label={t("composerSettings.richPaste")}
-            badge={<Badge variant="secondary" className="h-4 px-1.5 text-[10px] text-muted-foreground">{t("shell.beta")}</Badge>}
+            badge={<Badge variant="secondary" className="h-4 px-1.5 text-ui-10 text-muted-foreground">{t("shell.beta")}</Badge>}
             description={t("composerSettings.richPasteDescription", {
               shortcut: isMacPlatform() ? "\u21e7\u2318V" : "Ctrl+Shift+V",
             })}
