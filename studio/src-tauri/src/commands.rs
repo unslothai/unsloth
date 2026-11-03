@@ -58,8 +58,7 @@ fn adopted_failure_is_a_stall(verified: bool, served_alive: bool, different_owne
     !verified && served_alive && !different_owner
 }
 
-/// A verified live answer is enough. A saturated adopted backend may fail ownership
-/// re-verification, but its pre-probe busy marker still shows it was generating.
+/// Keep busy stalls when ownership cannot be reverified; any verified live answer wins.
 fn watchdog_confirm_keeps_backend(confirmed: &BackendLiveness) -> bool {
     confirmed.alive || (confirmed.inference_active && confirmed.probe_timed_out)
 }
@@ -2359,7 +2358,6 @@ mod tests {
             None
         );
 
-        // A live idle answer is also proof of life. The next stall still uses the idle budget.
         let mut idle_confirmed = vec![answered(false)];
         idle_confirmed.extend(vec![Probe::TimedOut; plain * 2]);
         assert_eq!(
@@ -2660,8 +2658,6 @@ async fn health_watchdog(
                 budget,
                 liveness.probe_timed_out,
             ) {
-                // Before killing, one wider probe. A verified live answer resets the count;
-                // an unverified generating stall keeps the existing busy protection.
                 let confirmed = check_watchdog_health(
                     &state,
                     generation,
