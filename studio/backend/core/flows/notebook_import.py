@@ -72,13 +72,6 @@ _ARGS = {
     "weight_decay": "weight_decay",
 }
 _QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
-# What Studio's training request uses when a flow sets nothing: a notebook asking for other LoRA placement,
-# dropout or scaling trains a different adapter, so say so instead of dropping it silently.
-_STUDIO_TARGETS = frozenset(
-    {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
-)
-# Embedding fine-tunes (FastSentenceTransformer) default to the attention projections only.
-_STUDIO_EMBEDDING_TARGETS = frozenset({"q_proj", "k_proj", "v_proj", "o_proj"})
 _MISSING = object()
 
 
@@ -317,6 +310,7 @@ class _Reader(ast.NodeVisitor):
         self.generic_visit(node)
 
     def _lora_settings(self, call: ast.Call) -> None:
+        """The Fine-tune node has fields for these, so they carry over; only a value it cannot read is reported."""
         for k in call.keywords:
             if k.arg not in ("target_modules", "lora_dropout", "use_rslora"):
                 continue
@@ -324,29 +318,32 @@ class _Reader(ast.NodeVisitor):
             if value is _MISSING and isinstance(k.value, ast.Name):
                 name = k.value.id
                 value = self.collections.get(name, self.consts.get(name, _MISSING))
-            if k.arg == "target_modules":
-                if self.found.get("task") == "embedding":
-                    expected, studio = _STUDIO_EMBEDDING_TARGETS, "q/k/v/o projections"
-                else:
-                    expected, studio = _STUDIO_TARGETS, "q/k/v/o/gate/up/down projections"
-                same = isinstance(value, (list, tuple, set)) and set(value) == expected
-                what = "LoRA target_modules"
-            elif k.arg == "lora_dropout":
-                same = (
-                    isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
-                )
-                what = "LoRA dropout"
-                studio = "0"
-            else:
-                same = value is False or value is None
-                what = "use_rslora"
-                studio = "off"
-            if not same:
-                shown = ast.unparse(k.value)[:80]
-                self.approximated.append(
-                    f"{what} = {shown}: Studio's fine-tune uses its default ({studio}), "
-                    "so the adapter differs from the notebook's"
-                )
+            if k.arg == "target_modules" and isinstance(value, str) and value.strip():
+                self.tune["target_modules"] = [value.strip()]
+                continue
+            if k.arg == "target_modules" and isinstance(value, (list, tuple, set)):
+                modules = [m for m in value if isinstance(m, str) and m.strip()]
+                if modules and len(modules) == len(value):
+                    self.tune["target_modules"] = (
+                        sorted(modules) if isinstance(value, set) else modules
+                    )
+                    continue
+            elif (
+                k.arg == "lora_dropout"
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                self.tune["lora_dropout"] = float(value)
+                continue
+            elif k.arg == "use_rslora" and value in (True, False, None):
+                if value is True:
+                    self.tune["lora_variant"] = "rslora"
+                continue
+            shown = ast.unparse(k.value)[:80]
+            self.approximated.append(
+                f"{k.arg} = {shown}: could not be read, so the Fine-tune node keeps its own setting and "
+                "the adapter may differ from the notebook's"
+            )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if "format" in node.name.lower():

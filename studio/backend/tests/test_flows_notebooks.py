@@ -631,7 +631,7 @@ def test_two_stages_of_the_same_rl_objective_are_refused():
     assert doc is None and any("GRPO and GRPO" in line for line in report["unsupported"])
 
 
-def test_lora_settings_studio_cannot_forward_are_reported():
+def test_lora_settings_carry_over_to_the_finetune_node():
     def read(peft_args):
         nb = _nb(
             "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
@@ -640,21 +640,22 @@ def test_lora_settings_studio_cannot_forward_are_reported():
         )
         doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
         assert doc is not None and report["unsupported"] == []
-        return [line for line in report["approximated"] if "LoRA" in line or "rslora" in line]
+        lines = [
+            line for line in report["approximated"] if "lora" in line or "target_modules" in line
+        ]
+        return _tune(doc), lines
 
-    custom = read(", target_modules = ['q_proj'], lora_dropout = 0.1, use_rslora = True")
-    assert len(custom) == 3
-    assert any("target_modules" in line for line in custom)
-    assert any("dropout" in line for line in custom)
-    assert any("use_rslora" in line for line in custom)
-    # The standard notebook settings match Studio's defaults and stay quiet.
-    assert (
-        read(
-            ", target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', "
-            "'down_proj'], lora_dropout = 0, use_rslora = False"
-        )
-        == []
+    tune, lines = read(", target_modules = ['q_proj'], lora_dropout = 0.1, use_rslora = True")
+    assert lines == []
+    assert tune["target_modules"] == ["q_proj"] and tune["lora_dropout"] == 0.1
+    assert tune["lora_variant"] == "rslora"
+    # The standard notebook settings arrive as they are, dropout 0 included.
+    tune, lines = read(
+        ", target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', "
+        "'down_proj'], lora_dropout = 0, use_rslora = False"
     )
+    assert lines == [] and tune["lora_dropout"] == 0.0 and "lora_variant" not in tune
+    assert len(tune["target_modules"]) == 7
 
 
 _SEVEN = "['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']"
@@ -687,11 +688,10 @@ def test_lora_targets_follow_the_latest_assignment_of_a_constant():
         assert doc is not None
         return _lora_lines(report)
 
-    # The seven defaults reassigned to something else must be reported, not masked by the old list.
-    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = 'all-linear'")) == 1
-    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = ['q_proj']")) == 1
+    # A later assignment wins; one the reader cannot follow is reported, not masked by the old list.
+    assert read(f"TARGETS = {_SEVEN}", "TARGETS = 'all-linear'") == []
+    assert read(f"TARGETS = {_SEVEN}", "TARGETS = ['q_proj']") == []
     assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = pick_targets()")) == 1
-    # And the reverse: a later default list wins over an earlier string.
     assert read("TARGETS = 'all-linear'", f"TARGETS = {_SEVEN}") == []
     # Augmented assignment, in-place mutation, item assignment and loops change the list too.
     assert len(read(f"TARGETS = {_SEVEN}", "TARGETS += ['lm_head']")) == 1
@@ -729,19 +729,14 @@ def test_lora_scalars_follow_an_unresolved_reassignment():
     assert read("DROP = 0", peft_args = ", lora_dropout = DROP") == []
 
 
-def test_embedding_lora_targets_compare_against_embedding_defaults():
-    def read(targets):
-        nb = _nb(
-            "model = FastSentenceTransformer.from_pretrained(model_name = 'unsloth/embeddinggemma-300m')\n"
-            f"model = FastSentenceTransformer.get_peft_model(model, r = 32, target_modules = {targets})",
-            "dataset = load_dataset('a/b', split = 'train')",
-            "loss = MultipleNegativesRankingLoss(model)\n"
-            "trainer = SentenceTransformerTrainer(model = model, loss = loss)",
-        )
-        doc, report = notebook_import.read_notebook(nb, "x.ipynb")
-        assert doc is not None
-        return _lora_lines(report)
-
-    assert read("['q_proj', 'k_proj', 'v_proj', 'o_proj']") == []
-    seven = read(_SEVEN)
-    assert len(seven) == 1 and "q/k/v/o projections)" in seven[0]
+def test_embedding_lora_targets_carry_over():
+    nb = _nb(
+        "model = FastSentenceTransformer.from_pretrained(model_name = 'unsloth/embeddinggemma-300m')\n"
+        f"model = FastSentenceTransformer.get_peft_model(model, r = 32, target_modules = {_SEVEN})",
+        "dataset = load_dataset('a/b', split = 'train')",
+        "loss = MultipleNegativesRankingLoss(model)\n"
+        "trainer = SentenceTransformerTrainer(model = model, loss = loss)",
+    )
+    doc, report = notebook_import.read_notebook(nb, "x.ipynb")
+    assert doc is not None and _lora_lines(report) == []
+    assert len(_tune(doc)["target_modules"]) == 7
