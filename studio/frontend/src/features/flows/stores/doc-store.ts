@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
-import { foldedGroups } from "../editor/super-card-records";
+import { foldedGroups, readSuperCards } from "../editor/super-card-records";
 import {
   FLOW_FORMAT,
   FLOW_FORMAT_VERSION,
@@ -737,12 +737,18 @@ export const useDocStore = create<DocState>((set, get) => {
         const groups = { ...s.graph.groups, [group.id]: group };
         const graph = { ...s.graph, groups };
         const nodes = { ...s.graph.nodes };
-        // A frame folded into a closed card keeps its blocks and takes no others.
+        // A frame folded into a closed card keeps its blocks and takes no others; a block hidden in
+        // a closed card keeps its frame too, since its saved position no longer says where it sits.
         const folded = foldedGroups(s.meta.editor, s.graph);
+        const hidden = new Set(
+          readSuperCards(s.meta.editor, s.graph)
+            .filter((card) => !card.open)
+            .flatMap((card) => card.members),
+        );
         for (const id of s.graph.nodeOrder) {
           const node = nodes[id];
           const before = node.group ?? null;
-          if (before && folded.has(before)) continue;
+          if (hidden.has(id) || (before && folded.has(before))) continue;
           const after = frameAt(graph, node.pos, folded);
           if (before === after) continue;
           if (before !== group.id && after !== group.id) continue;

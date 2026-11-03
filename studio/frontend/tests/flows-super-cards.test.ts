@@ -784,3 +784,56 @@ test("a rebuilt closed card keeps its measurement, so React Flow does not hide i
   const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
   assert.match(canvas, /useSuperCardView\(nodes, edges, selectedSet, sizes\)/);
 });
+
+test("resizing a frame leaves a block hidden in a closed card in its frame, even when the card holds only part of it", () => {
+  const d = comic();
+  // The card was dragged, so its hidden block's saved spot is now outside the frame.
+  d.nodes = d.nodes.map((n) => (n.id === "tpl" ? { ...n, pos: [-600, 500] as [number, number] } : n));
+  useDocStore.getState().load(d);
+  select("tpl", "prompt");
+  combineSelection();
+  const g = useDocStore.getState().graph.groups.g;
+  useDocStore.getState().resizeGroup({ ...g, rect: [g.rect[0], g.rect[1], g.rect[2] + 10, g.rect[3]] });
+  assert.equal(useDocStore.getState().graph.nodes.tpl.group, "g");
+  assert.equal(useDocStore.getState().graph.nodes.img.group, "g");
+});
+
+test("a note where two folded frames overlap moves with the card the canvas folds it into", () => {
+  const d = doc(
+    [
+      { ...node("a", "input.text", [0, 0]), group: "g1" },
+      { ...node("a2", "input.text", [0, 200]), group: "g1" },
+      { ...node("b", "input.text", [1000, 0]), group: "g2" },
+      { ...node("b2", "input.text", [1000, 200]), group: "g2" },
+    ],
+    [],
+  );
+  d.groups = [
+    { id: "g1", label: "One", color: "#8b5cf6", rect: [-20, -40, 700, 400] },
+    { id: "g2", label: "Two", color: "#8b5cf6", rect: [400, -40, 900, 400] },
+  ];
+  d.notes = [{ id: "n", text: "both", rect: [500, 100, 100, 50] }];
+  useDocStore.getState().load(d);
+  // The second frame's card is made first, so card order and block order disagree.
+  select("b", "b2");
+  combineSelection();
+  select("a", "a2");
+  combineSelection();
+  const [second, first] = cards();
+  assert.deepEqual(first.members, ["a", "a2"]);
+  assert.deepEqual(second.members, ["b", "b2"]);
+  const state = useDocStore.getState();
+  const request = {
+    direction: "LR" as const,
+    nodes: state.graph.nodeOrder.map((id) => ({ id, width: 260, height: 140 })),
+    edges: [],
+  };
+  const result = foldLayout(request, state, () => undefined).unfold({
+    [`super:${first.id}`]: [0, 1000],
+    [`super:${second.id}`]: [1000, 0],
+  });
+  // The canvas checks folded frames in block order, so the note is the first frame's.
+  assert.deepEqual(result["note:n"], [500, 1100]);
+  assert.deepEqual(result["group:g1"], [-20, 960]);
+  assert.deepEqual(result["group:g2"], [400, -40]);
+});

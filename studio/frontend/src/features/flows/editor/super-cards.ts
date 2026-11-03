@@ -209,6 +209,25 @@ function boxOf(nodes: RfNode[]): Box | null {
 
 /** Closed cards become one node at their blocks' top-left; wires crossing in or out re-attach
  *  to the card's ports. */
+/** Each group whose blocks all sit in one closed card, with that card, in the order both the
+ * canvas and Tidy up check their frames, so a note where two folded frames overlap has one owner. */
+function foldedFrames(
+  graph: DocGraph,
+  owner: ReadonlyMap<string, string>,
+): [string, string][] {
+  const groupCard = new Map<string, string | null>();
+  for (const id of graph.nodeOrder) {
+    const group = graph.nodes[id].group;
+    if (!group) continue;
+    const card = owner.get(id) ?? null;
+    const seen = groupCard.get(group);
+    groupCard.set(group, seen === undefined || seen === card ? card : null);
+  }
+  return [...groupCard].flatMap(([group, card]): [string, string][] =>
+    card ? [[group, card]] : [],
+  );
+}
+
 export function applySuperCards(
   nodes: RfNode[],
   edges: RfEdge[],
@@ -232,21 +251,12 @@ export function applySuperCards(
   }
   // A group whose blocks are all in one card folds with it, so a combined recipe shows no
   // empty frame; notes and reroutes drawn among the blocks fold too.
-  const groupCard = new Map<string, string | null>();
-  for (const id of graph.nodeOrder) {
-    const group = graph.nodes[id].group;
-    if (!group) continue;
-    const card = owner.get(id) ?? null;
-    const seen = groupCard.get(group);
-    groupCard.set(group, seen === undefined || seen === card ? card : null);
-  }
   // Things inside a folded frame fold too (a recipe's notes sit below its blocks).
   // Folded frames first: a note in a frame belongs to that frame's card even where
   // another card's blocks overlap it.
   const areas: [string, Box][] = [];
   const colors = new Map<string, string>();
-  for (const [group, card] of groupCard) {
-    if (!card) continue;
+  for (const [group, card] of foldedFrames(graph, owner)) {
     owner.set(GROUP_PREFIX + group, card);
     const color = graph.groups[group]?.color;
     if (color && !colors.has(card)) colors.set(card, color);
@@ -469,14 +479,8 @@ export function foldLayout(
   for (const card of closed)
     for (const id of card.members) owner.set(id, SUPER_PREFIX + card.id);
   // Tidy up lays a group out as one block; a group wholly inside a card folds into it too.
-  for (const groupId of graph.groupOrder) {
-    const inGroup = graph.nodeOrder.filter(
-      (id) => graph.nodes[id].group === groupId,
-    );
-    const card = inGroup.length ? owner.get(inGroup[0]) : undefined;
-    if (card && inGroup.every((id) => owner.get(id) === card))
-      owner.set(GROUP_PREFIX + groupId, card);
-  }
+  const frames = foldedFrames(graph, owner);
+  for (const [groupId, card] of frames) owner.set(GROUP_PREFIX + groupId, card);
   const blockOf = (id: string) => owner.get(id) ?? id;
   const nodes = request.nodes.filter((n) => !owner.has(n.id));
   for (const card of closed) {
@@ -499,8 +503,8 @@ export function foldLayout(
   const unfold = (result: LayoutResult): LayoutResult => {
     const next = { ...result };
     type Area = [[number, number], [number, number, number, number]];
-    const frameAreas: Area[] = [];
     const boxAreas: Area[] = [];
+    const shift = new Map<string, [number, number]>();
     for (const card of closed) {
       const at = result[SUPER_PREFIX + card.id];
       delete next[SUPER_PREFIX + card.id];
@@ -513,8 +517,6 @@ export function foldLayout(
         const [x, y] = graph.nodes[id].pos;
         next[id] = [x + dx, y + dy];
       }
-      // Frames and notes folded into the card move with it, as they do when it is dragged.
-      const members = new Set(card.members);
       let right = x0;
       let bottom = y0;
       for (const id of card.members) {
@@ -525,16 +527,16 @@ export function foldLayout(
         bottom = Math.max(bottom, y + (size?.height ?? saved?.[1] ?? DEFAULT_SIZE.height));
       }
       boxAreas.push([[dx, dy], [x0, y0, right - x0, bottom - y0]]);
-      for (const groupId of graph.groupOrder) {
-        const inGroup = graph.nodeOrder.filter(
-          (id) => graph.nodes[id].group === groupId,
-        );
-        if (!inGroup.length || !inGroup.every((id) => members.has(id)))
-          continue;
-        const rect = graph.groups[groupId].rect;
-        frameAreas.push([[dx, dy], rect]);
-        next[GROUP_PREFIX + groupId] = [rect[0] + dx, rect[1] + dy];
-      }
+      shift.set(SUPER_PREFIX + card.id, [dx, dy]);
+    }
+    // Frames and notes folded into a card move with it, as they do when it is dragged.
+    const frameAreas: Area[] = [];
+    for (const [groupId, card] of frames) {
+      const d = shift.get(card);
+      const rect = graph.groups[groupId]?.rect;
+      if (!d || !rect) continue;
+      frameAreas.push([d, rect]);
+      next[GROUP_PREFIX + groupId] = [rect[0] + d[0], rect[1] + d[1]];
     }
     // One owner per note, as the canvas folds it: a folded frame first, then a card's blocks.
     for (const noteId of graph.noteOrder) {
