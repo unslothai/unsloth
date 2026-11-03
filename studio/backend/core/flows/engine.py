@@ -2240,11 +2240,16 @@ async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[s
         model_id = await resident_name(ctx, spec["model_kind"])
         variant = await resident_gguf_variant(ctx) if model_id else None
     saved = await asyncio.to_thread(model_settings.read_saved, model_id)
+    before = dict(params)
     params.update(model_settings.overlay(params, saved, spec, bound))
     if any(p["id"] == model_settings.LOAD for p in spec["params"]):
         load = await asyncio.to_thread(model_settings.saved_load, model_id, variant)
         if load:
             params[model_settings.LOAD] = {**(params.get(model_settings.LOAD) or {}), **load}
+    if model_id and not (isinstance(choice, dict) and choice.get("repo")) and params != before:
+        # These are the loaded model's settings: run on that model, even if another flow swaps it
+        # while this step waits for the GPU.
+        ctx.settings_model = {"repo": model_id, "variant": variant}
 
 
 def _bind_params(spec: dict, params: dict, inputs: dict) -> None:

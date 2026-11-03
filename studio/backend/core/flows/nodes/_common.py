@@ -259,10 +259,9 @@ async def _alongside(
     if not serving or loading._same_id(serving[0], repo):
         return None
     name = f"{repo}:{variant}" if variant else repo
-    for gone in [
-        r for r in _ALONGSIDE_OPTIONS if not any(loading._same_id(s, r) for s in serving[1:])
-    ]:
-        _ALONGSIDE_OPTIONS.pop(gone, None)
+    records = _alongside_records()
+    for gone in [r for r in records if not any(loading._same_id(s, r) for s in serving[1:])]:
+        records.pop(gone, None)
     if any(loading._same_id(s, repo) for s in serving[1:]):
         kept = await loading._read_json(
             _caller(ctx), f"/api/inference/status?model={quote(repo, safe='')}"
@@ -274,7 +273,7 @@ async def _alongside(
                 f"loaded at once: pick {held} on this node, or unload it first."
             )
         # Unknown provenance (loaded in Chat) only matches a card that asks for no settings of its own.
-        if _ALONGSIDE_OPTIONS.get(repo.lower()) != options_hash(options):
+        if records.get(repo.lower()) != options_hash(options):
             raise FlowNodeError(
                 f"{repo} is already loaded alongside with other load settings. Give this node the same "
                 f"settings, or unload it first."
@@ -285,6 +284,7 @@ async def _alongside(
         from core.flows.engine import NeedsExclusiveGpu
         raise NeedsExclusiveGpu()
     ctx.set_status("loading_model", f"Loading {name} alongside {serving[0]}")
+    before = _chat_loads()
     try:
         await loading.load_llm(
             _caller(ctx),
@@ -303,7 +303,7 @@ async def _alongside(
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo} alongside {serving[0]}: {exc}") from None
     ctx.resident.clear()
-    _ALONGSIDE_OPTIONS[repo.lower()] = options_hash(options)
+    _alongside_loaded(before)[repo.lower()] = options_hash(options)
     note_loaded(ctx, "llm", repo)
     ctx.chat_model = name
     ctx.set_status("running")
@@ -338,6 +338,30 @@ def _media_load_count(slot: str) -> Optional[int]:
 _LOADED_OPTIONS: dict[str, tuple[str, str, int]] = {}
 # repo -> options_hash it was loaded alongside with; pruned once it stops being served.
 _ALONGSIDE_OPTIONS: dict[str, Optional[str]] = {}
+# The chat load count when every chat load since was the flow's own. Any other load (Chat reloading a
+# kept model with other settings) leaves no way to tell which one changed, so the records are dropped.
+_ALONGSIDE_SEEN: list[int] = [-1]
+
+
+def _chat_loads() -> int:
+    from core.inference import gpu_arbiter
+    return gpu_arbiter.load_count(gpu_arbiter.CHAT)
+
+
+def _alongside_records() -> dict[str, Optional[str]]:
+    if _ALONGSIDE_SEEN[0] != _chat_loads():
+        _ALONGSIDE_OPTIONS.clear()
+        _ALONGSIDE_SEEN[0] = _chat_loads()
+    return _ALONGSIDE_OPTIONS
+
+
+def _alongside_loaded(before: int) -> dict[str, Optional[str]]:
+    """After a flow load that started at chat load count ``before``: still trusted only if nothing else loaded."""
+    now = _chat_loads()
+    if _ALONGSIDE_SEEN[0] != before or now - before > 1:
+        _ALONGSIDE_OPTIONS.clear()
+    _ALONGSIDE_SEEN[0] = now
+    return _ALONGSIDE_OPTIONS
 
 
 def loaded_options(slot: str) -> Optional[tuple[str, str, int]]:
@@ -436,6 +460,9 @@ async def _ensure_model(
     from studio_mcp import loading
 
     slot = MODEL_SLOT.get(model_kind, model_kind)
+    if not (isinstance(choice, dict) and choice.get("repo")):
+        # An unset model whose saved settings were applied stays the model they belong to.
+        choice = getattr(ctx, "settings_model", None) or choice
     repo = choice.get("repo") if isinstance(choice, dict) else None
     variant = choice.get("variant") if isinstance(choice, dict) else None
     if not repo:
@@ -485,6 +512,7 @@ async def _ensure_model(
         raise NeedsExclusiveGpu()
     ctx.set_status("loading_model", f"Loading {repo}{':' + variant if variant else ''}")
     deadline = time.monotonic() + LOAD_DEADLINE_S
+    before = _chat_loads()
     try:
         if slot == "llm":
             await loading.load_llm(
@@ -518,6 +546,7 @@ async def _ensure_model(
         raise FlowNodeError(f"Could not load {repo}: {exc}") from None
     ctx.resident.clear()
     ctx.resident[slot] = repo
+    _alongside_loaded(before)
     note_loaded(ctx, slot, repo)
     _LOADED_VARIANT[slot] = (*wanted, _media_load_count(slot))
     if settings is None:

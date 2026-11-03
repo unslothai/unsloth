@@ -5,8 +5,8 @@ import { DatasetSelector } from "@/features/dataset-picker";
 import { hfApiToken, useHfTokenStore, useOnlineStatus } from "@/features/hub";
 import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { HfDatasetSubsetSplitSelectors } from "@/features/training";
-import { useCallback } from "react";
-import { hfDatasetChoice } from "./dataset-choice";
+import { useCallback, useRef } from "react";
+import { hfDatasetChoice, pickedSplit, shownSplit } from "./dataset-choice";
 
 export const HF_DATASET_NODE = "data.hf_dataset";
 
@@ -28,8 +28,11 @@ export function FlowHfDatasetFields({
     (v: string | null) => onChange({ subset: v ?? "" }),
     [onChange],
   );
+  // The dropdown only lists split names, so its auto-select must not overwrite a saved `train[:10%]`.
+  const saved = useRef(split);
+  saved.current = split;
   const setSplit = useCallback(
-    (v: string | null) => onChange({ split: v ?? "" }),
+    (v: string | null) => onChange({ split: pickedSplit(saved.current, v) }),
     [onChange],
   );
   return (
@@ -50,7 +53,7 @@ export function FlowHfDatasetFields({
         online={online}
         datasetSubset={subset}
         setDatasetSubset={setSubset}
-        datasetSplit={split}
+        datasetSplit={shownSplit(split)}
         setDatasetSplit={setSplit}
         datasetEvalSplit={null}
         setDatasetEvalSplit={noop}
