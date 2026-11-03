@@ -148,3 +148,10 @@ test("a card's first resize is laid out sized while it drags", () => {
   assert.match(src, /sized=\{\(!!node\.size \|\| resizing\) && !collapsed\}/);
   assert.match(src, /onResizeStart: \(\) => onResizing\(true\)/);
 });
+
+test("a resized card's text output, finished or streaming, fills the card and scrolls", () => {
+  const src = readSrc("features/flows/editor/flow-node.tsx");
+  const preview = src.slice(src.indexOf("function TextPreview"), src.indexOf("function OutputPreview"));
+  assert.match(preview, /expanded\s*\?\s*"nowheel min-h-0 flex-1 overflow-y-auto/);
+  assert.equal(src.match(/<TextPreview text=\{[^}]+\} expanded=\{expanded\} \/>/g)?.length, 2);
+});

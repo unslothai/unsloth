@@ -97,6 +97,21 @@ function nodeFields(
   return { rows, long };
 }
 
+/** Four lines on a card of its own size; a resized card's text fills it and scrolls. */
+function TextPreview({ text, expanded }: { text: string; expanded: boolean }) {
+  return (
+    <p
+      className={
+        expanded
+          ? "nowheel min-h-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words text-ui-11 leading-snug text-foreground"
+          : "line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none"
+      }
+    >
+      {text}
+    </p>
+  );
+}
+
 function OutputPreview({
   runtime,
   spec,
@@ -117,11 +132,7 @@ function OutputPreview({
     );
   }
   if ((runtime.status === "running" || !runtime.outputs) && runtime.text) {
-    return (
-      <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
-        {runtime.text}
-      </p>
-    );
+    return <TextPreview text={runtime.text} expanded={expanded} />;
   }
   if (
     runtime.partial &&
@@ -219,13 +230,8 @@ function OutputValues({
         </pre>
       );
     }
-    if (typeof value === "string") {
-      return (
-        <p className="line-clamp-4 whitespace-pre-wrap text-ui-11 leading-snug text-foreground group-data-[sized]/node:line-clamp-none">
-          {value}
-        </p>
-      );
-    }
+    if (typeof value === "string")
+      return <TextPreview text={value} expanded={expanded} />;
     if (typeof value === "number" || typeof value === "boolean") {
       return (
         <Badge variant="secondary" className="text-ui-11 tabular-nums">
