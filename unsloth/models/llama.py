@@ -2424,8 +2424,6 @@ class _PerDeviceRopeCache:
     allocate on their peers. A row depends only on its position, so a shorter cache matches the
     full one row for row."""
 
-    # LongRoPE's factors follow the length asked for, so even a traced stock call must read it
-    # rather than size its cache to max_position_embeddings.
     _rope_rows_pick_factors = False
 
     def _init_rope_cache_state(self, dtype):
@@ -2519,20 +2517,11 @@ class _PerDeviceRopeCache:
     ):
         if position_ids is not None and seq_len is None:
             # Stock transformers call (a plain model built after the patch): per-position cos/sin.
-            preallocate = torch.compiler.is_compiling() and not self._rope_rows_pick_factors
-            if preallocate:
-                # Reading max(position_ids) on the host breaks the graph, so a traced call builds
-                # every row below max_position_embeddings (as the fast model forward does for
-                # explicit positions) and indexes that: rows depend only on their position.
-                rows = max(
-                    self.current_rope_size,
-                    getattr(self, "max_position_embeddings", None) or 0,
-                )
-            else:
-                rows = int(position_ids.max()) + 1
+            if torch.compiler.is_compiling() and not self._rope_rows_pick_factors:
+                return self._compiled_position_embeddings(x, position_ids)
+            rows = int(position_ids.max()) + 1
             if rows > self.current_rope_size:
-                # Preallocating keeps the cache dtype, so a short compiled bf16 call cannot round a float32 cache.
-                self._grow_rope_cache(rows, self._rope_cache_dtype if preallocate else x.dtype)
+                self._grow_rope_cache(rows, x.dtype)
             self._need_rope_rows(rows)
             device_index = self._ensure_rope_cache(x.device.index)
             cos, sin = self._slice_rope_cache(device_index, rows)
@@ -2543,6 +2532,17 @@ class _PerDeviceRopeCache:
         self._need_rope_rows(self.current_rope_size if seq_len is None else seq_len)
         device_index = self._ensure_rope_cache(x.device.index)
         return self._slice_rope_cache(device_index, seq_len)
+
+    def _compiled_position_embeddings(self, x, position_ids):
+        # Gemma divides by timescale rather than multiplying by its reciprocal.
+        exponents = (2.0 / self.dim) * torch.arange(
+            self.dim // 2, dtype = torch.int64, device = x.device
+        ).float()
+        positions = position_ids.to(x.device).float()
+        positions = positions / getattr(self, "scaling_factor", 1.0)
+        freqs = positions[..., None] / (self.base**exponents)
+        emb = torch.cat((freqs, freqs), dim = -1)
+        return emb.cos().to(x.dtype), emb.sin().to(x.dtype)
 
     def _slice_rope_cache(self, device_index, seq_len):
         return (
@@ -2622,6 +2622,8 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self.multi_gpu_sin_cached = [None] * DEVICE_COUNT
 
         inv_freq = self._unsloth_recompute_inv_freq()
+        # Transformers may replace nonpersistent buffers while loading a stock model.
+        self._unsloth_inv_freq_cpu = inv_freq.detach().clone()
         self.register_buffer("inv_freq", inv_freq, persistent = False)
 
         # Built per device on first use, not for every visible GPU here.
@@ -2633,6 +2635,15 @@ class LlamaRotaryEmbedding(_PerDeviceRopeCache, torch.nn.Module):
         self.sin_cached = torch.empty(
             1, device = get_current_device(), dtype = torch.get_default_dtype()
         )
+
+    def _compiled_position_embeddings(self, x, position_ids):
+        inv_freq = self._unsloth_inv_freq_cpu.to(device = x.device)
+        positions = self._apply_time_scaling(position_ids.to(x.device).float())
+        freqs = positions[..., None] * inv_freq
+        emb = torch.cat((freqs, freqs), dim = -1)
+        cos = (emb.cos() * self.attention_scaling).to(self._rope_cache_dtype)
+        sin = (emb.sin() * self.attention_scaling).to(self._rope_cache_dtype)
+        return cos.to(x.dtype), sin.to(x.dtype)
 
     def _apply_inv_freq_scaling(self, inv_freq):
         """Override to apply custom inv_freq scaling (e.g., extended RoPE)."""

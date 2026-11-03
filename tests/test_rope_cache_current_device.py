@@ -615,7 +615,6 @@ def test_longrope_long_rebuild_keeps_short_marked_for_training(monkeypatch):
 
 
 def test_stock_call_compiles_as_one_graph():
-    # A plain transformers model built after the class patch calls rotary_emb(x, position_ids).
     rope = _llama(1 << 17)
     x = torch.zeros(1, 4, DIM)
     position_ids = torch.tensor([[3, 4, 5, 6]])
@@ -631,15 +630,12 @@ def test_stock_call_compiles_as_one_graph():
 
 @pytest.mark.parametrize("backend", ["eager", "aot_eager"])
 def test_compiled_stock_call_serves_every_position_below_max_position(backend):
-    # max_position_embeddings above the 32768-row starting cache, compiled before any eager long
-    # call: positions at or past 32768 must still index valid rows rather than past the cache.
     max_position = 1 << 16
     rope = _llama(max_position)
     torch._dynamo.reset()
     compiled = torch.compile(rope, backend = backend, fullgraph = True)
     ref_cos, ref_sin = _reference(max_position)
     x = torch.zeros(1, 4, DIM)
-    # A short prompt first, then decode steps crossing the 32768 boundary, then the last position.
     for start in (0, 32766, 32768, max_position - 4):
         position_ids = torch.arange(start, start + 4)[None]
         cos, sin = compiled(x, position_ids)
@@ -649,9 +645,7 @@ def test_compiled_stock_call_serves_every_position_below_max_position(backend):
     assert explained.graph_break_count == 0, explained.break_reasons
 
 
-def test_compiled_preallocation_keeps_the_cache_dtype():
-    # A short bf16 call compiled first grows the cache only to preallocate rows: it must not round a
-    # float32 cache to bf16 for later float32 calls.
+def test_compiled_stock_call_preserves_eager_cache_dtype():
     max_position = 1 << 16
     rope = _llama(max_position)
     torch._dynamo.reset()
@@ -664,3 +658,91 @@ def test_compiled_preallocation_keeps_the_cache_dtype():
     assert cos.dtype == torch.float32
     assert torch.equal(cos[0], ref_cos[3:7])
     assert torch.equal(sin[0], ref_sin[3:7])
+
+
+@pytest.mark.parametrize("backend", ["eager", "aot_eager"])
+@pytest.mark.parametrize("kind", ["llama", "linear", "extended", "gemma", "gemma_linear"])
+def test_compiled_stock_positions_cross_configured_extent(kind, backend):
+    ns = _load(
+        LLAMA,
+        list(_HELPERS)
+        + [
+            "LlamaRotaryEmbedding",
+            "LlamaLinearScalingRotaryEmbedding",
+            "LlamaExtendedRotaryEmbedding",
+        ],
+    )
+    if kind.startswith("gemma"):
+        ns = _load(
+            GEMMA,
+            ["GemmaFixedRotaryEmbedding", "GemmaFixedLinearScalingRotaryEmbedding"],
+            {"_PerDeviceRopeCache": ns["_PerDeviceRopeCache"]},
+        )
+    name = {
+        "llama": "LlamaRotaryEmbedding",
+        "linear": "LlamaLinearScalingRotaryEmbedding",
+        "extended": "LlamaExtendedRotaryEmbedding",
+        "gemma": "GemmaFixedRotaryEmbedding",
+        "gemma_linear": "GemmaFixedLinearScalingRotaryEmbedding",
+    }[kind]
+    kwargs = {"dim": DIM, "max_position_embeddings": 16, "base": BASE}
+    if kind.endswith("linear"):
+        kwargs["scaling_factor"] = 2.0
+    rope = ns[name](**kwargs)
+    reference = ns[name](**kwargs)
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = backend, fullgraph = True, dynamic = True)
+    for start in (0, 15, 32768):
+        positions = torch.arange(start, start + 4)[None]
+        x = torch.ones(1, 4, DIM, requires_grad = True)
+        cos, sin = compiled(x, positions)
+        ref_cos, ref_sin = reference(x, positions)
+        assert torch.equal(cos, ref_cos)
+        assert torch.equal(sin, ref_sin)
+        (x * cos + x * sin).sum().backward()
+        assert torch.equal(x.grad, cos + sin)
+    assert _built(rope.multi_gpu_cos_cached) == []
+
+
+@pytest.mark.parametrize("rope_type", ["llama3", "yarn", "linear", "dynamic"])
+def test_scaled_config_compiles_without_tracing_config_initialization(rope_type):
+    import contextlib
+    from transformers import LlamaConfig
+
+    names = list(_HELPERS) + [
+        "_get_rope_theta",
+        "_rope_scaling_as_dict",
+        "_llama3_inv_freq_from_config",
+        "_vanilla_inv_freq_from_config",
+        "_compute_config_rope_inv_freq",
+        "LlamaRotaryEmbedding",
+    ]
+    ns = _load(LLAMA, names, {"contextlib": contextlib})
+    scaling = {"rope_type": rope_type, "factor": 8.0}
+    if rope_type == "llama3":
+        scaling.update(
+            low_freq_factor = 1.0, high_freq_factor = 4.0, original_max_position_embeddings = 8192
+        )
+    config = LlamaConfig(
+        hidden_size = DIM,
+        num_attention_heads = 1,
+        head_dim = DIM,
+        max_position_embeddings = 1 << 17,
+        rope_scaling = scaling,
+    )
+    rope = ns["LlamaRotaryEmbedding"](config = config)
+    positions = torch.tensor([[0, 32768, 131071, 131072]])
+    inv_freq = rope.inv_freq.clone()
+    freqs = positions[..., None].float() * inv_freq
+    emb = torch.cat((freqs, freqs), dim = -1)
+    expected_cos = emb.cos() * rope.attention_scaling
+    expected_sin = emb.sin() * rope.attention_scaling
+    rope.inv_freq.fill_(float("nan"))
+    torch._dynamo.reset()
+    compiled = torch.compile(rope, backend = "aot_eager", fullgraph = True)
+    x = torch.ones(1, 4, DIM, requires_grad = True)
+    cos, sin = compiled(x, positions)
+    assert torch.equal(cos, expected_cos)
+    assert torch.equal(sin, expected_sin)
+    (x * cos + x * sin).sum().backward()
+    assert torch.equal(x.grad, cos + sin)
