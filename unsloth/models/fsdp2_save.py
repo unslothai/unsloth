@@ -1196,6 +1196,8 @@ def _without_quant_state_entries(name, args, kwargs):
 
 
 def _in_backward():
+    if torch.compiler.is_compiling():
+        return False
     try:
         return torch._C._current_graph_task_id() != -1
     except Exception:
@@ -1301,7 +1303,8 @@ def _like_param(p, local):
 
 
 def _fsdp_managed_param_ids(model):
-    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's)."""
+    """ids of FSDP2-managed params, or None when no FSDP2 state is readable (treat all DTensors as FSDP2's).
+    A readable state managing no params (every trainable param ignored) gives an empty set."""
     ids = set()
     found = False
     for unit in fsdp2_units(model):
@@ -1311,11 +1314,13 @@ def _fsdp_managed_param_ids(model):
             continue
         groups = getattr(st, "_fsdp_param_groups", None)
         if groups is None:
-            group = getattr(st, "_fsdp_param_group", None)
+            if not hasattr(st, "_fsdp_param_group"):
+                continue
+            group = st._fsdp_param_group
             groups = [group] if group is not None else []
+        found = True
         for group in groups:
             for fp in getattr(group, "fsdp_params", None) or ():
-                found = True
                 for attr in ("sharded_param", "_unsharded_param"):
                     t = getattr(fp, attr, None)
                     if t is not None:
