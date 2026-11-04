@@ -393,6 +393,7 @@ def test_scene_updates_cast_persona_and_settings(client):
             "settings": {
                 "replyOrder": "list",
                 "authorsNote": {"text": "Keep it short.", "depth": 2},
+                "view": "novel",
             },
         },
     )
@@ -401,6 +402,8 @@ def test_scene_updates_cast_persona_and_settings(client):
     assert [m["characterId"] for m in scene["cast"]] == [b["id"], a["id"]]
     assert scene["cast"][1]["muted"] is True
     assert scene["settings"]["authorsNote"] == {"text": "Keep it short.", "depth": 2}
+    assert scene["settings"]["view"] == "novel"
+    assert client.get(f"/api/characters/chats/{thread_id}").json()["settings"]["view"] == "novel"
     assert (
         client.put(
             f"/api/characters/chats/{thread_id}", json = {"cast": [{"characterId": "missing"}]}
@@ -414,6 +417,12 @@ def test_scene_updates_cast_persona_and_settings(client):
     assert (
         client.put(
             f"/api/characters/chats/{thread_id}", json = {"settings": {"replyOrder": "random"}}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.put(
+            f"/api/characters/chats/{thread_id}", json = {"settings": {"view": "theater"}}
         ).status_code
         == 422
     )

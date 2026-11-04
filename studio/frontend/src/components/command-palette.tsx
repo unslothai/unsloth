@@ -46,7 +46,7 @@ import {
   TestTube01Icon,
   ApiIcon,
   Clock01Icon,
-  MaskTheater01Icon,
+  LaughIcon,
   Download01Icon,
 } from "@hugeicons/core-free-icons";
 import { AiSpeechIcon, Settings01Icon } from "@/lib/hugeicons-derived";
@@ -315,7 +315,7 @@ function PaletteContent() {
             onSelect={runAndClose(() => void navigate({ to: "/characters" }))}
             keywords={["characters", "roleplay", "persona", "card", "group chat"]}
           >
-            <HugeiconsIcon icon={MaskTheater01Icon} strokeWidth={1.75} />
+            <HugeiconsIcon icon={LaughIcon} strokeWidth={1.75} />
             <span>{t("shell.navigation.characters")}</span>
           </PaletteItem>
           <PaletteItem

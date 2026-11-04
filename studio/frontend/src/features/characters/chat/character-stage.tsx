@@ -4,65 +4,58 @@
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useAuiState } from "@assistant-ui/react";
 import type { ReactNode } from "react";
 import { Portrait } from "../components/portrait";
-import { openCharacterLightbox } from "../lightbox-store";
-import { roleplayMetaOf } from "../meta";
+import { viewPicture } from "../images";
+import { chatViewOf, useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
+import { NovelScene, SpeakingDots } from "./novel-scene";
 import { useAskToReply } from "./speaker-bar";
 import { RoleplayController } from "./roleplay-controller";
 import { useThreadScene } from "./use-thread-scene";
 
-function useStageFocus(cast: Character[]): { focus: Character | null; speaking: boolean } {
-  const state = useAuiState(({ thread }) => {
-    let lastId: string | null = null;
-    for (let i = thread.messages.length - 1; i >= 0; i -= 1) {
-      const meta = roleplayMetaOf(thread.messages[i]);
-      if (meta?.kind === "reply" || meta?.kind === "turn") {
-        lastId = meta.speakerId;
-        break;
-      }
-    }
-    return `${thread.isRunning ? 1 : 0}|${lastId ?? ""}`;
-  });
-  const [running, id] = state.split("|");
-  const focus = cast.find((c) => c.id === id) ?? cast[0] ?? null;
-  return { focus, speaking: running === "1" };
-}
-
 /**
- * The chat area of a character chat. Its controller keeps group rounds going; with stage view on,
- * the speaking character stands beside the conversation in a tall portrait, the rest of the cast
- * waiting below them.
+ * The chat area of a character chat. Its controller keeps group rounds going. Stage view stands the
+ * speaking character beside the conversation; visual novel view puts the cast over the scene with the
+ * messages in a panel below. The thread keeps one place in the tree, so switching never remounts it.
  */
 export function CharacterStage({ threadId, children }: { threadId: string | null | undefined; children: ReactNode }) {
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
-  const thread = useThreadScene(threadId ?? activeThreadId);
-  const stage = Boolean(thread?.scene.settings.stage);
+  const id = threadId ?? activeThreadId ?? null;
+  const thread = useThreadScene(id);
+  const view = thread ? chatViewOf(thread.scene.settings) : "chat";
+  const stage = view === "stage";
+  const novel = view === "novel";
   return (
-    <div className={cn("flex min-h-0 min-w-0 flex-1 basis-0", stage ? "flex-col md:flex-row" : "flex-col")}>
+    <div
+      className={cn(
+        "relative flex min-h-0 min-w-0 flex-1 basis-0",
+        stage ? "flex-col md:flex-row" : "flex-col",
+        novel && "character-novel isolate",
+      )}
+    >
       {thread ? <RoleplayController /> : null}
-      {stage && thread ? <StagePanel cast={thread.cast} /> : null}
-      <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">{children}</div>
+      {stage && thread ? <StagePanel threadId={id} cast={thread.cast} /> : null}
+      {novel && thread ? <NovelScene threadId={id} cast={thread.cast} /> : null}
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
+          novel &&
+            "novel-dialogue relative z-10 mx-auto w-full max-w-[min(100%,1080px)] flex-none basis-auto h-[min(54%,640px)] min-h-[300px] rounded-t-[28px] bg-background/85 shadow-[0_-24px_70px_-34px_rgb(0_0_0/0.55)] ring-1 ring-border/60 backdrop-blur-xl max-md:h-[62%] [--studio-chat-header-height:calc(1.25rem*var(--ui-space-scale,1))] [--studio-chat-scroller-top:0px] [--studio-content-top-inset:0px]",
+        )}
+      >
+        {children}
+      </div>
     </div>
   );
 }
 
-function StagePanel({ cast }: { cast: Character[] }) {
+function StagePanel({ threadId, cast }: { threadId: string | null; cast: Character[] }) {
   const t = useT();
-  const { focus, speaking } = useStageFocus(cast);
+  const { focus, speaking } = useStageFocus(threadId, cast);
   const ask = useAskToReply();
   if (!focus) return null;
   const others = cast.filter((c) => c.id !== focus.id);
-  const open = (character: Character) =>
-    openCharacterLightbox({
-      kind: "character",
-      id: character.id,
-      name: character.name,
-      hasImage: character.hasAvatar,
-      rev: character.avatarRev,
-    });
   return (
     <aside
       className="character-stage relative flex shrink-0 gap-3 border-border/60 p-3 max-md:mt-12 max-md:h-37 max-md:items-end max-md:border-b md:w-[clamp(240px,30%,440px)] md:flex-col md:border-r md:p-4 md:pt-16"
@@ -76,7 +69,8 @@ function StagePanel({ cast }: { cast: Character[] }) {
         <button
           type="button"
           className="block size-full cursor-zoom-in"
-          onClick={() => open(focus)}
+          onClick={() => viewPicture("character", focus.id, focus.name)}
+          disabled={!focus.hasAvatar}
           aria-label={t("characters.actions.viewPicture")}
         >
           <Portrait
@@ -92,16 +86,7 @@ function StagePanel({ cast }: { cast: Character[] }) {
           <span className="font-heading text-ui-20 font-semibold leading-tight [text-shadow:0_1px_2px_rgb(0_0_0/0.4)]">
             {focus.name}
           </span>
-          {speaking ? (
-            <span className="flex items-center gap-1.5 text-ui-12 text-white/80">
-              <span className="flex gap-0.5">
-                <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.3s]" />
-                <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.15s]" />
-                <span className="size-1 animate-bounce rounded-full bg-white/90" />
-              </span>
-              {t("characters.chat.speaking", { name: focus.name.split(/\s+/)[0] })}
-            </span>
-          ) : null}
+          {speaking ? <SpeakingDots name={focus.name} /> : null}
         </figcaption>
       </figure>
       {others.length ? (

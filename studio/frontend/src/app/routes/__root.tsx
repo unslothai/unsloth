@@ -49,7 +49,6 @@ import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { useDeviceSettingsSync } from "@/features/settings/hooks/use-device-settings-sync";
 import { ScheduledTaskRunNotifier } from "@/features/scheduled-tasks/run-notifier";
-import { CharacterLightboxHost } from "@/features/characters/lightbox-host";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SETTINGS_TABS,
@@ -832,7 +831,6 @@ function RootLayout() {
       {/* These side-effect-only mounts stay last so they cannot shift existing React useId paths. */}
       {!isAuthFlowRoute && <HubSourceNoticeMount />}
       {!isAuthFlowRoute && <ScheduledTaskRunNotifier />}
-      {!isAuthFlowRoute && <CharacterLightboxHost />}
     </>
   );
 

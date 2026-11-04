@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useEffect, useState } from "react";
+import { openImageViewer } from "@/components/image-viewer";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { fetchImage } from "./api";
 
@@ -68,6 +69,21 @@ if (typeof window !== "undefined") {
     urls.clear();
     resolved.clear();
   });
+}
+
+const EXTENSIONS: Record<string, string> = { "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
+
+/** Opens a picture full size in Studio's image viewer. */
+export function viewPicture(kind: Kind, id: string, name: string): void {
+  const base = name.trim().replace(/[\\/:*?"<>|]+/g, "_") || kind;
+  openImageViewer([
+    {
+      key: `${kind}:${id}`,
+      title: name,
+      fileName: (contentType) => `${base}.${EXTENSIONS[contentType] ?? "png"}`,
+      load: () => fetchImage(kind, id),
+    },
+  ]);
 }
 
 const HUES = [12, 28, 160, 190, 215, 250, 280, 330];

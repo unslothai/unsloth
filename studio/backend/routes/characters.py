@@ -115,7 +115,7 @@ class SceneSettings(BaseModel):
     authorsNote: Optional[AuthorsNote] = None
     replyOrder: Optional[Literal["natural", "list", "manual"]] = None
     allowSelfReplies: Optional[bool] = None
-    stage: Optional[bool] = None
+    view: Optional[Literal["chat", "stage", "novel"]] = None
 
 
 class CastMember(BaseModel):

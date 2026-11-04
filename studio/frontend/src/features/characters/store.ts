@@ -152,7 +152,7 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     })),
   patchScene: (threadId, patch) => {
     // One write at a time per chat, each merged into the settings the previous one left, so two
-    // quick edits (a note and the stage toggle) never undo each other.
+    // quick edits (a note and the view) never undo each other.
     const previous = sceneWrites.get(threadId) ?? Promise.resolve();
     const write = previous
       .catch(() => undefined)

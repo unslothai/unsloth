@@ -13,7 +13,7 @@ import {
   PencilEdit02Icon,
   ApiIcon,
   Clock01Icon,
-  MaskTheater01Icon,
+  LaughIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ProjectIcon } from "@/lib/project-icon";
@@ -47,7 +47,7 @@ const ITEM_META: Record<
   export: { icon: Download01Icon, labelKey: "shell.navigation.export" },
   api: { icon: ApiIcon, labelKey: "shell.navigation.api" },
   tasks: { icon: Clock01Icon, labelKey: "shell.navigation.tasks" },
-  characters: { icon: MaskTheater01Icon, labelKey: "shell.navigation.characters" },
+  characters: { icon: LaughIcon, labelKey: "shell.navigation.characters" },
 };
 
 function FixedRow({ icon, label }: { icon: IconSvgElement; label: string }) {

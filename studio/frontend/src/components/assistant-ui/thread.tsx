@@ -470,7 +470,7 @@ import {
   MoreHorizontalIcon,
   PlusSignIcon,
   Cancel01Icon,
-  MaskTheater01Icon,
+  LaughIcon,
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -7224,7 +7224,7 @@ const ComposerToolsMenu: FC<{
     ),
     characters: (
       <DropdownMenuItem onSelect={() => setCharacterPickerOpen(true)}>
-        <HugeiconsIcon icon={MaskTheater01Icon} strokeWidth={2} />
+        <HugeiconsIcon icon={LaughIcon} strokeWidth={2} />
         {t("characters.plusMenu")}
       </DropdownMenuItem>
     ),

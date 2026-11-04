@@ -96,12 +96,15 @@ export interface Persona {
 
 export type ReplyOrder = "natural" | "list" | "manual";
 
+/** How a character chat is laid out: the plain chat, the speaker's picture beside it, or a visual novel scene. */
+export type ChatView = "chat" | "stage" | "novel";
+
 export interface SceneSettings {
   scenario?: string;
   authorsNote?: { text: string; depth: number };
   replyOrder?: ReplyOrder;
   allowSelfReplies?: boolean;
-  stage?: boolean;
+  view?: ChatView;
 }
 
 export interface CastMember {

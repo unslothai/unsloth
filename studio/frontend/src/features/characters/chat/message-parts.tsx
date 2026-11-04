@@ -4,12 +4,12 @@
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useAuiState } from "@assistant-ui/react";
+import { useAui, useAuiState } from "@assistant-ui/react";
 import { createContext, useContext, type ReactNode } from "react";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { Portrait } from "../components/portrait";
 import { RoleplayText } from "../components/roleplay-text";
-import { openCharacterLightbox } from "../lightbox-store";
+import { showOnStage } from "../stage-focus";
 import { roleplayMetaOf } from "../meta";
 import { useCharactersStore } from "../store";
 import { useThreadScene } from "./use-thread-scene";
@@ -57,6 +57,8 @@ function useReplySpeaker() {
 export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   const t = useT();
   const speaker = useReplySpeaker();
+  const threadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const aui = useAui();
   if (!speaker) return <>{children}</>;
   const character = speaker.character;
   return (
@@ -70,16 +72,8 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
           label={speaker.name}
           className="absolute left-0 top-0.5 size-[calc(2.125rem*var(--ui-space-scale,1))] rounded-[11px] text-[0.95rem] shadow-[0_1px_2px_rgb(0_0_0/0.12)]"
           onClick={
-            character
-              ? () =>
-                  openCharacterLightbox({
-                    kind: "character",
-                    id: character.id,
-                    name: character.name,
-                    hasImage: character.hasAvatar,
-                    rev: character.avatarRev,
-                    caption: character.creator ? t("characters.profile.by", { creator: character.creator }) : undefined,
-                  })
+            character && threadId
+              ? () => showOnStage(threadId, character.id, aui.thread().getState().messages.length)
               : undefined
           }
         />

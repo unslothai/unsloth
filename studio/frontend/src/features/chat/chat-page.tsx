@@ -181,7 +181,7 @@ import { ContextUsageBar } from "./components/context-usage-bar";
 import { contextUsageRows } from "./lib/context-usage-bar-state";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
-import { CastChip, StageToggle } from "@/features/characters/chat/chat-chrome";
+import { CastChip, ChatViewMenu } from "@/features/characters/chat/chat-chrome";
 import { CharacterStage } from "@/features/characters/chat/character-stage";
 import { EditProjectDialog } from "./components/edit-project-dialog";
 import {
@@ -4793,7 +4793,7 @@ export function ChatPage({
                 onDiscard={toggleIncognito}
               />
             ) : null}
-            {view.mode === "single" ? <StageToggle threadId={activeThreadId} /> : null}
+            {view.mode === "single" ? <ChatViewMenu threadId={activeThreadId} /> : null}
             {view.mode === "single" && (
               <ChatHeaderMenu temporary={incognito} onToggleTemporary={toggleIncognito} />
             )}
