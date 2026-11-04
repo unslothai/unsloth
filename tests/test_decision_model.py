@@ -251,6 +251,35 @@ def test_dataset_skips_bad_rows_and_names_the_most_common_reason(checkpoint):
     assert torch.allclose(batch["target"].sum(-1), torch.ones(3))
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_needs_no_model_and_stops_at_the_first_usable_row(clef):
+    assert FastDecisionModel.rows_problem([], clef) == ""
+    no_gold = {**_row(0), "gold": {}}
+    no_questions = {"state": "only a state"}
+    assert FastDecisionModel.rows_problem([no_questions], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+    assert FastDecisionModel.rows_problem([no_questions, no_questions], clef) == (
+        "row 1 needs state, questions and gold (and 1 more like it)"
+    )
+    assert FastDecisionModel.rows_problem([no_gold], clef).startswith('row 1: "')
+
+    def record(name, question):
+        seen.append(name)
+
+    seen = []
+    assert FastDecisionModel.rows_problem([no_gold, _row(1), no_questions], clef, record) is None
+    assert len(seen) == 1
+
+
+def test_rows_problem_applies_the_callers_validation():
+    def refuse(name, question):
+        raise ValueError("is over the limit")
+
+    problem = FastDecisionModel.rows_problem([_row(0)], False, refuse)
+    assert problem.endswith("is over the limit (and 2 more like it)")
+
+
 def test_holdout_takes_whole_rows_and_never_overshoots():
     items = [{"row": row} for row in range(50) for _ in range(3)]
     train, held = FastDecisionModel.split_holdout(items, 3407)

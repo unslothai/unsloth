@@ -50,6 +50,7 @@ from unsloth._decision_common import (
     _parsed,
     _predicted,
     _row_images,
+    _rows_problem,
     _served_lengths,
     _served_temperatures,
     _target,
@@ -871,6 +872,7 @@ class FastDecisionModel:
         clef = functools.partial(_clef_items, model._unsloth_pipeline) if _is_clef(model) else None
         return _decision_dataset(rows, tokenizer, model.decision_config, validate, clef)
 
+    rows_problem = staticmethod(_rows_problem)
     split_holdout = staticmethod(_decision_holdout)
 
     @staticmethod
