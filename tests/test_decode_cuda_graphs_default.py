@@ -228,3 +228,55 @@ def test_grpo_generation_uses_graphs_and_releases(runtime, tmp_path):
     assert len(seen["replays"]) == 2 and all(r > 0 for r in seen["replays"]), seen
     assert seen["buffers_at_loss"] == [(0, 0), (0, 0)], seen
     assert _Stats(model)()["disabled"] is None
+
+
+@rl_default
+def test_out_of_memory_in_the_graph_path_redoes_the_call_eagerly(runtime):
+    """A real CUDA allocator OOM raised only while graphs are on (the first graph-mode buffer
+    allocation asks for 1 PiB): generate() frees the graphs, redoes the call eagerly once, counts it,
+    warns once, and returns the eager tokens and logits."""
+    if not G._STUDIO_DEFAULT_OK:
+        pytest.skip("the plain generate() default stays eager on native Windows")
+    model, tok = _load()
+    FastLanguageModel.for_inference(model)
+    runtime.setenv(ENV, "0")
+    eager = _gen(model, tok)
+    runtime.delenv(ENV)
+    original = G.alloc_decode_buffers
+
+    def allocate(*args, **kwargs):
+        if G.enabled():
+            torch.empty(1 << 50, dtype = torch.uint8, device = "cuda")
+        return original(*args, **kwargs)
+
+    runtime.setattr(G, "alloc_decode_buffers", allocate)
+    runtime.setattr(G, "_OOM_WARNED", False)
+    redos = G.EAGER_REDOS
+    with pytest.warns(UserWarning, match = "ran out of GPU memory"):
+        redone = _gen(model, tok)
+    assert G.EAGER_REDOS == redos + 1
+    assert torch.equal(eager[0], redone[0]) and torch.equal(eager[1], redone[1])
+    assert _graph_buffers(model) == 0
+    # Without the forced OOM the next call is graphed again.
+    runtime.setattr(G, "alloc_decode_buffers", original)
+    replays = _Stats(model)().get("replays", 0)
+    assert torch.equal(_gen(model, tok)[1], eager[1])
+    assert _Stats(model)()["replays"] > replays and G.EAGER_REDOS == redos + 1
+
+
+@rl_default
+def test_training_forward_without_for_training_frees_generate_memory(runtime):
+    """Sampling in a trainer callback: generate() on an inference-mode model, then training resumes
+    with model.train() only. The first training forward frees the graphs and decode caches."""
+    if not G._STUDIO_DEFAULT_OK:
+        pytest.skip("the plain generate() default stays eager on native Windows")
+    model, tok = _load()
+    FastLanguageModel.for_inference(model)
+    enc = tok(PROMPTS, return_tensors = "pt", padding = True).to("cuda")
+    model.generate(**enc, max_new_tokens = 8, do_sample = False, pad_token_id = tok.pad_token_id)
+    assert _graph_buffers(model) > 0
+    model.train()
+    out = model(**enc, labels = enc.input_ids)
+    out.loss.backward()
+    assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
+    assert _Stats(model)()["graphs"] == 0

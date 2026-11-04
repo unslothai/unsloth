@@ -199,3 +199,82 @@ def test_eager_scope_beats_the_variable_and_the_scopes(G, monkeypatch):
     with G.rl_generation(), G.eager_scope():
         assert G.enabled() is False
     assert G.enabled() is True
+
+
+def _with_graphs(G, model, *bszs):
+    state = G._state(model)
+    for bsz in bszs:
+        model.keep(bsz, 2816)
+        state.graphs[(bsz, CUDA0, (False, None), True, None)] = object()
+    state.pool = object()
+    return state
+
+
+def test_keep_only_drops_other_batch_sizes_and_keeps_this_ones_graphs(G):
+    model = _Model()
+    state = _with_graphs(G, model, 1, 4)
+    epoch = G.BUFFER_EPOCH
+    assert G.keep_only(model, 4) is True
+    assert {k for a in model.attns for k in a._unsloth_graph_buffers} == {(4, torch.float16, CUDA0)}
+    assert [k[0] for k in state.graphs] == [4] and state.pool is not None
+    # The kept graphs still read valid buffers: no epoch bump, so the next call of this shape replays.
+    assert G.BUFFER_EPOCH == epoch
+    assert all(a.paged_attention is a._unsloth_graph_buffers[(4, torch.float16, CUDA0)][0] for a in model.attns)
+    assert G.keep_only(model, 4) is False
+
+
+def test_keep_only_drops_the_current_attributes_of_an_evicted_cache(G):
+    model = _Model()
+    _with_graphs(G, model, 4, 1)  # attn.paged_attention is the bs1 cache
+    G.keep_only(model, 4)
+    assert not any("paged_attention" in a.__dict__ for a in model.attns)
+
+
+def test_training_forward_releases_what_a_graphed_generate_kept(G):
+    model = _Model()
+    _with_graphs(G, model, 4)
+    assert G.release_if_training(model) is False  # nothing marked: one dict read, nothing freed
+    assert model.held() == 1
+    model.__dict__[G.HELD] = True
+    assert G.release_if_training(model) is True
+    assert model.held() == 0 and G.HELD not in model.__dict__
+    assert G._state(model).graphs == {}
+    assert G.release_if_training(model) is False
+
+
+def test_release_clears_the_held_mark(G):
+    model = _Model()
+    _with_graphs(G, model, 1)
+    model.__dict__[G.HELD] = True
+    G.release_for_training(model)
+    assert G.HELD not in model.__dict__
+
+
+def test_eager_redo_is_counted(G):
+    model = _Model()
+    assert G.EAGER_REDOS == 0
+    with G.generate_scope():
+        G.generate_with_fallback(model, _oom_while_graphed(G, []), True, (), {})
+        G.generate_with_fallback(model, lambda: "ok", True, (), {})
+    assert G.EAGER_REDOS == 1
+
+
+def test_causal_lm_forward_calls_the_training_release():
+    """The hook lives in llama.py's _CausalLM_fast_forward (importing unsloth needs an accelerator,
+    so this reads the source): a training forward with grad on releases what generate() kept."""
+    import ast
+
+    source = (_SOURCE.parent / "llama.py").read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    fwd = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_CausalLM_fast_forward"
+    )
+    hooks = [
+        n for n in ast.walk(fwd)
+        if isinstance(n, ast.If) and "release_if_training" in ast.unparse(n)
+        and "self.training" in ast.unparse(n.test) and "is_grad_enabled" in ast.unparse(n.test)
+    ]  # fmt: skip
+    assert hooks, "training forward does not free graphs a generate() kept"
+    gen = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate")
+    text = ast.unparse(gen)
+    assert "keep_only" in text and "HELD" in text

@@ -43,6 +43,9 @@ __all__ = [
     "eager_scope",
     "make_room",
     "generate_with_fallback",
+    "keep_only",
+    "release_if_training",
+    "EAGER_REDOS",
     "static",
     "alloc_decode_buffers",
     "decode_step",
@@ -224,13 +227,18 @@ def make_room(model, input_ids, dtype, increment):
 
 
 _OOM_WARNED = False
+# generate() calls redone eagerly after an out-of-memory error with graphs on (this process).
+EAGER_REDOS = 0
+# Set on the model by a graphed generate() that leaves graphs / decode buffers behind; the next
+# training forward frees them (release_if_training).
+HELD = "_unsloth_decode_held"
 
 
 def generate_with_fallback(model, generate, graphs, args, kwargs):
     """generate(*args, **kwargs); when it runs out of GPU memory with graph decode on, free the graphs
     and decode buffers and redo the call once eagerly, with one warning per process. A caller-supplied
     cache or streamer has already seen part of the call, so those re-raise instead."""
-    global _OOM_WARNED
+    global _OOM_WARNED, EAGER_REDOS
     try:
         return generate(*args, **kwargs)
     except torch.cuda.OutOfMemoryError:
@@ -251,8 +259,43 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
         )
     release_for_training(model)
     _empty_cache()
+    EAGER_REDOS += 1
     with eager_scope():
         return generate(*args, **kwargs)
+
+
+def keep_only(model, bsz):
+    """After a graphed generate(): drop the decode buffers and graphs of every other batch size, so
+    one call's cache (and its graphs) is all that stays between calls. The kept batch size's graphs
+    stay valid (its buffers are untouched), so repeated calls of one shape do not re-capture."""
+    dropped = False
+    for module in model.modules():
+        store = module.__dict__.get("_unsloth_graph_buffers")
+        if store:
+            for key in [k for k in store if k[0] != bsz]:
+                bufs = store.pop(key)
+                dropped = True
+                if module.__dict__.get("paged_attention") is bufs[0]:
+                    for name in _BUFFER_NAMES:
+                        module.__dict__.pop(name, None)
+        state = module.__dict__.get("_unsloth_decode_graphs")
+        if state is not None:
+            for key in [k for k in state.graphs if k[0] != bsz]:
+                del state.graphs[key]
+                dropped = True
+            if not state.graphs:
+                state.pool = None
+    return dropped
+
+
+def release_if_training(model):
+    """Called by a training forward: frees what a graphed generate() kept on the model when training
+    resumed without for_training() (e.g. sampling inside a trainer callback). One dict read when
+    nothing is held."""
+    if model.__dict__.pop(HELD, False):
+        release_for_training(model)
+        return True
+    return False
 
 
 def static():
@@ -507,6 +550,7 @@ def release(model):
     found = False
     for module in model.modules():
         d = module.__dict__
+        d.pop(HELD, None)
         state = d.get("_unsloth_decode_graphs")
         if state is not None:
             found = True
