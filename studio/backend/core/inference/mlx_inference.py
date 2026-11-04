@@ -2269,7 +2269,7 @@ def _mlx_stream_detokenizer(source):
 def _eager_spm_detokenizer_class():
     from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
     class EagerSPMStreamingDetokenizer(SPMStreamingDetokenizer):
-        # mlx-vlm streams pass the special ids to drop; mlx-lm's add_token takes none.
+        # mlx-vlm's stream loop passes skip_special_token_ids; mlx-lm's add_token takes none.
         def add_token(
             self,
             token,
@@ -2282,9 +2282,7 @@ def _eager_spm_detokenizer_class():
 
 
 def _stream_spm_tokens_eagerly(processor):
-    """mlx-vlm's SPM detokenizer releases a piece only once the next word starts, so every streamed
-    token, the first included, reaches the client a decode step late; mlx-lm's releases each as it
-    is added, holding back only an unfinished UTF-8 sequence."""
+    """mlx-vlm's SPM detokenizer holds each piece until the next word starts; mlx-lm's does not."""
     held = getattr(processor, "detokenizer", None)
     if (type(held).__module__, type(held).__name__) != (
         "mlx_vlm.tokenizer_utils",

@@ -1764,8 +1764,6 @@ def test_mlx_inference_distributed_vlm_forwards_group_to_fast_mlx(monkeypatch):
 
 
 def test_vlm_load_streams_each_spm_token_as_it_arrives(monkeypatch):
-    """mlx-vlm's SPM detokenizer held a piece until the next word began, so a stream's first token
-    reached the client a decode step late."""
     detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
     pytest.importorskip("mlx_lm.tokenizer_utils")
     from core.inference.mlx_inference import MLXInferenceBackend
