@@ -325,10 +325,10 @@ _AUDIO_SNIFF_ROWS = 16
 _AUDIO_COLUMN_KEYWORDS = ("audio", "speech", "wav", "waveform", "sound")
 
 
-# A whole cell that is a path or URL to an image: one token, or one line with a path separator.
-# Prose that merely ends in "chart.png" is text, not an image column.
+# A whole cell that is a path or URL to an image: one token, or a path whose first segment has
+# no spaces (later folders may). "Save the chart to /tmp/plot.png" is prose, not an image column.
 _IMAGE_PATH_PATTERN = (
-    r"(?i)^\s*(?:\S{1,999}|[^\n]{0,998}[/\\][^\n]{0,998})"
+    r"(?i)^\s*(?:\S{1,999}|[^\s/\\]{0,255}[/\\][^\n]{0,998})"
     r"\.(png|jpe?g|webp|gif|bmp|tiff|svg)(\?\S*)?\s*$"
 )
 
