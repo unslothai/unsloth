@@ -76,6 +76,8 @@ function tagNames(
   for (const match of body.matchAll(NAME)) {
     const before = body.slice(0, match.index).trimEnd();
     if (before.endsWith(".") || before.endsWith("|")) continue;
+    // A test (`value is string`, `x is not number`) is Jinja's, not a column.
+    if (/\bis(\s+not)?$/.test(before)) continue;
     if (boundAt(scopes, match[0], at)) continue;
     // A loop's filter reads its own variables: `for x in items if x > 0`.
     if (part?.bound.includes(match[0]) && (match.index ?? 0) >= filterAt)

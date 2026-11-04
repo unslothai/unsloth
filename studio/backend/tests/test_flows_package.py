@@ -351,6 +351,11 @@ def test_scrub_keeps_a_structured_outputs_field_names_and_a_transforms_columns()
         },
     }
     assert scrub({"output_format": nullable}) == {"output_format": nullable}
+    composed = {
+        "type": "object",
+        "allOf": [{"properties": {"token": {"type": "string"}}, "required": ["token"]}],
+    }
+    assert scrub({"output_format": composed}) == {"output_format": composed}
     # A template's `headers` key is an output column, not a request's headers.
     shaped = {"processor_type": "schema_transform", "template": {"headers": {"X-Type": "{{ h }}"}}}
     assert scrub(shaped) == shaped

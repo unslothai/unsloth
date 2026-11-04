@@ -1718,3 +1718,29 @@ test("setting a namespace's attribute binds no variable of that name", async () 
     "{% set ns = namespace() %}{% set ns.topic = 'local' %}{{ subject }}",
   );
 });
+
+test("a duplicated reader gets the wire to the column it reads, and a Jinja test is not a column", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes } = sqlGroup();
+  const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
+  const store = useDocStore.getState();
+  const reader = byName(nodes, "sql");
+  const source = byName(nodes, "sql_prompt");
+  const fragment = cloneFragment(store.graph, [reader.id], [40, 40]);
+  store.insertFragment(fragment);
+  const copy = fragment.nodes[0].id;
+  const graph = useDocStore.getState().graph;
+  assert.ok(Object.values(graph.edges).some((e) => e.source === source.id && e.target === copy));
+  removeNodes([source.id]);
+  const after = useDocStore.getState().graph;
+  assert.doesNotMatch(JSON.stringify(after.nodes[copy].params.column), /\{\{ sql_prompt \}\}/);
+
+  const col = (expr: string) => ({ name: "result", column_type: "expression", expr }) as never;
+  const names = new Set(["value", "string", "number"]);
+  assert.deepEqual(columnReferences(col("{{ value is string }}"), names), ["value"]);
+  assert.deepEqual(columnReferences(col("{{ value is not number }}"), names), ["value"]);
+});

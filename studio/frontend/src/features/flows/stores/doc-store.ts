@@ -4,6 +4,7 @@
 import { create } from "zustand";
 import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
 import { foldedGroups, readSuperCards } from "../editor/super-card-records";
+import { referenceEdges } from "../recipe/recipe-columns";
 import {
   FLOW_FORMAT,
   FLOW_FORMAT_VERSION,
@@ -900,6 +901,24 @@ export const useDocStore = create<DocState>((set, get) => {
             continue;
           edges[edge.id] = edge;
           edgeOrder.push(edge.id);
+        }
+        // A pasted column reading one that was not copied with it reads the recipe's own: it gets
+        // that wire too, so deleting the column it reads reaches it.
+        const pasted = new Set(added.filter((id) => nodes[id].type === RECIPE_COLUMN));
+        const wired = new Set(
+          edgeOrder.map((id) => `${edges[id].source}>${edges[id].target}`),
+        );
+        for (const group of new Set([...pasted].map((id) => nodes[id].group))) {
+          if (!group) continue;
+          const columns = nodeOrder
+            .map((id) => nodes[id])
+            .filter((n) => n.type === RECIPE_COLUMN && n.group === group);
+          for (const edge of referenceEdges(columns)) {
+            if (!pasted.has(edge.target) || wired.has(`${edge.source}>${edge.target}`)) continue;
+            const id = newId("e");
+            edges[id] = { ...edge, id };
+            edgeOrder.push(id);
+          }
         }
         return withGraph(s, { nodes, nodeOrder, edges, edgeOrder });
       }),

@@ -62,7 +62,20 @@ def _local_url(url: Any) -> bool:
 _NAMES = ("properties", "patternProperties", "$defs", "definitions")
 
 
-_SUBSCHEMAS = ("items", "additionalProperties", "anyOf", "oneOf", "allOf", "not", "prefixItems")
+_SUBSCHEMAS = (
+    "items",
+    "additionalProperties",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "not",
+    "prefixItems",
+    "if",
+    "then",
+    "else",
+    "contains",
+    "propertyNames",
+)
 
 
 def _object_schema(value: dict) -> bool:
@@ -75,7 +88,8 @@ def _names_below(parent: dict, key: Any, names: str) -> str:
     names), "schema" (a schema, whose keys are keywords) or "" (settings)."""
     if names == "all" or (key == "template" and parent.get("processor_type") == "schema_transform"):
         return "all"
-    if names == "one":
+    if names == "one" or key == "output_format":
+        # A property's schema, or a structured-output column's whole schema.
         return "schema"
     if key in _NAMES and (names == "schema" or _object_schema(parent)):
         return "one"
