@@ -1666,6 +1666,9 @@ def test_decider_is_served_only_by_the_mlx_engine(home, client, engine):
     )
     with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
         laya_runtime.select(entry, preference = "llama.cpp")
+    # Flagged so the Runtime row shows: a runtime pinned to llama.cpp or PyTorch can be switched back.
+    listed = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    assert listed["decider-2b"]["llama_cpp_only"] and not listed["clef-omni"]["llama_cpp_only"]
 
 
 def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, engine):
