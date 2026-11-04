@@ -1683,6 +1683,9 @@ class FlowEngine:
         spec = plan.specs[nid]
         overrides = rs.input_overrides.get(nid, {})
         inputs: dict[str, Any] = {}
+        if loop_rounds.EXCLUDE_INPUT in overrides:
+            # Not a port: a Loop's frozen test questions, which its Fine-tune keeps out of training.
+            inputs[loop_rounds.EXCLUDE_INPUT] = overrides[loop_rounds.EXCLUDE_INPUT]
         for port in spec["inputs"]:
             pid = port["id"]
             if pid in overrides:
@@ -2235,10 +2238,12 @@ class FlowEngine:
                 )
             carry = [b for b in carry if b not in lora]
         last: dict[str, dict] = {}
-        saved = {k: dict(rs.input_overrides.get(k, {})) for k in (seed_node, scorer, *carry)}
+        saved = {
+            k: dict(rs.input_overrides.get(k, {})) for k in (seed_node, scorer, held_src[0], *carry)
+        }
 
         def override(node: str, port: str, value: Any) -> None:
-            rs.input_overrides[node] = {**saved[node], port: value}
+            rs.input_overrides[node] = {**rs.input_overrides.get(node, saved[node]), port: value}
 
         async def score(split: dict, layer: Env, key: tuple) -> dict:
             override(scorer, held_port, split)
@@ -2278,6 +2283,11 @@ class FlowEngine:
                 for b in carry:
                     if b in last:
                         override(b, "start", last[b])
+                if test_rows:
+                    # The frozen test questions never train a later round, wherever the recipe puts them.
+                    override(
+                        held_src[0], loop_rounds.EXCLUDE_INPUT, loop_rounds.questions(test_rows)
+                    )
                 # The scored Fine-tune's start, not whichever trainer comes first.
                 continued = (
                     last[held_src[0]].get("name")

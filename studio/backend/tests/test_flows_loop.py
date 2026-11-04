@@ -756,3 +756,22 @@ async def test_a_score_over_part_of_the_test_split_neither_wins_nor_meets_the_ta
     history = rs.nodes["loop"].outputs["history"]
     assert history["stopped"] != "target"
     assert all(r.get("test_errored") for r in history["rounds"])
+
+
+@run_async
+async def test_later_rounds_train_without_the_frozen_test_questions():
+    eng, _, scored = _engine()
+    real = eng.handlers["train.finetune"]
+    excluded = []
+
+    async def train(ctx):
+        excluded.append(ctx.inputs.get(loop_rounds.EXCLUDE_INPUT))
+        return await real(ctx)
+
+    eng.handlers["train.finetune"] = train
+    rs = await _run(eng, loop_doc(rounds = 3, target = 100))
+    assert rs.status == "completed", rs.error
+    test = sorted({p for split, rows in scored if split == "test" for p in rows})
+    # Round 1 makes the split; every later round is told its test questions.
+    assert excluded[0] is None
+    assert excluded[1:] and all(e == test for e in excluded[1:])

@@ -835,6 +835,10 @@ async def _off_thread(ctx: NodeContext, fn: Any, *args: Any) -> Any:
             ctx.check_cancelled()
 
 
+# core.flows.loop.EXCLUDE_INPUT, named here so this module imports nothing from the Loop.
+EXCLUDE_INPUT = "_loop_test_questions"
+
+
 async def holdout_split(
     ctx: NodeContext, dataset: dict, percent: int, seed: int
 ) -> tuple[dict, dict]:
@@ -870,7 +874,21 @@ async def holdout_split(
     held = set(held_ids)
     name = str(dataset.get("ref") or "dataset").replace("/", "-")
     tag = f"{name}-holdout{percent}-seed{seed}"
-    train = await upload_rows(ctx, [r for i, r in enumerate(rows) if i not in held], f"{tag}-train")
+    kept = [r for i, r in enumerate(rows) if i not in held]
+    exclude = ctx.inputs.get(EXCLUDE_INPUT)
+    if exclude:
+        # In a Loop's later rounds: a question frozen into its test split never trains, at any position.
+        from core.flows import loop as loop_rounds
+
+        before = len(kept)
+        kept = loop_rounds.without_questions(kept, exclude)
+        if before > len(kept):
+            ctx.log(
+                f"Left {before - len(kept)} test question(s) of the Loop out of training", "info"
+            )
+        if not kept:
+            raise FlowNodeError("Every training row asks one of the Loop's test questions")
+    train = await upload_rows(ctx, kept, f"{tag}-train")
     holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
     holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": len(rows)})
     return train, holdout

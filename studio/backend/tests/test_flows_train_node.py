@@ -1106,3 +1106,23 @@ def test_a_window_over_joined_splits_of_unknown_size_counts_the_rows_each_has(mo
     assert [r["q"] for r in rows] == [f"validation{i}" for i in range(50, 55)]
     rows = training._hub_rows({"ref": "a/b", "split": "train+validation"}, None, 98, 101)
     assert [r["q"] for r in rows] == ["train98", "train99", "validation0", "validation1"]
+
+
+def test_a_loops_frozen_test_questions_never_reach_a_later_rounds_training(monkeypatch):
+    from core.flows import loop as loop_rounds
+
+    rows = [{"prompt": f"question number {i}", "response": f"a{i}"} for i in range(10)]
+    monkeypatch.setattr(
+        training, "_load_rows", lambda dataset, token, end, start = 0: list(reversed(rows))
+    )
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    frozen = loop_rounds.questions(rows[:3])
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data"},
+        loop_rounds.EXCLUDE_INPUT: frozen,
+    }
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.jsonl"))
+    assert train and not {r["prompt"] for r in train} & set(frozen)

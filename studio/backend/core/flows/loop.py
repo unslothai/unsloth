@@ -127,6 +127,21 @@ def _identifying(row: Any, prompt_column: str = "") -> frozenset:
     return frozenset(s for s in strings if len(s) >= LEAK_MIN_CHARS)
 
 
+# A Fine-tune's input (not a port) a Loop fills with its frozen test questions from round 2 on.
+EXCLUDE_INPUT = "_loop_test_questions"
+
+
+def questions(rows: list[dict], prompt_column: str = "") -> list[str]:
+    """The questions rows ask, as Benchmark asks them (an Alpaca row's instruction plus input)."""
+    return sorted({q for q in (_asked(row, prompt_column) for row in rows) if q})
+
+
+def without_questions(rows: list[dict], asked: Any) -> list[dict]:
+    """``rows`` less those asking one of the ``asked`` questions."""
+    banned = {q for q in asked or [] if isinstance(q, str)}
+    return [r for r in rows if _asked(r) not in banned] if banned else list(rows)
+
+
 def drop_test_rows(
     failures: list[dict],
     test_rows: list[dict],
