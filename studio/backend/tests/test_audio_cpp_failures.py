@@ -149,31 +149,51 @@ def test_estimate_uses_the_measured_family_profile():
 YUE2_BYTES = (2933424181, 4531978293, 7529267253)
 
 
-@pytest.mark.parametrize(
-    "capability, expected",
-    [
-        ((8, 6), (7.83, 9.32, 12.11)),
-        ((8, 9), (7.83, 9.32, 12.11)),
-        ((12, 0), (7.83, 9.32, 12.11)),
-        # Below Ampere, or no NVIDIA card nvidia-smi can read: the generic formula.
-        ((7, 5), (8.33, 12.05, 19.03)),
-        (None, (8.33, 12.05, 19.03)),
-    ],
-)
-def test_yue2_uses_its_profile_only_on_ampere_or_newer(monkeypatch, capability, expected):
-    monkeypatch.setattr(af, "_lowest_cuda_capability", lambda: capability)
-    assert tuple(af.estimate_resident_gb(size, "yue2") for size in YUE2_BYTES) == expected
-    assert af.estimate_resident_gb(YUE2_BYTES[2], "yue2") > (11.2 if capability else 0)
+MEASURED = (7.83, 9.32, 12.11)
+GENERIC = (8.33, 12.05, 19.03)
 
 
-def test_the_least_capable_card_decides(monkeypatch):
+def _machine(monkeypatch, backend, capabilities):
+    from core.inference import audio_cpp_server
     from utils.hardware import nvidia
 
-    for found, lowest in (({0: (8, 9), 1: (7, 5)}, (7, 5)), ({0: (8, 6)}, (8, 6)), ({}, None)):
-        monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda found = found: found)
-        af._lowest_cuda_capability.cache_clear()
-        assert af._lowest_cuda_capability() == lowest
-    af._lowest_cuda_capability.cache_clear()
+    monkeypatch.setattr(audio_cpp_server, "runtime_backend", lambda: backend)
+    answers = capabilities if isinstance(capabilities, list) else [capabilities]
+    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(answers.pop(0)))
+
+
+def _yue2():
+    return tuple(af.estimate_resident_gb(size, "yue2") for size in YUE2_BYTES)
+
+
+@pytest.mark.parametrize(
+    "backend, capabilities, expected",
+    [
+        ("cuda", {0: (8, 6)}, MEASURED),
+        ("cuda", {0: (8, 9)}, MEASURED),
+        ("cuda", {0: (12, 0)}, MEASURED),
+        # Below Ampere, unreadable cards, or any older card beside a new one: the generic formula.
+        ("cuda", {0: (7, 5)}, GENERIC),
+        ("cuda", {}, GENERIC),
+        ("cuda", {0: (8, 9), 1: (7, 5)}, GENERIC),
+        # Only the CUDA backend was measured: Vulkan on the same Ampere card is not.
+        ("vulkan", {0: (8, 6)}, GENERIC),
+        ("cpu", {0: (8, 6)}, GENERIC),
+        (None, {0: (8, 6)}, GENERIC),
+    ],
+)
+def test_yue2_uses_its_profile_only_on_cuda_with_ampere_or_newer(
+    monkeypatch, backend, capabilities, expected
+):
+    _machine(monkeypatch, backend, [capabilities] * len(YUE2_BYTES))
+    assert _yue2() == expected
+
+
+def test_the_yue2_estimate_follows_the_current_inventory(monkeypatch):
+    # A failed probe, then the card is read, then an older card is added: each read is honored.
+    answers = [{}] * 3 + [{0: (8, 6)}] * 3 + [{0: (8, 6), 1: (7, 5)}] * 3
+    _machine(monkeypatch, "cuda", answers)
+    assert (_yue2(), _yue2(), _yue2()) == (GENERIC, MEASURED, GENERIC)
 
 
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():

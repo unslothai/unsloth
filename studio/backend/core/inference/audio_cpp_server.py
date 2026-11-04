@@ -355,10 +355,15 @@ def compiled_backends(binary: str) -> Optional[frozenset[str]]:
     return found
 
 
+def runtime_backend() -> Optional[str]:
+    """The ``--backend`` an Auto-placed audio.cpp model launches with; None without a runtime."""
+    binary = find_audio_cpp_server_binary()
+    return select_backend(binary, False) if binary else None
+
+
 def runtime_runs_on_cpu() -> bool:
     """Whether an Auto-placed audio.cpp model launches on the CPU anyway (a CPU-only bundle or override)."""
-    binary = find_audio_cpp_server_binary()
-    return bool(binary) and select_backend(binary, False) == "cpu"
+    return runtime_backend() == "cpu"
 
 
 def child_env(binary: str) -> dict[str, str]:

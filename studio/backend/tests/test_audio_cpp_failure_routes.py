@@ -183,11 +183,22 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
     assert placement.native_required_gb == af.estimate_resident_gb(size, family) < free_gb
 
 
-@pytest.mark.parametrize("capability, fits", [((8, 6), True), ((7, 5), False), (None, False)])
-def test_yue2_q8_on_a_10gb_ampere_card(monkeypatch, capability, fits):
-    # #16627: an RTX 3080 10 GB has about 9.5 GiB free. YuE2 Q8_0 peaks at 8.3 GiB at worst.
+@pytest.mark.parametrize(
+    "backend, capabilities, fits",
+    [
+        ("cuda", {0: (8, 6)}, True),
+        ("cuda", {0: (7, 5)}, False),
+        ("cuda", {}, False),
+        ("vulkan", {0: (8, 6)}, False),
+    ],
+)
+def test_yue2_q8_on_a_10gb_ampere_card(monkeypatch, backend, capabilities, fits):
+    # #16627: an RTX 3080 10 GB has about 9.5 GiB free. YuE2 Q8_0 peaks at 8.3 GiB at worst on CUDA.
+    from utils.hardware import nvidia
+
     monkeypatch.setattr(af, "offload_options", lambda model: [])
-    monkeypatch.setattr(af, "_lowest_cuda_capability", lambda: capability)
+    monkeypatch.setattr(srv, "runtime_backend", lambda: backend)
+    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(capabilities))
     base = _model(sizes = (3,))
     variant = dataclasses.replace(
         base.variant, files = (dataclasses.replace(base.variant.files[0], size = 4531978293),)
