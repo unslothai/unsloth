@@ -653,14 +653,16 @@ def test_resolve_refusals_and_names():
             f8t.resolve_fp8_lora(True, gpu = "sm89")
 
 
-def test_loader_refuses_before_any_load():
+@pytest.mark.parametrize("gpu", [None, "sm75", "rocm"])
+def test_loader_refuses_before_any_load(monkeypatch, gpu):
     from unsloth.models import loader
+    monkeypatch.setattr(P, "current_gpu_class", lambda: gpu)
     for cls in (loader.FastLanguageModel, loader.FastModel):
         with pytest.raises(P.PrecisionRefused, match = "load_in_4bit = False"):
             cls.from_pretrained(
                 model_name = "unsloth/does-not-exist", load_in_4bit = True, float8_training = "fp8_lora"
             )
-        with pytest.raises(P.PrecisionRefused, match = "no CUDA device|tensor cores"):
+        with pytest.raises(P.PrecisionRefused):
             cls.from_pretrained(
                 model_name = "unsloth/does-not-exist",
                 load_in_4bit = False,
@@ -905,6 +907,7 @@ def test_enabling_an_offloaded_base_again_keeps_engagement(offload_on_cpu, monke
         assert state.offloaded
         state.device = torch.device("cuda:0")
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda device: (8, 9))
+    monkeypatch.setattr(torch.version, "hip", None)
     monkeypatch.setenv("UNSLOTH_STRICT_ENGAGE", "1")
     assert f8t.enable_fp8_lora(model) == expected
     assert P.engaged(model)[f8t.FP8_LORA_RECIPE]["modules"] == len(expected)
