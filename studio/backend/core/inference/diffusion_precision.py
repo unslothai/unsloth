@@ -102,17 +102,21 @@ def resolve_te_quant_request(
 # encoder 0.087 mean, bf16 encoder 0.059 at the same s/img, +6.1 GiB resident.
 TE_BF16_AUTO_FAMILIES = frozenset({"qwen-image"})
 TE_BF16_AUTO_ENV = "UNSLOTH_DIFFUSION_TE_BF16_AUTO"
-TE_BF16_AUTO_REASON = "bf16 text encoder kept automatically: the denoiser stays resident with room for it"
+TE_BF16_AUTO_REASON = (
+    "bf16 text encoder kept automatically: the denoiser stays resident with room for it"
+)
 
 
 def te_bf16_auto_enabled() -> bool:
     import os
-
     return os.environ.get(TE_BF16_AUTO_ENV, "1").strip().lower() not in ("0", "false", "off", "no")
 
 
 def te_bf16_auto_wanted(
-    raw_request: Optional[str], family: Optional[str], auto_scheme: Optional[str], kind: Optional[str]
+    raw_request: Optional[str],
+    family: Optional[str],
+    auto_scheme: Optional[str],
+    kind: Optional[str],
 ) -> bool:
     """Whether an unset / auto text-encoder request may be upgraded to the bf16 encoder (room still to be proven).
     An explicit pick (none, off, fp8, int8, ...) always wins, as does the kill switch."""
@@ -136,7 +140,10 @@ def te_bf16_auto_fits(plan: Any) -> tuple[bool, str]:
 
     if getattr(plan, "offload_policy", None) != OFFLOAD_NONE:
         return False, f"plan offloads ({getattr(plan, 'offload_policy', None)})"
-    if getattr(plan, "stream_text_encoders", False) or getattr(plan, "secondary_ordinal", None) is not None:
+    if (
+        getattr(plan, "stream_text_encoders", False)
+        or getattr(plan, "secondary_ordinal", None) is not None
+    ):
         return False, "plan streams or splits"
     memory = getattr(plan, "device_memory", None)
     if getattr(memory, "memory_kind", None) != "discrete_vram":

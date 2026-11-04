@@ -51,7 +51,15 @@ def test_kill_switch(monkeypatch, value):
     assert prec.te_bf16_auto_wanted(None, "qwen-image", "int8", "pipeline") is False
 
 
-def _plan(required, budget, *, policy = OFFLOAD_NONE, kind = "discrete_vram", stream = False, secondary = None):
+def _plan(
+    required,
+    budget,
+    *,
+    policy = OFFLOAD_NONE,
+    kind = "discrete_vram",
+    stream = False,
+    secondary = None,
+):
     return types.SimpleNamespace(
         offload_policy = policy,
         stream_text_encoders = stream,
@@ -101,12 +109,20 @@ def backend(monkeypatch):
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *_a, **_k: (12, 0))
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *_a, **_k: 0)
-    monkeypatch.setattr(tq, "_scheme_supported", lambda scheme, device = None, unproven_ok = False: scheme in ("int8", "fp8"))
+    monkeypatch.setattr(
+        tq,
+        "_scheme_supported",
+        lambda scheme, device = None, unproven_ok = False: scheme in ("int8", "fp8"),
+    )
     monkeypatch.setattr(tq, "_is_consumer_gpu", lambda *_a, **_k: True)
     monkeypatch.setattr(ap, "_hf_cache_free_mib", lambda: 10**7)
     card: dict = {}
     for module in (dmod, mem):
-        for fn in ("snapshot_device_memory", "settled_snapshot_device_memory", "reclaimable_snapshot_device_memory"):
+        for fn in (
+            "snapshot_device_memory",
+            "settled_snapshot_device_memory",
+            "reclaimable_snapshot_device_memory",
+        ):
             if hasattr(module, fn):
                 monkeypatch.setattr(module, fn, lambda *_a, **_k: card["memory"])
     target = types.SimpleNamespace(
@@ -145,7 +161,6 @@ def test_big_card_keeps_the_bf16_encoder_and_small_cards_do_not(backend):
     assert backend(80) is True
     assert backend(64) is False
     assert backend(24) is False
-
 
 
 def test_seeded_int8_denoiser_is_priced_on_its_artifact(backend):

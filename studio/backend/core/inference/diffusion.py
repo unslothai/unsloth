@@ -5497,7 +5497,9 @@ class DiffusionBackend:
             # for it with the denoiser resident; settled here, before the dense encoder shards would be skipped.
             te_bf16_auto = (
                 not local_files_only
-                and not (component_overrides is not None and component_overrides.text_encoder_components)
+                and not (
+                    component_overrides is not None and component_overrides.text_encoder_components
+                )
                 and te_bf16_auto_wanted(
                     kwargs.get("text_encoder_quant"),
                     getattr(fam, "name", None),
