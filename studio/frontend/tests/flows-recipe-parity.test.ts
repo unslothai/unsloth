@@ -267,3 +267,14 @@ test("a tool server whose endpoint is cleared to retype keeps the profile and it
   const reopened = studioView({ ...g, ...edit.group } as never, nodes);
   assert.ok(Object.values(reopened.configs).some((c) => c.kind === "tool_config" && c.name === "web"));
 });
+
+test("removing a tool profile's last server removes it from the recipe", () => {
+  const { group: g, nodes } = group(withTools());
+  const view = studioView(g, nodes);
+  const tool = Object.values(view.configs).find((c) => c.kind === "tool_config");
+  assert.ok(tool);
+  const edit = commitStudioEdit(g, nodes, view, applyConfigPatch(view.configs, tool.id, { mcp_providers: [] } as never));
+  const config = edit.group?.config as Record<string, unknown>;
+  assert.deepEqual(config.mcp_providers ?? [], []);
+  assert.ok(!((config.tool_configs ?? []) as { tool_alias: string }[]).some((t) => t.tool_alias === "web"));
+});

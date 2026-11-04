@@ -624,18 +624,28 @@ function keepIncompleteTools(
     (Array.isArray(value) ? value : []) as Record<string, unknown>[];
   for (const tool of Object.values(configs)) {
     if (tool.kind !== "tool_config") continue;
+    // A profile with no servers left had them removed on purpose: nothing of it is kept.
+    const present = new Set(tool.mcp_providers.map((p) => p.name.trim()));
+    if (!present.size) continue;
     const errors: string[] = [];
     buildToolProfilePayload(tool, errors);
     if (!errors.length) continue;
     const kept = list(saved.tool_configs).find((t) => t.tool_alias === tool.name);
     if (!kept) continue;
     const tools = list(config.tool_configs).filter((t) => t.tool_alias !== tool.name);
+    const providers = Array.isArray(kept.providers)
+      ? (kept.providers as unknown[]).filter((name) => present.has(String(name)))
+      : kept.providers;
     // biome-ignore lint/style/useNamingConvention: api schema
-    config.tool_configs = [...tools, kept];
+    config.tool_configs = [...tools, { ...kept, providers }];
     const names = list(config.mcp_providers).map((p) => p.name);
     const uses = Array.isArray(kept.providers) ? (kept.providers as unknown[]) : [];
+    // Only servers still on the profile come back; one removed from it stays removed.
     const servers = list(saved.mcp_providers).filter(
-      (p) => uses.includes(p.name) && !names.includes(p.name),
+      (p) =>
+        uses.includes(p.name) &&
+        present.has(String(p.name)) &&
+        !names.includes(p.name),
     );
     // biome-ignore lint/style/useNamingConvention: api schema
     if (servers.length) config.mcp_providers = [...list(config.mcp_providers), ...servers];
