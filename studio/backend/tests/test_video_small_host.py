@@ -327,3 +327,35 @@ def test_split_load_kwargs_cap_the_card():
     assert whole["device_map"] == {"": "cuda:0"} and "max_memory" not in whole
     assert split["device_map"] == "auto" and split["max_memory"][0] == "13832MiB"
     assert "output_loading_info" not in split
+
+
+def test_a_dit_neither_the_card_nor_a_split_takes_is_cast_from_its_shards(pipe_dir, monkeypatch):
+    """The HunyuanVideo-1.5 T4 case: the fp16 DiT is bigger than the card and its host share does not fit, so its cast
+    is written from the source shards one tensor at a time and the load maps it (no dense conversion in host RAM)."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 20000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    calls = _wire(monkeypatch, available = 3000, total = 13000)
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    written = []
+    real = CC.save_from_source
+    monkeypatch.setattr(CC, "save_from_source", lambda cand, **kw: written.append(cand.component) or real(cand, **kw))
+    missed = V._read_cast_cache(
+        pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda"
+    )
+    assert written == ["transformer"] and ("transformer", "cuda") not in calls
+    assert "transformer" in pipe_kwargs and "transformer" not in [c.component for c in missed]
+    _identical(pipe_kwargs["transformer"], _dense(_cands(pipe_dir)["transformer"]))
+
+
+def test_source_cast_respects_the_kill_switch(pipe_dir, monkeypatch):
+    from core.inference import video as V
+
+    monkeypatch.setenv(VS.SMALL_HOST_ENV, "0")
+    sizes = {"text_encoder": 100, "transformer": 20000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    _wire(monkeypatch, available = 3000, total = 13000)
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert "transformer" not in pipe_kwargs
