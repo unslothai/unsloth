@@ -399,6 +399,17 @@ _FRAME_HTML = r"""<!doctype html>
   <body>
     <script>
       const boot = (cfg) => {
+        let interactive = cfg.interactive === true;
+        for (const proto of [HTMLElement.prototype, SVGElement.prototype, Window.prototype]) {
+          const focus = proto.focus;
+          if (typeof focus !== "function") continue;
+          try {
+            Object.defineProperty(proto, "focus", {
+              configurable: true, writable: true,
+              value: function (...args) { if (interactive) return Reflect.apply(focus, this, args); },
+            });
+          } catch {}
+        }
         const inputChannel = new MessageChannel();
         const edited = inputChannel.port1.postMessage.bind(inputChannel.port1);
         parent.postMessage({ source: "unsloth-browser-input" }, "*", [inputChannel.port2]);
@@ -936,7 +947,7 @@ _FRAME_HTML = r"""<!doctype html>
         };
         // The page as it is now, for printing: scripts' DOM, typed values and canvases included.
         // Printed from a copy in a separate frame, as this sandbox can't open the print dialog.
-        const snapshot = () => {
+        const snapshot = (view = false) => {
           try {
             const source = document.documentElement;
             const copy = source.cloneNode(true);
@@ -978,6 +989,11 @@ _FRAME_HTML = r"""<!doctype html>
               }
             } catch {}
             for (const node of copy.querySelectorAll("script, [data-unsloth-annotate]")) node.remove();
+            if (view) {
+              for (const node of copy.querySelectorAll("iframe, frame, object, embed, meta[http-equiv]")) {
+                if (node.tagName !== "META" || node.getAttribute("http-equiv")?.toLowerCase() === "refresh") node.remove();
+              }
+            }
             const html = "<!doctype html>" + copy.outerHTML;
             return html.length <= 8 * 1024 * 1024 ? html : null;
           } catch {
@@ -1082,7 +1098,8 @@ _FRAME_HTML = r"""<!doctype html>
           if (event.source !== parent) return;
           const data = event.data;
           if (!data || data.type !== "unsloth:browser-command") return;
-          if (data.command === "annotateInstall") install(data.code);
+          if (data.command === "interactive") { if (event.isTrusted) interactive = data.on === true; }
+          else if (data.command === "annotateInstall") install(data.code);
           else if (data.command === "annotate") {
             if (!annotation) wanted = { on: data.on === true, color: data.color };
             else if (data.on === true) annotation.start(data.color);
@@ -1099,6 +1116,7 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
+          else if (data.command === "snapshotView") post({ type: "snapshotView", html: snapshot(true), scrollX, scrollY, viewportWidth: innerWidth, viewportHeight: innerHeight });
           else if (data.command === "go") {
             const to = stepFrom(data.delta === -1 ? -1 : 1);
             if (routes[to]) moveRoute(to);
@@ -1125,6 +1143,7 @@ _FRAME_HTML = r"""<!doctype html>
       const FOLLOW_CLICK_MS = 3000;
       const sameOrigin = (a, b) => { try { return new URL(a).origin === new URL(b).origin; } catch { return false; } };
       let page = null;
+      let interactive = null;
       let inputPort = null;
       let lastInput = -Infinity;
       let clicked = null;
@@ -1148,19 +1167,23 @@ _FRAME_HTML = r"""<!doctype html>
         }
         if (event.source !== parent) return;
         const data = event.data;
+        if (data?.type === "unsloth:browser-command" && data.command === "interactive" && event.isTrusted) interactive = data.on === true;
         if (page) {
           if (data && data.type === "unsloth:browser-command") page.contentWindow.postMessage(data, "*");
           return;
         }
         // Only the parent may drive the shell, once.
         if (!data || data.type !== "unsloth:browser-html" || typeof data.html !== "string") return;
-        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, storage: data.storage || null, scroll: data.scroll || null };
+        const cfg = { url: data.url || null, ownBase: data.ownBase === true, anyOrigin: data.anyOrigin === true, refresh: data.refresh || null, zoom: Number(data.zoom) || 1, muted: data.muted === true, interactive: interactive ?? data.interactive === true, storage: data.storage || null, scroll: data.scroll || null };
         const base = data.base ? `<base href="${escapeAttr(data.base)}">` : "";
         const script = `<script>(${boot.toString()})(${JSON.stringify(cfg).replace(/</g, "\\u003c")});<\/script>`;
         page = document.createElement("iframe");
         page.setAttribute("sandbox", "allow-scripts allow-forms");
         page.setAttribute("allow", "clipboard-write");
         page.setAttribute("allowfullscreen", "");
+        page.addEventListener("load", () => {
+          if (interactive !== null) page.contentWindow.postMessage({ type: "unsloth:browser-command", command: "interactive", on: interactive }, "*");
+        });
         page.srcdoc = inject(data.html, base + script);
         document.body.appendChild(page);
         // A script navigation the page's hooks missed (no Navigation API) hits the lock below; the

@@ -124,6 +124,14 @@ export const zhCN = {
     removeFromMessage: "从消息中移除",
   },
   browser: {
+    observer: {
+      menu: "其他聊天",
+      otherChat: "其他聊天",
+      label: "{owner}的浏览器只读快照",
+      back: "返回你的浏览器",
+      preview: "只读浏览器预览",
+      unavailable: "目前无法预览此页面。",
+    },
     drafts: {
       title: "卸载含有已输入文本的页面？",
       description: "为保持聊天响应流畅，最多仅保留三个含有已输入文本的隐藏页面继续运行。继续将卸载 {pages}，其中未保存的文本可能丢失。取消将返回上一个标签页。",

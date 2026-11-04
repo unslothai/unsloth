@@ -43,7 +43,7 @@ test("lightboxes, the browser panel and the titlebar backdrop do not blur", () =
   );
   assert.match(
     read("features/chat/chat-page.tsx"),
-    /className="fixed inset-0 z-50 flex items-center justify-center bg-background\/80 sm:p-4"/,
+    /className="fixed inset-0 z-\d+ flex items-center justify-center bg-background\/80 sm:p-4"/,
   );
   const css = read("index.css");
   const titlebar = css.slice(css.indexOf('[data-slot="window-titlebar"]::after {'));

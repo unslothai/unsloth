@@ -740,7 +740,7 @@ function pruneViews(shown: string | null): void {
       resume.delete(tabId);
     }
   }
-  while (views.size - background.length > MAX_VIEWS) {
+  while ([...views.keys()].filter((id) => !background.includes(id)).length > MAX_VIEWS) {
     const oldest = recency.find((id) => id !== shown && views.has(id) && !background.includes(id));
     if (!oldest) break;
     closeView(oldest);
@@ -777,9 +777,7 @@ let snapshot: { tabId: string; element: HTMLElement; url: string } | null = null
 let shownBounds: Bounds | null = null;
 const viewBounds = new Map<string, Bounds>();
 
-// Pages kept open while their chat is off screen: the agent at work in another chat. Newest last;
-// past the cap the oldest closes (and reopens where it got to, like any pruned view).
-const MAX_BACKGROUND = 3;
+// Pages kept open while their chat is off screen, excluded from the idle-view cap.
 let background: string[] = [];
 const openingInBackground = new Set<string>();
 let watchingBackground = false;
@@ -789,10 +787,6 @@ let panelUp = false;
 /** Keeps `tabId`'s page open, and following its tab, while the panel shows another chat or none. */
 export function keepInBackground(tabId: string): void {
   background = [...background.filter((id) => id !== tabId), tabId];
-  while (background.length > MAX_BACKGROUND) {
-    const oldest = background.shift();
-    if (oldest && oldest !== shownView && oldest !== parkedView && views.has(oldest)) closeView(oldest);
-  }
   listenOnce();
   if (!watchingBackground) {
     watchingBackground = true;
@@ -856,7 +850,7 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   syncBackground();
 }
 
-/** True once `tabId`'s page is open (a kept page reopening after the cap closed it), false after `timeoutMs`. */
+/** True once `tabId`'s page is open, false after `timeoutMs`. */
 export async function whenViewOpen(tabId: string, timeoutMs = 5000): Promise<boolean> {
   const until = Date.now() + timeoutMs;
   while (!views.has(tabId) || openingInBackground.has(tabId)) {

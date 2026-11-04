@@ -21,6 +21,9 @@ function setup(
     | null = "https://platform.claude.com/docs/en/api/messages/create",
 ) {
   const window = { URL, location: { origin: "null", href: "about:srcdoc" } };
+  class HTMLElement { focus() {} }
+  class SVGElement { focus() {} }
+  class Window { focus() {} }
   runInNewContext(source, {
     window,
     URL,
@@ -29,6 +32,9 @@ function setup(
     document: { querySelector: () => null },
     MessageChannel,
     parent: { postMessage() {} },
+    HTMLElement,
+    SVGElement,
+    Window,
   });
   return window;
 }

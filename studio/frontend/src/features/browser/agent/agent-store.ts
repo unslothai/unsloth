@@ -46,6 +46,7 @@ export type AgentStep = {
 
 /** One chat's use of the browser tools; chats run theirs side by side, each in its own tab. */
 export type AgentChat = {
+  enabled?: boolean;
   /** The tab the agent drives in this chat; the model can't reach any other. */
   tabId: string | null;
   shared: boolean;
@@ -145,6 +146,18 @@ export function liveChat(chat: string): string {
 
 export function agentChat(chat: string): AgentChat {
   return useBrowserAgentStore.getState().chats[liveChat(chat)] ?? IDLE_AGENT;
+}
+
+export function browserAgentEnabled(chat: string): boolean {
+  const state = useBrowserAgentStore.getState();
+  return state.chats[liveChat(chat)]?.enabled ?? state.enabled;
+}
+
+export function setBrowserAgentEnabled(chat: string, enabled: boolean): void {
+  if (!enabled && browserAgentEnabled(chat)) {
+    stopBrowserAgent(chat);
+    patchAgentChat(chat, { enabled, targetVersion: agentChat(chat).targetVersion + 1 });
+  } else patchAgentChat(chat, { enabled });
 }
 
 export function patchAgentChat(chat: string, patch: Partial<AgentChat>): void {

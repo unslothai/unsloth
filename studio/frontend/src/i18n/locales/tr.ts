@@ -124,6 +124,14 @@ export const tr = {
     removeFromMessage: "Mesajdan kaldır",
   },
   browser: {
+    observer: {
+      menu: "Diğer sohbetler",
+      otherChat: "Başka bir sohbet",
+      label: "{owner} tarayıcısının salt okunur anlık görüntüleri",
+      back: "Tarayıcınıza dönün",
+      preview: "Salt okunur tarayıcı önizlemesi",
+      unavailable: "Bu sayfanın önizlemesi şu anda gösterilemiyor.",
+    },
     drafts: {
       title: "Metin girilmiş bir sayfa bellekten kaldırılsın mı?",
       description:

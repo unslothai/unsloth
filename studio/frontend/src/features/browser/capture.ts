@@ -81,18 +81,30 @@ export async function screenshotPage(tab: BrowserTab, element: HTMLElement): Pro
 }
 
 const png = (bytes: ArrayBuffer) => (bytes.byteLength > 0 ? new Blob([bytes], { type: "image/png" }) : null);
+// Native show_for_capture owns a temporary placement; overlapping shots must not hide it mid-capture.
+const nativeCaptures = new Map<string, Promise<void>>();
+
+function captureNativePage(tabId: string): Promise<Blob | null> {
+  const next = (nativeCaptures.get(tabId) ?? Promise.resolve()).then(() => callNative<ArrayBuffer>("browser_capture", { tabId }));
+  const settled = next.then(() => undefined, () => undefined);
+  nativeCaptures.set(tabId, settled);
+  void settled.then(() => {
+    if (nativeCaptures.get(tabId) === settled) nativeCaptures.delete(tabId);
+  });
+  return next.then(png);
+}
 
 /** A PNG of a native page that isn't on screen (its chat isn't shown); the app shows it off the window for the shot. */
 export async function captureHiddenPage(tab: BrowserTab): Promise<Blob | null> {
   if (!nativePageOf(tab)) return null;
-  return png(await callNative<ArrayBuffer>("browser_capture", { tabId: tab.id }));
+  return captureNativePage(tab.id);
 }
 
 async function nativeScreenshot(tab: BrowserTab, element: HTMLElement): Promise<Blob | null> {
   if (nativePageOf(tab)) {
     // A native view sits over the DOM and hides under the menu: capture it once it's back.
     if (!(await whenNativeViewShown(tab.id))) return null;
-    return png(await callNative<ArrayBuffer>("browser_capture", { tabId: tab.id }));
+    return captureNativePage(tab.id);
   }
   await clearOfOverlays(element);
   return withChromeHidden(async () => {

@@ -124,6 +124,14 @@ export const nl = {
     removeFromMessage: "Verwijderen uit bericht",
   },
   browser: {
+    observer: {
+      menu: "Andere chats",
+      otherChat: "Andere chat",
+      label: "Alleen-lezen momentopnamen van de browser van {owner}",
+      back: "Terug naar je browser",
+      preview: "Alleen-lezen browservoorbeeld",
+      unavailable: "Deze pagina kan nu niet worden weergegeven.",
+    },
     drafts: {
       title: "Pagina met ingevoerde tekst ontladen?",
       description:

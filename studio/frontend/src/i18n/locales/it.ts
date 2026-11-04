@@ -121,6 +121,14 @@ export const it = {
     removeFromMessage: "Rimuovi dal messaggio",
   },
   browser: {
+    observer: {
+      menu: "Altre chat",
+      otherChat: "Un’altra chat",
+      label: "Istantanee di sola lettura del browser di {owner}",
+      back: "Torna al tuo browser",
+      preview: "Anteprima del browser in sola lettura",
+      unavailable: "Impossibile visualizzare l’anteprima di questa pagina ora.",
+    },
     drafts: {
       title: "Scaricare una pagina con testo inserito?",
       description: "Per mantenere la chat reattiva, solo tre pagine nascoste con testo inserito restano in esecuzione. Continuando verrà scaricata {pages} e il testo non salvato potrebbe andare perso. Annulla torna alla scheda precedente.",

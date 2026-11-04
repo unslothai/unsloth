@@ -92,12 +92,14 @@ function useFrameMessages(tabId: string, origin: string | null, entry: BrowserEn
         case "navigate": {
           const from = pageAddress(store.tabs.find((candidate) => candidate.id === tabId));
           if (message.newTab) {
-            store.openUrl(message.url, {
-              newTab: true,
+            const owner = store.tabs.find((candidate) => candidate.id === tabId);
+            if (!owner) break;
+            store.openTabIn(owner.chat, message.url, {
               background: message.background && !useBrowserPrefsStore.getState().switchToNewTabs,
               method: message.method,
               body: message.body,
               from,
+              temporary: loadTemporary(tabId, entry),
             });
           } else {
             store.navigate(tabId, { url: message.url, method: message.method, body: message.body, from }, { replace: message.replace });
@@ -295,7 +297,7 @@ function PageError({
   );
 }
 
-function WebPage({
+export function WebPage({
   tab,
   entry,
 }: {
@@ -435,6 +437,7 @@ function WebPage({
       refresh={page.refresh}
       title={tab.title || hostOf(page.url)}
       tabId={tab.id}
+      runtimeKey={`${entryKey(entry)}:${tab.reloadKey}`}
       zoom={tab.zoom}
       muted={tab.muted}
       scroll={savedScroll(entry, page.url)}
@@ -492,7 +495,7 @@ export const TabView = memo(function TabView({ tab, active }: { tab: BrowserTab;
         native ? (
           <NativePage tab={tab} entry={entry} />
         ) : (
-          <WebPage key={`${entryKey(entry)}:${tab.reloadKey}`} tab={tab} entry={entry} />
+          <div data-web-page={tab.id} className="size-full" />
         )
       ) : entry.kind === "internal" ? (
         <InternalPageView page={entry.page} tabId={tab.id} />

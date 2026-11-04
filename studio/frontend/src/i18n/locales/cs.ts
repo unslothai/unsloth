@@ -124,6 +124,14 @@ export const cs = {
     removeFromMessage: "Odebrat ze zprávy",
   },
   browser: {
+    observer: {
+      menu: "Ostatní konverzace",
+      otherChat: "Jiná konverzace",
+      label: "Snímky prohlížeče {owner} pouze pro čtení",
+      back: "Zpět do prohlížeče",
+      preview: "Náhled prohlížeče pouze pro čtení",
+      unavailable: "Tuto stránku nyní nelze zobrazit.",
+    },
     drafts: {
       title: "Uvolnit stránku se zadaným textem?",
       description:

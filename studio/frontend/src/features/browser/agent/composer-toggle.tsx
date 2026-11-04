@@ -8,7 +8,14 @@ import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { useBrowserPanelAvailable } from "../panel-availability";
-import { useBrowserAgentStore } from "./agent-store";
+import { useBrowserStore } from "../store";
+import { setBrowserAgentEnabled, useBrowserAgentStore } from "./agent-store";
+
+export function useCurrentBrowserAgentEnabled(): [string, boolean] {
+  const chat = useBrowserStore((state) => state.chat);
+  const enabled = useBrowserAgentStore((state) => state.chats[chat]?.enabled ?? state.enabled);
+  return [chat, enabled];
+}
 
 /** Like MCP: the model needs Studio's tool loop, so a loaded model without tools rules it out; so
  *  does a chat with nowhere to show the panel (mobile, compare), where no browser tool is sent. */
@@ -22,13 +29,13 @@ export function useBrowserAgentDisabled(): boolean {
 
 export function BrowserAgentMenuItem() {
   const disabled = useBrowserAgentDisabled();
-  const enabled = useBrowserAgentStore((state) => state.enabled);
+  const [chat, enabled] = useCurrentBrowserAgentEnabled();
   const on = enabled && !disabled;
   return (
     <DropdownMenuItem
       disabled={disabled}
       className={on ? "text-primary font-medium" : undefined}
-      onSelect={() => useBrowserAgentStore.getState().setEnabled(!enabled)}
+      onSelect={() => setBrowserAgentEnabled(chat, !enabled)}
     >
       <HugeiconsIcon icon={CursorInWindowIcon} strokeWidth={2} />
       Browser use
@@ -40,13 +47,13 @@ export function BrowserAgentMenuItem() {
 /** Shown while browser use is on; a click turns it off. `glyph` wraps the icon like the other pills. */
 export function BrowserAgentPill({ glyph }: { glyph: (icon: ReactNode) => ReactNode }) {
   const disabled = useBrowserAgentDisabled();
-  const enabled = useBrowserAgentStore((state) => state.enabled);
+  const [chat, enabled] = useCurrentBrowserAgentEnabled();
   if (!enabled) return null;
   return (
     <button
       type="button"
       disabled={disabled}
-      onClick={() => useBrowserAgentStore.getState().setEnabled(false)}
+      onClick={() => setBrowserAgentEnabled(chat, false)}
       className="composer-pill-btn"
       data-pill-label="Browser"
       data-active={disabled ? "false" : "true"}

@@ -122,6 +122,14 @@ export const sv = {
     removeFromMessage: "Ta bort från meddelandet",
   },
   browser: {
+    observer: {
+      menu: "Andra chattar",
+      otherChat: "Annan chatt",
+      label: "Skrivskyddade ögonblicksbilder av webbläsaren för {owner}",
+      back: "Tillbaka till din webbläsare",
+      preview: "Skrivskyddad förhandsvisning av webbläsaren",
+      unavailable: "Sidan kan inte förhandsvisas just nu.",
+    },
     drafts: {
       title: "Ladda ur en sida med inmatad text?",
       description: "För att hålla chatten responsiv fortsätter bara tre dolda sidor med inmatad text att köras. Om du fortsätter laddas {pages} ur och osparad text kan gå förlorad. Avbryt återgår till föregående flik.",

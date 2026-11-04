@@ -124,6 +124,14 @@ export const ptBR = {
     removeFromMessage: "Remover da mensagem",
   },
   browser: {
+    observer: {
+      menu: "Outras conversas",
+      otherChat: "Outra conversa",
+      label: "Capturas somente leitura do navegador de {owner}",
+      back: "Voltar ao seu navegador",
+      preview: "Prévia do navegador somente leitura",
+      unavailable: "Não é possível visualizar esta página agora.",
+    },
     drafts: {
       title: "Descarregar uma página com texto inserido?",
       description: "Para manter o chat responsivo, apenas três páginas ocultas com texto inserido continuam em execução. Continuar descarregará {pages}, podendo perder texto não salvo. Cancelar volta à aba anterior.",

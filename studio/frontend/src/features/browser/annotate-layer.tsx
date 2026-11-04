@@ -1030,7 +1030,8 @@ export function WebAnnotateLayer({
   url,
   page,
   native = false,
-}: { tabId: string; title: string; url?: string; page: HTMLElement | null; native?: boolean }) {
+  suspended = false,
+}: { tabId: string; title: string; url?: string; page: HTMLElement | null; native?: boolean; suspended?: boolean }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -1111,6 +1112,7 @@ export function WebAnnotateLayer({
 
   // Read on each report, so one always sees this render's state.
   const handle = (event: AnnotateEvent) => {
+    if (suspended && event.kind !== "rects") return;
     switch (event.kind) {
       case "ready":
         // New document (a native view navigated in place): drop the old marks.
@@ -1202,6 +1204,7 @@ export function WebAnnotateLayer({
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (suspended) return;
       if (event.key !== "Escape") return;
       event.preventDefault();
       if (pending) discard();

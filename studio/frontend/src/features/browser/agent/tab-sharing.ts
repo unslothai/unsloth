@@ -4,7 +4,7 @@
 import { currentEntry, onChatAdopted, useBrowserStore } from "../store";
 import { useNativeBrowser } from "../native-support";
 import { keepInBackground, releaseBackground } from "../native-view";
-import { adoptAgentChat, agentChat, liveChat, notifyAgentTargetChange, patchAgentChat, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
+import { adoptAgentChat, agentChat, liveChat, notifyAgentTargetChange, patchAgentChat, setBrowserAgentEnabled, stopBrowserAgent, useBrowserAgentStore } from "./agent-store";
 
 onChatAdopted(adoptAgentChat);
 
@@ -16,14 +16,16 @@ export function shareAgentTab(chat: string, tabId: string | null): boolean {
     if (browser.activeTabId !== tabId) return false;
     const tab = browser.tabs.find((item) => item.id === tabId && item.chat === key);
     if (!tab || currentEntry(tab).kind !== "web") return false;
-    useBrowserAgentStore.getState().setEnabled(true);
+    if (Object.entries(useBrowserAgentStore.getState().chats).some(([owner, agent]) => liveChat(owner) !== key && agent.tabId === tabId)) return false;
+    setBrowserAgentEnabled(key, true);
   }
   const current = agentChat(key);
   if (current.tabId === tabId && current.shared === Boolean(tabId)) return true;
   stopBrowserAgent(key);
   patchAgentChat(key, { tabId, shared: Boolean(tabId), targetVersion: current.targetVersion + 1 });
   if (useNativeBrowser.getState().enabled) {
-    if (current.tabId && current.tabId !== tabId) releaseBackground(current.tabId);
+    const previous = browser.tabs.find((item) => item.id === current.tabId && liveChat(item.chat) === key);
+    if (previous && previous.id !== tabId) releaseBackground(previous.id);
     if (tabId) keepInBackground(tabId);
   }
   notifyAgentTargetChange(key, current.tabId);

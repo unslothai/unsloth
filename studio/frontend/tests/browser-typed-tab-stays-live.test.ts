@@ -209,7 +209,7 @@ test("only the first private input channel from this page can report edits", () 
   let now = 0;
   let violation: (event: { effectiveDirective: string; blockedURI: string }) => void;
   const document = {
-    createElement: () => ({ contentWindow: child, setAttribute() {} }),
+    createElement: () => ({ contentWindow: child, setAttribute() {}, addEventListener() {} }),
     body: { appendChild() {} }, head: { appendChild() {} },
     addEventListener: (_: string, callback: typeof violation) => { violation = callback; },
   };

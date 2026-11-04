@@ -123,6 +123,14 @@ export const zhTW = {
     removeFromMessage: "從訊息中移除",
   },
   browser: {
+    observer: {
+      menu: "其他聊天",
+      otherChat: "其他聊天",
+      label: "{owner} 的瀏覽器唯讀快照",
+      back: "返回你的瀏覽器",
+      preview: "唯讀瀏覽器預覽",
+      unavailable: "目前無法預覽此頁面。",
+    },
     drafts: {
       title: "要卸載含有已輸入文字的頁面嗎？",
       description:

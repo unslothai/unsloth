@@ -30,6 +30,7 @@ export type FrameMessage =
   | { type: "findResult"; count: number; active: number }
   /** The page's current markup, for printing; null when it couldn't be copied or was too large. */
   | { type: "snapshot"; html: string | null }
+  | { type: "snapshotView"; html: string; scrollX: number; scrollY: number; viewportWidth: number; viewportHeight: number }
   | { type: "shortcut"; key: string; shift: boolean }
   | { type: "zoom"; direction: 1 | -1 | 0; wheel: boolean }
   | { type: "annotate"; event: AnnotateEvent }
@@ -248,6 +249,13 @@ export function parseFrameMessage(data: unknown): FrameMessage | null {
     }
     case "snapshot":
       return { type: "snapshot", html: typeof message.html === "string" && message.html.length <= MAX_SNAPSHOT_CHARS ? message.html : null };
+    case "snapshotView": {
+      const { html, scrollX, scrollY, viewportWidth, viewportHeight } = message;
+      if (typeof html !== "string" || html.length > MAX_SNAPSHOT_CHARS) return null;
+      if (![scrollX, scrollY, viewportWidth, viewportHeight].every((value) => typeof value === "number" && Number.isFinite(value) && Math.abs(value) <= MAX_COORD)) return null;
+      if ((viewportWidth as number) <= 0 || (viewportHeight as number) <= 0) return null;
+      return { type: "snapshotView", html, scrollX: scrollX as number, scrollY: scrollY as number, viewportWidth: viewportWidth as number, viewportHeight: viewportHeight as number };
+    }
     case "shortcut":
       return typeof message.key === "string" && SHORTCUT_KEYS.has(message.key)
         ? { type: "shortcut", key: message.key, shift: message.shift === true }

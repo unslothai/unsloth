@@ -121,6 +121,14 @@ export const en = {
     removeFromMessage: "Remove from message",
   },
   browser: {
+    observer: {
+      menu: "Other chats",
+      otherChat: "Another chat",
+      label: "Read-only snapshots of {owner}'s browser",
+      back: "Back to your browser",
+      preview: "Read-only browser preview",
+      unavailable: "This page cannot be previewed right now.",
+    },
     drafts: {
       title: "Unload a page with entered text?",
       description: "To keep the chat responsive, only three hidden pages with entered text stay running. Continuing will unload {pages}, which may lose unsaved text. Cancel returns to the previous tab.",

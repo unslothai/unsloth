@@ -124,6 +124,14 @@ export const id = {
     removeFromMessage: "Hapus dari pesan",
   },
   browser: {
+    observer: {
+      menu: "Chat lain",
+      otherChat: "Chat lainnya",
+      label: "Cuplikan hanya baca dari browser {owner}",
+      back: "Kembali ke browser Anda",
+      preview: "Pratinjau browser hanya baca",
+      unavailable: "Halaman ini tidak dapat dipratinjau sekarang.",
+    },
     drafts: {
       title: "Lepas halaman yang berisi teks yang dimasukkan?",
       description:

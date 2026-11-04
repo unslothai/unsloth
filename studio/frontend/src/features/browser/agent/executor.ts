@@ -15,7 +15,7 @@ import { useBrowserHistoryStore } from "../history-store";
 import { hasNativeView, keepInBackground, nativeAction, releaseBackground, whenViewOpen } from "../native-view";
 import { isLoopbackUrl } from "../address";
 import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
-import { requestFrameAgent, sendFrameCommand } from "../page-frame";
+import { requestFrameAgent, sendFrameCommand, whenWebPageReady } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
 import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
 import {
@@ -26,7 +26,6 @@ import {
   askUser,
   liveChat,
   onAgentTargetChange,
-  onBrowserAgentRunEnd,
   patchAgentChat,
   setActiveAction,
   useBrowserAgentStore,
@@ -188,11 +187,6 @@ onChatAdopted((from, to) => {
   adoptAgentChat(from, to);
 });
 
-onBrowserAgentRunEnd((chat) => {
-  const { tabId, shared } = agentChat(chat);
-  if (tabId && !shared) releaseBackground(tabId);
-});
-
 onAgentTargetChange((chat) => {
   const session = sessions.get(chat);
   if (!session) return;
@@ -301,12 +295,16 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const findTab = (tabId: string) => useBrowserStore.getState().tabs.find((candidate) => candidate.id === tabId);
 
 function agentTab(context: Run): BrowserTab | null {
-  return findTab(agentChat(context.session.chat).tabId ?? "") ?? null;
+  const chat = liveChat(context.session.chat);
+  const tab = findTab(agentChat(chat).tabId ?? "");
+  if (!tab || liveChat(tab.chat) !== chat) return null;
+  if (Object.entries(useBrowserAgentStore.getState().chats).some(([owner, agent]) => liveChat(owner) !== chat && agent.tabId === tab.id)) return null;
+  return tab;
 }
 
 /** The run's chat is on screen with the panel beside it, so the user can watch and answer there. */
 function chatOnScreen(context: Run): boolean {
-  return context.session.chat === useBrowserStore.getState().chat && browserPanelAvailable();
+  return liveChat(context.session.chat) === useBrowserStore.getState().chat && browserPanelAvailable();
 }
 
 function tabUrl(tab: BrowserTab): string {
@@ -322,7 +320,7 @@ function showTab(tab: BrowserTab, context: Run): void {
   // Off screen it shows when the user goes back to that chat; their tabs here stay put. A chat on
   // screen without room for the panel isn't given one.
   const store = useBrowserStore.getState();
-  if (context.session.chat !== store.chat || browserPanelAvailable()) store.revealIn(context.session.chat, tab.id);
+  if (liveChat(context.session.chat) !== store.chat || browserPanelAvailable()) store.revealIn(liveChat(context.session.chat), tab.id);
 }
 
 async function waitForLoad(tabId: string, signal?: AbortSignal): Promise<BrowserTab | null> {
@@ -627,12 +625,14 @@ function onGrantedOrigin(tab: BrowserTab): boolean {
 }
 
 function grantedLocalTab(url: string, chat: string): BrowserTab | undefined {
-  return useBrowserStore.getState().tabs.find((tab) => tab.chat === chat && localOriginGranted(tab.id, url));
+  return useBrowserStore.getState().tabs.find((tab) => liveChat(tab.chat) === liveChat(chat) && localOriginGranted(tab.id, url) &&
+    !Object.entries(useBrowserAgentStore.getState().chats).some(([owner, agent]) => liveChat(owner) !== liveChat(chat) && agent.tabId === tab.id));
 }
 
 function moveRun(context: Run, tabId: string): void {
   const previous = agentChat(context.session.chat).tabId;
-  if (previous && previous !== tabId) releaseBackground(previous);
+  const previousTab = previous && findTab(previous);
+  if (previous && previous !== tabId && previousTab && liveChat(previousTab.chat) === liveChat(context.session.chat)) releaseBackground(previous);
   patchAgentChat(context.session.chat, { tabId, shared: previous === tabId && agentChat(context.session.chat).shared });
   context.session.trail = [];
   context.session.at = -1;
@@ -754,16 +754,6 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const { chat, reachedHosts } = session;
   if (agentChat(chat).stoppedRun === context.runKey || agentChat(chat).targetVersion !== context.targetVersion) return { ok: false, error: STOPPED };
   if (signal?.aborted) return { ok: false, error: "the action expired before it could run." };
-  // Off screen, only a native page can work on: a framed one runs in the panel.
-  if (!chatOnScreen(context) && !useNativeBrowser.getState().enabled) {
-    return {
-      ok: false,
-      error:
-        chat === useBrowserStore.getState().chat
-          ? "the browser panel can't be shown in this window; ask the user to widen it or open the chat."
-          : "this chat's browser only runs while the chat is open here; ask the user to switch back to it.",
-    };
-  }
   const owner = agentChat(chat).runKey;
   if (owner && owner !== context.runKey) {
     return { ok: false, error: "Another reply in this chat is using the browser right now. Wait for it to finish, or tell the user." };
@@ -804,8 +794,11 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (useNativeBrowser.getState().enabled && currentEntry(shown).kind === "web" && !hasNativeView(shown.id)) {
     await whenViewOpen(shown.id);
   }
+  if (!useNativeBrowser.getState().enabled && !(await whenWebPageReady(shown.id, signal))) {
+    return { ok: false, error: "the browser page is not ready." };
+  }
   if (signal?.aborted) return { ok: false, error: STOPPED };
-  const tab = findTab(shown.id);
+  const tab = agentTab(context);
   if (!tab) return { ok: false, error: "the browser tab closed." };
   const before = tabUrl(tab);
 

@@ -3,6 +3,7 @@
 
 import { lazy, Suspense, type ComponentProps } from "react";
 import type { BrowserAgentPill as Pill } from "./composer-toggle";
+import { useBrowserStore } from "../store";
 import { useBrowserAgentStore } from "./agent-store";
 
 // Off the startup bundle: the item loads with the + menu, the pill only once browser use is on.
@@ -22,7 +23,8 @@ export function BrowserAgentMenuItem() {
 }
 
 export function BrowserAgentPill(props: ComponentProps<typeof Pill>) {
-  const enabled = useBrowserAgentStore((state) => state.enabled);
+  const chat = useBrowserStore((state) => state.chat);
+  const enabled = useBrowserAgentStore((state) => state.chats[chat]?.enabled ?? state.enabled);
   if (!enabled) return null;
   return (
     <Suspense fallback={null}>

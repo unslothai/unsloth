@@ -177,6 +177,22 @@ test("Run scripts set to Never drops browser_evaluate from the turn", async () =
   setBrowserPanelAvailable(false);
 });
 
+test("a chat's tools remain available when another chat hides its panel", async () => {
+  registerBundlerResolver();
+  const { browserAgentToolsForTurn } = await import("../src/features/browser/agent/tools.ts");
+  const { setBrowserAgentEnabled, useBrowserAgentStore } = await import("../src/features/browser/agent/agent-store.ts");
+  const { setBrowserPanelAvailable, setShownBrowserChat } = await import("../src/features/browser/panel-availability.ts");
+  useBrowserAgentStore.setState({ enabled: false, historyAccess: "never", scriptAccess: "never" });
+  setBrowserAgentEnabled("single:tools-a", true);
+  setBrowserAgentEnabled("single:tools-b", false);
+  setShownBrowserChat("single:tools-b");
+  setBrowserPanelAvailable(false);
+  assert.ok(browserAgentToolsForTurn("single:tools-a").includes("browser_click"));
+  assert.deepEqual(browserAgentToolsForTurn("single:tools-b"), []);
+  assert.ok(!browserAgentToolsForTurn("single:tools-a").includes("browser_history"));
+  assert.ok(!browserAgentToolsForTurn("single:tools-a").includes("browser_evaluate"));
+});
+
 test("a form posting to a blocked site is refused", () => {
   const policy = { allowedDomains: [], blockedDomains: ["evil.example"] };
   const info = element({ submits: true, formAction: "https://evil.example/collect" });

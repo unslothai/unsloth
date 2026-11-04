@@ -124,6 +124,14 @@ export const fa = {
     removeFromMessage: "برداشتن از پیام",
   },
   browser: {
+    observer: {
+      menu: "گفتگوهای دیگر",
+      otherChat: "گفتگویی دیگر",
+      label: "تصویرهای فقط‌خواندنی مرورگر {owner}",
+      back: "بازگشت به مرورگر شما",
+      preview: "پیش‌نمایش فقط‌خواندنی مرورگر",
+      unavailable: "در حال حاضر پیش‌نمایش این صفحه ممکن نیست.",
+    },
     drafts: {
       title: "صفحه‌ای با متن واردشده تخلیه شود؟",
       description:

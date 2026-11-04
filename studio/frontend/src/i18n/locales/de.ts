@@ -124,6 +124,14 @@ export const de = {
     removeFromMessage: "Aus Nachricht entfernen",
   },
   browser: {
+    observer: {
+      menu: "Andere Chats",
+      otherChat: "Anderer Chat",
+      label: "Schreibgeschützte Momentaufnahmen des Browsers von {owner}",
+      back: "Zurück zu deinem Browser",
+      preview: "Schreibgeschützte Browservorschau",
+      unavailable: "Diese Seite kann derzeit nicht angezeigt werden.",
+    },
     drafts: {
       title: "Seite mit eingegebenem Text entladen?",
       description: "Damit der Chat reaktionsschnell bleibt, laufen nur drei ausgeblendete Seiten mit eingegebenem Text weiter. Beim Fortfahren wird {pages} entladen. Nicht gespeicherter Text kann verloren gehen. Abbrechen kehrt zum vorherigen Tab zurück.",

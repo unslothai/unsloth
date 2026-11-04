@@ -124,6 +124,14 @@ export const ko = {
     removeFromMessage: "메시지에서 제거",
   },
   browser: {
+    observer: {
+      menu: "다른 채팅",
+      otherChat: "다른 채팅",
+      label: "{owner} 브라우저의 읽기 전용 스냅샷",
+      back: "내 브라우저로 돌아가기",
+      preview: "읽기 전용 브라우저 미리보기",
+      unavailable: "지금은 이 페이지를 미리 볼 수 없습니다.",
+    },
     drafts: {
       title: "입력한 텍스트가 있는 페이지를 종료할까요?",
       description: "채팅의 응답성을 유지하기 위해 입력한 텍스트가 있는 숨겨진 페이지는 세 개까지만 계속 실행됩니다. 계속하면 {pages} 페이지가 종료되며 저장하지 않은 텍스트가 사라질 수 있습니다. 취소하면 이전 탭으로 돌아갑니다.",

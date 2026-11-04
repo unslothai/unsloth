@@ -124,6 +124,14 @@ export const vi = {
     removeFromMessage: "Xóa khỏi tin nhắn",
   },
   browser: {
+    observer: {
+      menu: "Các cuộc trò chuyện khác",
+      otherChat: "Cuộc trò chuyện khác",
+      label: "Ảnh chụp chỉ đọc của trình duyệt {owner}",
+      back: "Quay lại trình duyệt của bạn",
+      preview: "Bản xem trước trình duyệt chỉ đọc",
+      unavailable: "Không thể xem trước trang này lúc này.",
+    },
     drafts: {
       title: "Gỡ một trang có văn bản đã nhập?",
       description:

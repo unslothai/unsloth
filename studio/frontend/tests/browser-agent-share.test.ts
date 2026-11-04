@@ -33,7 +33,8 @@ test("sharing an existing tab keeps its page and isolates chats; revocation canc
     return { installed: true, result: { ok: true, text: "unsaved form state", links: [] } };
   };
   assert.equal(shareAgentTab(chat, tab), true);
-  assert.equal(agent.useBrowserAgentStore.getState().enabled, true);
+  assert.equal(agent.browserAgentEnabled(chat), true);
+  assert.equal(agent.browserAgentEnabled("other-chat"), false);
   assert.equal(shareAgentTab(chat, otherTab), false);
   assert.equal(shareAgentTab("other-chat", otherTab), false);
   assert.equal(shareAgentTab(chat, tab), true);

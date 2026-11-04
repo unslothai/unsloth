@@ -124,6 +124,14 @@ export const fr = {
     removeFromMessage: "Retirer du message",
   },
   browser: {
+    observer: {
+      menu: "Autres discussions",
+      otherChat: "Autre discussion",
+      label: "Instantanés en lecture seule du navigateur de {owner}",
+      back: "Revenir à votre navigateur",
+      preview: "Aperçu du navigateur en lecture seule",
+      unavailable: "Cette page ne peut pas être prévisualisée pour le moment.",
+    },
     drafts: {
       title: "Décharger une page contenant du texte saisi ?",
       description: "Pour préserver la réactivité du chat, seules trois pages masquées contenant du texte saisi restent actives. Continuer déchargera {pages} et risque de perdre le texte non enregistré. Annuler revient à l’onglet précédent.",

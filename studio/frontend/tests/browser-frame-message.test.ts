@@ -7,6 +7,14 @@ import { type FrameMessage, frameNotice, parseFrameMessage, userActionGate } fro
 
 const from = (message: Record<string, unknown>) => parseFrameMessage({ source: "unsloth-browser", ...message });
 
+test("observer snapshots carry bounded viewport and scroll geometry", () => {
+  const message = { type: "snapshotView", html: "<p>page</p>", scrollX: 0, scrollY: 400, viewportWidth: 800, viewportHeight: 600 };
+  assert.deepEqual(from(message), message);
+  assert.equal(from({ ...message, scrollY: Infinity }), null);
+  assert.equal(from({ ...message, viewportWidth: 0 }), null);
+  assert.equal(from({ ...message, html: "x".repeat(8 * 1024 * 1024 + 1) }), null);
+});
+
 test("malformed messages are dropped", () => {
   assert.equal(parseFrameMessage(null), null);
   assert.equal(parseFrameMessage("x"), null);

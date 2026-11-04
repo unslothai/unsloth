@@ -125,6 +125,14 @@ export const es419 = {
     removeFromMessage: "Quitar del mensaje",
   },
   browser: {
+    observer: {
+      menu: "Otros chats",
+      otherChat: "Otro chat",
+      label: "Capturas de solo lectura del navegador de {owner}",
+      back: "Volver a tu navegador",
+      preview: "Vista previa del navegador de solo lectura",
+      unavailable: "No se puede previsualizar esta página ahora.",
+    },
     drafts: {
       title: "¿Descartar una página con texto escrito?",
       description:
