@@ -127,6 +127,25 @@ def test_rewriting_a_reply_does_not_shrink_its_count(limiter_db):
     assert _pools()["combined"]["used"] == 500
 
 
+def test_settings_reads_stay_fresh_across_keeper_lifetimes(limiter_db):
+    import json
+
+    studio_db.upsert_app_settings({"token_limit": {"limit": 100}})
+    assert token_limit.load_settings()["limit"] == 100
+    assert studio_db.open_wal_keeper()
+    try:
+        assert token_limit.load_settings()["limit"] == 100
+        with sqlite3.connect(studio_db_path()) as writer:
+            writer.execute(
+                "UPDATE app_settings SET value_json = ? WHERE key = 'token_limit'",
+                (json.dumps({"limit": 200}),),
+            )
+        assert token_limit.load_settings()["limit"] == 200
+    finally:
+        studio_db.close_wal_keeper_for(studio_db_path())
+    assert token_limit.load_settings()["limit"] == 200
+
+
 @pytest.mark.parametrize("clock_offset", [-10, 1, 10])
 def test_a_fork_does_not_count_the_history_it_copies(limiter_db, clock_offset):
     now = _now_ms()

@@ -5487,7 +5487,23 @@ def list_chat_messages_for_threads(thread_ids: list[str]) -> list[dict]:
         conn.close()
 
 
-def get_app_setting(key: str, fallback = None):
+def get_app_setting(
+    key: str,
+    fallback = None,
+    *,
+    reuse_keeper: bool = False,
+):
+    if reuse_keeper:
+        path = studio_db_path()
+        with _wal_keeper_lock:
+            keeper = _wal_keepers.get(path) or _wal_keepers.get(path.resolve())
+            if keeper is not None:
+                cursor = keeper.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,))
+                try:
+                    row = cursor.fetchone()
+                finally:
+                    cursor.close()
+                return _json_loads(row["value_json"], fallback) if row is not None else fallback
     conn = get_connection()
     try:
         row = conn.execute("SELECT value_json FROM app_settings WHERE key = ?", (key,)).fetchone()
