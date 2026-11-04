@@ -328,7 +328,9 @@ def test_cold_status_judges_an_overridden_gpu_by_the_override_without_torch(
     "value, target",
     [
         ("11.0.0", "gfx1100"),
-        (" 9.0.10 ", "gfx90a"),
+        (" 9.0.10", "gfx90a"),
+        ("11.0.0 ", None),
+        ("64.0.0", None),
         ("11.5.1", "gfx1151"),
         ("10.3.0", "gfx1030"),
         ("", None),

@@ -659,14 +659,15 @@ def hsa_override_gfx_target() -> Optional[str]:
     """The gfx target ROCr presents for every GPU under HSA_OVERRIDE_GFX_VERSION, or ``None``
     when it is unset, unreadable, or a per-device HSA_OVERRIDE_GFX_VERSION_<n> may differ.
     ROCr reads major.minor.stepping as gfx<major><minor><stepping in hex>: 11.0.0 is gfx1100,
-    9.0.10 is gfx90a, as install_python_stack._hsa_override_gfx_arch reads it."""
+    9.0.10 is gfx90a, as install_python_stack._hsa_override_gfx_arch reads it. libhsakmt parses
+    it with sscanf("%u.%u.%u%c") and rejects major > 63, so trailing text (even a space) fails."""
     if any(key.startswith("HSA_OVERRIDE_GFX_VERSION_") for key in os.environ):
         return None
-    value = os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
+    value = os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").lstrip()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value):
         return None
     major, minor, step = (int(part) for part in value.split("."))
-    if major <= 0 or minor > 9 or step > 15:
+    if not 0 < major <= 63 or minor > 9 or step > 15:
         return None
     return f"gfx{major}{minor}{step:x}"
 
