@@ -1149,8 +1149,10 @@ async def _stream_post_with_compat_fallbacks(
 
 
 _OPENROUTER_CATALOG_TTL_S = 3600.0
+_OPENROUTER_CATALOG_RETRY_S = 60.0
+# cache key -> (expires_at, models)
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
-_openrouter_catalog_lock = asyncio.Lock()
+_openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
 _OPENROUTER_MODEL_KEYS = (
     "id",
     "context_length",
@@ -7372,11 +7374,12 @@ class ExternalProviderClient:
         key_digest = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
         cache_key = f"{self.base_url}\n{key_digest}"
         cached = _openrouter_catalog.get(cache_key)
-        if cached and time.monotonic() - cached[0] < _OPENROUTER_CATALOG_TTL_S:
+        if cached and time.monotonic() < cached[0]:
             return cached[1]
-        async with _openrouter_catalog_lock:
+        # Per key, so a slow proxy or account never holds up another connection's catalog.
+        async with _openrouter_catalog_locks.setdefault(cache_key, asyncio.Lock()):
             cached = _openrouter_catalog.get(cache_key)
-            if cached and time.monotonic() - cached[0] < _OPENROUTER_CATALOG_TTL_S:
+            if cached and time.monotonic() < cached[0]:
                 return cached[1]
             try:
                 response = await _client().get(
@@ -7389,11 +7392,19 @@ class ExternalProviderClient:
             except (httpx.HTTPError, ValueError) as exc:
                 if cached:
                     logger.warning("OpenRouter catalog refresh failed, serving cache: %s", exc)
+                    # Back off, or every waiter queued behind a timed-out refresh retries in turn.
+                    _openrouter_catalog[cache_key] = (
+                        time.monotonic() + _OPENROUTER_CATALOG_RETRY_S,
+                        cached[1],
+                    )
                     return cached[1]
                 logger.error("Failed to list models from openrouter: %s", exc)
                 raise
             if models:
-                _openrouter_catalog[cache_key] = (time.monotonic(), models)
+                _openrouter_catalog[cache_key] = (
+                    time.monotonic() + _OPENROUTER_CATALOG_TTL_S,
+                    models,
+                )
             return models
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:

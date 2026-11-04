@@ -53,8 +53,9 @@ CATALOG = {
 def catalog_server(monkeypatch):
     state = {"calls": 0, "fail": False}
 
-    def handler(request: httpx.Request) -> httpx.Response:
+    async def handler(request: httpx.Request) -> httpx.Response:
         state["calls"] += 1
+        await asyncio.sleep(0.01)
         assert request.url.path == "/api/v1/models"
         if state["fail"]:
             return httpx.Response(503)
@@ -64,8 +65,13 @@ def catalog_server(monkeypatch):
         ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
     )
     monkeypatch.setattr(ep_mod, "_openrouter_catalog", {})
-    monkeypatch.setattr(ep_mod, "_openrouter_catalog_lock", asyncio.Lock())
+    monkeypatch.setattr(ep_mod, "_openrouter_catalog_locks", {})
     return state
+
+
+def _expire_catalog():
+    for key, (_, models) in ep_mod._openrouter_catalog.items():
+        ep_mod._openrouter_catalog[key] = (0.0, models)
 
 
 def _client(api_key: str = "") -> ExternalProviderClient:
@@ -116,12 +122,38 @@ def test_catalog_cache_is_scoped_to_the_api_key(catalog_server):
     assert catalog_server["calls"] == 2
 
 
-def test_serves_stale_catalog_when_refresh_fails(catalog_server, monkeypatch):
+def test_serves_stale_catalog_and_backs_off_when_refresh_fails(catalog_server):
     first = asyncio.run(_client().list_models())
-    monkeypatch.setattr(ep_mod, "_OPENROUTER_CATALOG_TTL_S", 0.0)
+    _expire_catalog()
     catalog_server["fail"] = True
     assert asyncio.run(_client().list_models()) == first
+    assert asyncio.run(_client().list_models()) == first
     assert catalog_server["calls"] == 2
+
+
+def test_a_slow_catalog_does_not_block_another_key(monkeypatch):
+    release = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.headers.get("authorization") == "Bearer slow":
+            await release.wait()
+        return httpx.Response(200, json = CATALOG)
+
+    monkeypatch.setattr(
+        ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    )
+    monkeypatch.setattr(ep_mod, "_openrouter_catalog", {})
+    monkeypatch.setattr(ep_mod, "_openrouter_catalog_locks", {})
+
+    async def run():
+        slow = asyncio.create_task(_client("slow").list_models())
+        await asyncio.sleep(0)
+        fast = await asyncio.wait_for(_client("fast").list_models(), timeout = 1)
+        release.set()
+        await slow
+        return fast
+
+    assert [m["id"] for m in asyncio.run(run())][0] == "new/chat"
 
 
 def test_raises_when_no_cache_and_fetch_fails(catalog_server):

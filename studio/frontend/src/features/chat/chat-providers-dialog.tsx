@@ -285,7 +285,8 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
-  const autoLoadedCatalogRef = useRef<string | null>(null);
+  // One object per automatic load: a reopened form reuses the key, never the request.
+  const autoLoadedCatalogRef = useRef<{ key: string } | null>(null);
   // One-shot latch; user navigation sets it too so a slow first sync cannot pull them into the form.
   const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
@@ -311,6 +312,8 @@ export function ChatProvidersSettings({
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
+  // Kept apart from modelsLoading: an automatic catalog load must not hold up saving.
+  const [catalogAutoLoad, setCatalogAutoLoad] = useState<{ key: string } | null>(null);
   const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [testingProviderIds, setTestingProviderIds] = useState<
@@ -459,8 +462,15 @@ export function ChatProvidersSettings({
     !hasPublicModelCatalog(providerType) &&
     apiKey.trim().length === 0 &&
     !(editingProviderHasSavedKey && !clearApiKeyRequested);
+  const autoLoadCatalogKey =
+    page === "form" && hasPublicModelCatalog(providerType)
+      ? `${editingProviderId ?? "new"}:${providerType}`
+      : null;
+  const catalogAutoLoading =
+    catalogAutoLoad !== null && catalogAutoLoad.key === autoLoadCatalogKey;
   const loadModelsDisabled =
     modelsLoading ||
+    catalogAutoLoading ||
     mutatingProvider ||
     isManualModelList ||
     missingModelCatalogBaseUrl ||
@@ -504,15 +514,15 @@ export function ChatProvidersSettings({
   }, [providers]);
 
   useEffect(() => {
-    if (page !== "form" || !hasPublicModelCatalog(providerType)) {
-      autoLoadedCatalogRef.current = null;
-      return;
-    }
-    const key = `${editingProviderId ?? "new"}:${providerType}`;
-    if (autoLoadedCatalogRef.current === key) return;
-    autoLoadedCatalogRef.current = key;
-    void loadModels({ autoLoadKey: key });
-  }, [page, providerType, editingProviderId]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!autoLoadCatalogKey) return;
+    const autoLoad = { key: autoLoadCatalogKey };
+    autoLoadedCatalogRef.current = autoLoad;
+    void loadModels({ autoLoad });
+    // Leaving the form or unmounting retires the request, so its response cannot write stale state.
+    return () => {
+      if (autoLoadedCatalogRef.current === autoLoad) autoLoadedCatalogRef.current = null;
+    };
+  }, [autoLoadCatalogKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!providerType || editingProviderId) return;
@@ -734,9 +744,9 @@ export function ChatProvidersSettings({
   }
 
   async function loadModels({
-    autoLoadKey,
-  }: { autoLoadKey?: string } = {}) {
-    const silent = autoLoadKey !== undefined;
+    autoLoad,
+  }: { autoLoad?: { key: string } } = {}) {
+    const silent = autoLoad !== undefined;
     if (!providerType) {
       toast.error("Choose a connection first.");
       return;
@@ -789,7 +799,8 @@ export function ChatProvidersSettings({
       toast.info("Save the new Base URL first, then load its models.");
       return;
     }
-    setModelsLoading(true);
+    if (silent) setCatalogAutoLoad(autoLoad);
+    else setModelsLoading(true);
     try {
       // Auto-loads can run before the form drops the previous provider's key and Base URL.
       const baseUrl = silent
@@ -809,7 +820,7 @@ export function ChatProvidersSettings({
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
-      if (silent && autoLoadedCatalogRef.current !== autoLoadKey) return;
+      if (silent && autoLoadedCatalogRef.current !== autoLoad) return;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
@@ -858,7 +869,8 @@ export function ChatProvidersSettings({
       const message = error instanceof Error ? error.message : "Unknown error";
       if (!silent) toast.error(`Could not load models: ${message}`);
     } finally {
-      setModelsLoading(false);
+      if (silent) setCatalogAutoLoad((current) => (current === autoLoad ? null : current));
+      else setModelsLoading(false);
     }
   }
 
@@ -2099,7 +2111,7 @@ export function ChatProvidersSettings({
                       title={loadModelsTitle}
                       onClick={() => void loadModels()}
                     >
-                      {modelsLoading ? (
+                      {modelsLoading || catalogAutoLoading ? (
                         <>
                           <Spinner className="mr-2 size-3.5" />
                           Loading…

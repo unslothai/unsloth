@@ -48,3 +48,21 @@ test("explicit OpenRouter reloads keep saved routing variants too", () => {
     /if \(silent \|\| hasPublicModelCatalog\(providerType\)\) \{\s*setAvailableModels\(withSavedModelIds\(modelIds, selectedModelIds\)\);/,
   );
 });
+
+test("automatic catalog loads do not disable saving", () => {
+  const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
+  assert.match(dialog, /if \(silent\) setCatalogAutoLoad\(autoLoad\);\s*else setModelsLoading\(true\);/);
+  const save = dialog.match(/disabled=\{\s*registryLoading \|\|[^}]*\}\s*onClick=\{\(\) =>\s*editingProviderId\s*\? void saveProviderEdits\(\)/);
+  assert.ok(save, "Save button not found");
+  assert.doesNotMatch(save[0], /catalogAutoLoading/);
+});
+
+test("a response from a retired automatic load is dropped by identity, not key", () => {
+  const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
+  assert.match(dialog, /const autoLoad = \{ key: autoLoadCatalogKey \};\s*autoLoadedCatalogRef\.current = autoLoad;/);
+  assert.match(dialog, /if \(silent && autoLoadedCatalogRef\.current !== autoLoad\) return;/);
+  assert.match(
+    dialog,
+    /return \(\) => \{\s*if \(autoLoadedCatalogRef\.current === autoLoad\) autoLoadedCatalogRef\.current = null;\s*\};\s*\}, \[autoLoadCatalogKey\]\);/,
+  );
+});
