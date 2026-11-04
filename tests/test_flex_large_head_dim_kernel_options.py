@@ -78,7 +78,6 @@ def test_wrapper_injects_kernel_options_above_256():
 
 
 def test_wrapper_injects_kernel_options_inside_a_compiled_block():
-    # Dynamo < 2.10 reads hasattr(tensor, "dim") as False, which dropped these in compiled blocks.
     import torch
 
     original, seen = _record()
