@@ -47,6 +47,7 @@ async def main():
         async with ClientSession(streams[0], streams[1]) as session:
             await session.initialize()
             print([tool.name for tool in (await session.list_tools()).tools])
+            print("modern" if session.discover_result is not None else "legacy")
 
 asyncio.run(main())
 """
@@ -126,3 +127,5 @@ def test_recipe_worker_reaches_mcp_through_data_designers_client_import(tmp_path
         server.wait()
     assert worker.returncode == 0, worker.stderr
     assert "['add']" in worker.stdout
+    # A modern-only server rejects the bare initialize handshake data-designer sends.
+    assert "modern" in worker.stdout.split()
