@@ -137,6 +137,7 @@ if HAS_TRITON:
         ADD: tl.constexpr,
         SCALE: tl.constexpr,
         IEEE: tl.constexpr,
+        UPCAST: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_K: tl.constexpr,
@@ -183,6 +184,8 @@ if HAS_TRITON:
                 mask = mask_k[:, None] & mask_n[None, :],
                 other = 0.0,
             )
+            if UPCAST:
+                a, b = a.to(tl.float32), b.to(tl.float32)
             if IEEE:
                 acc += tl.dot(a, b, input_precision = "ieee")
             else:
@@ -214,6 +217,7 @@ if HAS_TRITON:
         Q_SORTED: tl.constexpr,
         SCALE: tl.constexpr,
         IEEE: tl.constexpr,
+        UPCAST: tl.constexpr,
         BLOCK_T: tl.constexpr,
         BLOCK_I: tl.constexpr,
         BLOCK_J: tl.constexpr,
@@ -254,6 +258,8 @@ if HAS_TRITON:
                 mask = mask_t[:, None] & mask_j[None, :],
                 other = 0.0,
             )
+            if UPCAST:
+                p, q = p.to(tl.float32), q.to(tl.float32)
             if IEEE:
                 acc += tl.dot(p, q, input_precision = "ieee")
             else:
@@ -311,7 +317,8 @@ def _launch_seg_mm(
         OUT_SORTED = out_sorted,
         ADD = add,
         SCALE = scales is not None,
-        IEEE = inp.dtype == torch.float32,
+        IEEE = inp.dtype == torch.float32 and W.dtype == torch.float32,
+        UPCAST = inp.dtype != W.dtype,
         BLOCK_M = BLOCK_M,
         BLOCK_N = BLOCK_N,
         BLOCK_K = BLOCK_K,
@@ -351,7 +358,8 @@ def _launch_seg_wgrad(
         P_SORTED = p_sorted,
         Q_SORTED = q_sorted,
         SCALE = scales is not None,
-        IEEE = P.dtype == torch.float32,
+        IEEE = P.dtype == torch.float32 and Q.dtype == torch.float32,
+        UPCAST = P.dtype != Q.dtype,
         BLOCK_T = 64,
         BLOCK_I = BLOCK_I,
         BLOCK_J = BLOCK_J,
@@ -507,7 +515,8 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
-        dH = torch.empty(X.shape[0], R, dtype = dtype, device = X.device)
+        # dH is fp32 so it cannot overflow in either scale direction; the scale is applied once, here.
+        dH = torch.empty(X.shape[0], R, dtype = torch.float32, device = X.device)
         _seg_mm(
             dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False
         )
