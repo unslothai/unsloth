@@ -2549,6 +2549,7 @@ class CfgParallelRouter:
             "kv_prefill_primary_calls": 0,
             "replica_failures": 0,
             "batch_splits": 0,
+            "batch_split_skip": None,
         }
         # the last render ran one call per step (no guidance branches): a batch can split from its first step
         self.last_render_single = False
@@ -2763,19 +2764,25 @@ class CfgParallelRouter:
         if allowed is None or _batch_split_disabled() or torch.compiler.is_compiling():
             return None
         if getattr(module, "_compiled_call_impl", None) is not None:
-            return None
+            return self._skip_split("denoiser is compiled whole")
         n = latent.shape[0] if isinstance(latent, torch.Tensor) and latent.dim() >= 1 else 0
-        if n < 2 or n % 2 or args:
+        if n < 2 or n % 2:
             return None
-        if any(k not in allowed and v is not None and v is not False for k, v in kwargs.items()):
-            return None
+        if args:
+            return self._skip_split("positional inputs")
+        extra = sorted(k for k, v in kwargs.items() if k not in allowed and v is not None and v is not False)
+        if extra:
+            return self._skip_split(f"unknown inputs {extra}")
         if kwargs.get("joint_attention_kwargs"):
-            return None
+            return self._skip_split("attention kwargs")
         try:
             (a0, k0), (a1, k1) = [(_split_batch(args, n, h), _split_batch(kwargs, n, h)) for h in (0, 1)]
-        except TypeError:
-            return None
-        res = self.run_pair(lambda: self._primary_noting(None, a0, k0), a1, k1)
+        except TypeError as exc:
+            return self._skip_split(f"unsplittable input ({exc})")
+        # inside the denoiser's own call: its root hooks already wrap the whole batch, so run_pair need not refuse them
+        res = self.run_pair(lambda: self._primary_noting(None, a0, k0), a1, k1, inside_call = True)
+        if res is None:
+            self._skip_split(f"pair not run ({self.disabled_reason or 'replica unavailable'})")
         # run_pair forgets the step: keep this one's latent so the next call is read as a new step
         self.prev_latent = latent
         self.branch = 0
@@ -2788,17 +2795,22 @@ class CfgParallelRouter:
         self.stats["batch_splits"] += 1
         return _join_batch(first, second)
 
+    def _skip_split(self, reason: str) -> None:
+        self.stats["batch_split_skip"] = reason
+        return None
+
     def run_pair(
-        self, primary_call: Callable[[], Any], args: tuple, kwargs: dict
+        self, primary_call: Callable[[], Any], args: tuple, kwargs: dict, *, inside_call: bool = False
     ) -> Optional[tuple]:
         """Second half on the replica, ``primary_call`` on the source. ``(first, second)``; None = run both on source;
-        ``second`` None = replica failed."""
+        ``second`` None = replica failed. ``inside_call``: called from within the denoiser's own ``__call__`` (batch
+        split), whose root hooks already ran around the whole call."""
         if self.disabled_reason is not None or _background_compile_call():
             return None
         module = self.module_ref()
         if module is None or _holds_opaque_tensors((args, kwargs)):
             return None
-        if any(getattr(module, attr, None) for attr in _ROOT_HOOK_DICTS):
+        if not inside_call and any(getattr(module, attr, None) for attr in _ROOT_HOOK_DICTS):
             return None
         self._drop_pending()
         self.template = None

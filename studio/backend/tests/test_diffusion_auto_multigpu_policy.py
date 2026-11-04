@@ -210,3 +210,21 @@ def test_replica_failure_during_a_batch_split_recomputes_on_the_source():
     out = _flux_loop(model, 2, 4)
     torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-6)
     assert router.disabled_reason is not None
+
+
+def test_batch_split_skips_are_recorded_and_stay_exact():
+    """A foreign root hook cannot be mirrored onto a replica, and an unknown input cannot be split: both renders stay
+    on the source, match one card, and say why."""
+    ref_model, ref = _reference(FluxTransformer2DModel, 2, 3)
+    torch.manual_seed(0)
+    model = FluxTransformer2DModel()
+    model.register_forward_pre_hook(lambda mod, args: None)
+    router, built = _router(model)
+    out = _flux_loop(model, 2, 3)
+    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batch_splits"] == 0 and "carries hooks" in router.stats["batch_split_skip"]
+    torch.manual_seed(0)
+    model = FluxTransformer2DModel()
+    router, _ = _router(model)
+    _flux_loop(model, 2, 3, controlnet_block_samples = torch.ones(1))
+    assert "unknown inputs" in router.stats["batch_split_skip"]
