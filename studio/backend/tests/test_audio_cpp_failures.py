@@ -138,6 +138,9 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.68 > 2.7
     assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
     assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
+    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): 240 s cover peaks at 11.2 GB / 14.7 GB.
+    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.16 > 11.2
+    assert af.estimate_resident_gb(10090406336, "ace_step") == 15.8 > 14.7
 
 
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():

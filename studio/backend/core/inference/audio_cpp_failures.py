@@ -139,6 +139,8 @@ _GENERIC_PROFILE = (2.5, 1.5)
 # family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
 # 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
 _MEASURED_PROFILES = {
+    # Peak is a 240 s cover (the longest edit), above a 240 s song.
+    "ace_step": (1.0, 6.4, 9.4),
     "chatterbox": (1.0, 3.5, 3.5),
     "higgs_audio_tts": (1.0, 2.0, 4.8),
     "kokoro_tts": (1.0, 3.5, 0.2),
@@ -167,9 +169,8 @@ def smaller_variants(
     free_gb: Optional[float] = None,
     limit: int = 3,
 ) -> list[dict]:
-    """Variants smaller than the loaded one, largest first; only those that fit ``free_gb``.
-    A variant whose estimate is no lower than the loaded one's (a sibling package a few bytes
-    smaller, such as ACE-Step base next to turbo) cannot fit where the loaded one did not."""
+    """Variants with a lower estimate than the loaded one, largest first; only those that fit
+    ``free_gb``. Byte size alone is not enough: ACE-Step base is a few bytes under turbo."""
     if model is None:
         return []
     from core.inference.audio_cpp_models import quant_label, resolve
@@ -229,8 +230,7 @@ def classify_audio_cpp_failure(
     free_gb: Optional[float] = None,
     required_gb: Optional[float] = None,
 ) -> Optional[AudioCppFailure]:
-    """The known failure in ``text`` (a runtime log tail or error), or None. ``required_gb`` is the
-    estimate a placement refusal compared against ``free_gb``; the message states both."""
+    """The known failure in ``text`` (a runtime log tail or error), or None."""
     raw = str(text or "")
     lowered = raw.lower()
     for code, pattern in _PATTERNS:
