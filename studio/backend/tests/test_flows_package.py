@@ -338,6 +338,19 @@ def test_scrub_keeps_a_structured_outputs_field_names_and_a_transforms_columns()
     assert scrub({"properties": {"token": "abc"}}) == {"properties": {}}
     leaked = scrub({"processor_type": "schema_transform", "template": {"a": "hf_" + "x" * 30}})
     assert "hf_" not in str(leaked)
+    nullable = {
+        "type": "object",
+        "properties": {
+            "inner": {
+                "type": ["object", "null"],
+                "properties": {"token": {"type": "string"}},
+                "required": ["token"],
+            },
+            "list": {"type": "array", "items": {"properties": {"password": {"type": "string"}}}},
+            "either": {"anyOf": [{"properties": {"secret": {"type": "string"}}}]},
+        },
+    }
+    assert scrub({"output_format": nullable}) == {"output_format": nullable}
     # A template's `headers` key is an output column, not a request's headers.
     shaped = {"processor_type": "schema_transform", "template": {"headers": {"X-Type": "{{ h }}"}}}
     assert scrub(shaped) == shaped

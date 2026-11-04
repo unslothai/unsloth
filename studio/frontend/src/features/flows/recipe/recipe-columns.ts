@@ -54,7 +54,8 @@ const BLOCK = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
 const QUOTED = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
 
 /** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}`, a
- * `{% set %}`'s from there on. Inside them the name is that variable, not a column. */
+ * `{% set %}`'s from there on, each starting after its own tag (whose right side reads the scope
+ * before it). Inside them the name is that variable, not a column. */
 function localScopes(text: string): { name: string; from: number; to: number }[] {
   const scopes: { name: string; from: number; to: number }[] = [];
   const open: { names: string[]; from: number }[] = [];
@@ -63,16 +64,17 @@ function localScopes(text: string): { name: string; from: number; to: number }[]
     if (block[2] === undefined) continue;
     const tag = block[2].replace(QUOTED, '""').trim();
     const at = block.index ?? 0;
-    const loop = /^for\s+(.+?)\s+in\b/.exec(tag);
-    if (loop) open.push({ names: loop[1].match(ident) ?? [], from: at });
+    const after = at + block[0].length;
+    const loop = LOOP.exec(tag);
+    if (loop) open.push({ names: loop[1].match(ident) ?? [], from: after });
     else if (/^endfor\b/.test(tag)) {
       const scope = open.pop();
       for (const name of scope?.names ?? [])
         scopes.push({ name, from: scope?.from ?? 0, to: at });
     } else {
-      const set = /^set\s+([^=]+?)\s*=/.exec(tag);
+      const set = SET.exec(tag);
       for (const name of set?.[1].match(ident) ?? [])
-        scopes.push({ name, from: at, to: text.length });
+        scopes.push({ name, from: after, to: text.length });
     }
   }
   // An unclosed loop runs to the end.
@@ -81,12 +83,25 @@ function localScopes(text: string): { name: string; from: number; to: number }[]
   return scopes;
 }
 
+const LOOP = /^for\s+(.+?)\s+in\b([\s\S]*)$/;
+const SET = /^set\s+([^=]+?)\s*=([\s\S]*)$/;
+
+/** What a tag reads: a loop's iterable and a `set`'s right side, not the names they bind. */
+function readPart(body: string, isTag: boolean): string {
+  if (!isTag) return body;
+  const tag = body.trim();
+  return LOOP.exec(tag)?.[2] ?? SET.exec(tag)?.[2] ?? body;
+}
+
 function templateNames(text: string): string[] {
   const names: string[] = [];
   const scopes = localScopes(text);
   for (const block of text.matchAll(BLOCK)) {
     // A quoted string is text, not a column: `{{ "topic" }}` reads nothing.
-    const body = (block[1] ?? block[2] ?? "").replace(QUOTED, '""');
+    const body = readPart(
+      (block[1] ?? block[2] ?? "").replace(QUOTED, '""'),
+      block[2] !== undefined,
+    );
     const at = block.index ?? 0;
     const local = new Set(
       scopes.filter((s) => s.from <= at && at <= s.to).map((s) => s.name),

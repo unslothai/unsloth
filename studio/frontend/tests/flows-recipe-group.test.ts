@@ -1473,6 +1473,14 @@ test("a loop's own variable is not a column, inside its loop only", async () => 
   assert.deepEqual(columnReferences(outside as never, names), ["topic", "topics"]);
   const set = { ...loop, expr: "{{ topic }}{% set topic = 'x' %}{{ topic }}" };
   assert.deepEqual(columnReferences(set as never, names), ["topic"]);
+  // The right side of a `set` and a loop's iterable read the scope before the name is bound.
+  const reassigned = { ...loop, expr: "{% set topic = topic | upper %}{{ topic }}" };
+  assert.deepEqual(columnReferences(reassigned as never, names), ["topic"]);
+  assert.equal(templateStillReads(reassigned as never, "topic"), true);
+  const same = { ...loop, expr: "{% for topic in topic %}{{ topic }}{% endfor %}" };
+  assert.deepEqual(columnReferences(same as never, names), ["topic"]);
+  const local = { ...loop, expr: "{% set label = 'x' %}{{ label }}" };
+  assert.deepEqual(columnReferences(local as never, new Set(["label"])), []);
 });
 
 test("resizing a recipe frame or grouping its blocks never takes them out of their recipe", async () => {

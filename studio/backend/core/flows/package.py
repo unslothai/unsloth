@@ -62,17 +62,31 @@ def _local_url(url: Any) -> bool:
 _NAMES = ("properties", "patternProperties", "$defs", "definitions")
 
 
+_SUBSCHEMAS = ("items", "additionalProperties", "anyOf", "oneOf", "allOf", "not", "prefixItems")
+
+
+def _object_schema(value: dict) -> bool:
+    kind = value.get("type")
+    return kind == "object" or (isinstance(kind, list) and "object" in kind) or "$schema" in value
+
+
 def _names_below(parent: dict, key: Any, names: str) -> str:
+    """How scrub reads ``parent[key]``: "all" (a transform template), "one" (a schema's property
+    names), "schema" (a schema, whose keys are keywords) or "" (settings)."""
     if names == "all" or (key == "template" and parent.get("processor_type") == "schema_transform"):
         return "all"
-    if key in _NAMES and (parent.get("type") == "object" or "$schema" in parent):
+    if names == "one":
+        return "schema"
+    if key in _NAMES and (names == "schema" or _object_schema(parent)):
         return "one"
+    if names == "schema" and key in _SUBSCHEMAS:
+        return "schema"
     return ""
 
 
 def scrub(value: Any, names: str = "") -> Any:
     """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively.
-    ``names`` is "one" when this dict's keys are names, "all" when every key below is."""
+    ``names`` says whose keys these are (``_names_below``): a schema's or a template's keep them all."""
     if isinstance(value, dict):
         found = {
             k: scrub(v, _names_below(value, k, names))
@@ -90,7 +104,7 @@ def scrub(value: Any, names: str = "") -> Any:
             found.pop("url")
         return found
     if isinstance(value, list):
-        return [scrub(v, names if names == "all" else "") for v in value]
+        return [scrub(v, names if names in ("all", "schema") else "") for v in value]
     if isinstance(value, str):
         if _SECRET_VALUE.search(value):
             value = _SECRET_VALUE.sub("", value)
