@@ -278,7 +278,6 @@ def test_a_dotdot_through_a_link_that_stays_in_the_folder_passes(tmp_path, files
 
 @symlinks
 def test_a_module_path_that_reads_as_the_root_but_lands_elsewhere_has_its_index_read(tmp_path):
-    # link/.. is "." as text but opens deep/, whose index is not the model root's.
     from utils.security.file_security import escaping_weight_references
 
     folder = _write(
@@ -325,7 +324,6 @@ def test_a_module_index_shard_linking_outside_from_where_it_lands_is_flagged(tmp
     (folder / "deep" / "child").mkdir(parents = True)
     (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
     (folder / "deep" / "out").symlink_to(victim, target_is_directory = True)
-    # Rooted and drive-qualified names ignore the module path they are joined onto.
     for shard, flagged in (
         ("out/s.safetensors", "link/../out/s.safetensors"),
         ("/abs/s.safetensors", "/abs/s.safetensors"),
