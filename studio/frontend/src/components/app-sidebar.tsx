@@ -6634,6 +6634,7 @@ export function AppSidebar() {
             travel in this band and a full-width gradient washed it out. */}
         <div
           ref={attachFade}
+          data-slot="sidebar-footer-fade"
           aria-hidden="true"
           className={cn(
             // from-[8px] holds the fade opaque across the hard clip, matching the list's pb-2.
