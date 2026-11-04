@@ -418,6 +418,7 @@ from .diffusion_sampler import (
     DEFAULT_SAMPLER,
     apply_checkpoint_prediction_type,
     apply_pipeline_prediction_type,
+    start_root_single_marks,
     build_scheduler,
     sampler_options,
 )
@@ -6181,6 +6182,11 @@ class DiffusionBackend:
                 return None
             if not pipeline_seed_supported(fam):
                 return None
+            # A UNet denoiser (SDXL) has no dense quant scheme and no seed: skip the scheme probe, a child process.
+            if getattr(fam, "denoiser_attr", "transformer") != "transformer" and not getattr(
+                fam, "prequant_repos", ()
+            ):
+                return None
             raw = transformer_quant
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
             # Speed=off rewrites AUTO to off (no seed); an explicit scheme upgrades speed to default, so seed it to keep the load off the released bf16 shards.
@@ -9644,6 +9650,18 @@ class DiffusionBackend:
                                         )
                                     # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                     # otherwise)
+                                    # Overlapped only on a staged snapshot: its commit is the one from_pretrained
+                                    # loads. A Hub id resolves its revision inside from_pretrained, so it reads after.
+                                    _marks_future = (
+                                        start_root_single_marks(
+                                            _base_local_dir,
+                                            fetch_base,
+                                            hub_token,
+                                            not local_files_only,
+                                        )
+                                        if fam.single_file_is_pipeline and _base_local_dir
+                                        else None
+                                    )
                                     try:
                                         with _converted_shards_pread(dtype, small_host):
                                             pipe = pipeline_cls.from_pretrained(
@@ -9670,6 +9688,7 @@ class DiffusionBackend:
                                             # Not hf_token: that collapsed False (anonymous) to None (ambient).
                                             hf_token = hub_token,
                                             allow_network = not local_files_only,
+                                            marks_future = _marks_future,
                                         )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
