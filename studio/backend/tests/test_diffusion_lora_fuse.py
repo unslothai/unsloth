@@ -203,8 +203,14 @@ def test_fold_and_restore_on_the_gpu_in_bf16(engine, monkeypatch, backup):
     before = _base_weights(engine.unet)
     with torch.no_grad():
         unfused = engine.unet(*x).sample.float()
+    lin = next(m for m in engine.unet.modules() if hasattr(m, "lora_A") and hasattr(m.get_base_layer(), "in_features"))
+    base_w = lin.get_base_layer().weight.detach().clone()
+    a_w, b_w = lin.lora_A["px"].weight.detach().float(), lin.lora_B["px"].weight.detach().float()
+    expected = (base_w.float() + (b_w @ a_w) * lin.scaling["px"]).to(base_w.dtype)
     engine.apply(1.0)
     assert _merged_layers(engine.unet) > 0
+    # one fp32 multiply-add, one rounding to bf16 (not a bf16 delta added afterwards)
+    assert torch.equal(lin.get_base_layer().weight, expected)
     with torch.no_grad():
         folded = engine.unet(*x).sample.float()
     assert (folded - unfused).abs().max().item() < 0.05 * max(1.0, unfused.abs().max().item())
