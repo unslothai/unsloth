@@ -3424,9 +3424,7 @@ def _read_cast_cache(
                 revision = revision,
                 skip = tuple(pipe_kwargs),
             )
-            stage_misses(
-                cands, device, logger = logger, cancel_check = cancel_check, others_mib = others
-            )
+            stage_misses(cands, device, logger = logger, cancel_check = cancel_check, others_mib = others)
         hits = read_all(cands, logger = logger, cancel_check = cancel_check)
         pipe_kwargs.update(hits)
         if hits:

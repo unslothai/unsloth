@@ -258,7 +258,9 @@ def converted_others_mib(
 
         from . import diffusion_cast_cache as cc
 
-        index = cc._read_json(cc._cache._local_file(str(source), "model_index.json", cache_dir, revision))
+        index = cc._read_json(
+            cc._cache._local_file(str(source), "model_index.json", cache_dir, revision)
+        )
         if not isinstance(index, dict):
             return 0
         names = {c.component for c in cands}
@@ -267,13 +269,19 @@ def converted_others_mib(
         for component, spec in index.items():
             if component.startswith("_") or component in skip or component in names:
                 continue
-            if not isinstance(spec, (list, tuple)) or len(spec) != 2 or spec[0] not in cc._LIBRARIES:
+            if (
+                not isinstance(spec, (list, tuple))
+                or len(spec) != 2
+                or spec[0] not in cc._LIBRARIES
+            ):
                 continue
             dtype = cc._component_dtype(torch_dtype, component)
             if not cc._is_half(dtype):
                 continue
             want = "F16" if dtype == torch.float16 else "BF16"
-            for shard in cc._shards_of(str(source), component, cc._STEMS[spec[0]], cache_dir, revision) or ():
+            for shard in (
+                cc._shards_of(str(source), component, cc._STEMS[spec[0]], cache_dir, revision) or ()
+            ):
                 header = cc._shard_header(shard) or {}
                 for name, entry in header.items():
                     if name == "__metadata__" or not isinstance(entry, dict):

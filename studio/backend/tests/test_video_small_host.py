@@ -286,7 +286,11 @@ def test_the_encoder_converted_beside_the_dit_is_priced():
     old = VS.plan_stage(HV15_T4, available_mib = 29238, reserve_mib = 3174, device_free_mib = 14600)
     assert not old.engaged  # the DiT alone "fits"
     plan = VS.plan_stage(
-        HV15_T4, available_mib = 29238, reserve_mib = 3174, device_free_mib = 14600, others_mib = HV15_TE_MIB
+        HV15_T4,
+        available_mib = 29238,
+        reserve_mib = 3174,
+        device_free_mib = 14600,
+        others_mib = HV15_TE_MIB,
     )
     assert plan.engaged and plan.stage == ("transformer",)
     # 15 GB card: split, 13.8 GB on the card and 4.9 GB in host RAM beside the encoder's 15.6
@@ -295,7 +299,13 @@ def test_the_encoder_converted_beside_the_dit_is_priced():
 
 
 def test_others_that_fit_change_nothing():
-    plan = VS.plan_stage(HV15_T4, available_mib = 60000, reserve_mib = 6000, device_free_mib = 14600, others_mib = HV15_TE_MIB)
+    plan = VS.plan_stage(
+        HV15_T4,
+        available_mib = 60000,
+        reserve_mib = 6000,
+        device_free_mib = 14600,
+        others_mib = HV15_TE_MIB,
+    )
     assert not plan.engaged and "fits" in plan.reason
 
 
@@ -307,12 +317,19 @@ def test_converted_others_counts_only_a_half_dtype_change(pipe_dir):
         f.unlink()
     st.save_file({"w": torch.zeros(1024, 512, dtype = torch.bfloat16)}, str(te / "model.safetensors"))
     cands = [c for c in CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT)]
-    assert {c.component for c in cands} == {"transformer"}  # the bf16 encoder is not a cast candidate
+    assert {c.component for c in cands} == {
+        "transformer"
+    }  # the bf16 encoder is not a cast candidate
     fp16 = VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT)
     assert fp16 == 1  # 1 MiB of bf16 converted to fp16 in host RAM
-    bf16 = VS.converted_others_mib(pipe_dir, cands, torch_dtype = {"default": torch.bfloat16, "vae": torch.float32})
+    bf16 = VS.converted_others_mib(
+        pipe_dir, cands, torch_dtype = {"default": torch.bfloat16, "vae": torch.float32}
+    )
     assert bf16 == 0  # same dtype: memory-mapped, nothing converted
-    assert VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT, skip = ("text_encoder",)) == 0
+    assert (
+        VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT, skip = ("text_encoder",))
+        == 0
+    )
 
 
 def test_device_load_kwargs_put_the_whole_component_on_the_card():
@@ -320,7 +337,9 @@ def test_device_load_kwargs_put_the_whole_component_on_the_card():
     from unittest import mock
 
     cand = types.SimpleNamespace()
-    with mock.patch.object(CC, "_load_kwargs", lambda c: {"torch_dtype": torch.float16, "output_loading_info": True}):
+    with mock.patch.object(
+        CC, "_load_kwargs", lambda c: {"torch_dtype": torch.float16, "output_loading_info": True}
+    ):
         whole = VS._device_load_kwargs(cand, "cuda:0")
     assert whole["device_map"] == {"": "cuda:0"} and "max_memory" not in whole
     assert "output_loading_info" not in whole
@@ -337,7 +356,11 @@ def test_a_dit_neither_the_card_nor_a_split_takes_is_cast_from_its_shards(pipe_d
     pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
     written = []
     real = CC.save_from_source
-    monkeypatch.setattr(CC, "save_from_source", lambda cand, **kw: written.append(cand.component) or real(cand, **kw))
+    monkeypatch.setattr(
+        CC,
+        "save_from_source",
+        lambda cand, **kw: written.append(cand.component) or real(cand, **kw),
+    )
     missed = V._read_cast_cache(
         pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda"
     )
@@ -369,7 +392,11 @@ def test_a_split_plan_casts_from_the_source_shards_instead(pipe_dir, monkeypatch
     calls = _wire(monkeypatch, available = 18000, total = 20000)
     written = []
     real = CC.save_from_source
-    monkeypatch.setattr(CC, "save_from_source", lambda cand, **kw: written.append(cand.component) or real(cand, **kw))
+    monkeypatch.setattr(
+        CC,
+        "save_from_source",
+        lambda cand, **kw: written.append(cand.component) or real(cand, **kw),
+    )
     pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
     V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
     assert written == ["transformer"] and ("transformer", "cuda") not in calls

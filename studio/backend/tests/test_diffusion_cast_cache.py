@@ -315,7 +315,9 @@ def test_source_cast_matches_the_live_module_cast_bit_for_bit(pipe_dir, tmp_path
 
 def test_source_cast_refuses_a_class_its_shards_do_not_match(pipe_dir):
     cand = _by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["transformer"]
-    cand.cls = diffusers.UNet2DModel  # a different architecture: names / shapes disagree with the shards
+    cand.cls = (
+        diffusers.UNet2DModel
+    )  # a different architecture: names / shapes disagree with the shards
     cand.config_path = str(pipe_dir / "transformer" / "config.json")
     assert CC.save_from_source(cand) is None
     # transformers components are not cast from source (their dense load is the small one)
@@ -343,7 +345,12 @@ def test_source_cast_of_a_hunyuanvideo15_denoiser_reads_back_as_the_dense_load(t
     root = tmp_path / "HunyuanVideo-1.5-tiny"
     model.save_pretrained(root / "transformer", max_shard_size = "200KB")
     (root / "model_index.json").write_text(
-        json.dumps({"_class_name": "HunyuanVideo15Pipeline", "transformer": ["diffusers", "HunyuanVideo15Transformer3DModel"]})
+        json.dumps(
+            {
+                "_class_name": "HunyuanVideo15Pipeline",
+                "transformer": ["diffusers", "HunyuanVideo15Transformer3DModel"],
+            }
+        )
     )
     cand = _by_name(CC.candidates(root, torch_dtype = FP16_DEFAULT))["transformer"]
     assert len(cand.shards) > 1

@@ -787,7 +787,13 @@ def save(
         return None
 
 
-def _persist(cand: CastCandidate, reader: Any, *, logger: Any = None, t0: float = 0.0) -> Optional[str]:
+def _persist(
+    cand: CastCandidate,
+    reader: Any,
+    *,
+    logger: Any = None,
+    t0: float = 0.0,
+) -> Optional[str]:
     """Write ``cand.names`` through ``reader`` into the cast cache; returns the artifact path or None. Raises."""
     import torch
 
@@ -942,7 +948,9 @@ def _source_names(cand: CastCandidate) -> tuple[Optional[list], dict]:
         if name in tied and name not in where:
             continue
         entry = tags.get(name)
-        if entry is None or [int(d) for d in entry.get("shape", ())] != [int(d) for d in tensor.shape]:
+        if entry is None or [int(d) for d in entry.get("shape", ())] != [
+            int(d) for d in tensor.shape
+        ]:
             return None, {}
         dtype = tensor.dtype
         if dtype.is_floating_point:
@@ -965,7 +973,11 @@ def save_from_source(
     try:
         names, where = _source_names(cand)
         if not names:
-            _log(logger, "info", f"{cand.component}: not cached from source (its tensors do not match the class)")
+            _log(
+                logger,
+                "info",
+                f"{cand.component}: not cached from source (its tensors do not match the class)",
+            )
             return None
         cand.names = names
         reader = _ShardReader(cand, where, check)
