@@ -6057,6 +6057,11 @@ class DiffusionBackend:
                 return None
             if not pipeline_seed_supported(fam):
                 return None
+            # A UNet denoiser (SDXL) has no dense quant scheme and no seed: skip the scheme probe, a child process.
+            if getattr(fam, "denoiser_attr", "transformer") != "transformer" and not getattr(
+                fam, "prequant_repos", ()
+            ):
+                return None
             raw = transformer_quant
             auto = raw is None or str(raw).strip().lower() in ("", "auto")
             # Speed=off rewrites AUTO to off (no seed); an explicit scheme upgrades speed to default, so seed it to keep the load off the released bf16 shards.
