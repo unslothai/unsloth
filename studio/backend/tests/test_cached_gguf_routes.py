@@ -3687,6 +3687,8 @@ def _pretend_old_diffusers(monkeypatch, *, engine):
 
     monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
     monkeypatch.setattr(router, "predict_engine", lambda fam, **kwargs: engine)
+    # A pinned engine is a post-detection answer; before detection the listing leaves it provisional.
+    _hardware_detected(monkeypatch)
 
 
 def test_gguf_picker_hides_a_family_no_engine_here_can_build(monkeypatch):
