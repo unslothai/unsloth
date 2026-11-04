@@ -260,3 +260,17 @@ def test_responses_requests_carry_the_extra_keys():
 
     assert chat_req.enable_thinking is True
     assert _extra_chat_template_kwargs(chat_req) == {"verification": True}
+
+
+def test_the_public_token_count_prices_the_extra_keys(monkeypatch):
+    from .test_openai_auto_switch import _count_request, _count_tokens_backend, _counted_body
+
+    _switched, counted = _count_tokens_backend(monkeypatch)
+    _counted_body(
+        _count_request(
+            [{"role": "user", "content": "hi"}],
+            chat_template_kwargs = {"enable_thinking": True, "verification": True},
+        )
+    )
+
+    assert counted["chat_template_kwargs"] == {"verification": True, "enable_thinking": True}

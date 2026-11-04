@@ -2337,9 +2337,7 @@ def _count_gguf_admission_prompt(
                 payload.reasoning_effort,
                 _replay_preserve_thinking(llama_backend, payload, messages),
             )
-            _template_extras = _extra_chat_template_kwargs(payload)
-            if _template_extras:
-                template_kwargs = {**_template_extras, **(template_kwargs or {})}
+            template_kwargs = _with_extra_chat_template_kwargs(payload, template_kwargs)
             continue_final = (
                 _continue_final_message(payload, thought = True)
                 and trailing_assistant_resume_kind(messages) is not None
@@ -30213,6 +30211,12 @@ def _extra_chat_template_kwargs(payload) -> Optional[dict]:
     return extras or None
 
 
+def _with_extra_chat_template_kwargs(payload, template_kwargs: Optional[dict]) -> Optional[dict]:
+    """Studio's resolved reasoning keys win over same-named caller extras."""
+    extras = _extra_chat_template_kwargs(payload)
+    return {**extras, **(template_kwargs or {})} if extras else template_kwargs
+
+
 def _resolve_reasoning_controls(
     enable_thinking: Optional[bool], reasoning_effort: Optional[str]
 ) -> tuple[Optional[bool], Optional[str]]:
@@ -42372,6 +42376,7 @@ async def chat_count_tokens(
         # Off the loop: first use probes the template.
         await asyncio.to_thread(_replay_preserve_thinking, llama_backend, payload, openai_messages),
     )
+    _template_kwargs = _with_extra_chat_template_kwargs(payload, _template_kwargs)
 
     # Another tab's load can swap the tokenizer unseen by the caller's guard, so report the id.
     _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
@@ -46402,10 +46407,7 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
-    _template_extras = _extra_chat_template_kwargs(payload)
-    if _template_extras:
-        # Studio's resolved reasoning keys win over anything the caller sent beside them.
-        tpl_kwargs = {**_template_extras, **(tpl_kwargs or {})}
+    tpl_kwargs = _with_extra_chat_template_kwargs(payload, tpl_kwargs)
     response_format = _response_format_for_llama_server(
         _response_format_beside_tools(payload, tools)
     )
