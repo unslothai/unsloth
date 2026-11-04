@@ -270,14 +270,15 @@ async def finetune(ctx: NodeContext) -> dict:
         metrics["train_rows"] = dataset.get("rows")
         metrics["holdout_rows"] = holdout["rows"]
     checkpoint = {"kind": "checkpoint", "name": run, "base_model": config["model_name"]}
-    columns = dataset.get("columns")
-    if columns is None and objective == "grpo" and dataset.get("source") == "hf":
+    row = None
+    if objective == "grpo":
         from core.training.account_jobs import account_hf_token
 
-        # A Hub dataset's value names no columns: read them, as the formatter saw them.
+        # Whether a prompt carried its own system message is in the rows: read the first, as the
+        # formatter saw it (an Arrow column holds one type, so one row tells text from conversation).
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
-        columns = await asyncio.to_thread(_hub_columns, dataset, token)
-    system = trained_system_prompt(config, columns)
+        row = await asyncio.to_thread(_first_row, dataset, token)
+    system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
     return {
@@ -385,23 +386,25 @@ def drafter_request(params: dict) -> dict:
     }
 
 
-def trained_system_prompt(config: dict, columns: Any = None) -> str:
+def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:
     """The system message a new prompt would have got in training: the SFT mapping's system prompt,
-    or GRPO's, which fills in for every prompt with no system message of its own. A per-row system
-    column (mapped, or one the formatter finds by name) has no single value to reuse."""
+    or GRPO's, which fills in for every prompt with no system message of its own. GRPO claims it
+    only when ``row`` (the dataset's first) shows every prompt got it: plain-text prompts and no
+    system column. A conversation can carry its own system message, and rows it cannot read
+    claim nothing."""
     mapping = config.get("custom_format_mapping")
     if config.get("objective") == "grpo":
-        from core.training.rl import _AUTO_ROLE_NAMES, _IGNORE_ROLE
+        from core.training.rl import resolve_role_columns
 
-        if columns is None:
-            # Columns unknown: a `system` column the formatter found by name may have been used.
+        if not isinstance(row, dict):
             return ""
-        roles = mapping if isinstance(mapping, dict) else {}
-        named = [c for c in (columns or []) if isinstance(c, str)] + list(roles)
-        if "system" in roles.values() or any(
-            str(c).lower() in _AUTO_ROLE_NAMES["system"] and roles.get(c) != _IGNORE_ROLE
-            for c in named
-        ):
+        try:
+            roles = resolve_role_columns(
+                list(row), "grpo", mapping if isinstance(mapping, dict) else None
+            )
+        except ValueError:
+            return ""
+        if "system" in roles or not isinstance(row.get(roles["prompt"]), str):
             return ""
         return str(config.get("rl_system_prompt") or "").strip()
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
@@ -471,7 +474,12 @@ def _content_hash(path: str) -> Optional[str]:
     import os
 
     digest = hashlib.sha256()
-    for file in sorted(glob.glob(path)) if "*" in path else [path]:
+    files = sorted(glob.glob(path)) if "*" in path else [path]
+    if not files:
+        # A folder of Arrow, CSV or JSON files (a saved dataset) matches no `*.parquet`: the digest
+        # would be of nothing and never change, so train again rather than reuse.
+        return None
+    for file in files:
         if _names_media(file):
             return None
         digest.update(os.path.basename(file).encode() + b"\0")
@@ -915,20 +923,29 @@ def _compound_rows(
     return Dataset.from_list(rows)
 
 
-def _hub_columns(dataset: dict, token: Any) -> Optional[list[str]]:
-    """A Hub split's column names from its schema, or None when the Hub cannot say."""
+def _first_row(dataset: dict, token: Any) -> Optional[dict]:
+    """The dataset's first row as training reads it, or None when it cannot be read here."""
     from datasets import load_dataset
 
-    split = re.split(r"[\[+]", str(dataset.get("split") or "train").replace(" ", ""))[0]
+    from core.flows.nodes.data import local_seed_path
+
     try:
-        streamed = load_dataset(
-            str(dataset["ref"]),
-            dataset.get("subset") or None,
-            split = split,
-            token = token,
-            streaming = True,
-        )
-        return list(streamed.column_names) if streamed.column_names else None
+        if dataset.get("source") == "hf":
+            split = re.split(r"[\[+]", str(dataset.get("split") or "train").replace(" ", ""))[0]
+            streamed = load_dataset(
+                str(dataset["ref"]),
+                dataset.get("subset") or None,
+                split = split,
+                token = token,
+                streaming = True,
+            )
+        else:
+            path = local_seed_path(dataset.get("ref"))
+            builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
+            if builder is None:
+                return None
+            streamed = load_dataset(builder, data_files = path, split = "train", streaming = True)
+        return next(iter(streamed), None)
     except Exception:
         return None
 

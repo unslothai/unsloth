@@ -252,6 +252,8 @@ test("Try the rewards reads the reward training uses, not one a user reward shad
     new URL("../src/features/flows/editor/reward-try.tsx", import.meta.url),
     "utf8",
   );
+  // A private or gated dataset's preview row reads with the picked Hub token.
+  assert.match(src, /\.\.\.hubTokenHeader\(useHfTokenStore\.getState\(\)\.token\)/);
   assert.match(src, /library\.filter\(\(r\) => !r\.shadowed\)\.map\(\(r\) => \[r\.name, r\.rule\]\)/);
 });
 
@@ -262,4 +264,10 @@ test("Try the rewards reads the columns training reads: the Advanced mapping win
   assert.equal(roleColumn(params, "prompt"), "q");
   assert.equal(roleColumn({ answer_column: "draft" }, "answer"), "draft");
   assert.equal(roleColumn({ answer_column: "draft", custom_format_mapping: {} }, "answer"), "draft");
+  // With no column named, aliases go in training's order, not the row's: `answer` before `solution`.
+  const { pick, ANSWER_NAMES } = await import("../src/features/flows/editor/reward-roles.ts");
+  const row = { problem: "2+2", solution: "Adding two and two gives four.", answer: "4" };
+  assert.equal(pick(row, undefined, ANSWER_NAMES), "4");
+  assert.equal(pick(row, "solution", ANSWER_NAMES), "Adding two and two gives four.");
+  assert.equal(pick({ Solution: "x" }, "", ANSWER_NAMES), "x");
 });
