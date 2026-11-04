@@ -120,6 +120,7 @@ test("xlsx: decodes escaped text in shared, inline and cached formula strings", 
     ["_x005F_x000D_", "_x000D_"],
     ["_x005F_x005F_x000D_", "_x005F_x000D_"],
     ["&amp;_x0041_ _xZZZZ_", "&A _xZZZZ_"],
+    ["_X0041_ _X000D_ _x004a_", "_X0041_ _X000D_ J"],
   ]) {
     const [sheet] = readXlsx(workbook(
       `<worksheet xmlns="${MAIN}"><sheetData><row r="1">

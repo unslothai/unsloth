@@ -851,7 +851,7 @@ function flattenMarkup(text: string): string {
 
 function decodeXstring(text: string): string {
   return text.replace(
-    /_x005f_(x[0-9a-f]{4}_)|_x([0-9a-f]{4})_/gi,
+    /_x005[fF]_(x[0-9a-fA-F]{4}_)|_x([0-9a-fA-F]{4})_/g,
     (_match, literal?: string, hex?: string) =>
       literal ? `_${literal}` : String.fromCharCode(parseInt(hex!, 16)),
   );
