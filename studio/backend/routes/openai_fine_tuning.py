@@ -1131,8 +1131,7 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # Queue entries merge into the runs by creation time, ties first: a started job keeps its
-    # queue creation time, so starting it between pages cannot move another entry across a cursor.
+    # By creation time, queue entries first on ties: a started job keeps its place across pages.
     remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
     # Batch members share started_at: order them by creation time, as the live batch lists them.
     runs = groupby(_iter_runs(), key = lambda run: run.get("started_at"))
@@ -1157,8 +1156,7 @@ def _list_job_page(
 ) -> dict[str, Any]:
     jobs, seen = [], set()
     for row, is_run in _ordered_jobs(pending, live):
-        # A queued job can start while the page is built: list it once, and let its queue id
-        # still match the cursor.
+        # A job that starts mid-request: listed once, its queue id still matches the cursor.
         public_id = (_RUN_ALIAS.get(row["id"]) or _job_id(row["id"])) if is_run else row["id"]
         if public_id in seen:
             continue
