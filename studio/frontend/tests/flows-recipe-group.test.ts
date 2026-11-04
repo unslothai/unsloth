@@ -1731,6 +1731,28 @@ test("a loop's else branch reads the enclosing scope, an if's else inside the lo
   );
 });
 
+test("with, macro and call blocks bind their own names, so a rename or a reference scan skips them", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const rename = (t: string) => replaceRef(t, "topic", "area");
+  assert.equal(
+    rename("{% with topic = topic, n = f(a=1, b=2) %}{{ topic | upper }}{% endwith %}{{ topic }}"),
+    "{% with topic = area, n = f(a=1, b=2) %}{{ topic | upper }}{% endwith %}{{ area }}",
+  );
+  assert.equal(
+    rename("{% macro show(topic, n=1) %}{{ topic }}{% endmacro %}{{ show(topic=topic) }}"),
+    "{% macro show(topic, n=1) %}{{ topic }}{% endmacro %}{{ show(topic=area) }}",
+  );
+  assert.equal(
+    rename("{% call(topic) lister(topic) %}{{ topic }}{% endcall %}"),
+    "{% call(topic) lister(area) %}{{ topic }}{% endcall %}",
+  );
+  const col = (expr: string) => ({ name: "result", column_type: "expression", expr }) as never;
+  const names = new Set(["topic", "words"]);
+  assert.deepEqual(columnReferences(col("{% with topic = 'x' %}{{ topic }}{% endwith %}{{ words }}"), names), ["words"]);
+  assert.deepEqual(columnReferences(col("{% macro show(topic) %}{{ topic }}{% endmacro %}{{ show(words) }}"), names), ["words"]);
+});
+
 test("a duplicated reader gets the wire to the column it reads, and a Jinja test is not a column", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
   const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");

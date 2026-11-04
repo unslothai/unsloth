@@ -171,9 +171,10 @@ export async function autoLayout(
       return handle ? handle.y + handle.height / 2 : undefined;
     },
   };
-  // A closed super card is laid out as one block; its blocks move with it.
+  // A closed super card is laid out as one block; its blocks move with it. The layout sees the grown
+  // recipe frames that the patch places.
   const folded = foldLayout(
-    tidyRequest({ ...ctx, graph: tidyGraph(graph, useDocStore.getState().meta.editor) }),
+    tidyRequest({ ...ctx, graph: tidyGraph(ctx.graph, useDocStore.getState().meta.editor) }),
     useDocStore.getState(),
     sizeLookup(getInternalNode),
   );

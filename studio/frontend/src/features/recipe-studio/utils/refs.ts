@@ -74,22 +74,70 @@ const JINJA_TAG_RE = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
 const QUOTED_RE = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
 const LOOP_RE = /^for\s+(.+?)\s+in\b([\s\S]*)$/;
 const SET_RE = /^set\s+([^=]+?)\s*=([\s\S]*)$/;
+const NESTED_RE = /\([^()]*\)|\[[^[\]]*\]|\{[^{}]*\}/g;
+
+/** Text with every bracketed part blanked, so only its top-level commas and `=`s are left. */
+function topLevel(text: string): string {
+  let out = text;
+  for (let prev = ""; prev !== out; ) {
+    prev = out;
+    out = out.replace(NESTED_RE, (m) => " ".repeat(m.length));
+  }
+  return out;
+}
+
+/** The parameter names in a macro's or call block's `(...)` list: `(topic, n=1)` binds topic and n. */
+function paramNames(list: string): string[] {
+  return topLevel(list)
+    .split(",")
+    .map((p) => /^\s*([A-Za-z_][A-Za-z0-9_]*)/.exec(p)?.[1])
+    .filter((n): n is string => Boolean(n));
+}
+
+/** The names a block tag binds for its body: `with a = 1, b = 2`, `macro show(topic)`, `call(user) ...`. */
+function blockNames(tag: string): { kind: string; names: string[] } | null {
+  const word = /^(with|macro|call)\b\s*([\s\S]*)$/.exec(tag);
+  if (!word) return null;
+  const [, kind, rest] = word;
+  if (kind === "with")
+    return {
+      kind,
+      names: topLevel(rest)
+        .split(",")
+        .map((p) => /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=(?!=)/.exec(p)?.[1])
+        .filter((n): n is string => Boolean(n)),
+    };
+  // `macro show(topic)` lists its parameters after the name, `call(user) list(...)` right away.
+  const open =
+    kind === "macro" ? rest.indexOf("(") : rest.startsWith("(") ? 0 : -1;
+  if (open < 0) return { kind, names: [] };
+  const close = topLevel(rest.slice(open + 1)).indexOf(")");
+  return {
+    kind,
+    names: paramNames(
+      rest.slice(open + 1, close < 0 ? undefined : open + 1 + close),
+    ),
+  };
+}
 
 export type JinjaScope = { name: string; from: number; to: number };
 
-/** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}`, a
- * `{% set %}`'s from there on, each starting after its own tag (whose right side reads the scope
- * before it). Inside them the name is that variable, not a column. */
+/** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}` (or
+ * its own `{% else %}`), a `with`'s, macro's or call block's names up to its end tag, a `{% set %}`'s
+ * from there on, each starting after its own tag (whose right side reads the scope before it).
+ * Inside them the name is that variable, not a column. */
 export function jinjaScopes(text: string): JinjaScope[] {
   const scopes: JinjaScope[] = [];
-  // A loop's own names, and the `set`s made inside it: both end at its `{% endfor %}`.
+  // A block's own names, and the `set`s made inside it: both end at its end tag.
   const open: {
+    kind: string;
     names: string[];
     from: number;
     sets: { name: string; from: number }[];
   }[] = [];
-  // Open `for` and `if` blocks, innermost last, to tell a loop's own `{% else %}` from an `if`'s.
-  const blocks: ("for" | "if")[] = [];
+  // Open `for`, `if`, `with`, `macro` and `call` blocks, innermost last, to tell a loop's own
+  // `{% else %}` from an `if`'s and match each end tag.
+  const blocks: string[] = [];
   const ident = /[A-Za-z_][A-Za-z0-9_]*/g;
   const close = (scope: (typeof open)[number], to: number) => {
     for (const name of scope.names) scopes.push({ name, from: scope.from, to });
@@ -101,13 +149,16 @@ export function jinjaScopes(text: string): JinjaScope[] {
     const at = block.index ?? 0;
     const after = at + block[0].length;
     const loop = LOOP_RE.exec(tag);
-    if (loop) {
-      open.push({ names: loop[1].match(ident) ?? [], from: after, sets: [] });
-      blocks.push("for");
-    } else if (/^endfor\b/.test(tag)) {
-      if (blocks[blocks.length - 1] === "for") blocks.pop();
-      const scope = open.pop();
-      if (scope) close(scope, at);
+    const bound = loop ? null : blockNames(tag);
+    const end = /^end(for|with|macro|call)\b/.exec(tag)?.[1];
+    if (loop || bound) {
+      const kind = bound?.kind ?? "for";
+      const names = loop ? (loop[1].match(ident) ?? []) : (bound?.names ?? []);
+      open.push({ kind, names, from: after, sets: [] });
+      blocks.push(kind);
+    } else if (end) {
+      if (blocks[blocks.length - 1] === end) blocks.pop();
+      if (open[open.length - 1]?.kind === end) close(open.pop()!, at);
     } else if (/^if\b/.test(tag)) blocks.push("if");
     else if (/^endif\b/.test(tag)) {
       if (blocks[blocks.length - 1] === "if") blocks.pop();
@@ -122,19 +173,19 @@ export function jinjaScopes(text: string): JinjaScope[] {
       }
     } else {
       const set = SET_RE.exec(tag);
-      const inLoop = open[open.length - 1];
+      const inBlock = open[open.length - 1];
       // `{% set ns.topic = ... %}` sets an attribute of `ns`: it binds no variable named topic.
       const targets = (set?.[1] ?? "")
         .split(",")
         .map((t) => t.trim())
         .filter((t) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(t));
       for (const name of targets) {
-        if (inLoop) inLoop.sets.push({ name, from: after });
+        if (inBlock) inBlock.sets.push({ name, from: after });
         else scopes.push({ name, from: after, to: text.length });
       }
     }
   }
-  // An unclosed loop runs to the end.
+  // An unclosed block runs to the end.
   for (const scope of open) close(scope, text.length);
   return scopes;
 }
@@ -148,9 +199,6 @@ export function boundAt(
   return scopes.some((s) => s.name === name && s.from <= at && at <= s.to);
 }
 
-/** The parts of a `{% %}` tag that read: a loop's iterable and a `set`'s right side, not the names
- * they bind (``head`` comes before them). A loop's filter (`for x in items if x > 0`) is ``filter``:
- * its own variables are bound there (``bound``). */
 /** A tag's inside without Jinja's whitespace control (`{%- endfor %}`, `{% for x in y -%}`). */
 function unmarked(body: string): string {
   return body
@@ -159,12 +207,33 @@ function unmarked(body: string): string {
     .replace(/\s*[-+]$/, "");
 }
 
+/** The parts of a `{% %}` tag that read: a loop's iterable and a `set`'s right side, not the names
+ * they bind (``head`` comes before them). A loop's filter (`for x in items if x > 0`) is ``filter``:
+ * its own variables are bound there (``bound``). A macro's header and a call block's parameter
+ * list name its own parameters: they read nothing. */
 export function tagReadPart(body: string): {
   head: string;
   read: string;
   filter: string;
   bound: string[];
 } {
+  const header = /^(macro\b|call\s*\()/.exec(unmarked(body));
+  if (header?.[1] === "macro")
+    return { head: body, read: "", filter: "", bound: [] };
+  if (header) {
+    // `call(user) list_users(users)`: the call after the parameter list reads.
+    const start = body.indexOf("(");
+    const close = topLevel(body.slice(start + 1)).indexOf(")");
+    if (close >= 0) {
+      const cut = start + 2 + close;
+      return {
+        head: body.slice(0, cut),
+        read: body.slice(cut),
+        filter: "",
+        bound: [],
+      };
+    }
+  }
   const loop = LOOP_RE.exec(unmarked(body));
   const set = loop ? null : SET_RE.exec(unmarked(body));
   const read = loop?.[2] ?? set?.[2];
