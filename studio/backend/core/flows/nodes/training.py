@@ -581,7 +581,13 @@ async def finetune_cache_valid(ctx: NodeContext, outputs: dict) -> bool:
     return True
 
 
-cache_hook("train.finetune", material = finetune_cache_material, valid = finetune_cache_valid)
+# Fine-tune never reads the flow's parameters (a question asked downstream must not retrain it).
+cache_hook(
+    "train.finetune",
+    material = finetune_cache_material,
+    valid = finetune_cache_valid,
+    flow_params = False,
+)
 
 
 def rl_roles(params: dict, objective: str) -> dict:
@@ -1131,7 +1137,8 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
     found = {"repo": model, "variant": status.get("gguf_variant") or None}
     # How it was loaded, so putting it back keeps its context and precision.
     context = status.get("requested_context_length")
-    if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+    # 0 is a request too: automatic sizing.
+    if isinstance(context, int) and not isinstance(context, bool) and context >= 0:
         found["max_seq_length"] = context
     if isinstance(status.get("load_in_4bit"), bool):
         found["load_in_4bit"] = status["load_in_4bit"]
@@ -1155,7 +1162,7 @@ async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replace
             None,
             model = previous["repo"],
             variant = previous["variant"],
-            max_seq_length = previous.get("max_seq_length") or FLOW_CHAT_CONTEXT,
+            max_seq_length = previous.get("max_seq_length", FLOW_CHAT_CONTEXT),
             load_in_4bit = previous.get("load_in_4bit", True),
             hf_token = None,
             kind = "llm",

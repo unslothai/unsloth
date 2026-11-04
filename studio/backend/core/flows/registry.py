@@ -254,13 +254,21 @@ class CacheHook:
 
     material: Callable[[NodeContext], Awaitable[Any]]
     valid: Callable[[NodeContext, dict], Awaitable[bool]]
+    # False for a handler that never reads the run's flow parameters: they stay out of its key.
+    flow_params: bool = True
 
 
 CACHE_HOOKS: dict[str, CacheHook] = {}
 
 
-def cache_hook(node_type: str, *, material: Callable, valid: Callable) -> None:
-    CACHE_HOOKS[node_type] = CacheHook(material, valid)
+def cache_hook(
+    node_type: str,
+    *,
+    material: Callable,
+    valid: Callable,
+    flow_params: bool = True,
+) -> None:
+    CACHE_HOOKS[node_type] = CacheHook(material, valid, flow_params)
 
 
 def load_handlers() -> dict[str, Handler]:

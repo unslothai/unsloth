@@ -1137,3 +1137,20 @@ def test_the_previous_chat_model_is_put_back_with_its_own_context_and_precision(
         loads[0]["max_seq_length"] == training.FLOW_CHAT_CONTEXT
         and loads[0]["load_in_4bit"] is True
     )
+
+
+def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {"model_identifier": "unsloth/Qwen3-4B", "requested_context_length": 0}
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    previous = asyncio.run(training.active_chat_model(ctx))
+    asyncio.run(training.restore_chat_model(ctx, previous, "run-1"))
+    assert loads[0]["max_seq_length"] == 0

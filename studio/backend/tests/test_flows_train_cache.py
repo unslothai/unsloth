@@ -282,3 +282,12 @@ async def test_a_base_model_picked_by_inventory_handle_is_fingerprinted_through_
     await _run(eng, _flow(base_model = "ref:gone"))
     await _run(eng, _flow(base_model = "ref:gone"))
     assert len(world["trained"]) == 4
+
+
+@run_async
+async def test_a_flow_parameter_read_only_downstream_does_not_retrain(world):
+    eng = _engine(world)
+    await _run(eng, _flow(), params = {"question": "First question"})
+    await _run(eng, _flow(), params = {"question": "First question"})
+    await _run(eng, _flow(), params = {"question": "Different question"})
+    assert len(world["trained"]) == 1

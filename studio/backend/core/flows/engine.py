@@ -1787,7 +1787,7 @@ class FlowEngine:
                     inputs,
                     model = model_key,
                     seed = seed,
-                    flow_params = ctx.flow_params,
+                    flow_params = ctx.flow_params if hook is None or hook.flow_params else None,
                     extra = extra,
                 )
                 pending = rs.pending_cache(key)
@@ -1815,7 +1815,7 @@ class FlowEngine:
                 key = cache_key(
                     spec["type"], spec["v"], params, inputs,
                     model = await self._model_key(ctx, spec, params), seed = seed,
-                    flow_params = ctx.flow_params, extra = extra,
+                    flow_params = ctx.flow_params if hook is None or hook.flow_params else None, extra = extra,
                 )  # fmt: skip
             except Exception:
                 key = None
