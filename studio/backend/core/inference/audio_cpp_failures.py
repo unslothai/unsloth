@@ -142,8 +142,14 @@ _MEASURED_PROFILES = {
     # Peak is a 240 s cover (the longest edit), above a 240 s song; BF16 highest on Vulkan.
     "ace_step": (1.15, 5.55, 9.4),
     "chatterbox": (1.0, 3.5, 3.5),
+    # Peak is a 240 s song with 20,000 characters of lyrics; on Vulkan it passes the generic formula.
+    "heartmula": (2.5, 2.7, 7.2),
     "higgs_audio_tts": (1.0, 2.0, 4.8),
     "kokoro_tts": (1.0, 3.5, 0.2),
+    # Flat in length: 10 s and the 80 s cap peak the same.
+    "midashenglm_gen": (1.0, 2.25, 3.2),
+    # Peak is 4 batched takes at the cap (Small 120 s, Medium 240 s); F16 highest on Vulkan.
+    "stable_audio": (1.8, 0.65, 5.5),
     "voxcpm2": (2.2, 4.7, 4.5),
     "voxtral_tts": (1.0, 2.0, 4.4),
     # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap, highest on Vulkan.

@@ -144,6 +144,25 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(10090406336, "ace_step") == 16.36 > 15.31 + 0.9
 
 
+@pytest.mark.parametrize(
+    "family, size_bytes, peak_gib, expected",
+    [
+        # Stable Audio 3 Small Q8_0 / F16 and Medium Q8_0 / F16 (Hub bytes): 4 batched takes at
+        # the cap, the higher of CUDA and Vulkan on an RTX 3090.
+        ("stable_audio", 1683576608, 2.24, 3.47),
+        ("stable_audio", 2358473088, 2.80, 4.60),
+        ("stable_audio", 3582601408, 5.34, 6.66),
+        ("stable_audio", 5834365856, 9.48, 10.43),
+        # MiDashengLM-Gen Q8_0 at the 80 s cap; HeartMuLa Q8_0, 240 s, 20,000 characters, on Vulkan.
+        ("midashenglm_gen", 3381370752, 4.42, 5.40),
+        ("heartmula", 7659762592, 19.58, 20.53),
+    ],
+)
+def test_music_profiles_cover_their_measured_peak(family, size_bytes, peak_gib, expected):
+    estimate = af.estimate_resident_gb(size_bytes, family)
+    assert estimate == expected and estimate >= peak_gib + 0.9
+
+
 # YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16. Their highest peaks with
 # 20,000 characters of lyrics at the 360 s cap, on an RTX 3090 through Vulkan: 6.5 / 8.6 / 11.9 GiB
 # (CUDA: 6.6 / 8.1 / 11.0 GiB; RTX 6000 Ada CUDA: 6.8 / 8.3 / 11.2 GiB).
