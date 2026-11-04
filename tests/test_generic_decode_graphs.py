@@ -757,3 +757,25 @@ def test_grpo_hidden_states_wrapper_keeps_graphs_eligible():
     assert GG._plain_forward(m)
     m.forward = lambda *a, **k: None  # e.g. an accelerate device hook: stays eager
     assert not GG._plain_forward(m)
+
+
+def test_decode_scope_restores_an_instance_forward():
+    import types
+
+    class M(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    m = M()
+    with vision._EagerDecodeSteps(m):
+        assert "forward" in m.__dict__
+    assert "forward" not in m.__dict__  # none before: none after
+
+    def wrapper(self, *args, **kwargs):  # e.g. accelerate's autocast wrapper
+        return M.forward(self, *args, **kwargs)
+
+    m.forward = types.MethodType(wrapper, m)
+    previous = m.__dict__["forward"]
+    with vision._EagerDecodeSteps(m):
+        assert m.__dict__["forward"] is not previous
+    assert m.__dict__["forward"] is previous
