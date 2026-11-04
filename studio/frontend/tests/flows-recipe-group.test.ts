@@ -1641,3 +1641,21 @@ test("a set inside a loop ends with it, and a rename reaches an override's paren
     "area == 'science'": { sampler_type: "subcategory", category: "area", values: { science: ["chem"], art: ["clay"] } },
   });
 });
+
+test("a seed is not added while another block holds the name seed, which every seed opens as", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const renamed = nodes.map((n) =>
+    columnName(n) === "domain"
+      ? { ...n, params: { column: { ...(n.params.column as object), name: "seed" } } }
+      : n,
+  );
+  useDocStore.getState().load({ ...doc(renamed), groups: [group] });
+  addRecipeBlock("recipe", "seed", "seed_local");
+  const graph = useDocStore.getState().graph;
+  assert.equal(graph.groups.recipe.config?.seed_config, undefined);
+  const view = studioView(graph.groups.recipe, Object.values(graph.nodes).filter((n) => n.group === "recipe"));
+  assert.deepEqual(view.errors, []);
+});

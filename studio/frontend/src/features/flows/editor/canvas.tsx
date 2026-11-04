@@ -85,7 +85,7 @@ import {
   recipeConnectionError,
   removeElementsWithReferences,
 } from "../recipe/recipe-actions";
-import { isRecipeGroup } from "../recipe/recipe-columns";
+import { COLUMN_TYPE, isRecipeGroup } from "../recipe/recipe-columns";
 import { holdRecipeBlocks, ownRecipe } from "./recipe-drag";
 import {
   parseSetupId,
@@ -903,6 +903,14 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const onEdgeDoubleClick = useCallback(
     (event: ReactMouseEvent, edge: RfEdge) => {
       if (readOnly || edge.data?.kind !== "data") return;
+      const ends = useDocStore.getState().graph.nodes;
+      if (
+        ends[edge.source]?.type === COLUMN_TYPE ||
+        ends[edge.target]?.type === COLUMN_TYPE
+      ) {
+        toast.error("Recipe columns connect directly, not through a reroute");
+        return;
+      }
       const flow = screenToFlowPosition({ x: event.clientX, y: event.clientY });
       const at = snapToWire(edge.id, flow);
       const id = addReroute(at ?? flow, {

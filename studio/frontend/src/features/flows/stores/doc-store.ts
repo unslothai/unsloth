@@ -679,6 +679,14 @@ export const useDocStore = create<DocState>((set, get) => {
     addReroute: (reroute, splitId, style) =>
       commit((s) => {
         if (s.graph.nodes[reroute.id]) return null;
+        // A recipe column's wire is a reference in its reader's prompt: it never goes through a reroute.
+        const split = splitId ? (s.graph.wires[splitId] ?? s.graph.edges[splitId]) : undefined;
+        if (
+          split &&
+          (s.graph.nodes[split.source]?.type === RECIPE_COLUMN ||
+            s.graph.nodes[split.target]?.type === RECIPE_COLUMN)
+        )
+          return null;
         const exists = !!s.graph.reroutes[reroute.id];
         let graph: DocGraph = {
           ...s.graph,

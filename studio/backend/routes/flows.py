@@ -397,9 +397,35 @@ def import_recipe(
     return {"flow": flow, "report": {"notices": notices}}
 
 
-def _recipe_notes(doc: dict, group: dict) -> list[dict]:
+def _block_names(recipe: dict) -> set[str]:
+    """Every name a Recipe Studio block of ``recipe`` takes: they share one namespace with its notes."""
+    picks = (
+        ("columns", "name"),
+        ("model_providers", "name"),
+        ("mcp_providers", "name"),
+        ("model_configs", "alias"),
+        ("tool_configs", "tool_alias"),
+    )
+    names = {
+        item.get(field)
+        for key, field in picks
+        for item in recipe.get(key) or []
+        if isinstance(item, dict)
+    }
+    if recipe.get("seed_config"):
+        names.add("seed")
+    return {n for n in names if isinstance(n, str)}
+
+
+def _recipe_notes(
+    doc: dict,
+    group: dict,
+    taken: Optional[set] = None,
+) -> list[dict]:
     """The flow notes that belong to a recipe group, as Recipe Studio markdown notes: the ones its
-    import made (id ``<group>_...``) and any note sitting on its frame."""
+    import made (id ``<group>_...``) and any note sitting on its frame, each named apart from
+    ``taken`` (the recipe's block names) and the others."""
+    taken = set(taken or ())
     gid = str(group.get("id"))
     gx, gy, gw, gh = (list(group.get("rect") or []) + [0, 0, 0, 0])[:4]
     out = []
@@ -410,6 +436,10 @@ def _recipe_notes(doc: dict, group: dict) -> list[dict]:
         if not (nid.startswith(f"{gid}_") or on_frame):
             continue
         name = nid[len(gid) + 1 :] if nid.startswith(f"{gid}_") else nid
+        base, n = name, 2
+        while name in taken:
+            name, n = f"{base}_{n}", n + 1
+        taken.add(name)
         item = {
             "id": name,
             "name": name,
@@ -447,7 +477,7 @@ def export_recipe(body: RecipeExportBody) -> dict:
     except RecipeCompileError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     recipe, ui = share_recipe(compiled["recipe"], graph["group"].get("ui"))
-    notes = _recipe_notes(body.doc, graph["group"])
+    notes = _recipe_notes(body.doc, graph["group"], _block_names(recipe))
     if notes:
         ui["nodes"] = [*(ui.get("nodes") or []), *notes]
     run = compiled["run"]

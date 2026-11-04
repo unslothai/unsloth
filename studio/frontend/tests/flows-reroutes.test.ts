@@ -574,3 +574,19 @@ test("recipe columns never wire through a reroute: only a direct wire writes the
   assert.equal(checkRerouteConnection(graph(), out).ok, false);
   assert.deepEqual(Object.keys(graph().edges), []);
 });
+
+test("a recipe column's wire is never split by a reroute, by double-click or drop", () => {
+  useDocStore
+    .getState()
+    .load(
+      doc(
+        [node("a", "recipe.column", [0, 0]), node("b", "recipe.column", [600, 0])],
+        [edge("ref", "a", "out", "b", "in")],
+      ),
+    );
+  useDocStore.getState().addReroute({ id: "r9", pos: [300, 10] }, "ref");
+  assert.equal(graph().reroutes.r9, undefined);
+  assert.ok(graph().edges.ref, "the reference wire stays whole");
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /ends\[edge\.source\]\?\.type === COLUMN_TYPE/);
+});

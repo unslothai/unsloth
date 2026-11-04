@@ -506,3 +506,21 @@ def test_a_freely_named_recipe_note_imports_as_a_valid_flow_note():
     parsed = FlowDocument.model_validate(doc)
     assert [n.text for n in parsed.notes] == ["one", "two"]
     assert len({n.id for n in parsed.notes}) == 2
+
+
+def test_an_exported_note_is_named_apart_from_the_recipes_columns(client):
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["columns"].append(
+        {"name": "note0", "column_type": "expression", "expr": "{{ sql }}", "dtype": "str"}
+    )
+    payload["ui"] = {
+        "nodes": [{"id": "instructions", "node_type": "markdown_note", "markdown": "read me"}]
+    }
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    exported = client.post(
+        "/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}
+    ).json()
+    notes = [n for n in exported["ui"]["nodes"] if n.get("node_type") == "markdown_note"]
+    columns = {c["name"] for c in exported["recipe"]["columns"]}
+    assert [n["markdown"] for n in notes] == ["read me"]
+    assert not {n["name"] for n in notes} & columns
