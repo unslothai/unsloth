@@ -973,6 +973,42 @@ def dataset_rows(request: Request, body: DatasetRowsBody) -> dict:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
 
 
+class DatasetExportBody(BaseModel):
+    value: dict[str, Any]
+
+
+@router.post("/dataset-export")
+def dataset_export(body: DatasetExportBody) -> StreamingResponse:
+    """Every row of a saved Data Recipe output (a schema transform's parquet) as JSONL: the job's
+    own export reads the untransformed dataset beside it."""
+    from core.flows.dataset_rows import DatasetRowsError, dataset_source
+    from core.flows.nodes.data import recipe_artifact
+    from core.training.account_jobs import account_path
+
+    value = body.value
+    if value.get("source") != "recipe" or not recipe_artifact(value.get("ref")):
+        raise HTTPException(status_code = 400, detail = "Only a saved Data Recipe output exports here")
+    try:
+        folder = Path(dataset_source(value)["dataset_name"])
+        account_path(str(folder), reference = True)
+    except (DatasetRowsError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    files = sorted(folder.glob("*.parquet")) if folder.is_dir() else []
+    if not files:
+        raise HTTPException(status_code = 404, detail = "This dataset is no longer available")
+
+    def lines():
+        import pyarrow.parquet as pq
+
+        from core.data_recipe.export import _json_dumps_row
+        for file in files:
+            for batch in pq.ParquetFile(file).iter_batches(batch_size = 4096):
+                for row in batch.to_pylist():
+                    yield _json_dumps_row(row) + "\n"
+
+    return StreamingResponse(lines(), media_type = "application/x-ndjson")
+
+
 @router.get("/{flow_id}/latest-outputs")
 def latest_outputs(flow_id: str) -> dict:
     _flow_or_404(flow_id)

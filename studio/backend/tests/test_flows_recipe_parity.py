@@ -482,3 +482,27 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
         "seed_type": "local",
         "path": str(seed),
     }
+
+
+def test_a_removed_seeds_preview_rows_are_never_shared():
+    from core.flows.recipe_share import share_recipe
+
+    ui = {"seed_preview_rows": [{"secret": "PRIVATE-ROW"}], "seed_total_rows": 9}
+    recipe, shared = share_recipe({"columns": []}, ui)
+    assert "PRIVATE-ROW" not in json.dumps(shared) and "seed_total_rows" not in shared
+
+
+def test_a_freely_named_recipe_note_imports_as_a_valid_flow_note():
+    payload = copy.deepcopy(SQL)
+    payload["ui"] = {
+        "nodes": [
+            {"id": "My notes", "node_type": "markdown_note", "markdown": "one"},
+            {"id": "My notes!", "node_type": "markdown_note", "markdown": "two"},
+        ]
+    }
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    from core.flows.schema import FlowDocument
+
+    parsed = FlowDocument.model_validate(doc)
+    assert [n.text for n in parsed.notes] == ["one", "two"]
+    assert len({n.id for n in parsed.notes}) == 2

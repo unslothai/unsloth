@@ -113,3 +113,16 @@ test("an older run pages from its saved parquet once its recipe job is gone", ()
   assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /datasetRows\(saved, offset, size\)/);
   assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /Math\.min\(read\.total, read\.view_rows\)/);
 });
+
+test("a schema transform's run downloads its own rows and is never published as the job's", () => {
+  const runs = readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8");
+  assert.match(runs, /downloadDataset=\{downloadRun\}/);
+  assert.match(runs, /if \(!record\.output_ref\) return downloadExecutionDataset\(record\);/);
+  assert.match(runs, /datasetExport\(saved\)/);
+  const view = readFileSync(
+    new URL("../src/features/recipe-studio/components/executions/executions-view.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(view, /downloadDataset\(selectedExecution\)/);
+  assert.match(view, /!selectedExecution\.output_ref/);
+});

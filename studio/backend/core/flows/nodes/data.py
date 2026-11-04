@@ -514,7 +514,7 @@ async def run_recipe(
             preview,
             total,
             kept,
-            output = dataset["ref"] if isinstance(reshaped, str) else None,
+            output = dataset.get("ref") if reshaped is not None else None,
         )
     except BaseException as exc:
         # A Stop or failure anywhere before the record is finished would leave it running, and the

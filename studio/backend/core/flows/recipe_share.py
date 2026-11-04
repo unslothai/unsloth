@@ -105,10 +105,10 @@ def share_recipe(recipe: dict, ui: dict | None = None) -> tuple[dict, dict]:
             if "paths" in source:
                 source["paths"] = []
             seed.pop("resolved_paths", None)
-        # Preview rows hold the seed's contents (a private repo's issues, an uploaded file).
-        if kind in ("hf", "github_repo", *_LOCAL_SEEDS):
-            ui.update(copy.deepcopy(_SEED_HINTS))
-            ui.pop("seed_total_rows", None)
+    # Preview rows hold a seed's contents (a private repo's issues, an uploaded file), and stay in
+    # the UI hints after the seed itself is removed: never shared, whatever the seed is now.
+    ui.update(copy.deepcopy(_SEED_HINTS))
+    ui.pop("seed_total_rows", None)
     return recipe, ui
 
 

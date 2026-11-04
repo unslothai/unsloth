@@ -15,15 +15,20 @@ import {
   cancelRecipeJob,
   getRecipeJobDataset,
 } from "@/features/recipe-studio/api";
+import {
+  type DownloadOutcome,
+  downloadExecutionDataset,
+} from "@/features/recipe-studio/components/executions/download-execution-dataset";
 import { ExecutionsView } from "@/features/recipe-studio/components/executions/executions-view";
 import type { RecipeExecutionRecord } from "@/features/recipe-studio/execution-types";
 import {
   normalizeDatasetRows,
   toErrorMessage,
 } from "@/features/recipe-studio/executions/execution-helpers";
+import { downloadFile } from "@/lib/native-files";
 import { toastError } from "@/shared/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { datasetRows, recipeRun, recipeRuns } from "../api";
+import { datasetExport, datasetRows, recipeRun, recipeRuns } from "../api";
 import { runFlow } from "../editor/run-controller";
 import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
@@ -271,12 +276,32 @@ function RecipeRunsOpen({ target }: { target: RecipeRunsTarget }) {
               onSelectExecution={setSelected}
               onCancelExecution={(id) => void cancel(id)}
               onLoadDatasetPage={(id, page) => void loadPage(id, page)}
+              downloadDataset={downloadRun}
             />
           )}
         </div>
       </DialogContent>
     </Dialog>
   );
+}
+
+/** A schema transform's run downloads its own rows; the job's export holds the untransformed ones. */
+async function downloadRun(
+  record: RecipeExecutionRecord,
+): Promise<DownloadOutcome> {
+  if (!record.output_ref) return downloadExecutionDataset(record);
+  const name = `${(record.run_name || record.id).replace(/[^\w.-]+/g, "-")}.jsonl`;
+  if (record.kind === "preview") {
+    // A preview's record keeps every transformed row.
+    const body = record.dataset
+      .map((row) => `${JSON.stringify(row)}\n`)
+      .join("");
+    await downloadFile(body, name, "application/x-ndjson");
+    return "saved";
+  }
+  const saved = savedRunDataset(record);
+  await downloadFile(await datasetExport(saved), name, "application/x-ndjson");
+  return "saved";
 }
 
 export default function RecipeRuns() {

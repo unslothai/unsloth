@@ -207,6 +207,18 @@ export const datasetRows = (value: unknown, offset: number, limit: number) =>
     json("POST", { value, offset, limit }),
   );
 
+/** Every row of a saved Data Recipe output (a schema transform's) as JSONL. */
+export async function datasetExport(value: unknown): Promise<Blob> {
+  const response = await transport(
+    `${FLOWS_API}/dataset-export`,
+    json("POST", { value }),
+  );
+  if (!response.ok) {
+    throw new FlowsApiError(await readFastApiError(response), response.status);
+  }
+  return response.blob();
+}
+
 export interface ImportReport {
   missing_models: PlanModel[];
   warnings: string[];
