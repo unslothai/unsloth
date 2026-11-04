@@ -6635,6 +6635,59 @@ def _prebuilt_optimizer(trainer, init, args, kwargs):
     return None
 
 
+def _cp_trainer_refusal(trainer_cls, cp) -> str:
+    """Why a trainer class carries no context parallel wrapper under UNSLOTH_CP_SIZE, and what to do."""
+    import sys
+
+    name = trainer_cls.__name__
+    bases = {c.__name__.removeprefix("Unsloth").removeprefix("_CPU") for c in trainer_cls.__mro__}
+    kind = next((k for k in ("SFTTrainer", "DPOTrainer", "GRPOTrainer") if k in bases), None)
+    head = (
+        f"Unsloth: cp x trainer: context parallel (UNSLOTH_CP_SIZE={cp}) was requested, but {name} "
+    )
+    if sys.modules.get("unsloth._cpu_init") is not None or getattr(
+        trainer_cls, "_unsloth_cpu", False
+    ):
+        return (
+            head
+            + "runs on Unsloth's CPU backend (no GPU was found), which uses TRL's own trainers and does not "
+            "wire context parallel; every rank would train on the whole sequence. Instead: launch on GPUs "
+            "(torchrun with CUDA devices visible), or drop cp."
+        )
+    if kind is None:
+        return (
+            head
+            + "is not one of the trainers context parallel hooks into (SFTTrainer, DPOTrainer, GRPOTrainer); "
+            "every rank would train on the whole sequence. Instead: use SFTTrainer (it takes a plain Trainer "
+            "script's arguments), or drop cp."
+        )
+    if os.environ.get("UNSLOTH_ALLOW_CPU", "0") == "1":
+        reason = "UNSLOTH_ALLOW_CPU=1 skips Unsloth's trainer patches"
+        fix = "unset UNSLOTH_ALLOW_CPU"
+    else:
+        try:
+            from .rl import PATCHED_TRAINER_BUILD_ERRORS
+        except Exception:
+            PATCHED_TRAINER_BUILD_ERRORS = {}
+        file = {
+            "SFTTrainer": "sft_trainer",
+            "DPOTrainer": "dpo_trainer",
+            "GRPOTrainer": "grpo_trainer",
+        }[kind]
+        built = PATCHED_TRAINER_BUILD_ERRORS.get(file)
+        reason = (
+            f"Unsloth's patched {kind} could not be built ({built})"
+            if built
+            else f"Unsloth's context parallel wrapper was not installed on {name} (import unsloth before trl)"
+        )
+        fix = "import unsloth before trl / transformers, and check the warning above for the build failure"
+    return (
+        head
+        + f"has no context parallel wrapper: {reason}; every rank would train on the whole sequence. "
+        f"Instead: {fix}, or drop cp."
+    )
+
+
 def _optimizer_kwargs_hold_params(trainer, init, args, kwargs):
     """Trainer(optimizer_cls_and_kwargs = (cls, {"params": ...})) carries parameters chosen before __init__."""
     value = kwargs.get("optimizer_cls_and_kwargs")
@@ -6679,11 +6732,7 @@ def _parallel_capabilities_pre(trainer, init, args, kwargs, model):
 
     cp = env_cp_size()
     if cp > 1 and not getattr(type(trainer), "__unsloth_context_parallel__", False):
-        raise NotImplementedError(
-            f"Unsloth: cp x trainer: context parallel (UNSLOTH_CP_SIZE={cp}) runs through SFTTrainer, "
-            f"DPOTrainer and GRPOTrainer; {type(trainer).__name__} would train every rank on the whole sequence. "
-            "Instead: use SFTTrainer (a plain Trainer script: SFTTrainer takes the same arguments), or drop cp."
-        )
+        raise NotImplementedError(_cp_trainer_refusal(type(trainer), cp))
     from .tp_env import env_layout
 
     layout = env_layout()

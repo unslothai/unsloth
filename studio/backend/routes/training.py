@@ -2226,6 +2226,7 @@ async def _admit_training_request(
         "is_decision": request.is_decision,
         "model_subfolder": request.model_subfolder,
         "decision_layout": request.decision_layout,
+        "decision_head": request.decision_head,
         "enable_wandb": request.enable_wandb,
         "wandb_token": request.wandb_token or "",
         "wandb_project": request.wandb_project or "",

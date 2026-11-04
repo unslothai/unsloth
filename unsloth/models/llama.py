@@ -88,6 +88,7 @@ from .loader_utils import (
     warn_if_bitsandbytes_quantized_nothing,
 )
 from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
+from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_boundary_labels,
@@ -5228,7 +5229,9 @@ class FastLlamaModel:
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
-        model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        model = FastLlamaModel.patch_peft_model(
+            model, use_gradient_checkpointing, _defer_fp8_lora = True
+        )
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
@@ -5236,6 +5239,7 @@ class FastLlamaModel:
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
+        enable_fp8_lora(model)
         skip_checkpointing(model, checkpoint_skip_layers)
 
         if ensure_weight_tying:
@@ -5336,7 +5340,11 @@ class FastLlamaModel:
         return model
 
     @staticmethod
-    def patch_peft_model(model, use_gradient_checkpointing = "unsloth"):
+    def patch_peft_model(
+        model,
+        use_gradient_checkpointing = "unsloth",
+        _defer_fp8_lora = False,
+    ):
         # Persist the GC mode: for_inference() clears it every GRPO step and TrainingArguments defaults
         # it to False, which would silently disable it at train time.
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
@@ -5565,6 +5573,8 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        if not _defer_fp8_lora:
+            enable_fp8_lora(model)
         _unsloth_install_pretrain_detector(model)
         _legacy_block_compile(model)
         return model
@@ -5576,6 +5586,7 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
         _tensor_parallel_for_inference(model)
+        restore_fp8_lora_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5648,6 +5659,7 @@ class FastLlamaModel:
             m = m.model
         _for_training(m)
         apply_training_mode()
+        enable_fp8_lora(model)
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)

@@ -494,7 +494,8 @@ def test_the_chat_claim_outlives_the_worker_that_earned_it():
     assert "on_prior_worker_released" in sig.parameters
 
     load_src = inspect.getsource(InferenceOrchestrator.load_model)
-    hook = load_src.index("on_prior_worker_released()")
+    # The fresh path's call; a context narrowed in the held worker has no teardown to wait for.
+    hook = load_src.rindex("on_prior_worker_released()")
     assert load_src.index("did not exit and still holds GPU") < hook
     assert load_src.index("if expected_free_gb is not None and not settled:") < hook
 

@@ -1878,6 +1878,29 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a title from the first message.",
+      mlWarmup: {
+        sectionTitle: "Startup performance",
+        description:
+          "Prepare selected features for faster first use. All off by default. Options may load shared dependencies and use more RAM while idle.",
+        restartRequired: "Changes apply after restarting Unsloth.",
+        hardwareLabel: "Hardware detection",
+        hardwareDescription: "Detect GPUs and prepare PyTorch.",
+        textLabel: "Text models",
+        textDescription: "Prepare Transformers text-model support.",
+        datasetsLabel: "Dataset preparation",
+        datasetsDescription: "Prepare Datasets and its dependencies for previews and processing.",
+        mediaLabel: "Image and video models",
+        mediaDescription: "Prepare Diffusers and shared model dependencies.",
+        advanced: "Advanced",
+        quantizationLabel: "Image quantization prechecks",
+        quantizationDescription:
+          "Check support before the first quantized image model load. Can briefly increase RAM use.",
+        requiredBySelections: "Required by your selections.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_STUDIO_DISABLE_TORCH_WARM in the backend environment.",
+        loadError: "Failed to load startup warmup settings.",
+        saveError: "Failed to save startup warmup settings.",
+      },
       helperLlm: {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
@@ -1942,7 +1965,7 @@ export const en = {
         idleUnsaved: "Not saved yet.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before a model is unloaded or switched, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
         keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
@@ -2983,8 +3006,8 @@ export const en = {
         "Keep Edit response on every response, instead of in the More menu.",
       turnNavigation: "Turn navigation",
       turnNavigationDescription: "Show your prompts as a rail at the left edge of long chats. Hover to preview a turn, click to jump to it, and bookmark turns to find them again.",
-      composerAtBottom: "Composer at the bottom",
-      composerAtBottomDescription: "Start new chats with the composer at the bottom of the page instead of the middle.",
+      composerPosition: "Composer position",
+      composerPositionDescription: "Where the composer sits when a new chat starts, from the top of the page down to the bottom.",
       projectAttachments: "Share files across a project",
       projectAttachmentsDescription:
         "Make new chat attachments available to every chat in the project.",
@@ -3455,6 +3478,9 @@ export const en = {
         docs: "Docs",
         docsLabel: "Open the Decision API docs",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
+        codeTitle: "Call it from code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Other MCP clients connect here with the same token.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
         enableRemoteDescription: "Serves /v1/systemone.",
@@ -3474,7 +3500,7 @@ export const en = {
         backend: "Runtime",
         backendAuto: "Auto",
         backendDescription:
-          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
+          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. Exported Laya fine-tunes use llama.cpp when it is chosen here. llama.cpp also reads images.",
         backendDescriptionMlx:
           "Auto serves Clef through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads images for Clef models only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",
@@ -3606,7 +3632,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app connected to an already-running Unsloth server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
+          "Connected to an Unsloth server on port {port} that this app did not start, such as `unsloth studio` in a terminal. Stop it where it was started, then quit and reopen the app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
@@ -5109,6 +5135,8 @@ export const en = {
     removeLevel: "Remove level {n}",
     addLevel: "Add level",
     jsonHelp: "The request body. Run sends it as written.",
+    copyBody: "Copy body",
+    copyCurl: "Copy as cURL",
     examples: "Examples",
     presetToolApproval: "Approve agent tool calls",
     presetPromptInjection: "Catch prompt injection",
@@ -5504,6 +5532,7 @@ export const en = {
   generationStats: {
     working: "Working...",
     processingPrompt: "Processing prompt {percent}%",
+    compactingContext: "Compacting context...",
     // {eta}: a short duration such as "12s" or "2m 10s".
     timeLeft: "{eta} left",
     tokensOne: "{count} token",

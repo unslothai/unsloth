@@ -23,6 +23,7 @@ from auth.authentication import get_current_subject
 from auth import policy
 from state import active_generations, run_subscribers, unattended_runs
 from utils.account_context import current_account, current_account_id, run_as
+from core.inference.chat_generation_runs import detach_embedded_images
 from core.inference.llama_keepwarm import inference_lifecycle_gate
 from models.inference import ChatCompletionRequest
 from storage import chat_generation_runs_db as db
@@ -204,12 +205,15 @@ def _sanitize_request(payload: CreateChatGenerationRun) -> dict[str, Any]:
             status_code = 400,
             detail = "Durable chat runs are available only for local inference",
         )
-    # A media turn persists verbatim, so refuse base64 blobs in fields or in earlier
-    # messages[].content (image follow-ups no longer set top-level image_base64).
+    # This turn's media stays legacy; images of earlier turns are detached before the request persists.
+    latest_user = max(
+        (index for index, message in enumerate(request.messages) if message.role == "user"),
+        default = 0,
+    )
     if (
         any(raw.get(field) not in (None, "") for field in _MEDIA_FIELDS)
         or _messages_have_input_audio(request.messages)
-        or _messages_have_embedded_image(request.messages)
+        or _messages_have_embedded_image(request.messages[latest_user:])
         or _request_has_video(request)
     ):
         raise HTTPException(
@@ -355,6 +359,7 @@ async def create_chat_generation_run(
     current_subject: str = Depends(get_current_subject),
 ):
     sanitized = _sanitize_request(payload)
+    images = detach_embedded_images(sanitized)
     from routes.inference import _request_used_api_key
 
     sanitized[db.API_MONITOR_ORIGIN_FIELD] = _request_used_api_key(request)
@@ -387,6 +392,7 @@ async def create_chat_generation_run(
                 run["id"],
                 thread_id = run["threadId"],
                 model = run["requestPayload"].get("model"),
+                images = images,
             )
     if payload.stopWhenUnattended and run["status"] not in db.TERMINAL_STATUSES:
         _watch_unattended(request, run["id"])
