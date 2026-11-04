@@ -424,7 +424,10 @@ async def run_recipe(
     artifact = status.get("artifact_path") if isinstance(status, dict) else None
     saved = isinstance(artifact, str) and artifact.strip()
     try:
-        kept = None if saved else await recipe_rows(ctx, job_id)
+        # Every row the job made, up to the most a Recipe Dataset step can ask for.
+        kept = (
+            None if saved else await recipe_rows(ctx, job_id, limit = max(MAX_RECIPE_ROWS, rows or 0))
+        )
     except BaseException as exc:
         # finish() never runs, so the record would stay running and the Runs pane keep polling.
         failed = isinstance(exc, FlowNodeError)
@@ -581,6 +584,10 @@ def lead_columns(names: Iterable[str], first: Sequence[str]) -> list[str]:
     names = set(names)
     lead = [n for n in dict.fromkeys(first) if n in names]
     return lead + sorted(names - set(lead))
+
+
+# The Recipe Dataset step's rows cap (specs.py), the Run dialog's.
+MAX_RECIPE_ROWS = 200_000
 
 
 async def recipe_rows(

@@ -276,6 +276,23 @@ function untouchedFromSaved(
   return next;
 }
 
+/** `built` with every part the edit left as it was (`prior` = the same thing built before the edit)
+ * taken from `saved`, nested objects part by part. */
+function keepUntouched(built: unknown, saved: unknown, prior: unknown): unknown {
+  if (saved === undefined) return built;
+  if (same(prior, built)) return saved;
+  const b = asRecord(built);
+  const v = asRecord(saved);
+  const p = asRecord(prior);
+  if (!b || !v || !p) return built;
+  const next: Record<string, unknown> = {};
+  for (const k of new Set([...Object.keys(b), ...Object.keys(v), ...Object.keys(p)])) {
+    const kept = same(p[k], b[k]) ? v[k] : keepUntouched(b[k], v[k], p[k]);
+    if (kept !== undefined) next[k] = kept;
+  }
+  return next;
+}
+
 /** A provider, preset or tool profile the edit did not touch is kept exactly as saved, settings the
  * forms do not show included (a preset's max_parallel_requests, a uniform temperature); an edited
  * or renamed one keeps those settings and every field its form left alone, and takes what the form changed. */
@@ -394,12 +411,19 @@ export function commitStudioEdit(
   ).payload.recipe as Record<string, unknown>;
   const config: Record<string, unknown> = { ...(group.config ?? {}) };
   for (const [key, value] of Object.entries(recipe)) {
-    if (value === undefined) delete config[key];
+    const saved = group.config?.[key];
+    if (!ENTRY_NAME[key] && key !== "processors") {
+      // The seed and other single settings: what the edit left alone stays as saved (an HF seed's
+      // split and subset, which the form does not hold), what it changed comes from the form.
+      const kept = keepUntouched(value, saved, priorRecipe[key]);
+      if (kept === undefined) delete config[key];
+      else config[key] = kept;
+    } else if (value === undefined) delete config[key];
     else
       config[key] = keepUnshown(
         key,
         value,
-        group.config?.[key],
+        saved,
         before,
         configs,
         priorRecipe[key],

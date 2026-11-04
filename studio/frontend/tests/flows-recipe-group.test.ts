@@ -1233,3 +1233,24 @@ test("quoted text in a template reads no column, and deleting a {% %} reader its
   assert.equal(useDocStore.getState().graph.nodes[sql.id], undefined);
   assert.ok(useDocStore.getState().graph.nodes[prompt.id]);
 });
+
+test("an edit to another block keeps the seed exactly as saved, an HF seed's split and subset included", () => {
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const seed = {
+    source: { seed_type: "hf", path: "nyu-mll/glue", split: "validation", subset: "sst2" },
+    sampling_strategy: "ordered",
+  };
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const saved = { ...group, config: { ...cfg, seed_config: seed } };
+  const view = studioView(saved, nodes);
+  const provider = Object.values(view.configs).find((c) => c.kind === "model_provider");
+  assert.ok(provider);
+  const edited = commitStudioEdit(
+    saved,
+    nodes,
+    view,
+    applyConfigPatch(view.configs, provider.id, { endpoint: "https://example.com/v1" } as never),
+  );
+  assert.deepEqual((edited.group?.config as Record<string, unknown>).seed_config, seed);
+});

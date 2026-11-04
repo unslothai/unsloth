@@ -863,3 +863,39 @@ def test_a_recipe_on_chats_model_is_cached_under_the_model_it_ran_on(monkeypatch
     loaded["name"] = "org/model-a"
     asyncio.run(run())
     assert ran == ["org/model-b", "org/model-a"]
+
+
+def test_a_preview_over_100k_rows_keeps_every_row_it_made(monkeypatch):
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: None)
+    monkeypatch.setattr(data, "POLL_S", 0)
+    asked = []
+    real = data.recipe_rows
+
+    async def recording(
+        ctx,
+        job_id,
+        limit = 100_000,
+    ):
+        asked.append(limit)
+        return await real(ctx, job_id, limit = 2)
+
+    monkeypatch.setattr(data, "recipe_rows", recording)
+    doc = _flow()
+    routes = _job_routes("completed", preview_rows = 150_000)
+
+    def no_artifact(method, path, params, body):
+        if path == "/api/hub/datasets/upload":
+            return {"stored_path": "/x/uploaded.jsonl"}
+        found = routes(method, path, params, body)
+        if path.endswith("/status"):
+            found["artifact_path"] = None
+        return found
+
+    ctx = _Ctx(
+        no_artifact, params = {RECIPE_PARAM: _compiled(doc), "rows": 150_000, "mode": "preview"}
+    )
+    ctx.doc = doc
+    asyncio.run(data.recipe_group(ctx))
+    assert asked and asked[0] >= 150_000
