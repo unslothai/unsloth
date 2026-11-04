@@ -96,6 +96,14 @@ from utils.chat_preferences_settings import (
     migrate_show_model_disclaimer,
     set_show_model_disclaimer,
 )
+from utils.ml_warmup_settings import (
+    ML_WARMUP_FEATURES,
+    MlWarmupFeature,
+    effective_ml_warmup_features,
+    get_ml_warmup_features,
+    ml_warmup_disabled_by_env,
+    set_ml_warmup_features,
+)
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
@@ -760,6 +768,16 @@ class SystemOneDownloadPlan(BaseModel):
     error: Optional[str] = None
 
 
+class MlWarmupPayload(BaseModel):
+    features: list[MlWarmupFeature]
+
+
+class MlWarmupResponse(BaseModel):
+    features: list[MlWarmupFeature]
+    effective_features: list[MlWarmupFeature]
+    disabled_by_env: bool
+
+
 class HelperPrecachePayload(BaseModel):
     enabled: bool
 
@@ -1188,6 +1206,16 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
     )
 
 
+def _ml_warmup_response(features: frozenset[str] | None = None) -> MlWarmupResponse:
+    selected = get_ml_warmup_features() if features is None else features
+    effective = effective_ml_warmup_features(selected)
+    return MlWarmupResponse(
+        features = [feature for feature in ML_WARMUP_FEATURES if feature in selected],
+        effective_features = [feature for feature in ML_WARMUP_FEATURES if feature in effective],
+        disabled_by_env = ml_warmup_disabled_by_env(),
+    )
+
+
 def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResponse:
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
@@ -1610,6 +1638,19 @@ def update_tool_result_limit(
         "settings.tool_result_limit_updated subject=%s max_chars=%s", current_subject, max_chars
     )
     return _tool_result_limit_response()
+
+
+@_shared_settings_router.get("/ml-warmup", response_model = MlWarmupResponse)
+def get_ml_warmup(current_subject: str = Depends(get_current_subject)) -> MlWarmupResponse:
+    return _ml_warmup_response()
+
+
+@_owner_settings_router.put("/ml-warmup", response_model = MlWarmupResponse)
+def update_ml_warmup(
+    payload: MlWarmupPayload, current_subject: str = Depends(get_current_subject)
+) -> MlWarmupResponse:
+    """Save the selected ML warmup features for the next Unsloth startup."""
+    return _ml_warmup_response(set_ml_warmup_features(payload.features))
 
 
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)

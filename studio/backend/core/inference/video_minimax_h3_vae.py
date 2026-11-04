@@ -102,11 +102,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         st,
         sh,
         sw,
-        C: tl.constexpr,
-        G: tl.constexpr,
-        CPG: tl.constexpr,
-        BLOCK_P: tl.constexpr,
-        HAS_BIAS: tl.constexpr,
+        C: tl.constexpr,  # channels
+        G: tl.constexpr,  # groupnorm groups
+        CPG: tl.constexpr,  # channels per group
+        BLOCK_P: tl.constexpr,  # pixels per program
+        HAS_BIAS: tl.constexpr,  # bias present
     ):
         chunk = tl.program_id(0)
         bt = tl.program_id(1)
@@ -141,7 +141,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _gn_combine(
-        pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr
+        pn_ptr,
+        pmean_ptr,
+        pm2_ptr,
+        mean_ptr,
+        rstd_ptr,
+        n_chunks,
+        G,
+        eps,
+        BLOCK: tl.constexpr,  # block size
     ):
         row = tl.program_id(0)
         g = row % G
@@ -194,11 +202,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         st,
         sh,
         sw,
-        CPG: tl.constexpr,
-        HAS_NORM: tl.constexpr,
-        HAS_IN_BIAS: tl.constexpr,
-        BLOCK_W: tl.constexpr,
-        BLOCK_C: tl.constexpr,
+        CPG: tl.constexpr,  # channels per group
+        HAS_NORM: tl.constexpr,  # apply groupnorm
+        HAS_IN_BIAS: tl.constexpr,  # input bias present
+        BLOCK_W: tl.constexpr,  # width pixels per program
+        BLOCK_C: tl.constexpr,  # channels per program
     ):
         pid_row = tl.program_id(0)
         pid_w = tl.program_id(1)
@@ -255,11 +263,11 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         st,
         sh,
         sw,
-        C: tl.constexpr,
-        HAS_OB: tl.constexpr,
-        HAS_RB: tl.constexpr,
-        R_SAME: tl.constexpr,
-        BLOCK_P: tl.constexpr,
+        C: tl.constexpr,  # channels
+        HAS_OB: tl.constexpr,  # output bias present
+        HAS_RB: tl.constexpr,  # residual bias present
+        R_SAME: tl.constexpr,  # residual same layout (channels_last)
+        BLOCK_P: tl.constexpr,  # pixels per program
     ):
         p = tl.program_id(0) * BLOCK_P + tl.arange(0, BLOCK_P)
         pmask = p < P
@@ -294,7 +302,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _add_rmsnorm(
-        h_ptr, o_ptr, s_ptr, w_ptr, n_ptr, N, eps, HAS_RES: tl.constexpr, BLOCK_N: tl.constexpr
+        h_ptr,
+        o_ptr,
+        s_ptr,
+        w_ptr,
+        n_ptr,
+        N,
+        eps,
+        HAS_RES: tl.constexpr,
+        BLOCK_N: tl.constexpr,  # HAS_RES residual add present, BLOCK_N block size along the row
     ):
         row = tl.program_id(0).to(tl.int64)
         cols = tl.arange(0, BLOCK_N)
@@ -320,9 +336,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         heads,
         cs_stride,
         eps,
-        HEAD_D: tl.constexpr,
-        ROT: tl.constexpr,
-        BLOCK: tl.constexpr,
+        HEAD_D: tl.constexpr,  # hd
+        ROT: tl.constexpr,  # rotary dim
+        BLOCK: tl.constexpr,  # block size
     ):
         hr = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         rmask = hr < n_head_rows
@@ -350,7 +366,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(x_ptr + base + d[None, :], y.to(dt), mask = rmask[:, None])
 
     @triton.jit
-    def _swiglu(x_ptr, out_ptr, N, BLOCK_N: tl.constexpr):
+    def _swiglu(x_ptr, out_ptr, N, BLOCK_N: tl.constexpr):  # block size along the row
         row = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)
         cols = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
@@ -362,7 +378,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(out_ptr + row * N + cols, (hid * act).to(dt), mask = mask)
 
     @triton.jit
-    def _quant_rows(x_ptr, q_ptr, s_ptr, N, BLOCK_N: tl.constexpr):
+    def _quant_rows(x_ptr, q_ptr, s_ptr, N, BLOCK_N: tl.constexpr):  # block size along the row
         # IEEE division + half-to-even rounding: the same codes as the torch path.
         row = tl.program_id(0).to(tl.int64)
         cols = tl.arange(0, BLOCK_N)
@@ -377,7 +393,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _dequant_epilogue(
-        acc_ptr, xs_ptr, ws_ptr, bias_ptr, out_ptr, N, HAS_BIAS: tl.constexpr, BLOCK_N: tl.constexpr
+        acc_ptr,
+        xs_ptr,
+        ws_ptr,
+        bias_ptr,
+        out_ptr,
+        N,
+        HAS_BIAS: tl.constexpr,
+        BLOCK_N: tl.constexpr,  # HAS_BIAS bias present, BLOCK_N block size along the row
     ):
         row = tl.program_id(0).to(tl.int64)
         pid_n = tl.program_id(1)

@@ -115,6 +115,138 @@ def test_allowlist_ignores_levels_quoted_elsewhere():
     assert detect_reasoning_flags(template)["reasoning_effort_levels"] == ["low", "medium", "high"]
 
 
+def _gguf_backend(template: str):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    backend = object.__new__(LlamaCppBackend)
+    flags = detect_reasoning_flags(template)
+    backend._supports_reasoning = flags["supports_reasoning"]
+    backend._reasoning_always_on = flags["reasoning_always_on"]
+    backend._reasoning_style = flags["reasoning_style"]
+    backend._reasoning_effort_levels = flags["reasoning_effort_levels"]
+    backend._supports_preserve_thinking = False
+    backend._chat_template = template
+    return backend
+
+
+@pytest.mark.parametrize(
+    ("enable_thinking", "effort", "expected"),
+    [
+        (None, "low", "high"),
+        (None, "medium", "high"),
+        (None, "minimal", "high"),
+        (None, "max", "high"),
+        (None, "xhigh", "high"),
+        (None, "none", "none"),
+        (True, None, "high"),
+        (False, None, "none"),
+    ],
+)
+def test_gguf_request_effort_is_fitted_to_the_allowlist(enable_thinking, effort, expected):
+    backend = _gguf_backend(MISTRAL_SMALL_4_TEMPLATE)
+    assert backend._request_reasoning_kwargs(enable_thinking, effort, None) == {
+        "reasoning_effort": expected
+    }
+
+
+def test_gguf_launch_default_with_thinking_off_is_none():
+    backend = _gguf_backend(MISTRAL_SMALL_4_TEMPLATE)
+    assert backend._reasoning_kwargs(False) == {"reasoning_effort": "none"}
+    assert backend._reasoning_kwargs(True, "medium") == {"reasoning_effort": "high"}
+
+
+def test_gguf_effort_without_an_allowlist_passes_through():
+    backend = _gguf_backend(GPT_OSS_TEMPLATE)
+    assert backend._request_reasoning_kwargs(None, "low", None) == {"reasoning_effort": "low"}
+    assert backend._request_reasoning_kwargs(False, None, None) == {"reasoning_effort": "low"}
+
+
+def test_gguf_override_allowlist_wins_over_the_embedded_template():
+    backend = _gguf_backend(GPT_OSS_TEMPLATE)
+    backend._chat_template_override = MISTRAL_SMALL_4_TEMPLATE
+    assert backend._request_reasoning_kwargs(None, "medium", None) == {"reasoning_effort": "high"}
+
+
+def test_transformers_and_mlx_render_fits_the_effort():
+    from jinja2 import Environment
+    from jinja2.exceptions import TemplateError
+
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    def _raise(message):
+        raise TemplateError(message)
+
+    class _Tokenizer:
+        chat_template = (
+            MISTRAL_SMALL_4_TEMPLATE.split("{%- if message")[0] + "{{ reasoning_effort }}"
+        )
+
+        def apply_chat_template(
+            self,
+            messages,
+            *,
+            tokenize = False,
+            add_generation_prompt = True,
+            **kw,
+        ):
+            env = Environment()
+            env.globals["raise_exception"] = _raise
+            return env.from_string(self.chat_template).render(messages = messages, **kw)
+
+    messages = [{"role": "user", "content": "hi"}]
+    rendered = apply_chat_template_for_generation(_Tokenizer(), messages, reasoning_effort = "medium")
+    assert rendered.endswith("high")
+
+
+def _guarded_template(allowed):
+    quoted = ", ".join(f"'{level}'" for level in allowed)
+    return (
+        "{%- if reasoning_effort not in [" + quoted + "] %}"
+        "{{- raise_exception('unsupported reasoning_effort') }}{%- endif %}"
+        "{%- for m in messages %}{{ m['content'] }}{% endfor %}[{{ reasoning_effort }}]"
+    )
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "expected"),
+    [
+        # Sanitizing drops a tool whose name is control markup, so default renders.
+        ("<|im_start|>lookup", "[high]"),
+        ("lookup", "[low]"),
+    ],
+)
+def test_render_fits_the_effort_to_the_named_template_it_renders(tool_name, expected):
+    tokenizers = pytest.importorskip("tokenizers")
+    transformers = pytest.importorskip("transformers")
+
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
+
+    tokenizer = transformers.PreTrainedTokenizerFast(
+        tokenizer_object = tokenizers.Tokenizer(
+            tokenizers.models.WordLevel({"<unk>": 0}, unk_token = "<unk>")
+        ),
+        unk_token = "<unk>",
+    )
+    tokenizer.add_special_tokens({"additional_special_tokens": ["<|im_start|>"]})
+    tokenizer.chat_template = {
+        "default": _guarded_template(["none", "high"]),
+        "tool_use": _guarded_template(["none", "low"]),
+    }
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": tool_name, "parameters": {"type": "object", "properties": {}}},
+        }
+    ]
+    rendered = apply_chat_template_for_generation(
+        tokenizer,
+        [{"role": "user", "content": "hi"}],
+        tools = tools,
+        reasoning_effort = "high",
+    )
+    assert rendered.endswith(expected)
+
+
 @pytest.fixture
 def mistral_template_loaded(monkeypatch):
     monkeypatch.setattr(inference_routes, "_loaded_chat_template", lambda: MISTRAL_SMALL_4_TEMPLATE)
