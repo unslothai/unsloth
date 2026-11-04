@@ -414,3 +414,29 @@ def test_an_on_device_pick_keys_on_the_snapshot_it_trains_from(tmp_path, monkeyp
     # No On device pick: the key is unchanged from before.
     Ctx.params = {"base_model": "owner/model"}
     assert "base_model_snapshot" not in asyncio.run(training.finetune_cache_material(Ctx()))
+
+
+def test_a_local_vision_set_trains_again_since_its_images_are_not_hashed(tmp_path, monkeypatch):
+    import asyncio
+
+    async def material(ctx, *args):
+        return {"rows": "same"}
+
+    monkeypatch.setattr(training, "dataset_material", material)
+    monkeypatch.setattr(training, "_model_material", material)
+
+    class Ctx:
+        caller = None
+        inputs = {"dataset": {"kind": "dataset", "source": "local", "ref": "uploads/a/scans.jsonl"}}
+        params = {"base_model": "owner/model", "task": "vision"}
+
+    # scan.jfif replaced in place leaves the rows the same: nothing to key on, so no reuse.
+    assert asyncio.run(training.finetune_cache_material(Ctx())) is None
+    Ctx.params = {**Ctx.params, "task": "audio"}
+    assert asyncio.run(training.finetune_cache_material(Ctx())) is None
+    # A Hub vision set is keyed on its revision, which covers the images it holds; text is unchanged.
+    Ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/scans"}}
+    assert asyncio.run(training.finetune_cache_material(Ctx())) is not None
+    Ctx.inputs = {"dataset": {"kind": "dataset", "source": "local", "ref": "uploads/a/t.jsonl"}}
+    Ctx.params = {**Ctx.params, "task": "text"}
+    assert asyncio.run(training.finetune_cache_material(Ctx())) is not None

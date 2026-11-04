@@ -613,6 +613,13 @@ def _loader_repos(base: str, load_in_4bit: bool) -> list[str]:
 async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
     """What the params can't show: the dataset's content and, for GRPO, the reward rules.
     None (an unreachable Hub, a missing file) means train again rather than guess."""
+    dataset = ctx.inputs.get("dataset")
+    if str(ctx.params.get("task") or "text") in ("vision", "audio") and not (
+        isinstance(dataset, dict) and dataset.get("source") == "hf"
+    ):
+        # A local vision or audio set names image and sound files training reads (scan.jfif, a path
+        # with no extension): their content is not in the rows' hash, so train again.
+        return None
     found = await dataset_material(ctx)
     if found is None:
         return None
