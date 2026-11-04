@@ -887,19 +887,23 @@ def test_held_out_decisions_count_every_clef_question():
 
 
 @pytest.mark.parametrize(
-    "model_type, mlx, head",
+    "model_type, mlx, zoo_d1, head",
     [
-        ("lfm3_omni", True, "d1"),
-        ("lfm3_vl", True, "d1"),
-        ("lfm3", True, "clef"),
-        ("qwen3_5", True, "clef"),
-        ("lfm3_omni", False, "clef"),
+        ("lfm3_omni", True, True, "d1"),
+        ("lfm3_vl", True, True, "d1"),
+        ("lfm3", True, True, "clef"),
+        ("qwen3_5", True, True, "clef"),
+        ("lfm3_omni", False, True, "clef"),
+        ("lfm3_vl", True, False, "clef"),
     ],
 )
-def test_lfm3_vision_and_omni_train_as_a_d1_on_mlx(tmp_path, monkeypatch, model_type, mlx, head):
+def test_lfm3_vision_and_omni_train_as_a_d1_on_mlx(
+    tmp_path, monkeypatch, model_type, mlx, zoo_d1, head
+):
     from core.training import decision_trainer
 
     monkeypatch.setattr(decision_trainer, "_is_mlx", lambda: mlx)
+    monkeypatch.setattr(decision_trainer, "_zoo_trains_d1", lambda: zoo_d1)
     (tmp_path / "config.json").write_text(json.dumps({"model_type": model_type}), encoding = "utf-8")
     assert decision_trainer._lm_decision_head(str(tmp_path), None) == head
 

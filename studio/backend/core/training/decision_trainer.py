@@ -349,8 +349,17 @@ def _is_mlx() -> bool:
     return hardware.DEVICE == hardware.DeviceType.MLX
 
 
+def _zoo_trains_d1() -> bool:
+    try:
+        from unsloth_zoo.mlx import decision
+    except Exception:
+        return False
+    return hasattr(decision, "load_language_model_as_d1")
+
+
 def _lm_decision_head(model_name: str, token: str | None) -> str:
-    if not _is_mlx():
+    # An unsloth-zoo without the d1 trainer keeps the Clef head these models trained into before.
+    if not _is_mlx() or not _zoo_trains_d1():
         return "clef"
     try:
         folder = Path(model_name).expanduser()
