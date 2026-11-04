@@ -31,6 +31,15 @@ test("the Decision tab and the API Monitor pass the key and tunnel to the sectio
   );
 });
 
+test("the API Monitor's examples follow the keyless policy, as the Settings tab's do", () => {
+  const monitor = readSrc("features/api-monitor/api-monitor-page.tsx");
+  assert.match(monitor, /useKeylessExampleAccess\(isOwner\)/);
+  for (const section of ["MediaApiExamples", "AudioApiExamples", "DecisionApiSection"]) {
+    assert.match(monitor, new RegExp(`<${section}[^>]*\\{\\.\\.\\.keyless\\}`), section);
+  }
+  assert.match(readSrc("features/settings/tabs/api-keys-tab.tsx"), /useKeylessExampleAccess\(isOwner\)/);
+});
+
 test("the section shows examples and the MCP URL on the host in use", () => {
   const section = readSrc("features/settings/components/decision-api-section.tsx");
   assert.match(section, /<ApiExampleBox/);

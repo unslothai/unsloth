@@ -35,6 +35,7 @@ import {
   loadLanAccess,
   loadMultiModelEnabled,
   publishLanUrls,
+  useKeylessExampleAccess,
   useSettingsDialogStore,
 } from "@/features/settings";
 // Not through the barrel: these pull in chat, which every barrel importer would then load.
@@ -919,6 +920,12 @@ function QuickStart({
   const [useTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<ApiExampleKind>("chat");
   const freshKey = useFreshApiKeyStore((s) => s.key);
+  const isOwner = useIsAccountOwner();
+  const keylessAccess = useKeylessExampleAccess(isOwner);
+  const keyless = {
+    keylessScope: keylessAccess.scope,
+    keylessExposure: keylessAccess.exposure,
+  };
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -961,18 +968,21 @@ function QuickStart({
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
+              {...keyless}
             />
           ) : kind === "audio" ? (
             <AudioApiExamples
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
+              {...keyless}
             />
           ) : (
             <DecisionApiSection
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
+              {...keyless}
             />
           )}
         </div>
