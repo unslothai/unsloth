@@ -3076,18 +3076,26 @@ def unsloth_fast_generate(self, *args, **kwargs):
     # decided once per call, so the prefill and every decode step agree.
     with _decode_graphs.generate_scope():
         graphs = _decode_graphs.enabled()
+        plan, token = "graph", None
         if graphs:
-            _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
-            # Buffers / graphs kept from earlier calls are freed when this call would not fit beside them.
+            max_len = _generation_max_len(self, args, kwargs)
+            # Frees what earlier calls kept when this one would not fit beside it; a call whose graphed
+            # estimate does not fit even then decodes eagerly from the start.
             try:
-                _decode_graphs.make_room(
-                    self, _generation_input_ids(args, kwargs), dtype, KV_CACHE_INCREMENT
+                plan, token = _decode_graphs.plan_call(
+                    self, _generation_input_ids(args, kwargs), dtype, KV_CACHE_INCREMENT, max_len
                 )
             except Exception:
-                pass
+                plan, token = "graph", None
+            if plan == "eager":
+                graphs = False
+            else:
+                _decode_graphs.start_generation(max_len)
+        redos = _decode_graphs.EAGER_REDOS
         # Mixed precision autocast.
         try:
             with (
+                _decode_graphs.eager_scope() if plan == "eager" else contextlib.nullcontext(),
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
             ):
@@ -3098,6 +3106,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
         finally:
             if graphs:
                 _decode_graphs.end_generation()
+        if graphs and _decode_graphs.EAGER_REDOS == redos:
+            _decode_graphs.record_need(self, token)
     if graphs and restore_training_mode:
         # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
         # decode buffers for training.

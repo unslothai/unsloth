@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Graph decode memory: make_room() frees decode buffers / graphs kept from earlier generate() calls only
-when the new call would not fit beside them (measured free memory, mocked here), and
-generate_with_fallback() redoes an out-of-memory graphed call once eagerly. CPU only: the module is
+"""Graph decode memory: plan_call() frees decode buffers / graphs kept from earlier generate() calls only
+when the new call would not fit beside them (measured free memory, mocked here) and runs a call whose
+graphed need does not fit even then eagerly from the start; generate_with_fallback() redoes an
+out-of-memory graphed call once eagerly. CPU only: the module is
 loaded by file path and the capture / CUDA memory queries are stand-ins."""
 
 import importlib.util
@@ -77,52 +78,100 @@ def _ids(bsz, prompt):
     return types.SimpleNamespace(shape = (bsz, prompt), device = CUDA0)
 
 
-def _need(G, bsz, prompt):
-    return G._call_bytes(_Model().config, bsz, prompt, torch.float16, 512)[1]
+def _need(G, bsz, prompt, max_len = 0):
+    rows, kv, work = G._call_bytes(_Model().config, bsz, prompt, torch.float16, 512, max_len)
+    return G.CALIB_WORK * (kv + work) + G.CALIB_GRAPH_KV * kv
 
 
-def test_make_room_frees_kept_buffers_when_the_call_does_not_fit(G):
+def _plan(G, model, bsz, prompt, max_len = 0):
+    return G.plan_call(model, _ids(bsz, prompt), torch.float16, 512, max_len)
+
+
+def test_plan_frees_kept_buffers_when_the_call_does_not_fit_beside_them(G):
     model = _Model()
     model.keep(1, 2816)
     model.keep(4, 2816)
-    # bs16 x 2048 on Qwen3-4B: ~6.6 GB of KV cache + the prefill working set.
-    need = _need(G, 16, 2048)
-    assert 8 * GB < need < 11 * GB
-    G._free_bytes = lambda device: int(1.1 * need)
-    assert G.make_room(model, _ids(16, 2048), torch.float16, 512) is True
-    assert model.held() == 0 and G.emptied == 1
+    need = _need(G, 16, 2048, 2081)
+    # Qwen3-4B bs16 x 2048: ~6.2 GiB of KV cache + the prefill working set, calibrated.
+    assert 11 * GB < need < 13 * GB
+    free = iter([int(0.9 * need), int(1.1 * need)])  # before / after the release
+    G._free_bytes = lambda device: next(free)
+    plan, token = _plan(G, model, 16, 2048, 2081)
+    assert plan == "graph" and token is not None
+    assert model.held() == 0 and G.emptied == 1 and G.EAGER_UNFIT == 0
     assert not any("paged_attention" in a.__dict__ for a in model.attns)
 
 
-def test_make_room_keeps_buffers_when_there_is_room(G):
+def test_plan_runs_a_call_that_cannot_fit_eagerly_from_the_start(G):
+    model = _Model()
+    model.keep(4, 2816)
+    G._free_bytes = lambda device: int(0.95 * _need(G, 16, 2048, 2081))
+    plan, token = _plan(G, model, 16, 2048, 2081)
+    assert (plan, token) == ("eager", None)
+    # Kept state was freed first (the eager call needs the memory too), then the call was counted.
+    assert model.held() == 0 and G.EAGER_UNFIT == 1
+    # Nothing kept, still too small: eager again, no release.
+    assert _plan(G, model, 16, 2048, 2081)[0] == "eager" and G.EAGER_UNFIT == 2 and G.emptied == 1
+
+
+def test_plan_keeps_buffers_when_there_is_room(G):
     model = _Model()
     model.keep(1, 2816)
     G._free_bytes = lambda device: 20 * GB
-    assert G.make_room(model, _ids(16, 2048), torch.float16, 512) is False
-    assert model.held() == 1 and G.emptied == 0
+    assert _plan(G, model, 16, 2048)[0] == "graph"
+    assert model.held() == 1 and G.emptied == 0 and G.EAGER_UNFIT == 0
 
 
-def test_make_room_counts_a_reusable_buffer_of_the_same_batch_size(G):
+def test_plan_counts_a_reusable_buffer_of_the_same_batch_size(G):
     model = _Model(layers = 1)
-    rows, need = G._call_bytes(model.config, 4, 128, torch.float16, 512)
-    # A kept bs4 cache with enough rows is reused: only the rest of the call must fit.
+    rows, kv, work = G._call_bytes(model.config, 4, 128, torch.float16, 512)
     model.keep(4, rows)
     reused = model.attns[0]._unsloth_graph_buffers[(4, torch.float16, CUDA0)][0]
-    reused_bytes = reused.numel() * reused.element_size()
-    G._free_bytes = lambda device: int(G.ROOM_MARGIN * (need - reused_bytes)) + 1
-    assert G.make_room(model, _ids(4, 128), torch.float16, 512) is False
+    G._free_bytes = lambda device: int(_need(G, 4, 128) - reused.numel() * reused.element_size()) + 1
+    assert _plan(G, model, 4, 128)[0] == "graph"
     assert model.held() == 1
 
 
-def test_make_room_is_a_no_op_without_kept_state_or_off_cuda(G):
+def test_plan_lets_non_cuda_or_shapeless_inputs_through(G):
     model = _Model()
     G._free_bytes = lambda device: 0
-    assert G.make_room(model, _ids(16, 2048), torch.float16, 512) is False
-    model.keep(1, 2816)
     cpu_ids = types.SimpleNamespace(shape = (16, 2048), device = torch.device("cpu"))
-    assert G.make_room(model, cpu_ids, torch.float16, 512) is False
-    assert G.make_room(model, None, torch.float16, 512) is False
-    assert model.held() == 1
+    assert G.plan_call(model, cpu_ids, torch.float16, 512) == ("graph", None)
+    assert G.plan_call(model, None, torch.float16, 512) == ("graph", None)
+    assert G.EAGER_UNFIT == 0
+
+
+def test_measured_peak_replaces_the_estimate_for_its_shape(G):
+    model = _Model()
+    stats = {"alloc": 3 * GB, "peak": 3 * GB}
+    G._alloc_stats = lambda device: (stats["alloc"], stats["peak"])
+    G._free_bytes = lambda device: 20 * GB
+    plan, token = _plan(G, model, 4, 2048, 2081)
+    assert plan == "graph"
+    stats["peak"] = 5 * GB  # the call peaked 2 GiB above where it started
+    G.record_need(model, token)
+    key = G._shape_key(4, 2048, 2081)
+    assert model.__dict__[G.NEEDS][key] == 2 * GB
+    # A later call of that shape is judged by the measurement (x MEASURED_MARGIN), not the estimate.
+    G._free_bytes = lambda device: int(2.0 * GB * G.MEASURED_MARGIN) + 1
+    assert _plan(G, model, 4, 2048, 2081)[0] == "graph"
+    G._free_bytes = lambda device: int(2.0 * GB * G.MEASURED_MARGIN) - 1
+    assert _plan(G, model, 4, 2048, 2081)[0] == "eager"
+    # Only the first graphed call of a shape is recorded; a call that did not raise the peak is not.
+    stats["peak"] = 9 * GB
+    G._free_bytes = lambda device: 20 * GB
+    G.record_need(model, _plan(G, model, 4, 2048, 2081)[1])
+    assert model.__dict__[G.NEEDS][key] == 2 * GB
+    G.record_need(model, _plan(G, model, 1, 128)[1])
+    assert G._shape_key(1, 128, 0) not in model.__dict__[G.NEEDS]
+
+
+def test_release_keeps_the_measured_needs(G):
+    model = _Model()
+    model.__dict__[G.NEEDS] = {(4, 2304): GB}
+    model.keep(4, 2816)
+    G.release_for_training(model)
+    assert model.__dict__[G.NEEDS] == {(4, 2304): GB}
 
 
 def _oom_while_graphed(G, seen):
@@ -296,3 +345,5 @@ def test_causal_lm_forward_calls_the_training_release():
     )
     text = ast.unparse(gen)
     assert "keep_only" in text and "HELD" in text
+    # A call the plan says cannot fit graphed runs eagerly from the start; graphed calls record their peak.
+    assert "plan_call" in text and "eager_scope" in text and "record_need" in text

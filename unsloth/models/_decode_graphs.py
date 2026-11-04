@@ -41,7 +41,9 @@ __all__ = [
     "studio_generation",
     "generate_scope",
     "eager_scope",
-    "make_room",
+    "plan_call",
+    "record_need",
+    "EAGER_UNFIT",
     "generate_with_fallback",
     "keep_only",
     "release_if_training",
@@ -157,14 +159,25 @@ class eager_scope:
         return False
 
 
-# make_room() frees what earlier generate() calls left when the free memory (device + the allocator's
-# cached blocks) is under this multiple of the new call's estimated KV cache + prefill working set.
-ROOM_MARGIN = float(os.environ.get("UNSLOTH_DECODE_GRAPH_ROOM_MARGIN", "1.25"))
+# A graphed generate() call needs (calibrated, before its own peak was measured):
+#   CALIB_WORK x (KV cache + prefill working set) + CALIB_GRAPH_KV x KV cache.
+# From Qwen3-4B NF4 / QLoRA, bs 16 x ctx 2048 on a 15 GB T4: the eager call peaked 10.42 GiB above the
+# weights against a 9.11 GiB estimate (1.14x); the first graphed call ran out of memory with about
+# 12 GiB free, i.e. capture needs about 0.26 x the KV cache on top.
+CALIB_WORK = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_WORK", "1.15"))
+CALIB_GRAPH_KV = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_KV", "0.30"))
+# A measured peak (the first graphed call of a shape) is used with this headroom instead.
+MEASURED_MARGIN = 1.05
+# generate() calls run eagerly from the start because their graphed estimate did not fit (this process).
+EAGER_UNFIT = 0
+# Per model: {(batch size, length bucket): bytes the first graphed call of that shape peaked above its
+# starting allocation}.
+NEEDS = "_unsloth_decode_needs"
 
 
-def _call_bytes(config, bsz, prompt, dtype, increment):
-    """KV cache rows the first decode step allocates (as alloc_decode_buffers) and a prefill working
-    set for one generate() call, in bytes. None when the config lacks a dimension."""
+def _call_bytes(config, bsz, prompt, dtype, increment, max_len = 0):
+    """(cache rows, KV cache bytes, prefill working-set bytes) of one generate() call, sized as
+    alloc_decode_buffers sizes the cache (grown up to the length hint). None when a dimension is missing."""
     try:
         layers = int(config.num_hidden_layers)
         hidden = int(config.hidden_size)
@@ -174,13 +187,13 @@ def _call_bytes(config, bsz, prompt, dtype, increment):
         inter = int(getattr(config, "intermediate_size", None) or 4 * hidden)
         vocab = int(getattr(config, "vocab_size", 0) or 0)
     except (AttributeError, TypeError, ValueError):
-        return None, None
+        return None, None, None
     size = torch.empty((), dtype = dtype).element_size()
-    rows = _round_up(prompt + increment + 1, BUCKET)
+    rows = _round_up(max(prompt + increment + 1, max_len + 1), BUCKET)
     kv = layers * rows * 2 * bsz * kv_heads * head_dim * size
     tokens = bsz * prompt
     work = tokens * (4 * hidden + 3 * inter + 2 * heads * head_dim) * size + bsz * vocab * 4
-    return rows, kv + work
+    return rows, kv, work
 
 
 def _free_bytes(device):
@@ -193,41 +206,78 @@ def _empty_cache():
     torch.cuda.empty_cache()
 
 
-def make_room(model, input_ids, dtype, increment):
-    """Before a graphed generate(): when the decode buffers and graphs kept from earlier calls (other
-    batch sizes, a shorter cache) leave too little free memory for this call, release them and empty
-    the allocator cache. Measured: cudaMemGetInfo plus the allocator's reserved-but-free bytes, against
-    ROOM_MARGIN x the call's estimated KV cache + prefill working set. Returns True when it released."""
+def _alloc_stats(device):
+    # (bytes allocated now, peak bytes allocated so far); the peak is only read, never reset.
+    return torch.cuda.memory_allocated(device), torch.cuda.max_memory_allocated(device)
+
+
+def _shape_key(bsz, prompt, max_len):
+    return (bsz, _round_up(max(prompt, max_len) + 1, BUCKET))
+
+
+def plan_call(model, input_ids, dtype, increment, max_len = 0):
+    """Before a graphed generate(): ("graph", token) or ("eager", None).
+
+    The call's need is its measured peak (first graphed call of this batch size and length bucket) with
+    MEASURED_MARGIN, else the calibrated estimate above; a kept cache of this batch size that already
+    has the rows is reused and not counted. Free memory is measured (cudaMemGetInfo plus the allocator's
+    reserved-but-free bytes). Not enough free: the graphs and decode buffers kept from earlier calls are
+    released first; still not enough: the call runs eagerly from the start (counted in EAGER_UNFIT), so
+    a predictable shape never relies on the out-of-memory redo. The token goes to record_need()."""
+    global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
         not hasattr(input_ids, "shape")
         or len(input_ids.shape) < 2
         or getattr(device, "type", None) != "cuda"
     ):
-        return False
+        return "graph", None
+    bsz, prompt = int(input_ids.shape[0]), int(input_ids.shape[1])
+    rows, kv, work = _call_bytes(model.config, bsz, prompt, dtype, increment, max_len)
+    if rows is None:
+        return "graph", None
+    key = _shape_key(bsz, prompt, max_len)
+    measured = model.__dict__.get(NEEDS, {}).get(key)
+    if measured is not None:
+        need = MEASURED_MARGIN * measured
+    else:
+        need = CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
     stores = [
         m.__dict__["_unsloth_graph_buffers"]
         for m in model.modules()
         if "_unsloth_graph_buffers" in m.__dict__
     ]
-    if not any(stores) and not any(state.graphs for state in _states(model)):
-        return False
-    bsz, prompt = int(input_ids.shape[0]), int(input_ids.shape[1])
-    rows, need = _call_bytes(model.config, bsz, prompt, dtype, increment)
-    if need is None:
-        return False
-    # A kept buffer of this batch size and dtype that already has the rows is reused, not reallocated.
     for store in stores:
         bufs = store.get((bsz, dtype, device))
         if bufs is not None and bufs[0].shape[0] >= rows:
             need -= bufs[0].numel() * bufs[0].element_size()
-    if need <= 0:
-        return False
-    if _free_bytes(device) >= ROOM_MARGIN * need:
-        return False
-    release(model)
-    _empty_cache()
-    return True
+    free = _free_bytes(device)
+    if free < need and (any(stores) or any(state.graphs for state in _states(model))):
+        release(model)
+        _empty_cache()
+        free = _free_bytes(device)
+        # The reused cache was released too: count it again.
+        need = (
+            MEASURED_MARGIN * measured
+            if measured is not None
+            else CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
+        )
+    if free < need:
+        EAGER_UNFIT += 1
+        return "eager", None
+    return "graph", (key, device, *_alloc_stats(device))
+
+
+def record_need(model, token):
+    """After a graphed call that plan_call() let through: store its peak above the starting allocation
+    for its shape (first call only, which includes the capture). The peak statistic is only read, never
+    reset; a call that did not raise it gives no exact reading and is not stored."""
+    if token is None:
+        return
+    key, device, start, peak_before = token
+    peak = _alloc_stats(device)[1]
+    if peak > peak_before:
+        model.__dict__.setdefault(NEEDS, {}).setdefault(key, peak - start)
 
 
 _OOM_WARNED = False
