@@ -1526,3 +1526,53 @@ test("a rename or a delete leaves the template's own variable of that name alone
     " / {% for topic in ['one', 'two'] %}{{ topic }}{% endfor %}",
   );
 });
+
+test("editing a sampler keeps the settings its form does not show, and a rename reaches a numeric sampler's conditions", () => {
+  const { group, nodes } = sqlGroup();
+  const extra: FlowNode[] = [
+    {
+      id: "tier",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [0, 400],
+      params: {
+        column: {
+          name: "tier",
+          column_type: "sampler",
+          sampler_type: "category",
+          params: { values: ["basic", "premium"] },
+        },
+      },
+    },
+    {
+      id: "price",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [320, 400],
+      params: {
+        column: {
+          name: "price",
+          column_type: "sampler",
+          sampler_type: "uniform",
+          params: { low: 0, high: 100, decimal_places: 2 },
+          conditional_params: { "tier == 'premium'": { sampler_type: "uniform", low: 100, high: 200 } },
+        },
+      },
+    },
+  ];
+  const all = [...nodes, ...extra];
+  const view = studioView(group, all);
+  assert.deepEqual(view.errors, []);
+  const price = Object.values(view.configs).find((c) => c.name === "price");
+  assert.ok(price);
+  const edited = commitStudioEdit(group, all, view, applyConfigPatch(view.configs, price.id, { high: "200" } as never));
+  const column = edited.nodes.find((n) => n.id === "price")?.params.column as Record<string, unknown>;
+  assert.deepEqual(column.params, { low: 0, high: 200, decimal_places: 2 });
+  const tier = Object.values(view.configs).find((c) => c.name === "tier");
+  assert.ok(tier);
+  const renamed = commitStudioEdit(group, all, view, applyConfigPatch(view.configs, tier.id, { name: "plan" }));
+  const after = renamed.nodes.find((n) => n.id === "price")?.params.column as Record<string, unknown>;
+  assert.deepEqual(Object.keys(after.conditional_params as object), ["plan == 'premium'"]);
+});

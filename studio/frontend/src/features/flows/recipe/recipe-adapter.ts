@@ -6,7 +6,7 @@
 
 import { syncSubcategoryConfigsForCategoryUpdate } from "@/features/recipe-studio/stores/helpers/edge-sync";
 import { applyRenameToConfigs } from "@/features/recipe-studio/stores/helpers/reference-sync";
-import { replaceRef } from "@/features/recipe-studio/utils/refs";
+import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
 import type {
   NodeConfig,
   RecipeNode,
@@ -387,6 +387,22 @@ export function savedView(before: StudioView, configs: Record<string, NodeConfig
   return { ...before, configs, processors: renamedProcessors(before, configs) };
 }
 
+/** A sampler's conditions (`tier == 'premium'`) with renamed columns renamed; the same object when none is. */
+function renamedConditions(conditions: unknown, renames: Map<string, string>): unknown {
+  const record = asRecord(conditions);
+  if (!record || !renames.size) return conditions;
+  let changed = false;
+  const next = Object.fromEntries(
+    Object.entries(record).map(([rule, value]) => {
+      let renamed = rule;
+      for (const [from, to] of renames) renamed = renameRoot(renamed, from, to);
+      if (renamed !== rule) changed = true;
+      return [renamed, value];
+    }),
+  );
+  return changed ? next : conditions;
+}
+
 /** An AI column's image contexts with renamed columns renamed; the same list when none is. */
 function renamedImages(list: unknown, renames: Map<string, string>): unknown {
   if (!Array.isArray(list) || !renames.size) return list;
@@ -417,13 +433,22 @@ export function commitStudioEdit(
     const config = id ? configs[id] : undefined;
     const saved = columnOf(node);
     const images = renamedImages(saved.multi_modal_context, renames);
+    const conditions = renamedConditions(saved.conditional_params, renames);
     if (!config) continue;
     if (config === before.configs[id]) {
-      // The form shows one image context; a renamed column in any other is renamed in place.
-      if (images !== saved.multi_modal_context)
+      // What the forms do not show (a second image context, a numeric sampler's conditions) is
+      // renamed in place.
+      if (images !== saved.multi_modal_context || conditions !== saved.conditional_params)
         nodes.push({
           ...node,
-          params: { ...node.params, column: { ...saved, multi_modal_context: images } },
+          params: {
+            ...node.params,
+            column: {
+              ...saved,
+              ...(images === undefined ? {} : { multi_modal_context: images }),
+              ...(conditions === undefined ? {} : { conditional_params: conditions }),
+            },
+          },
         });
       continue;
     }
@@ -438,6 +463,17 @@ export function commitStudioEdit(
           [...new Set([...Object.keys(prior), ...Object.keys(built), ...Object.keys(saved)])],
         ) as typeof built)
       : built;
+    const kept = column as Record<string, unknown>;
+    // A form that changed one setting of a sampler of the same type keeps the settings it does not
+    // show (a uniform's decimal_places, a uuid's short_form).
+    if (
+      prior &&
+      same(prior.column_type, built.column_type) &&
+      same((prior as Record<string, unknown>).sampler_type, (built as Record<string, unknown>).sampler_type)
+    )
+      kept.params = keepUntouched(kept.params, saved.params, (prior as Record<string, unknown>).params);
+    if (kept.conditional_params === saved.conditional_params && conditions !== undefined)
+      kept.conditional_params = conditions;
     // Only a rename changed the form's image context: the saved list keeps its other images and
     // their attributes, renamed where they name the column.
     const formImages = (c: unknown) => (c as Record<string, unknown> | null)?.multi_modal_context;
