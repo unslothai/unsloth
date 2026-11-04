@@ -196,9 +196,28 @@ def _call_bytes(
     return rows, kv, work
 
 
+def _allocator(device):
+    """(allocated, reserved, peak allocated) from one allocator read: memory_allocated() and friends each
+    rebuild and flatten the whole stats dict."""
+    try:
+        stats = torch.cuda.memory_stats_as_nested_dict(device)
+        return (
+            stats["allocated_bytes"]["all"]["current"],
+            stats["reserved_bytes"]["all"]["current"],
+            stats["allocated_bytes"]["all"]["peak"],
+        )
+    except (KeyError, TypeError):
+        return (
+            torch.cuda.memory_allocated(device),
+            torch.cuda.memory_reserved(device),
+            torch.cuda.max_memory_allocated(device),
+        )
+
+
 def _free_bytes(device):
     free, _ = torch.cuda.mem_get_info(device)
-    return free + torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+    allocated, reserved, _ = _allocator(device)
+    return free + reserved - allocated
 
 
 def _empty_cache():
@@ -207,7 +226,8 @@ def _empty_cache():
 
 def _alloc_stats(device):
     # Peak is never reset: other code may rely on max_memory_allocated.
-    return torch.cuda.memory_allocated(device), torch.cuda.max_memory_allocated(device)
+    allocated, _, peak = _allocator(device)
+    return allocated, peak
 
 
 def _shape_key(bsz, prompt, max_len):
