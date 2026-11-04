@@ -535,3 +535,37 @@ def test_generate_runs_a_short_call_eagerly_when_nothing_is_kept():
     body = ast.unparse(guards[0].body[0]) if guards[0].body else ""
     assert "'eager'" in body or '"eager"' in body
     assert "plan_call" not in ast.unparse(guards[0].body[0])
+
+
+def test_capture_only_when_enough_steps_are_left(G):
+    # prompt 32 + 8 new tokens: the step at cache length 35 produces token 3 and leaves 6 steps.
+    G.start_generation(32 + 8)
+    try:
+        assert G.CAPTURE_MIN_STEPS == 6
+        assert G.worth_capturing(35) is True
+        assert G.worth_capturing(36) is False
+        # 3-4 new tokens never reach the break-even: those calls decode eagerly.
+        G.start_generation(32 + 4)
+        assert not any(G.worth_capturing(kv) for kv in range(33, 37))
+    finally:
+        G.end_generation()
+    # No length hint (a hand-written decode loop): capture as before.
+    assert G.worth_capturing(10_000) is True
+
+
+def test_decode_step_skips_only_a_new_capture():
+    """decode_step consults worth_capturing() only when no graph is kept for the step's key: a kept graph
+    of this shape still replays however few steps are left."""
+    import ast
+
+    tree = ast.parse(_SOURCE.read_text(encoding = "utf-8"))
+    fn = next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "decode_step"
+    )
+    guards = [
+        n for n in ast.walk(fn)
+        if isinstance(n, ast.If) and "worth_capturing" in ast.unparse(n.test)
+    ]  # fmt: skip
+    assert guards and all("step is None" in ast.unparse(g.test) for g in guards)
+    text = ast.unparse(fn)
+    assert text.index("worth_capturing") < text.index("_capture(")

@@ -28,6 +28,9 @@ FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
 FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
+# A new capture costs about 3 eager decode steps on a T4 (Qwen3-0.6B; 3-4 new tokens with alternating
+# batch sizes ran 32-58% slower than eager, 8 tokens 1.2x faster): only capture with this many steps left.
+CAPTURE_MIN_STEPS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_CAPTURE_MIN_STEPS", "6"))
 # Captured steps (one per batch size / autocast state) kept per model.
 MAX_GRAPHS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_MAX", "8"))
 # Whole-step graphs keep one graph per span too (log2(cache / BUCKET) + 1 per batch size).
@@ -602,6 +605,14 @@ def start_generation(max_len):
     MAX_LEN_HINT = max(0, int(max_len or 0))
 
 
+def worth_capturing(kv_len):
+    """Whether a decode step at cache length kv_len has CAPTURE_MIN_STEPS steps left in this generate()
+    call (MAX_LEN_HINT = prompt + max_new_tokens). Unknown length (0, e.g. a hand-written loop): yes."""
+    if MAX_LEN_HINT <= 0:
+        return True
+    return MAX_LEN_HINT - kv_len + 1 >= CAPTURE_MIN_STEPS
+
+
 def end_generation():
     global MAX_LEN_HINT
     MAX_LEN_HINT = 0
@@ -623,6 +634,7 @@ class _ModelGraphs:
         self.captures = 0
         self.replays = 0
         self.eager_steps = 0
+        self.short_skips = 0
 
     def clear(self):
         self.graphs.clear()
@@ -1002,6 +1014,11 @@ def decode_step(
     autocast = _autocast_state()
     key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span)
     step = state.graphs.get(key)
+    if step is None and not worth_capturing(kv_len):
+        # Too few steps left to win back a capture: this step and the rest of the call run eagerly.
+        state.eager_steps += 1
+        state.short_skips += 1
+        return None
     if step is None:
         if len(state.graphs) >= (MAX_GRAPHS if span is None else MAX_FULL_GRAPHS):
             state.graphs.clear()
@@ -1144,5 +1161,6 @@ def stats(model):
         "replays": state.replays,
         "graphs": len(state.graphs),
         "eager_steps": state.eager_steps,
+        "short_skips": state.short_skips,
         "disabled": state.disabled,
     }
