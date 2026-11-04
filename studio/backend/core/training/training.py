@@ -294,6 +294,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "is_decision": values.get("is_decision", False),
         "model_subfolder": values.get("model_subfolder"),
         "decision_layout": values.get("decision_layout"),
+        "decision_head": values.get("decision_head"),
         "num_epochs": values.get("num_epochs", 3),
         "learning_rate": values.get("learning_rate", "2e-4"),
         "embedding_learning_rate": values.get("embedding_learning_rate"),
