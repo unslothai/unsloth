@@ -3331,8 +3331,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # As on CUDA, embed_tokens / lm_head train as full modules rather than through LoRA.
         user_modules = config.get("target_modules") or []
         leaf = lambda module: str(module).rsplit(".", 1)[-1]  # noqa: E731
-        model = FastMLXModel.get_peft_model(
-            model,
+        peft_kwargs = dict(
             r = config.get("lora_r", 128),
             lora_alpha = config.get("lora_alpha", 32),
             lora_dropout = config.get("lora_dropout", 0.0),
@@ -3342,8 +3341,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
             or list(_MLX_DEFAULT_LORA_TARGETS),
             modules_to_save = sorted({leaf(m) for m in user_modules} & _CPT_TARGET_NAMES) or None,
             use_gradient_checkpointing = use_grad_checkpoint,
-            **mlx_dora_kwargs,
         )
+        peft_kwargs.update(mlx_dora_kwargs)
+        model = FastMLXModel.get_peft_model(model, **peft_kwargs)
     elif use_lora:
         _send("status", status_message = "Configuring LoRA adapters...")
         peft_kwargs = dict(
