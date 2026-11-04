@@ -390,7 +390,7 @@ class RewardWorker:
 
     def log_tail(self, limit: int = 2000) -> str:
         try:
-            text = _worker_io.read_text(os.path.join(self._workdir, "worker.log"))
+            text = _worker_io.read_text(os.path.join(self._workdir, "worker.log"), tail = limit * 4)
         except (OSError, TypeError):
             return ""
         return text[-limit:].strip()
