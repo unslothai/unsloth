@@ -268,6 +268,8 @@ def test_unusable_hub_rows_end_a_model_download_in_progress(fake_decision_runtim
         assert decision._abandoned_downloads[-1].is_alive()
     finally:
         release.set()
+        while decision._abandoned_downloads:
+            decision._abandoned_downloads.pop().join(3)
 
 
 def test_an_abandoned_download_does_not_hold_the_worker_open(tmp_path):
