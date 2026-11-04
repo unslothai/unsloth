@@ -37,7 +37,7 @@ import {
   rerouteUpstream,
 } from "../stores/reroute-graph";
 import { useUiStore } from "../stores/ui-store";
-import type { FlowEdge } from "../types";
+import type { FlowEdge, FlowGroup } from "../types";
 import { CanvasControls } from "./canvas-controls";
 import { FIT_MIN_ZOOM, dragHasFiles } from "./canvas-rules";
 import {
@@ -81,6 +81,24 @@ import { snapToWire, wireUnder } from "./wire-snap";
 import { FlowNodeView } from "./flow-node";
 import { GroupFrame, NoteFrame } from "./frame-nodes";
 import { NODE_DRAG_MIME, addNodeConnected, tryConnect } from "./node-factory";
+import {
+  recipeConnectionError,
+  removeElementsWithReferences,
+} from "../recipe/recipe-actions";
+import { COLUMN_TYPE, isRecipeGroup } from "../recipe/recipe-columns";
+import { holdRecipeBlocks, ownRecipe } from "./recipe-drag";
+import {
+  parseSetupId,
+  setupEdges,
+  setupLayout,
+  withSetupPosition,
+} from "../recipe/recipe-setup";
+import {
+  RecipeSetupNode,
+  SETUP_IN,
+  SETUP_OUT,
+  type SetupData,
+} from "../recipe/recipe-setup-node";
 import { GRID, placementPosition } from "./placement";
 import { SelectedNodeToolbar } from "./node-toolbar";
 import { RerouteNode } from "./reroute-node";
@@ -101,6 +119,7 @@ const NODE_TYPES = {
   flowNode: FlowNodeView,
   flowGroup: GroupFrame,
   flowNote: NoteFrame,
+  recipeSetup: RecipeSetupNode,
   flowReroute: RerouteNode,
 };
 const EDGE_TYPES = { flowEdge: FlowEdgeView };
@@ -198,9 +217,11 @@ function insideRect(
   );
 }
 
-function groupMembership(
+export function groupMembership(
   positions: Record<string, [number, number]>,
   sizes: Map<string, Size>,
+  // A recipe frame drawn taller than it is saved (its setup cards) holds what lands in the extra space.
+  heights: Record<string, number> = {},
 ): Record<string, string | null> {
   const { graph, meta } = useDocStore.getState();
   // A frame folded into a closed card is hidden, so a block dropped where it was stays out of it.
@@ -214,17 +235,22 @@ function groupMembership(
       if (folded.has(groupId) && graph.nodes[id].group !== groupId) continue;
       const key = GROUP_PREFIX + groupId;
       const g = graph.groups[groupId];
+      const h = Math.max(g.rect[3], heights[groupId] ?? 0);
       const rect: [number, number, number, number] = positions[key]
-        ? [positions[key][0], positions[key][1], g.rect[2], g.rect[3]]
-        : g.rect;
+        ? [positions[key][0], positions[key][1], g.rect[2], h]
+        : [g.rect[0], g.rect[1], g.rect[2], h];
       if (!insideRect(pos[0] + width / 2, pos[1] + 16, rect)) continue;
       const area = rect[2] * rect[3];
       if (!best || area < best.area) best = { id: groupId, area };
     }
     membership[id] = best?.id ?? null;
+    // A recipe's blocks only run inside their recipe: dragged out, they stay its own (the frame grows).
+    const recipe = ownRecipe(graph, id);
+    if (recipe) membership[id] = recipe;
   }
   return membership;
 }
+
 
 export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const colorMode = useTheme().resolved;
@@ -232,12 +258,18 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const selectedNodes = useUiStore((s) => s.selectedNodes);
   const selectedEdges = useUiStore((s) => s.selectedEdges);
   const snapToGrid = useUiStore((s) => s.snapToGrid);
+  const recipeView = useDocStore((s) => {
+    const first = s.graph.groupOrder.find((id) =>
+      isRecipeGroup(s.graph.groups[id]),
+    );
+    return first ? `${s.flowId}:${first}` : null;
+  });
   const bus = useUiStore((s) => s.wireStyle === "bus");
   const pinnedBus = useDocStore((s) =>
     s.graph.wireOrder.some((id) => s.graph.wires[id].style === "bus"),
   );
   const flowId = useDocStore((s) => s.flowId);
-  const { screenToFlowPosition, flowToScreenPosition } = useReactFlow();
+  const { screenToFlowPosition, flowToScreenPosition, fitView } = useReactFlow();
   const store = useStoreApi<RfNode, RfEdge>();
   const { props: wireReconnect, reconnecting } =
     useWireReconnect(!readOnly);
@@ -284,7 +316,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     () => new Set([...selectedNodes, ...selectedEdges]),
     [selectedNodes, selectedEdges],
   );
-  const nodes = useMemo(
+  const derivedNodes = useMemo(
     () =>
       (deriver.current as RfDeriver).nodes(
         graph,
@@ -295,7 +327,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       ),
     [graph, selectedSet, drag, sizes, boxes],
   );
-  const edges = useMemo(
+  const derivedEdges = useMemo(
     () =>
       (deriver.current as RfDeriver).edges(
         graph,
@@ -305,6 +337,73 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       ),
     [graph, selectedSet],
   );
+  const setupSelected = useUiStore((s) => s.recipeSetup);
+  const setup = useMemo(
+    () => setupLayout(graph, drag, sizes),
+    [graph, drag, sizes],
+  );
+  const setupRef = useRef(setup);
+  setupRef.current = setup;
+  const nodes = useMemo(() => {
+    if (!setup.elements.length) return derivedNodes;
+    const grown = derivedNodes.map((node) => {
+      const height = node.id.startsWith(GROUP_PREFIX)
+        ? setup.heights[node.id.slice(GROUP_PREFIX.length)]
+        : undefined;
+      return height ? { ...node, style: { ...node.style, height } } : node;
+    });
+    const cards: RfNode[] = setup.elements.map(({ card, x, y }) => {
+      const size = sizes.get(card.id);
+      const seed = graph.groups[card.groupId]?.config?.seed_config as
+        | { source?: { seed_type?: string } }
+        | undefined;
+      const data: SetupData = { card, seedType: seed?.source?.seed_type };
+      return {
+        id: card.id,
+        type: "recipeSetup",
+        position: { x, y },
+        data: data as unknown as RfNode["data"],
+        selected:
+          setupSelected?.groupId === card.groupId &&
+          setupSelected.kind === card.kind &&
+          setupSelected.name === card.name,
+        selectable: false,
+        deletable: false,
+        connectable: false,
+        ...(size ? { measured: size } : {}),
+      };
+    });
+    return [...grown, ...cards];
+  }, [derivedNodes, setup, sizes, graph, setupSelected]);
+  const edges = useMemo(() => {
+    if (!setup.links.length) return derivedEdges;
+    const links = setupEdges(setup.links, graph, {
+      source: SETUP_OUT,
+      target: SETUP_IN,
+    });
+    return [...derivedEdges, ...links];
+  }, [derivedEdges, setup, graph]);
+
+  // A recipe opens at a size you can read, not fitted to the whole flow.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once per opened recipe flow
+  useEffect(() => {
+    if (!recipeView) return;
+    const doc = useDocStore.getState().graph;
+    const groupId = doc.groupOrder.find((id) => isRecipeGroup(doc.groups[id]));
+    if (!groupId) return;
+    const ids = doc.nodeOrder.filter((id) => doc.nodes[id].group === groupId);
+    const timer = window.setTimeout(
+      () =>
+        void fitView({
+          nodes: [{ id: GROUP_PREFIX + groupId }, ...ids.map((id) => ({ id }))],
+          padding: 0.08,
+          minZoom: 0.55,
+          maxZoom: 1,
+        }),
+      60,
+    );
+    return () => window.clearTimeout(timer);
+  }, [recipeView]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange<RfNode>[]) => {
@@ -504,11 +603,42 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       const current = dragRef.current;
       if (current) {
         const positions: Record<string, [number, number]> = {};
-        for (const [id, p] of Object.entries(current))
-          positions[id] = [Math.round(p.x), Math.round(p.y)];
-        const membership = groupMembership(positions, sizesRef.current);
-        for (const id of kept) delete membership[id];
-        useDocStore.getState().moveNodes(positions, membership);
+        const doc = useDocStore.getState();
+        const groups = new Map<string, FlowGroup>();
+        for (const [id, p] of Object.entries(current)) {
+          const card = parseSetupId(id);
+          if (!card) {
+            positions[id] = [Math.round(p.x), Math.round(p.y)];
+            continue;
+          }
+          // Only a card dragged on its own keeps a spot; one carried with its frame follows the frame.
+          if (current[GROUP_PREFIX + card.groupId]) continue;
+          const group = groups.get(card.groupId) ?? doc.graph.groups[card.groupId];
+          if (group) groups.set(card.groupId, withSetupPosition(group, id, [p.x, p.y]));
+        }
+        if (Object.keys(positions).length) {
+          const membership = groupMembership(
+            positions,
+            sizesRef.current,
+            setupRef.current.heights,
+          );
+          for (const id of kept) delete membership[id];
+          doc.moveNodes(positions, membership);
+          const held = new Map<string, Record<string, [number, number]>>();
+          for (const [id, pos] of Object.entries(positions)) {
+            const group = ownRecipe(doc.graph, id);
+            if (group && membership[id] === group)
+              held.set(group, { ...held.get(group), [id]: pos });
+          }
+          for (const [groupId, moved] of held) {
+            // A frame dragged along with its blocks is placed by its own drag.
+            if (current[GROUP_PREFIX + groupId]) continue;
+            const group = groups.get(groupId) ?? doc.graph.groups[groupId];
+            const grown = holdRecipeBlocks(group, moved, sizesRef.current);
+            if (grown !== group) groups.set(groupId, grown);
+          }
+        }
+        if (groups.size) doc.patchGraph({ groups: [...groups.values()] });
       }
       setDrag(null);
       const doc = useDocStore.getState().graph;
@@ -582,6 +712,8 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       connection.targetHandle,
     );
     if (!check.ok) return false;
+    if (recipeConnectionError(doc, connection.source, connection.target))
+      return false;
     if (
       check.kind === "data" &&
       wouldCreateCycle(
@@ -670,7 +802,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         notes: [] as string[],
         reroutes: [] as string[],
       };
-      const { reroutes } = useDocStore.getState().graph;
+      const { reroutes, groups, nodes, nodeOrder } = useDocStore.getState().graph;
       // A closed super card goes with its blocks and everything folded into it.
       const removed = rfNodes.flatMap((node) => {
         if (!node.id.startsWith(SUPER_PREFIX)) return [node.id];
@@ -679,13 +811,18 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       });
       for (const id of removed) {
         if (reroutes[id]) ids.reroutes.push(id);
-        else if (id.startsWith(GROUP_PREFIX))
-          ids.groups.push(id.slice(GROUP_PREFIX.length));
-        else if (id.startsWith(NOTE_PREFIX))
+        else if (id.startsWith(GROUP_PREFIX)) {
+          const groupId = id.slice(GROUP_PREFIX.length);
+          ids.groups.push(groupId);
+          // A recipe's columns mean nothing outside it: they go with the frame.
+          if (groups[groupId]?.kind === "recipe")
+            for (const member of nodeOrder)
+              if (nodes[member].group === groupId) ids.nodes.push(member);
+        } else if (id.startsWith(NOTE_PREFIX))
           ids.notes.push(id.slice(NOTE_PREFIX.length));
         else ids.nodes.push(id);
       }
-      useDocStore.getState().removeElements(ids);
+      removeElementsWithReferences(ids);
       useUiStore.getState().setSelection([], []);
     },
     [readOnly],
@@ -756,9 +893,24 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
     if (node.type === "flowNode") useUiStore.getState().openInspector(node.id);
   }, []);
 
+  const onNodeClick = useCallback((_: ReactMouseEvent, node: RfNode) => {
+    const card = parseSetupId(node.id);
+    if (!card) return;
+    const ui = useUiStore.getState();
+    ui.setSelection([], []);
+    ui.setRecipeSetup(card);
+  }, []);
   const onEdgeDoubleClick = useCallback(
     (event: ReactMouseEvent, edge: RfEdge) => {
       if (readOnly || edge.data?.kind !== "data") return;
+      const ends = useDocStore.getState().graph.nodes;
+      if (
+        ends[edge.source]?.type === COLUMN_TYPE ||
+        ends[edge.target]?.type === COLUMN_TYPE
+      ) {
+        toast.error("Recipe columns connect directly, not through a reroute");
+        return;
+      }
       const flow = screenToFlowPosition({ x: event.clientX, y: event.clientY });
       const at = snapToWire(edge.id, flow);
       const id = addReroute(at ?? flow, {
@@ -836,6 +988,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
         onDelete={onDelete}
         {...wireReconnect}
         onNodeDoubleClick={onNodeDoubleClick}
+        onNodeClick={onNodeClick}
         onEdgeDoubleClick={onEdgeDoubleClick}
         onNodeMouseEnter={bus ? onNodeMouseEnter : undefined}
         onNodeMouseLeave={bus ? onNodeMouseLeave : undefined}

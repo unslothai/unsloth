@@ -87,7 +87,8 @@ test("the card toolbar deletes through the same path as the Delete key", () => {
 test("notes and groups carry their own top-right trash, through the canvas delete", () => {
   const src = read("editor/frame-nodes.tsx");
   assert.match(src, /void deleteElements\(\{ nodes: \[\{ id \}\] \}\)/);
-  assert.match(src, /<FrameDelete\s*id=\{id\}\s*label="Delete group \(its blocks stay\)"/);
+  // A recipe frame's columns go with it; any other group's blocks stay.
+  assert.match(src, /<FrameDelete\s*id=\{id\}\s*label=\{\s*group\.kind === "recipe"\s*\? "Delete recipe \(and its columns\)"\s*: "Delete group \(its blocks stay\)"\s*\}/);
   assert.match(src, /<FrameDelete\s*id=\{id\}\s*label="Delete note"\s*className="absolute top-1 right-1 z-10"/);
   // Hidden until the frame is hovered or selected.
   assert.match(src, /opacity-0[^"]*group-hover\/frame:opacity-100 group-data-\[selected\]\/frame:opacity-100/);

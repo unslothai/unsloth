@@ -3,6 +3,7 @@
 
 import { useReactFlow } from "@xyflow/react";
 import { useEffect } from "react";
+import { toast } from "sonner";
 import {
   type GraphFragment,
   cloneFragment,
@@ -10,6 +11,8 @@ import {
   newId,
   useDocStore,
 } from "../stores/doc-store";
+import { removeNodes } from "../recipe/recipe-actions";
+import { GENERATE_TYPE } from "../recipe/recipe-columns";
 import { useUiStore } from "../stores/ui-store";
 import type { FlowEdge, FlowNode } from "../types";
 import { addFileNodes } from "./file-drop";
@@ -115,8 +118,14 @@ export function useEditorShortcuts(active: boolean): void {
       const at = pointer ? screenToFlowPosition(pointer) : null;
       const placed = placeFragment(fragment, at);
       useDocStore.getState().insertFragment(placed);
+      const { nodes } = useDocStore.getState().graph;
+      const landed = placed.nodes.filter((n) => nodes[n.id]);
+      if (landed.length < placed.nodes.length)
+        toast("Recipe columns paste into a Data Recipe frame", {
+          description: "Paste them inside a recipe's frame.",
+        });
       useUiStore.getState().setSelection(
-        placed.nodes.map((n) => n.id),
+        landed.map((n) => n.id),
         [],
       );
     };
@@ -160,8 +169,8 @@ export function useEditorShortcuts(active: boolean): void {
         const fragment = copySelection();
         if (fragment) {
           event.preventDefault();
-          // Cut what was copied, so a closed super card's blocks go too.
-          doc.removeElements({ nodes: fragment.nodes.map((n) => n.id) });
+          // Cut what was copied, so a closed super card's blocks go too, and readers lose their references.
+          removeNodes(fragment.nodes.map((n) => n.id));
           useUiStore.getState().setSelection([], []);
         }
       } else if (mod && key === "v") {
@@ -187,11 +196,12 @@ export function useEditorShortcuts(active: boolean): void {
         });
       } else if (mod && key === "d") {
         event.preventDefault();
+        // As the inspector's Duplicate: a recipe's one Recipe Dataset step is not copied.
         const ids = selectedBlocks(
           useUiStore.getState().selectedNodes,
           doc.meta.editor,
           doc.graph,
-        );
+        ).filter((id) => doc.graph.nodes[id]?.type !== GENERATE_TYPE);
         if (!ids.length) return;
         const fragment = cloneFragment(doc.graph, ids, [40, 40]);
         doc.insertFragment(fragment);

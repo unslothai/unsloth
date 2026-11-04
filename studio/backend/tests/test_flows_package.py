@@ -315,3 +315,48 @@ def test_scrub_drops_prefixed_credential_keys_and_keeps_ordinary_ones():
         }
     )
     assert out == {"max_tokens": 512, "token_count": 3, "prompt": "hello"}
+
+
+def test_scrub_keeps_a_structured_outputs_field_names_and_a_transforms_columns():
+    from core.flows.package import scrub
+
+    schema = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}, "text": {"type": "string"}},
+        "required": ["token", "text"],
+        "additionalProperties": False,
+    }
+    transform = {
+        "processor_type": "schema_transform",
+        "name": "chat",
+        "template": {"token": "{{ t }}", "nested": {"password": "{{ p }}"}},
+    }
+    out = scrub({"column": {"output_format": schema, "api_key": "x"}, "processors": [transform]})
+    assert out["column"]["output_format"] == schema and "api_key" not in out["column"]
+    assert out["processors"][0]["template"] == transform["template"]
+    # Anywhere else a credential-named key still goes, and a live token in a value is still blanked.
+    assert scrub({"properties": {"token": "abc"}}) == {"properties": {}}
+    leaked = scrub({"processor_type": "schema_transform", "template": {"a": "hf_" + "x" * 30}})
+    assert "hf_" not in str(leaked)
+    nullable = {
+        "type": "object",
+        "properties": {
+            "inner": {
+                "type": ["object", "null"],
+                "properties": {"token": {"type": "string"}},
+                "required": ["token"],
+            },
+            "list": {"type": "array", "items": {"properties": {"password": {"type": "string"}}}},
+            "either": {"anyOf": [{"properties": {"secret": {"type": "string"}}}]},
+        },
+    }
+    assert scrub({"output_format": nullable}) == {"output_format": nullable}
+    composed = {
+        "type": "object",
+        "allOf": [{"properties": {"token": {"type": "string"}}, "required": ["token"]}],
+    }
+    assert scrub({"output_format": composed}) == {"output_format": composed}
+    # A template's `headers` key is an output column, not a request's headers.
+    shaped = {"processor_type": "schema_transform", "template": {"headers": {"X-Type": "{{ h }}"}}}
+    assert scrub(shaped) == shaped
+    assert scrub({"headers": {"X-Auth": "secret"}}) == {"headers": {"X-Auth": ""}}

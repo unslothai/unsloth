@@ -94,6 +94,9 @@ export type RecipeExecutionRecord = {
   lastEventId: number | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   artifact_path: string | null;
+  /** Flows: the dataset a run's pages read when it is not the job's own (a schema transform's). */
+  // biome-ignore lint/style/useNamingConvention: backend schema
+  output_ref?: string | null;
   // biome-ignore lint/style/useNamingConvention: backend schema
   log_lines: string[];
   dataset: Record<string, unknown>[];

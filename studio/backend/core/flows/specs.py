@@ -207,6 +207,7 @@ def spec(
     requires: Optional[list[str]] = None,
     exclusive_gpu: bool = False,
     requires_approval: Optional[list[str]] = None,
+    design: bool = False,
 ) -> dict:
     inputs = list(inputs)
     for p in params:
@@ -251,6 +252,9 @@ def spec(
     if requires_approval:
         # requires_approval: python | http | mcp | provider | trigger, owner-approved per flow (core/flows/capabilities.py).
         found["requires_approval"] = list(requires_approval)
+    if design:
+        # design: describes part of something another node runs (a recipe column); never executed itself.
+        found["design"] = True
     return found
 
 
@@ -1460,9 +1464,10 @@ NODE_SPECS: list[dict] = [
     ),
     spec(
         "data.recipe",
-        "Data Recipe",
+        "Run a saved recipe",
         "data",
-        "Run a saved Data Recipe and output its dataset.",
+        "Run a Data Recipe saved on the Data Recipes page and output its dataset. To edit a recipe here, "
+        "bring it into Flows as a Data Recipe group.",
         inputs = [inp("seed", "dataset", "Seed dataset", optional = True)],
         outputs = [out("dataset", "dataset"), out("preview", "json")],
         params = [
@@ -1480,6 +1485,36 @@ NODE_SPECS: list[dict] = [
         lane = "gpu",
         side_effect = True,
         icon = "flask",
+    ),
+    spec(
+        "recipe.generate",
+        "Recipe Dataset",
+        "data",
+        "Runs the Data Recipe group it sits in as one job and outputs the dataset; select it to edit the "
+        "recipe's models, seed and processors. Added on its own, it starts a new recipe group.",
+        inputs = [inp("seed", "dataset", "Seed dataset", optional = True)],
+        outputs = [out("dataset", "dataset"), out("preview", "json")],
+        params = [
+            P("rows", "int", 5, "Rows", min = 1, max = 200000),
+            P("mode", "select", "preview", "Mode", options = ["preview", "full"]),
+        ],
+        lane = "gpu",
+        # Cached on the compiled recipe, rows, mode and seed input: an unchanged recipe hands back its
+        # last dataset; Re-roll forces a new job.
+        icon = "flask",
+    ),
+    spec(
+        "recipe.column",
+        "Recipe column",
+        "data",
+        "One column of a Data Recipe group. Double-click it to edit it in the inspector; wires show "
+        "which columns its prompt reads.",
+        inputs = [inp("in", "text", "Reads", optional = True, multi = True)],
+        outputs = [out("out", "text", "Column")],
+        params = [P("column", "json", None, "Column (JSON)", advanced = True)],
+        cacheable = False,
+        icon = "table",
+        design = True,
     ),
     spec(
         "data.rows_to_dataset",

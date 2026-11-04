@@ -159,6 +159,7 @@ function PaletteImpl({
         specs: catalog.nodes.filter(
           (spec) =>
             spec.category === category.id &&
+            !spec.design &&
             (!deferred ||
               spec.title.toLowerCase().includes(deferred) ||
               spec.description.toLowerCase().includes(deferred) ||

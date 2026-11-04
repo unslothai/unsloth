@@ -17,7 +17,14 @@ import { shouldUseNativeMacWindowTitlebar } from "@/components/tauri/window-titl
 import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
-import { type ReactElement, useCallback, useEffect, useState } from "react";
+import {
+  type ReactElement,
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
 import { toast } from "sonner";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
@@ -46,6 +53,8 @@ import {
 } from "./use-autosave";
 import { useEditorShortcuts } from "./use-editor-shortcuts";
 
+const RecipeEditor = lazy(() => import("../recipe/recipe-editor"));
+const RecipeRuns = lazy(() => import("../recipe/recipe-runs"));
 const SAVE_WAIT_MS = 10_000;
 // The shell gives this chat-like route no top inset; start below the titlebar on Mac and
 // Windows the way Train and Recipe Studio do.
@@ -85,6 +94,8 @@ function EditorBody({
 }: { flowId: string; readOnly: boolean }) {
   const navigate = useNavigate();
   const paletteOpen = useUiStore((s) => s.paletteOpen);
+  const recipeEditorOpen = useUiStore((s) => s.recipeEditor !== null);
+  const recipeRunsOpen = useUiStore((s) => s.recipeRuns !== null);
   const { screenToFlowPosition } = useReactFlow();
   const sidebar = useOptionalSidebar();
   const sidebarBeside = !!sidebar?.open && !sidebar.isMobile;
@@ -122,7 +133,7 @@ function EditorBody({
       {readOnly && (
         <Alert className="rounded-none border-x-0 border-t-0 py-2">
           <AlertDescription className="text-xs text-amber-700 dark:text-amber-300">
-            This flow uses blocks this version of Unsloth Studio does not know,
+            This flow uses blocks this version of Unsloth does not know,
             so it opens read-only. Update Studio to edit or run it.
           </AlertDescription>
         </Alert>
@@ -155,6 +166,16 @@ function EditorBody({
         />
       </div>
       <QuickAdd />
+      {recipeEditorOpen && (
+        <Suspense fallback={null}>
+          <RecipeEditor />
+        </Suspense>
+      )}
+      {recipeRunsOpen && (
+        <Suspense fallback={null}>
+          <RecipeRuns />
+        </Suspense>
+      )}
     </div>
   );
 }

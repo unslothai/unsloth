@@ -65,7 +65,7 @@ type UseRecipeStudioActionsResult = {
   executions: RecipeExecutionRecord[];
   selectedExecutionId: string | null;
   setSelectedExecutionId: (id: string) => void;
-  persistRecipe: () => Promise<void>;
+  persistRecipe: () => Promise<boolean>;
   openRunDialog: (kind: RecipeExecutionKind) => void;
   runFromDialog: () => Promise<boolean>;
   validateFromDialog: () => Promise<boolean>;

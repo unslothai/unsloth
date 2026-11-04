@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useMemo, useState } from "react";
-import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { useRecipeConfigs } from "../../stores/recipe-configs-context";
 import { RECIPE_STUDIO_REFERENCE_BADGE_TONES } from "../../utils/ui-tones";
 import { getAvailableVariableEntries } from "../../utils/variables";
 
@@ -25,7 +25,7 @@ export function AvailableVariables({
   configId,
 }: AvailableVariablesProps): ReactElement | null {
   const [showUserFields, setShowUserFields] = useState(false);
-  const configs = useRecipeStudioStore((state) => state.configs);
+  const configs = useRecipeConfigs();
   const vars = getAvailableVariableEntries(configs, configId);
   const variableNames = useMemo(
     () => new Set(vars.map((entry) => entry.name)),

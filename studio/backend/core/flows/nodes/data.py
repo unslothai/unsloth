@@ -1,15 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Dataset nodes: Hub datasets, saved Data Recipes (declarative part only) and JSON rows."""
+"""Dataset nodes: Hub datasets, Data Recipes (saved or a Recipe group, declarative only), rows."""
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import time
+import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional, Sequence
 from urllib.parse import quote
 
 from core.flows.nodes._common import poll_job
@@ -79,6 +82,77 @@ def declarative_recipe(payload: Any) -> dict:
     return recipe
 
 
+def runnable_recipe(payload: Any) -> dict:
+    """A Recipe group's recipe as the job runs it: tool profiles and provider keys kept (a flow calls
+    with an API key, so keys travel in ``api_key``), a local (stdio) tool server refused."""
+    recipe = payload if isinstance(payload, dict) else None
+    if recipe is None:
+        raise FlowNodeError("That Data Recipe has no recipe")
+    recipe = json.loads(json.dumps(recipe))
+    from core.flows.recipe_share import stdio_names
+
+    stdio = stdio_names(recipe)
+    if stdio:
+        raise FlowNodeError(
+            f"Tool server {stdio[0]} is a local (stdio) server; those only run from the Data Recipes "
+            "page. Use an http(s) MCP server here, or remove it from the tool profile"
+        )
+    from core.training.account_jobs import managed_account
+
+    if managed_account():
+        for provider in recipe.get("model_providers") or []:
+            if isinstance(provider, dict):
+                provider.pop("api_key_env", None)
+    from core.data_recipe.service import recipe_names_host_env_credential
+
+    # The job route refuses server-environment keys for API-key callers, and a flow run is one.
+    if recipe_names_host_env_credential(recipe):
+        raise FlowNodeError(
+            "This recipe reads a provider key from the server's environment, which a flow run cannot "
+            "use. Put the key in the provider's API key field instead"
+        )
+    return recipe
+
+
+DEFAULT_RUN_CONFIG = {
+    "non_inference_max_parallel_workers": 4,
+    "max_conversation_restarts": 5,
+    "max_conversation_correction_steps": 0,
+    "disable_early_shutdown": True,
+    "shutdown_error_rate": 0.5,
+    "shutdown_error_window": 10,
+}
+
+
+def run_settings(saved: Any, rows: int, mode: str, recipe: dict) -> dict:
+    """The job's `run` from a group's saved run settings, as Recipe Studio's run dialog builds it:
+    batching (``run_config.buffer_size``) only on a full run, else one buffer of ``rows``."""
+    saved = saved if isinstance(saved, dict) else {}
+    run: dict[str, Any] = {}
+    config = saved.get("run_config")
+    # Nothing saved yet: Recipe Studio's run dialog defaults, the values its form shows.
+    config = dict(config) if isinstance(config, dict) else dict(DEFAULT_RUN_CONFIG)
+    batching = mode == "full" and isinstance(config.get("buffer_size"), int)
+    if not batching:
+        config.pop("buffer_size", None)
+        if rows > 0:
+            config["buffer_size"] = rows
+    run["run_config"] = config
+    run["merge_batches"] = bool(batching and saved.get("merge_batches"))
+    name = saved.get("run_name")
+    if mode == "full" and isinstance(name, str) and name.strip():
+        run["run_name"] = name.strip()
+    parallel = saved.get("llm_parallel_requests")
+    if isinstance(parallel, int) and not isinstance(parallel, bool) and parallel > 0:
+        for model in recipe.get("model_configs") or []:
+            if isinstance(model, dict):
+                inference = model.get("inference_parameters")
+                inference = dict(inference) if isinstance(inference, dict) else {}
+                inference["max_parallel_requests"] = parallel
+                model["inference_parameters"] = inference
+    return run
+
+
 @handler("data.recipe")
 async def recipe(ctx: NodeContext) -> dict:
     recipe_id = str(ctx.params.get("recipe_id") or "").strip()
@@ -86,11 +160,249 @@ async def recipe(ctx: NodeContext) -> dict:
         raise FlowNodeError("Pick a saved Data Recipe")
     record = await ctx.call("GET", f"{RECIPES}/recipes/{quote(recipe_id, safe = '')}")
     body = declarative_recipe(record.get("payload") if isinstance(record, dict) else None)
+    await apply_seed(ctx, body)
+    return await run_recipe(ctx, body, {})
+
+
+def group_label(ctx: NodeContext) -> str:
+    doc = getattr(ctx, "doc", None) or {}
+    node = next((n for n in doc.get("nodes") or [] if n.get("id") == ctx.node_id), None)
+    group = next(
+        (g for g in doc.get("groups") or [] if node and g.get("id") == node.get("group")), None
+    )
+    return str((group or {}).get("label") or "").strip()
+
+
+@handler("recipe.generate")
+async def recipe_group(ctx: NodeContext) -> dict:
+    from core.flows.compiler import RECIPE_PARAM
+
+    compiled = ctx.params.get(RECIPE_PARAM)
+    if not isinstance(compiled, dict):
+        raise FlowNodeError("Put this step inside a Data Recipe group")
+    body = runnable_recipe(compiled.get("recipe"))
+    from core.flows.capabilities import recipe_hosts
+    from core.flows.recipe_share import missing_seed, uses_mcp
+
+    # Same boundary as every other MCP use in Flows: the owner, in Unsloth Studio, with MCP approved.
+    if uses_mcp(body) and (refused := ctx.capability_refusal("mcp")):
+        raise FlowNodeError(refused)
+
+    if not isinstance(ctx.inputs.get("seed"), dict) and (seed := missing_seed(body)):
+        raise FlowNodeError(seed)
+    if not isinstance(ctx.inputs.get("seed"), dict):  # a wired seed replaces it anyway
+        await resolve_hub_seed(ctx, body)
+    for host in recipe_hosts(body):
+        if refused := ctx.capability_refusal("http", host):
+            raise FlowNodeError(refused)
+    local = local_model(body)
+    if local:
+        # The preset names a model: it is loaded here, under the GPU lease, as Recipe Studio's Run does.
+        # The main slot: the job's local provider reaches only Chat's main model.
+        await ctx.ensure_model("chat", local, primary = True)
+    # Validate against the seed it will run on: its columns are what the prompts read.
+    await apply_seed(ctx, body)
+    checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
+    if isinstance(checked, dict) and checked.get("valid") is False:
+        problems = [
+            str(e.get("message") or "")
+            for e in checked.get("errors") or []
+            if isinstance(e, dict) and e.get("message")
+        ]
+        raise FlowNodeError(
+            "The recipe is not ready: " + ("; ".join(problems[:3]) or "it did not validate")
+        )
+    mode = "preview" if ctx.params.get("mode") == "preview" else "full"
+    run = run_settings(compiled.get("run"), int(ctx.params.get("rows") or 0), mode, body)
+    if mode == "full" and not run.get("run_name") and (label := group_label(ctx)):
+        run["run_name"] = (
+            label  # what the Run settings dialog fills in, so the Run button names it too
+        )
+    return await run_recipe(ctx, body, run, history = RunHistory(ctx))
+
+
+def bare_hub_seed(recipe: dict) -> Optional[dict]:
+    """The recipe's Hub seed source when its path is still a repo id (`owner/name`), not a reader path."""
+    seed = recipe.get("seed_config")
+    source = seed.get("source") if isinstance(seed, dict) else None
+    if not isinstance(source, dict) or source.get("seed_type") != "hf":
+        return None
+    path = str(source.get("path") or "").strip()
+    if not path or path.startswith(("datasets/", "hf://")) or "*" in path:
+        return None
+    return source
+
+
+async def resolve_hub_seed(ctx: NodeContext, recipe: dict) -> None:
+    """Turn a bare Hub seed into the path the reader takes, as Recipe Studio's seed Load does
+    (`/seed/inspect`); a shared or learning recipe often carries only the repo id."""
+    source = bare_hub_seed(recipe)
+    if source is None:
+        return
+    name = str(source["path"]).strip()
+    inspected = await ctx.call(
+        "POST",
+        f"{RECIPES}/seed/inspect",
+        json = {
+            "dataset_name": name,
+            "split": source.get("split") or "train",
+            "subset": source.get("subset"),
+            "hf_token": source.get("token"),
+            "preview_size": 1,
+        },
+    )
+    path = inspected.get("resolved_path") if isinstance(inspected, dict) else None
+    if not path:
+        raise FlowNodeError(f"Unsloth Studio could not read the seed dataset {name}")
+    source["path"] = path
+
+
+class RunHistory:
+    """A Recipe Dataset run as a Recipe Studio execution record, so its Runs view reads it like Recipe Studio's."""
+
+    def __init__(self, ctx: Optional[NodeContext] = None):
+        self.flow_id = getattr(ctx, "flow_id", None)
+        self.node_id = getattr(ctx, "node_id", None)
+        self.enabled = bool(self.flow_id and self.node_id)
+        self.record: dict[str, Any] = {}
+        self.seq = 0
+
+    def start(self, job_id: str, run: dict) -> None:
+        self.record = {
+            "id": uuid.uuid4().hex,
+            "recipeId": f"flow:{self.flow_id}:{self.node_id}",
+            "jobId": job_id,
+            "kind": run.get("execution_type") or "full",
+            "run_name": run.get("run_name"),
+            "status": "pending",
+            "rows": int(run.get("rows") or 0),
+            "createdAt": int(time.time() * 1000),
+            "finishedAt": None,
+            "recipeSignature": "",
+            "dataset": [],
+            "datasetTotal": 0,
+            "datasetPage": 1,
+            "datasetPageSize": 20,
+            "log_lines": [],
+        }
+
+    async def update(self, **fields: Any) -> None:
+        if not self.enabled or not self.record:
+            return
+        self.seq += 1
+        self.record.update(fields, lastEventId = self.seq)
+        if (
+            self.record["status"] in ("completed", "error", "cancelled")
+            and not self.record["finishedAt"]
+        ):
+            self.record["finishedAt"] = int(time.time() * 1000)
+        from storage import flows_db
+
+        try:
+            await asyncio.to_thread(
+                flows_db.save_recipe_run, self.flow_id, self.node_id, dict(self.record)
+            )
+        except Exception:  # a run never fails because its history could not be written
+            pass
+
+    async def status(self, status: Any) -> None:
+        if not isinstance(status, dict):
+            return
+        keep = (
+            "status",
+            "stage",
+            "current_column",
+            "completed_columns",
+            "progress",
+            "column_progress",
+            "batch",
+            "source_progress",
+            "model_usage",
+            "artifact_path",
+            "error",
+        )
+        fields = {k: status[k] for k in keep if k in status}
+        if fields.get("status") == "completed":
+            fields.pop("status")  # finish() marks it done once its rows are in the record
+        if isinstance(status.get("rows"), int):
+            fields["rows"] = status["rows"]
+        await self.update(**fields)
+
+    async def finish(
+        self,
+        ctx: NodeContext,
+        job_id: str,
+        preview: list,
+        total: Any,
+        kept: Optional[list],
+        output: Optional[str] = None,
+    ) -> None:
+        """``kept`` is every row when the step already read them all (a run with no saved artifact);
+        ``output`` is the dataset the run's pages read when it is not the job's own (a schema transform's)."""
+        if not self.enabled:
+            return
+        rows, analysis = preview, None
+        if self.record.get("kind") == "preview":
+            # The view pages a preview from the record alone, as Recipe Studio does: keep every row.
+            try:
+                rows = kept if kept is not None else await recipe_rows(ctx, job_id)
+            except FlowNodeError:
+                pass
+        try:
+            analysis = await ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/analysis")
+        except FlowNodeError:
+            pass
+        if self.record.get("kind") == "preview":
+            total = len(rows)
+        await self.update(
+            status = "completed",
+            dataset = rows,
+            datasetTotal = total if isinstance(total, int) else len(rows),
+            analysis = analysis if isinstance(analysis, dict) else None,
+            **({"output_ref": output} if output else {}),
+        )
+
+
+def local_model(recipe: dict) -> Optional[dict]:
+    """The one named model the recipe's local-provider columns use, if it names one."""
+    local = {
+        p.get("name")
+        for p in recipe.get("model_providers") or []
+        if isinstance(p, dict) and p.get("is_local") is True
+    }
+    used = {
+        c.get("model_alias")
+        for c in recipe.get("columns") or []
+        if isinstance(c, dict) and str(c.get("column_type") or "").startswith("llm-")
+    }
+    picks = {
+        (str(mc["model"]).strip(), str(mc.get("gguf_variant") or "").strip())
+        for mc in recipe.get("model_configs") or []
+        if isinstance(mc, dict)
+        and mc.get("provider") in local
+        and mc.get("alias") in used
+        and str(mc.get("model") or "").strip().lower() not in ("", "local")
+    }
+    if len(picks) != 1:
+        return None
+    repo, variant = picks.pop()
+    return {"repo": repo, "variant": variant or None}
+
+
+async def apply_seed(ctx: NodeContext, body: dict) -> None:
     seed = ctx.inputs.get("seed")
     if isinstance(seed, dict) and seed.get("kind") == "dataset":
         body["seed_config"] = await seed_config(ctx, seed, body.get("seed_config"))
-    mode = "preview" if ctx.params.get("mode") == "preview" else "full"
-    run: dict[str, Any] = {"execution_type": mode}
+
+
+async def run_recipe(
+    ctx: NodeContext,
+    body: dict,
+    run: dict[str, Any],
+    history: Optional[RunHistory] = None,
+) -> dict:
+    """One Data Designer job for ``body`` (its wired seed already applied): its dataset (parquet if saved, else rows)."""
+    run = {**run, "execution_type": "preview" if ctx.params.get("mode") == "preview" else "full"}
     rows = int(ctx.params.get("rows") or 0)
     if rows > 0:
         run["rows"] = rows
@@ -99,8 +411,17 @@ async def recipe(ctx: NodeContext) -> dict:
     if not job_id:
         raise FlowNodeError("Unsloth Studio did not start the recipe")
 
+    history = history or RunHistory()
+    history.start(job_id, run)
+    await history.update(status = "pending")
+
     async def cancel() -> None:
         await ctx.call("POST", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/cancel")
+
+    async def job_status() -> Any:
+        status = await ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/status")
+        await history.status(status)
+        return status
 
     def parse(status: Any) -> tuple[str, Optional[dict], Optional[str]]:
         state = str(status.get("status") or "") if isinstance(status, dict) else ""
@@ -116,39 +437,124 @@ async def recipe(ctx: NodeContext) -> dict:
             return "cancelled", shown, "The recipe was cancelled"
         return "running", shown, None
 
-    status = await poll_job(
-        ctx,
-        status = lambda: ctx.call("GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/status"),
-        parse = parse,
-        cancel = cancel,
-        interval = POLL_S,
-    )
-    preview: list = []
     try:
-        page = await ctx.call(
-            "GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset", params = {"limit": 20}
+        status = await poll_job(ctx, status = job_status, parse = parse, cancel = cancel, interval = POLL_S)
+    except BaseException as exc:
+        if history.record.get("status") not in ("error", "cancelled"):
+            failed = isinstance(exc, FlowNodeError)
+            await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
+        raise
+    preview: list = []
+    total = None
+    try:
+        try:
+            page = await ctx.call(
+                "GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset", params = {"limit": 20}
+            )
+            if isinstance(page, dict):
+                preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
+                total = page.get("total")
+        except FlowNodeError:
+            pass
+        # The job's own row count is the last batch's on a batched run; the dataset page counts them all.
+        rows = (
+            total
+            if isinstance(total, int)
+            else (status.get("rows") if isinstance(status, dict) else None)
         )
-        if isinstance(page, dict):
-            preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
-    except FlowNodeError:
-        pass
-    rows = status.get("rows") if isinstance(status, dict) else None
-    artifact = status.get("artifact_path") if isinstance(status, dict) else None
-    if isinstance(artifact, str) and artifact.strip():
-        ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
-        dataset = {
-            "kind": "dataset",
-            "source": "recipe",
-            "ref": ref,
-            "job_id": job_id,
-            "rows": rows,
-        }
-    else:
-        kept = await recipe_rows(ctx, job_id)
-        if not kept:
-            raise FlowNodeError("The Data Recipe produced no rows")
-        dataset = await upload_rows(ctx, kept, f"recipe-{job_id}")
+        artifact = status.get("artifact_path") if isinstance(status, dict) else None
+        saved = isinstance(artifact, str) and artifact.strip()
+        transform = schema_transform(body)
+        # A schema transform's rows are the recipe's output; Data Designer keeps them beside the dataset.
+        reshaped = None
+        if transform and saved:
+            folder = Path(artifact.strip()) / "processors-files" / transform[0]
+            if folder.is_dir():
+                reshaped = f"processors-files/{transform[0]}"
+                preview = await asyncio.to_thread(parquet_head, folder, 20)
+        elif transform and isinstance(status, dict):
+            made = (status.get("processor_artifacts") or {}).get(transform[0])
+            if isinstance(made, list):
+                reshaped = [row for row in made if isinstance(row, dict)]
+                preview = reshaped[:20]
+        # Every row the job made, up to the most a Recipe Dataset step can ask for.
+        kept = (
+            None
+            if saved
+            else reshaped
+            if isinstance(reshaped, list)
+            else await recipe_rows(ctx, job_id, limit = max(MAX_RECIPE_ROWS, rows or 0))
+        )
+        made_columns = transform[1] if reshaped is not None else generated_columns(body)
+        if saved:
+            ref = f"recipes/{Path(artifact.strip()).name}/{reshaped or 'parquet-files'}"
+            dataset = {
+                "kind": "dataset",
+                "source": "recipe",
+                "ref": ref,
+                "job_id": job_id,
+                "rows": rows,
+            }
+            if preview:
+                dataset["columns"] = lead_columns({k for r in preview for k in r}, made_columns)
+        else:
+            if not kept:
+                raise FlowNodeError("The Data Recipe produced no rows")
+            dataset = await upload_rows(
+                ctx,
+                kept,
+                f"recipe-{job_id}",
+                made_by = "preview" if run.get("execution_type") == "preview" else "recipe",
+                first = made_columns,
+            )
+        # Completed only once its dataset is in hand: an empty job or a refused upload is a failed run.
+        await history.finish(
+            ctx,
+            job_id,
+            preview,
+            total,
+            kept,
+            output = dataset.get("ref") if reshaped is not None else None,
+        )
+    except BaseException as exc:
+        # A Stop or failure anywhere before the record is finished would leave it running, and the
+        # Runs pane polling it.
+        if history.record.get("status") not in ("completed", "error", "cancelled"):
+            failed = isinstance(exc, FlowNodeError)
+            await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
+        raise
     return {"dataset": dataset, "preview": preview}
+
+
+def schema_transform(recipe: Any) -> Optional[tuple[str, list[str]]]:
+    """The recipe's schema transform (the one a recipe group edits): its name and output columns."""
+    for processor in recipe.get("processors") or [] if isinstance(recipe, dict) else []:
+        if not isinstance(processor, dict) or processor.get("processor_type") != "schema_transform":
+            continue
+        name, template = processor.get("name"), processor.get("template")
+        if (
+            isinstance(name, str)
+            and name.strip()
+            and Path(name).name == name
+            and name not in (".", "..")
+        ):
+            return name, list(template) if isinstance(template, dict) else []
+    return None
+
+
+def parquet_head(folder: Path, limit: int) -> list[dict]:
+    try:
+        import pyarrow.dataset as ds
+        return ds.dataset(str(folder), format = "parquet").head(limit).to_pylist()
+    except Exception:
+        return []
+
+
+def generated_columns(recipe: Any) -> list[str]:
+    columns = recipe.get("columns") if isinstance(recipe, dict) else None
+    return [
+        c["name"] for c in columns or [] if isinstance(c, dict) and isinstance(c.get("name"), str)
+    ]
 
 
 def recipe_artifact(ref: Any) -> bool:
@@ -191,6 +597,47 @@ async def seed_config(ctx: NodeContext, dataset: dict, current: Any) -> dict:
     raise FlowNodeError("A recipe seed takes a Hub dataset, a Data Recipe or Rows to Dataset")
 
 
+def seed_files(recipe: Any, wired: Any) -> Optional[str]:
+    """A digest of the files a recipe's local seed reads (names, sizes, times), or None when it has none."""
+    import glob
+    import hashlib
+
+    patterns: list[str] = []
+    if isinstance(wired, dict) and wired.get("source") in ("local", "recipe"):
+        try:
+            patterns.append(local_seed_path(wired.get("ref")))
+        except FlowNodeError:
+            return None
+    elif isinstance(wired, dict):
+        return None
+    else:
+        source = (
+            (recipe.get("seed_config") or {}).get("source") if isinstance(recipe, dict) else None
+        )
+        if isinstance(source, dict) and source.get("seed_type") == "local":
+            patterns.append(source.get("path"))
+        elif isinstance(source, dict) and source.get("seed_type") == "unstructured":
+            # The seed plugin still takes the older single `path`.
+            patterns.extend(source.get("paths") or [source.get("path")])
+    files = set()
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern.strip():
+            continue
+        # A relative seed (./seed.jsonl) is read from where Studio runs, as Data Designer reads it.
+        pattern = os.path.abspath(os.path.expanduser(pattern))
+        for path in glob.glob(pattern, recursive = True):
+            walked = os.walk(path) if os.path.isdir(path) else [("", [], [path])]
+            files.update(os.path.join(root, name) for root, _, names in walked for name in names)
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        digest.update(f"{path}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    return digest.hexdigest() if files else None
+
+
 def local_seed_path(ref: Any) -> str:
     from hub.utils.host_paths import resolve_host_path_reference
     from utils.paths import resolve_dataset_path
@@ -219,11 +666,18 @@ async def rows_to_dataset(ctx: NodeContext) -> dict:
         rows = rows.get("rows") or rows.get("data") or [rows]
     if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) for r in rows):
         raise FlowNodeError("Rows to Dataset takes a JSON list of objects")
-    return {"dataset": await upload_rows(ctx, rows, str(ctx.params.get("name") or "flow-dataset"))}
+    name = str(ctx.params.get("name") or "flow-dataset")
+    return {"dataset": await upload_rows(ctx, rows, name, made_by = "rows")}
 
 
-async def upload_rows(ctx: NodeContext, rows: list[dict], name: str) -> dict:
-    """Save rows as a JSONL training dataset and return its DatasetValue."""
+async def upload_rows(
+    ctx: NodeContext,
+    rows: list[dict],
+    name: str,
+    made_by: Optional[str] = None,
+    first: Sequence[str] = (),
+) -> dict:
+    """Save rows as a JSONL training dataset and return its DatasetValue; ``first`` columns lead."""
     name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
     data = "\n".join(json.dumps(r, ensure_ascii = False) for r in rows).encode()
     saved = await ctx.call(
@@ -235,15 +689,36 @@ async def upload_rows(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     if not isinstance(stored, str) or not stored:
         raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
     from hub.utils.host_paths import cache_reference
+    from utils.paths.storage_roots import dataset_uploads_root
 
-    columns = sorted({k for r in rows for k in r})
-    return {
+    # The value is cached and saved with the flow, so it names the upload by its place in the account's
+    # uploads folder: a `ref:` lives only in this process's table and is gone after a restart.
+    path = Path(stored)
+    try:
+        ref = f"uploads/{path.relative_to(dataset_uploads_root()).as_posix()}"
+    except ValueError:
+        ref = cache_reference(stored)
+    value = {
         "kind": "dataset",
         "source": "local",
-        "ref": cache_reference(stored),
+        "ref": ref,
         "rows": len(rows),
-        "columns": columns,
+        "columns": lead_columns({k for r in rows for k in r}, first),
     }
+    if made_by:
+        value["made_by"] = made_by
+    return value
+
+
+def lead_columns(names: Iterable[str], first: Sequence[str]) -> list[str]:
+    """``first`` (in order) then the rest sorted: a recipe's generated columns ahead of its seed's."""
+    names = set(names)
+    lead = [n for n in dict.fromkeys(first) if n in names]
+    return lead + sorted(names - set(lead))
+
+
+# The Recipe Dataset step's rows cap (specs.py), the Run dialog's.
+MAX_RECIPE_ROWS = 200_000
 
 
 async def recipe_rows(

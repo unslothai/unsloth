@@ -304,6 +304,7 @@ class JobManager:
                 "has_analysis": job.analysis is not None,
                 "dataset_rows": None if job.dataset is None else len(job.dataset),
                 "artifact_path": job.artifact_path,
+                "processor_artifacts": job.processor_artifacts,
                 "execution_type": job.execution_type,
                 "started_at": job.started_at,
                 "finished_at": job.finished_at,

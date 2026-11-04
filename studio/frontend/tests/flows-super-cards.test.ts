@@ -565,7 +565,7 @@ test("copy and duplicate take the blocks inside a selected closed card", () => {
   );
   // Cut removes what copy took, not the card's own selection id.
   const shortcuts = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
-  assert.match(shortcuts, /const fragment = copySelection\(\);\s*if \(fragment\) \{[^}]*removeElements\(\{ nodes: fragment\.nodes\.map\(\(n\) => n\.id\) \}\)/);
+  assert.match(shortcuts, /const fragment = copySelection\(\);\s*if \(fragment\) \{[^}]*removeNodes\(fragment\.nodes\.map\(\(n\) => n\.id\)\)/);
 });
 
 test("a block added where a folded frame sits stays out of it", () => {
@@ -612,7 +612,7 @@ test("tidy up keeps a card's blocks together when the card holds part of a group
   const wires = folded.request.edges.map((e) => `${e.source}>${e.target}`).sort();
   assert.deepEqual(wires, ["group:g>view", "prompt>super:sc1", "super:sc1>group:g"]);
   const layout = readFileSync(new URL("../src/features/flows/editor/layout.ts", import.meta.url), "utf8");
-  assert.match(layout, /tidyRequest\(\{ \.\.\.ctx, graph: tidyGraph\(graph, useDocStore\.getState\(\)\.meta\.editor\) \}\)/);
+  assert.match(layout, /tidyRequest\(\{ \.\.\.ctx, graph: tidyGraph\(ctx\.graph, useDocStore\.getState\(\)\.meta\.editor\) \}\)/);
   const result = folded.unfold({ "super:sc1": [1000, 500], "group:g": [0, 0], prompt: [0, 0], view: [0, 0] });
   const patch = tidyPatch(ctx, result);
   const [tx, ty] = patch.nodes.tpl.pos;

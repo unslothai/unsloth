@@ -33,7 +33,7 @@ from core.flows import capabilities
 from core.flows import model_settings
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
-from core.flows.compiler import FOR_EACH, CompileError, Plan, compile_flow
+from core.flows.compiler import FOR_EACH, RECIPE_PARAM, CompileError, Plan, compile_flow
 from core.flows.registry import CACHE_HOOKS, FlowCancelled, FlowNodeError, load_handlers
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
@@ -463,8 +463,11 @@ class NodeContextImpl:
         model_kind: str,
         choice: Optional[dict],
         options: Optional[dict] = None,
+        primary: bool = False,
     ) -> Optional[dict]:
         from core.flows.nodes import _common
+        if primary:
+            return await _common.ensure_model(self, model_kind, choice, options, primary = True)
         return await _common.ensure_model(self, model_kind, choice, options)
 
     async def llm_text(self, **kwargs: Any) -> str:
@@ -1835,6 +1838,14 @@ class FlowEngine:
             return
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
+        # Before the cache: a run that may not use a capability does not get another run's output of it.
+        for cap, detail in capabilities.node_needs(spec, params):
+            if refused := capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"]):
+                state.error = refused
+                env.values[nid] = SKIPPED
+                rs.set_status(nid, "failed")
+                self._record(rs, nid, "failed", None, refused, iteration)
+                return
         if params.get(model_settings.USE_SAVED) and spec.get("model_kind"):
             await _apply_saved_settings(ctx, spec, params, bound)
         key = None
@@ -1900,11 +1911,25 @@ class FlowEngine:
             rs.set_status(nid, "failed")
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
+        # A recipe on Chat's loaded model is keyed on the model it ran on, read while the GPU is still
+        # held: the one read above, before the wait, may have been swapped by another GPU step since.
+        relook = (
+            key is not None
+            and not spec.get("model_kind")
+            and _implicit_local_model(params.get(RECIPE_PARAM))
+        )
+
+        async def ran_on() -> Optional[str]:
+            try:
+                return cache_key(
+                    spec["type"], spec["v"], params, inputs,
+                    model = await self._model_key(ctx, spec, params), seed = seed,
+                    flow_params = ctx.flow_params,
+                )  # fmt: skip
+            except Exception:
+                return None
+
         try:
-            for cap, detail in capabilities.node_needs(spec, params):
-                refused = capabilities.refusal(rs.origin, rs.approvals, cap, detail, spec["title"])
-                if refused:
-                    raise FlowNodeError(refused)
             if spec["lane"] == "gpu":
                 lock = self.gpu_lock()
                 if lock.locked():
@@ -1925,6 +1950,8 @@ class FlowEngine:
                             ctx.gpu_shared = True
                             rs.set_status(nid, "running")
                             outputs = await handler(ctx)
+                            if relook:
+                                key = await ran_on()
                     except NeedsExclusiveGpu:
                         shared = None
                     finally:
@@ -1940,6 +1967,8 @@ class FlowEngine:
                         else:
                             rs.set_status(nid, "running")
                             outputs = await handler(ctx)
+                        if relook:
+                            key = await ran_on()
             else:
                 rs.set_status(nid, "running")
                 outputs = await handler(ctx)
@@ -2054,13 +2083,65 @@ class FlowEngine:
     async def _model_key(self, ctx: NodeContextImpl, spec: dict, params: dict) -> Optional[dict]:
         kind = spec.get("model_kind")
         if not kind:
-            return None
+            compiled = params.get(RECIPE_PARAM)
+            recipe = compiled.get("recipe") if isinstance(compiled, dict) else None
+            from core.flows.nodes.data import seed_files
+
+            # A seed file edited in place is a different dataset under the same path.
+            seeds = (
+                await asyncio.to_thread(
+                    seed_files, recipe, (getattr(ctx, "inputs", None) or {}).get("seed")
+                )
+                if isinstance(recipe, dict)
+                else None
+            )
+            key = await self._recipe_model_key(ctx, compiled, recipe)
+            if seeds:
+                key = {**(key or {}), "seed_files": seeds}
+            return key
         choice = params.get("model") or {}
         key = {"repo": choice.get("repo"), "variant": choice.get("variant")}
         repo = choice.get("repo")
         if isinstance(repo, str) and os.path.isabs(repo):
             key["files"] = await asyncio.to_thread(_local_fingerprint, repo)
         return key
+
+    async def _recipe_model_key(
+        self, ctx: NodeContextImpl, compiled: Any, recipe: Optional[dict]
+    ) -> Optional[dict]:
+        from core.flows.nodes.data import local_model
+
+        named = local_model(recipe) if isinstance(recipe, dict) else None
+        if named:
+            # The step loads the generator the recipe names, so it is keyed like any picked model,
+            # not by whatever an earlier step left loaded.
+            key = dict(named)
+            if not named["variant"]:
+                # No quant named: loading keeps the one Chat already holds of this repo.
+                from core.flows.nodes._common import resident_identity
+                from studio_mcp import loading
+
+                held = await resident_identity(ctx, "chat")
+                if isinstance(held.get("local"), str) and loading._same_id(
+                    held["local"], named["repo"]
+                ):
+                    key["variant"] = held.get("variant")
+            if os.path.isabs(named["repo"]):
+                key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
+            return key
+        if _implicit_local_model(compiled):
+            # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
+            from core.flows.nodes._common import resident_identity
+
+            key = await resident_identity(ctx, "chat")
+            name = key.get("local")
+            if isinstance(name, str) and os.path.isabs(name):
+                key["files"] = await asyncio.to_thread(_local_fingerprint, name)
+            elif not name:
+                # Which checkpoint Chat holds cannot be told: never reuse a dataset made on another.
+                key["unknown"] = uuid.uuid4().hex
+            return key
+        return None
 
     async def _for_each(
         self,
@@ -2279,6 +2360,24 @@ def _origin(account: AccountContext, kind: Optional[str]) -> dict:
     if account.via_api_key:
         return {"kind": "api_key", "owner": False}
     return {"kind": kind or "ui", "owner": account.is_owner}
+
+
+def _implicit_local_model(recipe: Any) -> bool:
+    """A compiled recipe with a model on the local provider: it runs on whichever copy and quant
+    Chat holds (blank or "local" is Chat's model; a named one is checked against it by repo only)."""
+    if not isinstance(recipe, dict):
+        return False
+    if isinstance(recipe.get("recipe"), dict):
+        recipe = recipe["recipe"]  # the compiler's {"recipe": ..., "run": ...}
+    local = {
+        p.get("name")
+        for p in recipe.get("model_providers") or []
+        if isinstance(p, dict) and p.get("is_local") is True
+    }
+    return any(
+        isinstance(mc, dict) and mc.get("provider") in local
+        for mc in recipe.get("model_configs") or []
+    )
 
 
 def _local_fingerprint(path: str) -> Optional[list]:

@@ -62,7 +62,13 @@ class NodeContext(Protocol):
         """Return the parsed JSON body (or raw bytes for non-JSON). Raise FlowNodeError with the route's detail on non-2xx."""
         ...
 
-    async def ensure_model(self, model_kind: str, choice: Optional[dict]) -> Optional[dict]:
+    async def ensure_model(
+        self,
+        model_kind: str,
+        choice: Optional[dict],
+        options: Optional[dict] = None,
+        primary: bool = False,
+    ) -> Optional[dict]:
         """Make `choice` ({"repo", "variant"}) the resident model for `model_kind`, loading it if needed.
         None = keep whatever is loaded (error if nothing is). Returns the resolved {"repo", "variant"} or None."""
         ...

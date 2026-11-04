@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
@@ -191,6 +193,41 @@ export const nodeHistory = (flowId: string, nodeId: string) =>
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/history`,
   );
 
+export const recipeRuns = (flowId: string, nodeId: string, limit: number) =>
+  request<{ executions: Record<string, unknown>[] }>(
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs?limit=${limit}`,
+  );
+
+export const recipeRun = (flowId: string, nodeId: string, runId: string) =>
+  request<Record<string, unknown> & { dataset?: unknown; datasetTotal?: unknown }>(
+    `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs/${encodeURIComponent(runId)}`,
+  );
+
+export const datasetRows = (value: unknown, offset: number, limit: number) => {
+  const init = json("POST", { value, offset, limit });
+  // A private or gated Hub dataset reads with this account's token, as the picker that chose it did.
+  init.headers = {
+    ...(init.headers as Record<string, string>),
+    ...hubTokenHeader(useHfTokenStore.getState().token),
+  };
+  return request<import("./dataset/dataset-value").DatasetRowsPage>(
+    "/dataset-rows",
+    init,
+  );
+};
+
+/** Every row of a saved Data Recipe output (a schema transform's) as JSONL. */
+export async function datasetExport(value: unknown): Promise<Blob> {
+  const response = await transport(
+    `${FLOWS_API}/dataset-export`,
+    json("POST", { value }),
+  );
+  if (!response.ok) {
+    throw new FlowsApiError(await readFastApiError(response), response.status);
+  }
+  return response.blob();
+}
+
 export interface ImportReport {
   missing_models: PlanModel[];
   warnings: string[];
@@ -246,6 +283,40 @@ export async function importNotebook(
     },
   };
 }
+
+/** A saved Data Recipe (by id) or recipe JSON as a new flow with one Recipe group. */
+export const importRecipe = (
+  source: { recipe_id: string } | { payload: unknown; name?: string },
+) =>
+  request<{ flow: FlowRecord; report: { notices: string[] } }>(
+    "/import/recipe",
+    json("POST", source),
+  );
+
+/** One recipe group as recipe JSON Recipe Studio imports, without keys, local tool servers or upload paths. */
+export const exportRecipe = (doc: FlowDocument, groupId: string) =>
+  request<{
+    recipe: Record<string, unknown>;
+    run: Record<string, unknown>;
+    ui: Record<string, unknown>;
+  }>("/export/recipe", json("POST", { doc, group_id: groupId }));
+
+export interface RecipeMigration {
+  created: {
+    recipe_id: string;
+    flow_id: string;
+    name: string;
+    notices: string[];
+    /** the older flow of a recipe edited since; it is kept */
+    replaces?: string;
+  }[];
+  skipped: { recipe_id: string; flow_id: string }[];
+  failed: { recipe_id: string; name: string; error: string }[];
+}
+
+/** One flow per saved Data Recipe not in Flows yet, or edited since; repeating it creates nothing new. */
+export const importAllRecipes = () =>
+  request<RecipeMigration>("/import/recipes", { method: "POST" });
 
 export interface NotebookEntry {
   id: string;

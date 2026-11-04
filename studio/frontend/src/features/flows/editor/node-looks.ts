@@ -3,6 +3,8 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 import type { ComponentType } from "react";
+import { COLUMN_TYPE } from "../recipe/recipe-columns";
+import { RECIPE_COLUMN_LOOK } from "../recipe/recipe-node-look";
 import type { FlowNode, NodeSpec } from "../types";
 import { TRAIN_LOOK } from "./train-node";
 
@@ -26,4 +28,5 @@ export interface NodeLook {
 
 export const NODE_LOOKS: Record<string, NodeLook> = {
   "train.finetune": TRAIN_LOOK,
+  [COLUMN_TYPE]: RECIPE_COLUMN_LOOK,
 };
