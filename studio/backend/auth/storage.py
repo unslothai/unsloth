@@ -991,6 +991,41 @@ def set_account_model_allowlist(account_id: str, allowlist: Optional[list[str]])
     return result
 
 
+def rename_account(account_id: str, username: str) -> dict:
+    """Files key on the account id, so nothing moves. Sessions carry the old name and are revoked;
+    API keys follow the account."""
+    from auth.policy import account_mutation
+
+    username = validate_account_username(username)
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = _managed_account(conn, account_id)
+                old = row["username"]
+                if old != username:
+                    if _login_alias_taken(conn, username):
+                        raise sqlite3.IntegrityError("Username is unavailable")
+                    conn.execute(
+                        "UPDATE auth_user SET username = ?, account_jwt_secret = ? WHERE account_id = ?",
+                        (username, secrets.token_urlsafe(64), account_id),
+                    )
+                    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (old,))
+                    conn.execute(
+                        "UPDATE api_keys SET username = ? WHERE username = ? AND account_id = ?",
+                        (username, old, account_id),
+                    )
+                    conn.execute(
+                        "UPDATE account_api_keys SET username = ? WHERE account_id = ?",
+                        (username, account_id),
+                    )
+                result = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
+    return result
+
+
 def account_model_allowlist(account_id: str) -> Optional[tuple[str, ...]]:
     """``None`` = every model. The owner is never restricted."""
     conn = get_connection()
