@@ -1465,8 +1465,18 @@ async def _stream_with_studio_tools(
     resumes_partial = run.continue_final_message
     # cap run-owned image parts across the full loop without counting caller attachments.
     loop_mcp_image_parts: list = list(run.promoted_image_parts)
-    # preserve the request branch for tools that search conversation history.
-    request_branch = list(restored)
+    # search_conversation filters on this: the request plus every message the loop added, so a
+    # result of this turn that a refit evicted stays findable (llama_cpp's _extend_live_branch).
+    live_branch = list(restored)
+    live_branch_ids = {id(message) for message in conversation}
+
+    def extend_live_branch() -> list[dict]:
+        for message in conversation:
+            if id(message) not in live_branch_ids:
+                live_branch_ids.add(id(message))
+                live_branch.append(message)
+        return list(live_branch)
+
     remaining = policy.max_calls
     unlimited = remaining >= 9999
     session_id = run.session_id
@@ -2104,7 +2114,7 @@ async def _stream_with_studio_tools(
                 # once a thread has an archive and needs the same branch: the stored rows are the whole DAG, and Retry
                 # leaves the replaced response in them.
                 if accepts_kwarg(execute_tool, "conversation_branch"):
-                    kwargs["conversation_branch"] = request_branch
+                    kwargs["conversation_branch"] = extend_live_branch()
                 if approved and accepts_kwarg(execute_tool, "host_access_approved"):
                     kwargs["host_access_approved"] = True
                 # External window is unknowable: 0 keeps the default page cap; unmeasurable budget means one recall, since 8 chunks is ~4K tokens replayed each later call.
