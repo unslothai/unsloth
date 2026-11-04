@@ -948,3 +948,33 @@ def test_a_cached_dataset_whose_files_are_gone_is_not_handed_back(monkeypatch, t
     assert not _common.gallery_media_present(value)
     # A Hub dataset is never checked on disk.
     assert _common.gallery_media_present({"kind": "dataset", "source": "hf", "ref": "org/data"})
+
+
+def test_a_refused_preview_upload_leaves_the_run_record_failed_not_completed(monkeypatch):
+    from storage import flows_db
+
+    saved = []
+    monkeypatch.setattr(
+        flows_db, "save_recipe_run", lambda flow, node, record: saved.append(dict(record))
+    )
+    monkeypatch.setattr(data, "POLL_S", 0)
+    doc = _flow()
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    routes = _job_routes("completed")
+
+    def refused(method, path, params, body):
+        if path == "/api/hub/datasets/upload":
+            raise FlowNodeError("The dataset is larger than the upload limit")
+        found = routes(method, path, params, body)
+        if path.endswith("/status"):
+            found["artifact_path"] = None
+        return found
+
+    class Ctx(_FlowCtx):
+        node_id = step["id"]
+
+    ctx = Ctx(refused, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "preview"})
+    ctx.doc = doc
+    with pytest.raises(FlowNodeError, match = "upload limit"):
+        asyncio.run(data.recipe_group(ctx))
+    assert saved[-1]["status"] == "error" and "upload limit" in saved[-1]["error"]

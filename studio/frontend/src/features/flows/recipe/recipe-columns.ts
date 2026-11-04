@@ -323,7 +323,8 @@ export function starterRecipe(): {
         },
       ],
       // biome-ignore lint/style/useNamingConvention: api schema
-      model_configs: [{ alias: "writer", model: "", provider: "local" }],
+      // "local": whatever model Chat has loaded, which the client check and the run both accept.
+      model_configs: [{ alias: "writer", model: "local", provider: "local" }],
       processors: [],
     },
     columns: [

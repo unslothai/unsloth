@@ -428,6 +428,30 @@ async def run_recipe(
         kept = (
             None if saved else await recipe_rows(ctx, job_id, limit = max(MAX_RECIPE_ROWS, rows or 0))
         )
+        if saved:
+            ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
+            dataset = {
+                "kind": "dataset",
+                "source": "recipe",
+                "ref": ref,
+                "job_id": job_id,
+                "rows": rows,
+            }
+            if preview:
+                dataset["columns"] = lead_columns(
+                    {k for r in preview for k in r}, generated_columns(body)
+                )
+        else:
+            if not kept:
+                raise FlowNodeError("The Data Recipe produced no rows")
+            dataset = await upload_rows(
+                ctx,
+                kept,
+                f"recipe-{job_id}",
+                made_by = "preview" if run.get("execution_type") == "preview" else "recipe",
+                first = generated_columns(body),
+            )
+        # Completed only once its dataset is in hand: an empty job or a refused upload is a failed run.
         await history.finish(ctx, job_id, preview, total, kept)
     except BaseException as exc:
         # A Stop or failure anywhere before the record is finished would leave it running, and the
@@ -436,29 +460,6 @@ async def run_recipe(
             failed = isinstance(exc, FlowNodeError)
             await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
         raise
-    if saved:
-        ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
-        dataset = {
-            "kind": "dataset",
-            "source": "recipe",
-            "ref": ref,
-            "job_id": job_id,
-            "rows": rows,
-        }
-        if preview:
-            dataset["columns"] = lead_columns(
-                {k for r in preview for k in r}, generated_columns(body)
-            )
-    else:
-        if not kept:
-            raise FlowNodeError("The Data Recipe produced no rows")
-        dataset = await upload_rows(
-            ctx,
-            kept,
-            f"recipe-{job_id}",
-            made_by = "preview" if run.get("execution_type") == "preview" else "recipe",
-            first = generated_columns(body),
-        )
     return {"dataset": dataset, "preview": preview}
 
 

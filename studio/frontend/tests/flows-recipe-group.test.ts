@@ -1297,3 +1297,13 @@ test("columns reading each other are a loop even when a wired seed defers the se
   assert.match(seed, /const removed = before\.some\(\(id\) => !now\.includes\(id\)\);/);
   assert.match(seed, /onUpdate\(\{ hf_path: "", resolved_paths: \[\], seed_preview_rows: \[\] \}\)/);
 });
+
+test("the starter recipe passes Check as made, writing with Chat's loaded model", async () => {
+  const { starterRecipeGraph } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { group, nodes } = starterRecipeGraph([0, 0], {});
+  const columns = nodes.filter((n: FlowNode) => n.type === COLUMN_TYPE);
+  assert.deepEqual(clientErrors(group, columns), []);
+  // Its card still reads as Chat's model, not the word "local".
+  const setup = readFileSync(new URL("../src/features/flows/recipe/recipe-setup.ts", import.meta.url), "utf8");
+  assert.match(setup, /name\.toLowerCase\(\) === "local"/);
+});
