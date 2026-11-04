@@ -36,8 +36,8 @@ import {
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import {
-  normalizeEscapedInlineMath,
   type SettledEscapedMath,
+  normalizeEscapedInlineMath,
 } from "@/lib/escaped-inline-math";
 import { preprocessLaTeX } from "@/lib/latex";
 import { withDataImageSupport } from "@/lib/markdown-data-images";

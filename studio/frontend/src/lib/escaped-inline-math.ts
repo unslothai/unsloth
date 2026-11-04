@@ -566,7 +566,7 @@ function mayCloseEscapedMath(
   return false;
 }
 
-/** Runs before currency and streaming repair. Pass `settled` only mid-stream: a later link definition reaches old blocks. */
+/** Runs before currency and streaming repair. Pass `settled` only mid-stream: link definitions reach across blocks. */
 export function normalizeEscapedInlineMath(
   markdown: string,
   settled?: SettledEscapedMath,

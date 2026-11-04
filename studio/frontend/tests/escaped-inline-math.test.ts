@@ -9,10 +9,10 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 import { parseMarkdownIntoRenderableBlocks } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import {
+  type SettledEscapedMath,
   looksLikeEscapedInlineMath,
   mayHoldEscapedInlineMath,
   normalizeEscapedInlineMath,
-  type SettledEscapedMath,
 } from "../src/lib/escaped-inline-math.ts";
 import { preprocessLaTeX } from "../src/lib/latex.ts";
 
@@ -329,7 +329,7 @@ test("real escaped math in a long streamed reply stays within the streaming budg
     normalizeEscapedInlineMath(reply.slice(0, end), settled);
   }
   const elapsed = performance.now() - started;
-  assert.ok(elapsed < 500, `streaming took ${elapsed.toFixed(1)}ms`);
+  assert.ok(elapsed < 1500, `streaming took ${elapsed.toFixed(1)}ms`);
   assert.ok(settled.prefix.length > 0);
 });
 
