@@ -14,12 +14,18 @@ from trl import SFTConfig, SFTTrainer
 
 # model has already been loaded and its trainable parameters selected.
 prepare_bf16_training(model)
+training_args = SFTConfig(bf16=True, fp16=False, learning_rate=2e-4, seed=3407)
 trainer = SFTTrainer(
     model=model,
     processing_class=tokenizer,
     train_dataset=dataset,
-    args=SFTConfig(bf16=True, fp16=False, learning_rate=2e-4),
-    optimizer_cls_and_kwargs=(AdamWBF16, {"lr": 2e-4, "seed": 3407}),
+    args=training_args,
+    optimizer_cls_and_kwargs=(AdamWBF16, {
+        "lr": training_args.learning_rate,
+        "betas": (training_args.adam_beta1, training_args.adam_beta2),
+        "eps": training_args.adam_epsilon,
+        "seed": training_args.seed,
+    }),
 )
 trainer.train()
 ```
@@ -35,6 +41,13 @@ Weights, gradients and two moments use 12 bytes per trainable scalar, plus scala
 state, versus 16 bytes for FP32 parameters, gradients and moments. Activations,
 frozen weights and framework buffers are additional. Keeping the moments FP32
 avoids losing small variance updates at common `beta2=0.999`.
+Moment buffers are allocated when a parameter first receives a gradient; frozen
+parameters and unused experts do not receive unnecessary optimizer buffers.
+
+Triton 3.3 and newer batch up to 64 parameter tensors per update launch.
+Older Triton versions use the same fused update one tensor at a time. Compiling
+the optimizer step with `torch.compile(..., fullgraph=True)` is supported on GPU;
+CPU provides a reference implementation.
 
 Stochastic rounding preserves the expectation of the FP32 update when both
 neighboring BF16 values are finite. It cannot recover rounding already incurred

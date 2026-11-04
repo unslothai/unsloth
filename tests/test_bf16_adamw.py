@@ -44,13 +44,15 @@ def test_prepare_preserves_identity_ties_and_frozen_parameters(api):
     assert {name: id(p) for name, p in model.named_parameters()} == before
 
 
-@pytest.mark.parametrize("invalid", ["dtype", "gradient"])
+@pytest.mark.parametrize("invalid", ["dtype", "gradient", "layout"])
 def test_prepare_preflight_does_not_partially_cast(api, invalid):
     model = torch.nn.Module()
     model.first = torch.nn.Parameter(torch.ones(4))
     model.last = torch.nn.Parameter(
         torch.ones(4, dtype = torch.float64 if invalid == "dtype" else torch.float32)
     )
+    if invalid == "layout":
+        model.last = torch.nn.Parameter(torch.ones(4, 4).T)
     if invalid == "gradient":
         model.last.grad = torch.ones_like(model.last)
     before = [(id(p), p.dtype, p.detach().clone()) for p in model.parameters()]
@@ -93,6 +95,11 @@ def test_sub_ulp_update_moves_correct_fraction_and_preserves_rng(api):
     moved = (p == lower).sum().item()
     assert abs(moved - p.numel() / 4) < 6 * (p.numel() * 0.25 * 0.75) ** 0.5
     assert abs(p.float().mean().item() - (1 - 2**-10)) < 3e-5
+    mask = (p != 1).clone()
+    with torch.no_grad():
+        p.fill_(1)
+    optimizer.step()
+    assert 0.3 < float((mask != (p != 1)).float().mean()) < 0.45
 
 
 def test_checkpoint_restores_fp32_moments_and_next_random_update(api):
@@ -188,6 +195,7 @@ def test_frozen_parameters_have_no_moments_and_can_be_unfrozen(api):
     packed = torch.nn.Parameter(torch.ones(65536, dtype = torch.uint8), requires_grad = False)
     p = torch.nn.Parameter(torch.ones(32, dtype = torch.bfloat16))
     optimizer = api.AdamWBF16([frozen, packed, p])
+    assert not optimizer.state
     assert frozen not in optimizer.state and packed not in optimizer.state
     p.sum().backward()
     optimizer.step()
@@ -229,6 +237,47 @@ def _cuda_pair(api):
     for p in params:
         p.grad = torch.ones_like(p)
     return params, optimizers
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires real CUDA")
+def test_gpu_stochastic_update_has_expected_mean_and_preserves_rng(api):
+    p = torch.nn.Parameter(torch.ones(65536, device = "cuda", dtype = torch.bfloat16))
+    optimizer = api.AdamWBF16([p], lr = 2**-10, betas = (0.0, 0.0), eps = 0.0, weight_decay = 0.0)
+    p.grad = torch.ones_like(p)
+    rng = torch.cuda.get_rng_state().clone()
+    optimizer.step()
+    assert torch.equal(torch.cuda.get_rng_state(), rng)
+    lower = 1 - 2**-8
+    assert torch.all((p == 1) | (p == lower))
+    moved = int((p == lower).sum())
+    assert abs(moved - p.numel() / 4) < 6 * (p.numel() * 0.25 * 0.75) ** 0.5
+    assert abs(float(p.float().mean()) - (1 - 2**-10)) < 3e-5
+    mask = (p != 1).clone()
+    with torch.no_grad():
+        p.fill_(1)
+    optimizer.step()
+    assert 0.3 < float((mask != (p != 1)).float().mean()) < 0.45
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires real CUDA")
+def test_gpu_moments_match_independent_fp32_adamw(api):
+    p = torch.nn.Parameter(torch.ones(65, device = "cuda", dtype = torch.bfloat16))
+    reference = torch.nn.Parameter(p.detach().float().cpu())
+    kwargs = dict(lr = 0.003, betas = (0.7, 0.95), eps = 1e-6, weight_decay = 0.03)
+    optimizer = api.AdamWBF16([p], **kwargs)
+    control = torch.optim.AdamW([reference], **kwargs)
+    for step in range(1, 5):
+        gradient = (torch.arange(65).float().sin() * step / 7).bfloat16()
+        p.grad = gradient.to("cuda")
+        reference.grad = gradient.float()
+        optimizer.step()
+        control.step()
+        for key in ("exp_avg", "exp_avg_sq"):
+            torch.testing.assert_close(
+                optimizer.state[p][key].cpu(), control.state[reference][key], atol = 2e-8, rtol = 2e-6
+            )
 
 
 def _assert_optimizer_equal(params, optimizers):
@@ -285,7 +334,7 @@ def test_cuda_graph_replay_advances_stochastic_updates(api):
 @pytest.mark.gpu
 @pytest.mark.skipif(not has_real_cuda(), reason = "requires real CUDA")
 def test_batched_updates_match_separate_groups_and_new_gradients(api):
-    shapes = [0, 1, 17, 255, 256, 257, 1025, 4096, 8193, 33, 65537]
+    shapes = [0, 1, 17, 255, 256, 257, 1025, 4096, 8193, 33, 65537] * 7
     params = [
         torch.nn.Parameter(torch.ones(n, device = "cuda", dtype = torch.bfloat16)) for n in shapes
     ]
@@ -301,5 +350,8 @@ def test_batched_updates_match_separate_groups_and_new_gradients(api):
         control.step()
         assert all(torch.equal(p, q) for p, q in zip(params, reference))
         for p, q in zip(params, reference):
+            assert bool(optimizer.state.get(p)) == bool(control.state.get(q))
+            if not optimizer.state.get(p):
+                continue
             for key in ("step", "exp_avg", "exp_avg_sq"):
                 assert torch.equal(optimizer.state[p][key], control.state[q][key])

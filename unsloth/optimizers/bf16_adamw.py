@@ -76,27 +76,23 @@ if triton is not None:
     ):
         pid = tl.program_id(0).to(tl.int64)
         start = tl.full((), 0, tl.int64)
+        chosen_n = tl.full((), 0, tl.int64)
+        chosen_tile = tl.full((), 0, tl.int64)
+        pp, gp, mp, vp, sp, seedp = P[0], G[0], M[0], V[0], STEP[0], SEED[0]
         for j in tl.static_range(len(sizes)):
             n = tl.cast(sizes[j], tl.int64)
             stop = start + (n + BLOCK - 1) // BLOCK
-            if (pid >= start) & (pid < stop):
-                _adamw_tile(
-                    P[j],
-                    G[j],
-                    M[j],
-                    V[j],
-                    STEP[j],
-                    LR,
-                    n,
-                    SEED[j],
-                    pid - start,
-                    B1,
-                    B2,
-                    EPS,
-                    WD,
-                    BLOCK,
-                )
+            active = (pid >= start) & (pid < stop)
+            pp = tl.where(active, P[j], pp)
+            gp = tl.where(active, G[j], gp)
+            mp = tl.where(active, M[j], mp)
+            vp = tl.where(active, V[j], vp)
+            sp = tl.where(active, STEP[j], sp)
+            seedp = tl.where(active, SEED[j], seedp)
+            chosen_n = tl.where(active, n, chosen_n)
+            chosen_tile = tl.where(active, pid - start, chosen_tile)
             start = stop
+        _adamw_tile(pp, gp, mp, vp, sp, LR, chosen_n, seedp, chosen_tile, B1, B2, EPS, WD, BLOCK)
 
     @triton.jit(do_not_specialize = ["N"])
     def _adamw_single(
@@ -188,8 +184,15 @@ def _plain_parameter(p):
 def prepare_bf16_training(model):
     params = [p for p in model.parameters() if p.requires_grad]
     for p in params:
-        if not _plain_parameter(p) or p.dtype not in (torch.float32, torch.bfloat16):
-            raise ValueError("BF16 training requires plain FP32/BF16 trainable parameters")
+        if (
+            not _plain_parameter(p)
+            or p.dtype not in (torch.float32, torch.bfloat16)
+            or not p.is_contiguous()
+            or p.device.type not in ("cpu", "cuda")
+        ):
+            raise ValueError(
+                "BF16 training requires contiguous plain FP32/BF16 CPU or CUDA parameters"
+            )
         if p.grad is not None:
             raise ValueError("Prepare BF16 training before creating gradients")
     with torch.no_grad():
@@ -286,13 +289,14 @@ class AdamWBF16(torch.optim.Optimizer):
                 raise RuntimeError("CUDA AdamWBF16 requires Triton")
         index = 0
         for group in self.param_groups:
-            device = next(
-                (p.device for p in group["params"] if p.requires_grad or p.grad is not None),
-                torch.device("cpu"),
-            )
+            device = torch.device("cpu")
+            for p in group["params"]:
+                if p.requires_grad or p.grad is not None:
+                    device = p.device
+                    break
             group["lr"] = torch.as_tensor(group["lr"], dtype = torch.float32, device = device)
             for p in group["params"]:
-                if not p.requires_grad and p.grad is None:
+                if p.grad is None:
                     index += 1
                     continue
                 state = self.state[p]
@@ -306,7 +310,6 @@ class AdamWBF16(torch.optim.Optimizer):
                             device = p.device,
                             dtype = torch.int64,
                         ),
-                        lr_tensor = group["lr"].to(device = p.device).clone(),
                     )
                 index += 1
 
@@ -357,8 +360,8 @@ class AdamWBF16(torch.optim.Optimizer):
                             group["weight_decay"],
                         )
                     continue
-                for start in range(0, len(params), 8):
-                    batch = params[start : start + 8]
+                for start in range(0, len(params), 64):
+                    batch = params[start : start + 64]
                     states = [self.state[p] for p in batch]
                     update = _cuda_update if torch.compiler.is_compiling() else _launch
                     update(
@@ -386,7 +389,7 @@ class AdamWBF16(torch.optim.Optimizer):
                 if original is None:
                     continue
                 state = self.state[p]
-                for name in ("exp_avg", "exp_avg_sq", "lr_tensor"):
+                for name in ("exp_avg", "exp_avg_sq"):
                     state[name] = original[name].to(device = p.device, dtype = torch.float32)
                 state["step"] = original["step"].to(device = p.device, dtype = torch.int64)
                 state["sr_seed"] = original["sr_seed"].to(device = p.device, dtype = torch.int64)
