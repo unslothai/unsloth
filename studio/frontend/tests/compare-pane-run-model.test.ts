@@ -81,6 +81,11 @@ test("Refresh or Edit in a compare pane loads that pane's own model", () => {
   assert.match(generalCompareSource, /return checkpointMatchesPick\(/);
   assert.match(
     generalCompareSource,
+    /\.\.\.\(sel\.ggufVariant \|\| sel\.id\.toLowerCase\(\)\.endsWith\("\.gguf"\)\s*\? \{ isGguf: true \}/,
+    "a standalone GGUF pane reloads with GGUF load fields, as shared Send does",
+  );
+  assert.match(
+    generalCompareSource,
     /if \(comparingRef\.current \|\| !sel\.id \|\| isActive\(\)\) return;/,
     "the shared send already loads each pane before its run",
   );

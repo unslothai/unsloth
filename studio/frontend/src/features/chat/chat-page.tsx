@@ -1623,6 +1623,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
           id: sel.id,
           isLora: sel.isLora,
           ggufVariant: sel.ggufVariant,
+          ...(sel.ggufVariant || sel.id.toLowerCase().endsWith(".gguf")
+            ? { isGguf: true }
+            : {}),
           isDiffusion: sel.isDiffusion,
           config:
             sel.config ??
