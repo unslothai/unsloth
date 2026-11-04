@@ -190,6 +190,20 @@ test("a styled document serialises to the Markdown it shows", () => {
   assert.equal(serializeMarkdown(doc(p("a"), p("b"))), "a\nb");
 });
 
+test("a fence inside a code block cannot close it early", () => {
+  const body = "start\n```\nafter";
+  const block = doc(
+    codeBlock.create({ language: "md" }, composerSchema.text(body)),
+  );
+  const markdown = serializeMarkdown(block);
+  assert.equal(markdown, `\`\`\`\`md\n${body}\n\`\`\`\``);
+  const parsed = parseMarkdown(markdown);
+  assert.equal(parsed.childCount, 1);
+  assert.equal(parsed.child(0).textContent, body);
+  const offset = markdown.indexOf("after");
+  assert.equal(docPosToOffset(parsed, offsetToDocPos(parsed, offset)), offset);
+});
+
 test("caret positions map to Markdown offsets and back", () => {
   const markdown = "ab **cd** @sk\n```\nxy\n```\nz";
   const parsed = parseMarkdown(markdown);

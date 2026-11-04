@@ -76,8 +76,7 @@ const DELIMITERS = [
   ["~~", "strike"],
   ["*", "italic"],
 ] as const;
-const OPEN_FENCE = /^```([^\s`]*)$/;
-const CLOSE_FENCE = "```";
+const OPEN_FENCE = /^(`{3,})([^\s`]*)$/;
 // Delimiter matching is quadratic on unmatched markers.
 const MAX_STYLED_LINE = 2000;
 
@@ -93,10 +92,17 @@ function codeSpan(text: string): string {
   return `${ticks}${pad}${text}${pad}${ticks}`;
 }
 
+// CommonMark: a backtick run at least as long as the fence closes it.
+function fenceFor(text: string): string {
+  const runs = (text.match(/`{3,}/g) ?? []).map((run) => run.length + 1);
+  return "`".repeat(Math.max(3, ...runs));
+}
+
 function serializeCodeBlock(language: string, text: string): string {
+  const fence = fenceFor(text);
   return text
-    ? `\`\`\`${language}\n${text}\n${CLOSE_FENCE}`
-    : `\`\`\`${language}\n${CLOSE_FENCE}`;
+    ? `${fence}${language}\n${text}\n${fence}`
+    : `${fence}${language}\n${fence}`;
 }
 
 const isSpace = (char: string | undefined) =>
@@ -204,7 +210,7 @@ export function serializeDoc(doc: Node): Serialized {
     if (index > 0) text += "\n";
     const start = blockOffset + 1;
     if (block.type === codeBlock) {
-      const fence = `\`\`\`${block.attrs.language}\n`;
+      const fence = `${fenceFor(block.textContent)}${block.attrs.language}\n`;
       segments.push({
         pos: start,
         offset: text.length + fence.length,
@@ -388,18 +394,18 @@ function parseBlocks(markdown: string, styled: boolean): Node {
   };
   for (let i = 0; i < lines.length; i++) {
     const open = styled ? OPEN_FENCE.exec(lines[i]) : null;
-    const close = open ? lines.indexOf(CLOSE_FENCE, i + 1) : -1;
+    const close = open ? lines.indexOf(open[1], i + 1) : -1;
     if (open && close !== -1) {
       const body = lines.slice(i + 1, close).join("\n");
       // One empty line and no lines would both read back as an empty block.
       if (
-        serializeCodeBlock(open[1], body) ===
+        serializeCodeBlock(open[2], body) ===
         lines.slice(i, close + 1).join("\n")
       ) {
         flush();
         blocks.push(
           codeBlock.create(
-            { language: open[1] },
+            { language: open[2] },
             body ? composerSchema.text(body) : null,
           ),
         );
