@@ -58,9 +58,7 @@ def reset_fp8_lora_stats():
 
 
 def _count(key):
-    # Diagnostics only, so they count eager calls only: an increment traced by Dynamo mutates a global the
-    # guards read, recompiling every call (fullgraph=True fails at the recompile limit). The fp8 GEMM ops
-    # stay opaque under compile, so their own counts still run at execution time.
+    # Counts eager calls only: a traced increment mutates a guarded global and recompiles every call.
     if not _compiling():
         FP8_LORA_STATS[key] += 1
 

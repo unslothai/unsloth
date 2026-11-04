@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The FP8 LoRA diagnostic counters must not recompile a compiled base layer: decode-sized calls (fewer rows
-than the fp8 GEMM minimum) take the 16-bit fallback, which used to bump a global dict inside the traced
-region, so every call failed the guard on that dict and recompiled."""
+"""Stats counters must not recompile a compiled base layer on the small-row 16-bit fallback."""
 
 from __future__ import annotations
 
@@ -43,7 +41,6 @@ def test_small_row_fallback_compiles_once_under_fullgraph(bias):
     assert counters["stats"]["unique_graphs"] == 1, dict(counters["stats"])
     assert not counters["graph_break"], dict(counters["graph_break"])
 
-    # Eager calls are still counted exactly.
     FL.reset_fp8_lora_stats()
     for _ in range(3):
         lin(x)
