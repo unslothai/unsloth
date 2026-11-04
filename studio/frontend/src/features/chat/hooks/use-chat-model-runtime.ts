@@ -50,6 +50,7 @@ import {
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
+import { loadFailureToastParts } from "../lib/load-failure-message";
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import {
   failureLogPath,
@@ -73,6 +74,11 @@ import {
 } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import {
+  pinnedReasoningEnabled,
+  resolveReasoningEnabledOnLoad,
+} from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   beginServerModelWait,
   serverModelWaitOutstanding,
@@ -2739,11 +2745,21 @@ export function useChatModelRuntime() {
                     reasoningEffortLevels,
                   )
                 : clampLocalReasoningEffort(existingReasoningEffort);
-            const nextReasoningEnabled = reasoningAlwaysOn
-              ? true
-              : reloadingSameModel && supportsReasoning
-                ? stateBeforeUnload.reasoningEnabled
-                : reasoningDefault;
+            const nextReasoningEnabled = resolveReasoningEnabledOnLoad({
+              reasoningAlwaysOn,
+              supportsReasoning,
+              supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+              pinned:
+                pinnedReasoningEnabled(loadPath) ??
+                pinnedReasoningEnabled(modelId),
+              // Status sync may have re-keyed the resident to the load path.
+              reloadingSameModel:
+                reloadingSameModel ||
+                (previousCheckpoint === loadPath &&
+                  (ggufVariant ?? null) === (previousVariant ?? null)),
+              previousEnabled: stateBeforeUnload.reasoningEnabled,
+              reasoningDefault,
+            });
             rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
             // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
@@ -3449,8 +3465,7 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
-            const [summary, ...rest] = message.split("\n");
-            const detail = rest.join("\n").trim();
+            const { summary, detail } = loadFailureToastParts(message);
             const runnerLogPath = failureLogPath(message);
             const logsAction = runnerLogPath
               ? viewLogsAction(

@@ -18,7 +18,11 @@ from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
-from models.providers import ProviderReasoningConfig, normalize_provider_reasoning_config
+from models.providers import (
+    ProviderReasoningConfig,
+    normalize_provider_extra_headers,
+    normalize_provider_reasoning_config,
+)
 from storage.studio_db import connect_studio_db
 from utils.paths import studio_db_path, ensure_dir
 
@@ -100,6 +104,22 @@ def _decode_reasoning_config(raw) -> Optional[dict]:
         return None
 
 
+def _encode_extra_headers(headers) -> Optional[str]:
+    normalized = normalize_provider_extra_headers(headers)
+    if not normalized:
+        return None
+    return json.dumps(normalized)
+
+
+def _decode_extra_headers(raw) -> dict[str, str]:
+    if not raw:
+        return {}
+    try:
+        return normalize_provider_extra_headers(json.loads(raw))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+
+
 def _row_models(row: sqlite3.Row) -> tuple[list[str], list[str]]:
     return (
         _decode_models_json(row["models_json"] if "models_json" in row.keys() else None),
@@ -141,6 +161,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN max_output_tokens INTEGER")
     if "reasoning_config_json" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN reasoning_config_json TEXT")
+    if "extra_headers_json" not in existing_cols:
+        conn.execute("ALTER TABLE llm_providers ADD COLUMN extra_headers_json TEXT")
     if "shared" not in existing_cols:
         conn.execute("ALTER TABLE llm_providers ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
     if "favicon_data_url" not in existing_cols:
@@ -204,10 +226,12 @@ def create_provider(
     api_type: str = "chat_completions",
     reasoning_config: Optional[dict] = None,
     favicon_data_url: Optional[str] = None,
+    extra_headers: Optional[dict] = None,
     shared: bool = False,
 ) -> None:
     """Insert a new provider configuration."""
     reasoning_json = _encode_reasoning_config(reasoning_config)
+    extra_headers_json = _encode_extra_headers(extra_headers)
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
@@ -216,9 +240,9 @@ def create_provider(
             INSERT INTO llm_providers (
                 id, provider_type, display_name, base_url,
                 models_json, available_models_json, max_output_tokens, api_type,
-                reasoning_config_json, shared, favicon_data_url, created_at, updated_at
+                reasoning_config_json, extra_headers_json, shared, favicon_data_url, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 id,
@@ -230,6 +254,7 @@ def create_provider(
                 max_output_tokens,
                 api_type,
                 reasoning_json,
+                extra_headers_json,
                 1 if shared else 0,
                 favicon_data_url,
                 now,
@@ -254,6 +279,7 @@ def update_provider(
     api_type: str | None = None,
     reasoning_config: dict | None | object = _UNSET,
     favicon_data_url: str | None | object = _UNSET,
+    extra_headers: dict | None | object = _UNSET,
     shared: bool | None = None,
 ) -> bool:
     """Update fields on an existing provider. Returns True if a row was updated."""
@@ -286,6 +312,9 @@ def update_provider(
     if favicon_data_url is not _UNSET:
         updates.append("favicon_data_url = ?")
         params.append(favicon_data_url)
+    if extra_headers is not _UNSET:
+        updates.append("extra_headers_json = ?")
+        params.append(_encode_extra_headers(extra_headers))
     if shared is not None:
         updates.append("shared = ?")
         params.append(1 if shared else 0)
@@ -324,6 +353,7 @@ def delete_provider(id: str) -> bool:
 def _row_to_provider(row: sqlite3.Row) -> dict:
     data = dict(row)
     data["reasoning_config"] = _decode_reasoning_config(data.pop("reasoning_config_json", None))
+    data["extra_headers"] = _decode_extra_headers(data.pop("extra_headers_json", None))
     models, available_models = _row_models(row)
     data["models"] = models
     data["available_models"] = available_models

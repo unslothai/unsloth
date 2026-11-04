@@ -408,7 +408,10 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     served = _clef_fine_tune(home, "clef_served_1")
     assert _listed(client) == [served]
     # The trainer's "Use in Decision API" names every run laya-ft:; the layout picks the prefix.
-    assert _put(client, enabled = True, model = "laya-ft:clef_served_1").status_code == 200
+    put = _put(client, enabled = True, model = "laya-ft:clef_served_1")
+    assert put.status_code == 200
+    # The trainer opens Try under the PUT answer's name.
+    assert put.json()["model"] == served
     assert client.get("/api/settings/systemone").json()["model"] == served
 
     answer = _post(client).json()
@@ -1165,7 +1168,7 @@ def test_clef_serves_on_nvidia_and_amd_gpus(home, client, clef, monkeypatch, kin
     assert all(
         m["available"] and m["unavailable_reason"] is None
         for m in models
-        if not m["llama_cpp_only"] and m["name"] != "clef-omni"
+        if not m["llama_cpp_only"] and m["name"] not in ("clef-omni", "decider-2b")
     )
 
 
@@ -1653,6 +1656,113 @@ def test_a_clef_with_its_audio_tower_hears_through_the_mlx_engine(
     asked, connection = {"q": systemone.QuestionIn(type = "noul")}, catalog.Connection("p", "m")
     with pytest.raises(systemone.HTTPException, match = "Audio is not forwarded"):
         asyncio.run(systemone._decide(connection, "s", asked, None, [clip]))
+
+
+def test_decider_is_served_only_by_the_mlx_engine(home, client, engine):
+    entry = catalog.CHECKPOINTS["decider-2b"]
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(entry)) == "mlx_vlm"
+    assert laya_runtime.select(entry)[0].backend == "mlx"
+    plan = laya_runtime.download_plan(entry)
+    assert plan["repo"] == entry.source and "decider_config.json" in plan["files"]
+    assert not laya_runtime._mlx_reads(entry, "images") and not laya_runtime._mlx_reads(
+        entry, "audio"
+    )
+    with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
+        laya_runtime.select(entry, preference = "llama.cpp")
+    listed = {m["name"]: m for m in client.get("/api/settings/systemone").json()["models"]}
+    assert listed["decider-2b"]["llama_cpp_only"] and not listed["clef-omni"]["llama_cpp_only"]
+
+
+def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, engine):
+    clip = "data:audio/wav;base64,AA=="
+    for name, hears in (
+        ("d1-omni-600m", True),
+        ("d1-omni-2b", True),
+        ("d1-2b", False),
+        ("d1-3b", False),
+    ):
+        entry = catalog.CHECKPOINTS[name]
+        assert laya_runtime._mlx_family(laya_runtime._mlx_target(entry)) == "d1"
+        assert (
+            laya_runtime._mlx_reads(entry, "images")
+            and laya_runtime._mlx_reads(entry, "audio") == hears
+        )
+        repo = catalog.MLX_COMPANIONS[name]
+        assert "config.json" in repo.files and "model.safetensors" in repo.files
+    assert laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = None)[0].backend == "mlx"
+    with pytest.raises(laya_runtime.Unavailable, match = "does not hear audio here"):
+        laya_runtime.select(catalog.CHECKPOINTS["d1-2b"], audio = [clip])
+    assert not laya_runtime._mlx_reads(catalog.CHECKPOINTS["kev-4b"], "images")
+
+
+def test_an_older_zoo_without_d1_keeps_llama_cpp_for_d1_and_no_decider(home, client, engine):
+    sys.modules["unsloth_zoo.mlx.decision"].FAMILIES = dict.fromkeys(("laya", "kev", "clef"))
+    d1 = catalog.CHECKPOINTS["d1-2b"]
+    assert laya_runtime._mlx_target(d1) is None
+    assert laya_runtime._native_target(d1) == d1
+    assert laya_runtime._mlx_target(catalog.CHECKPOINTS["decider-2b"]) is None
+    assert laya_runtime._mlx_target(catalog.CHECKPOINTS["kev-4b"]) is not None
+
+
+def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypatch):
+    folder = home / "d1_ft"
+    folder.mkdir()
+    config = {
+        "architectures": ["D1Model"],
+        "model_type": "lfm3_omni",
+        "vision_config": {},
+        "audio_encoder_config": {},
+    }
+    (folder / "config.json").write_text(json.dumps(config), encoding = "utf-8")
+    (folder / "processor_config.json").write_text("{}", encoding = "utf-8")
+    (folder / "model.safetensors").write_bytes(b"")
+    engine.cached.add(catalog.CLEF_FINE_TUNE_PREFIX + "d1_ft")
+    tuned = catalog.fine_tune(catalog.CLEF_FINE_TUNE_PREFIX + "d1_ft")
+    assert tuned.layout == "clef" and tuned.description.startswith("d1 fine-tuned")
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(tuned)) == "d1"
+    zoo = sys.modules["unsloth_zoo.mlx.decision"]
+    zoo.ClefModel = SimpleNamespace(takes_images = True, takes_audio = True)
+    assert laya_runtime.input_modalities(tuned) == ["text", "image", "audio"]
+    assert laya_runtime.select(tuned)[0].backend == "mlx"
+    for runtime in ("pytorch", "llama.cpp"):
+        with pytest.raises(laya_runtime.Unavailable, match = "served only by MLX"):
+            laya_runtime.select(tuned, preference = runtime)
+    monkeypatch.setenv("UNSLOTH_SYSTEMONE_MODEL", str(folder))
+    local = catalog.default_checkpoint()
+    assert (local.name, local.layout, local.backend) == (catalog.LOCAL_NAME, "clef", "mlx")
+    for stock in (
+        {
+            "model_type": "lfm2_vl",
+            "architectures": ["Lfm2VlForConditionalGeneration"],
+            "auto_map": {"AutoModel": "modeling_d1.D1Model"},
+        },
+        {
+            "model_type": "d1_omni",
+            "architectures": ["D1OmniModel"],
+            "auto_map": {"AutoModel": "modeling_d1.D1OmniModel"},
+        },
+    ):
+        (folder / "config.json").write_text(json.dumps(stock), encoding = "utf-8")
+        local = catalog.default_checkpoint()
+        assert (local.layout, local.backend, laya_runtime._mlx_family(local)) == (
+            "clef",
+            "mlx",
+            "d1",
+        )
+    plain = catalog.fine_tune(_clef_fine_tune(home, "clef_ft"))
+    assert laya_runtime._mlx_family(laya_runtime._mlx_target(plain)) == "clef"
+
+
+@pytest.mark.parametrize("wrapped", [True, False])
+def test_a_processor_only_model_keeps_the_engine_token_limit(engine, wrapped):
+    tokens = SimpleNamespace(encode = lambda text, add_special_tokens = False: [0] * len(text))
+    agent = laya_runtime._EngineAgent.__new__(laya_runtime._EngineAgent)
+    processor = SimpleNamespace(tokenizer = tokens) if wrapped else tokens
+    agent.model, agent.positions = SimpleNamespace(processor = processor), None
+    with pytest.raises(laya_runtime.Unavailable, match = "longer than"):
+        agent.decide(
+            "x" * (laya_runtime._ENGINE_TOKENS + 1), {"q": {"type": "noul", "instructions": "i"}}
+        )
 
 
 def test_clef_omni_is_served_by_the_mlx_engine_or_not_at_all(home, client, engine, monkeypatch):

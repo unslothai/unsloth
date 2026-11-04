@@ -88,6 +88,7 @@ test("resident refresh bypasses cached and in-flight pre-load memory", async () 
     new URL("../src/hooks/use-system.ts", import.meta.url),
     {
       react: {},
+      "@/config/env": { refreshDeviceTypeAfterSystemInfo: () => {} },
       "@/features/auth": {
         authFetch: (url: string) =>
           new Promise<Response>((resolve) => {

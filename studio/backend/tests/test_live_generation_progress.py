@@ -231,3 +231,222 @@ def test_stall_wait_still_sends_the_comment_after_the_stall_interval(monkeypatch
 def test_providers_cannot_forge_the_frame(line):
     assert sanitize_provider_sse_line(line) is None
     assert is_ui_control_sse_line(line)
+
+
+def test_a_compaction_report_becomes_one_frame_ahead_of_the_prefill():
+    signal = route._PrefillProgressSignal(None, live = True)
+    signal.compacting()
+    signal({"prompt_progress": {"total": 4000, "processed": 512}})
+    assert _frame(signal.live_frame()) == {"type": "generation_progress", "phase": "compacting"}
+    assert _frame(signal.live_frame())["phase"] == "prefill"
+    assert signal.live_frame() is None
+    signal.compacting()
+    assert _frame(signal.live_frame())["phase"] == "compacting"
+
+
+def test_a_compaction_report_is_dropped_when_not_live():
+    signal = route._PrefillProgressSignal(None)
+    signal.compacting()
+    assert signal.live_frame() is None
+
+
+def test_the_last_passs_unsent_figures_never_follow_a_compaction_report(monkeypatch):
+    # The tool call decoded within the throttle, so its decode figures were still pending when the fit began.
+    monkeypatch.setattr(route, "_LIVE_DECODE_FRAME_INTERVAL_S", 0.0)
+    signal = route._PrefillProgressSignal(None, live = True)
+    signal({"prompt_progress": {"total": 4000, "processed": 4000}})
+    signal({"predicted_n": 30, "predicted_per_second": 20.0})
+    signal.compacting()
+    assert _frame(signal.live_frame())["phase"] == "compacting"
+    assert signal.live_frame() is None, "a decode frame here would clear the label on the client"
+
+
+def test_a_tool_result_drops_the_last_passs_unsent_figures(monkeypatch):
+    monkeypatch.setattr(route, "_LIVE_DECODE_FRAME_INTERVAL_S", 0.0)
+    signal = route._PrefillProgressSignal(None, live = True)
+    signal({"prompt_progress": {"total": 4000, "processed": 4000}})
+    signal({"predicted_n": 30, "predicted_per_second": 20.0})
+    signal.round_ended()
+    assert signal.live_frame() is None
+    signal({"prompt_progress": {"total": 4100, "processed": 4050}})
+    assert _frame(signal.live_frame())["processed"] == 4050
+
+
+def test_stall_wait_sends_the_compaction_frame_while_the_fit_blocks(monkeypatch):
+    monkeypatch.setattr(route, "_LIVE_PROGRESS_POLL_S", 0.01)
+    signal = route._PrefillProgressSignal(None, live = True)
+
+    async def scenario():
+        release = asyncio.Event()
+
+        async def step():
+            await release.wait()
+            return "context_truncated"
+
+        task = asyncio.create_task(step())
+        lines = []
+
+        async def collect():
+            async for line in route._stall_wait_frames(task, signal, first_timeout = 15.0):
+                lines.append(line)
+
+        collector = asyncio.create_task(collect())
+        signal.compacting()
+        await asyncio.sleep(0.05)
+        # Sent while the step is still blocked, not when the fit returns.
+        sent_before_release = list(lines)
+        release.set()
+        await collector
+        return sent_before_release, lines
+
+    before, lines = asyncio.run(scenario())
+    assert [_frame(line)["phase"] for line in before] == ["compacting"]
+    assert len(lines) == 1
+
+
+def _chars(candidate):
+    return sum(len(str(message.get("content", ""))) for message in candidate)
+
+
+def _fit(
+    messages,
+    on_compacting,
+    counter = _chars,
+    **kwargs,
+):
+    from core.inference import llama_cpp
+    return llama_cpp._fit_with_instruction_pins(
+        messages,
+        context_length = 1000,
+        max_tokens = 128,
+        count_tokens = counter,
+        on_compacting = on_compacting,
+        **kwargs,
+    )
+
+
+def _turns(size):
+    return [
+        {"role": "user", "content": "A" * size},
+        {"role": "assistant", "content": "B" * size},
+        {"role": "user", "content": "C" * 50},
+    ]
+
+
+def test_the_fit_reports_once_when_it_starts_evicting():
+    reports = []
+    fitted, info = _fit(_turns(600), lambda: reports.append(True))
+    assert info is not None and info["dropped_messages"] > 0
+    assert reports == [True], "one report per fit, however many counts the trim takes"
+
+
+def test_a_fit_that_keeps_everything_reports_nothing():
+    reports = []
+    fitted, info = _fit(_turns(100), lambda: reports.append(True))
+    assert info is None
+    assert reports == []
+
+
+def test_a_forced_reset_reports(monkeypatch):
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    reports = []
+    fitted, info = _fit(
+        _turns(100),
+        lambda: reports.append(True),
+        force_reset = True,
+        context_policy = "checkpoint",
+        can_reset = True,
+    )
+    assert info is not None and info["checkpoint_started"]
+    assert reports == [True]
+
+
+def test_a_replay_only_fit_never_reports():
+    reports = []
+    _fit(_turns(600), lambda: reports.append(True), replay_only = True, sticky_dropped = 1)
+    assert reports == []
+
+
+def _compacted_chat(recent_size):
+    """Four turns a previous request already cut (the saved boundary), then the turns still in the window."""
+    old = [
+        {"role": role, "content": letter * 300}
+        for role, letter in (("user", "A"), ("assistant", "B"), ("user", "C"), ("assistant", "D"))
+    ]
+    recent = [
+        {"role": "user", "content": "E" * recent_size},
+        {"role": "assistant", "content": "F" * recent_size},
+        {"role": "user", "content": "G" * 50},
+    ]
+    return old + recent
+
+
+_REPLAYS = {
+    "rolling": {"context_policy": "rolling", "sticky_is_checkpoint": False, "keeps_boundary": True},
+    "checkpoint": {
+        "context_policy": "checkpoint",
+        "sticky_is_checkpoint": True,
+        "can_reset": False,
+    },
+}
+
+
+@pytest.mark.parametrize("policy", sorted(_REPLAYS))
+def test_replaying_a_saved_cut_is_not_reported(policy):
+    # The full history is over budget on every request after the first compaction; replaying the cut it
+    # already made evicts nothing new, so "Compacting context..." must not flash on each later turn.
+    reports = []
+    fitted, info = _fit(
+        _compacted_chat(100), lambda: reports.append(True), sticky_dropped = 4, **_REPLAYS[policy]
+    )
+    assert info is not None and info["fits"] and info["dropped_messages"] == 4
+    assert reports == []
+
+
+@pytest.mark.parametrize("policy", sorted(_REPLAYS))
+def test_a_replay_that_no_longer_fits_is_reported(policy):
+    reports = []
+    fitted, info = _fit(
+        _compacted_chat(500), lambda: reports.append(True), sticky_dropped = 4, **_REPLAYS[policy]
+    )
+    assert info is not None and info["dropped_messages"] > 4
+    assert reports == [True]
+
+
+def test_a_new_checkpoint_past_a_saved_cut_is_reported(monkeypatch):
+    # No system message, so the checkpoint block adds one, and a block the template prices at nothing leaves the
+    # reset's own count under budget: only the eviction decision itself shows that a new epoch started.
+    from core.inference import llama_cpp
+
+    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    reports = []
+    fitted, info = _fit(
+        _compacted_chat(450),
+        lambda: reports.append(True),
+        counter = lambda candidate: _chars([m for m in candidate if m.get("role") != "system"]),
+        sticky_dropped = 4,
+        context_policy = "checkpoint",
+        sticky_is_checkpoint = True,
+        can_reset = True,
+    )
+    assert info is not None and info["checkpoint_started"] and info["dropped_messages"] > 4
+    assert reports == [True]
+
+
+def test_a_failing_report_never_breaks_the_fit():
+    def boom():
+        raise RuntimeError("closed stream")
+
+    fitted, info = _fit(_turns(600), boom)
+    assert info is not None and info["fits"] is True
+
+
+def test_only_a_live_signal_is_a_compaction_reporter():
+    from core.inference import llama_cpp
+
+    signal = route._PrefillProgressSignal(None, live = True)
+    assert llama_cpp._compaction_reporter(signal) == signal.compacting
+    assert llama_cpp._compaction_reporter(lambda sample: None) is None
+    assert llama_cpp._compaction_reporter(None) is None

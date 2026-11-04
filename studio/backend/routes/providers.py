@@ -69,6 +69,7 @@ from models.providers import (
     ProviderTestRequest,
     ProviderTestResult,
     ProviderUpdate,
+    normalize_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 from storage import credential_secrets, providers_db
@@ -149,7 +150,21 @@ def _log_provider_failure(event: str, exc: Exception, **fields) -> None:
 _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
 
 
-def _provider_response(row: dict) -> ProviderResponse:
+def _request_extra_headers(payload, via_api_key: bool) -> dict[str, str]:
+    if "extra_headers" in getattr(payload, "model_fields_set", set()):
+        return normalize_provider_extra_headers(payload.extra_headers)
+    provider_id = getattr(payload, "provider_id", None)
+    # Saved headers can carry credentials: same gate as the saved key.
+    if not provider_id or payload.encrypted_api_key or via_api_key:
+        return {}
+    row = providers_db.get_provider(provider_id)
+    # Saved headers go only to the saved endpoint, like the saved key.
+    if not row or (payload.base_url or None) != (row.get("base_url") or None):
+        return {}
+    return normalize_provider_extra_headers(row.get("extra_headers"))
+
+
+def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResponse:
     has_api_key = credential_secrets.provider_api_key_saved(row["id"])
     return ProviderResponse(
         id = row["id"],
@@ -159,6 +174,12 @@ def _provider_response(row: dict) -> ProviderResponse:
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
         favicon_data_url = row.get("favicon_data_url"),
+        # Header values can carry credentials; other accounts and API keys never read them.
+        extra_headers = (
+            {}
+            if hide_headers or row.get("shared_by_owner")
+            else normalize_provider_extra_headers(row.get("extra_headers"))
+        ),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = has_api_key,
         auth_kind = ("chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"),
@@ -328,10 +349,13 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
 
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[ProviderResponse])
-def list_provider_configs(_current_subject: str = Depends(get_current_subject)):
+def list_provider_configs(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
-    return [_provider_response(row) for row in rows]
+    return [_provider_response(row, hide_headers = via_api_key) for row in rows]
 
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
@@ -399,6 +423,7 @@ async def create_provider_config(
             api_type = payload.api_type,
             reasoning_config = payload.reasoning_config,
             favicon_data_url = payload.favicon_data_url,
+            extra_headers = payload.extra_headers,
             shared = payload.shared,
         )
         try:
@@ -505,6 +530,7 @@ async def update_provider_config(
         "api_type",
         "reasoning_config",
         "favicon_data_url",
+        "extra_headers",
         "shared",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
@@ -548,6 +574,8 @@ async def update_provider_config(
             )
         if favicon_data_url_requested:
             metadata_updates["favicon_data_url"] = payload.favicon_data_url
+        if "extra_headers" in payload.model_fields_set:
+            metadata_updates["extra_headers"] = payload.extra_headers or {}
 
     # The row snapshot this request found, keyed the way update_provider takes it.
     _restorable = dict(
@@ -560,6 +588,7 @@ async def update_provider_config(
         api_type = existing.get("api_type", "chat_completions"),
         reasoning_config = existing.get("reasoning_config"),
         favicon_data_url = existing.get("favicon_data_url"),
+        extra_headers = existing.get("extra_headers") or {},
         shared = bool(existing.get("shared")),
     )
 
@@ -585,6 +614,7 @@ async def update_provider_config(
                 "max_output_tokens",
                 "reasoning_config",
                 "favicon_data_url",
+                "extra_headers",
             }:
                 continue
             if not _current_matches(current, field, written):
@@ -1016,6 +1046,7 @@ async def test_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = _request_extra_headers(payload, via_api_key),
         timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
 
@@ -1024,6 +1055,8 @@ async def test_provider(
         try:
             if answers_decisions_only(payload.provider_type, payload.api_type):
                 await client.list_decision_models()
+            elif payload.provider_type == "openrouter":
+                await client.verify_models_endpoint_lightweight()
             else:
                 await client.list_models()
         except Exception:
@@ -1059,6 +1092,8 @@ async def test_provider(
                 ),
                 models_count = None,
             )
+        if payload.provider_type == "openrouter":
+            await client.verify_models_endpoint_lightweight()
         models = await client.list_models()
         if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
             return ProviderTestResult(
@@ -1193,7 +1228,10 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
     # Per credential: one key's model list is not another caller's.
-    key_digest = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
+    extra_headers = _request_extra_headers(payload, via_api_key)
+    key_digest = hashlib.sha256(
+        json.dumps([api_key or "", extra_headers], sort_keys = True).encode("utf-8")
+    ).hexdigest()[:16]
     cache_key = f"{payload.provider_type}\n{base_url}\n{key_digest}"
     cached = _model_capability_cache.get(cache_key)
     if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
@@ -1205,6 +1243,7 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = extra_headers,
         timeout = 15.0,
     )
     try:
@@ -1291,6 +1330,7 @@ async def list_provider_models(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
+        extra_headers = _request_extra_headers(payload, via_api_key),
         timeout = 15.0,
     )
 

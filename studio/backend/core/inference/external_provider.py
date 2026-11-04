@@ -34,7 +34,9 @@ from core.inference.openai_responses_shared import (
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from models.providers import (
+    normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
+    render_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 
@@ -903,10 +905,11 @@ def _apply_deepseek_reasoning_controls(
 
 
 _KIMI_K3_EFFORT_ALIASES = {"minimal": "low", "medium": "high", "xhigh": "max"}
+_KIMI_K3_FAMILY = re.compile(r"kimi-k3(?:$|[.-])")
 
 
 def _is_kimi_k3(provider_type: Optional[str], model: Optional[str]) -> bool:
-    return provider_type == "kimi" and (model or "").strip().lower() == "kimi-k3"
+    return provider_type == "kimi" and bool(_KIMI_K3_FAMILY.match((model or "").strip().lower()))
 
 
 def _apply_kimi_k3_controls(body: dict[str, Any], reasoning_effort: Optional[str]) -> None:
@@ -1146,6 +1149,40 @@ async def _stream_post_with_compat_fallbacks(
             else:
                 yield response
                 return
+
+
+_OPENROUTER_CATALOG_TTL_S = 3600.0
+_OPENROUTER_CATALOG_RETRY_S = 60.0
+# cache key -> (expires_at, models)
+_openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
+_OPENROUTER_MODEL_KEYS = (
+    "id",
+    "context_length",
+    "architecture",
+    "reasoning",
+    "top_provider",
+    "supported_parameters",
+)
+
+
+def _slim_openrouter_models(payload: Any) -> list[dict[str, Any]]:
+    raw = payload.get("data") if isinstance(payload, dict) else None
+    models = []
+    for m in raw or []:
+        if not isinstance(m, dict) or not m.get("id"):
+            continue
+        endpoints = m.get("endpoints")
+        if isinstance(endpoints, list) and "/api/v1/chat/completions" not in endpoints:
+            continue
+        outputs = (m.get("architecture") or {}).get("output_modalities")
+        if isinstance(outputs, list) and "text" not in outputs:
+            continue
+        slim = {k: m[k] for k in _OPENROUTER_MODEL_KEYS if k in m}
+        slim["created"] = m.get("created") or 0
+        models.append(slim)
+    models.sort(key = lambda m: m["created"], reverse = True)
+    return models
 
 
 def _client() -> httpx.AsyncClient:
@@ -1512,6 +1549,7 @@ class ExternalProviderClient:
         *,
         api_type: str = "chat_completions",
         reasoning_config: Optional[dict] = None,
+        extra_headers: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
@@ -1521,6 +1559,8 @@ class ExternalProviderClient:
             if provider_type == "custom"
             else None
         )
+        self.extra_headers = normalize_provider_extra_headers(extra_headers)
+        self._header_vars: dict[str, str] = {}
         validate_provider_reasoning_contract(provider_type, self.api_type, self.reasoning_config)
         from core.inference.providers import validate_provider_base_url
 
@@ -1545,6 +1585,26 @@ class ExternalProviderClient:
         # client lives for the whole Studio tool loop, so remember that capability result instead of paying for the
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
+
+    def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
+        """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
+        session = (thread_id or "").strip()
+        self._header_vars = {
+            "CHAT_SESSION_ID": session,
+            "THREAD_ID": session,
+            "MODEL": model or "",
+            "PROVIDER_TYPE": self.provider_type,
+        }
+
+    def _credential_digest(self) -> str:
+        """Served-metadata cache identity: the key, plus the headers this request really sends."""
+        material = self.api_key or ""
+        headers = render_provider_extra_headers(
+            getattr(self, "extra_headers", None), getattr(self, "_header_vars", None)
+        )
+        if headers:
+            material = _json.dumps([material, headers], sort_keys = True)
+        return hashlib.sha256(material.encode()).hexdigest()
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -1584,6 +1644,14 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
+        custom = render_provider_extra_headers(
+            getattr(self, "extra_headers", {}), getattr(self, "_header_vars", {})
+        )
+        if custom:
+            # Header names are case-insensitive: an override replaces, never duplicates.
+            overridden = {name.lower() for name in custom}
+            headers = {k: v for k, v in headers.items() if k.lower() not in overridden}
+            headers.update(custom)
         return headers
 
     def _chat_headers(self, thread_id: Optional[str]) -> dict[str, str]:
@@ -1645,6 +1713,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
@@ -7319,6 +7388,8 @@ class ExternalProviderClient:
 
     async def list_models(self) -> list[dict[str, Any]]:
         """return each provider's OpenAI-compatible /models entries, including Anthropic."""
+        if self.provider_type == "openrouter":
+            return await self._list_openrouter_models()
         try:
             data, models = await self._models_payload(self._timeout)
             if self.provider_type == "ollama":
@@ -7333,6 +7404,43 @@ class ExternalProviderClient:
         except httpx.HTTPError as exc:
             logger.error("Failed to list models from %s: %s", self.provider_type, exc)
             raise
+
+    async def _list_openrouter_models(self) -> list[dict[str, Any]]:
+        key_digest = hashlib.sha256((self.api_key or "").encode("utf-8")).hexdigest()[:16]
+        cache_key = f"{self.base_url}\n{key_digest}"
+        cached = _openrouter_catalog.get(cache_key)
+        if cached and time.monotonic() < cached[0]:
+            return cached[1]
+        # Per key, so a slow proxy or account never holds up another connection's catalog.
+        async with _openrouter_catalog_locks.setdefault(cache_key, asyncio.Lock()):
+            cached = _openrouter_catalog.get(cache_key)
+            if cached and time.monotonic() < cached[0]:
+                return cached[1]
+            try:
+                response = await _client().get(
+                    f"{self.base_url}/models",
+                    headers = self._auth_headers(),
+                    timeout = self._timeout,
+                )
+                response.raise_for_status()
+                models = _slim_openrouter_models(response.json())
+            except (httpx.HTTPError, ValueError) as exc:
+                if cached:
+                    logger.warning("OpenRouter catalog refresh failed, serving cache: %s", exc)
+                    # Back off, or every waiter queued behind a timed-out refresh retries in turn.
+                    _openrouter_catalog[cache_key] = (
+                        time.monotonic() + _OPENROUTER_CATALOG_RETRY_S,
+                        cached[1],
+                    )
+                    return cached[1]
+                logger.error("Failed to list models from openrouter: %s", exc)
+                raise
+            if models:
+                _openrouter_catalog[cache_key] = (
+                    time.monotonic() + _OPENROUTER_CATALOG_TTL_S,
+                    models,
+                )
+            return models
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
@@ -7422,7 +7530,7 @@ class ExternalProviderClient:
         if self.provider_type != "vllm":
             return False
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest())
+        key = (self.base_url, self._credential_digest())
         cached = _served_versions.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7451,7 +7559,7 @@ class ExternalProviderClient:
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7477,7 +7585,7 @@ class ExternalProviderClient:
         if self.provider_type != "llama_cpp":
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_templates.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]

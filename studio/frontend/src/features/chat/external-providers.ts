@@ -28,6 +28,7 @@ export interface ExternalProviderConfig {
   maxOutputTokens?: number;
   /** Opt-in site icon as a backend-validated image data URL; absent means the generic mark. */
   faviconDataUrl?: string;
+  extraHeaders?: Record<string, string>;
 
   hasApiKey?: boolean;
   shared?: boolean;
@@ -366,6 +367,18 @@ export function normalizeProviderMaxOutputTokens(
   return value;
 }
 
+/** Copy saved headers into chat state. Validation lives in extra-headers.ts, loaded with Connections. */
+export function extraHeadersFromSaved(
+  value: unknown,
+): Record<string, string> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const headers: Record<string, string> = {};
+  for (const [name, headerValue] of Object.entries(value as Record<string, unknown>)) {
+    if (name && typeof headerValue === "string") headers[name] = headerValue;
+  }
+  return Object.keys(headers).length ? headers : undefined;
+}
+
 /** All types except ChatGPT subscriptions; both stored and UI types are checked. */
 export function supportsProviderMaxOutputTokens(
   uiProviderType: string | null | undefined,
@@ -544,9 +557,9 @@ export function isProviderFaviconDataUrl(value: unknown): value is string {
   return typeof value === "string" && PROVIDER_FAVICON_DATA_URL.test(value);
 }
 
-const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
+export const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
-const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
+export const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";
 
 function canUseStorage(): boolean {
@@ -626,6 +639,7 @@ function normalizeProvider(raw: ExternalProviderConfig): ExternalProviderConfig 
     faviconDataUrl: isProviderFaviconDataUrl(raw.faviconDataUrl)
       ? raw.faviconDataUrl
       : undefined,
+    extraHeaders: extraHeadersFromSaved(raw.extraHeaders),
     enablePromptCaching: supportsProviderPromptCaching(providerType)
       ? raw.enablePromptCaching !== false
       : undefined,
