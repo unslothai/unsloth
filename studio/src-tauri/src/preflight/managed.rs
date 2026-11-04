@@ -1273,7 +1273,11 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
         } else {
             (help, None)
         }
-    } else if let Some(capability) = launch.capability {
+    } else if let Some(capability) = launch
+        .capability
+        // Same as a cache hit: the answer holds only if the tree did not change while `-h` ran.
+        .filter(|_| managed_bin_fingerprint(&bin) == fingerprint_before)
+    {
         drop(help_probe);
         (Ok(true), Some(Ok(Some(capability))))
     } else {
