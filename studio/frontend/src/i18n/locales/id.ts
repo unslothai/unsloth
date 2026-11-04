@@ -3238,9 +3238,8 @@ export const id = {
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",
       turnNavigation: "Navigasi giliran",
       turnNavigationDescription: "Tampilkan prompt Anda sebagai bilah di tepi kiri chat panjang. Arahkan kursor untuk pratinjau giliran, klik untuk melompat ke sana, dan tandai giliran agar mudah ditemukan lagi.",
-      composerAtBottom: "Kolom pesan di bagian bawah",
-      composerAtBottomDescription:
-        "Mulai chat baru dengan kolom pesan di bagian bawah halaman, bukan di tengah.",
+      composerPosition: "Posisi kolom pesan",
+      composerPositionDescription: "Letak kolom pesan saat memulai chat baru, dari atas halaman hingga ke bawah.",
       projectAttachments: "Bagikan file di seluruh proyek",
       projectAttachmentsDescription:
         "Jadikan lampiran chat baru tersedia untuk setiap chat dalam proyek.",
@@ -3753,6 +3752,9 @@ export const id = {
         docsLabel: "Buka dokumentasi API Keputusan",
         description:
           "Jawab pertanyaan ya/tidak, pilihan ganda, dan skor tentang teks dengan model di mesin ini atau model keputusan dari Koneksi. Berfungsi dengan SDK TypeSafe.",
+        codeTitle: "Panggil dari kode",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Klien MCP lain terhubung ke sini dengan token yang sama.",
         enable: "Layani permintaan",
         enableDescription:
           "Melayani /v1/systemone. Mengaktifkannya akan mengunduh model.",
@@ -5492,6 +5494,8 @@ export const id = {
     removeLevel: "Hapus tingkat {n}",
     addLevel: "Tambah tingkat",
     jsonHelp: "Isi permintaan. Jalankan akan mengirimnya apa adanya.",
+    copyBody: "Salin body",
+    copyCurl: "Salin sebagai cURL",
     examples: "Contoh",
     presetToolApproval: "Setujui panggilan alat agen",
     presetPromptInjection: "Deteksi injeksi prompt",
@@ -5893,6 +5897,7 @@ export const id = {
   generationStats: {
     working: "Memproses...",
     processingPrompt: "Memproses prompt {percent}%",
+    compactingContext: "Memadatkan konteks...",
     timeLeft: "{eta} lagi",
     tokensOne: "{count} token",
     tokens: "{count} token",

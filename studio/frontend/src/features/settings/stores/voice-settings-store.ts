@@ -420,6 +420,13 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
     },
   ),
 );
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === useVoiceSettingsStore.persist.getOptions().name) {
+      void useVoiceSettingsStore.persist.rehydrate();
+    }
+  });
+}
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === "string" && value ? value : fallback;

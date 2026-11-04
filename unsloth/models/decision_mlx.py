@@ -50,6 +50,7 @@ from unsloth._decision_common import (
     _parsed,
     _predicted,
     _row_images,
+    _rows_problem,
     _served_lengths,
     _served_temperatures,
     _target,
@@ -182,7 +183,7 @@ def _decision_dataset(
             try:
                 if validate is not None:
                     validate(name, question)
-                internal = _internal(question)
+                internal = _internal(question, name)
                 target, label = _target(internal, _parsed(gold[name]))
                 ids, markers = common.build_sequence(
                     tokenizer, state, internal, max_len, head_max_len
@@ -366,7 +367,7 @@ def _clef_save(
     **kwargs,
 ) -> None:
     # Adapters plus the head, as Unsloth's other models; a full finetune has none, so it saves merged.
-    if not getattr(self, "_unsloth_lora", False):
+    if not getattr(self, "_unsloth_lora", False) or _is_d1(self._unsloth_pipeline):
         return self.save_pretrained_merged(save_directory, tokenizer)
     config = {**self.decision_config, "fine_tuned": True}
     _decision_zoo().save_clef_adapter(
@@ -452,6 +453,12 @@ def _clef_item(
     images,
     audio = (),
 ):
+    if _is_d1(pipeline):
+        # A d1 reads questions beside the whole state: skip an over-limit record, never truncate.
+        item = zoo.d1_training_item(pipeline, state, questions, images, audio)
+        if max_length is not None and len(item["input_ids"]) > max_length:
+            raise ValueError(f"{len(item['input_ids'])} tokens is past max_seq_length {max_length}")
+        return item
     media = {name: value for name, value in (("images", images), ("audio", audio)) if value}
     taken = inspect.signature(zoo.clef_training_item).parameters
     for name in media:
@@ -519,7 +526,19 @@ def _decision_save_merged(
     frozen = getattr(self, "_unsloth_frozen_backbone", ())
     FastDecisionModel.unfreeze_backbone(self)
     try:
-        if _is_clef(self):
+        if _is_d1(self._unsloth_pipeline if _is_clef(self) else None):
+            # A d1 has no head to fold temperatures into.
+            common = _laya().common
+            fitted = {
+                kind: config["head_temperature"] * common.clamp_temperature(value)
+                for kind, value in zip(QUESTION_TYPES, config["temperature"])
+            }
+            if set(fitted.values()) == {1.0}:
+                fitted = None
+            _decision_zoo().save_d1_model(
+                self._unsloth_pipeline, save_directory, self._unsloth_source, fitted
+            )
+        elif _is_clef(self):
             _decision_zoo().save_clef_model(
                 self._unsloth_pipeline, save_directory, self._unsloth_source, config
             )
@@ -559,16 +578,29 @@ _CLEF_ATTRIBUTES = (
 )
 
 
+def _is_d1(pipeline) -> bool:
+    return getattr(pipeline, "family", None) == "d1"
+
+
+def _training_network(zoo, pipeline):
+    return zoo.d1_training_network if _is_d1(pipeline) else zoo.clef_training_network
+
+
 def _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing):
     zoo = _decision_zoo()
     # A checkpoint saved as adapters comes with them, and they go on training.
     adapters = hasattr(pipeline, "base_folder")
+    tokenizer = pipeline.processor if _is_d1(pipeline) else pipeline.tokenizer
     if full_finetuning or adapters:
-        network = zoo.clef_training_network(
+        network = _training_network(zoo, pipeline)(
             pipeline,
             full_finetuning = bool(full_finetuning),
             gradient_checkpointing = gradient_checkpointing,
         )
+    elif _is_d1(pipeline):
+        pipeline.model.freeze()
+        network = zoo.D1Network(pipeline, gradient_checkpointing)
+        network.train()
     else:
         # Until get_peft_model adds adapters, only the joint head trains.
         pipeline.model.freeze()
@@ -582,10 +614,10 @@ def _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpoint
         _unsloth_pipeline = pipeline,
         _unsloth_source = getattr(pipeline, "base_folder", folder),
         _unsloth_full_finetuning = bool(full_finetuning),
-        _saved_temp_tokenizer = pipeline.tokenizer,
+        _saved_temp_tokenizer = tokenizer,
         _unsloth_lora = adapters,
     )
-    return network, pipeline.tokenizer
+    return network, tokenizer
 
 
 def _load_clef(
@@ -621,6 +653,67 @@ def _load_clef(
     return _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing)
 
 
+def _d1_predicted(zoo, pipeline, question, probabilities) -> dict:
+    # A d1's answer is its median level, not the argmax.
+    answer = zoo.d1_answer(pipeline, question, probabilities)
+    predicted = _predicted(question, answer, probabilities)
+    if question["type"] == "score":
+        predicted["answer"] = int(answer["score"])
+    return predicted
+
+
+def _d1_temperatures(folder) -> dict:
+    calibration = folder / "calibration.json" if folder else None
+    if calibration is None or not calibration.is_file():
+        return {"head_temperature": 1.0, "temperature": [1.0] * 3}
+    saved = json.loads(calibration.read_text(encoding = "utf-8"))
+    score, buckets = float(saved.get("default", 1.0)), saved["temperatures"]
+    served = {
+        "choice": buckets.get("choice:small", score),
+        "score": score,
+        "noul": buckets.get("noul", score),
+    }
+    # Per-type temperatures are clamped to [0.5, 5] on read.
+    head = min(served.values()) * 2
+    return {
+        "head_temperature": head,
+        "temperature": [served[kind] / head for kind in QUESTION_TYPES],
+    }
+
+
+def _load_lm_as_d1(
+    zoo,
+    folder,
+    model_name,
+    max_seq_length,
+    load_in_4bit,
+    full_finetuning,
+    token,
+    revision,
+    gradient_checkpointing,
+):
+    if not hasattr(zoo, "load_language_model_as_d1"):
+        raise ImportError(
+            "Unsloth: training a d1 needs a newer unsloth-zoo. "
+            "Upgrade with `pip install -U unsloth-zoo`."
+        )
+    if load_in_4bit:
+        warnings.warn(
+            "Unsloth: a d1 trains at its checkpoint's precision, so load_in_4bit is ignored."
+        )
+    pipeline = zoo.load_language_model_as_d1(folder, token = token)
+    config = {
+        "layout": "d1",
+        "max_len": int(max_seq_length or CLEF_MAX_LEN),
+        "base_model": str(model_name),
+        **({"base_revision": revision} if revision else {}),
+        **_d1_temperatures(folder),
+    }
+    if full_finetuning:
+        config.update(_d1_temperatures(None))
+    return _clef_network(pipeline, folder, config, full_finetuning, gradient_checkpointing)
+
+
 def _load_lm_as_clef(
     model_name,
     max_seq_length,
@@ -636,9 +729,10 @@ def _load_lm_as_clef(
     head_config = None,
     **kwargs,
 ):
-    # A plain language model plus a new joint schema head, as unsloth/models/decision_from_lm.py builds one.
-    if decision_head != "clef":
-        raise ValueError(f"Unsloth: decision_head must be one of ('clef',), not {decision_head!r}.")
+    if decision_head not in ("clef", "d1"):
+        raise ValueError(
+            f"Unsloth: decision_head must be one of ('clef', 'd1'), not {decision_head!r}."
+        )
     if kwargs:
         raise NotImplementedError(
             f"Unsloth: decision models on MLX do not support {', '.join(sorted(kwargs))}."
@@ -659,8 +753,22 @@ def _load_lm_as_clef(
             f"Unsloth: {folder} holds LoRA adapters over a base model, which MLX does not load. "
             "Merge them into the base model first."
         )
+    zoo = _decision_zoo()
+    d1 = getattr(zoo, "FAMILIES", {}).get("d1")
+    if decision_head == "d1" or (d1 is not None and d1.matches(folder)):
+        return _load_lm_as_d1(
+            zoo,
+            folder,
+            model_name,
+            max_seq_length,
+            load_in_4bit,
+            full_finetuning,
+            token,
+            revision,
+            gradient_checkpointing,
+        )
     load_in_4bit = bool(load_in_4bit) and not full_finetuning
-    pipeline = _decision_zoo().load_language_model_as_clef(
+    pipeline = zoo.load_language_model_as_clef(
         folder,
         head_width = head_width,
         head_config = head_config,
@@ -805,7 +913,7 @@ class FastDecisionModel:
         if _is_clef(model):
             if getattr(model, "_unsloth_lora", False):
                 raise RuntimeError("Unsloth: You already added LoRA adapters to your model!")
-            network = _decision_zoo().clef_training_network(
+            network = _training_network(_decision_zoo(), model._unsloth_pipeline)(
                 model._unsloth_pipeline,
                 r = r,
                 lora_alpha = lora_alpha,
@@ -816,6 +924,8 @@ class FastDecisionModel:
                 gradient_checkpointing = bool(use_gradient_checkpointing),
             )
             attributes = {name: getattr(model, name) for name in _CLEF_ATTRIBUTES}
+            if _is_d1(model._unsloth_pipeline):
+                model.decision_config.update(_d1_temperatures(None))
             return _decision_annotate(network, **attributes, _unsloth_lora = True)
         _decision_zoo().add_lora_adapters(
             model,
@@ -871,6 +981,7 @@ class FastDecisionModel:
         clef = functools.partial(_clef_items, model._unsloth_pipeline) if _is_clef(model) else None
         return _decision_dataset(rows, tokenizer, model.decision_config, validate, clef)
 
+    rows_problem = staticmethod(_rows_problem)
     split_holdout = staticmethod(_decision_holdout)
 
     @staticmethod
@@ -912,7 +1023,7 @@ class FastDecisionModel:
             tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
             items, keys = [], []
             for name, question in questions.items():
-                internal = _internal(question)
+                internal = _internal(question, name)
                 ids, markers = common.build_sequence(
                     tokenizer, state, internal, max_len, int(config.get("head_max_len", 192))
                 )
@@ -936,6 +1047,10 @@ class FastDecisionModel:
         answers = {}
         for (name, question), row, scale, options in zip(questions.items(), logits, scales, keys):
             probabilities = dict(zip(options, torch.softmax(row / scale, -1).tolist()))
+            pipeline = getattr(model, "_unsloth_pipeline", None)
+            if _is_d1(pipeline):
+                answers[name] = _d1_predicted(zoo, pipeline, question, probabilities)
+                continue
             answers[name] = _predicted(
                 question, systemone_answer(question, probabilities), probabilities
             )
@@ -1056,7 +1171,7 @@ class DecisionTrainer:
             )
         if gradient_checkpointing and not clef:
             model.gradient_checkpointing = True
-        if clef and getattr(model, "_unsloth_lora", False):
+        if clef and getattr(model, "_unsloth_lora", False) and not _is_d1(model._unsloth_pipeline):
             # Lets a checkpoint be written as the adapters save_pretrained writes.
             config = model.decision_config
             origin = (

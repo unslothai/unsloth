@@ -3236,9 +3236,8 @@ export const tr = {
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",
       turnNavigation: "Tur gezinmesi",
       turnNavigationDescription: "Uzun sohbetlerin sol kenarında mesajlarınızı bir şerit olarak gösterir. Önizlemek için üzerine gelin, gitmek için tıklayın ve yeniden bulmak için yer imi ekleyin.",
-      composerAtBottom: "Yazma alanı altta",
-      composerAtBottomDescription:
-        "Yeni sohbetleri, yazma alanı sayfanın ortası yerine altında olacak şekilde başlatın.",
+      composerPosition: "Yazma alanının konumu",
+      composerPositionDescription: "Yeni bir sohbet başlarken yazma alanının nerede duracağı, sayfanın üstünden en altına kadar.",
       projectAttachments: "Dosyaları proje genelinde paylaş",
       projectAttachmentsDescription:
         "Yeni sohbet eklerini projedeki her sohbet için kullanılabilir yapın.",
@@ -3751,6 +3750,9 @@ export const tr = {
         docsLabel: "Karar API'si belgelerini aç",
         description:
           "Bu makinedeki bir modelle veya Bağlantılar'daki bir karar modeliyle metin hakkında evet/hayır, çoktan seçmeli ve puanlama sorularını yanıtlayın. TypeSafe SDK ile çalışır.",
+        codeTitle: "Koddan çağır",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Diğer MCP istemcileri buraya aynı belirteçle bağlanır.",
         enable: "İstekleri sun",
         enableDescription:
           "/v1/systemone uç noktasını sunar. Açıldığında model indirilir.",
@@ -5487,6 +5489,8 @@ export const tr = {
     removeLevel: "Düzey {n} öğesini kaldır",
     addLevel: "Düzey ekle",
     jsonHelp: "İstek gövdesi. Çalıştır, onu yazıldığı gibi gönderir.",
+    copyBody: "Gövdeyi kopyala",
+    copyCurl: "cURL olarak kopyala",
     examples: "Örnekler",
     presetToolApproval: "Ajan araç çağrılarını onayla",
     presetPromptInjection: "İstem enjeksiyonunu yakala",
@@ -5889,6 +5893,7 @@ export const tr = {
   generationStats: {
     working: "İşleniyor...",
     processingPrompt: "İstem işleniyor %{percent}",
+    compactingContext: "Bağlam sıkıştırılıyor...",
     timeLeft: "{eta} kaldı",
     tokensOne: "{count} token",
     tokens: "{count} token",

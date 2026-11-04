@@ -3942,6 +3942,35 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
         const annotationFactory = (post) => {
           /* ANNOTATE_JS */
         };
+        // No eval under this CSP: the page agent arrives as an inline script, on a one-time key.
+        const buildAgent = (() => {
+          let apply, create, root, setText, append, detach, random, join, Words;
+          try {
+            apply = Reflect.apply;
+            create = Document.prototype.createElement;
+            root = Object.getOwnPropertyDescriptor(Document.prototype, "documentElement").get;
+            setText = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, "text").set;
+            append = Node.prototype.appendChild;
+            detach = Element.prototype.remove;
+            random = Crypto.prototype.getRandomValues;
+            join = Array.prototype.join;
+            Words = Uint32Array;
+          } catch {
+            return () => null;
+          }
+          return (code) => {
+            const parent = apply(root, document, []);
+            if (!parent) return null;
+            const key = "unslothAgent" + apply(join, apply(random, crypto, [new Words(4)]), ["_"]);
+            const script = apply(create, document, ["script"]);
+            apply(setText, script, ["window." + key + " = " + code]);
+            apply(append, parent, [script]);
+            apply(detach, script, []);
+            const agent = window[key];
+            delete window[key];
+            return agent && typeof agent.run === "function" ? agent : null;
+          };
+        })();
         // Named for canvasStack() in the frontend, which trims from this frame down.
         const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
@@ -3955,6 +3984,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.close();
           // Instantiate only on a parent command; the factory predates the page's meta CSP.
           let annotation = null;
+          let agent = null;
           const postAnnotation = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
           window.addEventListener("message", (event) => {
             if (event.source !== parent) return;
@@ -3967,6 +3997,10 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
               else annotation?.stop();
             } else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
             else if (data.command === "annotateNumbers") annotation?.number(data.numbers);
+            else if (data.command === "agent" && typeof data.id === "string") {
+              if (!agent && typeof data.code === "string" && data.code.length <= 262144) agent = buildAgent(data.code);
+              postAnnotation({ type: "agent", id: data.id, installed: Boolean(agent), result: agent ? agent.run(data.op || {}) : null });
+            }
           });
           postAnnotation({ type: "annotate", event: "ready" });
           // document.open() drops listeners bound before it, so rebind here.
@@ -7179,7 +7213,22 @@ class _PrefillProgressSignal:
         self._decode: Optional[dict] = None
         self._decode_sent_at = 0.0
         self._decode_started = False
+        # Counters, not a frame: one fit reports once, and the event loop sends each new report once.
+        self._compactions = 0
+        self._compactions_sent = 0
         self.wants_timings = inner is not None or live
+
+    def round_ended(self) -> None:
+        """A tool result closed the pass: its unsent prefill and decode figures must not follow into the next round."""
+        self._prefill_sent = self._prefill
+        self._decode = None
+        self._decode_started = False
+
+    def compacting(self) -> None:
+        if self._live:
+            # Cleared first: a figure from the last pass sent after this report would clear the label on the client.
+            self.round_ended()
+            self._compactions += 1
 
     @property
     def needs_phase(self) -> bool:
@@ -7255,6 +7304,11 @@ class _PrefillProgressSignal:
         once per ``_LIVE_DECODE_FRAME_INTERVAL_S``. None when nothing is due."""
         if not self._live:
             return None
+        # Before prefill: a pending report always precedes the prompt pass that follows its fit.
+        compactions = self._compactions
+        if compactions != self._compactions_sent:
+            self._compactions_sent = compactions
+            return 'data: {"type":"generation_progress","phase":"compacting"}\n\n'
         prefill = self._prefill
         if prefill is not None and prefill is not self._prefill_sent:
             self._prefill_sent = prefill
@@ -21586,6 +21640,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
+                from core.inference.chat_swap_kv import save_chat_kv_before_unload
+
+                await save_chat_kv_before_unload()
                 # Off the loop: a long teardown would block the event loop and this route's own padding.
                 await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
@@ -27194,8 +27251,7 @@ def _messages_have_input_audio(messages) -> bool:
 
 
 def _messages_have_embedded_image(messages) -> bool:
-    """True only for inline base64 image data URLs; durable runs would persist them into every later
-    turn."""
+    """True only for inline base64 image data URLs."""
     for msg in messages:
         content = getattr(msg, "content", None)
         if not isinstance(content, list):
@@ -32441,6 +32497,8 @@ async def produce_openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
+                            if event["type"] == "tool_end":
+                                _gguf_prefill_signal.round_ended()
                             if event["type"] == "tool_start":
                                 # Gated with the card since the stamp is set once: a caller that cannot
                                 # see the card would otherwise report the tool run as its TTFT.
@@ -43278,7 +43336,9 @@ def _anthropic_in_process_sse(
                 emitter, chunk, request, disable_parallel_tool_use
             )
 
-        finish = emitter.finish
+        def finish():
+            return [] if source.cancelled else emitter.finish()
+
     # The chat handler's tracker holds cancel_id and session_id; the message id is Messages' own.
     tracker = _TrackedCancel(source.cancel_event, message_id, track_run = False)
     tracker.__enter__()
@@ -45628,6 +45688,9 @@ async def _anthropic_passthrough_stream(
                 )
             finally:
                 _release_admission(tracker = _tracker)
+
+        if cancel_event.is_set():
+            return
 
         for line in emitter.finish():
             yield line
@@ -49442,6 +49505,7 @@ async def _generate_diffusion_image_run(
                         "text_encoder_quant": result.get("text_encoder_quant"),
                         "memory_mode": result.get("memory_mode"),
                         "offload_policy": result.get("offload_policy"),
+                        "denoiser_offload": result.get("denoiser_offload"),
                         "speed_mode": result.get("speed_mode"),
                         "attention_backend": result.get("attention_backend"),
                         "transformer_cache": result.get("transformer_cache"),
@@ -51382,6 +51446,7 @@ async def _generate_openai_images(
         "text_encoder_quant": result.get("text_encoder_quant"),
         "memory_mode": result.get("memory_mode"),
         "offload_policy": result.get("offload_policy"),
+        "denoiser_offload": result.get("denoiser_offload"),
         "speed_mode": result.get("speed_mode"),
         "attention_backend": result.get("attention_backend"),
         "transformer_cache": result.get("transformer_cache"),

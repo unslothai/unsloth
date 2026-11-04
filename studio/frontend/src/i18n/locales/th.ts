@@ -3103,9 +3103,8 @@ export const th = {
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",
       turnNavigation: "การนำทางตามรอบ",
       turnNavigationDescription: "แสดงข้อความของคุณเป็นแถบที่ขอบซ้ายของแชทยาว วางเมาส์เพื่อดูตัวอย่าง คลิกเพื่อไปยังรอบนั้น และบุ๊กมาร์กเพื่อหากลับมาได้",
-      composerAtBottom: "ช่องเขียนข้อความอยู่ด้านล่าง",
-      composerAtBottomDescription:
-        "เริ่มแชทใหม่โดยให้ช่องเขียนข้อความอยู่ด้านล่างของหน้าแทนตรงกลาง",
+      composerPosition: "ตำแหน่งช่องเขียนข้อความ",
+      composerPositionDescription: "ตำแหน่งของช่องเขียนข้อความเมื่อเริ่มแชตใหม่ ตั้งแต่ด้านบนของหน้าไปจนถึงด้านล่าง",
       projectAttachments: "แชร์ไฟล์ทั่วทั้งโปรเจกต์",
       projectAttachmentsDescription: "ให้ไฟล์แนบของแชทใหม่ใช้ได้ในทุกแชทของโปรเจกต์",
       rememberParamsPerModel: "จดจำการตั้งค่าแยกตามโมเดล",
@@ -3594,6 +3593,9 @@ export const th = {
         docsLabel: "เปิดเอกสาร Decision API",
         description:
           "ตอบคำถามแบบใช่/ไม่ใช่ แบบหลายตัวเลือก และแบบให้คะแนนเกี่ยวกับข้อความ ด้วยโมเดลบนเครื่องนี้หรือโมเดลการตัดสินใจจากการเชื่อมต่อ ใช้งานร่วมกับ TypeSafe SDK ได้",
+        codeTitle: "เรียกใช้จากโค้ด",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "ไคลเอนต์ MCP อื่นเชื่อมต่อที่นี่ด้วยโทเค็นเดียวกัน",
         enable: "ให้บริการคำขอ",
         enableDescription: "ให้บริการ /v1/systemone การเปิดตัวเลือกนี้จะดาวน์โหลดโมเดล",
         enableRemoteDescription: "ให้บริการ /v1/systemone",
@@ -5228,6 +5230,8 @@ export const th = {
     removeLevel: "นำระดับ {n} ออก",
     addLevel: "เพิ่มระดับ",
     jsonHelp: "เนื้อหาคำขอ ปุ่ม “รันการตัดสินใจ” จะส่งเนื้อหานี้ตามที่เขียนไว้",
+    copyBody: "คัดลอกเนื้อหา",
+    copyCurl: "คัดลอกเป็น cURL",
     examples: "ตัวอย่าง",
     presetToolApproval: "อนุมัติการเรียกใช้เครื่องมือของเอเจนต์",
     presetPromptInjection: "ตรวจจับ Prompt Injection",
@@ -5613,6 +5617,7 @@ export const th = {
   generationStats: {
     working: "กำลังดำเนินการ...",
     processingPrompt: "กำลังประมวลผลพรอมต์ {percent}%",
+    compactingContext: "กำลังบีบอัดบริบท...",
     timeLeft: "เหลืออีก {eta}",
     tokensOne: "{count} โทเค็น",
     tokens: "{count} โทเค็น",

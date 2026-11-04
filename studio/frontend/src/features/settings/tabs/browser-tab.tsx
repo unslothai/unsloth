@@ -120,6 +120,7 @@ function DownloadSiteRows() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="allow">{t("browser.downloadSiteAllow")}</SelectItem>
+                    <SelectItem value="allowAll">{t("browser.downloadSiteAllowAll")}</SelectItem>
                     <SelectItem value="block">{t("browser.downloadSiteBlock")}</SelectItem>
                   </SelectContent>
                 </Select>
@@ -163,6 +164,7 @@ export function BrowserTab() {
   const saveDownloadHistory = useBrowserPrefsStore((state) => state.saveDownloadHistory);
   const askWhereToSave = useBrowserPrefsStore((state) => state.askWhereToSave);
   const askBeforeDownloading = useBrowserPrefsStore((state) => state.askBeforeDownloading);
+  const askBeforeProgramDownloads = useBrowserPrefsStore((state) => state.askBeforeProgramDownloads);
   const annotationScreenshots = useBrowserPrefsStore((state) => state.annotationScreenshots);
   const {
     setOpenLinksInBrowser,
@@ -181,6 +183,7 @@ export function BrowserTab() {
     setSaveDownloadHistory,
     setAskWhereToSave,
     setAskBeforeDownloading,
+    setAskBeforeProgramDownloads,
     setAnnotationScreenshots,
   } = useBrowserPrefsStore.getState();
   const [clearOpen, setClearOpen] = useState(false);
@@ -489,6 +492,16 @@ export function BrowserTab() {
             aria-label={t("browser.askBeforeDownloadingSetting")}
             checked={askBeforeDownloading}
             onCheckedChange={setAskBeforeDownloading}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label={t("browser.askBeforeProgramDownloadsSetting")}
+          description={t("browser.askBeforeProgramDownloadsSettingDescription")}
+        >
+          <Switch
+            aria-label={t("browser.askBeforeProgramDownloadsSetting")}
+            checked={askBeforeProgramDownloads}
+            onCheckedChange={setAskBeforeProgramDownloads}
           />
         </SettingsRow>
         <DownloadSiteRows />

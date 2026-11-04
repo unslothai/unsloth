@@ -3070,8 +3070,8 @@ export const he = {
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
       turnNavigation: "ניווט בין סבבים",
       turnNavigationDescription: "הצגת ההודעות שלך כפס בקצה השמאלי של צ׳אטים ארוכים. רחפו לתצוגה מקדימה של סבב, לחצו כדי לקפוץ אליו וסמנו סבבים כדי למצוא אותם שוב.",
-      composerAtBottom: "תיבת הכתיבה למטה",
-      composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
+      composerPosition: "מיקום תיבת הכתיבה",
+      composerPositionDescription: "היכן תיבת הכתיבה מופיעה כשמתחילים צ'אט חדש, מראש הדף ועד תחתיתו.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
       projectAttachmentsDescription:
         "הפוך קבצים מצורפים חדשים לזמינים לכל צ'אט בפרויקט.",
@@ -3547,6 +3547,9 @@ export const he = {
         docsLabel: "פתח את התיעוד של ממשק ה-API להחלטות",
         description:
           "ענה על שאלות כן/לא, רב-ברירה ודירוג לגבי טקסט באמצעות מודל במחשב זה או מודל החלטות מ'חיבורים'. עובד עם TypeSafe SDK.",
+        codeTitle: "קריאה מקוד",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "לקוחות MCP אחרים מתחברים לכאן עם אותו אסימון.",
         enable: "הגש בקשות",
         enableDescription: "מגיש את /v1/systemone. הפעלה מורידה את המודל.",
         enableRemoteDescription: "מגיש את /v1/systemone.",
@@ -5196,6 +5199,8 @@ export const he = {
     removeLevel: "הסר רמה {n}",
     addLevel: "הוסף רמה",
     jsonHelp: "גוף הבקשה. הרצה שולחת אותו כפי שהוא.",
+    copyBody: "העתקת גוף הבקשה",
+    copyCurl: "העתקה כ-cURL",
     examples: "דוגמאות",
     presetToolApproval: "אישור קריאות לכלים של סוכן",
     presetPromptInjection: "זיהוי הזרקת פרומפט",
@@ -5581,6 +5586,7 @@ export const he = {
   generationStats: {
     working: "מעבד...",
     processingPrompt: "עיבוד הפרומפט {percent}%",
+    compactingContext: "דוחס את ההקשר...",
     timeLeft: "נותרו {eta}",
     tokensOne: "{count} טוקן",
     tokens: "{count} טוקנים",

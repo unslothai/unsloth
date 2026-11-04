@@ -3264,9 +3264,8 @@ export const uk = {
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
       turnNavigation: "Навігація ходами",
       turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
-      composerAtBottom: "Поле введення внизу",
-      composerAtBottomDescription:
-        "Починати нові чати з полем введення внизу сторінки, а не посередині.",
+      composerPosition: "Розташування поля введення",
+      composerPositionDescription: "Де розташоване поле введення в новому чаті: від верху сторінки до самого низу.",
       projectAttachments: "Спільні файли в проєкті",
       projectAttachmentsDescription:
         "Робити нові вкладення чату доступними для всіх чатів проєкту.",
@@ -3784,6 +3783,9 @@ export const uk = {
         docsLabel: "Відкрити документацію API рішень",
         description:
           "Відповідайте на запитання «так/ні», з кількома варіантами та з оцінкою щодо тексту за допомогою моделі на цьому комп’ютері або моделі рішень із розділу «Підключення». Працює з TypeSafe SDK.",
+        codeTitle: "Виклик із коду",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Інші клієнти MCP підключаються сюди з тим самим токеном.",
         enable: "Обслуговувати запити",
         enableDescription:
           "Обслуговує /v1/systemone. Увімкнення завантажує модель.",
@@ -5535,6 +5537,8 @@ export const uk = {
     removeLevel: "Вилучити рівень {n}",
     addLevel: "Додати рівень",
     jsonHelp: "Тіло запиту. «Виконати» надсилає його без змін.",
+    copyBody: "Копіювати тіло",
+    copyCurl: "Копіювати як cURL",
     examples: "Приклади",
     presetToolApproval: "Схвалювати виклики інструментів агентом",
     presetPromptInjection: "Виявляти ін’єкції в запити",
@@ -5936,6 +5940,7 @@ export const uk = {
   generationStats: {
     working: "Виконання...",
     processingPrompt: "Обробка запиту {percent}%",
+    compactingContext: "Стиснення контексту...",
     timeLeft: "залишилось {eta}",
     tokensOne: "токени: {count}",
     tokens: "токени: {count}",

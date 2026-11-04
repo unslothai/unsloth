@@ -3255,9 +3255,8 @@ export const cs = {
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
       turnNavigation: "Navigace v kolech",
       turnNavigationDescription: "Zobrazí vaše zprávy jako lištu u levého okraje dlouhých chatů. Najetím zobrazíte náhled kola, kliknutím na něj přejdete a záložkami si kola označíte.",
-      composerAtBottom: "Pole zprávy dole",
-      composerAtBottomDescription:
-        "Zahajovat nové chaty s polem zprávy v dolní části stránky místo uprostřed.",
+      composerPosition: "Umístění pole zprávy",
+      composerPositionDescription: "Kde je pole zprávy při zahájení nového chatu, od horní části stránky až dolů.",
       projectAttachments: "Sdílet soubory v rámci projektu",
       projectAttachmentsDescription:
         "Zpřístupnit nové přílohy chatu všem chatům v projektu.",
@@ -3772,6 +3771,9 @@ export const cs = {
         docsLabel: "Otevřít dokumentaci Decision API",
         description:
           "Odpovídejte na otázky typu ano/ne, s výběrem z možností a s hodnocením týkající se textu pomocí modelu v tomto počítači nebo rozhodovacího modelu z Připojení. Funguje se sadou TypeSafe SDK.",
+        codeTitle: "Volání z kódu",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Ostatní klienti MCP se sem připojují se stejným tokenem.",
         enable: "Obsluhovat požadavky",
         enableDescription: "Obsluhuje /v1/systemone. Zapnutím se stáhne model.",
         enableRemoteDescription: "Obsluhuje /v1/systemone.",
@@ -5510,6 +5512,8 @@ export const cs = {
     removeLevel: "Odebrat úroveň {n}",
     addLevel: "Přidat úroveň",
     jsonHelp: "Tělo požadavku. Spuštění ho odešle přesně tak, jak je napsané.",
+    copyBody: "Kopírovat tělo",
+    copyCurl: "Kopírovat jako cURL",
     examples: "Příklady",
     presetToolApproval: "Schvalovat volání nástrojů agenta",
     presetPromptInjection: "Odhalit prompt injection",
@@ -5909,6 +5913,7 @@ export const cs = {
   generationStats: {
     working: "Probíhá zpracování...",
     processingPrompt: "Zpracování promptu {percent} %",
+    compactingContext: "Zhušťování kontextu...",
     timeLeft: "zbývá {eta}",
     tokensOne: "tokeny: {count}",
     tokens: "tokeny: {count}",

@@ -3225,9 +3225,8 @@ export const fa = {
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
       turnNavigation: "پیمایش نوبت‌ها",
       turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
-      composerAtBottom: "کادر نوشتن در پایین",
-      composerAtBottomDescription:
-        "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
+      composerPosition: "جای کادر نوشتن",
+      composerPositionDescription: "جای کادر نوشتن هنگام شروع گفتگوی تازه، از بالای صفحه تا پایین آن.",
       projectAttachments: "اشتراک فایل‌ها در سراسر پروژه",
       projectAttachmentsDescription:
         "پیوست‌های جدید گفتگو در دسترس همهٔ گفتگوهای پروژه قرار گیرند.",
@@ -3740,6 +3739,9 @@ export const fa = {
         docsLabel: "باز کردن مستندات API تصمیم‌گیری",
         description:
           "با یک مدل روی این دستگاه یا یک مدل تصمیم‌گیری از «اتصال‌ها»، به پرسش‌های بله/خیر، چندگزینه‌ای و امتیازدهی دربارهٔ متن پاسخ دهید. با TypeSafe SDK کار می‌کند.",
+        codeTitle: "فراخوانی از کد",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "سایر کلاینت‌های MCP با همان توکن به اینجا وصل می‌شوند.",
         enable: "پاسخ به درخواست‌ها",
         enableDescription:
           "/v1/systemone را ارائه می‌دهد. روشن کردن آن مدل را دانلود می‌کند.",
@@ -5461,6 +5463,8 @@ export const fa = {
     removeLevel: "حذف سطح {n}",
     addLevel: "افزودن سطح",
     jsonHelp: "بدنهٔ درخواست. «اجرا» آن را همان‌طور که نوشته شده ارسال می‌کند.",
+    copyBody: "کپی بدنه",
+    copyCurl: "کپی به‌صورت cURL",
     examples: "نمونه‌ها",
     presetToolApproval: "تأیید فراخوانی‌های ابزار عامل",
     presetPromptInjection: "شناسایی تزریق پرامپت",
@@ -5861,6 +5865,7 @@ export const fa = {
   generationStats: {
     working: "در حال انجام...",
     processingPrompt: "پردازش پرامپت {percent}%",
+    compactingContext: "در حال فشرده‌سازی زمینه...",
     timeLeft: "{eta} مانده",
     tokensOne: "{count} توکن",
     tokens: "{count} توکن",
