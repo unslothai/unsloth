@@ -554,6 +554,9 @@ function lendKeys(blocked: boolean): void {
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
+// The wallpaper paints under the page without being its ancestor, so it is masked around the hole.
+const MASK_ATTRIBUTE = "data-native-hole-mask";
+let masked: HTMLElement[] = [];
 let holeSignature = "";
 let holeTab: string | null = null;
 let holeBounds: Bounds | null = null;
@@ -587,6 +590,12 @@ function placeHole(): void {
   const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
   const values = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height].map((value) => value / zoom);
   for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
+  // A mask is not a fixed background: its lengths are the layer's own CSS pixels, from its corner.
+  for (const node of masked) {
+    const box = node.getBoundingClientRect();
+    const local = [values[0] - box.left, values[1] - box.top, values[2], values[3]];
+    HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${local[index]}px`));
+  }
 }
 
 /** Re-reads background colors when the chain, its classes or the theme change; true if it did. */
@@ -598,8 +607,12 @@ function markHole(): boolean {
   // Theme: html classes, palette and inline color vars, minus our own.
   const root = document.documentElement;
   const theme = (root.style.cssText ?? "").replace(/--native-hole-[^;]*;?/g, "");
-  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}`;
-  if (signature === holeSignature && holed.every((node) => node.isConnected)) return false;
+  // From the page's own ancestors, not a document-wide scan: this runs on every recheck.
+  const layers = chain
+    .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
+    .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
+  const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
+  if (signature === holeSignature && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
   holeSignature = signature;
   const colors = chain.map((node) => getComputedStyle(node));
@@ -609,8 +622,10 @@ function markHole(): boolean {
     node.style.setProperty("--native-hole-bg", computed.backgroundColor);
     holed.push(node);
   });
+  masked = layers;
   placeHole();
   for (const node of holed) node.setAttribute(HOLE_ATTRIBUTE, "");
+  for (const node of masked) node.setAttribute(MASK_ATTRIBUTE, "");
   // Mid theme switch everything can read transparent: retry next sync.
   if (holed.length === 0) holeSignature = "";
   return true;
@@ -622,6 +637,11 @@ function unmarkHole(): void {
     for (const name of ["--native-hole-bg", ...HOLE_VARS]) node.style.removeProperty(name);
   }
   holed = [];
+  for (const node of masked) {
+    node.removeAttribute(MASK_ATTRIBUTE);
+    for (const name of HOLE_VARS) node.style.removeProperty(name);
+  }
+  masked = [];
   holeSignature = "";
 }
 

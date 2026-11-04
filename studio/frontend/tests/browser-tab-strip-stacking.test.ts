@@ -30,3 +30,13 @@ test("the browser's glass frosts the tab strip and panel body, never the section
     for (const part of selector.split(",")) assert.match(part.trim(), /\[data-slot="browser-panel"\](:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)$/);
   }
 });
+
+// A backdrop-filter paints over the hole, and the wallpaper is no ancestor of the page, so neither may cover a website.
+test("a native page's hole drops backdrop filters and masks the wallpaper layer", () => {
+  const css = readSrc("index.css");
+  assert.match(css, /\[data-native-hole\] \{\n\t-webkit-backdrop-filter: none !important;\n\tbackdrop-filter: none !important;/);
+  assert.match(css, /\[data-native-hole-mask\] \{[^}]*mask-image: var\(--native-hole-mask\)/);
+  const view = readSrc("features/browser/native-view.ts");
+  assert.match(view, /node\.hasAttribute\?\.\("data-wallpaper-workspace"\)/);
+  assert.match(view, /child\.classList\.contains\("chat-wallpaper"\)/);
+});

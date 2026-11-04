@@ -5872,6 +5872,41 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h) !important;
 }
 
+/* A backdrop-filter paints its blurred backdrop across the whole box, the hole included. */
+[data-native-hole] {
+	-webkit-backdrop-filter: none !important;
+	backdrop-filter: none !important;
+}
+/* The wallpaper is no ancestor of the page, so it is masked around the hole instead; the lengths are
+   the layer's own (native-view.ts sets them from its corner), not the viewport's. */
+[data-native-hole-mask] {
+	--native-hole-mask: linear-gradient(#000, #000);
+	-webkit-mask-image: var(--native-hole-mask), var(--native-hole-mask), var(--native-hole-mask), var(--native-hole-mask);
+	mask-image: var(--native-hole-mask), var(--native-hole-mask), var(--native-hole-mask), var(--native-hole-mask);
+	-webkit-mask-repeat: no-repeat;
+	mask-repeat: no-repeat;
+	-webkit-mask-position:
+		0 0,
+		0 calc(var(--native-hole-y) + var(--native-hole-h)),
+		0 var(--native-hole-y),
+		calc(var(--native-hole-x) + var(--native-hole-w)) var(--native-hole-y);
+	mask-position:
+		0 0,
+		0 calc(var(--native-hole-y) + var(--native-hole-h)),
+		0 var(--native-hole-y),
+		calc(var(--native-hole-x) + var(--native-hole-w)) var(--native-hole-y);
+	-webkit-mask-size:
+		100% var(--native-hole-y),
+		100% max(0px, calc(100% - var(--native-hole-y) - var(--native-hole-h))),
+		var(--native-hole-x) var(--native-hole-h),
+		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h);
+	mask-size:
+		100% var(--native-hole-y),
+		100% max(0px, calc(100% - var(--native-hole-y) - var(--native-hole-h))),
+		var(--native-hole-x) var(--native-hole-h),
+		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h);
+}
+
 .unsloth-files-panel {
 	/* The 28px Add files pill sits in the 32px header row: pt-2 and gap-2 leave it 10px from the top edge and from the cards. */
 	@apply relative mb-2 flex w-full flex-col gap-2 overflow-hidden rounded-2xl px-4 pt-2 pb-4;
@@ -6547,6 +6582,22 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
   --color-secondary: var(--secondary);
   --color-accent: var(--glass-hover);
   --color-sidebar-accent: var(--glass-hover);
+}
+/* Library row actions hard-code a solid dark hover; the picture controls (dark:bg-neutral-700) stay solid on purpose. */
+html.dark[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] [class*="dark:hover:bg-neutral-600"]:not([class*="dark:bg-neutral-700"]):hover {
+  background-color: var(--glass-hover);
+  box-shadow: var(--glass-hover-rim);
+}
+/* Every hover token, not just --accent, so icon buttons in menus, popovers and dialogs hover as glass too. */
+html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
+  --nav-surface-hover: var(--glass-hover);
+  --panel-surface-hover: var(--glass-hover);
+  --chat-icon-bg-hover: var(--glass-hover);
+  --panel-input-surface-hover: var(--glass-hover);
+  --color-nav-surface-hover: var(--glass-hover);
+  --color-panel-surface-hover: var(--glass-hover);
+  --color-chat-icon-bg-hover: var(--glass-hover);
+  --color-panel-input-surface-hover: var(--glass-hover);
 }
 html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
   background-image: var(--glass-sheen);

@@ -211,3 +211,14 @@ test("the browser menu takes the glass fill instead of its pinned dark surface",
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\]\[data-glass-menus\] \.browser-menu\[data-slot\] \{\n  --browser-menu-surface: var\(--glass-menu-fill\);/);
 });
+
+test("menus, popovers and dialogs point every hover token at the glass hover", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const at = css.indexOf("/* Every hover token, not just --accent");
+	assert.notEqual(at, -1);
+	const rule = css.slice(at, css.indexOf("}", at));
+	for (const token of ["nav-surface-hover", "panel-surface-hover", "chat-icon-bg-hover", "panel-input-surface-hover"]) {
+		assert.match(rule, new RegExp(`--${token}: var\\(--glass-hover\\);`));
+		assert.match(rule, new RegExp(`--color-${token}: var\\(--glass-hover\\);`));
+	}
+});
