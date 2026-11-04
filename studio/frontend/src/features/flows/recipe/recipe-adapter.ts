@@ -11,6 +11,7 @@ import type {
   NodeConfig,
   RecipeNode,
   RecipeProcessorConfig,
+  ToolProfileConfig,
 } from "@/features/recipe-studio/types";
 import { makeToolProfileConfig } from "@/features/recipe-studio/utils/config-factories";
 import { importRecipePayload } from "@/features/recipe-studio/utils/import/importer";
@@ -95,6 +96,34 @@ export function studioView(group: FlowGroup, columns: FlowNode[]): StudioView {
 }
 
 /** Recipe Studio's `updateConfig` without the store: the patch plus subcategory, rename and provider sync. */
+/** A tool server is one recipe-wide definition shared by name: an edit made through one tool profile is
+ * made in every profile that names it, so the copies never disagree (the payload keeps only one). */
+function withSharedMcpProviders(
+  configs: Record<string, NodeConfig>,
+  before: ToolProfileConfig,
+  after: ToolProfileConfig,
+): Record<string, NodeConfig> {
+  const was = new Map(before.mcp_providers.map((p) => [p.id, p]));
+  const edited = after.mcp_providers.filter((p) => {
+    const old = was.get(p.id);
+    return old && old.name === p.name && JSON.stringify(old) !== JSON.stringify(p);
+  });
+  if (!edited.length) return configs;
+  const byName = new Map(edited.map((p) => [p.name, p]));
+  let result = configs;
+  for (const [cid, cfg] of Object.entries(configs)) {
+    if (cid === after.id || cfg.kind !== "tool_config") continue;
+    if (!cfg.mcp_providers.some((p) => byName.has(p.name))) continue;
+    // biome-ignore lint/style/useNamingConvention: ui schema
+    const mcp_providers = cfg.mcp_providers.map((p) => {
+      const shared = byName.get(p.name);
+      return shared ? { ...shared, id: p.id } : p;
+    });
+    result = { ...result, [cid]: { ...cfg, mcp_providers } };
+  }
+  return result;
+}
+
 export function applyConfigPatch(
   configs: Record<string, NodeConfig>,
   id: string,
@@ -105,6 +134,8 @@ export function applyConfigPatch(
   const next = { ...current, ...patch } as NodeConfig;
   const nameChanged = current.name !== next.name;
   let result: Record<string, NodeConfig> = { ...configs, [id]: next };
+  if (next.kind === "tool_config" && current.kind === "tool_config")
+    result = withSharedMcpProviders(result, current, next);
   result = syncSubcategoryConfigsForCategoryUpdate(
     current,
     next,

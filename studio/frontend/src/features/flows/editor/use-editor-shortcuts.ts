@@ -3,6 +3,7 @@
 
 import { useReactFlow } from "@xyflow/react";
 import { useEffect } from "react";
+import { toast } from "sonner";
 import {
   type GraphFragment,
   cloneFragment,
@@ -117,8 +118,14 @@ export function useEditorShortcuts(active: boolean): void {
       const at = pointer ? screenToFlowPosition(pointer) : null;
       const placed = placeFragment(fragment, at);
       useDocStore.getState().insertFragment(placed);
+      const { nodes } = useDocStore.getState().graph;
+      const landed = placed.nodes.filter((n) => nodes[n.id]);
+      if (landed.length < placed.nodes.length)
+        toast("Recipe columns paste into a Data Recipe frame", {
+          description: "Paste them inside a recipe's frame.",
+        });
       useUiStore.getState().setSelection(
-        placed.nodes.map((n) => n.id),
+        landed.map((n) => n.id),
         [],
       );
     };

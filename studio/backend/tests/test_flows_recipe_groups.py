@@ -978,3 +978,9 @@ def test_a_refused_preview_upload_leaves_the_run_record_failed_not_completed(mon
     with pytest.raises(FlowNodeError, match = "upload limit"):
         asyncio.run(data.recipe_group(ctx))
     assert saved[-1]["status"] == "error" and "upload limit" in saved[-1]["error"]
+
+
+def test_the_dataset_viewer_reads_a_bare_hub_name_the_dataset_node_accepts():
+    from core.flows.dataset_rows import dataset_source
+    found = dataset_source({"kind": "dataset", "source": "hf", "ref": "imdb", "split": "train"})
+    assert found["dataset_name"] == "imdb"

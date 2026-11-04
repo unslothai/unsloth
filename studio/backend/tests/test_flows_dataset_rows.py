@@ -52,7 +52,7 @@ def test_each_source_names_what_the_dataset_check_reads():
     assert recipe["dataset_name"] == str(recipe_datasets_root() / "run1" / "parquet-files")
     for bad in (
         {"kind": "table", "ref": "x"},
-        {"kind": "dataset", "source": "hf", "ref": "no-owner"},
+        {"kind": "dataset", "source": "hf", "ref": "../escape"},
         {"kind": "dataset", "source": "local", "ref": "ref:unknown"},
         {"kind": "dataset", "source": "s3", "ref": "x"},
         {"kind": "dataset", "source": "local", "ref": ""},

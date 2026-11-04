@@ -1307,3 +1307,27 @@ test("the starter recipe passes Check as made, writing with Chat's loaded model"
   const setup = readFileSync(new URL("../src/features/flows/recipe/recipe-setup.ts", import.meta.url), "utf8");
   assert.match(setup, /name\.toLowerCase\(\) === "local"/);
 });
+
+test("recipe blocks pasted outside a recipe frame are left out, and a shared tool server edit reaches every profile", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes } = sqlGroup();
+  const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
+  const store = useDocStore.getState();
+  const before = store.graph.nodeOrder.length;
+  // Far outside the frame.
+  store.insertFragment(cloneFragment(store.graph, [nodes[0].id], [9000, 9000]));
+  assert.equal(useDocStore.getState().graph.nodeOrder.length, before);
+
+  const server = { id: "s1", name: "docs", provider_type: "streamable_http", endpoint: "https://a.example/mcp" };
+  const configs = {
+    t1: { id: "t1", kind: "tool_config", name: "one", mcp_providers: [server] },
+    t2: { id: "t2", kind: "tool_config", name: "two", mcp_providers: [{ ...server, id: "s2" }] },
+  } as never;
+  const next = applyConfigPatch(configs, "t2", {
+    mcp_providers: [{ ...server, id: "s2", endpoint: "https://b.example/mcp" }],
+  } as never) as Record<string, { mcp_providers: { id: string; endpoint: string }[] }>;
+  assert.equal(next.t1.mcp_providers[0].endpoint, "https://b.example/mcp");
+  assert.equal(next.t1.mcp_providers[0].id, "s1");
+});

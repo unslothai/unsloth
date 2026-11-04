@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 # The viewers page through the first rows only; a dataset is read from its start each time.
 VIEW_ROWS = 1000
-_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$")
+_REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)?$")
 
 
 class DatasetRowsError(ValueError):

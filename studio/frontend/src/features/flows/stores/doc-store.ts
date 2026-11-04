@@ -793,6 +793,13 @@ export const useDocStore = create<DocState>((set, get) => {
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
           const group = frameAt(s.graph, node.pos, folded);
+          // A recipe's blocks mean nothing outside a recipe frame (they carry none of its models or
+          // seed), and one alone would stop the whole flow compiling: such a paste skips them.
+          if (
+            (node.type === RECIPE_COLUMN || node.type === RECIPE_DATASET) &&
+            s.graph.groups[group ?? ""]?.kind !== "recipe"
+          )
+            continue;
           // A recipe runs from one Recipe Dataset step: a pasted or duplicated second one comes in off.
           const extra =
             node.type === RECIPE_DATASET &&
