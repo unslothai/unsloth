@@ -1661,11 +1661,13 @@ def _agent_for(checkpoint: Checkpoint, wait: float):
     return _agent
 
 
-def _to_laya(question: dict[str, Any]) -> dict[str, Any]:
+def _to_laya(question: dict[str, Any], name = "") -> dict[str, Any]:
     import json
 
-    instructions = question.get("instructions") or ""
-    if not isinstance(instructions, str):
+    instructions = question.get("instructions")
+    if instructions in (None, ""):
+        instructions = str(name)
+    elif not isinstance(instructions, str):
         instructions = json.dumps(instructions, ensure_ascii = False)
     out = {"type": question["type"], "instructions": instructions}
     if question.get("criteria") is not None:
@@ -2354,7 +2356,7 @@ def _decide(
             }
         if checkpoint.layout == "clef":
             return _decide_clef(checkpoint, agent, state, questions)
-        laya_questions = {name: _to_laya(q) for name, q in questions.items()}
+        laya_questions = {name: _to_laya(q, name) for name, q in questions.items()}
         try:
             if isinstance(agent, LayaWorker):
                 result, truncated = agent.predict(state, laya_questions)

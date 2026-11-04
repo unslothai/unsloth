@@ -182,7 +182,7 @@ def _decision_dataset(
             try:
                 if validate is not None:
                     validate(name, question)
-                internal = _internal(question)
+                internal = _internal(question, name)
                 target, label = _target(internal, _parsed(gold[name]))
                 ids, markers = common.build_sequence(
                     tokenizer, state, internal, max_len, head_max_len
@@ -912,7 +912,7 @@ class FastDecisionModel:
             tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
             items, keys = [], []
             for name, question in questions.items():
-                internal = _internal(question)
+                internal = _internal(question, name)
                 ids, markers = common.build_sequence(
                     tokenizer, state, internal, max_len, int(config.get("head_max_len", 192))
                 )

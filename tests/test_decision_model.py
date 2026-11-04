@@ -569,6 +569,29 @@ def test_compiled_layers_checkpoint_with_torch_and_get_unsloths_back(
         assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
 
 
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_a_question_without_instructions_is_read_by_its_id(checkpoint, instructions):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    state = "the server is down again"
+    blank = {"type": "noul", "instructions": instructions}
+    named = {name: {"type": "noul", "instructions": name} for name in ("outage", "billing")}
+
+    answers = FastDecisionModel.predict(model, tokenizer, state, dict.fromkeys(named, blank))
+    assert answers == FastDecisionModel.predict(model, tokenizer, state, named)
+
+    def tokens(questions):
+        gold = dict.fromkeys(questions, {"label": "true"})
+        row = {"state": state, "questions": questions, "gold": gold}
+        return [
+            item["input_ids"]
+            for item in FastDecisionModel.build_dataset([row], tokenizer, model)[0]
+        ]
+
+    assert tokens(dict.fromkeys(named, blank)) == tokens(named)
+
+
 def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
