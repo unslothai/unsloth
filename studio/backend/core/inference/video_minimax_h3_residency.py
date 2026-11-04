@@ -314,7 +314,10 @@ class H3Residency:
         self.max_blocks = 0
         # host_yield(nbytes): frees host RAM (the conditioner's resident share) before a demoted block is rebuilt
         self.host_yield: Any = None
+        # host_top_up(): hands RAM a re-fit released to the conditioner's resident share (after the load only)
+        self.host_top_up: Any = None
         self.released_bytes = 0
+        self.topped_bytes = 0
 
     @property
     def usable(self) -> bool:
@@ -381,6 +384,17 @@ class H3Residency:
         self.apply(top, n)
         if initial:
             self.max_blocks = n
+        released = getattr(self, "released_bytes", 0)
+        top_up = getattr(self, "host_top_up", None)
+        if released > getattr(self, "topped_bytes", 0) and callable(top_up):
+            try:
+                top_up()
+            except Exception as exc:  # noqa: BLE001 -- the conditioner stays mapped
+                if self.logger is not None:
+                    self.logger.warning("video.h3_residency: conditioner top-up failed: %s", exc)
+            self.topped_bytes = released
+        elif released < getattr(self, "topped_bytes", 0):
+            self.topped_bytes = released
         if self.logger is not None:
             self.logger.info(
                 "video.h3_residency: %d of %d denoiser blocks resident (+ top-level %s), %.2f GB on the device, "

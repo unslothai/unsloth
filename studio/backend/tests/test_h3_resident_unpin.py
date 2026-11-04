@@ -164,3 +164,43 @@ def test_the_conditioner_share_yields_back_to_its_mapping():
     te.yield_h3_te_resident(holder, 1 << 30)
     assert all(group.cpu_param_dict[p] is mapped[p] for p in mapped)
     assert all(p.data.data_ptr() == mapped[p].data_ptr() for p in mapped)
+
+
+def test_a_refit_that_releases_more_hands_it_to_the_conditioner_once():
+    r = _residency(4)
+    r.topped_bytes = 0
+    calls = []
+    r.host_top_up = lambda: calls.append(r.released_bytes)
+    r.fit(r.block_bytes[0], initial = True)  # the load's fit (a larger preset): one block
+    r.fit(sum(r.block_bytes))  # the request's fit: every block, more released
+    r.fit(sum(r.block_bytes))  # same request again: nothing new
+    assert calls == [r.block_bytes[0], sum(r.block_bytes)]
+    r.fit(r.block_bytes[0])  # demote: less released, no top-up
+    assert len(calls) == 2 and r.topped_bytes == r.block_bytes[0]
+
+
+def test_the_conditioner_top_up_copies_only_what_is_still_mapped(monkeypatch):
+    from core.inference import diffusion_small_host
+    from core.inference import video_minimax_h3_te as te
+
+    lin = torch.nn.Linear(32, 32)
+    group = type("G", (), {})()
+    group.modules = [lin]
+    group.parameters = []
+    group.buffers = []
+    group.cpu_param_dict = {p: p.data for p in lin.parameters()}
+
+    class _TE:
+        pass
+
+    holder = _TE()
+    holder.model = torch.nn.Module()
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (65536, 65536))
+    monkeypatch.setattr(diffusion_small_host, "host_commit_mib", lambda: None)
+    monkeypatch.setattr(te, "_H3_TE_RESIDENT_MIN_MIB", 0)
+    assert te.top_up_h3_te_resident(holder) == 0  # not managed by a load yet
+    te.keep_h3_te_resident(holder, groups = [group])
+    undo = getattr(holder.model, te._TE_RESIDENT_UNDO_ATTR)
+    assert len(undo) == 2
+    te.keep_h3_te_resident(holder, groups = [group])  # a top-up: nothing still mapped
+    assert len(undo) == 2
