@@ -53,8 +53,7 @@ def _refuse(reason):
     return None
 
 
-# Break-even (fold + unfold / per-token saving), L4 1B LoRA: 5-16 tokens eager; 43-216 tokens with decode
-# CUDA graphs, which already remove most of the per-token LoRA launch cost.
+# Break-even on L4 1B LoRA: 5-16 tokens eager, 43-216 with decode CUDA graphs.
 _DEFAULT_MIN_TOKENS = 128
 _DEFAULT_MIN_TOKENS_GRAPHS = 512
 
@@ -286,7 +285,6 @@ def fold_refusal(model):
 
 
 def _all_params(model):
-    # Every registration, so one Parameter held by two modules (tied weights) counts twice.
     for _, p in model.named_parameters(remove_duplicate = False):
         yield p
     for _, b in model.named_buffers(remove_duplicate = False):
