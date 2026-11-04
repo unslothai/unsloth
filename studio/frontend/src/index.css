@@ -6295,26 +6295,20 @@ html[data-glass="liquid-3d"] .wallpaper-preview:has(> .chat-wallpaper[data-outli
   content: none;
 }
 
-/* Frosted on a pseudo-element: a backdrop-filter on the section would make it a stacking
-   context, trapping the tab strip under the macOS drag strip. It starts below the Windows
-   titlebar, which stays clear as it does over chat; the overlay's opaque dialog stays solid. */
+/* Frost the tab strip and the body, never the section: a backdrop-filter there would make it a
+   stacking context, trapping the tab strip under the macOS drag strip. No pseudo-element: a macOS
+   native page cuts its hole only through elements. File views and the overlay's dialog stay solid. */
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] {
   background: transparent;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]::before {
-  content: "";
-  position: absolute;
-  inset: var(--studio-custom-titlebar-height, 0px) 0 0;
-  pointer-events: none;
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
   background-color: color-mix(in srgb, var(--glass-panel-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* The web toolbar joins the glass; file and document views keep their opaque surface. */
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
-  background-color: transparent;
-}
-html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]::before {
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
   background-image: var(--glass-sheen);
 }
 

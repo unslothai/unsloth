@@ -20,12 +20,13 @@ test("no query container wraps the browser tab strip, so it stays above the macO
   );
 });
 
-test("the browser's glass frosts a pseudo-element, never the section that holds the tab strip", () => {
+// Not the section (a stacking context) nor a pseudo-element (macOS native pages cut holes only through elements).
+test("the browser's glass frosts the tab strip and panel body, never the section", () => {
   const css = readSrc("index.css").replace(/\/\*[\s\S]*?\*\//g, "");
   const rules = [...css.matchAll(/([^{}]*\[data-slot="browser-panel"\][^{}]*)\{([^}]*)\}/g)];
   const frosted = rules.filter(([, , body]) => /backdrop-filter/.test(body));
   assert.ok(frosted.length > 0);
   for (const [, selector] of frosted) {
-    for (const part of selector.split(",")) assert.match(part.trim(), /::before$/);
+    for (const part of selector.split(",")) assert.match(part.trim(), /\[data-slot="browser-panel"\](:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)$/);
   }
 });
