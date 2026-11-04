@@ -16,6 +16,9 @@ test("revoking browser use during run preparation invalidates its captured targe
   const selection = source.indexOf("const browserTools = browserAgentToolsForTurn(runBrowserChat)");
   const version = source.indexOf("const browserTargetVersion", selection);
   assert.ok(selection > 0 && version > selection);
+  const preparation = source.indexOf("async *run(");
+  const hydration = source.indexOf("await useChatRuntimeStore.getState().hydratePersistedSettings()", preparation);
+  assert.ok(version < hydration, "the target must be captured before settings hydration can yield");
   assert.doesNotMatch(source.slice(selection, version), /\bawait\b/);
   const capture = new Function("runBrowserChat", "browserAgentToolsForTurn", "agentChat", `${source.slice(selection, source.indexOf(";", version) + 1)}; return { browserTools, browserTargetVersion };`);
   const store = useBrowserStore.getState();

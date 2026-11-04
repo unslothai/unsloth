@@ -4446,6 +4446,9 @@ export function createOpenAIStreamAdapter(
       // Read before the first await: later awaits make the store unreliable for the project.
       const browserChatAtSend = shownBrowserChat();
       const runThreadId = unstable_threadId ?? useChatRuntimeStore.getState().activeThreadId;
+      const runBrowserChat = options.pairId ? `compare:${options.pairId}` : runThreadId ? `single:${runThreadId}` : browserChatAtSend;
+      const browserTools = browserAgentToolsForTurn(runBrowserChat);
+      const browserTargetVersion = agentChat(runBrowserChat).targetVersion;
       const creationClaim = unstable_threadId
         ? readThreadCreationClaim(unstable_threadId)
         : undefined;
@@ -4855,9 +4858,6 @@ export function createOpenAIStreamAdapter(
         runtime.deepResearchEnabled &&
         !options.pairId &&
         (options.modelType === undefined || options.modelType === "base");
-      const runBrowserChat = options.pairId ? `compare:${options.pairId}` : runThreadId ? `single:${runThreadId}` : browserChatAtSend;
-      const browserTools = browserAgentToolsForTurn(runBrowserChat);
-      const browserTargetVersion = agentChat(runBrowserChat).targetVersion;
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane and thread
       // (unstable_threadId only, matching the reader's remoteId).
