@@ -40,6 +40,8 @@ TE_KIND_CLASSES: dict[str, frozenset] = {
     "qwen3": frozenset({"Qwen3Model", "Qwen3ForCausalLM"}),
     "qwen2_5_vl": frozenset({"Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLModel"}),
     "qwen3_vl": frozenset({"Qwen3VLForConditionalGeneration", "Qwen3VLModel"}),
+    # Qwen3.5 (MOSS-Image): hybrid gated-delta / attention layers, with a vision tower in ComfyUI's files.
+    "qwen3_5": frozenset({"Qwen3_5Model", "Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM"}),
     "mistral3": frozenset({"Mistral3ForConditionalGeneration", "Mistral3Model"}),
     "llama": frozenset({"LlamaForCausalLM", "LlamaModel"}),
     "gemma2": frozenset({"Gemma2Model", "Gemma2ForCausalLM"}),
@@ -246,6 +248,9 @@ def classify_text_encoder(
     lm_prefix = "model.language_model." if has("model.language_model.layers.") else "model."
     if not has(lm_prefix + "layers."):
         return None
+    if has(lm_prefix + "layers.0.linear_attn."):
+        # Qwen3.5 opens with gated-delta (linear attention) layers; its attention layers carry q_norm further in.
+        return "qwen3_5"
     q_norm = has(lm_prefix + "layers.0.self_attn.q_norm.")
     if has(lm_prefix + "layers.0.pre_feedforward_layernorm."):
         return (

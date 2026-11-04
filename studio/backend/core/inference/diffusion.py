@@ -4900,11 +4900,6 @@ class DiffusionBackend:
                 f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
                 "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
             )
-        if fam.name == MOSS_IMAGE_FAMILY_NAME and (vae_file or text_encoder_files):
-            raise ValueError(
-                f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
-                "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
-            )
         validate_component_specs(
             list(text_encoder_files or ()),
             vae_file,
@@ -9461,6 +9456,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
+                                            vae = pipe_kwargs.get("vae"),
                                             checkpoint = base,
                                         )
                                     finally:
@@ -9771,6 +9767,21 @@ class DiffusionBackend:
                                 )
                             elif fam.name == MOSS_IMAGE_FAMILY_NAME:
                                 from .diffusion_moss_image import load_moss_image_pipeline
+
+                                # Pre-cast or supplied (ComfyUI text_encoders / vae files) components by name.
+                                moss_components = te_prequant_pipe_kwargs(
+                                    fam,
+                                    fetch_base,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                    local_files_only = local_files_only,
+                                    dense_source = _base_local_dir
+                                    or (fetch_base if local_files_only else None),
+                                    config_source = _base_local_dir,
+                                )
                                 pipe = load_moss_image_pipeline(
                                     _base_local_dir or fetch_base,
                                     dtype,
@@ -9780,19 +9791,8 @@ class DiffusionBackend:
                                     ),
                                     transformer = transformer,
                                     local_files_only = local_files_only,
-                                    text_encoder = te_prequant_pipe_kwargs(
-                                        fam,
-                                        fetch_base,
-                                        te_quant_mode = text_encoder_quant,
-                                        target = target,
-                                        dtype = dtype,
-                                        hf_token = hf_token,
-                                        logger = logger,
-                                        local_files_only = local_files_only,
-                                        dense_source = _base_local_dir
-                                        or (fetch_base if local_files_only else None),
-                                        config_source = _base_local_dir,
-                                    ).get("text_encoder"),
+                                    text_encoder = moss_components.get("text_encoder"),
+                                    vae = moss_components.get("vae"),
                                     checkpoint = base,
                                 )
                             elif is_anima_family(fam):
@@ -11845,6 +11845,14 @@ class DiffusionBackend:
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
                 checkpoint = base,
+                vae = supplied_component_pipe_kwargs(
+                    base,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    family = fam.name,
+                    logger = logger,
+                ).get("vae"),
             )
             check_cancelled()
             pipe.to(device)

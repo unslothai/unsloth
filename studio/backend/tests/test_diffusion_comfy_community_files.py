@@ -256,3 +256,27 @@ def test_krea2_pipeline_takes_a_supplied_vae():
 
     from core.inference.diffusion_krea2 import load_krea2_pipeline
     assert "vae" in inspect.signature(load_krea2_pipeline).parameters
+
+
+def test_qwen3_5_text_encoder_is_classified_and_fits_moss():
+    from core.inference.diffusion_comfy_components import TE_KIND_CLASSES, classify_text_encoder
+
+    keys = [
+        "model.language_model.layers.0.linear_attn.in_proj_qkv.weight",
+        "model.language_model.layers.3.self_attn.q_norm.weight",
+        "model.visual.blocks.0.attn.qkv.weight",
+        "lm_head.weight",
+    ]
+    assert classify_text_encoder(keys) == "qwen3_5"
+    assert "Qwen3_5Model" in TE_KIND_CLASSES["qwen3_5"]
+    # A Qwen2.5-VL encoder (vision tower, no linear attention, no q_norm) keeps its kind.
+    assert classify_text_encoder(
+        ["model.layers.0.self_attn.q_proj.weight", "visual.blocks.0.attn.qkv.weight"]
+    ) == ("qwen2_5_vl")
+
+
+def test_moss_pipeline_takes_a_supplied_vae():
+    import inspect
+
+    from core.inference.diffusion_moss_image import load_moss_image_pipeline
+    assert "vae" in inspect.signature(load_moss_image_pipeline).parameters
