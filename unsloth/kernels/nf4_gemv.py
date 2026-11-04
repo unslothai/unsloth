@@ -16,7 +16,7 @@ import triton
 import triton.language as tl
 
 from .nf4 import _HAS_MUL_RN, _HAS_TL_GATHER, _mul, _nf4_lut
-from .triton_launch import launch, relaunch, tag_compile_cache
+from .triton_launch import jit_any_alignment, launch, relaunch, tag_compile_cache
 
 __all__ = [
     "gemv_nf4",
@@ -27,7 +27,8 @@ __all__ = [
 ]
 
 
-@triton.jit
+# M keeps the == 1 binary (fully unspecialized cost bsz 1 up to 5% on T4); every M > 1 shares one.
+@jit_any_alignment("M")
 def _gemv_nf4_kernel(
     X,
     W,
@@ -41,14 +42,14 @@ def _gemv_nf4_kernel(
     K,
     M,
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    EVEN_K: tl.constexpr,
-    LUT_MODE: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # NF4 quant block (absmax group, 64)
+    BLOCKSIZE2: tl.constexpr,  # absmax blocks per second-level scale (1 if not nested)
+    NESTED: tl.constexpr,  # absmax is itself 8-bit quantized
+    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn (off on HIP / interpreter)
+    BLOCK_N: tl.constexpr,  # output rows per program, from the N / K config
+    BLOCK_K: tl.constexpr,  # K per step: next pow2 of K, capped at 1024 or 2048
+    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, so K masks are skipped
+    LUT_MODE: tl.constexpr,  # NF4 table lookup: 0 load, 2 tl.gather (see _nf4_lut)
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
@@ -96,7 +97,8 @@ def _gemv_nf4_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
-@triton.jit
+# M: same specialization as _gemv_nf4_kernel.
+@jit_any_alignment("M")
 def _gemv_nf4_words_kernel(
     X,
     W,
@@ -110,12 +112,12 @@ def _gemv_nf4_words_kernel(
     K,
     M,
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # NF4 quant block (absmax group, 64)
+    BLOCKSIZE2: tl.constexpr,  # absmax blocks per second-level scale (1 if not nested)
+    NESTED: tl.constexpr,  # absmax is itself 8-bit quantized
+    USE_MUL_RN: tl.constexpr,  # unfused libdevice mul_rn (off on HIP / interpreter)
+    BLOCK_N: tl.constexpr,  # output rows per program (1)
+    BLOCK_K: tl.constexpr,  # K per step: next pow2 of K, capped at 2048
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
@@ -285,6 +287,7 @@ def _launch(
             8,
             constexprs,
             X.device.index,
+            unaligned = _UNALIGNED_M,
             num_warps = num_warps,
             enable_fp_fusion = True,
         )
@@ -343,6 +346,18 @@ def _gemv_nf4_op(
 
 
 _KERNELS = (_gemv_nf4_kernel, _gemv_nf4_words_kernel)
+# Key M without % 16 only if Triton dropped it, else a binary built for a divisible M gets reused.
+_UNALIGNED_M = (
+    (10,)
+    if all(
+        any(
+            p.name == "M" and getattr(p, "do_not_specialize_on_alignment", False)
+            for p in getattr(k, "params", ())
+        )
+        for k in _KERNELS
+    )
+    else ()
+)
 tag_compile_cache(__file__)
 _is_compiling = torch.compiler.is_compiling
 _current_device = torch.cuda.current_device

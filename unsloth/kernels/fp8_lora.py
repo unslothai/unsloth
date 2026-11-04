@@ -141,7 +141,10 @@ _MULTI_GPU = torch.cuda.is_available() and torch.cuda.device_count() > 1
 if triton is not None:
 
     @triton.jit
-    def _cast_fp8_rn(x, IS_E5M2: tl.constexpr):
+    def _cast_fp8_rn(
+        x,
+        IS_E5M2: tl.constexpr,  # e5m2 target, else e4m3
+    ):
         # Triton 3.8 rounds through fp16 on sm89; native f32 conversion avoids double rounding.
         if IS_E5M2:
             packed = tl.inline_asm_elementwise(
@@ -171,9 +174,9 @@ if triton is not None:
         amax_ptr,
         inv_ptr,
         numel,
-        FP8_MAX: tl.constexpr,
-        IS_E5M2: tl.constexpr,
-        BLOCK: tl.constexpr,
+        FP8_MAX: tl.constexpr,  # largest finite value of the fp8 format
+        IS_E5M2: tl.constexpr,  # e5m2 target, else e4m3
+        BLOCK: tl.constexpr,  # elements per program
     ):
         pid = tl.program_id(0).to(tl.int64)
         offs = pid * BLOCK + tl.arange(0, BLOCK)
@@ -226,10 +229,10 @@ if triton is not None:
         inv_ptr,
         K,
         stride_xm,
-        FP8_MAX: tl.constexpr,
-        IS_E5M2: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        ONE_BLOCK: tl.constexpr,
+        FP8_MAX: tl.constexpr,  # largest finite value of the fp8 format
+        IS_E5M2: tl.constexpr,  # e5m2 target, else e4m3
+        BLOCK_K: tl.constexpr,  # columns per loop step
+        ONE_BLOCK: tl.constexpr,  # the row fits in one BLOCK_K tile
     ):
         row = tl.program_id(0).to(tl.int64)
         x_row = x_ptr + row * stride_xm
@@ -303,7 +306,13 @@ def quantize_rowwise(x: torch.Tensor, fp8_dtype = E4M3):
 if triton is not None:
 
     @triton.jit
-    def _transpose_u8_kernel(x_ptr, y_ptr, R, C, BLOCK: tl.constexpr):
+    def _transpose_u8_kernel(
+        x_ptr,
+        y_ptr,
+        R,
+        C,
+        BLOCK: tl.constexpr,  # square tile side
+    ):
         # Square tiles on purpose: non-square 2D fp8 transposed stores write corrupt bytes on sm89 (L4, triton 3.x).
         rows = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         cols = tl.program_id(1).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
@@ -474,8 +483,8 @@ if triton is not None:
         raw_s1,
         delta_s0,
         delta_s1,
-        ROW_SCALE: tl.constexpr,
-        BLOCK: tl.constexpr,
+        ROW_SCALE: tl.constexpr,  # per-row / per-column scales, else one tensorwise scale each
+        BLOCK: tl.constexpr,  # elements per program
     ):
         offset = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         row, col = offset // N, offset % N

@@ -10,6 +10,7 @@ import triton.language as tl
 import torch
 from typing import Tuple
 from .utils import torch_gpu_device, DEVICE_TYPE
+from .triton_launch import jit_any_alignment
 from .rms_layernorm import (
     _BF16_TRACEABLE,
     _TRACEABLE,
@@ -84,7 +85,8 @@ def _norm_rope_fwd_block(
     tl.store(y_ptr + HALF, y1 * cos1[None, :] + y0 * sin1[None, :], mask = mask)
 
 
-@triton.jit
+# seqlen: 1 in decode, the prompt / batch length otherwise; no % 16 specialization.
+@jit_any_alignment("seqlen")
 def _qk_norm_rope_forward(
     Qo,
     Q,
@@ -194,7 +196,8 @@ def _norm_rope_bwd_block(
     tl.store(dx_ptr + HALF, scale * tl.fma(-n1, rowsum[:, None], HEAD_DIM * g1), mask = mask)
 
 
-@triton.jit
+# seqlen: 1 in decode, the prompt / batch length otherwise; no % 16 specialization.
+@jit_any_alignment("seqlen")
 def _qk_norm_rope_backward(
     dQ,
     dQo,

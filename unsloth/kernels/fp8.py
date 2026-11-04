@@ -1303,8 +1303,8 @@ def _fp8_rowwise_gemv_rows_reduce(
     y_ptr,
     M,
     N,
-    SPLIT_K: tl.constexpr,
-    BLOCK: tl.constexpr,  # SPLIT_K split-K factor, BLOCK block size
+    SPLIT_K: tl.constexpr,  # split-K factor
+    BLOCK: tl.constexpr,  # block size
 ):
     offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < M * N

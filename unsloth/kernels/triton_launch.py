@@ -15,6 +15,7 @@ __all__ = [
     "launch",
     "relaunch",
     "tag_compile_cache",
+    "jit_any_alignment",
 ]
 
 # CPU-only torch builds have no CUDA stream binding.
@@ -44,6 +45,20 @@ def _hooks_set():
     )
 
 
+def jit_any_alignment(*names):
+    """triton.jit that keeps the == 1 specialization of the named int args but not the % 16 one.
+    For a size that is 1 in decode and anything in prefill: two binaries (decode, other), both built
+    by the first generate, instead of a third one the first time a size is a multiple of 16."""
+
+    def wrap(fn):
+        try:
+            return triton.jit(fn, do_not_specialize_on_alignment = list(names))
+        except TypeError:  # a Triton without do_not_specialize_on_alignment
+            return triton.jit(fn)
+
+    return wrap
+
+
 def relaunch(entry, grid, device_index, args):
     """Repeat a launch whose cache entry launch() returned, with args matching the original in
     dtypes, 16 byte alignment and integer specialization, on device_index (the current device).
@@ -67,10 +82,22 @@ def relaunch(entry, grid, device_index, args):
     return True
 
 
-def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
-    """kernel[grid](*args, **constexprs, **options) on the current stream of device_index, which
-    must be the current device. args are the runtime arguments in signature order, before every
-    constexpr: n_tensors tensors, then integers. Returns the cache entry relaunch() takes, or None."""
+def launch(
+    kernel,
+    grid,
+    args,
+    n_tensors,
+    constexprs,
+    device_index,
+    unspecialized = (),
+    unaligned = (),
+    **options,
+):
+    """kernel[grid](*args, **constexprs, **options) on device_index's current stream (the current device).
+    args: runtime arguments in signature order before every constexpr: n_tensors tensors, then ints in
+    [0, 2**63) (sizes, strides, offsets: `< 2**31` then matches Triton's i32 / i64 typing). unspecialized /
+    unaligned: positions of ints in do_not_specialize / do_not_specialize_on_alignment (jit_any_alignment),
+    keyed by width only / by == 1 and width. Returns the cache entry relaunch() takes, or None."""
     global _ENABLED
     if _ENABLED and not _hooks_set():
         key = (
@@ -79,7 +106,17 @@ def launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
             tuple(constexprs.values()),
             tuple(options.values()),
             tuple([(arg.dtype, arg.data_ptr() & 15) for arg in args[:n_tensors]]),
-            tuple([(arg == 1, arg & 15, arg < (1 << 31)) for arg in args[n_tensors:]]),
+            # Triton specializes integers (== 1, % 16) unless do_not_specialize lists them.
+            tuple(
+                [
+                    arg < (1 << 31)
+                    if i in unspecialized
+                    else (arg == 1, arg < (1 << 31))
+                    if i in unaligned
+                    else (arg == 1, arg & 15, arg < (1 << 31))
+                    for i, arg in enumerate(args[n_tensors:], n_tensors)
+                ]
+            ),
         )
         entry = _CACHE.get(key)
         if entry is not None:
