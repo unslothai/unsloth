@@ -7199,6 +7199,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (chunk.context_truncated) {
+                runtime.setLiveCompacting(liveThreadKey(serverCancel), false);
                 contextTruncation = mergeContextTruncation(
                   contextTruncation,
                   chunk.context_truncated,
@@ -7289,6 +7290,8 @@ export function createOpenAIStreamAdapter(
                   runtime.setLivePrefill(liveThreadKey(serverCancel), update.prefill);
                 } else if (update?.phase === "decode") {
                   runtime.setLiveDecode(liveThreadKey(serverCancel), update.decode);
+                } else if (update?.phase === "compacting") {
+                  runtime.setLiveCompacting(liveThreadKey(serverCancel), true);
                 }
                 continue;
               }
@@ -7666,6 +7669,8 @@ export function createOpenAIStreamAdapter(
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
+                  // The round boundary: the last pass's prompt and decode figures must not stand in for the next one's.
+                  runtime.clearLiveGenerationForThread(liveThreadKey(serverCancel));
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const id = resolveToolPartId(backendToolCallId);

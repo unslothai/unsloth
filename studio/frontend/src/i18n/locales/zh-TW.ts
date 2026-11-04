@@ -3085,9 +3085,8 @@ export const zhTW = {
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
       turnNavigation: "輪次導覽",
       turnNavigationDescription: "在長對話的左側邊緣以導軌形式顯示你的訊息。懸停可預覽某一輪，點擊可跳轉，並可加書籤以便再次找到。",
-      composerAtBottom: "輸入框置於底部",
-      composerAtBottomDescription:
-        "開始新聊天時，將輸入框放在頁面底部而非中間。",
+      composerPosition: "輸入框位置",
+      composerPositionDescription: "新聊天時輸入框的位置，可從頁面頂端調到底部。",
       projectAttachments: "在專案中共用檔案",
       projectAttachmentsDescription: "讓新的聊天附件可供專案中的每個聊天使用。",
       rememberParamsPerModel: "依模型記住設定",
@@ -3571,6 +3570,9 @@ export const zhTW = {
         docsLabel: "開啟決策 API 文件",
         description:
           "使用此電腦上的模型或「連線」中的決策模型，回答與文字相關的是非題、選擇題和評分題。可搭配 TypeSafe SDK 使用。",
+        codeTitle: "透過程式碼呼叫",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "其他 MCP 用戶端使用同一權杖連線到此處。",
         enable: "處理請求",
         enableDescription: "提供 /v1/systemone 服務。開啟後會下載模型。",
         enableRemoteDescription: "提供 /v1/systemone 服務。",
@@ -5185,6 +5187,8 @@ export const zhTW = {
     removeLevel: "移除等級 {n}",
     addLevel: "新增等級",
     jsonHelp: "請求本文。執行時會依原樣傳送。",
+    copyBody: "複製請求內容",
+    copyCurl: "複製為 cURL",
     examples: "範例",
     presetToolApproval: "核准代理程式工具呼叫",
     presetPromptInjection: "偵測提示詞注入",
@@ -5564,6 +5568,7 @@ export const zhTW = {
   generationStats: {
     working: "處理中...",
     processingPrompt: "正在處理提示詞 {percent}%",
+    compactingContext: "正在壓縮上下文...",
     timeLeft: "剩餘 {eta}",
     tokensOne: "{count} 個 token",
     tokens: "{count} 個 token",

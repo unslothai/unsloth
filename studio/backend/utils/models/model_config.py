@@ -3664,8 +3664,25 @@ def clef_files_kind(has) -> Optional[str]:
     return None
 
 
+def is_d1_folder(folder: Path) -> bool:
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    # Markers unsloth-zoo's d1 loader reads: d1-3B only in auto_map, d1-omni by model_type.
+    automodel = str((config.get("auto_map") or {}).get("AutoModel", ""))
+    return (
+        config.get("model_type") == "d1_omni"
+        or "D1Model" in (config.get("architectures") or ())
+        or automodel.endswith("D1Model")
+    )
+
+
 def clef_folder_kind(folder: Path) -> Optional[str]:
-    return clef_files_kind(lambda name: (folder / name).is_file())
+    kind = clef_files_kind(lambda name: (folder / name).is_file())
+    return kind or ("merged" if is_d1_folder(folder) else None)
 
 
 def _folder_decision_layout(folder: Path) -> Optional[str]:
