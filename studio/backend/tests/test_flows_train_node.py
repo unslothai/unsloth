@@ -1444,3 +1444,21 @@ def test_a_csv_grpo_set_reads_its_first_row_as_training_does(tmp_path, monkeypat
     assert row["question"] == "00123"
     config = {"objective": "grpo", "rl_system_prompt": "Reason, then answer."}
     assert training.trained_system_prompt(config, row) == "Reason, then answer."
+
+
+def test_a_template_mapping_names_no_per_row_system_column():
+    # A plain role mapping trains each row's own system column.
+    assert training.mapping_facts({"rule": "system", "q": "user", "a": "assistant"}) == {
+        "system_column": "rule"
+    }
+    # Any `__` metadata selects the template mapping, which drops the system column: every row got
+    # `__system_prompt` instead.
+    mapping = {"rule": "system", "q": "user", "a": "assistant", "__system_prompt": "Be brief."}
+    assert training.mapping_facts(mapping) == {"system_column": ""}
+    assert training.trained_system_prompt({"custom_format_mapping": mapping}) == "Be brief."
+    labels = {"label": {"0": "neg", "1": "pos"}}
+    assert training.mapping_facts({"rule": "system", "__label_mapping": labels}) == {
+        "system_column": "",
+        "label_mapping": labels,
+    }
+    assert training.mapping_facts(None) == {}

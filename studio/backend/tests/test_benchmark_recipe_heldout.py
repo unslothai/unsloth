@@ -525,3 +525,42 @@ def test_a_local_model_is_stored_under_its_quant(monkeypatch):
     configs = {"candidate": {"provider": "local", "model": ""}}
     # Two quants of one repo are two models in history and on the scoreboard.
     assert route._model_label("candidate", configs, {"local"}) == "unsloth/Qwen3-0.6B-GGUF:Q8_0"
+
+
+def test_a_conversational_prompt_is_asked_as_turns_and_scored_on_the_answer():
+    asked = []
+
+    def chat(target, messages):
+        asked.append(messages)
+        return "Paris"
+
+    rows = [
+        {
+            "prompt": [
+                {"role": "system", "content": "Answer with one word."},
+                {"role": "user", "content": "Capital of France?"},
+            ],
+            "completion": [{"role": "assistant", "content": "Paris"}],
+        },
+        {
+            "prompt": [{"role": "user", "content": "Capital of Italy?"}],
+            "completion": [{"role": "assistant", "content": "Rome"}],
+        },
+    ]
+    result = run_benchmark(
+        {
+            "rows": rows,
+            "prompt_column": "prompt",
+            "reference_column": "completion",
+            "scorer": "reference",
+            "system_prompt": "Be helpful.",
+        },
+        chat = chat,
+    )
+    # The row's own system turn is kept, not doubled; a prompt without one gets the run's.
+    assert asked[0] == rows[0]["prompt"]
+    assert asked[1] == [{"role": "system", "content": "Be helpful."}, *rows[1]["prompt"]]
+    # Scored against the assistant's text, not the message list as JSON.
+    assert result["candidate"]["passed"] == 1
+    failed = result["failed_examples"][0]
+    assert failed["prompt"] == "Capital of Italy?" and failed["reference"] == "Rome"

@@ -309,16 +309,7 @@ async def finetune(ctx: NodeContext) -> dict:
     system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
-    mapping = config.get("custom_format_mapping")
-    if isinstance(mapping, dict) and mapping:
-        # How training read the rows, so Benchmark asks and scores the hold-out the same way: each
-        # row's own system message (none when the mapping names no system column), and the names
-        # numeric labels became.
-        per_row = [c for c, role in mapping.items() if role == "system"]
-        checkpoint["system_column"] = per_row[0] if per_row else ""
-        labels = mapping.get("__label_mapping")
-        if isinstance(labels, dict) and labels:
-            checkpoint["label_mapping"] = labels
+    checkpoint.update(mapping_facts(config.get("custom_format_mapping")))
     return {
         "checkpoint": checkpoint,
         "metrics": metrics,
@@ -429,6 +420,23 @@ def drafter_request(params: dict) -> dict:
         "learning_rate": float(lr) if lr not in (None, "") and float(lr) > 0 else None,
         "draft_steps": int(params.get("drafter_draft_steps") or 3),
     }
+
+
+def mapping_facts(mapping: Any) -> dict:
+    """How training read the rows, so Benchmark asks and scores the hold-out the same way: each
+    row's own system message (none when the mapping names no system column), and the names
+    numeric labels became."""
+    if not isinstance(mapping, dict) or not mapping:
+        return {}
+    # Any `__` metadata selects the template mapping, which drops system columns: its one system
+    # prompt is `__system_prompt`, the checkpoint's system_prompt.
+    templated = any(str(k).startswith("__") for k in mapping)
+    per_row = [] if templated else [c for c, role in mapping.items() if role == "system"]
+    facts = {"system_column": per_row[0] if per_row else ""}
+    labels = mapping.get("__label_mapping")
+    if isinstance(labels, dict) and labels:
+        facts["label_mapping"] = labels
+    return facts
 
 
 def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:

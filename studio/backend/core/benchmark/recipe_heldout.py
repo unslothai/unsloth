@@ -130,6 +130,41 @@ def _cell(row: dict[str, Any], column: str | None) -> str:
     return cell_text(row.get(column))
 
 
+def cell_messages(value: Any) -> Optional[list[dict[str, Any]]]:
+    """A cell holding a message list (conversational prompt/completion data) as training reads
+    it, else None."""
+    from utils.datasets.cells import _message, cell_turns, wrapped_messages
+
+    turns = wrapped_messages(value)
+    if not isinstance(turns, list) or not turns or any(_message(t) is None for t in turns):
+        return None
+    return cell_turns(value, "user")
+
+
+def prompt_text(value: Any) -> str:
+    """A prompt cell as one text (the judge, the failures): a conversation's turns by role."""
+    from utils.datasets.cells import cell_text
+
+    turns = cell_messages(value)
+    if turns is None:
+        return cell_text(value)
+    asked = [t for t in turns if t["role"] != "system"]
+    if len(asked) == 1:
+        return cell_text(asked[0]["content"])
+    return "\n\n".join(f"{t['role']}: {cell_text(t['content'])}" for t in asked)
+
+
+def reference_text(value: Any) -> str:
+    """A reference cell's text: a completion given as messages is its assistant answer."""
+    from utils.datasets.cells import cell_text
+
+    turns = cell_messages(value)
+    if turns is None:
+        return cell_text(value)
+    answer = [t for t in turns if t["role"] == "assistant"] or turns
+    return "\n".join(cell_text(t["content"]) for t in answer)
+
+
 def _score_answer(
     spec: dict[str, Any],
     chat: ChatFn,
@@ -185,13 +220,16 @@ def run_benchmark(
     on_progress(done, total)
     cancelled = False
     for index, row in enumerate(rows):
-        prompt = _cell(row, prompt_column)
-        reference = _cell(row, reference_column)
+        prompt = prompt_text(row.get(prompt_column))
+        reference = reference_text(row.get(reference_column)) if reference_column else ""
         # A row's own system message (training sent it) unless the run sets one for every row.
         system = (_cell(row, system_column).strip() and _cell(row, system_column)) or system_prompt
-        messages = ([{"role": "system", "content": system}] if system else []) + [
-            {"role": "user", "content": prompt}
-        ]
+        # A conversational prompt is asked as the turns training saw, its own system message kept.
+        turns = cell_messages(row.get(prompt_column)) or [{"role": "user", "content": prompt}]
+        own = [t["content"] for t in turns if t["role"] == "system"]
+        if own:
+            system = "\n\n".join(str(c or "") for c in own)
+        messages = ([] if own or not system else [{"role": "system", "content": system}]) + turns
         for target in targets:
             if is_cancelled():
                 cancelled = True
@@ -219,8 +257,10 @@ def run_benchmark(
         target: [
             {
                 "doc_id": r["index"],
-                "question": _cell(rows[r["index"]], prompt_column),
-                "target": _cell(rows[r["index"]], reference_column),
+                "question": prompt_text(rows[r["index"]].get(prompt_column)),
+                "target": reference_text(rows[r["index"]].get(reference_column))
+                if reference_column
+                else "",
                 "response": r.get("output"),
                 "raw_response": r.get("error") or r.get("reason") or None,
                 "correct": bool(r["passed"]),
@@ -238,8 +278,9 @@ def run_benchmark(
         row = rows[result["index"]]
         failed.append(
             {
-                "prompt": _cell(row, prompt_column),
-                "reference": _cell(row, reference_column) or None,
+                "prompt": prompt_text(row.get(prompt_column)),
+                "reference": (reference_text(row.get(reference_column)) if reference_column else "")
+                or None,
                 "output": result.get("output"),
                 "reason": result.get("error") or result.get("reason") or "",
                 "row": row,

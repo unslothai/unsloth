@@ -898,7 +898,7 @@ def test_the_eval_is_told_which_model_the_node_loaded(monkeypatch):
 
     reads = []
 
-    async def identity():
+    async def identity(*args):
         reads.append(len(reads))
         return "/out/run-1"
 
@@ -912,3 +912,23 @@ def test_the_eval_is_told_which_model_the_node_loaded(monkeypatch):
         pass
     # Read once, right after the load, before the rows are read.
     assert sent[0]["expected_model"] == "/out/run-1" and reads == [0]
+
+
+def test_a_model_swapped_in_after_the_load_fails_the_run(monkeypatch):
+    from studio_mcp import loading
+
+    async def loaded(ctx):
+        ctx.benchmark_target = "org/ckpt-A"
+        return "ckpt-A", False
+
+    async def resident(caller):
+        # Another tab loaded B between this node's load and its read of what is loaded.
+        return {}, {"serving": ["org/ckpt-B"]}
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(loading, "_resident", resident)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    with pytest.raises(FlowNodeError, match = "Another model"):
+        asyncio.run(benchmark.benchmark(ctx))
+    assert not [c for c in ctx.calls if c[1].endswith("/run")]

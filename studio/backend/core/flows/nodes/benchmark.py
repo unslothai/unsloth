@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 from urllib.parse import quote
 
+from core.benchmark.recipe_heldout import prompt_text, reference_text
 from core.flows.nodes._common import note_loaded, resident_name
 from utils.datasets.cells import cell_text
 from core.flows.registry import FlowNodeError, NodeContext, handler
@@ -116,6 +117,7 @@ async def _load_export(ctx: NodeContext, model: dict) -> tuple[str, bool]:
             deadline = deadline,
         )
         note_loaded(ctx, "llm", trained.ref)
+        ctx.benchmark_target = trained.ref
     except FlowNodeError:
         raise
     except Exception as exc:
@@ -142,6 +144,21 @@ def _flat_export(name: str) -> Optional[tuple[str, bool]]:
     return None
 
 
+def _same_model(loaded: str, ref: str) -> bool:
+    """Whether the loaded model is ``ref``: both sides as paths, since a checkpoint or export also
+    resolves to an opaque `ref:` handle."""
+    from hub.utils.host_paths import resolve_host_path_reference
+    from studio_mcp import loading
+
+    loaded = resolve_host_path_reference(loaded) or loaded
+    ref = resolve_host_path_reference(ref) or ref
+    return loading._same_id(loaded, ref) or (
+        os.path.isabs(loaded)
+        and os.path.isabs(ref)
+        and os.path.realpath(loaded) == os.path.realpath(ref)
+    )
+
+
 async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
     """The scoring requests reach Chat's main model. A target already kept in another slot stays
     there when loaded again, so it would not be the model scored: refuse instead."""
@@ -155,24 +172,36 @@ async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
     serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
     if len(serving) < 2:
         return
-    # Both sides as paths: a checkpoint or export resolves to an opaque `ref:` handle too.
-    main = resolve_host_path_reference(serving[0]) or serving[0]
-    ref = resolve_host_path_reference(ref) or ref
-    same = loading._same_id(main, ref) or (
-        os.path.isabs(main)
-        and os.path.isabs(ref)
-        and os.path.realpath(main) == os.path.realpath(ref)
-    )
-    if not same:
+    if not _same_model(serving[0], ref):
         raise FlowNodeError(
             f"{label} is kept loaded beside Chat's main model, and Benchmark scores the main model. "
             "Unload it, or set Keep multiple models loaded to Off, then run again."
         )
 
 
-async def _loaded_identity() -> Optional[str]:
-    """What this node loaded, as the eval checks it once scoring holds the model; None if unknown."""
+async def _loaded_identity(
+    ctx: Optional[NodeContext] = None,
+    target: Optional[str] = None,
+    label: str = "",
+) -> Optional[str]:
+    """What this node loaded, as the eval checks it once scoring holds the model; None if unknown.
+    With ``target`` (what the node asked to load), another model in Chat's main slot fails the run:
+    it was swapped in between the load and this read, and would be scored under ``label``."""
     from routes.benchmarks import loaded_identity
+
+    if ctx is not None and target:
+        from studio_mcp import loading
+
+        try:
+            _slots, status = await loading._resident(ctx.caller)
+        except Exception:
+            status = {}
+        serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
+        main = serving[0] if serving else status.get("model_identifier")
+        if isinstance(main, str) and main and not _same_model(main, target):
+            raise FlowNodeError(
+                f"Another model ({main}) was loaded after Benchmark loaded {label or target}. Run again."
+            )
     try:
         return await asyncio.to_thread(loaded_identity) or None
     except Exception:
@@ -216,6 +245,7 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
                 deadline = deadline,
             )
             note_loaded(ctx, "llm", trained.ref)
+            ctx.benchmark_target = trained.ref
         except FlowNodeError:
             raise
         except Exception as exc:
@@ -487,8 +517,8 @@ async def _recipe_heldout(
         + [
             {
                 "doc_id": i,
-                "question": asked[i].get(prompt_col),
-                "target": cell_text(asked[i].get(reference_col)) if reference_col else None,
+                "question": prompt_text(asked[i].get(prompt_col)),
+                "target": reference_text(asked[i].get(reference_col)) if reference_col else None,
                 "raw_response": err,
             }
             for i, err in errored.items()
@@ -661,7 +691,7 @@ async def benchmark(ctx: NodeContext) -> dict:
         label, is_lora = await _load_target(ctx)
         loaded = True
         # Read now: the eval fails if, by the time scoring holds the model, another one is loaded.
-        expected = await _loaded_identity()
+        expected = await _loaded_identity(ctx, getattr(ctx, "benchmark_target", None), label)
         if task == RECIPE_TASK:
             found = await _recipe_heldout(ctx, label, is_lora, max_rows, token, expected)
         else:
