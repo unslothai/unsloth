@@ -240,7 +240,6 @@ def test_a_compaction_report_becomes_one_frame_ahead_of_the_prefill():
     assert _frame(signal.live_frame()) == {"type": "generation_progress", "phase": "compacting"}
     assert _frame(signal.live_frame())["phase"] == "prefill"
     assert signal.live_frame() is None
-    # The next fit that compacts reports again.
     signal.compacting()
     assert _frame(signal.live_frame())["phase"] == "compacting"
 
@@ -269,7 +268,6 @@ def test_a_tool_result_drops_the_last_passs_unsent_figures(monkeypatch):
     signal({"predicted_n": 30, "predicted_per_second": 20.0})
     signal.round_ended()
     assert signal.live_frame() is None
-    # The next pass reports normally.
     signal({"prompt_progress": {"total": 4100, "processed": 4050}})
     assert _frame(signal.live_frame())["processed"] == 4050
 

@@ -400,7 +400,6 @@ def _fit_with_instruction_pins(
 ):
     """Pins are recomputed each fit (inline recall swaps the user dict), dropped if they block a fit, and must never mutate the anchor set the caller passed."""
     if on_compacting is not None:
-        # Called by the fit itself where it decides to drop turns past the saved cut, so replaying that cut is silent.
         kwargs["on_evict"] = _once(on_compacting)
     anchors = set(anchor_ids or ())
     try:
