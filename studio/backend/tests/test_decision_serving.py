@@ -1690,6 +1690,15 @@ def test_a_d1_is_served_by_the_mlx_engine_and_hears_only_on_omni(home, client, e
     assert not laya_runtime._mlx_reads(catalog.CHECKPOINTS["kev-4b"], "images")
 
 
+def test_an_older_zoo_without_d1_keeps_llama_cpp_for_d1_and_no_decider(home, client, engine):
+    sys.modules["unsloth_zoo.mlx.decision"].FAMILIES = dict.fromkeys(("laya", "kev", "clef"))
+    d1 = catalog.CHECKPOINTS["d1-2b"]
+    assert laya_runtime._mlx_target(d1) is None
+    assert laya_runtime._native_target(d1) == d1
+    assert laya_runtime._mlx_target(catalog.CHECKPOINTS["decider-2b"]) is None
+    assert laya_runtime._mlx_target(catalog.CHECKPOINTS["kev-4b"]) is not None
+
+
 def test_a_trained_d1_is_found_and_served_as_a_d1(home, client, engine, monkeypatch):
     folder = home / "d1_ft"
     folder.mkdir()

@@ -158,6 +158,12 @@ def _engine_available() -> bool:
     return True
 
 
+def _zoo_serves(family: str) -> bool:
+    # An unsloth-zoo older than this catalog lacks d1 / mlx_vlm: such entries fall back to llama.cpp or are unavailable.
+    families = getattr(sys.modules.get("unsloth_zoo.mlx.decision"), "FAMILIES", None)
+    return families is None or family in families
+
+
 def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """What unsloth-zoo's MLX engine serves in process on Apple Silicon: a merged Clef's own folder, or the source repo of a GGUF entry."""
     if not _engine_available():
@@ -165,7 +171,8 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
     if _is_mlx(checkpoint):
         return (
             checkpoint
-            if checkpoint.is_local or CHECKPOINTS.get(checkpoint.name) == checkpoint
+            if (checkpoint.is_local or CHECKPOINTS.get(checkpoint.name) == checkpoint)
+            and _zoo_serves(_mlx_family(checkpoint))
             else None
         )
     if checkpoint.layout == "clef":
@@ -175,7 +182,11 @@ def _mlx_target(checkpoint: Checkpoint) -> Checkpoint | None:
                 return None
         return dataclasses.replace(checkpoint, backend = MLX)
     companion = MLX_COMPANIONS.get(checkpoint.name)
-    if companion is None or CHECKPOINTS.get(checkpoint.name) != checkpoint:
+    if (
+        companion is None
+        or CHECKPOINTS.get(checkpoint.name) != checkpoint
+        or not _zoo_serves(companion.family)
+    ):
         return None
     return dataclasses.replace(
         checkpoint,
