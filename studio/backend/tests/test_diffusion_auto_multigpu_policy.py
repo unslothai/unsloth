@@ -526,3 +526,39 @@ def test_split_gate_applies_only_to_automatic_group_plans(monkeypatch):
     )  # compute negligible: exposed, split tried
     assert mg._hidden_stream_reason(pipe, streaming, sizes, Sel()) is None
     assert mg._STREAM_ESTIMATES[pipe]["exposed"] > 0.9
+
+
+def test_dynamic_nvfp4_layers_keep_the_batch_whole():
+    """A layer that takes its activation scale from each call's amax (ComfyUI's dynamic NVFP4) would quantise each half
+    against its own maximum: the split is refused and the render matches one card."""
+
+    class ComfyNVFP4DynamicLinear(torch.nn.Linear):
+        pass
+
+    ref_model, ref = _reference(FluxTransformer2DModel, 2, 3)
+    torch.manual_seed(0)
+    model = FluxTransformer2DModel()
+    model.q = ComfyNVFP4DynamicLinear(2, 2)
+    router, built = _router(model)
+    out = _flux_loop(model, 2, 3)
+    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batch_splits"] == 0
+    assert "per-call activation scaling" in router.stats["batch_split_skip"]
+
+
+def test_mirroring_lora_scales_resets_the_warm_state():
+    """Python-valued scales guard a compiled region, so after a mirror both sides may recompile: the next calls warm
+    one at a time again instead of overlapping."""
+    model = _lora_model()
+    router, _ = _router(model)
+    pipe = _Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    try:
+        router._build_replica()
+        router.warm_primary.add(("sig",))
+        router.warm_replica.add(("sig",))
+        _set_scale(model, 0.5)
+        assert mg.mirror_cfg_replica_adapter_scales(pipe)
+        assert not router.warm_primary and not router.warm_replica
+    finally:
+        mg._CFG_ROUTERS.pop(pipe, None)

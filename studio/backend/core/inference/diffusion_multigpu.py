@@ -2762,6 +2762,8 @@ class CfgParallelRouter:
         self.warm_primary: set = set()
         self.warm_replica: set = set()
         self._pair_job: Optional[dict] = None
+        # why the denoiser's layers scale activations per call (a split batch would change them), read once
+        self._split_scaled: Optional[tuple] = None
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -2973,6 +2975,12 @@ class CfgParallelRouter:
             return self._skip_split(f"unknown inputs {extra}")
         if kwargs.get("joint_attention_kwargs"):
             return self._skip_split("attention kwargs")
+        if self._split_scaled is None:
+            from .diffusion_cfg_batch import per_call_scaled
+            self._split_scaled = (per_call_scaled(module),)
+        if self._split_scaled[0] is not None:
+            # each half would take its own activation amax (dynamic NVFP4): not the one-card computation
+            return self._skip_split(f"per-call activation scaling ({self._split_scaled[0]})")
         try:
             (a0, k0), (a1, k1) = [
                 (_split_batch(args, n, h), _split_batch(kwargs, n, h)) for h in (0, 1)
@@ -3844,6 +3852,9 @@ def mirror_cfg_replica_adapter_scales(pipe: Any, logger: Any = None) -> bool:
         router.fingerprint = weights_fingerprint(module)
     except Exception:  # noqa: BLE001 - unverifiable: drop the replica as before
         return False
+    # Python-valued scales are guards of a compiled region: both sides may recompile, so they warm one at a time again
+    router.warm_primary.clear()
+    router.warm_replica.clear()
     router.stats["adapter_scale_mirrors"] = router.stats.get("adapter_scale_mirrors", 0) + 1
     if logger is not None:
         logger.info(
