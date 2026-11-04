@@ -173,8 +173,7 @@ class TestAcceleratorExtrasCarryTheirCompanions:
 
 
 def test_every_auto_install_torch_extra_is_published():
-    # _auto_install.py prints `unsloth[cu<NNN>-torch<T>]`; a tag missing here makes
-    # `pip install unsloth[...]` warn and silently resolve a different torch (#16520).
+    # A tag _auto_install.py prints but PyPI lacks makes pip warn and resolve another torch (#16520).
     import re
 
     source = (REPO_ROOT / "unsloth" / "_auto_install.py").read_text(encoding = "utf-8")
@@ -183,7 +182,7 @@ def test_every_auto_install_torch_extra_is_published():
     extras = _load()["project"].get("optional-dependencies", {})
     missing = []
     for tag in tags:
-        # torch 2.12+ ships on cu126 / cu130 only, and _auto_install.py accepts only those.
+        # torch 2.12+ ships on cu126 / cu130 only.
         wanted = [f"cu126-torch{tag}", f"cu130-torch{tag}"] if int(tag) >= 2120 else None
         if wanted is None:
             if not any(n.startswith("cu") and n.endswith(f"-torch{tag}") for n in extras):
