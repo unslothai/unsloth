@@ -82,6 +82,10 @@ export function shouldUseCustomWindowTitlebar(): boolean {
   return CUSTOM_TITLEBAR_PLATFORMS.some((token) => platform.includes(token));
 }
 
+export function usesWindowsTitlebar(): boolean {
+  return isTauri && /\bwin(?:32|64|dows)?\b/.test(getClientPlatform());
+}
+
 export function shouldUseNativeMacWindowTitlebar(): boolean {
   if (!isTauri) {
     return false;
