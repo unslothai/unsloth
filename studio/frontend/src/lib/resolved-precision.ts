@@ -187,12 +187,12 @@ const DENOISER_PLACEMENTS: Record<string, { label: string; detail: string }> = {
   partial: {
     label: "Transformer partly streamed",
     detail:
-      "Part of the transformer stays on the GPU and the rest streams from CPU on every denoise step, which is slower than resident.",
+      "Part of the transformer stays on the GPU and the rest streams from CPU on every denoise step (slower than resident).",
   },
   streamed: {
     label: "Transformer streamed",
     detail:
-      "Every transformer block streams from CPU on every denoise step, which is slower than resident.",
+      "Every transformer block streams from CPU on every denoise step (slower than resident).",
   },
 };
 

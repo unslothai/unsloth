@@ -47,24 +47,19 @@ def _pin(module: torch.nn.Module, count: int) -> None:
 def test_an_unhooked_transformer_under_group_offload_is_resident():
     pipe = types.SimpleNamespace(transformer = _Blocks())
     assert dm.denoiser_offload(pipe, dm.OFFLOAD_GROUP) == dm.DENOISER_RESIDENT
-    assert "resident speed" in dm.denoiser_offload_reason(pipe, dm.OFFLOAD_GROUP)
 
 
 def test_every_group_streamed_is_streamed():
     pipe = types.SimpleNamespace(transformer = _streamed())
     assert dm.denoiser_offload(pipe, dm.OFFLOAD_GROUP) == dm.DENOISER_STREAMED
-    assert "every denoise step" in dm.denoiser_offload_reason(pipe, dm.OFFLOAD_GROUP)
 
 
-def test_some_groups_pinned_is_partial_with_the_counts():
+def test_some_groups_pinned_is_partial():
     module = _streamed()
     _pin(module, 2)
     pipe = types.SimpleNamespace(transformer = module)
     assert dm.denoiser_residency(pipe) == (2, 4)
     assert dm.denoiser_offload(pipe, dm.OFFLOAD_GROUP) == dm.DENOISER_PARTIAL
-    assert "2 of the transformer's 4 block groups" in dm.denoiser_offload_reason(
-        pipe, dm.OFFLOAD_GROUP
-    )
 
 
 def test_every_group_pinned_is_resident():
@@ -88,13 +83,11 @@ def test_a_second_streamed_denoiser_counts():
 def test_other_policies_report_nothing(policy):
     pipe = types.SimpleNamespace(transformer = _streamed())
     assert dm.denoiser_offload(pipe, policy) is None
-    assert dm.denoiser_offload_reason(pipe, policy) is None
 
 
 def test_an_unreadable_denoiser_reports_nothing_instead_of_raising():
     pipe = types.SimpleNamespace(transformer = object())
     assert dm.denoiser_offload(pipe, dm.OFFLOAD_GROUP) is None
-    assert dm.denoiser_offload_reason(pipe, dm.OFFLOAD_GROUP) is None
 
 
 def test_the_gallery_record_keeps_the_denoiser_placement():

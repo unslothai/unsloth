@@ -212,7 +212,6 @@ from .diffusion_memory import (
     plan_fits_total_capacity,
     denoisers_pinned_resident,
     denoiser_offload,
-    denoiser_offload_reason,
     DENOISER_RESIDENT,
     install_encode_release,
     plan_keeps_transformer_resident,
@@ -10811,8 +10810,7 @@ class DiffusionBackend:
                                 else "a loaded component exceeds the device budget; "
                                 "streaming transformer blocks and text-encoder layers"
                                 if effective_policy == OFFLOAD_STREAMING
-                                else denoiser_offload_reason(pipe, effective_policy)
-                                or "planned from measured free VRAM vs estimated footprint",
+                                else "planned from measured free VRAM vs estimated footprint",
                             ),
                             "transformer_cache": (
                                 None if cache_auto else transformer_cache,
@@ -15125,17 +15123,6 @@ class DiffusionBackend:
             state.resolved, state.speed_optims, getattr(state, "cuda_graphs", ())
         )
         speed_optims = int8_gemm_live(state.pipe, speed_optims)
-        # Live, not load-time: a later pin or release changes how much of the denoiser streams.
-        tier_reason = denoiser_offload_reason(state.pipe, state.offload_policy)
-        if (
-            tier_reason
-            and isinstance(resolved, dict)
-            and isinstance(resolved.get("memory_mode"), dict)
-        ):
-            resolved = {
-                **resolved,
-                "memory_mode": {**resolved["memory_mode"], "reason": tier_reason},
-            }
         lora_gate = dict(
             engine = "diffusers",
             family = state.family.name,
