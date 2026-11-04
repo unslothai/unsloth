@@ -332,6 +332,77 @@ def test_the_dataset_counts_every_batch_not_the_last_one():
     assert out["dataset"]["rows"] == 6
 
 
+def test_a_schema_transform_is_the_recipe_output(tmp_path):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    payload = copy.deepcopy(SQL)
+    template = {"prompt": "{{ sql_prompt }}", "answer": "{{ sql }}"}
+    payload["recipe"]["processors"] = [
+        {"processor_type": "schema_transform", "name": "chat", "template": template}
+    ]
+    run = tmp_path / "recipe_sql"
+    (run / "processors-files" / "chat").mkdir(parents = True)
+    pd.DataFrame([{"prompt": "Find", "answer": "SELECT 1"}]).to_parquet(
+        run / "processors-files" / "chat" / "batch_00000.parquet", index = False
+    )
+    artifacts = {"chat": [{"prompt": "Find", "answer": "SELECT 1"}]}
+
+    def routes(path, status):
+        def answer(method, url, params, body):
+            if url == "/api/data-recipe/validate":
+                return {"valid": True}
+            if url == "/api/data-recipe/jobs":
+                return {"job_id": "job7"}
+            if url.endswith("/status"):
+                return status
+            if url.endswith("/dataset"):
+                return {"dataset": [{"sql_prompt": "Find", "sql": "SELECT 1"}], "total": 1}
+            raise AssertionError(url)
+
+        return answer
+
+    full = {"status": "completed", "rows": 1, "artifact_path": str(run)}
+    ctx = _Ctx(
+        routes(run, full),
+        params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "full"},
+    )
+    out = asyncio.run(data.recipe_group(ctx))
+    assert out["dataset"]["ref"] == "recipes/recipe_sql/processors-files/chat"
+    assert out["dataset"]["columns"] == ["prompt", "answer"]
+    assert out["preview"] == [{"prompt": "Find", "answer": "SELECT 1"}]
+
+    uploads = []
+
+    async def upload(
+        ctx,
+        rows,
+        name,
+        made_by = None,
+        first = (),
+    ):
+        uploads.append((rows, list(first)))
+        return {"kind": "dataset", "source": "local", "ref": "uploads/x"}
+
+    preview = {
+        "status": "completed",
+        "rows": 1,
+        "artifact_path": None,
+        "processor_artifacts": artifacts,
+    }
+    ctx = _Ctx(
+        routes(run, preview),
+        params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"},
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(data, "upload_rows", upload)
+        out = asyncio.run(data.recipe_group(ctx))
+    assert uploads == [([{"prompt": "Find", "answer": "SELECT 1"}], ["prompt", "answer"])]
+    assert out["preview"] == [{"prompt": "Find", "answer": "SELECT 1"}]
+    # A name that is a path never reaches the artifact folder.
+    payload["recipe"]["processors"][0]["name"] = "../x"
+    assert data.schema_transform(payload["recipe"]) is None
+
+
 def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
     payload = json.loads((LEARNING / "instruction-from-answer.json").read_text(encoding = "utf-8"))
     assert payload["recipe"]["seed_config"]["source"]["path"] == "unsloth/alpaca-cleaned"
@@ -1092,3 +1163,40 @@ def test_a_primary_load_never_goes_alongside_the_main_model(monkeypatch):
             _common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None, primary = True)
         )
     assert went == []
+
+
+def test_a_seed_file_edited_in_place_is_a_new_dataset(tmp_path, monkeypatch):
+    import os
+
+    from core.flows import engine as engine_mod
+
+    seed = tmp_path / "seed.jsonl"
+    seed.write_text('{"word": "RED"}\n')
+    recipe = {"seed_config": {"source": {"seed_type": "local", "path": str(seed)}}}
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+        inputs: dict = {}
+
+    eng = engine_mod.FlowEngine()
+    key = lambda ctx = Ctx(): asyncio.run(  # noqa: E731
+        eng._model_key(ctx, {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}})
+    )
+    first = key()
+    assert first and first["seed_files"]
+    seed.write_text('{"word": "BLUE"}\n')
+    os.utime(seed, ns = (1, 1))
+    assert key() != first
+    # A wired seed replaces the recipe's own, and is keyed on what it reads.
+    folder = tmp_path / "upload"
+    folder.mkdir()
+    (folder / "a.parquet").write_bytes(b"x")
+    wired = Ctx()
+    wired.inputs = {"seed": {"kind": "dataset", "source": "local", "ref": str(folder)}}
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: f"{ref}/*.parquet")
+    before = key(wired)
+    (folder / "a.parquet").write_bytes(b"xy")
+    assert key(wired) != before
+    # No local seed: the key is what it was.
+    assert key(Ctx()) is not None and data.seed_files({}, None) is None

@@ -2074,42 +2074,60 @@ class FlowEngine:
         if not kind:
             compiled = params.get(RECIPE_PARAM)
             recipe = compiled.get("recipe") if isinstance(compiled, dict) else None
-            from core.flows.nodes.data import local_model
+            from core.flows.nodes.data import seed_files
 
-            named = local_model(recipe) if isinstance(recipe, dict) else None
-            if named:
-                # The step loads the generator the recipe names, so it is keyed like any picked model,
-                # not by whatever an earlier step left loaded.
-                key = dict(named)
-                if not named["variant"]:
-                    # No quant named: loading keeps the one Chat already holds of this repo.
-                    from core.flows.nodes._common import resident_identity
-                    from studio_mcp import loading
-
-                    held = await resident_identity(ctx, "chat")
-                    if isinstance(held.get("local"), str) and loading._same_id(
-                        held["local"], named["repo"]
-                    ):
-                        key["variant"] = held.get("variant")
-                if os.path.isabs(named["repo"]):
-                    key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
-                return key
-            if _implicit_local_model(compiled):
-                # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
-                from core.flows.nodes._common import resident_identity
-
-                key = await resident_identity(ctx, "chat")
-                name = key.get("local")
-                if isinstance(name, str) and os.path.isabs(name):
-                    key["files"] = await asyncio.to_thread(_local_fingerprint, name)
-                return key
-            return None
+            # A seed file edited in place is a different dataset under the same path.
+            seeds = (
+                await asyncio.to_thread(
+                    seed_files, recipe, (getattr(ctx, "inputs", None) or {}).get("seed")
+                )
+                if isinstance(recipe, dict)
+                else None
+            )
+            key = await self._recipe_model_key(ctx, compiled, recipe)
+            if seeds:
+                key = {**(key or {}), "seed_files": seeds}
+            return key
         choice = params.get("model") or {}
         key = {"repo": choice.get("repo"), "variant": choice.get("variant")}
         repo = choice.get("repo")
         if isinstance(repo, str) and os.path.isabs(repo):
             key["files"] = await asyncio.to_thread(_local_fingerprint, repo)
         return key
+
+    async def _recipe_model_key(
+        self, ctx: NodeContextImpl, compiled: Any, recipe: Optional[dict]
+    ) -> Optional[dict]:
+        from core.flows.nodes.data import local_model
+
+        named = local_model(recipe) if isinstance(recipe, dict) else None
+        if named:
+            # The step loads the generator the recipe names, so it is keyed like any picked model,
+            # not by whatever an earlier step left loaded.
+            key = dict(named)
+            if not named["variant"]:
+                # No quant named: loading keeps the one Chat already holds of this repo.
+                from core.flows.nodes._common import resident_identity
+                from studio_mcp import loading
+
+                held = await resident_identity(ctx, "chat")
+                if isinstance(held.get("local"), str) and loading._same_id(
+                    held["local"], named["repo"]
+                ):
+                    key["variant"] = held.get("variant")
+            if os.path.isabs(named["repo"]):
+                key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
+            return key
+        if _implicit_local_model(compiled):
+            # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
+            from core.flows.nodes._common import resident_identity
+
+            key = await resident_identity(ctx, "chat")
+            name = key.get("local")
+            if isinstance(name, str) and os.path.isabs(name):
+                key["files"] = await asyncio.to_thread(_local_fingerprint, name)
+            return key
+        return None
 
     async def _for_each(
         self,

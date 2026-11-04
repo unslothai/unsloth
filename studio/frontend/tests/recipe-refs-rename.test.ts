@@ -73,3 +73,24 @@ test("renaming a column rewrites a sampler rule that conditions on it, keeping t
     "other == 'topic'": { values: ["easy"] },
   });
 });
+
+test("renaming a column moves an AI column's image context with its prompt", async () => {
+  const { applyRenameToConfigs } = await import(
+    "../src/features/recipe-studio/stores/helpers/reference-sync.ts"
+  );
+  const configs = {
+    a: { id: "a", kind: "sampler", name: "picture" },
+    b: {
+      id: "b",
+      kind: "llm",
+      name: "caption",
+      prompt: "Describe {{ picture }}",
+      // biome-ignore lint/style/useNamingConvention: api schema
+      image_context: { enabled: true, column_name: "picture" },
+    },
+  };
+  // biome-ignore lint/suspicious/noExplicitAny: test fixture
+  const next = applyRenameToConfigs(configs as any, "picture", "photo") as any;
+  assert.equal(next.b.prompt, "Describe {{ photo }}");
+  assert.deepEqual(next.b.image_context, { enabled: true, column_name: "photo" });
+});

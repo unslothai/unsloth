@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 import uuid
@@ -455,12 +456,30 @@ async def run_recipe(
         )
         artifact = status.get("artifact_path") if isinstance(status, dict) else None
         saved = isinstance(artifact, str) and artifact.strip()
+        transform = schema_transform(body)
+        # A schema transform's rows are the recipe's output; Data Designer keeps them beside the dataset.
+        reshaped = None
+        if transform and saved:
+            folder = Path(artifact.strip()) / "processors-files" / transform[0]
+            if folder.is_dir():
+                reshaped = f"processors-files/{transform[0]}"
+                preview = await asyncio.to_thread(parquet_head, folder, 20)
+        elif transform and isinstance(status, dict):
+            made = (status.get("processor_artifacts") or {}).get(transform[0])
+            if isinstance(made, list):
+                reshaped = [row for row in made if isinstance(row, dict)]
+                preview = reshaped[:20]
         # Every row the job made, up to the most a Recipe Dataset step can ask for.
         kept = (
-            None if saved else await recipe_rows(ctx, job_id, limit = max(MAX_RECIPE_ROWS, rows or 0))
+            None
+            if saved
+            else reshaped
+            if isinstance(reshaped, list)
+            else await recipe_rows(ctx, job_id, limit = max(MAX_RECIPE_ROWS, rows or 0))
         )
+        made_columns = transform[1] if reshaped is not None else generated_columns(body)
         if saved:
-            ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
+            ref = f"recipes/{Path(artifact.strip()).name}/{reshaped or 'parquet-files'}"
             dataset = {
                 "kind": "dataset",
                 "source": "recipe",
@@ -469,9 +488,7 @@ async def run_recipe(
                 "rows": rows,
             }
             if preview:
-                dataset["columns"] = lead_columns(
-                    {k for r in preview for k in r}, generated_columns(body)
-                )
+                dataset["columns"] = lead_columns({k for r in preview for k in r}, made_columns)
         else:
             if not kept:
                 raise FlowNodeError("The Data Recipe produced no rows")
@@ -480,7 +497,7 @@ async def run_recipe(
                 kept,
                 f"recipe-{job_id}",
                 made_by = "preview" if run.get("execution_type") == "preview" else "recipe",
-                first = generated_columns(body),
+                first = made_columns,
             )
         # Completed only once its dataset is in hand: an empty job or a refused upload is a failed run.
         await history.finish(ctx, job_id, preview, total, kept)
@@ -492,6 +509,30 @@ async def run_recipe(
             await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
         raise
     return {"dataset": dataset, "preview": preview}
+
+
+def schema_transform(recipe: Any) -> Optional[tuple[str, list[str]]]:
+    """The recipe's schema transform (the one a recipe group edits): its name and output columns."""
+    for processor in recipe.get("processors") or [] if isinstance(recipe, dict) else []:
+        if not isinstance(processor, dict) or processor.get("processor_type") != "schema_transform":
+            continue
+        name, template = processor.get("name"), processor.get("template")
+        if (
+            isinstance(name, str)
+            and name.strip()
+            and Path(name).name == name
+            and name not in (".", "..")
+        ):
+            return name, list(template) if isinstance(template, dict) else []
+    return None
+
+
+def parquet_head(folder: Path, limit: int) -> list[dict]:
+    try:
+        import pyarrow.dataset as ds
+        return ds.dataset(str(folder), format = "parquet").head(limit).to_pylist()
+    except Exception:
+        return []
 
 
 def generated_columns(recipe: Any) -> list[str]:
@@ -539,6 +580,44 @@ async def seed_config(ctx: NodeContext, dataset: dict, current: Any) -> dict:
     if source in ("local", "recipe"):
         return {**keep, "source": {"seed_type": "local", "path": local_seed_path(ref)}}
     raise FlowNodeError("A recipe seed takes a Hub dataset, a Data Recipe or Rows to Dataset")
+
+
+def seed_files(recipe: Any, wired: Any) -> Optional[str]:
+    """A digest of the files a recipe's local seed reads (names, sizes, times), or None when it has none."""
+    import glob
+    import hashlib
+
+    patterns: list[str] = []
+    if isinstance(wired, dict) and wired.get("source") in ("local", "recipe"):
+        try:
+            patterns.append(local_seed_path(wired.get("ref")))
+        except FlowNodeError:
+            return None
+    elif isinstance(wired, dict):
+        return None
+    else:
+        source = (
+            (recipe.get("seed_config") or {}).get("source") if isinstance(recipe, dict) else None
+        )
+        if isinstance(source, dict) and source.get("seed_type") == "local":
+            patterns.append(source.get("path"))
+        elif isinstance(source, dict) and source.get("seed_type") == "unstructured":
+            patterns.extend(source.get("paths") or [])
+    files = set()
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not os.path.isabs(pattern):
+            continue
+        for path in glob.glob(pattern, recursive = True):
+            walked = os.walk(path) if os.path.isdir(path) else [("", [], [path])]
+            files.update(os.path.join(root, name) for root, _, names in walked for name in names)
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        digest.update(f"{path}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    return digest.hexdigest() if files else None
 
 
 def local_seed_path(ref: Any) -> str:

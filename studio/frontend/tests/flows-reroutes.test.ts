@@ -552,3 +552,25 @@ test("a direct wire into a single input clears an empty reroute's segment there,
   assert.equal(into.length, 1);
   assert.match(into[0], /:a\.text->/);
 });
+
+test("recipe columns never wire through a reroute: only a direct wire writes the reference", () => {
+  useDocStore
+    .getState()
+    .load(
+      doc(
+        [
+          node("topic", "recipe.column", [0, 0]),
+          node("expr", "recipe.column", [600, 0]),
+          node("llm", "llm.generate", [600, 300]),
+        ],
+        [],
+      ),
+    );
+  useDocStore.getState().addReroute({ id: "r1", pos: [300, 10] });
+  const into = { source: "topic", sourceHandle: outHandle("out"), target: "r1", targetHandle: REROUTE_IN_HANDLE };
+  assert.equal(checkRerouteConnection(graph(), into).ok, false);
+  assert.notEqual(tryConnect(into), null);
+  const out = { source: "r1", sourceHandle: REROUTE_OUT_HANDLE, target: "expr", targetHandle: inHandle("in") };
+  assert.equal(checkRerouteConnection(graph(), out).ok, false);
+  assert.deepEqual(Object.keys(graph().edges), []);
+});
