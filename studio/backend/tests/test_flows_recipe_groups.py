@@ -819,3 +819,37 @@ def test_a_recipe_naming_its_generator_is_keyed_by_that_pick_not_by_what_chat_ho
     assert key() == first
     recipe["model_configs"][0]["gguf_variant"] = "Q8_0"
     assert key() != first
+
+
+def test_a_named_recipe_model_without_a_quant_is_keyed_on_the_quant_chat_holds(monkeypatch):
+    from core.flows import engine as engine_mod
+    from studio_mcp import loading
+
+    held = {"name": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
+
+    async def resident(caller):
+        return {"llm": [held["name"]]}, {"gguf_variant": held["variant"]}
+
+    monkeypatch.setattr(loading, "_resident", resident)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [{"alias": "m", "provider": "local", "model": "unsloth/Qwen3-4B-GGUF"}],
+        "columns": [{"name": "c", "column_type": "llm-text", "model_alias": "m"}],
+    }
+    eng = engine_mod.FlowEngine()
+    key = lambda: asyncio.run(  # noqa: E731
+        eng._model_key(
+            Ctx(), {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}}
+        )
+    )
+    first = key()
+    held["variant"] = "Q8_0"
+    assert key() != first
+    # Another model in Chat: the named one loads at its default quant, whatever Chat held.
+    held["name"] = "unsloth/gemma-3-4b-it-GGUF"
+    assert key()["variant"] is None

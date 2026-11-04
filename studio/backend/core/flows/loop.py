@@ -62,6 +62,8 @@ def failure_row(
 ) -> Optional[dict]:
     if not isinstance(failure, dict):
         return None
+    # As Benchmark reads them: " ticket " names the ticket column.
+    prompt_column, reference_column = prompt_column.strip(), reference_column.strip()
     lowered = {str(k).lower(): v for k, v in failure.items()}
     output = next((k for k in OUTPUT_KEYS if k in lowered), None)
     rest = [k for k in lowered if k not in (output, "reason", "origin")]

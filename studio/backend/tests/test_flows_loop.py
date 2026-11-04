@@ -775,3 +775,11 @@ async def test_later_rounds_train_without_the_frozen_test_questions():
     # Round 1 makes the split; every later round is told its test questions.
     assert excluded[0] is None
     assert excluded[1:] and all(e == {"column": "", "questions": test} for e in excluded[1:])
+
+
+def test_a_column_name_with_spaces_reads_the_same_column_benchmark_scored():
+    row = {"ticket": "My payment was charged twice", "queue": "billing", "model_output": "x"}
+    found = loop_rounds.failure_row(row, " ticket ", " queue ")
+    assert found["failed_prompt"] == "My payment was charged twice"
+    assert found["failed_reference"] == "billing"
+    assert loop_rounds.questions([row], " ticket ") == ["My payment was charged twice"]
