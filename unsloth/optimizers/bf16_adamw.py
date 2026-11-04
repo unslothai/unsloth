@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Opt-in BF16 AdamW with FP32 moments and stochastic parameter writes."""
 
 import math
 import torch
@@ -187,7 +186,6 @@ def _plain_parameter(p):
 
 
 def prepare_bf16_training(model):
-    """Cast trainable weights after model preparation, before creating gradients."""
     params = [p for p in model.parameters() if p.requires_grad]
     for p in params:
         if not _plain_parameter(p) or p.dtype not in (torch.float32, torch.bfloat16):
@@ -219,11 +217,6 @@ def _cpu_update(p, g, m, v, step, lr, seed, beta1, beta2, eps, weight_decay):
 
 
 class AdamWBF16(torch.optim.Optimizer):
-    """Dense BF16 AdamW with FP32 moments and no master weights.
-
-    CPU is a reference path; its random sequence differs from CUDA's Philox stream.
-    """
-
     def __init__(
         self,
         params,
