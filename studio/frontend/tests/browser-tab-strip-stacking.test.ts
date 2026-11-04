@@ -19,3 +19,13 @@ test("no query container wraps the browser tab strip, so it stays above the macO
     /^<TabStrip [^\n]*\n(?:[^\n]*\n){0,3}\s*<div className="browser-panel-body @container\/browser /,
   );
 });
+
+test("the browser's glass frosts a pseudo-element, never the section that holds the tab strip", () => {
+  const css = readSrc("index.css").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rules = [...css.matchAll(/([^{}]*\[data-slot="browser-panel"\][^{}]*)\{([^}]*)\}/g)];
+  const frosted = rules.filter(([, , body]) => /backdrop-filter/.test(body));
+  assert.ok(frosted.length > 0);
+  for (const [, selector] of frosted) {
+    for (const part of selector.split(",")) assert.match(part.trim(), /::before$/);
+  }
+});
