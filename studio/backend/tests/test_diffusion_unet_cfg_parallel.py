@@ -224,16 +224,29 @@ def test_unet_compiled_whole_after_install_runs_whole_on_the_source():
     unet._compiled_call_impl = lambda *a, **k: unet.forward(*a, **k)
     _sdxl_loop(unet, torch.randn(1, 4, 8, 8), steps = 2)
     assert unet.calls == [2, 2] and replicas == []
+
+
 class _Dit(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.proj = torch.nn.Linear(4, 4)
 
-    def forward(self, hidden_states, timestep = None, encoder_hidden_states = None, return_dict = False):
+    def forward(
+        self,
+        hidden_states,
+        timestep = None,
+        encoder_hidden_states = None,
+        return_dict = False,
+    ):
         return (self.proj(hidden_states),)
 
 
-def _automatic_install(monkeypatch, used_mib, names = ("Tesla T4", "Tesla T4"), env = None):
+def _automatic_install(
+    monkeypatch,
+    used_mib,
+    names = ("Tesla T4", "Tesla T4"),
+    env = None,
+):
     class Pipe:
         transformer = _Dit()
 
@@ -244,7 +257,9 @@ def _automatic_install(monkeypatch, used_mib, names = ("Tesla T4", "Tesla T4"), 
     if env is not None:
         monkeypatch.setenv(mg.AUTO_CFG_PARALLEL_ENV, env)
     monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
-    monkeypatch.setattr(mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals})
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals}
+    )
     monkeypatch.setattr(mg, "_hooks_present", lambda m: None)
     monkeypatch.setattr(mg, "is_layer_split", lambda p: False, raising = False)
     pipe = Pipe()

@@ -60,7 +60,12 @@ AUTO_CFG_PARALLEL_IDLE_USED_MIB = 1024
 
 
 def automatic_cfg_parallel_off() -> bool:
-    return (os.environ.get(AUTO_CFG_PARALLEL_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+    return (os.environ.get(AUTO_CFG_PARALLEL_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
 def _idle_card(probe: Any) -> bool:
@@ -214,7 +219,11 @@ def selection_scope(
         yield None
         return
     # Only a CFG replica reads the recorded compile arguments; automatic placement builds one unless its lever is off.
-    if not selection.automatic or cfg_parallel_mode() == "force" or not automatic_cfg_parallel_off():
+    if (
+        not selection.automatic
+        or cfg_parallel_mode() == "force"
+        or not automatic_cfg_parallel_off()
+    ):
         install_compile_recorder()
     token = _SELECTION.set(selection)
     try:
@@ -2881,7 +2890,9 @@ class CfgParallelRouter:
                 DeviceProbe(ordinal = self.secondary.index, name = "", total_mib = total, free_mib = free)
             ):
                 # Automatic borrowed this card because it was idle at load; something else took it since
-                raise RuntimeError(f"{self.secondary} is no longer idle ({free} of {total} MiB free)")
+                raise RuntimeError(
+                    f"{self.secondary} is no longer idle ({free} of {total} MiB free)"
+                )
             reserve = _replica_reserve_mib(free, total)
             if free is not None and need_mib + reserve > free:
                 raise RuntimeError(
