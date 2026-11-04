@@ -1751,6 +1751,17 @@ test("with, macro and call blocks bind their own names, so a rename or a referen
   const names = new Set(["topic", "words"]);
   assert.deepEqual(columnReferences(col("{% with topic = 'x' %}{{ topic }}{% endwith %}{{ words }}"), names), ["words"]);
   assert.deepEqual(columnReferences(col("{% macro show(topic) %}{{ topic }}{% endmacro %}{{ show(words) }}"), names), ["words"]);
+  // A macro's own name is the template's from its declaration on, not a same-named column.
+  const macro = "{{ format }}{% macro format(value) %}{{ value | upper }}{% endmacro %}{{ format(topic) }}";
+  assert.equal(
+    replaceRef(macro, "format", "display_format"),
+    "{{ display_format }}{% macro format(value) %}{{ value | upper }}{% endmacro %}{{ format(topic) }}",
+  );
+  const withFormat = new Set(["topic", "format"]);
+  assert.deepEqual(
+    columnReferences(col("{% macro format(value) %}{{ value }}{% endmacro %}{{ format(topic) }}"), withFormat),
+    ["topic"],
+  );
 });
 
 test("a duplicated reader gets the wire to the column it reads, and a Jinja test is not a column", async () => {

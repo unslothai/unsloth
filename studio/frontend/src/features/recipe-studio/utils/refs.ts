@@ -95,7 +95,9 @@ function paramNames(list: string): string[] {
 }
 
 /** The names a block tag binds for its body: `with a = 1, b = 2`, `macro show(topic)`, `call(user) ...`. */
-function blockNames(tag: string): { kind: string; names: string[] } | null {
+function blockNames(
+  tag: string,
+): { kind: string; names: string[]; declares?: string } | null {
   const word = /^(with|macro|call)\b\s*([\s\S]*)$/.exec(tag);
   if (!word) return null;
   const [, kind, rest] = word;
@@ -110,10 +112,14 @@ function blockNames(tag: string): { kind: string; names: string[] } | null {
   // `macro show(topic)` lists its parameters after the name, `call(user) list(...)` right away.
   const open =
     kind === "macro" ? rest.indexOf("(") : rest.startsWith("(") ? 0 : -1;
-  if (open < 0) return { kind, names: [] };
+  // A macro's own name is bound where it is declared, as a `set` is.
+  const declares =
+    kind === "macro" ? /^([A-Za-z_][A-Za-z0-9_]*)/.exec(rest)?.[1] : undefined;
+  if (open < 0) return { kind, names: [], declares };
   const close = topLevel(rest.slice(open + 1)).indexOf(")");
   return {
     kind,
+    declares,
     names: paramNames(
       rest.slice(open + 1, close < 0 ? undefined : open + 1 + close),
     ),
@@ -154,6 +160,12 @@ export function jinjaScopes(text: string): JinjaScope[] {
     if (loop || bound) {
       const kind = bound?.kind ?? "for";
       const names = loop ? (loop[1].match(ident) ?? []) : (bound?.names ?? []);
+      const outer = open[open.length - 1];
+      if (bound?.declares) {
+        if (outer) outer.sets.push({ name: bound.declares, from: after });
+        else
+          scopes.push({ name: bound.declares, from: after, to: text.length });
+      }
       open.push({ kind, names, from: after, sets: [] });
       blocks.push(kind);
     } else if (end) {
