@@ -3117,7 +3117,7 @@ def unsloth_fast_generate(self, *args, **kwargs):
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
     elif graphs:
-        # Keeps the batch size decode ran at (beams / num_return_sequences expand the prompts).
+        # keep_only uses the expanded decode batch.
         ids = _generation_input_ids(args, kwargs)
         expected = None
         if hasattr(ids, "shape") and len(ids.shape) >= 2:

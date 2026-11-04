@@ -112,7 +112,7 @@ def test_plan_holds_no_buffer_reference_when_it_empties_the_cache(G):
     model = _Model()
     model.keep(1, 2816)
     model.keep(4, 2816)
-    model.keep(16, 64)  # this call's batch size, too small to reuse: still scanned
+    model.keep(16, 64)  # too small to reuse, still scanned
     refs = [
         weakref.ref(bufs[0])
         for a in model.attns
@@ -180,16 +180,15 @@ def test_measured_peak_can_only_raise_the_estimate(G):
     G._free_bytes = lambda device: 20 * GB
     plan, token = _plan(G, model, 4, 2048, 2081)
     assert plan == "graph"
-    stats["peak"] = 5 * GB  # 2 GiB above the start: below the estimate
+    stats["peak"] = 5 * GB  # below the estimate
     G.record_need(model, token)
     key = G._shape_key(4, 2048, 2081)
     assert model.__dict__[G.NEEDS][key] == 2 * GB < est
-    # A measurement below the estimate does not lower the need.
+    # A measurement can only raise the estimate.
     G._free_bytes = lambda device: int(est) - 1
     assert _plan(G, model, 4, 2048, 2081)[0] == "eager"
     G._free_bytes = lambda device: int(est) + 1
     assert _plan(G, model, 4, 2048, 2081)[0] == "graph"
-    # A later, larger peak of the same shape wins and raises the need above the estimate.
     G._free_bytes = lambda device: 20 * GB
     plan, token = _plan(G, model, 4, 2048, 2081)
     stats["peak"] = 3 * GB + 6 * GB
@@ -199,20 +198,19 @@ def test_measured_peak_can_only_raise_the_estimate(G):
     assert _plan(G, model, 4, 2048, 2081)[0] == "eager"
     G._free_bytes = lambda device: int(G.MEASURED_MARGIN * 6 * GB) + 1
     assert _plan(G, model, 4, 2048, 2081)[0] == "graph"
-    # A call that did not raise the process peak has no exact reading and is not stored.
     G.record_need(model, _plan(G, model, 1, 128)[1])
     assert G._shape_key(1, 128, 0) not in model.__dict__[G.NEEDS]
 
 
 def test_prompt_length_is_part_of_the_shape(G):
-    # Batch 4, prompts 128 and 2048, both to 4096 tokens: one total-length bucket, different footprints.
+    # Same total-length bucket, different prompts: the key includes the prompt bucket.
     assert G._shape_key(4, 128, 4096) != G._shape_key(4, 2048, 4096)
     model = _Model()
     stats = {"alloc": 3 * GB, "peak": 3 * GB}
     G._alloc_stats = lambda device: (stats["alloc"], stats["peak"])
     G._free_bytes = lambda device: 30 * GB
     plan, token = _plan(G, model, 4, 128, 4096)
-    stats["peak"] = 3 * GB + GB // 2  # the short prompt's small peak
+    stats["peak"] = 3 * GB + GB // 2
     G.record_need(model, token)
     long_need = _need(G, 4, 2048, 4096)
     G._free_bytes = lambda device: int(long_need) - 1
@@ -220,8 +218,6 @@ def test_prompt_length_is_part_of_the_shape(G):
 
 
 def test_an_early_stop_measurement_never_admits_a_full_length_call(G):
-    # The first call of a shape stopped on EOS before its cache grew: its peak is small. A later call
-    # of the same shape that generates to the limit is still judged by at least the estimate.
     model = _Model()
     est = _need(G, 4, 2048, 4096)
     stats = {"alloc": 3 * GB, "peak": 3 * GB}
@@ -355,7 +351,7 @@ def test_keep_only_drops_other_batch_sizes_and_keeps_this_ones_graphs(G):
 
 def test_keep_only_never_evicts_the_cache_decode_just_used(G):
     model = _Model()
-    _with_graphs(G, model, 4, 1)  # attn.paged_attention is the bs1 cache: decode ran at bs 1
+    _with_graphs(G, model, 4, 1)  # decode ran at bs 1
     G.keep_only(model, 4)
     assert {k for a in model.attns for k in a._unsloth_graph_buffers} == {(1, torch.float16, CUDA0)}
     assert all(
@@ -420,14 +416,12 @@ def test_causal_lm_forward_calls_the_training_release():
     assert "keep_only" in text and "HELD" in text
     # A call the plan says cannot fit graphed runs eagerly from the start; graphed calls record their peak.
     assert "plan_call" in text and "eager_scope" in text and "record_need" in text
-    # Plan and keep_only use the batch size decode runs at, not the prompt count.
+    # Plan and keep_only use the expanded decode batch.
     assert text.count("decode_batch(") >= 2
 
 
 def test_measured_need_includes_a_reused_cache_and_is_discounted_once(G):
-    # The first graphed call of a shape reused a kept cache: peak - start misses those bytes. The stored
-    # need is the whole footprint, so the next plan subtracts the reuse exactly once and, once the cache
-    # is released, judges the full number. 8 GiB above the start keeps the measurement above the estimate.
+    # The stored footprint includes a reused cache, so the reuse is subtracted once.
     model = _Model(layers = 1)
     rows, kv, work = G._call_bytes(model.config, 4, 2048, torch.float16, 512, 2081)
     model.keep(4, rows)
@@ -445,11 +439,9 @@ def test_measured_need_includes_a_reused_cache_and_is_discounted_once(G):
     total = 8 * GB + reused_bytes
     assert model.__dict__[G.NEEDS][key] == total
     assert G.MEASURED_MARGIN * total > _need(G, 4, 2048, 2081)
-    # Cache still kept: the plan needs margin x total - reused.
     need = G.MEASURED_MARGIN * total - reused_bytes
     G._free_bytes = lambda device: int(need) + 1
     assert _plan(G, model, 4, 2048, 2081)[0] == "graph" and model.held() == 1
-    # Too little for that: the cache is released, and the full footprint must then fit.
     free = iter([int(need) - 1, int(G.MEASURED_MARGIN * total) - 1])
     G._free_bytes = lambda device: next(free)
     assert _plan(G, model, 4, 2048, 2081)[0] == "eager" and model.held() == 0
@@ -462,7 +454,6 @@ def test_decode_batch_follows_generate_expansion(G):
     assert G.decode_batch(3, {"num_beams": 4, "num_return_sequences": 2}, cfg) == 12
     beams = types.SimpleNamespace(num_beams = 2, num_return_sequences = 1)
     assert G.decode_batch(3, {}, beams) == 6
-    # A generation_config passed to generate() wins over the model's.
     assert G.decode_batch(3, {"generation_config": beams}, cfg) == 6
     assert G.decode_batch(3, {}, None) == 3
 
@@ -471,7 +462,7 @@ def test_plan_sizes_the_expanded_batch(G):
     model = _Model()
     need = _need(G, 4, 2048, 2081)
     G._free_bytes = lambda device: int(need) - 1
-    # bs 2 prompts x num_return_sequences 2 decode at bs 4: judged as bs 4, not 2.
+    # 2 prompts x num_return_sequences 2 decode at bs 4.
     assert G.plan_call(model, _ids(2, 2048), torch.float16, 512, 2081, bsz = 4)[0] == "eager"
     G._free_bytes = lambda device: int(need) + 1
     plan, token = G.plan_call(model, _ids(2, 2048), torch.float16, 512, 2081, bsz = 4)
@@ -480,9 +471,7 @@ def test_plan_sizes_the_expanded_batch(G):
 
 def test_keep_only_keeps_the_batch_size_decode_used(G):
     model = _Model()
-    state = _with_graphs(
-        G, model, 1, 4
-    )  # the call decoded at bs 4 (attn.paged_attention is bs 4's)
+    state = _with_graphs(G, model, 1, 4)  # decoded at bs 4
     assert G.decode_batch_used(model) == 4
     G.keep_only(model, None)
     assert {k for a in model.attns for k in a._unsloth_graph_buffers} == {(4, torch.float16, CUDA0)}

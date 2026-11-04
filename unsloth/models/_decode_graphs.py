@@ -209,13 +209,12 @@ def _alloc_stats(device):
 
 
 def _shape_key(bsz, prompt, max_len):
-    # Prompt and total length both: one total with a longer prompt has a larger prefill.
+    # Includes the prompt bucket: a longer prompt has a larger prefill.
     return (bsz, _round_up(prompt + 1, BUCKET), _round_up(max(prompt, max_len) + 1, BUCKET))
 
 
 def _kept_buffers(model, key, rows):
-    """(any graph buffers kept, bytes of a kept cache for `key` with >= rows). A helper so no reference to
-    the buffers outlives it: release() + empty_cache() can then actually free them before the recheck."""
+    """(any buffers kept, bytes of a kept cache for `key` with >= rows); no buffer reference outlives release()."""
     kept, reused = False, 0
     for m in model.modules():
         store = m.__dict__.get("_unsloth_graph_buffers")
@@ -238,7 +237,7 @@ def plan_call(
 ):
     """("graph", token) or ("eager", None). Releases kept graphs / buffers first if the call would not
     fit beside them; still too big runs eagerly up front rather than relying on the OOM redo. `bsz` is
-    the batch size decode runs at (decode_batch(): beams / num_return_sequences expand the prompts)."""
+    the expanded decode batch (decode_batch())."""
     global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
@@ -253,9 +252,7 @@ def plan_call(
         return "graph", None
     key = _shape_key(bsz, prompt, max_len)
     measured = model.__dict__.get(NEEDS, {}).get(key)
-    # A measurement can only raise the calibrated estimate (it corrects estimates that run low on other
-    # GPUs; an early-stopped call peaks low). It is the call's whole footprint (record_need adds back a
-    # cache it reused), so the cache kept for this shape now is subtracted exactly once.
+    # A measurement can only raise the estimate; it includes a reused cache, so reuse is subtracted once.
     estimate = CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
     full = estimate if measured is None else max(estimate, MEASURED_MARGIN * measured)
     need = full
@@ -275,9 +272,8 @@ def plan_call(
 
 
 def record_need(model, token):
-    """Store the largest graphed footprint seen per shape: a call's peak above its start plus the kept
-    cache it reused (already allocated at the start, so not in the peak delta). The peak is never reset
-    (not ours to reset), so a call that did not raise it has no exact reading and is skipped."""
+    """Store the largest graphed footprint per shape (peak delta + reused kept cache). The peak is never
+    reset, so a call that did not raise it is skipped."""
     if token is None:
         return
     key, device, start, peak_before, reused = token
@@ -292,8 +288,7 @@ def decode_batch(
     kwargs,
     generation_config = None,
 ):
-    """The batch size generate() decodes at: HF expands the prompts num_beams times for beam search,
-    else num_return_sequences times. kwargs win over the generation config, as in generate()."""
+    """Batch size generate() decodes at: prompts x num_beams, else x num_return_sequences; kwargs win."""
     config = kwargs.get("generation_config", None) or generation_config
 
     def get(name):
@@ -310,8 +305,7 @@ def decode_batch(
 
 
 def decode_batch_used(model):
-    """Batch size of the cache the last graph-mode decode ran on (its attention's current buffer), or
-    None when no graph-mode cache is current."""
+    """Batch size of the cache the last graph-mode decode ran on, or None."""
     for module in model.modules():
         d = module.__dict__
         store = d.get("_unsloth_graph_buffers")
@@ -358,7 +352,7 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
 
 def keep_only(model, bsz = None):
     """Drop decode buffers and graphs of every other batch size; this one's graphs stay valid. The batch
-    size the decode actually ran at (decode_batch_used) wins over `bsz`, the caller's expectation."""
+    size decode actually ran at wins over `bsz`."""
     used = decode_batch_used(model)
     if used is not None:
         bsz = used
