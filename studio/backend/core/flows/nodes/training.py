@@ -473,8 +473,9 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
             return None
     from core.flows.nodes.data import _REPO
 
-    if not os.path.isabs(base) and not _REPO.match(base):
-        # A relative local folder (./my-model) loads from where Studio runs, so it is fingerprinted there.
+    if not os.path.isabs(base) and (os.path.exists(base) or not _REPO.match(base)):
+        # A relative local folder (./my-model, or owner/model on disk) loads from where Studio runs,
+        # ahead of a Hub repo of that name, so it is fingerprinted there.
         if not os.path.exists(base):
             return None
         base = os.path.abspath(base)
@@ -804,9 +805,10 @@ def _stream_rows(streamed: Any, start: int, end: Optional[int]) -> Any:
     """Rows start..end of a streamed dataset, reading no further than the slice end or the cap plus one."""
     from datasets import Dataset
 
-    if end is not None and end + 1 - start > HOLDOUT_MAX_ROWS:
-        raise _too_many(end + 1 - start)
-    count = HOLDOUT_MAX_ROWS + 1 if end is None else max(end + 1 - start, 0)
+    # The end may be past the last row (the trainer clamps it): only rows actually read count.
+    count = (
+        HOLDOUT_MAX_ROWS + 1 if end is None else min(max(end + 1 - start, 0), HOLDOUT_MAX_ROWS + 1)
+    )
     rows = list((streamed.skip(start) if start else streamed).take(count))
     if len(rows) > HOLDOUT_MAX_ROWS:
         raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
@@ -1000,10 +1002,54 @@ async def holdout_split(
     held = set(held_ids)
     name = str(dataset.get("ref") or "dataset").replace("/", "-")
     tag = f"{name}-holdout{percent}-seed{seed}"
-    train = await upload_rows(ctx, [r for i, r in enumerate(rows) if i not in held], f"{tag}-train")
-    holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
+    save = upload_rows
+    if dataset.get("source") != "hf" and _is_csv(dataset):
+        # Saved as CSV again, so training reads it as it reads the source: a numeric id column stays
+        # out of a raw-text run's text, which the JSONL's all-string rows would lose.
+        save = _upload_csv
+    train = await save(ctx, [r for i, r in enumerate(rows) if i not in held], f"{tag}-train")
+    holdout = await save(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
     holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": len(rows)})
     return train, holdout
+
+
+def _is_csv(dataset: dict) -> bool:
+    from core.flows.nodes.data import local_seed_path
+    try:
+        return local_seed_path(dataset.get("ref")).lower().endswith(".csv")
+    except FlowNodeError:
+        return False
+
+
+async def _upload_csv(ctx: NodeContext, rows: list[dict], name: str) -> dict:
+    import csv
+    import io
+
+    from core.flows.nodes.data import upload_rows
+
+    columns = list(dict.fromkeys(k for r in rows for k in r))
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames = columns)
+    writer.writeheader()
+    writer.writerows({k: "" if v is None else v for k, v in r.items()} for r in rows)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
+    saved = await ctx.call(
+        "POST",
+        "/api/hub/datasets/upload",
+        files = {"file": (f"{name}.csv", out.getvalue().encode(), "application/octet-stream")},
+    )
+    stored = saved.get("stored_path") if isinstance(saved, dict) else None
+    if not isinstance(stored, str) or not stored:
+        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
+    from hub.utils.host_paths import cache_reference
+
+    return {
+        "kind": "dataset",
+        "source": "local",
+        "ref": cache_reference(stored),
+        "rows": len(rows),
+        "columns": sorted(columns),
+    }
 
 
 def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:

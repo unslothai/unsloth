@@ -970,7 +970,8 @@ def test_local_holdout_streams_only_the_slice_and_checks_the_cap_first(tmp_path,
         assert [r["q"] for r in training._load_rows(local, None, 9, 7)] == ["q7", "q8", "q9"]
         with pytest.raises(FlowNodeError, match = "More than 5"):
             training._load_rows(local, None, None)
-        with pytest.raises(FlowNodeError, match = "10 rows"):
+        # A slice past the cap is refused once more rows than the cap are read, never sooner.
+        with pytest.raises(FlowNodeError, match = "More than 5"):
             training._load_rows(local, None, 9)
         assert len(training._load_rows(local, None, None, 16)) == 4
 
@@ -1239,3 +1240,37 @@ def test_a_small_whole_split_is_streamed_too(monkeypatch):
     asked = _compound_world(monkeypatch, {"train": 3, "test": 50})
     rows = training._hub_rows({"ref": "a/b", "split": "train"}, None, 0, None)
     assert [r["q"] for r in rows] == ["train0", "train1", "train2"] and asked == ["train"]
+
+
+def test_a_csv_hold_out_is_saved_as_csv_and_reads_back_like_the_source(tmp_path, monkeypatch):
+    from datasets import load_dataset
+
+    from utils.datasets.cells import csv_as_text_kwargs
+
+    source = tmp_path / "notes.csv"
+    lines = ["uid,body"] + [f"{123456789012345678 + i},hello {i}" for i in range(20)]
+    source.write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: str(source))
+    started = []
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, dataset_slice_end = 200000)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "local", "ref": str(source)}}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    files = {
+        c[4]["file"][0]: c[4]["file"][1] for c in ctx.calls if c[1] == "/api/hub/datasets/upload"
+    }
+    train = next(body for name, body in files.items() if name.endswith("-train.csv"))
+    path = tmp_path / "train.csv"
+    path.write_bytes(train)
+    # The same feature tags as the source: the id column is still typed, the text still text.
+    assert (
+        csv_as_text_kwargs([str(path)])["features"] == csv_as_text_kwargs([str(source)])["features"]
+    )
+    assert len(load_dataset("csv", data_files = str(path), split = "train")) == 18
+
+
+def test_a_slice_end_past_the_last_row_reads_only_the_rows_there(monkeypatch):
+    from datasets import Dataset
+    streamed = Dataset.from_list([{"q": i} for i in range(20)]).to_iterable_dataset()
+    assert len(training._stream_rows(streamed, 0, 200000)) == 20

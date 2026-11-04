@@ -358,3 +358,25 @@ def test_a_relative_local_base_model_is_fingerprinted(tmp_path, monkeypatch):
     assert asyncio.run(training._model_material(Ctx(), "./my-model")) != first
     # A relative path that is not there cannot be identified: train again.
     assert asyncio.run(training._model_material(Ctx(), "./gone")) is None
+
+
+def test_a_repo_named_folder_on_disk_is_fingerprinted_not_looked_up(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "owner" / "model").mkdir(parents = True)
+    (tmp_path / "owner" / "model" / "model.safetensors").write_bytes(b"one")
+    monkeypatch.setattr(
+        training, "_hub_model_revision", lambda *a: pytest.fail("looked up the Hub")
+    )
+
+    class Ctx:
+        caller = None
+        params: dict = {}
+
+    first = asyncio.run(training._model_material(Ctx(), "owner/model"))
+    (tmp_path / "owner" / "model" / "model.safetensors").write_bytes(b"three")
+    assert (
+        first["base_model_files"]
+        and asyncio.run(training._model_material(Ctx(), "owner/model")) != first
+    )
