@@ -2,8 +2,12 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import json
+import subprocess
 import sys
+import textwrap
+import time
 from contextvars import ContextVar
+from pathlib import Path
 from queue import Queue
 from threading import Event, current_thread
 from types import ModuleType, SimpleNamespace
@@ -261,8 +265,45 @@ def test_unusable_hub_rows_end_a_model_download_in_progress(fake_decision_runtim
         with pytest.raises(ValueError, match = "row 1 has no gold"):
             decision._run(Queue(), Queue(), _decision_config(), "unused-output")
         assert not release.is_set() and loaded == []
+        assert decision._abandoned_downloads[-1].is_alive()
     finally:
         release.set()
+
+
+def test_an_abandoned_download_does_not_hold_the_worker_open(tmp_path):
+    # Shutdown joins executor threads; without the hard exit this child lives for the whole 60 s download.
+    script = textwrap.dedent(
+        """
+        import multiprocessing, threading, time
+        from concurrent.futures import ThreadPoolExecutor
+        from core.training import decision_trainer, worker
+
+        def download():
+            with ThreadPoolExecutor(2) as pool:
+                list(pool.map(time.sleep, [30] * 4))
+
+        thread = threading.Thread(target = download, daemon = True)
+        thread.start()
+        decision_trainer._abandoned_downloads.append(thread)
+        events = multiprocessing.get_context("spawn").Queue()
+        events.put({"type": "error", "error": "bad rows"})
+        worker._end_abandoned_decision_download(events)
+        """
+    )
+    backend = Path(__file__).resolve().parents[1]
+    started = time.monotonic()
+    # A file, not a pipe: the queue's resource tracker would hold a pipe open past the child.
+    log = tmp_path / "child.log"
+    with log.open("w") as out:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script], cwd = backend, stdout = out, stderr = subprocess.STDOUT
+        )
+        try:
+            returncode = proc.wait(timeout = 25)
+        finally:
+            proc.kill()
+    assert returncode == 0, log.read_text()[-2000:]
+    assert time.monotonic() - started < 25
 
 
 def test_a_bad_jsonl_line_names_its_file_and_line(tmp_path):

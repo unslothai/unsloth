@@ -9,6 +9,7 @@ import math
 import os
 import random
 import re
+import sys
 import threading
 import time
 from contextvars import copy_context
@@ -33,6 +34,25 @@ STRUCT_COLUMNS_WARNING = (
 
 class _Stopped(Exception):
     pass
+
+
+_abandoned_downloads: list[threading.Thread] = []
+
+
+def end_abandoned_download(event_queue: Any) -> None:
+    # Shutdown joins the hub executor threads, so the worker would keep downloading and refuse the next run.
+    if not any(thread.is_alive() for thread in _abandoned_downloads):
+        return
+    with contextlib.suppress(Exception):
+        event_queue.close()
+        event_queue.join_thread()
+    for stream in (sys.stdout, sys.stderr):
+        with contextlib.suppress(Exception):
+            stream.flush()
+    with contextlib.suppress(Exception):
+        from utils.worker_stderr import stop_worker_stderr_mirror
+        stop_worker_stderr_mirror()
+    os._exit(0)
 
 
 def _no_decisions_message(reason: str | None) -> str:
@@ -344,15 +364,18 @@ class _DecisionRows:
             except BaseException as exc:
                 failure.append(exc)
 
-        # A daemon thread, so bad rows end the run without waiting out the model download.
         context = copy_context()
         thread = account_thread(target = context.run, args = (run,), daemon = True)
         thread.start()
-        while thread.is_alive():
-            thread.join(0.1)
-            check_stop()
-            if self._done.is_set() and self._error is not None:
-                raise self._error
+        try:
+            while thread.is_alive():
+                thread.join(0.1)
+                check_stop()
+                if self._done.is_set() and self._error is not None:
+                    raise self._error
+        except BaseException:
+            _abandoned_downloads.append(thread)
+            raise
         if failure:
             raise failure[0]
 
