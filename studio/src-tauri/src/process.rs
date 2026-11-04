@@ -4214,10 +4214,14 @@ pub fn stop_attached_backend(port: u16) -> Result<(), String> {
     if !crate::desktop_backend_owner::port_is_listening_blocking(port, Duration::from_millis(150)) {
         return Ok(());
     }
-    if try_exact_port_http_shutdown(port, "Attached backend")
-        && wait_for_port_disconnect(port, Duration::from_secs(5))
-    {
-        return Ok(());
+    if try_exact_port_http_shutdown(port, "Attached backend") {
+        if wait_for_port_disconnect(port, Duration::from_secs(5)) {
+            return Ok(());
+        }
+        // Accepted: the port closes only after an active training run saves (up to 120 s).
+        return Err(format!(
+            "The Unsloth server on port {port} is still shutting down, for example saving a training checkpoint. Try again in a moment."
+        ));
     }
     Err(format!(
         "The Unsloth server on port {port} did not stop. Stop it from the terminal that started it, then try again."
