@@ -477,6 +477,12 @@ export function FlowsGalleryPage(): ReactElement {
   const bringRecipes = async () => {
     setMigrating(true);
     try {
+      // Recipes saved before they moved server-side still sit in this browser until the Data
+      // Recipes page has loaded once: bring them over first, as that page does.
+      const { importLegacyRecipes } = await import(
+        "@/features/data-recipes/data/legacy-import"
+      );
+      await importLegacyRecipes();
       const result = await importAllRecipes();
       const refreshed = result.created.filter((c) => c.replaces).length;
       const made = result.created.length - refreshed;

@@ -1338,3 +1338,35 @@ test("a name another block already has stays a draft in the form, so the recipe 
   // One namespace for every block, as the importer reads them.
   assert.match(forms, /\(other\) => other\.id !== id && other\.name\.trim\(\) === wanted/);
 });
+
+test("moving a column wire to another column moves the reference, in one undo step", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { reconnectWire } = await import("../src/features/flows/editor/use-wire-reconnect.ts");
+  const { inHandle, outHandle } = await import("../src/features/flows/editor/connection-rules.ts");
+  const { catalog, doc } = await import("./flows-editor-fixtures.ts");
+  const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
+  useCatalogStore.getState().setCatalog(catalog);
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
+  const before = useDocStore.getState().graph;
+  const prompt = byName(nodes, "sql_prompt").id;
+  const sql = byName(nodes, "sql").id;
+  const validator = byName(nodes, "sql-validator").id;
+  const id = before.edgeOrder.find((e) => before.edges[e].source === prompt && before.edges[e].target === sql);
+  assert.ok(id);
+  const old = { id, source: prompt, target: sql, sourceHandle: outHandle("out"), targetHandle: inHandle("in") };
+  const error = reconnectWire(old as never, {
+    source: prompt,
+    sourceHandle: outHandle("out"),
+    target: validator,
+    targetHandle: inHandle("in"),
+  });
+  assert.equal(error, null);
+  const after = useDocStore.getState().graph;
+  const wires = Object.values(after.edges).filter((e) => e.source === prompt);
+  assert.ok(wires.some((e) => e.target === validator));
+  assert.ok(!wires.some((e) => e.target === sql), "the old wire is gone");
+  assert.doesNotMatch(JSON.stringify(after.nodes[sql].params.column), /sql_prompt/);
+  useDocStore.getState().undo();
+  assert.match(JSON.stringify(useDocStore.getState().graph.nodes[sql].params.column), /sql_prompt/);
+});

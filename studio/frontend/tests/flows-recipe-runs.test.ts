@@ -126,3 +126,10 @@ test("a schema transform's run downloads its own rows and is never published as 
   assert.match(view, /downloadDataset\(selectedExecution\)/);
   assert.match(view, /!selectedExecution\.output_ref/);
 });
+
+test("Bring in my Data Recipes first moves recipes still saved in this browser", () => {
+  const gallery = readFileSync(new URL("../src/features/flows/gallery/flows-gallery-page.tsx", import.meta.url), "utf8");
+  const bring = gallery.slice(gallery.indexOf("const bringRecipes"));
+  assert.ok(bring.indexOf("await importLegacyRecipes()") > 0);
+  assert.ok(bring.indexOf("await importLegacyRecipes()") < bring.indexOf("await importAllRecipes()"));
+});

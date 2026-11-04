@@ -8,6 +8,8 @@ import {
 } from "@xyflow/react";
 import { useCallback, useMemo, useRef } from "react";
 import { toast } from "sonner";
+import { disconnectColumns } from "../recipe/recipe-actions";
+import { COLUMN_TYPE } from "../recipe/recipe-columns";
 import { HISTORY_LIMIT, useDocStore } from "../stores/doc-store";
 import type { RfEdge } from "./derive-rf";
 import { tryConnect } from "./node-factory";
@@ -33,7 +35,20 @@ export function reconnectWire(
   )
     return null;
   const { graph, meta, past, future } = before;
-  before.removeElements({ edges: [old.id] });
+  const wire = graph.edges[old.id];
+  if (
+    graph.nodes[wire.source]?.type === COLUMN_TYPE &&
+    graph.nodes[wire.target]?.type === COLUMN_TYPE
+  ) {
+    // A wire between recipe columns is the reference in the target's prompt: take it out there,
+    // or the reference sync draws the old wire again.
+    if (!disconnectColumns([old.id]).length) {
+      useDocStore.setState({ graph, past, future });
+      return ""; // disconnectColumns already said why
+    }
+  }
+  if (useDocStore.getState().graph.edges[old.id])
+    useDocStore.getState().removeElements({ edges: [old.id] });
   const error = tryConnect({
     source: connection.source,
     sourceHandle: connection.sourceHandle ?? "",
