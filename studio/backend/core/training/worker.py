@@ -4221,7 +4221,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
     """Subprocess entrypoint. Fresh Python, no stale module state. ``event_queue`` carries
     progress/status/error events to the parent, ``stop_queue`` carries stop commands from it, and
     ``config`` is the training config dict."""
-    # Off on Linux: forked map() workers deadlock.
+    # Coordinator runs before CUDA is touched; never import ddp at module scope (probes GPUs).
+    if config.get("parallelism_mode") == "ddp" and not config.get("_ddp_child"):
+        from .ddp import run_ddp_training_process
+        run_ddp_training_process(
+            event_queue = event_queue,
+            stop_queue = stop_queue,
+            config = config,
+        )
+        return
+
+    # Off on Linux (forked map() workers deadlock); on spawn platforms map() is in-process.
     os.environ["TOKENIZERS_PARALLELISM"] = (
         "true" if sys.platform in ("win32", "darwin") else "false"
     )
@@ -5124,6 +5134,21 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
             return
+        if config.get("_ddp_child") and (
+            getattr(trainer, "_audio_type", None)
+            or getattr(trainer, "is_audio", False)
+            or getattr(trainer, "is_vlm", False)
+            or getattr(trainer, "is_audio_vlm", False)
+        ):
+            event_queue.put(
+                {
+                    "type": "error",
+                    "error": "DDP supports text models only. Choose another GPU placement for "
+                    "vision and audio models.",
+                    "ts": time.time(),
+                }
+            )
+            return
 
         # Packing opt-out reads the probed branch, not client flags; streaming and explicit ranges opt out.
         raw_text_mode = is_cpt_for_dataset or config.get("format_type") == "raw"
@@ -5917,7 +5942,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         from core.import_guards import ensure_real_packages
 
         ensure_real_packages("unsloth_zoo", "unsloth")
-        from unsloth import FastSentenceTransformer, is_bfloat16_supported
+        from unsloth import FastSentenceTransformer
         from sentence_transformers import (
             SentenceTransformerTrainer,
             SentenceTransformerTrainingArguments,
@@ -6276,7 +6301,11 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     warmup_steps_val = config.get("warmup_steps")
     log_frequency = config.get("log_frequency", 50)
 
-    from core.training.trainer import _drop_hf_stdout_callbacks, _hf_stdout_progress_disabled
+    from core.training.trainer import (
+        _drop_hf_stdout_callbacks,
+        _hf_stdout_progress_disabled,
+        _training_precision_flags,
+    )
     from core.training.training import apply_save_strategy
 
     training_args_kwargs = {
@@ -6284,8 +6313,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
         "per_device_train_batch_size": batch_size,
         "gradient_accumulation_steps": gradient_accumulation_steps,
         "learning_rate": lr_value,
-        "fp16": not is_bfloat16_supported(),
-        "bf16": is_bfloat16_supported(),
+        **_training_precision_flags(),
         "logging_steps": 1,
         "report_to": ["wandb"] if config.get("enable_wandb") else "none",
         "lr_scheduler_type": config.get("lr_scheduler_type", "linear"),

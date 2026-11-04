@@ -9,9 +9,8 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { validateS3Source, validateTrainingConfig } = await import(
-  "../src/features/training/lib/validation.ts"
-);
+const { validateS3Source, validateTrainingConfig } =
+  await import("../src/features/training/lib/validation.ts");
 
 const validConfig = {
   selectedModel: "org/model",
@@ -49,6 +48,85 @@ test("training validation rejects non-positive learning rates", () => {
       ok: false,
       errorKey: "studio.training.validation.learningRatePositive",
     },
+  );
+});
+
+test("launch validation checks live membership and rejects an unresolved probe", () => {
+  const config = {
+    ...validConfig,
+    parallelismMode: "ddp" as const,
+    selectedGpuIds: [2, 5],
+  };
+  for (const available of [null, [], [2], [0, 1]]) {
+    assert.equal(
+      validateTrainingConfig(config, undefined, true, available).errorKey,
+      "studio.training.validation.gpuSelectionUnavailable",
+    );
+  }
+  assert.equal(
+    validateTrainingConfig(config, undefined, true, [2, 5]).ok,
+    true,
+  );
+  assert.equal(
+    validateTrainingConfig(
+      { ...config, parallelismMode: "auto", selectedGpuIds: null },
+      undefined,
+      true,
+      null,
+    ).ok,
+    true,
+  );
+});
+
+test("training validation rejects empty explicit GPU selections", () => {
+  assert.equal(
+    validateTrainingConfig({
+      ...validConfig,
+      parallelismMode: "single",
+      selectedGpuIds: [],
+    }).errorKey,
+    "studio.training.validation.singleGpuRequired",
+  );
+  assert.equal(
+    validateTrainingConfig({
+      ...validConfig,
+      parallelismMode: "ddp",
+      selectedGpuIds: [0],
+    }).errorKey,
+    "studio.training.validation.multipleGpusRequired",
+  );
+});
+
+test("DDP is rejected for every model that is not a text model", () => {
+  for (const model of [
+    { isEmbeddingModel: true },
+    { isVisionModel: true },
+    { isAudioModel: true },
+    { isDatasetImage: true },
+    { modelType: "embeddings" as const },
+    { modelType: "decision" as const },
+    { modelType: "vision" as const },
+  ]) {
+    assert.equal(
+      validateTrainingConfig({
+        ...validConfig,
+        ...model,
+        parallelismMode: "ddp",
+        selectedGpuIds: [0, 1],
+      }).errorKey,
+      "studio.training.validation.ddpModelUnsupported",
+    );
+  }
+});
+
+test("single-GPU validation still requires a selection even without a refresh result", () => {
+  assert.equal(
+    validateTrainingConfig({
+      ...validConfig,
+      parallelismMode: "single",
+      selectedGpuIds: null,
+    }).errorKey,
+    "studio.training.validation.singleGpuRequired",
   );
 });
 
