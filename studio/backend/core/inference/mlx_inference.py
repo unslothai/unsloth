@@ -2265,6 +2265,40 @@ def _mlx_stream_detokenizer(source):
     return independent
 
 
+@functools.cache
+def _eager_spm_detokenizer_class():
+    from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
+    class EagerSPMStreamingDetokenizer(SPMStreamingDetokenizer):
+        # mlx-vlm streams pass the special ids to drop; mlx-lm's add_token takes none.
+        def add_token(
+            self,
+            token,
+            skip_special_token_ids = (),
+        ):
+            if token not in skip_special_token_ids:
+                super().add_token(token)
+
+    return EagerSPMStreamingDetokenizer
+
+
+def _stream_spm_tokens_eagerly(processor):
+    """mlx-vlm's SPM detokenizer releases a piece only once the next word starts, so every streamed
+    token, the first included, reaches the client a decode step late; mlx-lm's releases each as it
+    is added, holding back only an unfinished UTF-8 sequence."""
+    held = getattr(processor, "detokenizer", None)
+    if (type(held).__module__, type(held).__name__) != (
+        "mlx_vlm.tokenizer_utils",
+        "SPMStreamingDetokenizer",
+    ):
+        return
+    try:
+        processor.detokenizer = _eager_spm_detokenizer_class()(
+            getattr(processor, "tokenizer", processor), trim_space = held.trim_space
+        )
+    except Exception as exc:  # noqa: BLE001 -- mlx-vlm's still streams the same text, only later
+        logger.debug("MLX streaming detokenizer kept as loaded (%s)", exc)
+
+
 class _MlxStreamedText:
     """A reply rebuilt from the ids the runtime sampled, for turns carrying native controls.
 
@@ -6227,6 +6261,7 @@ class MLXInferenceBackend:
             processor = tokenizer_or_processor
             if is_lora:
                 processor = load_mlx_adapter_processor(processor, model_name, hf_token)
+            _stream_spm_tokens_eagerly(processor)
             self._model = model
             self._processor = processor
             self._tokenizer = getattr(processor, "tokenizer", processor)
