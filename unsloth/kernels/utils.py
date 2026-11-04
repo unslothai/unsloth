@@ -484,6 +484,14 @@ def _has_packed_qweight(proj):
     )
 
 
+def _fp8_lora_state(base_layer, W):
+    """The fp8 frozen-base state (kernels/fp8_lora.py, float8_training with LoRA), refreshed if W changed."""
+    state = base_layer.__dict__.get("_unsloth_fp8_lora")
+    if state is None or W.requires_grad:
+        return None
+    return state.refresh(W)
+
+
 def _is_packed_state(quant_state):
     return getattr(type(quant_state), "_unsloth_packed_weight_state", False)
 
@@ -527,6 +535,8 @@ def get_lora_parameters(proj):
 
     if packed is not None:
         W_quant = packed[1]
+    elif W_quant is None:
+        W_quant = _fp8_lora_state(base_layer, W)
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None
@@ -590,6 +600,8 @@ def get_lora_parameters_bias(proj):
 
     if packed is not None:
         W_quant = packed[1]
+    elif W_quant is None:
+        W_quant = _fp8_lora_state(base_layer, W)
 
     if getattr(proj, "disable_adapters", True) or proj.merged:
         return W, W_quant, None, None, None, base_layer.bias
@@ -2024,6 +2036,8 @@ def _lora_fused_ok(W, W_quant, dtype):
         return False
     if not _is_compiling() and W.layout != torch.strided:
         return False
+    if getattr(type(W_quant), "_unsloth_fp8_dgrad", False):
+        return W_quant.dtype == dtype
     if type(W_quant) is Int4QuantState or _is_packed_state(W_quant):
         return False
     if W_quant is None:
@@ -2081,22 +2095,7 @@ def matmul_lora(
     if XA is not None and out is not None and _shares_storage(out, XA):
         XA = None
 
-    if isinstance(W, Float8Tensor):
-        assert W.ndim == 2
-        if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
-            # Rowwise scaling becomes colwise after transpose, so this detects the backward pass.
-            W = W.dequantize()
-        else:
-            W = W.contiguous()
-        out = torch_matmul(X, W.t(), out = out)
-    elif W.dtype == torch.float8_e4m3fn:
-        out = fp8_linear(X, W, W_quant)
-    elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
-        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
-        out = _int4_matmul(X, W, W_quant, out = out)
-    elif _is_packed_state(W_quant):
-        out = W_quant.matmul(X, W, out = out)
-    elif (
+    lora_first = (
         A is not None
         and fused
         # Compiled inside torch.func transforms or native forward-mode AD: the op has no forward-mode or
@@ -2119,11 +2118,31 @@ def matmul_lora(
                 and not _shares_storage(out, W, X, A, B, XA)
             )
         )
+    )
+    if isinstance(W, Float8Tensor):
+        assert W.ndim == 2
+        if W.block_size[0] == W.shape[0] and W.block_size[1] == 1:
+            # Rowwise scaling becomes colwise after transpose, so this detects the backward pass.
+            W = W.dequantize()
+        else:
+            W = W.contiguous()
+        out = torch_matmul(X, W.t(), out = out)
+    elif W.dtype == torch.float8_e4m3fn:
+        out = fp8_linear(X, W, W_quant)
+    elif type(W_quant) is Int4QuantState and W.stride(-1) == 1:
+        # Forward orientation: few rows use the fused kernel, the rest decode once + cuBLAS.
+        out = _int4_matmul(X, W, W_quant, out = out)
+    elif _is_packed_state(W_quant) and not (
+        lora_first and getattr(type(W_quant), "_unsloth_fp8_dgrad", False)
     ):
+        out = W_quant.matmul(X, W, out = out)
+    elif lora_first:
         if XA is None:
             XA = torch_matmul(X, A.t() if A.dtype is dtype else A.t().to(dtype))
         B = B.t() if B.dtype is dtype else B.t().to(dtype)
-        if out is not None:
+        if getattr(type(W_quant), "_unsloth_fp8_dgrad", False):
+            out = W_quant.lora_first(X, W, XA, B, s, out = out)
+        elif out is not None:
             # Eager only: a traced caller buffer cannot be checked for aliasing (_shares_storage). Dequantize
             # first: the caller's buffer may share storage with the quant state (absmax, code, ...).
             if W_quant is not None:

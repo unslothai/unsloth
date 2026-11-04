@@ -1145,6 +1145,46 @@ def _prepare_gdn(layer, hidden_states):
         _GDN_OP[0] = False
 
 
+# PEFT's ParamWrapper (target_parameters on a non-expert weight, e.g. a MoE router) registers a torch
+# parametrization on every forward and removes it after, and torch builds a new Parametrized<Class>
+# subclass per registration. Dynamo guards a module's type id, so each call recompiles the module's
+# forward whenever the fresh class lands at an address it has not seen (how many do depends on the
+# allocator: a different code path shifted the count). One class per module instance keeps the id.
+_PARAMETRIZED_CLASSES = weakref.WeakKeyDictionary()
+
+
+def _stable_parametrized_classes():
+    try:
+        from torch.nn.utils import parametrize
+    except Exception:
+        return
+    original = getattr(parametrize, "_inject_new_class", None)
+    if original is None or getattr(original, "_unsloth_stable", False):
+        return
+
+    # Eager: the class swap is the graph break PEFT's registration already takes, and Dynamo must
+    # not fold the cache lookup into a graph.
+    @torch.compiler.disable
+    @functools.wraps(original)
+    def _inject_new_class(module):
+        cls = module.__class__
+        try:
+            cached = _PARAMETRIZED_CLASSES.get(module)
+        except TypeError:  # not weak-referenceable / hashable
+            return original(module)
+        if cached is not None and cached.__bases__ == (cls,):
+            module.__class__ = cached
+            return
+        original(module)
+        try:
+            _PARAMETRIZED_CLASSES[module] = module.__class__
+        except TypeError:
+            pass
+
+    _inject_new_class._unsloth_stable = True
+    parametrize._inject_new_class = _inject_new_class
+
+
 # zoo's Gemma-4 sliding router scans the mask (data dependent) and declines while compiling, so
 # the block runs the scan eagerly and a router wrapper reads the verdict stored on the mask.
 _BAND_MODULE = "unsloth_zoo.temporary_patches.gemma4_banded_attention"
@@ -1422,8 +1462,10 @@ def _wrap(
     cls,
     compile_options,
     kinds = 1,
+    *,
+    install = True,
 ):
-    original = cls.forward
+    original = getattr(cls.forward, "_unsloth_block_original", cls.forward)
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     try:
@@ -1690,7 +1732,9 @@ def _wrap(
     forward._unsloth_block_original = original
     forward._unsloth_block_state = state
     setattr(forward, _MARK, True)
-    cls.forward = forward
+    if install:
+        cls.forward = forward
+    return forward
 
 
 _TOWER_SEGMENTS = (
@@ -1980,6 +2024,7 @@ def patch_block_compile(model):
         _rebind_class(cls)
     _flex_split_hook()
     _gemma4_router_hook()
+    _stable_parametrized_classes()
     if any(type(m).__name__ == "Linear4bit" for m in model.modules()):
         _nf4_in_blocks()
     kinds = {}
@@ -1999,10 +2044,28 @@ def patch_block_compile(model):
             continue
         _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
+    for layer in compiled_layers:
+        if not any(m.__dict__.get("_unsloth_fp8_lora") is not None for m in layer.modules()):
+            continue
+        default = type(layer).forward
+        precise = getattr(default, "_unsloth_fp8_block_forward", None)
+        if precise is None:
+            # FP8 dgrad amplifies elided BF16 rounding; other instances of this class keep their options.
+            precise = _wrap(
+                type(layer),
+                {**_COMPILE_OPTIONS, "emulate_precision_casts": True},
+                len(kinds.get(type(layer), ())) or 1,
+                install = False,
+            )
+            default._unsloth_fp8_block_forward = precise
+        if getattr(layer.forward, "__func__", None) is not precise:
+            layer.forward = types.MethodType(precise, layer)
+            layer.__dict__.pop("_unsloth_block_checked", None)
     if _COMPILE_OPTIONS.get("triton.cudagraphs") or (
         _CUDAGRAPH_MODE == "auto" and _auto_platform_reason() is None
     ):
         _watch_hidden_states(model)
+    model.__dict__["_unsloth_block_compile_installed"] = True
     if _CUDAGRAPH_MODE == "auto":
         # A new model decides again: a launch-bound model loaded first must not turn graphs on for
         # a GPU-bound one. Graphs that went off for shape churn stay off.

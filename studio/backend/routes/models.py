@@ -246,7 +246,7 @@ try:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -280,7 +280,7 @@ except ImportError:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -2110,10 +2110,15 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        # Off-loop: building the singleton calls get_device(), which would freeze on the torch import.
-        inference_backend = await asyncio.to_thread(get_inference_backend)
+        from core.inference.defaults import get_default_models
 
-        default_models = inference_backend.default_models
+        # Chat reads this on first paint: listing suggestions must not construct the runtime or probe hardware.
+        inference_backend = peek_inference_backend()
+        default_models = await asyncio.to_thread(
+            lambda: inference_backend.default_models
+            if inference_backend is not None
+            else get_default_models(detect_hardware = False)
+        )
         if account_access.managed_account():
             default_models = [
                 m
@@ -2163,7 +2168,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         hide_resident = account_access.resident_hidden(
             "chat", getattr(inference_backend, "active_model_name", None)
         )
-        if not hide_resident:
+        if not hide_resident and inference_backend is not None:
             loaded_models += _orchestrator_models(inference_backend)
 
         llama_backend = get_llama_cpp_backend()

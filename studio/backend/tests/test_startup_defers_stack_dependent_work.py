@@ -114,6 +114,12 @@ def test_post_warm_thread_is_started_by_the_lifespan():
 
 def test_post_warm_runs_repair_and_linked_folder_lifecycle(monkeypatch):
     import main as main_mod
+
+    monkeypatch.setattr(
+        main_mod,
+        "_startup_ml_warmup_features",
+        frozenset({"hardware", "text", "datasets", "media", "quantization"}),
+    )
     import utils.mlx_repair as mlx_mod
 
     order: list[str] = []
@@ -134,6 +140,12 @@ def test_post_warm_runs_repair_and_linked_folder_lifecycle(monkeypatch):
 
 def test_a_failing_mlx_probe_does_not_strand_linked_folder_startup(monkeypatch):
     import main as main_mod
+
+    monkeypatch.setattr(
+        main_mod,
+        "_startup_ml_warmup_features",
+        frozenset({"hardware", "text", "datasets", "media", "quantization"}),
+    )
     import utils.mlx_repair as mlx_mod
 
     ran: list[str] = []
