@@ -12362,8 +12362,8 @@ _MCP_TOOL_LOAD_SHARE = 0.5
 _MCP_TOOL_SEARCH_SUMMARY_CHARS = 80
 _MCP_TOOL_SEARCH_MAX_LIMIT = 10
 _MCP_TOOL_SEARCH_MAX_NAMES = 200
-# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds. Its
-# ranked tools hold too, until a message's best match is not among them.
+# Tools a thread ran stay listed on its later turns, so the prompt prefix (and llama-server's cache) holds; its
+# ranked tools hold until a message's best match is listable and not among them.
 _MCP_LOADED_PER_THREAD = 8
 _MCP_LOADED_THREADS_MAX = 512
 MCP_TOOL_SEARCH_NAME = "mcp_tool_search"
@@ -12691,9 +12691,10 @@ def _mcp_listing(listed: list[tuple[dict, list[dict], list[dict]]]) -> list[dict
     chosen = filled(held)
     held = [name for name in held if by_name[name] in chosen]
     if ranked and (not held or by_name[ranked[0]] not in chosen):
-        held = ranked
-        chosen = filled(held)
-        held = [name for name in held if by_name[name] in chosen]
+        fresh = filled(ranked)
+        # A best match too big to list is not worth dropping the held tools for.
+        if not held or by_name[ranked[0]] in fresh:
+            chosen, held = fresh, [name for name in ranked if by_name[name] in fresh]
     _mcp_hold_ranking(held)
     return chosen
 

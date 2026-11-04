@@ -2517,6 +2517,36 @@ def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch,
     assert _thread_listing(tools_mod, searching, chat) == second
 
 
+def test_mcp_listing_holds_when_the_best_match_cannot_fit(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    sizes = {"ping": 40, "create-pages": 40, "query": 1000}
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        for name, size in sizes.items():
+            if text.startswith("{") and f'"name":"mcp__srv1__{name}"' in text:
+                return size
+        return 40 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 100 / searching)
+    rankings = {"first": ["ping", "create-pages"], "second": ["query", "move-pages"]}
+
+    def ranked(specs, query):
+        names = [spec["function"]["name"] for spec in specs]
+        return [names.index(f"mcp__srv1__{name}") for name in rankings[query]], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+
+    first = _thread_listing(tools_mod, searching, [{"role": "user", "content": "first"}])
+    assert _names(first) == ["mcp_tool_search", "mcp__srv1__ping", "mcp__srv1__create-pages"]
+    assert _thread_listing(tools_mod, searching, [{"role": "user", "content": "second"}]) == first
+
+
 def test_mcp_listing_follows_a_change_of_subject(tmp_path, monkeypatch, searching):
     from core.inference import tools as tools_mod
 
