@@ -81,23 +81,64 @@ export function useMediaUrl(
   return url;
 }
 
+/** A small copy of an image, so a zoomed-out canvas full of them pans without decoding full size. */
+function useSmallUrl(url: string | null, enabled: boolean): string | null {
+  const [small, setSmall] = useState<string | null>(null);
+  const want = enabled && !!url && !small;
+  useEffect(() => {
+    if (!want || !url) return;
+    let alive = true;
+    let made: string | null = null;
+    fetch(url)
+      .then((r) => r.blob())
+      .then((blob) => createImageBitmap(blob, { resizeWidth: SMALL_PX, resizeQuality: "low" }))
+      .then((bitmap) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+        canvas.getContext("2d")?.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        return new Promise<Blob | null>((done) => canvas.toBlob(done, "image/webp", 0.7));
+      })
+      .then((blob) => {
+        if (!blob || !alive) return;
+        made = URL.createObjectURL(blob);
+        setSmall(made);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [want, url]);
+  useEffect(() => () => {
+    if (small) URL.revokeObjectURL(small);
+  }, [small]);
+  useEffect(() => setSmall(null), [url]);
+  return small;
+}
+
+const SMALL_PX = 192;
+
+/** `low`: the canvas is zoomed far out, so a small copy and no video controls are plenty. */
 export function MediaThumb({
   media,
   className,
-}: { media: MediaValue; className?: string }) {
+  low = false,
+}: { media: MediaValue; className?: string; low?: boolean }) {
   const url = useMediaUrl(media);
+  const small = useSmallUrl(media.kind === "image" ? url : null, low);
   if (media.kind === "image") {
     return url ? (
       <img
-        src={url}
+        src={(low && small) || url}
         alt={media.prompt ?? ""}
         loading="lazy"
         decoding="async"
         draggable={false}
-        className={className}
+        className={`flow-media ${className ?? ""}`}
       />
     ) : (
-      <div className={`${className ?? ""} animate-pulse bg-white/5`} />
+      <div className={`${className ?? ""} animate-pulse bg-muted`} />
     );
   }
   if (media.kind === "audio") {
@@ -110,7 +151,7 @@ export function MediaThumb({
         className="nodrag h-8 w-full"
       />
     ) : (
-      <div className="h-8 w-full animate-pulse rounded bg-white/5" />
+      <div className="h-8 w-full animate-pulse rounded bg-muted" />
     );
   }
   return url ? (
@@ -120,10 +161,10 @@ export function MediaThumb({
       muted={true}
       playsInline={true}
       preload="metadata"
-      controls={true}
-      className={`nodrag ${className ?? ""}`}
+      controls={!low}
+      className={`flow-media nodrag ${className ?? ""}`}
     />
   ) : (
-    <div className={`${className ?? ""} animate-pulse bg-white/5`} />
+    <div className={`${className ?? ""} animate-pulse bg-muted`} />
   );
 }

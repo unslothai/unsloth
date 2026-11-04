@@ -2,24 +2,40 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import "@xyflow/react/dist/style.css";
-import { useNavigate } from "@tanstack/react-router";
+import "./flows-editor.css";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { useOptionalSidebar } from "@/components/ui/sidebar";
+import { Spinner } from "@/components/ui/spinner";
+import { shouldUseNativeMacWindowTitlebar } from "@/components/tauri/window-titlebar";
+import { useBlocker, useNavigate } from "@tanstack/react-router";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useReactFlow } from "@xyflow/react";
 import { type ReactElement, useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { getFlow } from "../api";
 import { ensureCatalog } from "../stores/catalog-loader";
+import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
 import { needsNewerStudio } from "../stores/catalog-store";
 import { documentSignature, useDocStore } from "../stores/doc-store";
 import { usePinsStore } from "../stores/pins-store";
-import { useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { FlowCanvas } from "./canvas";
 import { CapabilityBanner } from "./capability-banner";
 import { Inspector } from "./inspector";
 import { addNodeConnected } from "./node-factory";
 import { Palette } from "./palette";
+import { placementPosition } from "./placement";
 import { QuickAdd } from "./quick-add";
 import { detachRun, hydrateRuntime } from "./run-controller";
+import { syncResidentModel } from "./resident-sync";
+import { RunBar } from "./run-bar";
 import { RunDrawer } from "./run-drawer";
 import { Toolbar } from "./toolbar";
 import {
@@ -29,6 +45,34 @@ import {
   useAutosave,
 } from "./use-autosave";
 import { useEditorShortcuts } from "./use-editor-shortcuts";
+
+const SAVE_WAIT_MS = 10_000;
+// The shell gives this chat-like route no top inset; start below the titlebar on Mac and
+// Windows the way Train and Recipe Studio do.
+const BELOW_TITLEBAR =
+  "pt-[var(--studio-non-chat-content-top-inset,var(--studio-content-top-inset,0px))]";
+
+/** Whether to stay: saves first, and a failed or stuck save asks instead of leaving the user stuck. */
+function stayUnlessSaved(): Promise<boolean> {
+  const wait = new Promise<"stuck">((resolve) =>
+    setTimeout(() => resolve("stuck"), SAVE_WAIT_MS),
+  );
+  return Promise.race([flushSave(), wait]).then((saved) => {
+    if (saved === true) return false;
+    return new Promise<boolean>((resolve) => {
+      toast.warning(
+        saved === "stuck" ? "Still saving this flow" : "This flow isn't saved",
+        {
+          description: "Leave anyway and lose the unsaved changes, or stay.",
+          duration: 15_000,
+          action: { label: "Leave anyway", onClick: () => resolve(false) },
+          onDismiss: () => resolve(true),
+          onAutoClose: () => resolve(true),
+        },
+      );
+    });
+  });
+}
 
 type LoadState =
   | { status: "loading" }
@@ -41,85 +85,74 @@ function EditorBody({
 }: { flowId: string; readOnly: boolean }) {
   const navigate = useNavigate();
   const paletteOpen = useUiStore((s) => s.paletteOpen);
-  const drawerOpen = useUiStore((s) => s.drawerOpen);
-  const runStatus = useRuntimeStore((s) => s.runStatus);
   const { screenToFlowPosition } = useReactFlow();
+  const sidebar = useOptionalSidebar();
+  const sidebarBeside = !!sidebar?.open && !sidebar.isMobile;
+  // On Mac the toolbar takes the titlebar row itself, on the canvas colour, as chat's header does.
+  const [macChrome] = useState(shouldUseNativeMacWindowTitlebar);
   useEditorShortcuts(!readOnly);
   useAutosave(!readOnly);
+  // Every way out (the window's back arrow, a link, the sidebar, Play) saves first.
+  useBlocker({ shouldBlockFn: stayUnlessSaved, enableBeforeUnload: false });
 
-  const addAtCenter = useCallback(
-    (type: string) => {
-      const pane = document
-        .querySelector('[data-testid="flows-canvas"]')
-        ?.getBoundingClientRect();
-      const center = pane
-        ? screenToFlowPosition({
-            x: pane.left + pane.width / 2,
-            y: pane.top + pane.height / 2,
-          })
-        : { x: 0, y: 0 };
-      const jitter = () => Math.round((Math.random() - 0.5) * 60);
-      const node = addNodeConnected(type, [
-        Math.round(center.x - 130 + jitter()),
-        Math.round(center.y - 60 + jitter()),
-      ]);
-      if (node) {
-        useUiStore.getState().setSelection([node.id], []);
-        useUiStore.getState().openInspector(node.id);
-      }
+  const dropAt = useCallback(
+    (type: string, x: number, y: number) => {
+      const target = document.elementFromPoint(x, y);
+      if (!target?.closest('[data-testid="flows-canvas"]')) return;
+      const snap = useUiStore.getState().snapToGrid;
+      addNodeConnected(
+        type,
+        placementPosition(screenToFlowPosition({ x, y }), snap),
+      );
     },
     [screenToFlowPosition],
   );
 
   return (
     <div
-      className="flows-editor dark flex h-full min-h-0 w-full flex-col bg-zinc-950 text-zinc-100"
+      // The titlebar strip and toolbar share the sidebar's colour, so the top reads as one surface with it.
+      className={`flows-editor flex h-full min-h-0 w-full flex-col text-foreground ${macChrome ? "bg-background" : `bg-sidebar ${BELOW_TITLEBAR}`}`}
       data-testid="flows-editor"
     >
       <Toolbar
-        onBack={() =>
-          void flushSave().then((saved) => {
-            if (saved) void navigate({ to: "/flows" });
-          })
-        }
-        onPlay={() =>
-          void flushSave().then((saved) => {
-            if (saved)
-              void navigate({ to: "/flows/$flowId/play", params: { flowId } });
-          })
-        }
-        onApp={() =>
-          void flushSave().then((saved) => {
-            if (saved)
-              void navigate({ to: "/flows/$flowId/app", params: { flowId } });
-          })
-        }
+        readOnly={readOnly}
+        titlebar={macChrome}
+        clearNav={macChrome && !(sidebar?.pinned ?? true)}
       />
       {readOnly && (
-        <div className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[12px] text-amber-200">
-          This flow uses blocks this version of Unsloth Studio does not know, so
-          it opens read-only. Update Studio to edit or run it.
-        </div>
+        <Alert className="rounded-none border-x-0 border-t-0 py-2">
+          <AlertDescription className="text-xs text-amber-700 dark:text-amber-300">
+            This flow uses blocks this version of Unsloth Studio does not know,
+            so it opens read-only. Update Studio to edit or run it.
+          </AlertDescription>
+        </Alert>
       )}
       {!readOnly && <CapabilityBanner flowId={flowId} />}
-      <div className="flex min-h-0 flex-1">
-        {paletteOpen && !readOnly && <Palette onAdd={addAtCenter} />}
+      <div className="relative flex min-h-0 flex-1 overflow-hidden bg-background">
+        {/* Curves into the app sidebar while it is open beside it. A painted corner, not a clipped
+            radius: WebKit can leave a clip over the canvas layer stale for seconds. */}
+        <span
+          aria-hidden="true"
+          className={`pointer-events-none absolute top-0 left-0 z-[1002] size-3 origin-top-left bg-[radial-gradient(circle_at_100%_100%,transparent_11px,var(--color-sidebar)_12px)] transition-transform duration-200 ease-out ${sidebarBeside && !macChrome ? "scale-100" : "scale-0"}`}
+          data-testid="flows-editor-corner"
+        />
+        {paletteOpen && !readOnly && <Palette onDrop={dropAt} />}
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="relative min-h-0 flex-1">
             <FlowCanvas readOnly={readOnly} />
-            {!drawerOpen && runStatus && (
-              <button
-                type="button"
-                onClick={() => useUiStore.getState().setDrawer(true, "run")}
-                className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-zinc-900/90 px-3 py-1 text-[12px] capitalize text-zinc-300 shadow-lg hover:bg-zinc-800"
-              >
-                Run: {runStatus}
-              </button>
-            )}
           </div>
           <RunDrawer />
         </div>
         <Inspector />
+        {/* Over the whole editor body, not the canvas, so it stays put as panels open. */}
+        <RunBar
+          onPlay={() =>
+            void navigate({ to: "/flows/$flowId/play", params: { flowId } })
+          }
+          onApp={() =>
+            void navigate({ to: "/flows/$flowId/app", params: { flowId } })
+          }
+        />
       </div>
       <QuickAdd />
     </div>
@@ -128,6 +161,11 @@ function EditorBody({
 
 export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
   const [state, setState] = useState<LoadState>({ status: "loading" });
+
+  useEffect(() => {
+    syncResidentModel();
+    return subscribeResidentStatusRefresh(syncResidentModel);
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -168,19 +206,22 @@ export function FlowsEditorPage({ flowId }: { flowId: string }): ReactElement {
 
   if (state.status === "loading") {
     return (
-      <div className="flex h-full flex-1 items-center justify-center bg-zinc-950 text-sm text-zinc-500">
-        Opening flow…
+      <div className="flex h-full flex-1 items-center justify-center gap-2 bg-background text-sm text-muted-foreground">
+        <Spinner /> Opening flow…
       </div>
     );
   }
   if (state.status === "error") {
     return (
-      <div className="flex h-full flex-1 flex-col items-center justify-center gap-2 bg-zinc-950 text-sm text-zinc-400">
-        <p>{state.message}</p>
-        <a href="/flows" className="text-sky-400 hover:underline">
-          Back to flows
-        </a>
-      </div>
+      <Empty className="h-full bg-background">
+        <EmptyHeader>
+          <EmptyTitle>Could not open the flow</EmptyTitle>
+          <EmptyDescription>{state.message}</EmptyDescription>
+        </EmptyHeader>
+        <Button variant="outline" asChild={true}>
+          <a href="/flows">Back to flows</a>
+        </Button>
+      </Empty>
     );
   }
   return (

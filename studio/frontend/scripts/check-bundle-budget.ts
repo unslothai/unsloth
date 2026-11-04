@@ -431,7 +431,9 @@ export const BUDGET = {
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
   // Flows: +12,232 B raw / +6,300 B transfer over 1610b38cc4 (shared startup chunks); Flows itself stays lazy.
-  transferBytes: 2_102_627,
+  // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
+  // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
+  transferBytes: 2_104_200,
   rawBytes: 6_970_945,
 };
 

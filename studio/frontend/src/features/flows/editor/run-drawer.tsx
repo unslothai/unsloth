@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Empty, EmptyDescription } from "@/components/ui/empty";
+import { Progress } from "@/components/ui/progress";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useReactFlow } from "@xyflow/react";
 import { memo, useMemo } from "react";
@@ -19,14 +24,25 @@ import { MediaThumb, isMediaValue } from "./media";
 import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 const RUN_STATUS_STYLE: Record<string, string> = {
-  queued: "bg-zinc-700 text-zinc-200",
-  running: "bg-sky-600 text-white",
-  cancelling: "bg-amber-600 text-white",
-  cancelled: "bg-zinc-600 text-zinc-100",
-  completed: "bg-emerald-600 text-white",
-  failed: "bg-red-600 text-white",
-  interrupted: "bg-amber-700 text-white",
+  queued: "text-muted-foreground",
+  running: "border-border bg-muted text-foreground",
+  cancelling:
+    "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+  cancelled: "text-muted-foreground",
+  completed:
+    "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+  failed: "border-destructive/25 bg-destructive/10 text-destructive",
+  interrupted:
+    "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
 };
+
+function DrawerEmpty({ children }: { children: string }) {
+  return (
+    <Empty className="p-6">
+      <EmptyDescription className="text-xs">{children}</EmptyDescription>
+    </Empty>
+  );
+}
 
 function duration(rt: NodeRuntime, now: number): string {
   if (!rt.startedAt) return "";
@@ -55,14 +71,10 @@ function Timeline() {
     [graph, runtimeNodes],
   );
   if (!rows.length)
-    return (
-      <p className="px-4 py-6 text-center text-[12px] text-zinc-500">
-        Run the flow to see each step here.
-      </p>
-    );
+    return <DrawerEmpty>Run the flow to see each step here.</DrawerEmpty>;
   const now = Date.now();
   return (
-    <ul className="divide-y divide-white/5">
+    <ul className="divide-y divide-border/60">
       {rows.map(({ id, node, rt }) => (
         <TimelineRow
           key={id}
@@ -99,44 +111,42 @@ const TimelineRow = memo(function TimelineRow({
           useUiStore.getState().openInspector(id);
           void fitView({ nodes: [{ id }], duration: 300, maxZoom: 1.2 });
         }}
-        className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-[12.5px] hover:bg-white/5"
+        className="flex w-full items-center gap-3 px-4 py-1.5 text-left text-xs transition hover:bg-muted/35"
       >
         <span
           className={`h-2 w-2 shrink-0 rounded-full ${
             rt.status === "failed"
-              ? "bg-red-500"
+              ? "bg-destructive"
               : rt.status === "running" || rt.status === "loading_model"
-                ? "animate-pulse bg-sky-400"
+                ? "animate-pulse bg-primary"
                 : rt.status === "done" || rt.status === "cached"
-                  ? "bg-emerald-400"
-                  : "bg-zinc-500"
+                  ? "bg-emerald-500"
+                  : "bg-muted-foreground"
           }`}
         />
-        <span className="w-48 truncate text-zinc-200">{title}</span>
-        <span className="w-24 text-zinc-500">
+        <span className="w-48 truncate text-foreground">{title}</span>
+        <span className="w-24 text-muted-foreground">
           {rt.cached ? "cached" : rt.status.replace("_", " ")}
         </span>
         {rt.status === "failed" ? (
-          <span className="min-w-0 flex-1 text-red-300">
+          <span className="min-w-0 flex-1 text-destructive">
             {rt.error || "It stopped with an error"}{" "}
-            <span className="whitespace-nowrap text-zinc-400 underline underline-offset-2">
+            <span className="whitespace-nowrap text-muted-foreground underline underline-offset-2">
               Open block
             </span>
           </span>
         ) : (
-          <span className="min-w-0 flex-1 truncate text-zinc-500">
+          <span className="min-w-0 flex-1 truncate text-muted-foreground">
             {rt.error ?? rt.phase ?? ""}
           </span>
         )}
         {rt.progress !== null && rt.status === "running" && (
-          <span className="h-1 w-24 overflow-hidden rounded bg-white/10">
-            <span
-              className="block h-full bg-sky-400"
-              style={{ width: `${Math.round(rt.progress * 100)}%` }}
-            />
-          </span>
+          <Progress
+            value={Math.round(rt.progress * 100)}
+            className="h-1 w-24"
+          />
         )}
-        <span className="w-14 text-right font-mono text-[11px] text-zinc-500">
+        <span className="w-14 text-right text-ui-11 text-muted-foreground tabular-nums">
           {duration(rt, now)}
         </span>
       </button>
@@ -147,13 +157,9 @@ const TimelineRow = memo(function TimelineRow({
 function Logs() {
   const logs = useRuntimeStore((s) => s.logs);
   if (!logs.length)
-    return (
-      <p className="px-4 py-6 text-center text-[12px] text-zinc-500">
-        No log lines yet.
-      </p>
-    );
+    return <DrawerEmpty>No log lines yet.</DrawerEmpty>;
   return (
-    <pre className="px-4 py-2 font-mono text-[11px] leading-relaxed text-zinc-400">
+    <pre className="px-4 py-2 font-mono text-ui-11 leading-relaxed text-muted-foreground">
       {logs.map((line) => (
         <LogLine key={line.seq} line={line} />
       ))}
@@ -166,17 +172,17 @@ const LogLine = memo(function LogLine({ line }: { line: RunLogLine }) {
     <div
       className={
         line.level === "error"
-          ? "text-red-300"
+          ? "text-destructive"
           : line.level === "warning"
-            ? "text-amber-300"
+            ? "text-amber-700 dark:text-amber-300"
             : ""
       }
     >
-      <span className="text-zinc-600">
+      <span className="text-muted-foreground/70">
         {new Date(line.ts * 1000).toLocaleTimeString()}{" "}
       </span>
       {line.nodeId ? (
-        <span className="text-zinc-500">[{line.nodeId}] </span>
+        <span className="text-muted-foreground">[{line.nodeId}] </span>
       ) : null}
       {line.message}
     </div>
@@ -230,15 +236,15 @@ function Outputs() {
   }, [runtimeOutputs]);
   if (!media.length && !structured.length)
     return (
-      <p className="px-4 py-6 text-center text-[12px] text-zinc-500">
+      <DrawerEmpty>
         Images, audio, video, tables and charts from the run appear here.
-      </p>
+      </DrawerEmpty>
     );
   return (
     <div className="flex flex-col gap-3 p-3">
       {structured.map((item) => (
         <section key={item.key} className="flex flex-col gap-1">
-          <h4 className="font-mono text-[11px] text-zinc-500">{item.label}</h4>
+          <h4 className="text-ui-11 text-muted-foreground">{item.label}</h4>
           <StructuredOutput value={item.value} />
         </section>
       ))}
@@ -266,40 +272,45 @@ function RunDrawerImpl() {
   if (!open) return null;
   return (
     <div
-      className="flex h-65 shrink-0 flex-col border-white/10 border-t bg-zinc-950/95 text-zinc-100"
+      className="flex h-65 shrink-0 flex-col border-border border-t bg-background text-foreground"
       data-testid="flows-run-drawer"
     >
-      <div className="flex items-center gap-1 border-white/10 border-b px-2 py-1">
-        {(["run", "outputs", "logs"] as const).map((id) => (
-          <button
-            key={id}
-            type="button"
-            onClick={() => setDrawer(true, id)}
-            className={`rounded-md px-2.5 py-1 text-[12px] capitalize ${tab === id ? "bg-white/10 text-white" : "text-zinc-400 hover:text-zinc-200"}`}
-          >
-            {id}
-          </button>
-        ))}
+      <div className="flex items-center gap-2 border-border/60 border-b px-2 py-1.5">
+        <Tabs
+          value={tab}
+          onValueChange={(value) => setDrawer(true, value as typeof tab)}
+        >
+          <TabsList className="group-data-horizontal/tabs:h-8">
+            {(["run", "outputs", "logs"] as const).map((id) => (
+              <TabsTrigger key={id} value={id} className="px-3 text-xs capitalize">
+                {id}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
         {runStatus && (
-          <span
-            className={`ml-2 rounded px-1.5 py-0.5 text-[10.5px] capitalize ${RUN_STATUS_STYLE[runStatus] ?? ""}`}
+          <Badge
+            variant="outline"
+            className={`capitalize ${RUN_STATUS_STYLE[runStatus] ?? ""}`}
           >
             {runStatus}
-          </span>
+          </Badge>
         )}
         {runError && (
-          <span className="ml-2 truncate text-[11.5px] text-red-300">
+          <span className="truncate text-xs text-destructive">
             {runError}
           </span>
         )}
-        <button
+        <Button
           type="button"
+          variant="ghost"
+          size="icon-xs"
           aria-label="Hide run panel"
           onClick={() => setDrawer(false)}
-          className="ml-auto rounded p-1 text-zinc-500 hover:bg-white/5 hover:text-zinc-200"
+          className="ml-auto text-muted-foreground"
         >
           <HugeiconsIcon icon={ArrowDown01Icon} size={14} />
-        </button>
+        </Button>
       </div>
       <div className="flex-1 overflow-y-auto">
         {tab === "run" ? <Timeline /> : tab === "logs" ? <Logs /> : <Outputs />}

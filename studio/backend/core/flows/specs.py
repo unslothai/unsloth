@@ -108,6 +108,45 @@ def P(
     return d
 
 
+# Chat's sampling knobs on the LLM nodes, unset = the server's choice. The editor shows them in Chat's
+# settings panel; `use_model_settings` reads Chat's saved settings for the model at run time instead.
+_LLM_SETTINGS = [
+    P("top_p", "number", None, "Top P", min = 0, max = 1, step = 0.05, advanced = True),
+    P("top_k", "int", None, "Top K", min = 0, max = 100, advanced = True),
+    P("min_p", "number", None, "Min P", min = 0, max = 1, step = 0.01, advanced = True),
+    P(
+        "repetition_penalty",
+        "number",
+        None,
+        "Repetition penalty",
+        min = 1,
+        max = 2,
+        step = 0.05,
+        advanced = True,
+    ),
+    P(
+        "presence_penalty",
+        "number",
+        None,
+        "Presence penalty",
+        min = 0,
+        max = 2,
+        step = 0.1,
+        advanced = True,
+    ),
+    P(
+        "reasoning_effort",
+        "select",
+        None,
+        "Reasoning effort",
+        options = ["low", "medium", "high", "max"],
+        advanced = True,
+    ),
+    # Chat's run settings for the load, in its saved-override shape; empty loads the way the model loads anyway.
+    P("load", "json", None, "Load settings", advanced = True),
+    P("use_model_settings", "bool", False, "Use the model's saved settings", advanced = True),
+]
+
 BIND_TYPES = {
     "number": "number",
     "int": "number",
@@ -440,6 +479,7 @@ NODE_SPECS: list[dict] = [
             P("json_schema", "schema", None, "JSON schema (optional)"),
             P("thinking", "bool", False, "Allow thinking"),
             P("seed", "seed", None, "Seed"),
+            *_LLM_SETTINGS,
         ],
         lane = "gpu",
         model_kind = "chat",
@@ -580,6 +620,11 @@ NODE_SPECS: list[dict] = [
             P("question", "textarea", "Describe this image in one paragraph.", "Question"),
             P("json_schema", "schema", None, "JSON schema (optional)"),
             P("max_tokens", "int", 512, "Max tokens", min = 1, max = 8192),
+            P("system", "textarea", "", "System prompt", advanced = True),
+            P("temperature", "number", None, "Temperature", min = 0, max = 2, step = 0.01, advanced = True),
+            P("seed", "seed", None, "Seed", advanced = True),
+            P("thinking", "bool", False, "Allow thinking", advanced = True),
+            *_LLM_SETTINGS,
         ],
         lane = "gpu",
         model_kind = "vision",

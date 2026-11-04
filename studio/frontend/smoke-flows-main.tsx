@@ -13,6 +13,7 @@ import { templateDocument } from "@/features/flows/gallery/templates";
 import { useDocStore } from "@/features/flows/stores/doc-store";
 import { useRuntimeStore } from "@/features/flows/stores/runtime-store";
 import { useUiStore } from "@/features/flows/stores/ui-store";
+import { useWireRoutes } from "@/features/flows/editor/wire-routing";
 import type {
   FlowDocument,
   FlowEdge,
@@ -512,6 +513,7 @@ declare global {
       doc: typeof useDocStore;
       runtime: typeof useRuntimeStore;
       ui: typeof useUiStore;
+      routes: typeof useWireRoutes;
       commits: typeof commits;
     };
   }
@@ -520,6 +522,7 @@ window.__flowsSmoke = {
   doc: useDocStore,
   runtime: useRuntimeStore,
   ui: useUiStore,
+  routes: useWireRoutes,
   commits,
 };
 

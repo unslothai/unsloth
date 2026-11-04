@@ -17,6 +17,55 @@ export interface QuickAddState {
   };
 }
 
+const NODES_HIDDEN_KEY = "unsloth_flows_nodes_hidden";
+
+const DRAWER_OPEN_KEY = "unsloth_flows_runs_open";
+
+function storedDrawerOpen(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(DRAWER_OPEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function storedPaletteOpen(): boolean {
+  try {
+    return globalThis.localStorage?.getItem(NODES_HIDDEN_KEY) !== "true";
+  } catch {
+    return true;
+  }
+}
+
+/** Bus: routed orthogonal wires with rounded corners and lanes. Curved: plain bezier wires. */
+export type WireStyle = "bus" | "curved";
+
+export const WIRE_STYLE_STORAGE_KEY = "unsloth_flows_wire_style";
+
+export function storedWireStyle(): WireStyle {
+  try {
+    return globalThis.localStorage?.getItem(WIRE_STYLE_STORAGE_KEY) === "curved"
+      ? "curved"
+      : "bus";
+  } catch {
+    return "bus";
+  }
+}
+
+/** Which way Tidy up lays the flow out: left to right, or top to bottom. */
+export type TidyDirection = "LR" | "TB";
+export const TIDY_DIRECTION_STORAGE_KEY = "unsloth_flows_tidy_direction";
+
+function storedTidyDirection(): TidyDirection {
+  try {
+    return globalThis.localStorage?.getItem(TIDY_DIRECTION_STORAGE_KEY) === "TB"
+      ? "TB"
+      : "LR";
+  } catch {
+    return "LR";
+  }
+}
+
 export type SaveState = "saved" | "dirty" | "saving" | "error" | "conflict";
 
 export interface PendingRun {
@@ -34,14 +83,20 @@ export interface UiState {
   drawerTab: "run" | "logs" | "outputs";
   paletteOpen: boolean;
   snapToGrid: boolean;
+  wireStyle: WireStyle;
+  tidyDirection: TidyDirection;
   saveState: SaveState;
   pendingRun: PendingRun | null;
   setSelection: (nodes: string[], edges: string[]) => void;
   openInspector: (nodeId: string | null) => void;
+  /** Opens the settings panel on `nodeId`, or closes it when it already shows that block. */
+  toggleInspector: (nodeId: string) => void;
   setQuickAdd: (quickAdd: QuickAddState | null) => void;
   setDrawer: (open: boolean, tab?: UiState["drawerTab"]) => void;
   togglePalette: () => void;
   toggleSnap: () => void;
+  setWireStyle: (style: WireStyle) => void;
+  setTidyDirection: (direction: TidyDirection) => void;
   setSaveState: (state: SaveState) => void;
   setPendingRun: (pending: PendingRun | null) => void;
   reset: () => void;
@@ -55,10 +110,13 @@ export const useUiStore = create<UiState>((set, get) => ({
   selectedEdges: [],
   inspectorNodeId: null,
   quickAdd: null,
-  drawerOpen: false,
+  // Opened only by the user, and remembered: a run never opens it.
+  drawerOpen: storedDrawerOpen(),
   drawerTab: "run",
-  paletteOpen: true,
+  paletteOpen: storedPaletteOpen(),
   snapToGrid: false,
+  wireStyle: storedWireStyle(),
+  tidyDirection: storedTidyDirection(),
   saveState: "saved",
   pendingRun: null,
   setSelection: (nodes, edges) => {
@@ -68,20 +126,54 @@ export const useUiStore = create<UiState>((set, get) => ({
     set({
       selectedNodes: nodes,
       selectedEdges: edges,
+      // An open panel follows a single selection; a closed one stays shut until asked for.
       inspectorNodeId:
-        nodes.length === 1
+        nodes.length === 1 && s.inspectorNodeId !== null
           ? nodes[0]
-          : nodes.length === 0
-            ? s.inspectorNodeId
-            : s.inspectorNodeId,
+          : s.inspectorNodeId,
     });
   },
   openInspector: (nodeId) => set({ inspectorNodeId: nodeId }),
+  toggleInspector: (nodeId) =>
+    set((s) => ({
+      inspectorNodeId: s.inspectorNodeId === nodeId ? null : nodeId,
+    })),
   setQuickAdd: (quickAdd) => set({ quickAdd }),
-  setDrawer: (open, tab) =>
-    set((s) => ({ drawerOpen: open, drawerTab: tab ?? s.drawerTab })),
-  togglePalette: () => set((s) => ({ paletteOpen: !s.paletteOpen })),
+  setDrawer: (open, tab) => {
+    set((s) => ({ drawerOpen: open, drawerTab: tab ?? s.drawerTab }));
+    try {
+      globalThis.localStorage?.setItem(DRAWER_OPEN_KEY, String(open));
+    } catch {
+      // No storage: the choice lasts until reload.
+    }
+  },
+  togglePalette: () => {
+    const paletteOpen = !get().paletteOpen;
+    set({ paletteOpen });
+    try {
+      if (paletteOpen) globalThis.localStorage?.removeItem(NODES_HIDDEN_KEY);
+      else globalThis.localStorage?.setItem(NODES_HIDDEN_KEY, "true");
+    } catch {
+      // No storage: the choice lasts until reload.
+    }
+  },
   toggleSnap: () => set((s) => ({ snapToGrid: !s.snapToGrid })),
+  setTidyDirection: (tidyDirection) => {
+    set({ tidyDirection });
+    try {
+      globalThis.localStorage?.setItem(TIDY_DIRECTION_STORAGE_KEY, tidyDirection);
+    } catch {
+      // No storage: the choice lasts until reload.
+    }
+  },
+  setWireStyle: (wireStyle) => {
+    set({ wireStyle });
+    try {
+      globalThis.localStorage?.setItem(WIRE_STYLE_STORAGE_KEY, wireStyle);
+    } catch {
+      // Private mode or no storage: the choice lasts until reload.
+    }
+  },
   setPendingRun: (pendingRun) => set({ pendingRun }),
   setSaveState: (saveState) => {
     if (get().saveState !== saveState) set({ saveState });

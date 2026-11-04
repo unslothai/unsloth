@@ -214,3 +214,8 @@ test("a column mixing numbers and words sorts as text, consistently", () => {
   assert.deepEqual(once, ["10", "15x", "2"]);
   assert.deepEqual(sortRows([...rows].reverse(), "v", false).map((r) => r.v), once);
 });
+
+test("a card with no output ports (Preview, Result) draws what the run returned", () => {
+  assert.deepEqual(kinds.shownOutputIds([], { value: ["a", "b"] }), ["value"]);
+  assert.deepEqual(kinds.shownOutputIds([{ id: "text" }], { text: "x", extra: 1 }), ["text"]);
+});
