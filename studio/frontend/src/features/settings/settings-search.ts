@@ -203,6 +203,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "browser.downloadsTitle",
     "browser.askWhereToSaveSetting",
     "browser.askBeforeDownloadingSetting",
+    "browser.askBeforeProgramDownloadsSetting",
     "browser.downloadSitesSetting",
     "browser.saveDownloadHistorySetting",
     "browser.browsingDataTitle",
