@@ -67,8 +67,12 @@ def _variant_select_meta(picker: str) -> str:
     """The meta a GGUF quant row builds; its click and its gear both pass it on."""
     meta = re.search(r"const variantSelectMeta = useCallback\(.*?\n  \);", picker, re.S)
     assert meta, "variantSelectMeta not found"
-    assert "onClick={() => onSelect(repoId, selectMeta)}" in picker, "the quant row no longer loads from the shared meta"
-    assert "onConfigure={() => onConfigure(repoId, selectMeta)}" in picker, "the quant gear no longer opens with the shared meta"
+    assert (
+        "onClick={() => onSelect(repoId, selectMeta)}" in picker
+    ), "the quant row no longer loads from the shared meta"
+    assert (
+        "onConfigure={() => onConfigure(repoId, selectMeta)}" in picker
+    ), "the quant gear no longer opens with the shared meta"
     return meta.group(0)
 
 
@@ -687,7 +691,9 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
         "isDownloaded"
     ], "the sole-quant row must carry the pin only after that quant is known complete"
     # The row and its gear share one meta. A quant outside the pinned snapshot lands in a different one.
-    assert "loadId: downloaded === true ? loadId : undefined," in _variant_select_meta(picker), "the GGUF row drops the pin"
+    assert "loadId: downloaded === true ? loadId : undefined," in _variant_select_meta(
+        picker
+    ), "the GGUF row drops the pin"
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
