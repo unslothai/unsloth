@@ -59,10 +59,16 @@ def _env(monkeypatch):
     monkeypatch.delenv(ENV, raising = False)
 
 
-def test_fuse_drops_the_unused_projections_and_output_is_bit_identical():
-    unet = _unet()
+def test_fuse_drops_the_unused_projections_and_output_is_bit_identical(monkeypatch):
+    # the claim is about the drop, not the fuse: a fused U-Net that keeps its unfused copies (main) against one that
+    # dropped them (the fused GEMM itself may differ from three GEMMs in the last bit on some BLAS builds)
+    kept = _unet()
+    monkeypatch.setenv(ENV, "0")
+    dspeed._fuse_qkv(_pipe(kept), None)
+    monkeypatch.delenv(ENV)
     with torch.no_grad():
-        before = unet(*_inputs()).sample
+        before = kept(*_inputs()).sample
+    unet = _unet()
     unfused_bytes = _bytes(unet)
     assert dspeed._fuse_qkv(_pipe(unet), None) is True
     with torch.no_grad():
