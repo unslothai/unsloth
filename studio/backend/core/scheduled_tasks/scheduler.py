@@ -509,6 +509,7 @@ async def generate_answer(
     from fastapi.responses import StreamingResponse
 
     from models.inference import ChatCompletionRequest
+    from core.inference.api_monitor import TemporaryUsage, temporary_usage_scope
     from routes.inference import (
         _chat_completion_from_connection_stream,
         _enforce_token_limit,
@@ -606,26 +607,39 @@ async def generate_answer(
             )
 
             serving: dict = {}
+            thread_id = db.chat_id_for_run(run["id"])
 
             async def produce() -> Any:
                 # Settled in this task: slot routing lives in its context, which the caller never sees.
                 reply = None
                 try:
                     await _enforce_token_limit(request, external = provider is not None)
-                    reply = await produce_openai_chat_completions(
-                        payload,
-                        request,
-                        task["ownerSubject"],
-                        cancel_on_disconnect = False,
-                    )
-                    if provider is not None and isinstance(reply, StreamingResponse):
-                        reply.body_iterator = _relay_split_thinking(
-                            reply.body_iterator,
-                            payload.stop,
-                            parse_thinking = payload.enable_thinking is not False,
+                    with temporary_usage_scope(
+                        TemporaryUsage(
+                            thread_id,
+                            "external" if provider is not None else "local",
+                            message_id = str(
+                                uuid.uuid5(uuid.NAMESPACE_URL, f"{thread_id}/assistant")
+                            ),
+                            parent_id = "",
                         )
-                        reply = await _chat_completion_from_connection_stream(reply, payload.model)
-                    elif provider is None:
+                    ):
+                        reply = await produce_openai_chat_completions(
+                            payload,
+                            request,
+                            task["ownerSubject"],
+                            cancel_on_disconnect = False,
+                        )
+                        if provider is not None and isinstance(reply, StreamingResponse):
+                            reply.body_iterator = _relay_split_thinking(
+                                reply.body_iterator,
+                                payload.stop,
+                                parse_thinking = payload.enable_thinking is not False,
+                            )
+                            reply = await _chat_completion_from_connection_stream(
+                                reply, payload.model
+                            )
+                    if provider is None:
                         serving.update(_serving_checkpoint())
                     # Checked before the request ends, while nobody else can have loaded a model yet.
                     if allow_switch and int(getattr(reply, "status_code", 200)) < 400:
@@ -804,7 +818,7 @@ def save_chat(task: dict, run: dict, answer: Answer, started_at: int, finished_a
                     "createdAt": started_at,
                 },
                 {
-                    "id": str(uuid.uuid4()),
+                    "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"{thread_id}/assistant")),
                     "threadId": thread_id,
                     "parentId": user_message_id,
                     "role": "assistant",

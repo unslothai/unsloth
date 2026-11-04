@@ -1097,6 +1097,59 @@ def test_scheduled_replies_respect_the_cap_and_one_override(monkeypatch, externa
             assert producer.payload is None
 
 
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_scheduled_usage_is_recorded_before_a_chat_is_saved(monkeypatch, external, empty):
+    import json
+
+    from core.inference import token_limit
+    from core.inference.api_monitor import ApiMonitor
+    from storage import providers_db
+    from storage.api_usage_db import record_api_usage
+
+    config = {"id": "conn-1", "is_enabled": 1, "display_name": "OpenAI", "provider_type": "openai"}
+    monkeypatch.setattr(providers_db, "get_provider", lambda provider_id: config)
+    monkeypatch.setattr(scheduler_module, "_chat_model_loaded", lambda: True)
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(record_api_usage)
+    task = make_task(model = "external::conn-1::gpt-5-mini" if external else None)
+
+    async def produce(payload, request, subject, *, cancel_on_disconnect):
+        entry = monitor.start(
+            endpoint = "/v1/chat/completions",
+            method = "POST",
+            model = payload.model,
+            prompt = "",
+            subject = subject,
+            via_api_key = False,
+        )
+        monitor.set_usage(entry, prompt_tokens = 90, completion_tokens = 10, total_tokens = 100)
+        monitor.finish(entry)
+        data = json.loads(completion("" if empty else "Done.", reasoning = "Thinking.").body)
+        data["usage"] = {"prompt_tokens": 90, "completion_tokens": 10, "total_tokens": 100}
+        return JSONResponse(data)
+
+    if empty:
+        with pytest.raises(RunFailed) as failure:
+            generate(monkeypatch, produce, task)
+        assert failure.value.code == "empty"
+    else:
+        answer = generate(monkeypatch, produce, task)
+    token_limit.update_settings(
+        {"enabled": True, "mode": "split", "localLimit": 100, "apiLimit": 100},
+        password = None,
+        new_password = None,
+    )
+    assert token_limit.status()["pools"][1 if external else 0]["used"] == 100
+    assert studio_db.list_chat_threads() == []
+    if not empty:
+        now = db.now_ms()
+        scheduler_module.save_chat(task, {"id": "run-1"}, answer, now, now + 1)
+        assert token_limit.status()["pools"][1 if external else 0]["used"] == 100
+    with pytest.raises(RunFailed, match = "token limit"):
+        generate(monkeypatch, FakeProducer(completion("Unexpected.")), task)
+
+
 @pytest.fixture
 def projects_home(tmp_path, monkeypatch):
     # Project folders otherwise land in the real ~/Documents/Unsloth Studio.
