@@ -2269,7 +2269,11 @@ def _mlx_stream_detokenizer(source):
 def _eager_spm_detokenizer_class():
     from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
     class EagerSPMStreamingDetokenizer(SPMStreamingDetokenizer):
-        def __init__(self, tokenizer, trim_space = True):
+        def __init__(
+            self,
+            tokenizer,
+            trim_space = True,
+        ):
             self._trims_first_space = trim_space
             super().__init__(tokenizer, trim_space = trim_space)
 
