@@ -2,7 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { renameRoot, replaceRef } from "@/features/recipe-studio/utils/refs";
 import { foldedGroups, readSuperCards } from "../editor/super-card-records";
+import { referenceEdges } from "../recipe/recipe-columns";
 import {
   FLOW_FORMAT,
   FLOW_FORMAT_VERSION,
@@ -22,6 +24,100 @@ import {
   reroutesToEditor,
   syncRerouteEdges,
 } from "./reroute-graph";
+
+/** recipe-columns.ts GENERATE_TYPE; kept here so the store imports nothing from the recipe editor. */
+const RECIPE_DATASET = "recipe.generate";
+/** recipe-columns.ts COLUMN_TYPE. */
+const RECIPE_COLUMN = "recipe.column";
+
+/** A column or Recipe Dataset step that runs only in its recipe: framing or grouping never moves it out. */
+function recipeOwned(node: FlowNode, groups: Record<string, FlowGroup>): boolean {
+  return (
+    (node.type === RECIPE_COLUMN || node.type === RECIPE_DATASET) &&
+    !!node.group &&
+    groups[node.group]?.kind === "recipe"
+  );
+}
+
+/** A recipe column's name, from its params. */
+function columnNameOf(node: FlowNode): string | null {
+  const column = (node.params as { column?: { name?: unknown } } | undefined)?.column;
+  return typeof column?.name === "string" ? column.name : null;
+}
+
+/** A column pasted or duplicated into a recipe that already has its name gets the next free one,
+ * since a recipe's column names are unique. */
+function uniqueColumn(
+  node: FlowNode,
+  group: string | null,
+  nodes: Record<string, FlowNode>,
+  order: string[],
+  config?: Record<string, unknown>,
+): FlowNode {
+  const name = columnNameOf(node);
+  if (node.type !== RECIPE_COLUMN || !group || !name) return node;
+  const taken = new Set<unknown>([
+    ...order
+      .filter((id) => nodes[id].type === RECIPE_COLUMN && nodes[id].group === group)
+      .map((id) => columnNameOf(nodes[id])),
+    // Columns share one namespace with the recipe's other blocks: two of one name never open again.
+    ...setupNames(config),
+  ]);
+  if (!taken.has(name)) return node;
+  let n = 2;
+  while (taken.has(`${name}_${n}`)) n += 1;
+  const next = `${name}_${n}`;
+  const params = node.params as { column: Record<string, unknown> };
+  return {
+    ...node,
+    label: next,
+    params: { ...node.params, column: { ...params.column, name: next } },
+  };
+}
+
+/** The names a recipe's providers, model presets, tool profiles and seed take. */
+function setupNames(config: Record<string, unknown> | undefined): unknown[] {
+  if (!config) return [];
+  const pick = (key: string, field: string) =>
+    Array.isArray(config[key])
+      ? (config[key] as Record<string, unknown>[]).map((item) => item?.[field])
+      : [];
+  return [
+    ...pick("model_providers", "name"),
+    ...pick("mcp_providers", "name"),
+    ...pick("model_configs", "alias"),
+    ...pick("tool_configs", "tool_alias"),
+    ...(config.seed_config ? ["seed"] : []),
+  ];
+}
+
+/** Fields that name another column outright, not through a Jinja reference (`column_name` is an
+ * AI column's image context). */
+const COLUMN_NAME_FIELDS = new Set([
+  "category",
+  "reference_column_name",
+  "subcategory_parent",
+  "column_name",
+]);
+
+/** A column's definition with column ``from`` renamed to ``to`` wherever it reads it: Jinja
+ * references, the fields that name a column, a validator's target list and sampler conditions. */
+function renameInColumn(value: unknown, from: string, to: string, key = ""): unknown {
+  if (typeof value === "string")
+    return COLUMN_NAME_FIELDS.has(key) && value === from ? to : replaceRef(value, from, to);
+  if (Array.isArray(value))
+    return key === "target_columns"
+      ? value.map((v) => (v === from ? to : v))
+      : value.map((v) => renameInColumn(v, from, to));
+  if (value && typeof value === "object")
+    return Object.fromEntries(
+      Object.entries(value).map(([k, v]) => [
+        key === "conditional_params" ? renameRoot(k, from, to) : k,
+        renameInColumn(v, from, to, k),
+      ]),
+    );
+  return value;
+}
 
 /** Graph state normalized by id. Every record is immutable: an edit replaces only what it touches,
  *  so a node component selecting `nodes[id]` re-renders only when that node changed. */
@@ -53,6 +149,16 @@ interface Snapshot {
 export interface GraphFragment {
   nodes: FlowNode[];
   edges: FlowEdge[];
+  /** Each copied node's frame where it was copied from: a pasted reader is renamed only after
+   * copies from its own recipe. */
+  from?: Record<string, string | null>;
+}
+
+export interface GraphPatch {
+  nodes?: FlowNode[];
+  groups?: FlowGroup[];
+  addEdges?: FlowEdge[];
+  removeEdges?: string[];
 }
 
 export interface DocState {
@@ -82,13 +188,16 @@ export interface DocState {
     positions: Record<string, [number, number]>,
     membership?: Record<string, string | null>,
   ) => void;
-  removeElements: (ids: {
-    nodes?: string[];
-    edges?: string[];
-    groups?: string[];
-    notes?: string[];
-    reroutes?: string[];
-  }) => void;
+  removeElements: (
+    ids: {
+      nodes?: string[];
+      edges?: string[];
+      groups?: string[];
+      notes?: string[];
+      reroutes?: string[];
+    },
+    coalesceKey?: string,
+  ) => void;
   connect: (edge: FlowEdge, replaceSingleInput: boolean) => void;
   /** Adds (or moves) a reroute and threads it into `splitId`, a plain edge or a wire segment. */
   addReroute: (
@@ -105,6 +214,8 @@ export interface DocState {
   resizeGroup: (group: FlowGroup) => void;
   groupNodes: (group: FlowGroup, nodeIds: string[]) => void;
   upsertNote: (note: FlowNote, coalesceKey?: string) => void;
+  /** One undo step that upserts nodes and groups and adds or drops edges (a recipe group edit). */
+  patchGraph: (patch: GraphPatch, coalesceKey?: string) => void;
   /** Tidy up's result as one undo step: card spots and sizes, frames, notes and reroutes. */
   applyTidy: (patch: TidyPatch) => void;
   undo: () => void;
@@ -431,7 +542,7 @@ export const useDocStore = create<DocState>((set, get) => {
         });
       }),
 
-    removeElements: (ids) =>
+    removeElements: (ids, coalesceKey) =>
       commit((s) => {
         const dropNodes = new Set(ids.nodes ?? []);
         const dropEdges = new Set(ids.edges ?? []);
@@ -508,7 +619,7 @@ export const useDocStore = create<DocState>((set, get) => {
             s.graph.wireOrder.filter((id) => !rewired.healed.has(id)),
           ),
         };
-      }),
+      }, coalesceKey),
 
     connect: (edge, replaceSingleInput) =>
       commit((s) => {
@@ -572,6 +683,14 @@ export const useDocStore = create<DocState>((set, get) => {
     addReroute: (reroute, splitId, style) =>
       commit((s) => {
         if (s.graph.nodes[reroute.id]) return null;
+        // A recipe column's wire is a reference in its reader's prompt: it never goes through a reroute.
+        const split = splitId ? (s.graph.wires[splitId] ?? s.graph.edges[splitId]) : undefined;
+        if (
+          split &&
+          (s.graph.nodes[split.source]?.type === RECIPE_COLUMN ||
+            s.graph.nodes[split.target]?.type === RECIPE_COLUMN)
+        )
+          return null;
         const exists = !!s.graph.reroutes[reroute.id];
         let graph: DocGraph = {
           ...s.graph,
@@ -714,10 +833,66 @@ export const useDocStore = create<DocState>((set, get) => {
         const nodes = { ...s.graph.nodes };
         const nodeOrder = [...s.graph.nodeOrder];
         const folded = foldedGroups(s.meta.editor, s.graph);
+        // A copied column renamed to stay unique is renamed in the other copies that read it too.
+        const renames = new Map<string, [string, string][]>();
+        const scopes = new Map<string, string>();
+        const added: string[] = [];
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
-          nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos, folded) };
+          const group = frameAt(s.graph, node.pos, folded);
+          // A recipe's blocks mean nothing outside a recipe frame (they carry none of its models or
+          // seed), and one alone would stop the whole flow compiling: such a paste skips them.
+          if (
+            (node.type === RECIPE_COLUMN || node.type === RECIPE_DATASET) &&
+            s.graph.groups[group ?? ""]?.kind !== "recipe"
+          )
+            continue;
+          // A recipe runs from one Recipe Dataset step: a pasted or duplicated second one comes in off.
+          const extra =
+            node.type === RECIPE_DATASET &&
+            !node.disabled &&
+            !!group &&
+            nodeOrder.some(
+              (id) =>
+                nodes[id].type === RECIPE_DATASET &&
+                nodes[id].group === group &&
+                !nodes[id].disabled,
+            );
+          const unique = uniqueColumn(
+            node,
+            group,
+            nodes,
+            nodeOrder,
+            group ? (s.graph.groups[group]?.config ?? undefined) : undefined,
+          );
+          const from = columnNameOf(node);
+          const to = columnNameOf(unique);
+          const scope = `${fragment.from?.[node.id] ?? ""}>${group}`;
+          if (group && from && to && from !== to)
+            renames.set(scope, [...(renames.get(scope) ?? []), [from, to]]);
+          scopes.set(node.id, scope);
+          nodes[node.id] = { ...unique, group, ...(extra ? { disabled: true } : {}) };
           nodeOrder.push(node.id);
+          added.push(node.id);
+        }
+        for (const id of added) {
+          const node = nodes[id];
+          const scope = scopes.get(id);
+          const pairs = node.group && scope ? renames.get(scope) : undefined;
+          if (node.type !== RECIPE_COLUMN || !pairs) continue;
+          const own = columnNameOf(node);
+          let column = (node.params as { column: Record<string, unknown> }).column;
+          // Through placeholders, so a new name that is another copy's old name (topic -> topic_2 while
+          // topic_2 -> topic_2_2) is not renamed a second time.
+          const held = pairs.map((_, i) => `__flows_paste_${i}__`);
+          pairs.forEach(([from], i) => {
+            column = renameInColumn(column, from, held[i]) as Record<string, unknown>;
+          });
+          pairs.forEach(([, to], i) => {
+            column = renameInColumn(column, held[i], to) as Record<string, unknown>;
+          });
+          column = { ...column, name: own };
+          nodes[id] = { ...node, params: { ...node.params, column } };
         }
         const edges = { ...s.graph.edges };
         const edgeOrder = [...s.graph.edgeOrder];
@@ -726,6 +901,24 @@ export const useDocStore = create<DocState>((set, get) => {
             continue;
           edges[edge.id] = edge;
           edgeOrder.push(edge.id);
+        }
+        // A pasted column reading one that was not copied with it reads the recipe's own: it gets
+        // that wire too, so deleting the column it reads reaches it.
+        const pasted = new Set(added.filter((id) => nodes[id].type === RECIPE_COLUMN));
+        const wired = new Set(
+          edgeOrder.map((id) => `${edges[id].source}>${edges[id].target}`),
+        );
+        for (const group of new Set([...pasted].map((id) => nodes[id].group))) {
+          if (!group) continue;
+          const columns = nodeOrder
+            .map((id) => nodes[id])
+            .filter((n) => n.type === RECIPE_COLUMN && n.group === group);
+          for (const edge of referenceEdges(columns)) {
+            if (!pasted.has(edge.target) || wired.has(`${edge.source}>${edge.target}`)) continue;
+            const id = newId("e");
+            edges[id] = { ...edge, id };
+            edgeOrder.push(id);
+          }
         }
         return withGraph(s, { nodes, nodeOrder, edges, edgeOrder });
       }),
@@ -757,6 +950,7 @@ export const useDocStore = create<DocState>((set, get) => {
           const node = nodes[id];
           const before = node.group ?? null;
           if (hidden.has(id) || (before && folded.has(before))) continue;
+          if (recipeOwned(node, s.graph.groups)) continue;
           const after = frameAt(graph, node.pos, folded);
           if (before === after) continue;
           if (before !== group.id && after !== group.id) continue;
@@ -769,7 +963,8 @@ export const useDocStore = create<DocState>((set, get) => {
       commit((s) => {
         const nodes = { ...s.graph.nodes };
         for (const id of nodeIds)
-          if (nodes[id]) nodes[id] = { ...nodes[id], group: group.id };
+          if (nodes[id] && !recipeOwned(nodes[id], s.graph.groups))
+            nodes[id] = { ...nodes[id], group: group.id };
         return withGraph(s, {
           nodes,
           groups: { ...s.graph.groups, [group.id]: group },
@@ -790,6 +985,40 @@ export const useDocStore = create<DocState>((set, get) => {
           }),
         coalesceKey,
       ),
+
+    patchGraph: (patch, coalesceKey) =>
+      commit((s) => {
+        const nodes = { ...s.graph.nodes };
+        let nodeOrder = s.graph.nodeOrder;
+        for (const node of patch.nodes ?? []) {
+          if (!nodes[node.id]) nodeOrder = [...nodeOrder, node.id];
+          nodes[node.id] = node;
+        }
+        const groups = { ...s.graph.groups };
+        let groupOrder = s.graph.groupOrder;
+        for (const group of patch.groups ?? []) {
+          if (!groups[group.id]) groupOrder = [...groupOrder, group.id];
+          groups[group.id] = group;
+        }
+        const drop = new Set(patch.removeEdges ?? []);
+        const edges = { ...s.graph.edges };
+        for (const id of drop) delete edges[id];
+        let edgeOrder = drop.size
+          ? s.graph.edgeOrder.filter((id) => !drop.has(id))
+          : s.graph.edgeOrder;
+        for (const edge of patch.addEdges ?? []) {
+          if (!edges[edge.id]) edgeOrder = [...edgeOrder, edge.id];
+          edges[edge.id] = edge;
+        }
+        return withGraph(s, {
+          nodes,
+          nodeOrder,
+          groups,
+          groupOrder,
+          edges,
+          edgeOrder,
+        });
+      }, coalesceKey),
 
     undo: () => {
       const s = get();
@@ -927,11 +1156,13 @@ export function cloneFragment(
 ): GraphFragment {
   const idMap = new Map<string, string>();
   const nodes: FlowNode[] = [];
+  const from: Record<string, string | null> = {};
   for (const id of nodeIds) {
     const node = graph.nodes[id];
     if (!node) continue;
     const nextId = newId("n");
     idMap.set(id, nextId);
+    from[nextId] = node.group ?? null;
     nodes.push({
       ...node,
       id: nextId,
@@ -951,5 +1182,5 @@ export function cloneFragment(
     if (source && target)
       edges.push({ ...edge, id: newId("e"), source, target });
   }
-  return { nodes, edges };
+  return { nodes, edges, from };
 }

@@ -9,22 +9,30 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
 import re
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from auth.authentication import get_current_subject
+from auth.authentication import (
+    authenticated_via_api_key,
+    get_current_subject,
+    require_ui_session_for_local_commands,
+)
 from core.flows import assets as asset_store
 from core.flows import caller as flow_caller
 from core.flows import capabilities, compiler, notebook_import, package, replication, triggers
+from core.flows.recipe_compile import RecipeCompileError, compile_recipe, recipe_graph
+from core.flows.recipe_import import GENERATE_TYPE, flow_from_recipe
+from core.flows.recipe_share import share_recipe, stdio_names
 from core.flows.examples import build_examples as examples
 from core.flows.compiler import CompileError
 from core.flows.engine import get_engine
@@ -81,6 +89,17 @@ class InvokeBody(BaseModel):
     stream: bool = False
     warm: bool = False
     background: bool = False
+
+
+class RecipeImportBody(BaseModel):
+    recipe_id: Optional[str] = Field(default = None, min_length = 1, max_length = 128)
+    payload: Optional[dict[str, Any]] = None
+    name: Optional[str] = Field(default = None, max_length = 200)
+
+
+class RecipeExportBody(BaseModel):
+    doc: dict[str, Any]
+    group_id: str = Field(min_length = 1, max_length = 64)
 
 
 class SessionBody(BaseModel):
@@ -245,6 +264,258 @@ async def import_notebook(request: Request, name: str = "notebook.ipynb") -> dic
     record, _report = await asyncio.to_thread(_import_doc, json.dumps(doc).encode())
     report["missing_models"] = await _missing_models(request, record["doc"])
     return {"flow": record, "report": report}
+
+
+def _recipe_flow(payload: Any, name: str, source: Optional[dict]) -> tuple[dict, list[str]]:
+    try:
+        doc, notices = flow_from_recipe(payload, name = name, source = source)
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    doc["id"] = uuid.uuid4().hex
+    _own_uploads(doc)
+    return _save(_doc_or_400(doc), None), notices
+
+
+_UPLOAD_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def _upload_dir_of(source: Any, root: Path) -> Optional[str]:
+    """The one upload folder directly under ``root`` that a seed's document paths are in, else None."""
+    if not isinstance(source, dict):
+        return None
+    paths = [source.get("path")] + list(source.get("paths") or [])
+    dirs = set()
+    for path in paths:
+        if not isinstance(path, str) or not path:
+            continue
+        parent = Path(path).parent
+        try:
+            if parent.parent.resolve() != root.resolve():
+                return None
+        except OSError:
+            return None
+        dirs.add(parent.name)
+    return dirs.pop() if len(dirs) == 1 else None
+
+
+def _own_uploads(doc: dict) -> None:
+    """Copy a recipe's uploaded documents under a new upload id: removing one in the flow deletes the
+    file, which must not break the recipe it came from."""
+    import shutil
+
+    from utils.paths.storage_roots import unstructured_uploads_root
+
+    root = unstructured_uploads_root()
+    for group in doc.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        seed = (group.get("config") or {}).get("seed_config")
+        source = seed.get("source") if isinstance(seed, dict) else None
+        ui = group.get("ui")
+        uid = ui.get("unstructured_upload_uid") if isinstance(ui, dict) else None
+        if not isinstance(uid, str) or not uid:
+            # Older document recipes keep no upload id; their files sit in a folder named by the
+            # upload block (`n1`), which the paths themselves name.
+            uid = _upload_dir_of(source, root)
+        if not isinstance(uid, str) or not _UPLOAD_ID.fullmatch(uid) or not (root / uid).is_dir():
+            continue
+        new = uuid.uuid4().hex
+        shutil.copytree(root / uid, root / new)
+        if not isinstance(ui, dict):
+            ui = group["ui"] = {}
+        ui["unstructured_upload_uid"] = new
+        if not isinstance(source, dict):
+            continue
+
+        def moved(path: Any) -> Any:
+            p = Path(path) if isinstance(path, str) else None
+            return str(p.parent.parent / new / p.name) if p and p.parent.name == uid else path
+
+        if "path" in source:
+            source["path"] = moved(source["path"])
+        if isinstance(source.get("paths"), list):
+            source["paths"] = [moved(p) for p in source["paths"]]
+
+
+def _recipe_hash(payload: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys = True, separators = (",", ":")).encode()
+    ).hexdigest()[:16]
+
+
+def _recipe_source(record: dict) -> dict:
+    return {
+        "id": record["id"],
+        "name": record.get("name"),
+        "updatedAt": record.get("updatedAt"),
+        "hash": _recipe_hash(record.get("payload")),
+    }
+
+
+def _made_from_unchanged(flow: Optional[dict], record: dict) -> bool:
+    """True when ``flow`` was made from ``record`` as it is now. Compares the payload, since Recipe
+    Studio's save bumps ``updatedAt`` even when nothing changed; flows made before the hash fall back."""
+    made_from = ((flow or {}).get("doc", {}).get("meta") or {}).get("from_recipe") or {}
+    if not flow or made_from.get("id") != record["id"]:
+        return False
+    if made_from.get("hash"):
+        return made_from["hash"] == _recipe_hash(record.get("payload"))
+    return made_from.get("updatedAt") == record.get("updatedAt")
+
+
+@router.post("/import/recipe")
+def import_recipe(
+    body: RecipeImportBody, via_api_key: Annotated[bool, Depends(authenticated_via_api_key)] = False
+) -> dict:
+    """A saved Data Recipe (by id) or recipe JSON as a new flow; the recipe itself is left alone.
+    Asking again for an unchanged saved recipe opens the flow made last time."""
+    from storage import data_recipes_db
+
+    if body.recipe_id:
+        record = data_recipes_db.get_recipe(body.recipe_id)
+        if record is None:
+            raise HTTPException(status_code = 404, detail = "Recipe not found")
+        # The recipe unchanged since its newest flow was made: open that flow again.
+        known = flows_db.recipe_flows().get(record["id"])
+        existing = flows_db.get_flow(known) if known else None
+        if _made_from_unchanged(existing, record) and not body.name:
+            return {"flow": existing, "report": {"notices": [], "reused": True}}
+        payload, name, source = record["payload"], record.get("name"), _recipe_source(record)
+    elif body.payload is not None:
+        recipe = (
+            body.payload.get("recipe")
+            if isinstance(body.payload.get("recipe"), dict)
+            else body.payload
+        )
+        if stdio_names(recipe):
+            # Same rule as saving a recipe: only the Unsloth UI may hand this host a command to run.
+            require_ui_session_for_local_commands(via_api_key)
+        payload, name, source = body.payload, None, None
+    else:
+        raise HTTPException(status_code = 400, detail = "Send a recipe_id or a recipe payload")
+    flow, notices = _recipe_flow(payload, body.name or name or "Data Recipe", source)
+    return {"flow": flow, "report": {"notices": notices}}
+
+
+def _block_names(recipe: dict) -> set[str]:
+    """Every name a Recipe Studio block of ``recipe`` takes: they share one namespace with its notes."""
+    picks = (
+        ("columns", "name"),
+        ("model_providers", "name"),
+        ("mcp_providers", "name"),
+        ("model_configs", "alias"),
+        ("tool_configs", "tool_alias"),
+    )
+    names = {
+        item.get(field)
+        for key, field in picks
+        for item in recipe.get(key) or []
+        if isinstance(item, dict)
+    }
+    if recipe.get("seed_config"):
+        names.add("seed")
+    return {n for n in names if isinstance(n, str)}
+
+
+def _recipe_notes(
+    doc: dict,
+    group: dict,
+    taken: Optional[set] = None,
+) -> list[dict]:
+    """The flow notes that belong to a recipe group, as Recipe Studio markdown notes: the ones its
+    import made (id ``<group>_...``) and any note sitting on its frame, each named apart from
+    ``taken`` (the recipe's block names) and the others."""
+    taken = set(taken or ())
+    gid = str(group.get("id"))
+    gx, gy, gw, gh = (list(group.get("rect") or []) + [0, 0, 0, 0])[:4]
+    out = []
+    for note in doc.get("notes") or []:
+        x, y, w, _ = (list(note.get("rect") or []) + [0, 0, 0, 0])[:4]
+        nid = str(note.get("id") or "")
+        on_frame = gx <= x + w / 2 <= gx + gw and gy <= y <= gy + gh
+        if not (nid.startswith(f"{gid}_") or on_frame):
+            continue
+        name = nid[len(gid) + 1 :] if nid.startswith(f"{gid}_") else nid
+        base, n = name, 2
+        while name in taken:
+            name, n = f"{base}_{n}", n + 1
+        taken.add(name)
+        item = {
+            "id": name,
+            "name": name,
+            "node_type": "markdown_note",
+            "markdown": str(note.get("text") or ""),
+            "x": round(x - gx),
+            "y": round(y - gy),
+            "width": round(w) or 320,
+        }
+        if note.get("color"):
+            item["note_color"] = note["color"]
+        out.append(item)
+    return out
+
+
+@router.post("/export/recipe")
+def export_recipe(body: RecipeExportBody) -> dict:
+    """One Recipe group of ``doc`` as recipe JSON Recipe Studio imports (`{recipe, run, ui}`), without
+    credentials, local tool servers or this machine's upload paths."""
+    # A seed wired into the group's Recipe Dataset step supplies columns, as the flow compiler counts it.
+    steps = {
+        n.get("id")
+        for n in body.doc.get("nodes") or []
+        if n.get("type") == GENERATE_TYPE
+        and n.get("group") == body.group_id
+        and not n.get("disabled")
+    }
+    wired = any(
+        e.get("target") in steps and e.get("target_port") == "seed"
+        for e in body.doc.get("edges") or []
+    )
+    try:
+        graph = recipe_graph(body.doc, body.group_id, wired)
+        compiled = compile_recipe(graph)
+    except RecipeCompileError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+    recipe, ui = share_recipe(compiled["recipe"], graph["group"].get("ui"))
+    notes = _recipe_notes(body.doc, graph["group"], _block_names(recipe))
+    if notes:
+        ui["nodes"] = [*(ui.get("nodes") or []), *notes]
+    run = compiled["run"]
+    # Rows and mode live on the Recipe Dataset step, not on the group.
+    steps = [n for n in graph["nodes"] if n.get("type") == GENERATE_TYPE]
+    step = next((n for n in steps if not n.get("disabled")), steps[0] if steps else None)
+    if step:
+        params = step.get("params") or {}
+        if isinstance(params.get("rows"), int) and params["rows"] > 0:
+            run["rows"] = params["rows"]
+        run["preview"] = params.get("mode", "preview") == "preview"
+    return package.scrub({"recipe": recipe, "run": run, "ui": ui})
+
+
+@router.post("/import/recipes")
+def import_all_recipes() -> dict:
+    """A flow per saved Data Recipe not in Flows yet, and a fresh one for a recipe edited since its
+    flow was made (the old flow stays). Safe to repeat; recipes are left alone."""
+    from storage import data_recipes_db
+
+    known = flows_db.recipe_flows()
+    created, skipped, failed = [], [], []
+    for record in data_recipes_db.list_recipes():
+        earlier = known.get(record["id"])
+        if earlier and _made_from_unchanged(flows_db.get_flow(earlier), record):
+            skipped.append({"recipe_id": record["id"], "flow_id": earlier})
+            continue
+        name = str(record.get("name") or "Data Recipe")
+        try:
+            flow, notices = _recipe_flow(record["payload"], name, _recipe_source(record))
+        except HTTPException as exc:
+            failed.append({"recipe_id": record["id"], "name": name, "error": str(exc.detail)})
+            continue
+        made = {"recipe_id": record["id"], "flow_id": flow["id"], "name": name, "notices": notices}
+        if earlier:
+            made["replaces"] = earlier
+        created.append(made)
+    return {"created": created, "skipped": skipped, "failed": failed}
 
 
 @router.post("/assets")
@@ -687,6 +958,88 @@ def node_history(
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
         raise HTTPException(status_code = 400, detail = "Invalid node id")
     return {"entries": flows_db.node_output_history(flow_id, node_id, limit)}
+
+
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs")
+def recipe_runs(
+    flow_id: str,
+    node_id: str,
+    limit: int = Query(50, ge = 1, le = 200),
+) -> dict:
+    """A Recipe Dataset step's runs as Recipe Studio execution records, newest first."""
+    _flow_or_404(flow_id)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", node_id):
+        raise HTTPException(status_code = 400, detail = "Invalid node id")
+    return {"executions": flows_db.recipe_runs(flow_id, node_id, limit)}
+
+
+@router.get("/{flow_id}/nodes/{node_id}/recipe-runs/{run_id}")
+def recipe_run(flow_id: str, node_id: str, run_id: str) -> dict:
+    """One run with its rows."""
+    _flow_or_404(flow_id)
+    record = flows_db.recipe_run(flow_id, node_id, run_id)
+    if record is None:
+        raise HTTPException(status_code = 404, detail = "Run not found")
+    return record
+
+
+class DatasetRowsBody(BaseModel):
+    value: dict[str, Any]
+    offset: int = Field(0, ge = 0, le = 100_000)
+    limit: int = Field(20, ge = 1, le = 100)
+
+
+@router.post("/dataset-rows")
+def dataset_rows(request: Request, body: DatasetRowsBody) -> dict:
+    """A page of a flow `dataset` value's rows (Hub, uploaded or Data Recipe), for the viewers."""
+    from core.flows.dataset_rows import DatasetRowsError
+    from core.flows.dataset_rows import dataset_rows as read_rows
+
+    try:
+        return read_rows(body.value, body.offset, body.limit, _hf_token(request))
+    except DatasetRowsError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
+class DatasetExportBody(BaseModel):
+    value: dict[str, Any]
+
+
+@router.post("/dataset-export")
+def dataset_export(body: DatasetExportBody) -> StreamingResponse:
+    """Every row of a saved Data Recipe output (a schema transform's parquet) as JSONL: the job's
+    own export reads the untransformed dataset beside it."""
+    from core.flows.dataset_rows import DatasetRowsError, dataset_source
+    from core.flows.nodes.data import recipe_artifact
+    from core.training.account_jobs import account_path
+
+    value = body.value
+    if value.get("source") != "recipe" or not recipe_artifact(value.get("ref")):
+        raise HTTPException(status_code = 400, detail = "Only a saved Data Recipe output exports here")
+    try:
+        folder = Path(dataset_source(value)["dataset_name"])
+        account_path(str(folder), reference = True)
+    except (DatasetRowsError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    from utils.paths.path_utils import drop_appledouble_metadata
+
+    # Without the ._batch.parquet companions a macOS volume leaves, which no reader can parse.
+    files = drop_appledouble_metadata(sorted(folder.glob("*.parquet"))) if folder.is_dir() else []
+    if not files:
+        raise HTTPException(status_code = 404, detail = "This dataset is no longer available")
+
+    def lines():
+        import pyarrow.parquet as pq
+
+        from core.data_recipe.export import _json_dumps_row
+        for file in files:
+            for batch in pq.ParquetFile(file).iter_batches(batch_size = 4096):
+                for row in batch.to_pylist():
+                    yield _json_dumps_row(row) + "\n"
+
+    return StreamingResponse(lines(), media_type = "application/x-ndjson")
 
 
 @router.get("/{flow_id}/latest-outputs")

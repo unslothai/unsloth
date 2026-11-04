@@ -26,6 +26,7 @@ from core.flows import assets as asset_store
 from core.flows import glb, schema
 from core.flows.compiler import parse_document
 from core.flows import replication
+from core.flows.recipe_share import missing_seed, share_flow
 from core.flows.specs import SPECS_BY_TYPE
 
 MAX_ENTRIES = schema.MAX_ASSETS + 8
@@ -56,16 +57,58 @@ def _local_url(url: Any) -> bool:
     return isinstance(url, str) and url.startswith("/api/") and "//" not in url and "\\" not in url
 
 
-def scrub(value: Any) -> Any:
-    """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively."""
+# Keys that are names someone chose, not settings: an object schema's properties (a structured
+# output's `token` field), and every key of a schema transform's template (its output columns).
+_NAMES = ("properties", "patternProperties", "$defs", "definitions")
+
+
+_SUBSCHEMAS = (
+    "items",
+    "additionalProperties",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "not",
+    "prefixItems",
+    "if",
+    "then",
+    "else",
+    "contains",
+    "propertyNames",
+)
+
+
+def _object_schema(value: dict) -> bool:
+    kind = value.get("type")
+    return kind == "object" or (isinstance(kind, list) and "object" in kind) or "$schema" in value
+
+
+def _names_below(parent: dict, key: Any, names: str) -> str:
+    """How scrub reads ``parent[key]``: "all" (a transform template), "one" (a schema's property
+    names), "schema" (a schema, whose keys are keywords) or "" (settings)."""
+    if names == "all" or (key == "template" and parent.get("processor_type") == "schema_transform"):
+        return "all"
+    if names == "one" or key == "output_format":
+        # A property's schema, or a structured-output column's whole schema.
+        return "schema"
+    if key in _NAMES and (names == "schema" or _object_schema(parent)):
+        return "one"
+    if names == "schema" and key in _SUBSCHEMAS:
+        return "schema"
+    return ""
+
+
+def scrub(value: Any, names: str = "") -> Any:
+    """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively.
+    ``names`` says whose keys these are (``_names_below``): a schema's or a template's keep them all."""
     if isinstance(value, dict):
         found = {
-            k: scrub(v)
+            k: scrub(v, _names_below(value, k, names))
             for k, v in value.items()
-            if not (isinstance(k, str) and _SECRET_KEY.search(k))
+            if names or not (isinstance(k, str) and _SECRET_KEY.search(k))
         }
         # Request headers carry credentials under any name (Cookie, X-Custom-Auth): keep the names, drop the values.
-        if isinstance(found.get("headers"), dict):
+        if not names and isinstance(found.get("headers"), dict):
             found["headers"] = {
                 k: v if str(k).lower() in _PLAIN_HEADERS else ""
                 for k, v in found["headers"].items()
@@ -75,7 +118,7 @@ def scrub(value: Any) -> Any:
             found.pop("url")
         return found
     if isinstance(value, list):
-        return [scrub(v) for v in value]
+        return [scrub(v, names if names in ("all", "schema") else "") for v in value]
     if isinstance(value, str):
         if _SECRET_VALUE.search(value):
             value = _SECRET_VALUE.sub("", value)
@@ -163,6 +206,34 @@ async def _embed(value: Any, read_media: ReadMedia, files: dict[str, tuple[bytes
     return {k: await _embed(v, read_media, files) for k, v in value.items()}
 
 
+_LOCAL_SEEDS = ("local", "unstructured")
+_UPLOAD_UI = (
+    "unstructured_file_ids",
+    "unstructured_file_names",
+    "unstructured_file_sizes",
+    "unstructured_upload_uid",
+    "local_file_name",
+)
+
+
+def _drop_local_seeds(doc: dict) -> None:
+    """A recipe group's seed preview rows, and an uploaded seed's paths and upload ids, stay here."""
+    for group in doc.get("groups") or []:
+        if not isinstance(group, dict) or group.get("kind") != "recipe":
+            continue
+        if isinstance(group.get("ui"), dict):
+            group["ui"].pop("seed_preview_rows", None)
+        seed = (group.get("config") or {}).get("seed_config")
+        source = seed.get("source") if isinstance(seed, dict) else None
+        if not isinstance(source, dict) or source.get("seed_type") not in _LOCAL_SEEDS:
+            continue
+        source.pop("path", None)
+        source.pop("paths", None)
+        if isinstance(group.get("ui"), dict):
+            for key in _UPLOAD_UI:
+                group["ui"].pop(key, None)
+
+
 def _drop_local(value: Any) -> Any:
     if isinstance(value, list):
         return [
@@ -197,7 +268,8 @@ def _uses_models(doc: dict) -> bool:
 
 async def export_flow(doc: dict, mode: str, read_media: ReadMedia) -> tuple[bytes, str, str]:
     """(bytes, filename, media type) for ``mode`` json, package or baked."""
-    doc = scrub(json.loads(json.dumps(doc)))
+    doc = scrub(share_flow(json.loads(json.dumps(doc))))
+    _drop_local_seeds(doc)
     meta = dict(doc.get("meta") or {})
     meta["created_with"] = "Unsloth Studio"
     meta.setdefault("license", DEFAULT_LICENSE)
@@ -358,7 +430,7 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
     doc, errors = parse_document(raw)
     if doc is None:
         raise PackageError("; ".join(e["message"] for e in errors[:5]) or "Not a valid flow")
-    doc = scrub(doc)
+    doc = scrub(share_flow(doc))
     declared = {asset_store.parse_ref(a["id"]) for a in doc.get("assets") or []}
     for digest in declared - set(files):
         warnings.append(f"Embedded file {digest[:12]} is missing from the package")
@@ -374,6 +446,9 @@ def read_package(data: bytes) -> tuple[dict, dict[str, tuple[bytes, str]], dict]
             doc["assets"].append(
                 {"id": f"sha256:{digest}", "mime": mime, "bytes": len(blob), "name": None}
             )
+    for group in doc.get("groups") or []:
+        if group.get("kind") == "recipe" and (seed := missing_seed(group.get("config"))):
+            warnings.append(f"{group.get('label') or 'Data Recipe'}: {seed}")
     unknown = sorted({n["type"] for n in doc.get("nodes", []) if n["type"] not in SPECS_BY_TYPE})
     if unknown:
         warnings.append(

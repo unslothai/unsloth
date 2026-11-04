@@ -10,12 +10,20 @@ import {
 import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
 import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { memo, useCallback, useState } from "react";
+import { Suspense, lazy, memo, useCallback, useState } from "react";
 import { loopMembers } from "../app/app-form";
 import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
 import { IDLE_RUNTIME, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
+import { removeNodes } from "../recipe/recipe-actions";
+import {
+  COLUMN_TYPE,
+  GENERATE_TYPE,
+  columnName,
+} from "../recipe/recipe-columns";
+import { ColumnPanel, RecipePanel } from "../recipe/recipe-panels";
+import { SetupInspector } from "../recipe/recipe-setup-inspector";
 import type { NodeSpec, ParamSpec } from "../types";
 import {
   Cancel01Icon,
@@ -28,6 +36,7 @@ import { nodeIcon } from "./icons";
 import { LLM_SETTINGS_NODES, withoutPanelParams } from "./llm-settings";
 import { LlmSettingsPanel } from "./llm-settings-panel";
 import { NodeIconTile } from "./node-card";
+import { NODE_LOOKS } from "./node-looks";
 import { NodeHistory } from "./node-history";
 import { rerollNode, runToNode } from "./node-actions";
 import { CopyTextButton } from "./copy-text";
@@ -36,6 +45,10 @@ import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
 import { CATEGORY_TONES } from "./node-tones";
 import { TriggerPanel } from "./trigger-panel";
+
+const ColumnForm = lazy(() =>
+  import("../recipe/recipe-forms").then((m) => ({ default: m.ColumnForm })),
+);
 
 function InspectorHeading({ children }: { children: string }) {
   return (
@@ -154,7 +167,9 @@ function InspectorImpl() {
     [nodeId],
   );
 
-  if (!nodeId || !node || !spec) return null;
+  if (!nodeId || !node || !spec) return <SetupInspector />;
+  const isColumn = node.type === COLUMN_TYPE;
+  const look = NODE_LOOKS[node.type];
 
   return (
     <aside
@@ -163,14 +178,20 @@ function InspectorImpl() {
     >
       <header className="flex items-start gap-2.5 border-border/60 border-b px-4 py-3">
         <NodeIconTile
-          icon={nodeIcon(spec.icon)}
-          tone={CATEGORY_TONES[spec.category]}
+          icon={look?.icon?.(node) ?? nodeIcon(spec.icon)}
+          tone={look?.tone ? look.tone(node) : CATEGORY_TONES[spec.category]}
           accent={color}
         />
         <div className="min-w-0 flex-1">
           <input
             aria-label="Node name"
-            value={node.label ?? ""}
+            value={isColumn ? columnName(node) : (node.label ?? "")}
+            readOnly={isColumn}
+            title={
+              isColumn
+                ? "Rename it in Column name below; references follow"
+                : undefined
+            }
             placeholder={spec.title}
             onChange={(e) =>
               useDocStore
@@ -180,7 +201,9 @@ function InspectorImpl() {
             className="-mx-1.5 w-[calc(100%+0.75rem)] rounded-md bg-transparent px-1.5 py-0.5 font-semibold text-sm outline-none placeholder:text-foreground hover:bg-muted focus:bg-muted"
           />
           <p className="mt-0.5 text-ui-11 leading-snug text-muted-foreground">
-            {spec.description}
+            {isColumn
+              ? `${look?.subtitle?.(node, spec) ?? "Column"} column of a Data Recipe`
+              : spec.description}
           </p>
         </div>
         <Button
@@ -195,40 +218,46 @@ function InspectorImpl() {
         </Button>
       </header>
       <div className="flex flex-wrap gap-1.5 border-border/60 border-b px-4 py-2">
-        <Button
-          type="button"
-          variant="dark"
-          size="xs"
-          onClick={() => void runToNode(node.id)}
-          title="Run only what this node needs"
-        >
-          <HugeiconsIcon icon={PlayIcon} size={12} /> Run to here
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          onClick={() => void rerollNode(node.id)}
-          title="Run this node again, ignoring the cache (new seed when it has one)"
-        >
-          <HugeiconsIcon icon={DiceIcon} size={12} /> Re-roll
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          size="xs"
-          onClick={() => {
-            const doc = useDocStore.getState();
-            const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
-            doc.insertFragment(fragment);
-            useUiStore.getState().setSelection(
-              fragment.nodes.map((n) => n.id),
-              [],
-            );
-          }}
-        >
-          <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
-        </Button>
+        {!spec.design && (
+          <>
+            <Button
+              type="button"
+              variant="dark"
+              size="xs"
+              onClick={() => void runToNode(node.id)}
+              title="Run only what this node needs"
+            >
+              <HugeiconsIcon icon={PlayIcon} size={12} /> Run to here
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="xs"
+              onClick={() => void rerollNode(node.id)}
+              title="Run this node again, ignoring the cache (new seed when it has one)"
+            >
+              <HugeiconsIcon icon={DiceIcon} size={12} /> Re-roll
+            </Button>
+            {node.type !== GENERATE_TYPE && (
+              <Button
+                type="button"
+                variant="outline"
+                size="xs"
+                onClick={() => {
+                  const doc = useDocStore.getState();
+                  const fragment = cloneFragment(doc.graph, [node.id], [40, 40]);
+                  doc.insertFragment(fragment);
+                  useUiStore.getState().setSelection(
+                    fragment.nodes.map((n) => n.id),
+                    [],
+                  );
+                }}
+              >
+                <HugeiconsIcon icon={Copy01Icon} size={12} /> Duplicate
+              </Button>
+            )}
+          </>
+        )}
         <Button
           type="button"
           variant="outline"
@@ -259,7 +288,7 @@ function InspectorImpl() {
           size="icon-xs"
           aria-label="Delete node"
           onClick={() => {
-            useDocStore.getState().removeElements({ nodes: [node.id] });
+            removeNodes([node.id]);
             useUiStore.getState().openInspector(null);
           }}
           className="ml-auto text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
@@ -268,16 +297,25 @@ function InspectorImpl() {
         </Button>
       </div>
       <div className="flex-1 overflow-y-auto">
-        <section className="flex flex-col gap-4 px-4 py-3">
-          {spec.params.length === 0 && (
-            <p className="text-xs text-muted-foreground">
-              This node has no settings.
-            </p>
-          )}
-          {spec.type === HF_DATASET_NODE ? (
-            <FlowHfDatasetFields params={node.params} onChange={setParams} />
-          ) : (
-            spec.params
+        {isColumn && (
+          <section className="flex flex-col gap-4 px-4 py-3">
+            <Suspense fallback={null}>
+              <ColumnForm key={node.id} node={node} />
+            </Suspense>
+            <ColumnPanel node={node} />
+          </section>
+        )}
+        {!isColumn && (
+          <section className="flex flex-col gap-4 px-4 py-3">
+            {spec.params.length === 0 && (
+              <p className="text-xs text-muted-foreground">
+                This node has no settings.
+              </p>
+            )}
+            {spec.type === HF_DATASET_NODE ? (
+              <FlowHfDatasetFields params={node.params} onChange={setParams} />
+            ) : (
+              spec.params
               .filter((param) => !param.advanced)
               .map((param) => (
                 <ParamRow
@@ -315,6 +353,8 @@ function InspectorImpl() {
             </Collapsible>
           )}
         </section>
+        )}
+        {node.type === GENERATE_TYPE && <RecipePanel node={node} />}
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
         )}

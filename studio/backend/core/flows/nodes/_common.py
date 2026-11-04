@@ -164,8 +164,23 @@ def gallery_media(kind: str, row: dict, **extra: Any) -> dict:
     return value
 
 
+def _dataset_present(dataset: dict) -> bool:
+    """False for a dataset a step saved (an upload or a recipe's parquet) whose files are gone."""
+    from core.flows.nodes.data import local_seed_path, recipe_artifact
+
+    ref, source = dataset.get("ref"), dataset.get("source")
+    if not (source == "local" or (source == "recipe" and recipe_artifact(ref))):
+        return True
+    try:
+        local_seed_path(ref)
+    except FlowNodeError:
+        return False
+    return True
+
+
 def gallery_media_present(value: Any) -> bool:
-    """False when a value holds an image, clip or video whose gallery entry is gone (the user deleted it)."""
+    """False when a value holds an image, clip or video whose gallery entry is gone (the user deleted
+    it), or a saved dataset whose files are gone."""
     from core.inference import audio_gallery, image_gallery, video_gallery
 
     owned = {
@@ -185,6 +200,8 @@ def gallery_media_present(value: Any) -> bool:
                 and item.get("kind") == kind
                 and owned[kind](media_id) is None
             ):
+                return False
+            if item.get("kind") == "dataset" and not _dataset_present(item):
                 return False
             stack.extend(item.values())
         elif isinstance(item, list):
@@ -325,6 +342,38 @@ async def resident_name(ctx: Any, model_kind: str) -> Optional[str]:
     return name
 
 
+async def resident_identity(ctx: Any, model_kind: str) -> dict:
+    """The model a slot holds and, for chat, the GGUF quant it was loaded at: a cache key part."""
+    from core.flows.engine import MODEL_SLOT
+    from studio_mcp import loading
+
+    slot = MODEL_SLOT.get(model_kind, model_kind)
+    try:
+        slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return {"local": None}
+    names = slots.get(slot) or []
+    name = names[0] if names else None
+    if ctx is not None:
+        ctx.resident[slot] = name
+    if slot == "llm":
+        # Chat's main checkpoint itself: its public name can be a bare file stem two checkpoints share.
+        name = _checkpoint(status.get("model_identifier"))
+    variant = status.get("gguf_variant") if slot == "llm" else None
+    return {"local": name, "variant": variant.lower() if isinstance(variant, str) else None}
+
+
+def _checkpoint(identifier: Any) -> Optional[str]:
+    """A status ``model_identifier``, with the ``ref:`` handle an API-key caller is shown resolved
+    to the path it stands for."""
+    if not isinstance(identifier, str) or not identifier.strip():
+        return None
+    if identifier.startswith("ref:"):
+        from hub.utils.host_paths import resolve_host_path_reference
+        return resolve_host_path_reference(identifier)
+    return identifier
+
+
 # slot -> (repo, variant, owner load count): a media reload outside Flows changes the count.
 _LOADED_VARIANT: dict[str, tuple[str, str, Optional[int]]] = {}
 
@@ -426,12 +475,15 @@ async def ensure_model(
     model_kind: str,
     choice: Optional[dict],
     options: Optional[dict] = None,
+    primary: bool = False,
 ) -> Optional[dict]:
     """Load ``choice`` into its slot unless it is already resident; None keeps what is loaded.
 
     ``options`` are load settings merged into the chat load body (context, KV cache type, offload, speculative
-    decoding); the model counts as resident only when it was loaded with the same settings."""
-    found = await _ensure_model(ctx, model_kind, choice, options)
+    decoding); the model counts as resident only when it was loaded with the same settings. ``primary``
+    puts it in Chat's main slot even under Keep multiple models loaded, for a caller (a recipe job)
+    that only reaches the main model."""
+    found = await _ensure_model(ctx, model_kind, choice, options, primary)
     requires = (getattr(ctx, "spec", None) or {}).get("requires")
     if requires:
         await _check_backend(ctx, model_kind, requires)
@@ -461,7 +513,11 @@ async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None
 
 
 async def _ensure_model(
-    ctx: Any, model_kind: str, choice: Optional[dict], options: Optional[dict]
+    ctx: Any,
+    model_kind: str,
+    choice: Optional[dict],
+    options: Optional[dict],
+    primary: bool = False,
 ) -> Optional[dict]:
     from core.flows.engine import LOAD_KIND, MODEL_SLOT
     from studio_mcp import loading
@@ -488,8 +544,12 @@ async def _ensure_model(
     if slot == "llm":
         ctx.chat_model = None
     resident = await resident_name(ctx, model_kind)
+    if primary and slot == "llm":
+        # Chat's main slot, not just any slot: a recipe job reads the model from there.
+        resident = await _into_primary(ctx, repo)
     if (
         slot == "llm"
+        and not primary
         and model_kind in ("chat", "vision")
         and not (resident and resident.lower() == repo.lower())
     ):
@@ -551,6 +611,10 @@ async def _ensure_model(
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo}: {exc}") from None
+    if primary and slot == "llm" and not loading._same_id(await _primary_name(ctx) or "", repo):
+        raise FlowNodeError(
+            f"{repo} did not load into Chat's main slot; unload the other models and run again"
+        )
     ctx.resident.clear()
     ctx.resident[slot] = repo
     _alongside_loaded(before)
@@ -562,6 +626,32 @@ async def _ensure_model(
         _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count(gpu_arbiter.CHAT))
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
+
+
+async def _primary_name(ctx: Any) -> Optional[str]:
+    from studio_mcp import loading
+    try:
+        _, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    return _checkpoint(status.get("model_identifier"))
+
+
+async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
+    """Chat's main model; ``repo`` kept in an extra slot is unloaded there first, since a load of a
+    model a slot already serves stays in that slot."""
+    from studio_mcp import loading
+
+    try:
+        slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    main = _checkpoint(status.get("model_identifier"))
+    if main and loading._same_id(main, repo):
+        return main
+    if any(loading._same_id(_checkpoint(name) or name, repo) for name in slots.get("llm") or []):
+        await ctx.call("POST", "/api/inference/unload", json = {"model_path": repo})
+    return main
 
 
 def _load_context(options: Optional[dict]) -> int:

@@ -4,6 +4,7 @@
 import type { InternalNode } from "@xyflow/react";
 import { getSpec } from "../stores/catalog-store";
 import { type DocGraph, useDocStore } from "../stores/doc-store";
+import { setupLayout } from "../recipe/recipe-setup";
 import { useUiStore } from "../stores/ui-store";
 import { CARD_MIN_WIDTH } from "./card-size";
 import { inHandle, outHandle } from "./connection-rules";
@@ -154,7 +155,8 @@ export async function autoLayout(
   const sizes = fitCards(graph, measured);
   const ctx: TidyContext = {
     direction,
-    graph,
+    // A recipe frame grows to hold its setup cards; Tidy moves it whole at that height, cards and all.
+    graph: withSetupHeights(graph),
     wireStyle: useUiStore.getState().wireStyle,
     size: (id) => {
       const fit = sizes[id];
@@ -169,13 +171,27 @@ export async function autoLayout(
       return handle ? handle.y + handle.height / 2 : undefined;
     },
   };
-  // A closed super card is laid out as one block; its blocks move with it.
+  // A closed super card is laid out as one block; its blocks move with it. The layout sees the grown
+  // recipe frames that the patch places.
   const folded = foldLayout(
-    tidyRequest({ ...ctx, graph: tidyGraph(graph, useDocStore.getState().meta.editor) }),
+    tidyRequest({ ...ctx, graph: tidyGraph(ctx.graph, useDocStore.getState().meta.editor) }),
     useDocStore.getState(),
     sizeLookup(getInternalNode),
   );
   const result = folded.unfold(await runLayout(folded.request));
   const patch = tidyPatch(ctx, result, sizes);
   useDocStore.getState().applyTidy(patch);
+}
+
+/** The graph with each recipe frame as tall as it is drawn, holding its setup cards. */
+function withSetupHeights(graph: DocGraph): DocGraph {
+  const { heights } = setupLayout(graph, null, new Map());
+  if (!Object.keys(heights).length) return graph;
+  const groups = { ...graph.groups };
+  for (const [id, height] of Object.entries(heights)) {
+    const rect = groups[id]?.rect;
+    if (rect && height > rect[3])
+      groups[id] = { ...groups[id], rect: [rect[0], rect[1], rect[2], height] };
+  }
+  return { ...graph, groups };
 }

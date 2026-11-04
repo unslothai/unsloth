@@ -11,7 +11,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import type { ReactElement } from "react";
 import { useMemo } from "react";
-import { useRecipeStudioStore } from "../../stores/recipe-studio";
+import { useRecipeConfigs } from "../../stores/recipe-configs-context";
 import type { ExpressionConfig, ExpressionDtype } from "../../types";
 import { findInvalidJinjaReferences } from "../../utils/refs";
 import { getAvailableVariables } from "../../utils/variables";
@@ -30,7 +30,7 @@ export function ExpressionDialog({
   config,
   onUpdate,
 }: ExpressionDialogProps): ReactElement {
-  const configs = useRecipeStudioStore((state) => state.configs);
+  const configs = useRecipeConfigs();
   const dtypeId = `${config.id}-dtype`;
   const exprId = `${config.id}-expr`;
   const validReferences = useMemo(

@@ -3,6 +3,8 @@
 
 import type { IconSvgElement } from "@hugeicons/react";
 import type { ComponentType } from "react";
+import { COLUMN_TYPE } from "../recipe/recipe-columns";
+import { RECIPE_COLUMN_LOOK } from "../recipe/recipe-node-look";
 import type { FlowNode, NodeSpec } from "../types";
 
 /** Per-type content for the shared node card. Anything left out falls back to the
@@ -21,4 +23,6 @@ export interface NodeLook {
   Body?: ComponentType<{ node: FlowNode }>;
 }
 
-export const NODE_LOOKS: Record<string, NodeLook> = {};
+export const NODE_LOOKS: Record<string, NodeLook> = {
+  [COLUMN_TYPE]: RECIPE_COLUMN_LOOK,
+};

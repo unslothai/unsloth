@@ -19,6 +19,7 @@ import {
   useRuntimeStore,
 } from "../stores/runtime-store";
 import type { FlowNode, NodeSpec, PortSpec } from "../types";
+import { isDatasetValue } from "../dataset/dataset-value";
 import {
   FLOW_IN_HANDLE,
   flowOutHandle,
@@ -27,6 +28,7 @@ import {
 } from "./connection-rules";
 import { CARD_MIN_WIDTH, cardContentMinHeight, cardMinHeight } from "./card-size";
 import type { RfNode } from "./derive-rf";
+import { DatasetOutput } from "./dataset-output";
 import { nodeIcon } from "./icons";
 import { LLM_SETTINGS_NODES } from "./llm-settings";
 import { LlmReloadHint } from "./llm-settings-panel";
@@ -219,6 +221,7 @@ function OutputValues({
   for (const id of ids) {
     const value = outputs[id];
     if (value === undefined || value === null) continue;
+    if (isDatasetValue(value)) return <DatasetOutput value={value} compact />;
     if (isStructuredValue(value)) return <StructuredBadge value={value} />;
     if (expanded && typeof value === "object") {
       return (
