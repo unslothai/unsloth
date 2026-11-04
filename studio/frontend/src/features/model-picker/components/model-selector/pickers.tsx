@@ -3251,7 +3251,7 @@ function GgufVariantExpander({
               )}
             </div>
           ) : null,
-          <div key={v.filename} className="flex items-center">
+          <div key={v.filename} className="group/quant flex items-center">
             {/* Nested button triggers are not accessible. */}
             {companionBytes === null ? (
               rowButton
@@ -3270,7 +3270,12 @@ function GgufVariantExpander({
             {!unusableLocal && onConfigure && (
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
-                className="relative left-0.5"
+                className={cn(
+                  "relative left-0.5",
+                  // Always shown once on device; otherwise only on row hover or focus.
+                  v.downloaded !== true &&
+                    "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/quant:opacity-100 group-focus-within/quant:opacity-100 [@media(hover:none)]:opacity-100",
+                )}
                 onConfigure={() => onConfigure(repoId, selectMeta)}
               />
             )}

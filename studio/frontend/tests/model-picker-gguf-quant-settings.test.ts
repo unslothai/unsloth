@@ -25,7 +25,8 @@ function quantRowGear(): string {
 test("every GGUF quant row offers Run settings, downloaded or not", () => {
   const gear = quantRowGear();
   assert.match(gear, /^\{!unusableLocal && onConfigure && \(/);
-  assert.doesNotMatch(gear, /downloaded/);
+  // Download state picks visibility only, never whether the gear renders.
+  assert.doesNotMatch(gear.split("\n")[0], /downloaded/);
   // Every quant list renders through the expander, so no list keeps its own gate.
   assert.equal(
     picker.match(
@@ -52,6 +53,18 @@ test("the gear targets the row's own quant and pick, without downloading", () =>
   assert.match(meta, /loadId: downloaded === true \? loadId : undefined,/);
   // Building the meta must not itself start anything.
   assert.doesNotMatch(meta, /onSelect\(|download\(/);
+});
+
+test("the gear stays visible on device and reveals on hover or focus otherwise", () => {
+  assert.ok(
+    picker.includes(
+      '<div key={v.filename} className="group/quant flex items-center">',
+    ),
+  );
+  assert.match(
+    quantRowGear(),
+    /v\.downloaded !== true &&\s*"opacity-0 transition-opacity focus-visible:opacity-100 group-hover\/quant:opacity-100 group-focus-within\/quant:opacity-100 \[@media\(hover:none\)\]:opacity-100"/,
+  );
 });
 
 test("a quant without a menu keeps its slot so gears line up", () => {
