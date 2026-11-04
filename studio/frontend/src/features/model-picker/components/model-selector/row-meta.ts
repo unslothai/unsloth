@@ -72,6 +72,7 @@ export type MetaToken =
 
 const META_SIZE_RE = /(?:KB|MB|GB|TB)\b/i;
 const META_APPROX_RE = /^~/;
+const META_RUN_RE = /\bto run$/i;
 const META_PARAM_RE = /^\d+(?:\.\d+)?[MB]$/i;
 const META_WHITESPACE_RE = /\s+/;
 
@@ -80,6 +81,8 @@ const META_WHITESPACE_RE = /\s+/;
 export function classifyMetaToken(raw: string): MetaToken | null {
   const t = raw.trim();
   if (!t) return null;
+  // "12.2 GB to run" (an audio.cpp load estimate) is read beside the size, not as one.
+  if (META_RUN_RE.test(t)) return { kind: "text", label: t };
   if (META_SIZE_RE.test(t) || META_APPROX_RE.test(t)) {
     return { kind: "size", label: t };
   }

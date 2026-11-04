@@ -2007,7 +2007,15 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
               c.cache_path,
               ggufQuantDetailLabel(variant.quant),
             )}
-            meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
+            meta={[
+              "GGUF",
+              formatBytes(variant.size_bytes),
+              variant.estimated_resident_gb
+                ? `${residentGbLabel(variant.estimated_resident_gb)} to run`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
             quantChip={ggufQuantChipLabel(variant.quant)}
             partial={isPartial}
             // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
@@ -4906,6 +4914,9 @@ export function HubModelPicker({
             ggufParams ? formatCompact(ggufParams) : null,
             "GGUF",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+            r.estimatedResidentGb
+              ? `${residentGbLabel(r.estimatedResidentGb)} to run`
+              : null,
           ]
             .filter(Boolean)
             .join(" · ")
