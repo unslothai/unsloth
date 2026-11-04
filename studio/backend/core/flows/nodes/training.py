@@ -365,16 +365,13 @@ def drafter_request(params: dict) -> dict:
 
 
 def trained_system_prompt(config: dict) -> str:
-    """The one system message every training row got, when the run set one: the GRPO prompt, or
-    the SFT mapping's system prompt. A per-row system column has no single value to reuse."""
+    """The one system message every training row got, when the run set one: the SFT mapping's
+    system prompt. A per-row system column has no single value to reuse."""
     mapping = config.get("custom_format_mapping")
-    if config.get("objective") == "grpo" and config.get("rl_system_prompt"):
-        # The fallback is only known to be every row's system message under an explicit mapping with
-        # no system column: without one, a `system` column or a conversation's own system message
-        # (found by the formatter) wins row by row, so no single prompt is claimed.
-        if not isinstance(mapping, dict) or not mapping or "system" in mapping.values():
-            return ""
-        return str(config["rl_system_prompt"])
+    if config.get("objective") == "grpo":
+        # GRPO's prompt is only a fallback: a `system` column the formatter finds by name, or a
+        # conversation's own system message, wins row by row, so no single prompt is claimed.
+        return ""
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
         return mapping["__system_prompt"].strip()
     return ""
@@ -1148,7 +1145,22 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
         found["max_seq_length"] = context
     if isinstance(status.get("load_in_4bit"), bool):
         found["load_in_4bit"] = status["load_in_4bit"]
+    # A model served by vLLM or SGLang goes back on that engine, with its launch settings.
+    if status.get("engine") in ("vllm", "sglang"):
+        found["engine"] = {
+            k: status[k] for k in ENGINE_FIELDS if k in status and status[k] is not None
+        }
     return found
+
+
+ENGINE_FIELDS = (
+    "engine",
+    "engine_parallelism",
+    "engine_precision",
+    "engine_kv_cache_dtype",
+    "engine_seed",
+    "engine_gpu_memory_utilization",
+)
 
 
 async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
@@ -1173,6 +1185,7 @@ async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replace
             hf_token = None,
             kind = "llm",
             deadline = time.monotonic() + 1800,
+            extra_body = previous.get("engine") or None,
         )
         note_loaded(ctx, "llm", previous["repo"])
         ctx.resident.clear()

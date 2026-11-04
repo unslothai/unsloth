@@ -909,8 +909,9 @@ def test_the_checkpoint_carries_the_one_system_prompt_training_used():
         "rl_system_prompt": "Use <answer> tags.",
         "custom_format_mapping": {"q": "user", "a": "assistant"},
     }
-    assert training.trained_system_prompt(grpo) == "Use <answer> tags."
-    # Without a mapping the formatter may find a system column or message per row: no single prompt.
+    # GRPO's prompt is a fallback a `system` column found by name or a conversation's own system
+    # message overrides row by row: no single prompt, mapped or not.
+    assert training.trained_system_prompt(grpo) == ""
     assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}) == ""
     sft = {
         "custom_format_mapping": {
@@ -1145,6 +1146,41 @@ def test_the_previous_chat_model_is_put_back_with_its_own_context_and_precision(
     )
 
 
+def test_a_chat_model_on_vllm_is_put_back_on_vllm(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {
+        "model_identifier": "unsloth/Qwen3-4B-FP8",
+        "engine": "vllm",
+        "engine_precision": "fp8",
+        "engine_kv_cache_dtype": "fp8",
+        "engine_seed": None,
+    }
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {
+        "engine": "vllm",
+        "engine_precision": "fp8",
+        "engine_kv_cache_dtype": "fp8",
+    }
+    # Unsloth's own backend sends nothing extra, as before.
+    loads.clear()
+    status["engine"] = "auto"
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] is None
+
+
 def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monkeypatch):
     loads = []
 
@@ -1169,8 +1205,9 @@ def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
         "custom_format_mapping": {"question": "user", "rule": "system"},
     }
     assert training.trained_system_prompt(config) == ""
-    config["custom_format_mapping"] = {"question": "user"}
-    assert training.trained_system_prompt(config) == "Reason, then answer."
+    # A prompt/answer mapping still lets the formatter pick up a `system` column by name.
+    config["custom_format_mapping"] = {"q": "prompt", "gold": "answer"}
+    assert training.trained_system_prompt(config) == ""
 
 
 def test_a_small_whole_split_is_streamed_too(monkeypatch):
