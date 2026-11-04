@@ -348,6 +348,21 @@ def test_benchmark_failures_map_to_the_seed_columns():
     lm_eval = {"question": "q", "target": "a", "model_output": "b"}
     assert loop_rounds.failure_row(lm_eval)["failed_reference"] == "a"
     assert loop_rounds.failure_row({"model_output": "x"}) is None
+    # Benchmark scored against the label name (or a structured answer's text): that is fed back.
+    labelled = {
+        "text": "great film",
+        "label": 1,
+        "model_output": "negative",
+        "scored_reference": "positive",
+    }
+    assert loop_rounds.failure_row(labelled, "text", "label")["failed_reference"] == "positive"
+    squad = {
+        "question": "Capital of France?",
+        "answers": {"text": ["Paris"], "answer_start": [0]},
+        "model_output": "Lyon",
+        "scored_reference": "Paris",
+    }
+    assert loop_rounds.failure_row(squad)["failed_reference"] == "Paris"
 
 
 def test_the_real_benchmark_node_can_close_the_loop():

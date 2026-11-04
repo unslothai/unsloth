@@ -327,3 +327,29 @@ def test_a_sweep_cannot_start_while_an_eval_is_scoring(monkeypatch):
     with benchmarks_routes.scoring_hold():
         assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
+
+
+def test_an_eval_cannot_start_under_a_running_sweep(monkeypatch):
+    import pytest
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    app.post("/api/inference/load")(lambda: {"ok": True})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    sweep = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+    client.post("/api/benchmarks/lease", json = sweep)
+    with pytest.raises(HTTPException) as refused:
+        benchmarks_routes.sweep_refusal()
+    assert refused.value.status_code == 409
+    with pytest.raises(benchmarks_routes.SweepRunningError):
+        with benchmarks_routes.scoring_hold():
+            pass
+    # The sweep keeps the server: its own loads and its renewal still go through.
+    own = {"X-Unsloth-Bench-Lease": sweep["holder"]}
+    assert client.post("/api/inference/load", headers = own).status_code == 200
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
+    assert not benchmarks_routes.scoring_active()

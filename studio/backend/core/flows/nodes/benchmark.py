@@ -17,6 +17,7 @@ from typing import Any, Optional
 from urllib.parse import quote
 
 from core.flows.nodes._common import note_loaded, resident_name
+from utils.datasets.cells import cell_text
 from core.flows.registry import FlowNodeError, NodeContext, handler
 
 EVALS = "/api/benchmarks/evals"
@@ -333,8 +334,6 @@ ALPACA_PROMPT = "__instruction_and_input"
 
 
 def _alpaca_question(row: dict) -> Any:
-    from utils.datasets.cells import cell_text
-
     # As training reads the cells: an input of 0 or False is part of the question, not a blank.
     extra = cell_text(row.get("input")).strip()
     return f"{cell_text(row.get('instruction'))}\n\n{extra}" if extra else row.get("instruction")
@@ -474,7 +473,7 @@ async def _recipe_heldout(
             {
                 "doc_id": i,
                 "question": asked[i].get(prompt_col),
-                "target": rows[i].get(reference_col) if reference_col else None,
+                "target": cell_text(asked[i].get(reference_col)) if reference_col else None,
                 "raw_response": err,
             }
             for i, err in errored.items()
@@ -497,7 +496,15 @@ async def _recipe_heldout(
             item["base_passed"] = bool(base[index].get("correct"))
         results.append(item)
         if not item["passed"]:
-            failures.append({**row, "model_output": item["output"], "reason": item["reason"]})
+            failures.append(
+                {
+                    **row,
+                    "model_output": item["output"],
+                    # What the answer was scored against: the label name, a structured answer's text.
+                    "scored_reference": item["reference"],
+                    "reason": item["reason"],
+                }
+            )
     summary = found.get("candidate") or {}
     baseline = found.get("baseline") or {}
     return {

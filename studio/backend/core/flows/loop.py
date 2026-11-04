@@ -66,7 +66,7 @@ def failure_row(
     prompt_column, reference_column = prompt_column.strip(), reference_column.strip()
     lowered = {str(k).lower(): v for k, v in failure.items()}
     output = next((k for k in OUTPUT_KEYS if k in lowered), None)
-    rest = [k for k in lowered if k not in (output, "reason", "origin")]
+    rest = [k for k in lowered if k not in (output, "reason", "origin", "scored_reference")]
 
     def pick(named: str, guesses: tuple[str, ...], skip: Optional[str]) -> Optional[str]:
         if named and named.lower() in lowered:
@@ -83,7 +83,11 @@ def failure_row(
     row = {
         "origin": "failure",
         "failed_prompt": question,
-        "failed_reference": _text(lowered.get(reference)) if reference else "",
+        # Benchmark's own scored reference when it gave one: the dataset cell may be a label id or
+        # a structured answer the score read differently.
+        "failed_reference": _text(lowered["scored_reference"])
+        if lowered.get("scored_reference") is not None
+        else (_text(lowered.get(reference)) if reference else ""),
         "failed_output": _text(lowered.get(output)) if output else "",
     }
     return row if row["failed_prompt"] else None

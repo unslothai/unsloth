@@ -235,6 +235,11 @@ def scoring_hold():
     scoring itself never loads."""
     global _scorings
     with _lease_lock:
+        if _sweep_holds_against(None):
+            # The sweep reloads the server between its rows and owns it until it lets go.
+            raise SweepRunningError(
+                "A Config sweep holds the server. Stop it or let it finish, then run the evaluation."
+            )
         _scorings += 1
     try:
         with _gpu_lease():
@@ -242,6 +247,21 @@ def scoring_hold():
     finally:
         with _lease_lock:
             _scorings -= 1
+
+
+class SweepRunningError(RuntimeError):
+    """A scoring cannot start: a Config sweep holds the one llama-server."""
+
+
+def sweep_refusal() -> None:
+    """409 for a run that would score under a running Config sweep (eval start and reservation)."""
+    with _lease_lock:
+        busy = _sweep_holds_against(None)
+    if busy:
+        raise HTTPException(
+            status_code = 409,
+            detail = "A Config sweep holds the server. Stop it or let it finish, then run the evaluation.",
+        )
 
 
 def scoring_active() -> bool:

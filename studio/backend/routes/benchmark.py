@@ -1,1031 +1,672 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Benchmark API routes for model benchmarking."""
+"""Benchmark node: a front end to the Benchmarks Evals tab, so every run it starts is stored there too."""
 
 from __future__ import annotations
 
 import asyncio
-import copy
-import json
+import contextlib
 import os
-import sys
-import threading
+import re
+from pathlib import Path
 import time
 import uuid
-from pathlib import Path
-from typing import Any, AsyncGenerator, Optional
+from types import SimpleNamespace
+from typing import Any, Optional
+from urllib.parse import quote
 
-import yaml
+from core.flows.nodes._common import note_loaded, resident_name
+from utils.datasets.cells import cell_text
+from core.flows.registry import FlowNodeError, NodeContext, handler
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
-from loggers import get_logger
-from utils.utils import safe_error_detail
-
-backend_path = Path(__file__).parent.parent.parent
-if str(backend_path) not in sys.path:
-    sys.path.insert(0, str(backend_path))
-
-from auth.authentication import (
-    authenticated_via_api_key,
-    get_current_credential,
-    get_current_subject,
-)
-from hub.utils.host_paths import host_paths_visible, redact_host_paths
-from core.training.account_jobs import _has_managed_accounts
-from utils.account_context import AccountContext, current_account
-from utils.host_policy import LOOPBACK_FALLBACK_HOST, dial_host
-from utils.paths.storage_roots import outputs_root
-
-from models.benchmark import (
-    BenchmarkRunRequest,
-    BenchmarkRunSummary,
-    BenchmarkRunListResponse,
-    BenchmarkRunDetail,
-    BenchmarkStatusResponse,
-    BenchmarkOperationResponse,
-    BenchmarkTaskConfigResponse,
-    BenchmarkTaskInfo,
-    BenchmarkTasksResponse,
-    BenchmarkGraphRequest,
-    BenchmarkExportRequest,
-)
-
-from core.benchmark import (
-    resolve_model_details,
-    parse_run_summary,
-    extract_samples,
-    get_benchmark_backend,
-)
-from core.benchmark.recipe_heldout import RECIPE_HELDOUT_TASK_ID
-
-
-# ── Curated benchmark tasks ──────────────────────────
-_CURATED_TASKS: list[BenchmarkTaskInfo] = [
-    BenchmarkTaskInfo(
-        id = RECIPE_HELDOUT_TASK_ID,
-        name = "Recipe held-out",
-        description = "Held-out rows scored with a reference match or an LLM judge (Flows Benchmark node)",
-        task_type = "generation",
-        runner = "recipe",
-    ),
-    BenchmarkTaskInfo(
-        id = "mmlu",
-        name = "MMLU",
-        description = "Massive Multitask Language Understanding",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "mmlu_pro",
-        name = "MMLU-Pro",
-        description = "MMLU-Pro (more challenging MMLU variant)",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "gpqa_main_cot_zeroshot",
-        name = "GPQA",
-        description = "Google Proof Q&A (PhD-level science, CoT zero-shot)",
-        task_type = "generation",
-    ),
-    BenchmarkTaskInfo(
-        id = "hellaswag",
-        name = "HellaSwag",
-        description = "Commonsense reasoning (sentence completion)",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "arc_challenge",
-        name = "ARC-Challenge",
-        description = "AI2 Reasoning Challenge (challenge split)",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "winogrande",
-        name = "WinoGrande",
-        description = "Winograd schema coreference",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "gsm8k",
-        name = "GSM8K",
-        description = "Grade-school math (5-shot, chain-of-thought)",
-        task_type = "generation",
-    ),
-    BenchmarkTaskInfo(
-        id = "hendrycks_math",
-        name = "MATH",
-        description = "Hendrycks MATH (mathematical reasoning)",
-        task_type = "generation",
-    ),
-    BenchmarkTaskInfo(
-        id = "ifeval",
-        name = "IFEval",
-        description = "Instruction Following Evaluation",
-        task_type = "generation",
-    ),
-    BenchmarkTaskInfo(
-        id = "truthfulqa_mc1",
-        name = "TruthfulQA MC1",
-        description = "Truthfulness & safety (single-true)",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "longbench",
-        name = "LongBench",
-        description = "Long-context understanding (multi-task)",
-        task_type = "generation",
-    ),
-    BenchmarkTaskInfo(
-        id = "bbh",
-        name = "BBH",
-        description = "Big Bench Hard (chain-of-thought few-shot)",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "bbh_fewshot",
-        name = "BBH (few-shot)",
-        description = "Big Bench Hard (few-shot, no CoT)",
-        task_type = "log_likelihood",
-    ),
-    BenchmarkTaskInfo(
-        id = "bbh_zeroshot",
-        name = "BBH (zero-shot)",
-        description = "Big Bench Hard (zero-shot, no CoT)",
-        task_type = "log_likelihood",
-    ),
-]
-
-_task_cache: list[BenchmarkTaskInfo] | None = None
-
-
-def _build_task_cache() -> list[BenchmarkTaskInfo]:
-    curated_map = {t.id: t for t in _CURATED_TASKS}
-    try:
-        if _lm_eval_available:
-            logger.info("lm_eval available — building task index...")
-            all_names = _get_task_manager().all_tasks
-            logger.info(f"Loaded {len(all_names)} tasks from lm_eval: first 5 = {all_names[:5]}")
-        else:
-            logger.warning("lm_eval not available — using curated tasks only")
-            all_names = list(curated_map.keys())
-    except Exception as e:
-        logger.warning(f"Failed to load lm_eval tasks: {e}")
-        all_names = list(curated_map.keys())
-
-    seen: set[str] = set()
-    for name in all_names:
-        if name not in curated_map:
-            parent = None
-            for t in _CURATED_TASKS:
-                if name.startswith(t.id + "_"):
-                    parent = t
-                    break
-            if parent is not None:
-                curated_map[name] = BenchmarkTaskInfo(
-                    id = name,
-                    name = name,
-                    description = parent.description,
-                    task_type = parent.task_type,
-                )
-            else:
-                curated_map[name] = BenchmarkTaskInfo(id = name, name = name)
-        seen.add(name)
-    for t in _CURATED_TASKS:
-        if t.id not in seen:
-            all_names.append(t.id)
-    return [curated_map[n] for n in all_names]
-
-
-def _get_task_cache() -> list[BenchmarkTaskInfo]:
-    global _task_cache
-    if _task_cache is None:
-        try:
-            logger.info("Building task cache...")
-            _task_cache = _build_task_cache()
-            logger.info(f"Task cache built: {len(_task_cache)} tasks")
-        except Exception as e:
-            logger.error(f"Task cache build failed: {e}", exc_info = True)
-            _task_cache = [t for t in _CURATED_TASKS]
-    return _task_cache
-
-
-_task_mgr_cache = None
-
-
-def _get_task_manager():
-    global _task_mgr_cache
-    if _task_mgr_cache is None:
-        _task_mgr_cache = _lm_eval_tasks.TaskManager()
-    return _task_mgr_cache
-
-
-try:
-    import lm_eval.tasks as _lm_eval_tasks
-    _lm_eval_available = True
-except ImportError:
-    _lm_eval_available = False
-
-router = APIRouter()
-logger = get_logger(__name__)
-
-# Warm the task cache in the background at startup so the first /tasks
-# request doesn't pay the cost of building the full lm_eval task index.
-threading.Thread(target = _get_task_cache, daemon = True).start()
-
-
-def _run_output_path(task: str) -> str:
-    """The run's results folder; its name is also the run id, so two runs in one second need a suffix."""
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    return str(outputs_root() / "evals" / f"benchmark_{task}_{ts}_{uuid.uuid4().hex[:6]}")
-
-
-@router.get("/tasks", response_model = BenchmarkTasksResponse)
-async def list_benchmark_tasks(current_subject: str = Depends(get_current_subject)):
-    """List available benchmark tasks — curated shortlist merged with all lm_eval tasks."""
-    try:
-        tasks = _get_task_cache()
-        logger.info(f"Returning {len(tasks)} tasks")
-        return BenchmarkTasksResponse(tasks = tasks)
-    except Exception as e:
-        logger.error(f"Error listing benchmark tasks: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = "Failed to list benchmark tasks",
-        )
-
-
-@router.get("/task/{task_id}/config", response_model = BenchmarkTaskConfigResponse)
-async def get_task_config(task_id: str, current_subject: str = Depends(get_current_subject)):
-    """Load a single task's YAML config and return its metadata (num_fewshot, etc.)."""
-    if not _lm_eval_available:
-        return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
-
-    try:
-        task_mgr = _get_task_manager()
-        idx = task_mgr.task_index.get(task_id)
-        if idx is None:
-            return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
-
-        # task_index entries may be dicts or Entry objects — handle both
-        yaml_path = idx.get("yaml_path") if hasattr(idx, "get") else getattr(idx, "yaml_path", None)
-        if not yaml_path or yaml_path == -1:
-            return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
-
-        # Read the raw YAML — num_fewshot is null if absent (user can customize)
-        # or 0 if explicitly disabled (slider hidden).
-        # lm_eval YAMLs use !function tags; register a no-op constructor for them.
-        yaml.add_constructor("!function", lambda loader, node: None, Loader = yaml.FullLoader)
-        with open(yaml_path, encoding = "utf-8") as f:
-            cfg = yaml.full_load(f)
-        if not isinstance(cfg, dict):
-            return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
-        nf = cfg.get("num_fewshot")
-        # lm_eval treats null as "no default" (user can still set it),
-        # and 0 as "explicitly disabled"
-        if nf is None:
-            num_fewshot: int | None = None
-        else:
-            num_fewshot = int(nf)
-        return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = num_fewshot)
-    except Exception as e:
-        logger.warning(f"Failed to load config for task '{task_id}': {e}")
-        return BenchmarkTaskConfigResponse(task_id = task_id, num_fewshot = None)
-
-
-# lm_eval with the gguf backend is not on PyPI yet (EleutherAI/lm-evaluation-harness#4012).
-_LM_EVAL_INSTALL_HINT = (
-    "lm_eval is not installed. Install it into Studio's Python environment with: "
-    "pip install 'lm_eval[hf,api] @ git+https://github.com/EleutherAI/lm-evaluation-harness.git"
-    "@ad8737ae7fad24cf64e50fc7fc31397bff586b9e'"
+EVALS = "/api/benchmarks/evals"
+RECIPE_TASK = "recipe_heldout"
+TASKS = {
+    "Recipe held-out": RECIPE_TASK,
+    "HellaSwag": "hellaswag",
+    "ARC-Challenge": "arc_challenge",
+    "WinoGrande": "winogrande",
+    "GSM8K": "gsm8k",
+    "MMLU": "mmlu",
+    "TruthfulQA MC1": "truthfulqa_mc1",
+}
+SCORERS = {"Reference match": "reference", "LLM judge": "judge"}
+MAX_ROWS = 200
+PREVIEW_CHARS = 400
+PROMPT_GUESSES = ("prompt", "instruction", "question", "input", "query", "user")
+REFERENCE_GUESSES = (
+    "response",
+    "output",
+    "answer",
+    "completion",
+    "reference",
+    "target",
+    "assistant",
 )
 
 
-def _without_api_keys(value: Any) -> Any:
-    """lm_eval copies model_args (with the run's key) into its results; keep it off disk."""
-    if isinstance(value, dict):
-        return {
-            k: ("<redacted>" if k == "api_key" else _without_api_keys(v)) for k, v in value.items()
-        }
-    if isinstance(value, list):
-        return [_without_api_keys(v) for v in value]
+def guess_column(columns: list[str], wanted: str, guesses: tuple[str, ...]) -> Optional[str]:
+    if wanted:
+        if wanted not in columns:
+            raise FlowNodeError(
+                f"The rows have no {wanted!r} column (they have {', '.join(columns)})"
+            )
+        return wanted
+    lower = {c.lower(): c for c in columns}
+    return next((lower[g] for g in guesses if g in lower), None)
+
+
+def headline(metrics: list[dict]) -> tuple[Optional[float], str]:
+    """The metric the Evals tab leads with, so the node and the tab show the same number."""
+    from core.benchmark.parse import pick_default_metric
+
+    name = pick_default_metric(metrics)
+    found = next((m for m in metrics if m.get("name") == name), None)
+    if found is None or not isinstance(found.get("score"), (int, float)):
+        return None, name
+    return float(found["score"]), name
+
+
+def _short(value: Any) -> Any:
+    if isinstance(value, str) and len(value) > PREVIEW_CHARS:
+        return value[:PREVIEW_CHARS] + "…"
     return value
 
 
-def _redact_eval_run(run: dict, *, via_api_key: bool) -> dict:
-    """``model`` and ``output_path`` are absolute host paths; API-key callers get
-    the same redaction the sweep runs route applies (routes/benchmarks._redact_run)."""
-    if host_paths_visible(via_api_key):
-        return run
-    ids = redact_host_paths({"active_model": run.get("model")}, via_api_key = via_api_key)
-    out = dict(run)
-    out["model"] = ids["active_model"]
-    if out.get("output_path"):
-        out["output_path"] = os.path.basename(str(out["output_path"]))
-    return out
+async def _load_export(ctx: NodeContext, model: dict) -> tuple[str, bool]:
+    """Load an Export Model output by its export name (a GGUF loads as its folder plus quant)."""
+    from studio_mcp import loading, trained_models
 
+    from core.flows.nodes._common import FLOW_CHAT_CONTEXT
 
-def _run_hidden_from(backend, viewer: AccountContext) -> bool:
-    """True when the current/last eval belongs to another account (multi-account
-    installs only): its log, outcome and Stop are then not this viewer's."""
-    owner = getattr(backend, "_result_account", None)
-    return (
-        isinstance(owner, AccountContext)
-        and owner.account_id != viewer.account_id
-        and _has_managed_accounts()
-    )
-
-
-def _gguf_backend_supported() -> bool:
-    """PyPI lm_eval (and unsloth[eval]) ships an older ``gguf`` model that
-    StudioGGUFLM cannot drive; only the pinned commit has the server-slot API."""
+    name = str(model["repo"])
+    deadline = time.monotonic() + 3600
+    ctx.set_status("loading_model", f"Loading {name}")
     try:
-        from lm_eval.models.gguf import GGUFLM
+        try:
+            trained = await trained_models.resolve_by(
+                deadline,
+                ctx.caller,
+                model = None,
+                checkpoint = None,
+                export = name,
+                kind = "llm",
+                variant = model.get("variant") or None,
+            )
+        except Exception as exc:
+            trained, missing = None, exc
+        else:
+            missing = None
+        if trained is None:
+            flat = await asyncio.to_thread(_flat_export, name)
+            if flat is None:
+                raise missing or FlowNodeError(f"No export named {name}")
+            trained = SimpleNamespace(ref = flat[0], is_lora = flat[1], gguf_variant = None)
+        await loading.load_llm(
+            ctx.caller,
+            None,
+            model = trained.ref,
+            variant = trained.gguf_variant,
+            max_seq_length = FLOW_CHAT_CONTEXT,
+            load_in_4bit = True,
+            hf_token = None,
+            kind = "llm",
+            is_lora = trained.is_lora,
+            deadline = deadline,
+        )
+        note_loaded(ctx, "llm", trained.ref)
+    except FlowNodeError:
+        raise
+    except Exception as exc:
+        raise FlowNodeError(f"Could not load {name}: {exc}") from None
+    ctx.resident.clear()
+    await _require_primary(ctx, trained.ref, name)
+    ctx.set_status("running")
+    return name, bool(trained.is_lora)
+
+
+def _flat_export(name: str) -> Optional[tuple[str, bool]]:
+    """(folder, is_lora) of a merged or LoRA export Export Model wrote as one folder under exports,
+    a layout the export listing reads only for GGUF."""
+    from utils.paths.storage_roots import resolve_export_dir
+
+    try:
+        folder = resolve_export_dir(name)
+    except (OSError, ValueError):
+        return None
+    if (folder / "adapter_config.json").is_file():
+        return str(folder), True
+    if (folder / "config.json").is_file():
+        return str(folder), False
+    return None
+
+
+async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
+    """The scoring requests reach Chat's main model. A target already kept in another slot stays
+    there when loaded again, so it would not be the model scored: refuse instead."""
+    from hub.utils.host_paths import resolve_host_path_reference
+    from studio_mcp import loading
+
+    try:
+        _slots, status = await loading._resident(ctx.caller)
+    except Exception:
+        return
+    serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
+    if len(serving) < 2:
+        return
+    # Both sides as paths: a checkpoint or export resolves to an opaque `ref:` handle too.
+    main = resolve_host_path_reference(serving[0]) or serving[0]
+    ref = resolve_host_path_reference(ref) or ref
+    same = loading._same_id(main, ref) or (
+        os.path.isabs(main)
+        and os.path.isabs(ref)
+        and os.path.realpath(main) == os.path.realpath(ref)
+    )
+    if not same:
+        raise FlowNodeError(
+            f"{label} is kept loaded beside Chat's main model, and Benchmark scores the main model. "
+            "Unload it, or set Keep multiple models loaded to Off, then run again."
+        )
+
+
+async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
+    """Load what is being scored; (label, is_lora)."""
+    wired = ctx.inputs.get("model")
+    if isinstance(wired, dict) and wired.get("repo"):
+        return await _load_export(ctx, wired)
+    checkpoint = ctx.inputs.get("checkpoint")
+    name = checkpoint.get("name") if isinstance(checkpoint, dict) else None
+    if name:
+        from studio_mcp import loading, trained_models
+
+        from core.flows.nodes._common import FLOW_CHAT_CONTEXT
+
+        deadline = time.monotonic() + 3600
+        ctx.set_status("loading_model", f"Loading {name}")
+        try:
+            trained = await trained_models.resolve_by(
+                deadline,
+                ctx.caller,
+                model = None,
+                checkpoint = name,
+                export = None,
+                kind = "llm",
+                variant = None,
+            )
+            await loading.load_llm(
+                ctx.caller,
+                None,
+                model = trained.ref,
+                variant = None,
+                max_seq_length = FLOW_CHAT_CONTEXT,
+                load_in_4bit = True,
+                hf_token = None,
+                kind = "llm",
+                is_lora = trained.is_lora,
+                deadline = deadline,
+            )
+            note_loaded(ctx, "llm", trained.ref)
+        except FlowNodeError:
+            raise
+        except Exception as exc:
+            raise FlowNodeError(f"Could not load {name}: {exc}") from None
+        ctx.resident.clear()
+        await _require_primary(ctx, trained.ref, name)
+        ctx.set_status("running")
+        return name, bool(trained.is_lora)
+    model = ctx.params.get("model")
+    await ctx.ensure_model("chat", model if isinstance(model, dict) and model.get("repo") else None)
+    kept = getattr(ctx, "chat_model", None)
+    if kept:
+        # The scoring requests reach Chat's main model, so a model kept beside it would not be the one scored.
+        raise FlowNodeError(
+            f"Benchmark scores Chat's main model, and {kept} is kept loaded beside it. Unload the main "
+            "model, or set Keep multiple models loaded to Off, then run again."
+        )
+    label = await resident_name(ctx, "chat")
+    if not label:
+        raise FlowNodeError(
+            "Wire a Fine-tune checkpoint in, pick a model, or load one in Chat first"
+        )
+    return label, await asyncio.to_thread(_is_adapter, label)
+
+
+def _is_adapter(name: str) -> bool:
+    """A model Chat loaded from a LoRA folder or Hub repo, so the adapter-off comparison and judging apply
+    to it too. The status a flow reads names a local folder by its `ref:` handle; the folder is what is
+    checked. A Hub repo Chat loaded is already in the Hub cache, which is read without a network call."""
+    from hub.utils.host_paths import resolve_host_path_reference
+
+    path = resolve_host_path_reference(name) or name
+    try:
+        if (Path(path) / "adapter_config.json").is_file():
+            return True
+    except (OSError, ValueError):
+        return False
+    if path != name or not re.fullmatch(r"[\w.-]+/[\w.-]+", name):
+        return False
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        return isinstance(try_to_load_from_cache(name, "adapter_config.json"), str)
     except Exception:
         return False
-    return hasattr(GGUFLM, "_detect_total_slots") and hasattr(GGUFLM, "_post_with_retries")
 
 
-def _run_model_label(model: str) -> str:
-    """A Hub repo holds every quant, so name the loaded one: two quants of a repo stay apart."""
-    try:
-        from core.inference.openai_auto_download import split_model_ref
-        from hub.utils.paths import is_valid_repo_id
-        from routes.inference import get_llama_cpp_backend
+def _head(dataset: dict, token: Any, limit: int) -> list[dict]:
+    """The first rows of a dataset, streamed so a big file or split is never read whole."""
+    from datasets import load_dataset
 
-        base, variant = split_model_ref(model)
-        if variant is not None or not is_valid_repo_id(base):
-            return model  # already pinned, or a local file whose name carries the quant
-        llama = get_llama_cpp_backend()
-        loaded = llama.is_loaded and split_model_ref(llama.model_identifier or "")[0] == base
-        if loaded and llama.hf_variant:
-            return f"{base}:{llama.hf_variant}"
-    except Exception as e:
-        logger.debug("Could not read the loaded GGUF variant: %s", e)
-    return model
-
-
-def _studio_base_url(http_request: Request) -> Optional[str]:
-    """The address this Studio actually listens on, for lm_eval's requests back to it."""
-    from utils.studio_tls import loopback_http_port
-
-    state = http_request.app.state
-    # Under native TLS server_port speaks HTTPS; the plain loopback listener is the one to call.
-    loopback = loopback_http_port(state)
-    if loopback is not None:
-        return f"http://127.0.0.1:{loopback}"
-    port = getattr(state, "server_port", None)
-    if not isinstance(port, int) or port <= 0:
-        return None
-    host = getattr(state, "server_request_host", None)
-    if not isinstance(host, str) or not host:
-        host = LOOPBACK_FALLBACK_HOST
-    return f"http://{dial_host(host)}:{port}"
-
-
-@router.post("/run", response_model = BenchmarkOperationResponse)
-async def run_benchmark(
-    request: BenchmarkRunRequest,
-    http_request: Request,
-    current_subject: str = Depends(get_current_subject),
-    credential: tuple = Depends(get_current_credential),
-    via_api_key: bool = Depends(authenticated_via_api_key),
-):
-    """Run a benchmark on the specified model using lm_eval."""
-    if request.task == RECIPE_HELDOUT_TASK_ID:
-        from routes.benchmark_recipe import run_recipe_heldout
-        return await run_recipe_heldout(request, http_request, credential, via_api_key)
-    backend = get_benchmark_backend()
-
-    api_key_raw: str | None = None
-    api_key_id: int | None = None
-    run_seq: int | None = None
-    started = False
-
-    try:
-        if not _lm_eval_available or not _gguf_backend_supported():
-            raise HTTPException(
-                status_code = 400,
-                detail = _LM_EVAL_INSTALL_HINT,
-            )
-
-        # Claimed before the first await: checking here and claiming later on
-        # the executor thread let two concurrent requests both start a run.
-        account = current_account()
-        run_seq = backend.try_begin(account, request.run_token)
-        if run_seq is None:
-            raise HTTPException(
-                status_code = 409,
-                detail = "The stopped benchmark is still finishing. Try again in a moment."
-                if backend.is_draining()
-                else "A benchmark is already running.",
-            )
-
-        logger.info("=== Benchmark Run Request =========================")
-        logger.info(f"checkpoint_path: {request.checkpoint_path}")
-        logger.info(f"model_source:    {request.model_source}")
-        logger.info(f"hf_token:        {'<provided>' if request.hf_token else '<not provided>'}")
-        logger.info(f"hf_token length: {len(request.hf_token) if request.hf_token else 0}")
-        logger.info(f"request model_dump: {request.model_dump(exclude = {'hf_token'})}")
-        logger.info("===================================================")
-
-        _run_start = time.monotonic()
-
-        # Results are always written to an auto-managed directory; there is no
-        # user-supplied output path.
-        output_path = _run_output_path(request.task)
-
-        model_lines, lm_eval_kwargs = resolve_model_details(
-            request.checkpoint_path,
-            task = request.task,
-            server_url = _studio_base_url(http_request),
-            batch_size = request.batch_size,
-            num_fewshot = request.num_fewshot,
-            max_tokens = request.max_tokens,
-            limit = request.limit,
-        )
-        log_kwargs = copy.deepcopy(lm_eval_kwargs)
-        log_model_args = log_kwargs.get("model_args", {})
-        if "auth_token" in log_model_args:
-            log_model_args["auth_token"] = f"<redacted ({len(log_model_args['auth_token'])} chars)>"
-        kwargs_json = json.dumps(log_kwargs, indent = 2, default = str)
-        logger.info(f"lm_eval.simple_evaluate kwargs:\n{kwargs_json}")
-        model_lines.append(f"lm_eval kwargs: {kwargs_json}")
-
-        if lm_eval_kwargs is None:
-            error_lines = [l for l in model_lines if l.startswith("ERROR:")]
-            detail = (
-                "; ".join(error_lines)
-                if error_lines
-                else (
-                    "Could not resolve model path for benchmarking. "
-                    "Ensure the model is downloaded and accessible."
-                )
-            )
-            raise HTTPException(
-                status_code = 400,
-                detail = detail,
-            )
-
-        if lm_eval_kwargs.get("model") == "unsloth-studio-gguf":
-            from datetime import datetime, timedelta, timezone
-            from auth.storage import create_api_key
-
-            expires_at = (datetime.now(timezone.utc) + timedelta(days = 3)).isoformat()
-            raw_key, row = create_api_key(
-                username = current_subject,
-                name = "benchmark-run",
-                expires_at = expires_at,
-                internal = True,
-            )
-            api_key_raw = raw_key
-            api_key_id = row["id"]
-            # StudioGGUFLM sends it as a bearer header on every request.
-            lm_eval_kwargs["model_args"]["api_key"] = raw_key
-            logger.info("Minted ephemeral API key for benchmark run")
-
-        model_label = _run_model_label(request.checkpoint_path)
-
-        # ── Run lm_eval in the orchestrator worker thread ─────────
-        backend.clear_logs()
-        for line in model_lines:
-            backend._append_log("stdout", line)
-
-        loop = asyncio.get_event_loop()
-        started = True
-        results = await loop.run_in_executor(
-            None, lambda: backend.run(lm_eval_kwargs, account, op_seq = run_seq)
-        )
-
-        # A cancelled run returns {}; by then a new run may already own the backend.
-        if not results or backend.was_cancelled(run_seq):
-            backend._append_log("status", "Benchmark cancelled.")
-            return BenchmarkOperationResponse(
-                success = False,
-                message = "Benchmark cancelled",
-                details = {"checkpoint_path": request.checkpoint_path, "cancelled": True},
-            )
-
-        # ── Post-run: save to disk + DB ───────────────────────────
-        if output_path:
-            try:
-                os.makedirs(output_path, exist_ok = True)
-                results_path = os.path.join(output_path, "results.json")
-                with open(results_path, "w", encoding = "utf-8") as f:
-                    json.dump(_without_api_keys(results), f, indent = 2, default = str)
-                backend._append_log("stdout", f"Results saved to {results_path}")
-            except Exception as e:
-                logger.warning(f"Failed to save benchmark results: {e}")
-
-        stored_run_id = None
-        try:
-            from storage.studio_db import (
-                insert_benchmark_run,
-                insert_benchmark_samples,
-            )
-            run_summary = parse_run_summary(
-                os.path.basename(output_path) if output_path else f"benchmark_{request.task}",
-                results,
-                task = request.task,
-            )
-            if run_summary is not None:
-                insert_benchmark_run(
-                    id = run_summary["id"],
-                    task = run_summary["task"],
-                    model = model_label
-                    if run_summary["model"] == request.checkpoint_path
-                    else run_summary["model"],
-                    metrics = run_summary["metrics"],
-                    n_samples = run_summary["n_samples"],
-                    output_path = output_path or "",
-                    duration_seconds = time.monotonic() - _run_start,
-                    num_fewshot = run_summary.get("num_fewshot"),
-                )
-                samples = extract_samples(results, run_summary["task"])
-                if samples:
-                    insert_benchmark_samples(run_summary["id"], samples)
-                stored_run_id = run_summary["id"]
-                backend._append_log("stdout", "Results stored in database")
-        except Exception as e:
-            logger.warning(f"Failed to store benchmark results in DB: {e}")
-
-        task_results = results.get("results", {})
-        backend._append_log("stdout", "Results:")
-        for task_name, metrics in task_results.items():
-            acc = metrics.get("acc,none", metrics.get("acc", "N/A"))
-            stderr = metrics.get("acc_stderr,none", None)
-            line = f"  {task_name}: acc={acc}" + (f" ± {stderr}" if stderr else "")
-            backend._append_log("stdout", line)
-        backend._append_log("status", "Benchmark complete.")
-        backend.finish(op_seq = run_seq)
-
-        return BenchmarkOperationResponse(
-            success = True,
-            message = f"Benchmark completed for {request.checkpoint_path}",
-            details = {
-                "checkpoint_path": request.checkpoint_path,
-                "results": task_results,
-                "run_id": stored_run_id,
-            },
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        backend._append_log("stderr", f"Error: {safe_error_detail(e)}")
-        logger.error(f"Error running benchmark: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to run benchmark: {safe_error_detail(e)}",
-        )
-    finally:
-        if run_seq is not None and not started:
-            # Refused before lm_eval started (bad request, key minting): free the slot.
-            backend.release(run_seq)
-        elif run_seq is not None:
-            # No-op unless this request's run is still the active one, i.e.
-            # lm_eval returned but handling its results raised.
-            backend.finish(op_seq = run_seq, error = "Failed to store benchmark results")
-        if api_key_id is not None:
-            try:
-                from auth.storage import revoke_internal_api_key
-                revoke_internal_api_key(api_key_id)
-                logger.info("Revoked ephemeral benchmark API key")
-            except Exception as e:
-                logger.warning("Failed to revoke benchmark API key: %s", e)
-
-
-@router.post("/reserve", response_model = BenchmarkOperationResponse)
-async def reserve_benchmark(
-    token: str = Query(..., min_length = 8, max_length = 64),
-    current_subject: str = Depends(get_current_subject),
-):
-    """Hold the run slot for the run ``token`` starts next (a Flows Benchmark loads its model first,
-    which must not swap the model under a run in progress). Freed by ``/cancel?token=``."""
-    backend = get_benchmark_backend()
-    if not backend.reserve(current_account(), token):
-        raise HTTPException(
-            status_code = 409,
-            detail = "The stopped benchmark is still finishing. Try again in a moment."
-            if backend.is_draining()
-            else "A benchmark is already running.",
-        )
-    return BenchmarkOperationResponse(success = True, message = "Benchmark slot reserved")
-
-
-@router.post("/cancel", response_model = BenchmarkOperationResponse)
-async def cancel_benchmark(
-    token: Optional[str] = Query(None, max_length = 64),
-    current_subject: str = Depends(get_current_subject),
-):
-    """Cancel the in-flight benchmark; with ``token``, only the run started with that token."""
-    try:
-        backend = get_benchmark_backend()
-        if _run_hidden_from(backend, current_account()):
-            return BenchmarkOperationResponse(
-                success = True,
-                message = "No active benchmark to cancel",
-            )
-        was_active = backend.cancel(token)
-        return BenchmarkOperationResponse(
-            success = True,
-            message = "Benchmark cancelled" if was_active else "No active benchmark to cancel",
-        )
-    except Exception as e:
-        logger.error(f"Error cancelling benchmark: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = "Failed to cancel benchmark",
-        )
-
-
-@router.get("/status", response_model = BenchmarkStatusResponse)
-async def get_benchmark_status(current_subject: str = Depends(get_current_subject)):
-    """Get benchmark backend status."""
-    try:
-        backend = get_benchmark_backend()
-        if _run_hidden_from(backend, current_account()):
-            # Busy-ness stays visible so Run reports the 409, nothing else does.
-            return BenchmarkStatusResponse(is_benchmark_active = backend.is_active())
-        return BenchmarkStatusResponse(
-            is_benchmark_active = backend.is_active(),
-            last_op_status = backend.get_last_op_status(),
-            last_op_error = backend.get_last_error(),
-            last_op_seq = backend.get_op_seq(),
-        )
-    except Exception as e:
-        logger.error(f"Error getting benchmark status: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = "Failed to get benchmark status",
-        )
-
-
-def _live_progress(backend) -> Optional[dict]:
-    """Progress of the run in flight; none while idle, so a stream opened just
-    before ``/run`` lands doesn't show the previous run's last count."""
-    return backend.get_latest_progress() if backend.is_active() else None
-
-
-@router.get("/logs/stream")
-async def stream_benchmark_logs(
-    request: Request,
-    since: Optional[int] = Query(
-        None,
-        description = "Return log entries with seq strictly greater than this cursor.",
-    ),
-    current_subject: str = Depends(get_current_subject),
-):
-    """
-    Stream benchmark logs as Server-Sent Events.
-
-    This single long-lived stream replaces the old `/logs` poll + short-lived
-    `/logs/stream` pair: it replays everything from the start of the current run,
-    then pushes each new log line as it arrives, keeping the connection open
-    (with periodic heartbeats) until the client disconnects. Clients resume on
-    reconnect via `?since=` or the `Last-Event-ID` header.
-
-    Events:
-      - `log`      : a single log line (data: {"stream","line","ts"})
-      - `heartbeat`: periodic keepalive carrying {"active": bool} when idle
-
-    Each event's `id:` is the log entry's monotonic seq, used for resume.
-    """
-    backend = get_benchmark_backend()
-    viewer = current_account()
-
-    # Resume cursor: explicit `since` wins, then Last-Event-ID on reconnect.
-    last_event_id = request.headers.get("last-event-id")
-    if since is None and last_event_id is not None:
-        try:
-            since = int(last_event_id)
-        except ValueError:
-            pass
-
-    if since is not None:
-        cursor = max(0, int(since))
-    elif backend.is_active():
-        # First connect mid-run: replay the whole current run.
-        cursor = backend.get_run_start_seq()
+    if dataset.get("source") == "hf":
+        ref, subset = str(dataset["ref"]), dataset.get("subset") or None
+        split = str(dataset.get("split") or "train").replace(" ", "")
+        # Streaming takes only plain split names: `test[10:100]` becomes a bounded read of test.
+        sliced = re.fullmatch(r"([\w.-]+)\[(\d*):(\d*)\]", split)
+        if sliced:
+            lo = int(sliced.group(2) or 0)
+            if sliced.group(3):
+                limit = max(0, min(limit, int(sliced.group(3)) - lo))
+            stream = load_dataset(ref, subset, split = sliced.group(1), token = token, streaming = True)
+            return list((stream.skip(lo) if lo else stream).take(limit))
+        if "[" in split or "+" in split:
+            # Percent slices and joined splits: read the way training does.
+            loaded = load_dataset(ref, subset, split = split, token = token)
+            return loaded.select(range(min(limit, len(loaded)))).to_list()
+        stream = load_dataset(ref, subset, split = split, token = token, streaming = True)
     else:
-        # First connect while idle — e.g. the stream opens just before the
-        # `/run` POST lands — so don't replay stale logs from an earlier run;
-        # wait for the live ones instead.
-        cursor = backend.get_current_log_seq()
+        from core.flows.nodes.data import local_seed_path
+        from core.flows.nodes.training import LOADERS
 
-    async def event_generator() -> AsyncGenerator[str, None]:
-        nonlocal cursor
-        # Reconnect after 3 seconds if the connection drops.
-        yield "retry: 3000\n\n"
+        path = local_seed_path(dataset.get("ref"))
+        builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
+        if builder is None:
+            raise FlowNodeError("Benchmark reads Parquet, CSV or JSON rows")
+        from utils.datasets.cells import csv_as_text_kwargs
 
-        last_yield = time.monotonic()
-        last_progress = None
+        # CSV cells stay text as Fine-tune reads them ("00501" keeps its zeros, "NA" stays a value).
+        stream = load_dataset(
+            builder,
+            data_files = path,
+            split = "train",
+            streaming = True,
+            **csv_as_text_kwargs([path]),
+        )
+    return list(stream.take(limit))
+
+
+async def _read_rows(ctx: NodeContext, dataset: Any, limit: int) -> list[dict]:
+    from core.flows.nodes.data import recipe_artifact, recipe_rows
+    from core.training.account_jobs import account_hf_token
+
+    if not isinstance(dataset, dict) or dataset.get("kind") != "dataset":
+        raise FlowNodeError(
+            "Recipe held-out scores a dataset: wire Fine-tune's Held-out rows or a recipe in"
+        )
+    if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
+        rows = (await recipe_rows(ctx, str(dataset["ref"]), limit = limit))[:limit]
+    else:
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            while True:
-                if await request.is_disconnected():
-                    return
-
-                entries, new_cursor = backend.get_logs_since(cursor)
-                if entries and _run_hidden_from(backend, viewer):
-                    cursor = new_cursor
-                    entries = []
-                if entries:
-                    for entry in entries:
-                        payload = json.dumps(
-                            {
-                                "stream": entry.get("stream", "stdout"),
-                                "line": entry.get("line", ""),
-                                "ts": entry.get("ts"),
-                            }
-                        )
-                        yield _format_sse(
-                            payload,
-                            event = "log",
-                            event_id = int(entry.get("seq", 0)),
-                        )
-                    cursor = new_cursor
-                    last_yield = time.monotonic()
-                else:
-                    now = time.monotonic()
-                    if now - last_yield > 10.0:
-                        yield _format_sse(
-                            json.dumps({"active": backend.is_active()}),
-                            event = "heartbeat",
-                            event_id = cursor,
-                        )
-                        last_yield = now
-
-                # Surface lm_eval tqdm progress as a dedicated SSE event.
-                progress = _live_progress(backend)
-                if (
-                    progress is not None
-                    and progress != last_progress
-                    and not _run_hidden_from(backend, viewer)
-                ):
-                    last_progress = progress
-                    yield _format_sse(json.dumps(progress), event = "progress")
-
-                await asyncio.sleep(0.1)
-        except asyncio.CancelledError:
-            # Client disconnected mid-yield: end cleanly so StreamingResponse finalizes.
-            return
+            rows = await asyncio.to_thread(_head, dataset, token, limit)
+        except FlowNodeError:
+            raise
         except Exception as exc:
-            logger.error("Benchmark log stream failed: %s", exc, exc_info = True)
-            try:
-                yield _format_sse(
-                    json.dumps({"error": safe_error_detail(exc)}),
-                    event = "error",
-                )
-            except Exception:
-                pass
+            raise FlowNodeError(f"Could not read the rows to score: {exc}") from None
+    from core.data_recipe.jsonable import to_jsonable
 
-    return StreamingResponse(
-        event_generator(),
-        media_type = "text/event-stream",
-        headers = {
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+    rows = [to_jsonable(r) for r in rows if isinstance(r, dict)]
+    if not rows:
+        raise FlowNodeError("There are no rows to score")
+    return rows
+
+
+async def _samples(ctx: NodeContext, run_id: Optional[str]) -> list[dict]:
+    if not run_id:
+        return []
+    detail = await ctx.call("GET", f"{EVALS}/runs/{quote(run_id, safe = '')}")
+    samples = detail.get("samples") if isinstance(detail, dict) else None
+    return sorted(
+        (s for s in samples or [] if isinstance(s, dict)), key = lambda s: s.get("doc_id", 0)
     )
 
 
-# ── Past eval runs ─────────────────────────────
+ALPACA_PROMPT = "__instruction_and_input"
 
 
-@router.get("/runs", response_model = BenchmarkRunListResponse)
-async def list_benchmark_runs(
-    current_subject: str = Depends(get_current_subject),
-    via_api_key: bool = Depends(authenticated_via_api_key),
-):
-    """List past benchmark runs, newest first."""
-    try:
-        from storage.studio_db import list_benchmark_runs as db_list_runs
-        runs = db_list_runs()
-        return BenchmarkRunListResponse(
-            runs = [BenchmarkRunSummary(**_redact_eval_run(r, via_api_key = via_api_key)) for r in runs]
+def _alpaca_question(row: dict) -> Any:
+    # As training reads the cells: an input of 0 or False is part of the question, not a blank.
+    extra = cell_text(row.get("input")).strip()
+    return f"{cell_text(row.get('instruction'))}\n\n{extra}" if extra else row.get("instruction")
+
+
+def _system_prompt(ctx: NodeContext) -> str:
+    """The Advanced override, else the system prompt the checkpoint was trained with."""
+    own = str(ctx.params.get("system_prompt") or "")
+    if own.strip():
+        return own
+    checkpoint = ctx.inputs.get("checkpoint")
+    trained = checkpoint.get("system_prompt") if isinstance(checkpoint, dict) else None
+    return trained if isinstance(trained, str) else ""
+
+
+SYSTEM_GUESSES = ("system", "system_prompt")
+
+
+def _system_column(ctx: NodeContext, columns: list[str]) -> Optional[str]:
+    """The column whose value was each training row's system message: the one the checkpoint's
+    mapping named, else one named like a system prompt (training's formatter finds it by name).
+    None under the Advanced override, which is every row's system message."""
+    if str(ctx.params.get("system_prompt") or "").strip():
+        return None
+    checkpoint = ctx.inputs.get("checkpoint")
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    if "system_column" in checkpoint:
+        # Training's mapping said which column, if any, was the system message.
+        named = checkpoint["system_column"]
+        return named if isinstance(named, str) and named in columns else None
+    if checkpoint.get("system_prompt"):
+        # Training sent one system prompt to every row, whatever columns the rows have.
+        return None
+    return next((c for c in columns if c.strip().lower() in SYSTEM_GUESSES), None)
+
+
+def _labelled(rows: list[dict], columns: tuple, ctx: NodeContext) -> list[dict]:
+    """The rows with the label names training gave numeric labels (Fine-tune's label mapping)."""
+    checkpoint = ctx.inputs.get("checkpoint")
+    labels = checkpoint.get("label_mapping") if isinstance(checkpoint, dict) else None
+    named = [
+        c for c in columns if c and isinstance(labels, dict) and isinstance(labels.get(c), dict)
+    ]
+    if not named:
+        return rows
+    from utils.datasets.dataset_utils import _extract_column_value
+
+    return [
+        {**r, **{c: _extract_column_value(r[c], c, labels) for c in named if r.get(c) is not None}}
+        for r in rows
+    ]
+
+
+async def _recipe_heldout(
+    ctx: NodeContext, label: str, is_lora: bool, max_rows: int, token: str
+) -> dict:
+    rows = await _read_rows(ctx, ctx.inputs.get("dataset"), max_rows)
+    columns = sorted({k for r in rows for k in r})
+    prompt_col = guess_column(
+        columns, str(ctx.params.get("prompt_column") or "").strip(), PROMPT_GUESSES
+    )
+    if not prompt_col:
+        raise FlowNodeError("Set the prompt column under Advanced: no column looks like a prompt")
+    # Read against every column first: training may have mapped `input` as the system message.
+    system_col = _system_column(ctx, columns)
+    if (
+        prompt_col == "instruction"
+        and "input" in columns
+        and system_col != "input"
+        and not str(ctx.params.get("prompt_column") or "").strip()
+    ):
+        # An Alpaca row's question is its instruction plus its input, as training formats it.
+        asked = [{**r, ALPACA_PROMPT: _alpaca_question(r)} for r in rows]
+        prompt_col = ALPACA_PROMPT
+        columns = [c for c in columns if c != "input"]
+    else:
+        asked = rows
+    reference_col = guess_column(
+        [c for c in columns if c != prompt_col],
+        str(ctx.params.get("reference_column") or "").strip(),
+        REFERENCE_GUESSES,
+    )
+    # The failures output keeps the original rows.
+    asked = _labelled(asked, (prompt_col, reference_col), ctx)
+    scorer = SCORERS.get(str(ctx.params.get("scorer") or ""), "reference")
+    if scorer == "reference" and not reference_col:
+        raise FlowNodeError(
+            "Reference match needs a reference column; set it under Advanced or use LLM judge"
         )
-    except Exception as e:
-        logger.error(f"Error listing benchmark runs: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Failed to list benchmark runs")
-
-
-@router.get("/runs/{run_id}", response_model = Optional[BenchmarkRunDetail])
-async def get_benchmark_run_detail(
-    run_id: str,
-    current_subject: str = Depends(get_current_subject),
-    via_api_key: bool = Depends(authenticated_via_api_key),
-):
-    """Get full detail for a single benchmark run, including per-sample results."""
-    try:
-        from storage.studio_db import get_benchmark_run_detail as db_get_detail
-
-        detail = db_get_detail(run_id)
-        if detail is None:
-            raise HTTPException(status_code = 404, detail = "Benchmark run not found")
-        return BenchmarkRunDetail(**_redact_eval_run(detail, via_api_key = via_api_key))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error loading benchmark run: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Failed to load benchmark run")
-
-
-@router.delete("/runs/{run_id}", response_model = BenchmarkOperationResponse)
-async def delete_benchmark_run(run_id: str, current_subject: str = Depends(get_current_subject)):
-    """Delete a benchmark run and its per-sample data."""
-    import shutil
-    try:
-        from storage.studio_db import get_benchmark_run as db_get_run
-        from storage.studio_db import delete_benchmark_run as db_delete_run
-
-        run = db_get_run(run_id)
-        if run is None:
-            raise HTTPException(status_code = 404, detail = "Benchmark run not found")
-
-        # Remove results.json directory if it exists
-        output_path = run.get("output_path")
-        if output_path and os.path.isdir(output_path):
-            try:
-                shutil.rmtree(output_path)
-            except Exception as e:
-                logger.warning(f"Failed to delete output directory {output_path}: {e}")
-
-        db_delete_run(run_id)
-        return BenchmarkOperationResponse(
-            success = True,
-            message = f"Deleted benchmark run {run_id}",
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting benchmark run: {e}", exc_info = True)
-        raise HTTPException(status_code = 500, detail = "Failed to delete benchmark run")
-
-
-def _format_sse(
-    data: str,
-    event: str,
-    event_id: Optional[int] = None,
-) -> str:
-    lines = []
-    if event_id is not None:
-        lines.append(f"id: {event_id}")
-    lines.append(f"event: {event}")
-    lines.append(f"data: {data}")
-    lines.append("")
-    lines.append("")
-    return "\n".join(lines)
-
-
-@router.post("/graph")
-async def generate_benchmark_graph(
-    request: BenchmarkGraphRequest, current_subject: str = Depends(get_current_subject)
-):
-    """Generate a benchmark comparison chart as a PNG image."""
-    from fastapi.responses import Response
-    from storage.studio_db import get_benchmark_run_detail as db_get_run_detail
-
-    try:
-        if len(request.run_ids) < 1:
-            raise HTTPException(
-                status_code = 400,
-                detail = "At least one run ID is required.",
-            )
-
-        if request.chart_type not in ("bar", "line", "grouped_bar", "radar"):
-            raise HTTPException(
-                status_code = 400,
-                detail = f"Invalid chart type: {request.chart_type}. Must be 'bar', 'line', 'grouped_bar', or 'radar'.",
-            )
-
-        _VALID_THEMES = {
-            "light",
-            "dark",
-            "unsloth-dark",
-            "ggplot",
-            "fivethirtyeight",
-            "bmh",
-            "grayscale",
-            "seaborn-v0_8",
-            "seaborn-v0_8-darkgrid",
-        }
-        if request.theme not in _VALID_THEMES:
-            import matplotlib.style
-            if request.theme not in matplotlib.style.available:
-                raise HTTPException(
-                    status_code = 400,
-                    detail = f"Invalid theme: '{request.theme}'. Not a built-in theme or a known matplotlib style.",
-                )
-
-        runs = []
-        for run_id in request.run_ids:
-            run = db_get_run_detail(run_id)
-            if run is None:
-                raise HTTPException(
-                    status_code = 404,
-                    detail = f"Benchmark run not found: {run_id}",
-                )
-            runs.append(run)
-
-        from core.benchmark.graph import generate_chart
-
-        png_bytes = await asyncio.to_thread(
-            generate_chart,
-            runs = runs,
-            chart_type = request.chart_type,
-            metric = request.metric,
-            width = request.width,
-            height = request.height,
-            theme = request.theme,
-        )
-
-        return Response(
-            content = png_bytes,
-            media_type = "image/png",
-            headers = {
-                "Content-Disposition": 'attachment; filename="benchmark-chart.png"',
-            },
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error generating benchmark graph: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to generate chart: {safe_error_detail(e)}",
-        )
-
-
-@router.post("/export")
-async def export_benchmark_runs(
-    request: BenchmarkExportRequest,
-    current_subject: str = Depends(get_current_subject),
-    via_api_key: bool = Depends(authenticated_via_api_key),
-):
-    """Export benchmark runs as JSON with metadata and results.json contents."""
-    from fastapi.responses import Response
-    from storage.studio_db import get_benchmark_run_detail as db_get_run_detail
-
-    try:
-        if len(request.run_ids) < 1:
-            raise HTTPException(
-                status_code = 400,
-                detail = "At least one run ID is required.",
-            )
-
-        exported = []
-        for run_id in request.run_ids:
-            run = db_get_run_detail(run_id)
-            if run is None:
-                raise HTTPException(
-                    status_code = 404,
-                    detail = f"Benchmark run not found: {run_id}",
-                )
-
-            output_path = run.get("output_path", "")
-            results_json = None
-            if output_path:
-                results_path = os.path.join(output_path, "results.json")
-                if os.path.isfile(results_path):
-                    try:
-                        with open(results_path, "r", encoding = "utf-8") as f:
-                            results_json = _without_api_keys(json.load(f))
-                    except Exception as e:
-                        logger.warning(f"Failed to read results.json for {run_id}: {e}")
-
-            entry = {
-                "id": run.get("id"),
-                "task": run.get("task"),
-                "model": run.get("model"),
-                "metrics": run.get("metrics", []),
-                "n_samples": run.get("n_samples", 0),
-                "num_fewshot": run.get("num_fewshot"),
-                "created_at": run.get("created_at"),
-                "output_path": output_path,
-                "correct_count": run.get("correct_count", 0),
-                "total_count": run.get("total_count", 0),
-                "samples": run.get("samples", []),
-                "results": results_json,
+    with_base = is_lora and ctx.params.get("compare_base") is not False
+    spec = {
+        "rows": asked,
+        "max_rows": max_rows,
+        "prompt_column": prompt_col,
+        "reference_column": reference_col,
+        "system_prompt": _system_prompt(ctx),
+        "system_column": system_col,
+        "scorer": scorer,
+        "rubric": str(ctx.params.get("rubric") or ""),
+        "model_alias": "candidate",
+        "baseline": {"mode": "adapter_off" if with_base else "none"},
+        # The judge is the loaded model; with an adapter loaded the route turns it off for judging.
+        "judge_alias": "candidate" if scorer == "judge" else None,
+        "local_adapter": is_lora,
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [{"alias": "candidate", "provider": "local", "model": ""}],
+    }
+    ctx.progress(
+        phase = f"Scoring {len(rows)} rows" + (" with the adapter on and off" if with_base else "")
+    )
+    done = await ctx.call(
+        "POST",
+        f"{EVALS}/run",
+        json = {
+            "checkpoint_path": label,
+            "model_source": "local",
+            "task": RECIPE_TASK,
+            "recipe": spec,
+            "run_token": token,
+        },
+    )
+    done = done if isinstance(done, dict) else {}
+    details = done.get("details") or {}
+    if not done.get("success"):
+        raise FlowNodeError(str(done.get("message") or "The benchmark did not finish"))
+    found = details.get("recipe") or {}
+    run_ids = found.get("run_ids") or {}
+    candidate = await _samples(ctx, run_ids.get("candidate"))
+    base = {s.get("doc_id"): s for s in await _samples(ctx, run_ids.get("baseline"))}
+    results, failures = [], []
+    errored = {
+        e.get("index"): e.get("error") for e in found.get("errored") or [] if isinstance(e, dict)
+    }
+    candidate = sorted(
+        candidate
+        + [
+            {
+                "doc_id": i,
+                "question": asked[i].get(prompt_col),
+                "target": cell_text(asked[i].get(reference_col)) if reference_col else None,
+                "raw_response": err,
             }
-            if not host_paths_visible(via_api_key):
-                # results.json repeats the model path throughout its configs.
-                entry = _redact_eval_run(entry, via_api_key = via_api_key)
-                entry["results"] = None
-            exported.append(entry)
+            for i, err in errored.items()
+            if isinstance(i, int) and 0 <= i < len(rows)
+        ],
+        key = lambda s: s.get("doc_id", 0),
+    )
+    for s in candidate:
+        index = s.get("doc_id")
+        row = rows[index] if isinstance(index, int) and 0 <= index < len(rows) else {}
+        item = {
+            "prompt": s.get("question"),
+            "reference": s.get("target") or None,
+            "output": s.get("response"),
+            "passed": bool(s.get("correct")),
+            "reason": s.get("raw_response") or "",
+        }
+        if index in base:
+            item["base_output"] = base[index].get("response")
+            item["base_passed"] = bool(base[index].get("correct"))
+        results.append(item)
+        if not item["passed"]:
+            failures.append(
+                {
+                    **row,
+                    "model_output": item["output"],
+                    # What the answer was scored against: the label name, a structured answer's text.
+                    "scored_reference": item["reference"],
+                    "reason": item["reason"],
+                }
+            )
+    summary = found.get("candidate") or {}
+    baseline = found.get("baseline") or {}
+    return {
+        "score": summary.get("score"),
+        "passed": summary.get("passed", 0),
+        "scored": summary.get("scored", 0),
+        # Rows the model or judge failed to answer (HTTP errors): left out of the score.
+        "errored": len(errored),
+        "base_score": baseline.get("score") if baseline else None,
+        "metric": "reference match" if scorer == "reference" else "LLM judge",
+        "run_id": run_ids.get("candidate"),
+        "results": results,
+        "failures": failures,
+    }
 
-        payload = json.dumps(exported, indent = 2, default = str)
-        return Response(
-            content = payload,
-            media_type = "application/json",
-            headers = {
-                "Content-Disposition": 'attachment; filename="benchmark-export.json"',
-            },
+
+async def _lm_eval(
+    ctx: NodeContext, task: str, label: str, is_lora: bool, max_rows: int, token: str
+) -> dict:
+    from studio_mcp import loading
+
+    if is_lora:
+        raise FlowNodeError(
+            "lm-eval tasks score a GGUF. Wire Fine-tune into Export Model (GGUF) and Export Model into this "
+            "Benchmark's Model, or use Recipe held-out"
         )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error exporting benchmark runs: {e}", exc_info = True)
-        raise HTTPException(
-            status_code = 500,
-            detail = f"Failed to export runs: {safe_error_detail(e)}",
+    try:
+        _slots, status = await loading._resident(ctx.caller)
+    except Exception:
+        status = None
+    if not isinstance(status, dict) or status.get("is_gguf") is not True:
+        raise FlowNodeError(
+            "lm-eval tasks score a GGUF loaded in llama.cpp; pick a GGUF model on this node"
         )
+    ctx.progress(phase = f"Running {task} on {max_rows} samples")
+    done = await ctx.call(
+        "POST",
+        f"{EVALS}/run",
+        json = {
+            "checkpoint_path": label,
+            "model_source": "local",
+            "task": task,
+            "limit": max_rows,
+            "run_token": token,
+        },
+    )
+    done = done if isinstance(done, dict) else {}
+    details = done.get("details") or {}
+    if not done.get("success"):
+        raise FlowNodeError(str(done.get("message") or "The benchmark did not finish"))
+    run_id = details.get("run_id")
+    detail = await ctx.call("GET", f"{EVALS}/runs/{quote(run_id, safe = '')}") if run_id else {}
+    detail = detail if isinstance(detail, dict) else {}
+    score, metric = headline(detail.get("metrics") or [])
+    samples = sorted(
+        (s for s in (detail.get("samples") or []) if isinstance(s, dict)),
+        key = lambda s: s.get("doc_id", 0),
+    )
+    results = [
+        {
+            "prompt": s.get("question"),
+            "reference": s.get("target"),
+            "output": s.get("response"),
+            "passed": bool(s.get("correct")),
+            "reason": "",
+        }
+        for s in samples
+    ]
+    return {
+        "score": score,
+        "passed": sum(1 for r in results if r["passed"]),
+        "scored": len(results),
+        "base_score": None,
+        "metric": metric,
+        "run_id": run_id,
+        "results": results,
+        "failures": [
+            {"question": r["prompt"], "target": r["reference"], "model_output": r["output"]}
+            for r in results
+            if not r["passed"]
+        ],
+    }
+
+
+async def _as_dataset(ctx: NodeContext, rows: list[dict], name: str) -> dict:
+    from core.flows.nodes.data import upload_rows
+    if not rows:
+        return {"kind": "dataset", "source": "local", "ref": "", "rows": 0, "columns": []}
+    return await upload_rows(ctx, rows, name)
+
+
+def _percent(score: Any) -> Optional[float]:
+    """The 0..1 pass rate as a percent with two decimals, the unit the card and a Loop's target use."""
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        return None
+    return round(score * 100, 2)
+
+
+async def _settle_loads(ctx: NodeContext, timeout: float = 1800.0) -> None:
+    """Wait for this account's model loads still running (a stopped Benchmark's own among them), so the
+    eval slot it held is not freed while one could still swap Chat's model."""
+    from studio_mcp import loading
+
+    account = getattr(ctx.caller, "account_id", None)
+    tasks = {
+        job.task for job in loading.LOADS.running(account) if getattr(job, "task", None) is not None
+    }
+    if tasks:
+        with contextlib.suppress(Exception):
+            await asyncio.wait(tasks, timeout = timeout)
+
+
+@handler("train.benchmark")
+async def benchmark(ctx: NodeContext) -> dict:
+    task = TASKS.get(str(ctx.params.get("task") or ""), RECIPE_TASK)
+    max_rows = max(1, min(MAX_ROWS, int(ctx.params.get("max_rows") or 20)))
+    # Stop cancels only the run this node starts, never another one of the account's.
+    token = uuid.uuid4().hex
+    loaded = False
+
+    async def cancel() -> None:
+        # While the model loads, Stop leaves the slot held: the load runs on as its own job and would
+        # swap the model under the next eval. The finally below frees it once that load has ended.
+        if loaded:
+            await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})
+
+    # The eval slot is held before the model loads: loading while another eval runs would swap
+    # the model that run is scoring.
+    await ctx.call("POST", f"{EVALS}/reserve", params = {"token": token})
+    ctx.on_cancel(cancel)
+    try:
+        label, is_lora = await _load_target(ctx)
+        loaded = True
+        if task == RECIPE_TASK:
+            found = await _recipe_heldout(ctx, label, is_lora, max_rows, token)
+        else:
+            found = await _lm_eval(ctx, task, label, is_lora, max_rows, token)
+    finally:
+        if not loaded:
+            await _settle_loads(ctx)
+        # Frees a reservation no run took over; a finished run's slot is already free. Sent as a cancel
+        # hook's call, which a stopped run still lets through.
+        from core.flows.engine import _run_cancel_hook
+        await _run_cancel_hook(lambda: ctx.call("POST", f"{EVALS}/cancel", params = {"token": token}))
+    tag = f"benchmark-{task}-{found.get('run_id') or int(time.time())}"
+    results = await _as_dataset(ctx, found["results"], f"{tag}-results")
+    results.update(
+        {
+            "task": task,
+            "model": label,
+            "metric": found["metric"],
+            "score": _percent(found["score"]),
+            "base_score": _percent(found["base_score"]),
+            "passed": found["passed"],
+            "scored": found["scored"],
+            "errored": found.get("errored", 0),
+            "run_id": found["run_id"],
+            "preview": [{k: _short(v) for k, v in r.items()} for r in found["results"][:MAX_ROWS]],
+        }
+    )
+    failures = await _as_dataset(ctx, found["failures"], f"{tag}-failures")
+    failures["preview"] = [
+        {k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]
+    ]
+    return {"score": _percent(found["score"]), "results": results, "failures": failures}

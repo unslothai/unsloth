@@ -126,8 +126,13 @@ def test_adapter_is_scored_against_itself_off_and_failures_keep_the_row(monkeypa
     assert results["preview"][3]["reason"] == "HTTP 500: boom"
     failed = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-failures.jsonl"))
     assert failed == [
-        {**ROWS[2], "model_output": "x", "reason": ""},
-        {**ROWS[3], "model_output": None, "reason": "HTTP 500: boom"},
+        {**ROWS[2], "model_output": "x", "scored_reference": "answer-2", "reason": ""},
+        {
+            **ROWS[3],
+            "model_output": None,
+            "scored_reference": "answer-3",
+            "reason": "HTTP 500: boom",
+        },
     ]
     assert out["failures"]["rows"] == 2 and out["failures"]["preview"][0]["id"] == 2
 
