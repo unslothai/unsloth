@@ -4994,6 +4994,27 @@ def _can_ask_for_model() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _check_picked_gguf_variant(model: Optional[str], variant: Optional[str]) -> None:
+    if not model or not variant:
+        return
+    from unsloth_cli._model_catalog import _is_gguf_file
+
+    if not _is_gguf_file(model):
+        return
+    filename = Path(model).name
+    labels = _direct_gguf_variant_labels(model)
+    rows = [{"quant": label, "filename": filename} for label in labels]
+    if variant.strip().lower() == filename.lower() or _answer_offers_variant(
+        rows, variant, strict = True
+    ):
+        return
+    _fail(
+        f"Selected GGUF file {model} cannot use --gguf-variant {variant}. "
+        "Choose the matching file, or pass --model naming the repository or directory "
+        "to select a different quant."
+    )
+
+
 def _ask_for_local_model(gguf_only: bool, reason: str) -> str:
     """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
     from rich.console import Console
@@ -5063,6 +5084,7 @@ def _connect(
     local_model_picked = False
     if model is None:
         model = _pick_model_to_auto_start(serve, launch, gguf_only)
+        _check_picked_gguf_variant(model, load.gguf_variant)
         local_model_picked = model is not None
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
@@ -5095,6 +5117,7 @@ def _connect(
         if model is None and server is None:
             picked = _pick_model_for_idle_server(base, key, gguf_only)
             if picked is not None:
+                _check_picked_gguf_variant(picked, load.gguf_variant)
                 model = requested = picked
                 local_model_picked = True
         connection = (
