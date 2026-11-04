@@ -11,6 +11,7 @@ import {
 import { hfModelFitsDevice } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import { parseMetaTokens } from "../src/features/model-picker/components/model-selector/row-meta.ts";
 import {
+  audioCppRowFit,
   classifyGgufFit,
   classifyGgufVariantFit,
   classifyVariantFitOnCard,
@@ -68,26 +69,49 @@ test("without an estimate, or without a known GPU, the llama.cpp rule still deci
   );
 });
 
-test("the fits-on-device filter judges an audio.cpp row on the estimate, as its quants are", () => {
-  // The YuE2 catalog row (Q8_0 package). RAM must not lift it onto a card its quants read as oom.
+test("the fits-on-device filter keeps a row when any of its quants fits the card", () => {
+  // The YuE2 catalog row: Q8_0 by default (9.51 GiB), Q4_0 the smallest (7.73 GiB).
   const row = {
     id: "audio-cpp/YuE2-GGUF",
     isGguf: true,
     estimatedSizeBytes: yue2[1].size_bytes,
     estimatedResidentGb: yue2[1].estimated_resident_gb,
+    smallestResidentGb: yue2[0].estimated_resident_gb,
   };
   const card = (gpuGb: number) => ({
     memoryTotalGb: gpuGb,
     systemRamAvailableGb: 32,
   });
-  assert.equal(
-    classifyGgufVariantFit(yue2[1], { gpuGb: 6, systemRamGb: 32 }),
-    "oom",
-  );
-  assert.equal(hfModelFitsDevice(row, card(6)), false);
-  assert.equal(hfModelFitsDevice(row, card(10)), true);
-  // Without an estimate the size rule, which counts RAM, still decides.
-  const { estimatedResidentGb: _, ...plain } = row;
+  const rule = (gpuGb: number) => (bytes: number) =>
+    classifyGgufFit(bytes, { gpuGb, systemRamGb: 32 });
+  for (const [gpuGb, listed, quant] of [
+    // Nothing fits: RAM must not lift the row onto a card every quant reads as oom.
+    [6, false, undefined],
+    // Only Q4_0 fits: the row stays, and opening it picks Q4_0.
+    [8, true, "Q4_0"],
+    [10, true, "Q8_0"],
+  ] as const) {
+    assert.equal(hfModelFitsDevice(row, card(gpuGb)), listed, `${gpuGb} GiB`);
+    assert.equal(
+      audioCppRowFit(row, gpuGb),
+      listed ? "fits" : "oom",
+      `${gpuGb} GiB badge`,
+    );
+    const fitting = yue2.filter(
+      (v) => classifyGgufVariantFit(v, { gpuGb, systemRamGb: 32 }) === "fits",
+    );
+    assert.equal(fitting.length > 0, listed, `${gpuGb} GiB quants`);
+    if (quant)
+      assert.equal(
+        recommendedQuantForDevice(yue2, rule(gpuGb), null, gpuGb)?.quant,
+        quant,
+      );
+  }
+  // An older backend sends no smallest estimate: the default variant's decides.
+  const { smallestResidentGb: _, ...defaultOnly } = row;
+  assert.equal(hfModelFitsDevice(defaultOnly, card(8)), false);
+  // Without any estimate the size rule, which counts RAM, still decides.
+  const { estimatedResidentGb: __, ...plain } = defaultOnly;
   assert.equal(hfModelFitsDevice(plain, card(6)), true);
 });
 

@@ -118,7 +118,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  audioCppResidentFit,
+  audioCppRowFit,
   classifyVariantFitOnCard,
   ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
@@ -3820,6 +3820,7 @@ export function HubModelPicker({
     models: (ModelOption & {
       sizeBytes?: number | null;
       estimatedResidentGb?: number | null;
+      smallestResidentGb?: number | null;
     })[];
   };
 }) {
@@ -4819,6 +4820,7 @@ export function HubModelPicker({
         isGguf: model.isGguf ?? true,
         estimatedSizeBytes: model.sizeBytes ?? undefined,
         estimatedResidentGb: model.estimatedResidentGb ?? undefined,
+        smallestResidentGb: model.smallestResidentGb ?? undefined,
       }))
       .filter(
         (row) =>
@@ -4937,11 +4939,9 @@ export function HubModelPicker({
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
         // audio.cpp: the backend's estimate against the card, the number its load check compares.
+        // The badge asks whether any variant fits, as the fit filter does; the meta shows the default.
         const resident = r.estimatedResidentGb;
-        const residentFit = audioCppResidentFit(
-          resident,
-          rowInferenceGpu.memoryTotalGb,
-        );
+        const residentFit = audioCppRowFit(r, rowInferenceGpu.memoryTotalGb);
         if (resident && residentFit) {
           map.set(r.id, {
             meta,

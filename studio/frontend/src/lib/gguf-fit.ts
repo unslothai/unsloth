@@ -119,6 +119,20 @@ export function audioCppResidentFit(
   return residentGb <= gpuGb ? "fits" : "oom";
 }
 
+/** An audio.cpp model row fits a card when any variant does, so its smallest variant decides. */
+export function audioCppRowFit(
+  row: {
+    estimatedResidentGb?: number | null;
+    smallestResidentGb?: number | null;
+  },
+  gpuGb: number,
+): GgufFitClass | null {
+  return audioCppResidentFit(
+    row.smallestResidentGb ?? row.estimatedResidentGb,
+    gpuGb,
+  );
+}
+
 /** A variant's fit: the audio.cpp estimate where the backend gave one, else the llama.cpp rule. */
 export function classifyVariantFitOnCard(
   fitOf: (sizeBytes: number) => GgufFitClass,

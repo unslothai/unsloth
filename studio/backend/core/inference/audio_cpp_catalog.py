@@ -290,7 +290,7 @@ def _row(
     display = _text(spec.get("display_name"), 120) or folder or repo_id.split("/")[-1]
     names = (model_id, folder, *(Path(f.path).name for f in files if f.path.endswith(".gguf")))
     workflows: list[str] = []
-    task, size, reason = "", None, _NO_FAMILY
+    task, size, smallest, reason = "", None, None, _NO_FAMILY
     if family:
         try:
             policy = acm.family_policy(family, spec or None, names, display)
@@ -319,6 +319,19 @@ def _row(
                 picked = list(package.files) if package is not None else picked
             variant = None if picked else _ranked(files, folder, policy)
             size = sum(f.size for f in picked) if picked else (variant and variant.size_bytes)
+            # The smallest variant a GPU runs: a row fits a card when any of its quants does.
+            smallest = min(
+                (
+                    v.size_bytes
+                    for v in (
+                        acm._package_variants(policy, files, folder)
+                        if policy.package
+                        else acm._single_file_variants(files, folder)
+                    )
+                    if acm.quant_label(v.main_file) not in acm.CPU_ONLY_QUANTS
+                ),
+                default = None,
+            )
         except Exception as exc:  # noqa: BLE001 - a malformed spec refuses its row, not the list
             logger.debug("audio.cpp catalog: policy of %s failed: %s", family, exc)
             reason = "Unsloth Studio could not read this model's spec."
@@ -341,6 +354,7 @@ def _row(
         languages = None if languages == ["auto"] else languages,
         status = status if status in _STATUSES else None,
         size_bytes = size or None,
+        smallest_size_bytes = smallest or None,
         unsupported_reason = reason or None,
     )
 

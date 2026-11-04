@@ -85,11 +85,17 @@ def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
     # Set per request, not cached with the catalog: the estimate reads this host's GPUs.
     from core.inference.audio_cpp_failures import estimate_resident_gb
 
-    sized = dict(KOKORO, family = "kokoro_tts", size_bytes = 189_000_000)
+    sized = dict(
+        KOKORO, family = "kokoro_tts", size_bytes = 189_000_000, smallest_size_bytes = 90_000_000
+    )
     catalog = AudioCatalogResponse(**{**CATALOG.model_dump(), "models": [sized, DRAMA]})
     _builder(monkeypatch, lambda: catalog)
     rows = {r["id"]: r for r in client.get("/api/inference/audio/catalog").json()["models"]}
     assert rows[KOKORO["id"]]["estimated_resident_gb"] == estimate_resident_gb(
         189_000_000, "kokoro_tts"
     )
+    assert rows[KOKORO["id"]]["smallest_estimated_resident_gb"] == estimate_resident_gb(
+        90_000_000, "kokoro_tts"
+    )
     assert rows[DRAMA["id"]]["estimated_resident_gb"] is None
+    assert rows[DRAMA["id"]]["smallest_estimated_resident_gb"] is None

@@ -35,6 +35,8 @@ export interface AudioCatalogRow {
   size_bytes: number | null;
   /** GiB of GPU memory the load check requires; absent on an older backend. */
   estimated_resident_gb?: number | null;
+  /** The same for the smallest variant a GPU runs; absent on an older backend. */
+  smallest_estimated_resident_gb?: number | null;
   downloaded: boolean;
   unsupported_reason: string | null;
 }
@@ -124,6 +126,7 @@ export function catalogMoreRows(
 export function catalogModelOption(row: AudioCatalogRow): ModelOption & {
   sizeBytes: number | null;
   estimatedResidentGb: number | null;
+  smallestResidentGb: number | null;
 } {
   // Named by folder like the seed rows, and a Community repo by its full id: two repos can
   // share one spec display name, or one repo name.
@@ -139,6 +142,7 @@ export function catalogModelOption(row: AudioCatalogRow): ModelOption & {
         : about,
     sizeBytes: row.size_bytes,
     estimatedResidentGb: row.estimated_resident_gb ?? null,
+    smallestResidentGb: row.smallest_estimated_resident_gb ?? null,
   };
 }
 

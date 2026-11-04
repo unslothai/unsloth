@@ -444,7 +444,18 @@ def test_a_package_row_is_sized_by_every_file_it_loads():
         "yue2-vae-f16.gguf": 265_000_000,
     }
     files = [RepoFile(path, size) for path, size in sizes.items()]
-    package = {"id": "q8", "format": "gguf", "default": True, "files": ["yue2-3b-q8_0.gguf"]}
+    q8 = {"id": "q8", "format": "gguf", "default": True, "files": ["yue2-3b-q8_0.gguf"]}
+    q4 = {"id": "q4", "format": "gguf", "files": ["yue2-3b-q4_0.gguf"]}
     repo = "audio-cpp/Yue2-3B-GGUF"
-    row = catalog._row(repo, repo, "", "yue2", {"packages": [package]}, files)
+    row = catalog._row(repo, repo, "", "yue2", {"packages": [q8, q4]}, files)
     assert row.size_bytes == sum(size for path, size in sizes.items() if "q4_0" not in path)
+    # The fit filter keeps the row on a card only Q4_0 fits, so it also carries the smallest package.
+    assert row.smallest_size_bytes == sum(size for path, size in sizes.items() if "q8_0" not in path)
+
+
+def test_the_smallest_variant_skips_quants_a_gpu_cannot_run():
+    # TQ2_1 has only a CPU kernel, so it says nothing about which card the row fits.
+    files = [RepoFile("kitten-tq2_1.gguf", 10_000_000), RepoFile("kitten-q8_0.gguf", 40_000_000)]
+    repo = "someone/Kitten-GGUF"
+    row = catalog._row(repo, repo, "", "kokoro_tts", {}, files)
+    assert row.smallest_size_bytes == 40_000_000

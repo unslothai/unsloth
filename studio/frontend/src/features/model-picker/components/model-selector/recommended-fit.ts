@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  audioCppResidentFit,
+  audioCppRowFit,
   classifyGgufFit,
 } from "../../../../lib/gguf-fit.ts";
 import {
@@ -242,6 +242,8 @@ export function hfModelFitsDevice(
     estimatedSizeBytes?: number;
     /** audio.cpp only: GiB of GPU memory the load check requires. */
     estimatedResidentGb?: number;
+    /** audio.cpp only: the same for the smallest variant a GPU runs. */
+    smallestResidentGb?: number;
     curatedSizeBytes?: number;
     isGguf?: boolean;
     quantMethod?: string;
@@ -266,11 +268,9 @@ export function hfModelFitsDevice(
     !gpu.budgetKnown
   )
     return true;
-  // audio.cpp loads whole on one card: its load-check estimate decides, as on the row badge and quants.
-  const resident = audioCppResidentFit(
-    model.estimatedResidentGb,
-    gpu.memoryTotalGb,
-  );
+  // audio.cpp loads whole on one card: the load-check estimate of its smallest variant decides, as on
+  // the row badge, so a model whose default quant is too big stays listed when a smaller one fits.
+  const resident = audioCppRowFit(model, gpu.memoryTotalGb);
   if (resident) return resident === "fits";
   const params = model.totalParams ?? paramsFromId(model.id);
   const isGguf = isGgufId(model.id, model.isGguf);
