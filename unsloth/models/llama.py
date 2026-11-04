@@ -2018,7 +2018,7 @@ def CausalLM_fast_forward(fast_forward_inference):
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         # Not a named parameter: HF's find_labels would make it a required eval label.
         shift_labels = kwargs.pop("shift_labels", None)
-        # Training resumed after a graphed generate() without for_training(): free its graphs and caches.
+        # Training may resume without for_training() (trainer callback sampling): free kept graphs here.
         if _decode_graphs.HELD in self.__dict__ and self.training and torch.is_grad_enabled():
             _decode_graphs.release_if_training(self)
         past_key_values = _cache_as_legacy_tuple(past_key_values)
@@ -3072,15 +3072,12 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    # Plain generate() decodes with CUDA graphs by default (UNSLOTH_DECODE_CUDA_GRAPHS=0 opts out);
-    # decided once per call, so the prefill and every decode step agree.
+    # Decided once per call so the prefill and every decode step agree.
     with _decode_graphs.generate_scope():
         graphs = _decode_graphs.enabled()
         plan, token = "graph", None
         if graphs:
             max_len = _generation_max_len(self, args, kwargs)
-            # Frees what earlier calls kept when this one would not fit beside it; a call whose graphed
-            # estimate does not fit even then decodes eagerly from the start.
             try:
                 plan, token = _decode_graphs.plan_call(
                     self, _generation_input_ids(args, kwargs), dtype, KV_CACHE_INCREMENT, max_len
@@ -3099,7 +3096,6 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
             ):
-                # Out of memory with graphs: freed, and this call is redone eagerly once.
                 output = _decode_graphs.generate_with_fallback(
                     self, self._old_generate, graphs, args, kwargs
                 )
@@ -3117,8 +3113,6 @@ def unsloth_fast_generate(self, *args, **kwargs):
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
     elif graphs:
-        # Only this call's batch size stays cached between calls; a training forward that follows
-        # without for_training() frees it (release_if_training in the forward).
         ids = _generation_input_ids(args, kwargs)
         if hasattr(ids, "shape") and len(ids.shape) >= 2:
             _decode_graphs.keep_only(self, int(ids.shape[0]))
@@ -5682,7 +5676,6 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
-        # Captured decode graphs and decode KV buffers from generate() would sit through training.
         _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)

@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Graph decode memory: plan_call() frees decode buffers / graphs kept from earlier generate() calls only
-when the new call would not fit beside them (measured free memory, mocked here) and runs a call whose
-graphed need does not fit even then eagerly from the start; generate_with_fallback() redoes an
-out-of-memory graphed call once eagerly. CPU only: the module is
-loaded by file path and the capture / CUDA memory queries are stand-ins."""
+"""Graph decode memory planning and OOM fallback; CPU only, CUDA memory queries mocked."""
 
 import importlib.util
 import types
@@ -60,7 +56,6 @@ class _Model(torch.nn.Module):
         rows,
         dtype = torch.float16,
     ):
-        # What a graphed generate() of batch `bsz` leaves behind (tiny stand-in tensors, real row count).
         for attn in self.attns:
             paged = torch.zeros((rows, 2, 1, 1, 1), dtype = dtype)
             store = attn.__dict__.setdefault("_unsloth_graph_buffers", {})
@@ -68,7 +63,6 @@ class _Model(torch.nn.Module):
             attn.paged_attention = paged
 
     def held(self):
-        # Batch sizes with a kept cache (any layer).
         return len(
             {key for a in self.attns for key in a.__dict__.get("_unsloth_graph_buffers", {})}
         )
@@ -103,9 +97,8 @@ def test_plan_frees_kept_buffers_when_the_call_does_not_fit_beside_them(G):
     model.keep(1, 2816)
     model.keep(4, 2816)
     need = _need(G, 16, 2048, 2081)
-    # Qwen3-4B bs16 x 2048: ~6.2 GiB of KV cache + the prefill working set, calibrated.
     assert 11 * GB < need < 13 * GB
-    free = iter([int(0.9 * need), int(1.1 * need)])  # before / after the release
+    free = iter([int(0.9 * need), int(1.1 * need)])
     G._free_bytes = lambda device: next(free)
     plan, token = _plan(G, model, 16, 2048, 2081)
     assert plan == "graph" and token is not None
@@ -121,7 +114,6 @@ def test_plan_runs_a_call_that_cannot_fit_eagerly_from_the_start(G):
     assert (plan, token) == ("eager", None)
     # Kept state was freed first (the eager call needs the memory too), then the call was counted.
     assert model.held() == 0 and G.EAGER_UNFIT == 1
-    # Nothing kept, still too small: eager again, no release.
     assert _plan(G, model, 16, 2048, 2081)[0] == "eager" and G.EAGER_UNFIT == 2 and G.emptied == 1
 
 
@@ -161,7 +153,7 @@ def test_measured_peak_replaces_the_estimate_for_its_shape(G):
     G._free_bytes = lambda device: 20 * GB
     plan, token = _plan(G, model, 4, 2048, 2081)
     assert plan == "graph"
-    stats["peak"] = 5 * GB  # the call peaked 2 GiB above where it started
+    stats["peak"] = 5 * GB
     G.record_need(model, token)
     key = G._shape_key(4, 2048, 2081)
     assert model.__dict__[G.NEEDS][key] == 2 * GB
@@ -210,7 +202,6 @@ def test_oom_with_graphs_redoes_the_call_once_eagerly_and_warns_once(G):
                 out = G.generate_with_fallback(model, _oom_while_graphed(G, seen), graphs, (), {})
         assert out == "eager-output"
         assert model.held() == 0
-        # Graphs are back on for the next call in the scope.
         with G.generate_scope():
             assert G.enabled() is True
     assert seen == [True, False, True, False]
@@ -307,7 +298,7 @@ def test_keep_only_drops_the_current_attributes_of_an_evicted_cache(G):
 def test_training_forward_releases_what_a_graphed_generate_kept(G):
     model = _Model()
     _with_graphs(G, model, 4)
-    assert G.release_if_training(model) is False  # nothing marked: one dict read, nothing freed
+    assert G.release_if_training(model) is False
     assert model.held() == 1
     model.__dict__[G.HELD] = True
     assert G.release_if_training(model) is True

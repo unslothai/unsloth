@@ -2,8 +2,7 @@
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
 """CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, on for every
-Unsloth generate() (plain, RL trainer, Studio chat) on NVIDIA CUDA outside native Windows for the
-model types below; graphs dropped when params, LoRA, quant or RoPE change, and freed by for_training.
+Unsloth generate() on NVIDIA CUDA outside native Windows for the model types below.
 
 UNSLOTH_DECODE_CUDA_GRAPHS_FULL=1 also captures the attention cores: each step is then ONE graph that
 attends over a fixed span of cache rows (the next power of two >= the KV length, at least BUCKET, at
@@ -79,7 +78,6 @@ _PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "
 def enabled():
     """Whether a decode step / prefill on this thread runs (and sizes its buffers) for graph replay."""
     if getattr(_TLS, "eager", 0):
-        # The eager redo of a generate() that ran out of memory in the graph path.
         return False
     if ENABLED is not None:
         return bool(ENABLED)
@@ -138,15 +136,13 @@ class studio_generation(rl_generation):
 
 
 class generate_scope(studio_generation):
-    """Per-thread scope of Unsloth's plain model.generate(): graphs default on as in Studio (eager
-    decode is host bound: ~1000 launches per step for a 28 layer model). Replays are bitwise equal
-    to the eager step; for_training() frees the graphs and decode buffers."""
+    """Per-thread scope of plain model.generate(): graphs default on, as in Studio."""
 
     __slots__ = ()
 
 
 class eager_scope:
-    """Per-thread: decode eagerly whatever the variable or scopes say (the OOM redo in generate())."""
+    """Per-thread: force eager decode (the OOM redo in generate())."""
 
     __slots__ = ()
 
@@ -159,19 +155,12 @@ class eager_scope:
         return False
 
 
-# A graphed generate() call needs (calibrated, before its own peak was measured):
-#   CALIB_WORK x (KV cache + prefill working set) + CALIB_GRAPH_KV x KV cache.
-# From Qwen3-4B NF4 / QLoRA, bs 16 x ctx 2048 on a 15 GB T4: the eager call peaked 10.42 GiB above the
-# weights against a 9.11 GiB estimate (1.14x); the first graphed call ran out of memory with about
-# 12 GiB free, i.e. capture needs about 0.26 x the KV cache on top.
+# Need = CALIB_WORK x (KV + prefill work) + CALIB_GRAPH_KV x KV. Calibrated on Qwen3-4B QLoRA bs16 x 2048,
+# T4: eager peaked 1.14x the estimate; graph capture OOMed at ~12 GiB free (~0.26 x KV extra).
 CALIB_WORK = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_WORK", "1.15"))
 CALIB_GRAPH_KV = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_KV", "0.30"))
-# A measured peak (the first graphed call of a shape) is used with this headroom instead.
 MEASURED_MARGIN = 1.05
-# generate() calls run eagerly from the start because their graphed estimate did not fit (this process).
 EAGER_UNFIT = 0
-# Per model: {(batch size, length bucket): bytes the first graphed call of that shape peaked above its
-# starting allocation}.
 NEEDS = "_unsloth_decode_needs"
 
 
@@ -183,8 +172,7 @@ def _call_bytes(
     increment,
     max_len = 0,
 ):
-    """(cache rows, KV cache bytes, prefill working-set bytes) of one generate() call, sized as
-    alloc_decode_buffers sizes the cache (grown up to the length hint). None when a dimension is missing."""
+    """(cache rows, KV bytes, prefill work bytes), sized like alloc_decode_buffers."""
     try:
         layers = int(config.num_hidden_layers)
         hidden = int(config.hidden_size)
@@ -204,7 +192,6 @@ def _call_bytes(
 
 
 def _free_bytes(device):
-    # Device free memory plus blocks the caching allocator holds but has not handed out.
     free, _ = torch.cuda.mem_get_info(device)
     return free + torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
 
@@ -214,7 +201,7 @@ def _empty_cache():
 
 
 def _alloc_stats(device):
-    # (bytes allocated now, peak bytes allocated so far); the peak is only read, never reset.
+    # Peak is never reset: other code may rely on max_memory_allocated.
     return torch.cuda.memory_allocated(device), torch.cuda.max_memory_allocated(device)
 
 
@@ -229,14 +216,8 @@ def plan_call(
     increment,
     max_len = 0,
 ):
-    """Before a graphed generate(): ("graph", token) or ("eager", None).
-
-    The call's need is its measured peak (first graphed call of this batch size and length bucket) with
-    MEASURED_MARGIN, else the calibrated estimate above; a kept cache of this batch size that already
-    has the rows is reused and not counted. Free memory is measured (cudaMemGetInfo plus the allocator's
-    reserved-but-free bytes). Not enough free: the graphs and decode buffers kept from earlier calls are
-    released first; still not enough: the call runs eagerly from the start (counted in EAGER_UNFIT), so
-    a predictable shape never relies on the out-of-memory redo. The token goes to record_need()."""
+    """("graph", token) or ("eager", None). Releases kept graphs / buffers first if the call would not
+    fit beside them; still too big runs eagerly up front rather than relying on the OOM redo."""
     global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
@@ -269,7 +250,6 @@ def plan_call(
         release(model)
         _empty_cache()
         free = _free_bytes(device)
-        # The reused cache was released too: count it again.
         need = (
             MEASURED_MARGIN * measured
             if measured is not None
@@ -282,9 +262,8 @@ def plan_call(
 
 
 def record_need(model, token):
-    """After a graphed call that plan_call() let through: store its peak above the starting allocation
-    for its shape (first call only, which includes the capture). The peak statistic is only read, never
-    reset; a call that did not raise it gives no exact reading and is not stored."""
+    """Store the first graphed call's peak per shape. The peak is never reset (not ours to reset), so a
+    call that did not raise it has no exact reading and is skipped."""
     if token is None:
         return
     key, device, start, peak_before = token
@@ -294,17 +273,13 @@ def record_need(model, token):
 
 
 _OOM_WARNED = False
-# generate() calls redone eagerly after an out-of-memory error with graphs on (this process).
 EAGER_REDOS = 0
-# Set on the model by a graphed generate() that leaves graphs / decode buffers behind; the next
-# training forward frees them (release_if_training).
 HELD = "_unsloth_decode_held"
 
 
 def generate_with_fallback(model, generate, graphs, args, kwargs):
-    """generate(*args, **kwargs); when it runs out of GPU memory with graph decode on, free the graphs
-    and decode buffers and redo the call once eagerly, with one warning per process. A caller-supplied
-    cache or streamer has already seen part of the call, so those re-raise instead."""
+    """On a graph-mode OOM, free graphs and redo once eagerly. A caller's streamer / past_key_values
+    already saw part of the call, so those re-raise instead."""
     global _OOM_WARNED, EAGER_REDOS
     try:
         return generate(*args, **kwargs)
@@ -331,9 +306,7 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
 
 
 def keep_only(model, bsz):
-    """After a graphed generate(): drop the decode buffers and graphs of every other batch size, so
-    one call's cache (and its graphs) is all that stays between calls. The kept batch size's graphs
-    stay valid (its buffers are untouched), so repeated calls of one shape do not re-capture."""
+    """Drop decode buffers and graphs of every other batch size; this one's graphs stay valid."""
     dropped = False
     for module in model.modules():
         store = module.__dict__.get("_unsloth_graph_buffers")
@@ -355,9 +328,8 @@ def keep_only(model, bsz):
 
 
 def release_if_training(model):
-    """Called by a training forward: frees what a graphed generate() kept on the model when training
-    resumed without for_training() (e.g. sampling inside a trainer callback). One dict read when
-    nothing is held."""
+    """Run from the training forward: training can resume without for_training() (e.g. sampling in a
+    trainer callback), so this is the only place guaranteed to free kept graphs."""
     if model.__dict__.pop(HELD, False):
         release_for_training(model)
         return True
@@ -469,9 +441,7 @@ def alloc_decode_buffers(
         key = (bsz, dtype, device)
         bufs = store.get(key)
         if bufs is None or bufs[0].shape[0] < rows:
-            # Graphs reading a replaced / evicted buffer are dropped (BUFFER_EPOCH); a new batch size
-            # beside the ones kept leaves their graphs valid. Evicted before allocating, so the old
-            # and new caches are never both held.
+            # Evict before allocating so old and new caches are never both held (peak memory).
             if bufs is not None or len(store) >= 2:
                 store.clear()
                 for name in _BUFFER_NAMES:

@@ -140,7 +140,6 @@ def test_plain_generate_on_by_default_bitwise_and_released(runtime):
     assert _Stats(model)().get("replays", 0) == 0
     assert _graph_buffers(model) == 0
 
-    # Unset: plain generate() replays graphs, bitwise equal to the eager step.
     runtime.delenv(ENV)
     graph = _gen(model, tok)
     stats = _Stats(model)()
@@ -149,7 +148,6 @@ def test_plain_generate_on_by_default_bitwise_and_released(runtime):
     with G.rl_generation():
         assert torch.equal(_gen(model, tok)[1], eager[1])
 
-    # =0 wins inside both scopes.
     runtime.setenv(ENV, "0")
     replays = _Stats(model)()["replays"]
     with G.rl_generation():
