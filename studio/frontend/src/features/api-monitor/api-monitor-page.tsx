@@ -1523,6 +1523,7 @@ export function ApiMonitorPage(): ReactElement {
         </div>
         <div
           aria-hidden={true}
+          data-slot="api-toolbar-fade"
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
         />
       </div>
