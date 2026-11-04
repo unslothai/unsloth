@@ -18,6 +18,7 @@ import {
   type BenchmarkRunSummary,
   listBenchmarkRuns,
 } from "../api/benchmark-api";
+import { modelLabels } from "../lib/model-labels";
 import { useBenchmarkRuntimeStore } from "../stores/benchmark-runtime-store";
 
 // The Benchmarks page's validated categorical order, minus its neutral. Assigned by first
@@ -48,10 +49,6 @@ interface Bar {
   score: number;
   stderr: number | null;
   run: BenchmarkRunSummary;
-}
-
-function modelName(model: string): string {
-  return model.split(/[\\/]/).filter(Boolean).pop() ?? model;
 }
 
 function score(
@@ -125,20 +122,20 @@ export function EvalScoreboard(): ReactElement | null {
     };
   }, [running]);
 
-  const { groups, models, best } = useMemo(() => {
+  const { groups, models, best, labels } = useMemo(() => {
     const newestFirst = [...runs].sort((a, b) =>
       b.created_at.localeCompare(a.created_at),
     );
+    // The full id is the model's identity: two folders both named `adapter` are two models.
     const models: string[] = [];
     for (const r of [...newestFirst].reverse()) {
-      const name = modelName(r.model);
-      if (!models.includes(name)) models.push(name);
+      if (!models.includes(r.model)) models.push(r.model);
     }
     const shown = models.slice(0, palette.length);
     const byTask = new Map<string, Bar[]>();
     for (const run of newestFirst) {
       const s = score(run);
-      const model = modelName(run.model);
+      const model = run.model;
       if (!s || !shown.includes(model)) continue;
       const bars = byTask.get(run.task) ?? [];
       if (bars.some((b) => b.model === model)) continue;
@@ -152,7 +149,7 @@ export function EvalScoreboard(): ReactElement | null {
     const best = groups
       .flatMap((g) => g.bars)
       .sort((a, b) => b.score - a.score)[0];
-    return { groups, models: shown, best };
+    return { groups, models: shown, best, labels: modelLabels(shown) };
   }, [runs, palette.length]);
 
   if (groups.length === 0) return null;
@@ -164,7 +161,7 @@ export function EvalScoreboard(): ReactElement | null {
         <Tile
           label="Best score"
           value={best ? pct(best.score) : "—"}
-          detail={best ? `${best.run.task} · ${best.model}` : undefined}
+          detail={best ? `${best.run.task} · ${labels[best.model]}` : undefined}
         />
         <Tile
           label="Benchmarks"
@@ -189,7 +186,7 @@ export function EvalScoreboard(): ReactElement | null {
                   style={{ background: color(m) }}
                   aria-hidden={true}
                 />
-                <span className="truncate">{m}</span>
+                <span className="truncate">{labels[m]}</span>
               </span>
             ))}
           </span>
@@ -208,7 +205,7 @@ export function EvalScoreboard(): ReactElement | null {
                   b.run.num_fewshot ? ` · ${b.run.num_fewshot}-shot` : ""
                 } · ${new Date(b.run.created_at).toLocaleString()}`}
               >
-                <ModelLabel model={b.model} />
+                <ModelLabel model={labels[b.model] ?? b.model} />
                 <span className="relative h-3 rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)]">
                   {[25, 50, 75].map((x) => (
                     <span
