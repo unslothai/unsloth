@@ -1434,9 +1434,10 @@ export function AppSidebar() {
 
   // MLX self-heal or late detection can change the verdict after first health; re-poll.
   useEffect(() => {
-    // Also while deferred: under the kill switch health settles nothing.
+    // Deferred detection starts only on demand, so there is no background verdict to poll.
+    if (detectionDeferred) return;
     const selfHealSettled =
-      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+      !chatOnly || chatOnlyReason !== "mlx_unavailable";
     // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded wait at
     // most once per page load, so a host that detects slower keeps the provisional reply and nothing
     // else re-reads it: the rows above would spin and /studio would hold its loading panel for the rest
@@ -3406,7 +3407,7 @@ export function AppSidebar() {
         ? { label: "Install Training", onClick: () => setFullInstallOpen(true) }
         : undefined,
       spinner: trainingInProgress,
-      pending: capabilitiesUnknown,
+      pending: capabilitiesUnknown && !detectionDeferred,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (trainBlocked) {
@@ -3430,7 +3431,7 @@ export function AppSidebar() {
       active: pathname === "/video" || pathname.startsWith("/video/"),
       disabled: videoDisabled,
       tooltip: videoDisabledHint,
-      pending: capabilitiesUnknown,
+      pending: capabilitiesUnknown && !detectionDeferred,
       pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
         navigateFromRow({ to: "/video" });

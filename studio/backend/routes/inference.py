@@ -36469,6 +36469,10 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
         hit = _fresh()
         if hit is not None:
             return hit
+        from utils.hardware import hardware as hw
+
+        # Non-GGUF servability needs the device; undetected hardware would list GGUF only.
+        hw.ensure_hardware_detected()
         # Captured before the scan so an invalidation during it leaves the entry stale.
         generation = _servability_generation()
         scanned = []
