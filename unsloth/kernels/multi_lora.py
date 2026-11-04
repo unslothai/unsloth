@@ -567,7 +567,7 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
     else:
         Wd = fast_dequantize(W, W_quant, dtype = X.dtype) if W_quant is not None else W.to(X.dtype)
         Y = F.linear(X, Wd)
-        # Under autocast the base matmul is low precision while the masked delta promotes to X's dtype.
+        # Autocast: base matmul is low precision but the delta promotes to X.dtype.
         Y = Y + multi_lora_delta(X, A, B, scales, batch).to(Y.dtype)
     if bias is not None:
         Y = Y + bias.to(Y.dtype)

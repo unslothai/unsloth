@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The PyTorch multi-LoRA path keeps the base layer's output dtype under autocast."""
-
 from __future__ import annotations
 
 import pytest
