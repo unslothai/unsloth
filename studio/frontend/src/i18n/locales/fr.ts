@@ -3026,8 +3026,8 @@ export const fr = {
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       turnNavigation: "Navigation par tours",
       turnNavigationDescription: "Affiche vos messages sous forme de barre sur le bord gauche des longues discussions. Survolez un tour pour l’aperçu, cliquez pour y aller et ajoutez-le aux favoris pour le retrouver.",
-      composerAtBottom: "Zone de saisie en bas",
-      composerAtBottomDescription: "Commencer les nouvelles discussions avec la zone de saisie en bas de la page plutôt qu'au centre.",
+      composerPosition: "Position de la zone de saisie",
+      composerPositionDescription: "Emplacement de la zone de saisie au début d'une nouvelle discussion, du haut de la page jusqu'en bas.",
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
         "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",

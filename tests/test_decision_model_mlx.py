@@ -200,6 +200,14 @@ def test_decision_helpers_are_one_torch_free_module_for_both_backends():
     assert [a.name for n in taken for a in n.names] == ["*"]
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_checks_rows_without_a_model(clef):
+    assert FastDecisionModel.rows_problem([{"state": "s"}, _row(0)], clef) is None
+    assert FastDecisionModel.rows_problem([{"state": "s"}], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+
+
 @pytest.fixture
 def clef_checkpoint(tmp_path, monkeypatch):
     from types import SimpleNamespace

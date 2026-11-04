@@ -196,7 +196,11 @@ import {
   type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
-import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import {
+  COMPOSER_POSITION_BOTTOM,
+  COMPOSER_POSITION_MIDDLE,
+  useChatPreferencesStore,
+} from "@/features/chat/stores/chat-preferences-store";
 import {
   sortProjectsByActivity,
   useChatProjects,
@@ -2077,7 +2081,7 @@ export const Thread: FC<{
     startGrammarPrewarm();
   }, []);
   const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
+    (s) => s.newChatComposerPosition >= COMPOSER_POSITION_BOTTOM,
   );
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
@@ -2779,9 +2783,15 @@ const ThreadWelcome: FC<{
   });
   const customText = greeting.kind === "text" ? greeting.text : null;
   // At the bottom, Thread docks the composer and the greeting centres in the space above it.
-  const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
+  const composerPosition = useChatPreferencesStore(
+    (s) => s.newChatComposerPosition,
   );
+  const composerAtBottom = composerPosition >= COMPOSER_POSITION_BOTTOM;
+  // Below 50 the top padding shrinks; above it, spacers split the leftover height.
+  const lift =
+    Math.min(composerPosition, COMPOSER_POSITION_MIDDLE) /
+    COMPOSER_POSITION_MIDDLE;
+  const sink = Math.max(0, composerPosition - COMPOSER_POSITION_MIDDLE);
   useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
@@ -2804,12 +2814,23 @@ const ThreadWelcome: FC<{
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
             : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
           // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          // The image row's -76px margin needs at least that much padding.
           !composerAtBottom &&
-            (greeting.kind !== "off" || incognito
-              ? "pt-[27.5dvh]"
-              : "pt-[calc(27.5dvh_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
+            (greeting.kind === "image" && !incognito
+              ? "pt-[max(calc(76px*var(--ui-space-scale,1)),calc(27.5dvh*var(--welcome-lift,1)))]"
+              : greeting.kind !== "off" || incognito
+                ? "pt-[calc(27.5dvh*var(--welcome-lift,1))]"
+                : "pt-[calc(27.5dvh*var(--welcome-lift,1)_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
         )}
+        style={{ "--welcome-lift": lift } as CSSProperties}
       >
+        {!composerAtBottom && (
+          <div
+            aria-hidden="true"
+            className="[:has(.unsloth-files-panel)>&]:hidden"
+            style={{ flexGrow: sink }}
+          />
+        )}
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
@@ -2877,6 +2898,13 @@ const ThreadWelcome: FC<{
             <ComposerAnimated threadId={threadId} />
           )}
         </div>
+        {!composerAtBottom && (
+          <div
+            aria-hidden="true"
+            className="[:has(.unsloth-files-panel)>&]:hidden"
+            style={{ flexGrow: COMPOSER_POSITION_MIDDLE - sink }}
+          />
+        )}
       </div>
     </div>
   );

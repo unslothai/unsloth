@@ -4610,7 +4610,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div data-wallpaper-chrome-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
+          <div data-wallpaper-chrome-controls="" data-chat-model-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"

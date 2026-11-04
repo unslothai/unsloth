@@ -2975,8 +2975,8 @@ export const ja = {
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       turnNavigation: "ターンナビゲーション",
       turnNavigationDescription: "長いチャットの左端に自分のメッセージをレールとして表示します。ホバーでプレビュー、クリックでそのターンへ移動し、ブックマークで後から見つけられます。",
-      composerAtBottom: "入力欄を下に表示",
-      composerAtBottomDescription: "新しいチャットで入力欄を中央ではなくページ下部に表示します。",
+      composerPosition: "入力欄の位置",
+      composerPositionDescription: "新しいチャットを始めるときの入力欄の位置を、ページ上部から下部まで調整します。",
       projectAttachments: "プロジェクト全体でファイルを共有",
       projectAttachmentsDescription:
         "新しく添付したファイルをプロジェクト内のすべてのチャットで利用できるようにします。",

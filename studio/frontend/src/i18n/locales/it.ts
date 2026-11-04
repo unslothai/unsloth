@@ -2926,8 +2926,8 @@ export const it = {
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       turnNavigation: "Navigazione dei turni",
       turnNavigationDescription: "Mostra i tuoi messaggi come una barra sul bordo sinistro delle chat lunghe. Passa sopra un turno per l’anteprima, fai clic per raggiungerlo e aggiungilo ai segnalibri per ritrovarlo.",
-      composerAtBottom: "Casella di testo in basso",
-      composerAtBottomDescription: "Avvia le nuove chat con la casella di testo in fondo alla pagina invece che al centro.",
+      composerPosition: "Posizione della casella di testo",
+      composerPositionDescription: "Dove si trova la casella di testo quando inizi una nuova chat, dalla parte alta della pagina fino in fondo.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
         "Rende i nuovi allegati disponibili in tutte le chat del progetto.",

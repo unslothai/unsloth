@@ -1832,6 +1832,8 @@ class FastDecisionModel:
             )
         return items, report
 
+    rows_problem = staticmethod(_rows_problem)
+
     @staticmethod
     def split_holdout(
         items: list,
