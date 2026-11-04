@@ -1679,6 +1679,70 @@ def test_biased_native_mlp_keeps_its_forward(projection):
 
 
 @pytest.mark.parametrize(
+    "weight_dtype, input_dtype",
+    [
+        (torch.bfloat16, torch.float32),
+        (torch.float16, torch.bfloat16),
+        (torch.bfloat16, torch.float16),
+    ],
+)
+def test_mixed_native_norm_uses_its_original_equation(monkeypatch, weight_dtype, input_dtype):
+    from unsloth.kernels import rms_layernorm
+
+    def unsupported(*args, **kwargs):
+        pytest.fail("mixed-dtype normalization entered the fused kernel")
+
+    monkeypatch.setattr(rms_layernorm, "fast_rms_layernorm", unsupported)
+    model = _tiny_qwen3_peft()
+    norm = model.get_base_model().model.norm.to(weight_dtype)
+    original = norm.forward
+    f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+    x = torch.randn(2, 16, norm.weight.numel()).to(input_dtype).requires_grad_(True)
+    expected = original(x)
+    for call in (norm, torch.compile(norm, backend = "aot_eager", fullgraph = True)):
+        actual = call(x)
+        assert actual.dtype == expected.dtype
+        torch.testing.assert_close(actual, expected, rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_fp32_native_norm_keeps_its_promoted_output(dtype):
+    model = _tiny_qwen3_peft()
+    norm = model.get_base_model().model.norm.float()
+    norm.weight.data.fill_(1.001)
+    original = norm.forward
+    f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+    assert norm.forward == original
+    x = torch.randn(2, 16, norm.weight.numel()).to(dtype)
+    normalized = x.float() * torch.rsqrt(
+        x.float().square().mean(-1, keepdim = True) + norm.variance_epsilon
+    )
+    expected = norm.weight * normalized.to(dtype)
+    actual = norm(x)
+    assert actual.dtype == expected.dtype == torch.float32
+    torch.testing.assert_close(actual, expected, rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32])
+def test_norm_upcast_after_binding_keeps_the_native_equation(monkeypatch, dtype):
+    from unsloth.kernels import rms_layernorm
+
+    def unsupported(*args, **kwargs):
+        pytest.fail("FP32 normalization entered the fused kernel")
+
+    monkeypatch.setattr(rms_layernorm, "fast_rms_layernorm", unsupported)
+    model = _tiny_qwen3_peft()
+    norm = model.get_base_model().model.norm
+    original = norm.forward
+    f8t._prepare_fp8_lora_operators(model, allow_cpu = True)
+    norm.float()
+    x = torch.randn(2, 16, norm.weight.numel()).to(dtype)
+    actual = norm(x)
+    assert actual.dtype == torch.float32
+    torch.testing.assert_close(actual, original(x), rtol = 0, atol = 0)
+
+
+@pytest.mark.parametrize(
     "mode", ["full", "gelu", "partial", "custom", "custom_class", "private_norm", "generated"]
 )
 @pytest.mark.parametrize("layout", ["3d", "2d", "strided_3d", "strided_2d"])
@@ -1701,7 +1765,7 @@ def test_native_operator_binding_preserves_keywords_and_restores_instances(
                 num_attention_heads = 4,
                 num_key_value_heads = 2,
             )
-        ),
+        ).to(torch.bfloat16),
         LoraConfig(r = 4, target_modules = ["gate_proj", "up_proj", "down_proj"]),
     )
     owner = model.get_base_model()
@@ -1755,7 +1819,7 @@ def test_native_operator_binding_preserves_keywords_and_restores_instances(
     x = torch.randn(2, 3, 64)[..., ::2] if layout.startswith("strided") else torch.randn(2, 3, 32)
     if layout.endswith("2d"):
         x = x.reshape(6, 32)
-    x.requires_grad_(True)
+    x = x.to(torch.bfloat16).requires_grad_(True)
     expected_mlp, expected_norm = mlp(x = x), norm(hidden_states = x)
     calls = {"norm": 0, "mlp": 0}
 

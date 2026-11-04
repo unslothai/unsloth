@@ -724,6 +724,11 @@ def _prepare_fp8_lora_operators(model, allow_cpu = False):
         x = x * torch.rsqrt(variance + self.variance_epsilon)
         return self.weight * x.to(dtype)
 
+    def fused_rms(self, X):
+        if X.dtype not in (torch.float16, torch.bfloat16) or X.dtype != self.weight.dtype:
+            return rms_equation(self, X)
+        return fast_rms_layernorm(self, X)
+
     def mlp_equation(self, x):
         output = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return output
@@ -732,7 +737,7 @@ def _prepare_fp8_lora_operators(model, allow_cpu = False):
         return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
 
     templates = (
-        (rms_equation, fast_rms_layernorm),
+        (rms_equation, fused_rms),
         (mlp_equation, fused_mlp),
         (mlp_expression, fused_mlp),
     )
@@ -796,9 +801,11 @@ def _prepare_fp8_lora_operators(model, allow_cpu = False):
                     weight = getattr(module, "weight", None)
                     if equation.__globals__.get("torch") is not torch or weight is None:
                         continue
+                    if weight.dtype not in (torch.float16, torch.bfloat16):
+                        continue
                     if not allow_cpu and weight.device.type != "cuda":
                         continue
-                operator = apply_lora_mlp_swiglu if kernel is fused_mlp else kernel
+                operator = apply_lora_mlp_swiglu if kernel is fused_mlp else fast_rms_layernorm
                 key = (id(module), name, function, operator, kernel.__code__)
                 replacement = cache.get(key)
                 if replacement is None:
