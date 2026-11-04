@@ -208,3 +208,30 @@ async def test_a_continued_adapter_trains_again_when_the_base_under_it_changes(w
     world["model_sha"] = "m2"
     await _run(eng, _flow(base_model = str(adapter)))
     assert len(world["trained"]) == 4
+
+
+@run_async
+async def test_a_new_revision_of_the_4bit_mirror_the_loader_fetches_trains_again(
+    world, monkeypatch
+):
+    from utils.models import unsloth_mirror
+
+    revisions = {"unsloth/Qwen3-0.6B": "m1", "unsloth/Qwen3-0.6B-unsloth-bnb-4bit": "q1"}
+    monkeypatch.setattr(training, "_hub_model_revision", lambda repo, token: revisions[repo])
+    monkeypatch.setattr(
+        unsloth_mirror,
+        "unsloth_public_mirror",
+        lambda name, mode: f"{name}-unsloth-bnb-4bit" if mode else None,
+    )
+    eng = _engine(world)
+    await _run(eng, _flow())
+    await _run(eng, _flow())
+    assert len(world["trained"]) == 1
+    revisions["unsloth/Qwen3-0.6B-unsloth-bnb-4bit"] = "q2"
+    await _run(eng, _flow())
+    assert len(world["trained"]) == 2
+    # A 16-bit run never fetches the 4-bit mirror, so its changes do not retrain it.
+    await _run(eng, _flow(load_in_4bit = False))
+    revisions["unsloth/Qwen3-0.6B-unsloth-bnb-4bit"] = "q3"
+    await _run(eng, _flow(load_in_4bit = False))
+    assert len(world["trained"]) == 3

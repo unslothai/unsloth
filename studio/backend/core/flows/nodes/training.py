@@ -438,11 +438,45 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
             found["base_model_revision"] = await asyncio.to_thread(_hub_model_revision, base, token)
+            loaded = {}
+            for repo in _loader_repos(base, _loads_4bit(ctx.params, base)):
+                # The loader may fetch a 4-bit or 16-bit mirror instead: its changes count too.
+                loaded[repo] = await asyncio.to_thread(_hub_model_revision, repo, token)
+                if not loaded[repo]:
+                    return None
+            if loaded:
+                found["loader_revisions"] = loaded
         except Exception:
             return None
         if not found["base_model_revision"]:
             return None
     return found
+
+
+def _loads_4bit(params: dict, base: str) -> bool:
+    """Whether the run asks for a 4-bit load, as method_fields sets it."""
+    method = str(params.get("training_type") or "lora")
+    if method == "lora":
+        return params.get("load_in_4bit") is not False
+    return method == "cpt" and "4bit" in base.lower()
+
+
+def _loader_repos(base: str, load_in_4bit: bool) -> list[str]:
+    """The repos Unsloth's loader can fetch in place of ``base``: its mirror for each load mode the run
+    can end in (a 4-bit request falls back to 16-bit, never the reverse) and that mirror without its
+    4-bit suffix (what a GPU without pre-quantized support downloads). The worker scans the same set."""
+    from utils.models.unsloth_mirror import unsloth_public_mirror
+
+    repos: list[str] = []
+    for mode in (True, False) if load_in_4bit else (False,):
+        mirrored = unsloth_public_mirror(base, mode)
+        if not mirrored or mirrored == base:
+            continue
+        repos.append(mirrored)
+        suffix = next((x for x in ("-unsloth-bnb-4bit", "-bnb-4bit") if mirrored.endswith(x)), "")
+        if suffix and mirrored[: -len(suffix)] != base:
+            repos.append(mirrored[: -len(suffix)])
+    return list(dict.fromkeys(repos))
 
 
 async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
