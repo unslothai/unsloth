@@ -798,7 +798,7 @@ test("a column dropped in a recipe frame's setup-card space stays in the recipe"
   );
   // Membership is tested against the height the frame is drawn at, not only the saved one.
   assert.match(canvas, /const h = Math\.max\(g\.rect\[3\], heights\[groupId\] \?\? 0\);/);
-  assert.match(canvas, /groupMembership\(positions, sizesRef\.current, setupRef\.current\.heights\)/);
+  assert.match(canvas, /groupMembership\(\s*positions,\s*sizesRef\.current,\s*setupRef\.current\.heights,?\s*\)/);
 });
 
 test("a GitHub seed added before a repository is entered keeps a form to enter it", async () => {
@@ -895,7 +895,7 @@ test("a pasted or duplicated second Recipe Dataset step comes into its recipe sw
   assert.equal(steps.length, 2);
   assert.deepEqual(steps.map((n) => !!n.disabled).sort(), [false, true]);
   const keys = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
-  assert.match(keys, /doc\.graph\.nodes\[id\]\.type !== GENERATE_TYPE/);
+  assert.match(keys, /doc\.graph\.nodes\[id\]\?\.type !== GENERATE_TYPE/);
 });
 
 test("an edit elsewhere keeps a processor the recipe forms do not show", () => {
