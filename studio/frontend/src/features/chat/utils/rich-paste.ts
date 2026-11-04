@@ -128,7 +128,7 @@ function span(cell: PasteNode, name: string, max: number): number {
 
 function table(node: PasteNode, ctx: Ctx): string {
   const physical = tableRows(node);
-  // Lay merged cells onto the grid so every value stays under its own header.
+  // Merged cells span the grid, so each value stays under its header.
   const rows: string[][] = physical.map(() => []);
   physical.forEach((row, r) => {
     let c = 0;

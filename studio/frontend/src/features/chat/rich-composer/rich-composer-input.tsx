@@ -102,7 +102,6 @@ function keyEvent(native: KeyboardEvent, field: HTMLElement) {
   });
 }
 
-// For applySentTextGuard.
 function inputTypeOf(tr: Transaction, view: EditorView): string {
   if (isHistoryTransaction(tr)) return "historyUndo";
   const ui = tr.getMeta("uiEvent");

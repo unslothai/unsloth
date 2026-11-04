@@ -28,7 +28,7 @@ export function markerRule(marker: string, type: MarkType): InputRule {
         .delete(from, from + marker.length);
       const to = from + text.length;
       if (type.spec.code) {
-        // Marks applied earlier inside the span were typed as literal markers: restore them.
+        // Marks applied inside the span were typed as literal markers.
         const runs: (readonly Mark[])[] = [];
         tr.doc.nodesBetween(from, to, (node) => {
           if (node.isText) runs.push(node.marks);
