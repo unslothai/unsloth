@@ -36,7 +36,12 @@ def _unet_with_lora():
         norm_num_groups = 8,
     ).eval()
     unet.add_adapter(
-        LoraConfig(r = 4, lora_alpha = 4, target_modules = ["to_q", "to_k", "to_v", "to_out.0"], init_lora_weights = False),
+        LoraConfig(
+            r = 4,
+            lora_alpha = 4,
+            target_modules = ["to_q", "to_k", "to_v", "to_out.0"],
+            init_lora_weights = False,
+        ),
         adapter_name = "px",
     )
     return unet
@@ -52,15 +57,15 @@ def _inputs():
 
 
 def _base_weights(unet) -> dict:
-    return {
-        n: p.detach().clone()
-        for n, p in unet.named_parameters()
-        if "lora_" not in n
-    }
+    return {n: p.detach().clone() for n, p in unet.named_parameters() if "lora_" not in n}
 
 
 class _Pipe(types.SimpleNamespace):
-    def set_adapters(self, names, adapter_weights = None):
+    def set_adapters(
+        self,
+        names,
+        adapter_weights = None,
+    ):
         self.unet.set_adapters(names, weights = adapter_weights)
         self.calls.append(("set_adapters", tuple(names), tuple(adapter_weights or ())))
 
@@ -96,7 +101,9 @@ def engine(monkeypatch):
     )
 
     def apply(weight):
-        dmod.DiffusionBackend._apply_loras(backend, state, [("px", weight)], __import__("threading").Event())
+        dmod.DiffusionBackend._apply_loras(
+            backend, state, [("px", weight)], __import__("threading").Event()
+        )
 
     return types.SimpleNamespace(apply = apply, state = state, pipe = pipe, unet = unet)
 
@@ -160,7 +167,9 @@ def test_removing_the_set_restores_before_unload(engine):
 
     def unload():
         seen["merged"] = _merged_layers(engine.unet)
-        seen["equal"] = all(torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items())
+        seen["equal"] = all(
+            torch.equal(before[k], v) for k, v in _base_weights(engine.unet).items()
+        )
 
     engine.pipe.unload_lora_weights = unload
     dmod.DiffusionBackend._apply_loras(
@@ -178,11 +187,15 @@ def test_removing_the_set_restores_before_unload(engine):
         (10, 24, "device", True),
     ],
 )
-def test_backup_lands_on_the_card_only_with_ample_room(monkeypatch, free_gib, total_gib, mode, expected):
+def test_backup_lands_on_the_card_only_with_ample_room(
+    monkeypatch, free_gib, total_gib, mode, expected
+):
     from core.inference import diffusion_lora_fuse as lf
 
     gib = 1 << 30
-    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev = None: (free_gib * gib, total_gib * gib))
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda dev = None: (free_gib * gib, total_gib * gib)
+    )
     if mode is None:
         monkeypatch.delenv(lf.BACKUP_ENV, raising = False)
     else:
@@ -199,11 +212,18 @@ def test_fold_and_restore_on_the_gpu_in_bf16(engine, monkeypatch, backup):
 
     monkeypatch.setenv(lf.BACKUP_ENV, backup)
     engine.unet.to("cuda", torch.bfloat16)
-    x = tuple(t.to("cuda") if t.is_floating_point() is False else t.to("cuda", torch.bfloat16) for t in _inputs())
+    x = tuple(
+        t.to("cuda") if t.is_floating_point() is False else t.to("cuda", torch.bfloat16)
+        for t in _inputs()
+    )
     before = _base_weights(engine.unet)
     with torch.no_grad():
         unfused = engine.unet(*x).sample.float()
-    lin = next(m for m in engine.unet.modules() if hasattr(m, "lora_A") and hasattr(m.get_base_layer(), "in_features"))
+    lin = next(
+        m
+        for m in engine.unet.modules()
+        if hasattr(m, "lora_A") and hasattr(m.get_base_layer(), "in_features")
+    )
     base_w = lin.get_base_layer().weight.detach().clone()
     a_w, b_w = lin.lora_A["px"].weight.detach().float(), lin.lora_B["px"].weight.detach().float()
     expected = (base_w.float() + (b_w @ a_w) * lin.scaling["px"]).to(base_w.dtype)

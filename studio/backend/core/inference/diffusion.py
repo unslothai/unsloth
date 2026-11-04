@@ -1925,7 +1925,6 @@ def _generation_defaults_for(
 
 def _lora_fuse_dits(pipe: Any) -> list:
     from .diffusion_autoopt import targets as _targets
-
     try:
         return list(_targets.denoiser_dits(pipe))
     except Exception:  # noqa: BLE001 - no DiT: the U-Net alone
@@ -13190,7 +13189,6 @@ class DiffusionBackend:
     def _unfuse_loras(self, state: Any, pipe: Any) -> None:
         """Restore the original weights of a folded LoRA set (bit-exact) before any change to it."""
         from . import diffusion_lora_fuse as lora_fuse
-
         if lora_fuse.unfuse(pipe):
             cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
             invalidate_cfg_replica(pipe, "the folded LoRA set was restored", logger)

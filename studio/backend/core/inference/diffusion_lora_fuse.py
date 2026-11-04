@@ -35,7 +35,9 @@ def _lora_layers(module: Any) -> list:
     return [
         m
         for m in module.modules()
-        if hasattr(m, "lora_A") and hasattr(m, "get_base_layer") and callable(getattr(m, "get_delta_weight", None))
+        if hasattr(m, "lora_A")
+        and hasattr(m, "get_base_layer")
+        and callable(getattr(m, "get_delta_weight", None))
     ]
 
 
@@ -48,11 +50,14 @@ def _plan(denoisers: list) -> Optional[list]:
         for layer in _lora_layers(denoiser):
             if getattr(layer, "merged", False) or getattr(layer, "disable_adapters", False):
                 return None
-            active = [a for a in (getattr(layer, "active_adapters", None) or ()) if a in layer.lora_A]
+            active = [
+                a for a in (getattr(layer, "active_adapters", None) or ()) if a in layer.lora_A
+            ]
             if not active:
                 continue
             if any(
-                (getattr(layer, "use_dora", {}) or {}).get(a) or (getattr(layer, "lora_bias", {}) or {}).get(a)
+                (getattr(layer, "use_dora", {}) or {}).get(a)
+                or (getattr(layer, "lora_bias", {}) or {}).get(a)
                 for a in active
             ):
                 return None  # DoRA / LoRA bias change more than the weight
@@ -74,7 +79,11 @@ def _delta_fp32(layer: Any, adapter: str) -> Any:
     were, so the layout rules (fan_in_fan_out, conv kernels) stay PEFT's."""
     import torch
 
-    mods = [m for m in (layer.lora_A[adapter], layer.lora_B[adapter]) if getattr(m, "weight", None) is not None]
+    mods = [
+        m
+        for m in (layer.lora_A[adapter], layer.lora_B[adapter])
+        if getattr(m, "weight", None) is not None
+    ]
     saved = [m.weight.data for m in mods]
     try:
         for m in mods:
@@ -86,7 +95,11 @@ def _delta_fp32(layer: Any, adapter: str) -> Any:
             m.weight.data = w
 
 
-def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
+def fuse(
+    pipe: Any,
+    denoisers: list,
+    logger: Any = None,
+) -> bool:
     """Fold the active adapters into ``denoisers``' weights; True when they are folded (now or already)."""
     if fused(pipe):
         return True
@@ -119,7 +132,9 @@ def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
         if on_device:
             chunks = [torch.empty(n, dtype = torch.uint8, device = device) for n in sizes]
         else:
-            chunks = [torch.empty(n, dtype = torch.uint8, pin_memory = device.type == "cuda") for n in sizes]
+            chunks = [
+                torch.empty(n, dtype = torch.uint8, pin_memory = device.type == "cuda") for n in sizes
+            ]
     except Exception:  # noqa: BLE001 - no room for the backup: stay unfused
         return False
     entries = []
@@ -156,7 +171,6 @@ def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
 
 def _restore(entries: list) -> None:
     import torch
-
     with torch.no_grad():
         for layer, weight, backup in entries:
             weight.copy_(backup)
@@ -175,7 +189,6 @@ def _backup_on_device(device: Any, nbytes: int) -> bool:
         return True
     try:
         import torch
-
         free, total = torch.cuda.mem_get_info(device)
     except Exception:  # noqa: BLE001 - unreadable: the host
         return False
@@ -185,7 +198,6 @@ def _backup_on_device(device: Any, nbytes: int) -> bool:
 def _sync(device: Any) -> None:
     if device.type == "cuda":
         import torch
-
         torch.cuda.synchronize(device)
 
 
