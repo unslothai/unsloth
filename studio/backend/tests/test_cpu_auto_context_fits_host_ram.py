@@ -39,8 +39,17 @@ def _qwen3_4b_header(backend, native):
     return read
 
 
-def _cpu_load(tmp_path, monkeypatch, *, available_mib, native = NATIVE, **load_kwargs):
-    monkeypatch.setattr(LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0))
+def _cpu_load(
+    tmp_path,
+    monkeypatch,
+    *,
+    available_mib,
+    native = NATIVE,
+    **load_kwargs,
+):
+    monkeypatch.setattr(
+        LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
+    )
     monkeypatch.setattr(
         LlamaCppBackend, "_available_system_memory_mib", staticmethod(lambda: available_mib)
     )
@@ -68,9 +77,7 @@ def test_auto_on_a_small_cpu_host_fits_the_kv_cache_in_free_ram(tmp_path, monkey
 
 
 def test_a_shorter_native_window_keeps_its_own_length(tmp_path, monkeypatch):
-    _backend, ctx = _cpu_load(
-        tmp_path, monkeypatch, available_mib = 64 * 1024, native = 40960, n_ctx = 0
-    )
+    _backend, ctx = _cpu_load(tmp_path, monkeypatch, available_mib = 64 * 1024, native = 40960, n_ctx = 0)
     assert ctx == 40960
 
 
