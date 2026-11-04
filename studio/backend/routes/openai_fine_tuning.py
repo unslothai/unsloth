@@ -1154,8 +1154,13 @@ def _list_job_page(
     limit: int,
     via_api_key: bool,
 ) -> dict[str, Any]:
-    jobs = []
+    jobs, seen = [], set()
     for row, is_run in _ordered_jobs(queued, terminal, live):
+        # A queued job can start while the page is built: list its public id once.
+        public_id = (_RUN_ALIAS.get(row["id"]) or _job_id(row["id"])) if is_run else row["id"]
+        if public_id in seen:
+            continue
+        seen.add(public_id)
         if after:
             if row["id"] == (after_run if is_run else after):
                 after = None
@@ -1174,12 +1179,6 @@ async def list_fine_tuning_jobs(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     await asyncio.to_thread(_load_aliases)
-    queued, terminal = [], []
-    for entry in reversed(_ALIASES.values()):
-        if _own_alias(entry.alias) is not None:
-            group = queued if entry.status in ("queued", "starting") else terminal
-            group.append(_for_caller(_queued_job(entry), via_api_key))
-
     after_run = await _resolve(after) if after else None
     status = await _current_status(current_subject, via_api_key)
     live_id = _status_field(status, "job_id") if status is not None else None
@@ -1192,6 +1191,12 @@ async def list_fine_tuning_jobs(
                 if run_id == after_run:
                     after = job["id"]
 
+    # After the awaits, so a job that started meanwhile is listed as its run.
+    queued, terminal = [], []
+    for entry in reversed(_ALIASES.values()):
+        if _own_alias(entry.alias) is not None:
+            group = queued if entry.status in ("queued", "starting") else terminal
+            group.append(_for_caller(_queued_job(entry), via_api_key))
     return await asyncio.to_thread(
         _list_job_page, queued, terminal, live, after, after_run, limit, via_api_key
     )

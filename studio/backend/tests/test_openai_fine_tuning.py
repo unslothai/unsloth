@@ -1784,3 +1784,25 @@ def test_a_cancelled_queued_job_is_still_listed_after_a_newer_job_starts(
     assert [(job.id, job.status) for job in before.data] == [(old.id, "cancelled")]
     assert retrieved.status == "cancelled"
     assert after == [newer.id, old.id]
+
+
+def test_a_job_that_starts_during_a_list_request_is_listed_once(queue, monkeypatch):
+    client, _calls, live, gpu = queue
+    status_read = training_routes.get_training_status
+
+    async def start_mid_request(current_subject, via_api_key):
+        if openai_fine_tuning._QUEUE:
+            gpu["busy"] = False
+            await openai_fine_tuning._drain_once()
+        return await status_read(current_subject = current_subject, via_api_key = via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "get_training_status", start_mid_request)
+        page = await client.fine_tuning.jobs.list(limit = 1)
+        return job, page
+
+    job, page = _run(flow())
+    assert [(j.id, j.status) for j in page.data] == [(job.id, "validating_files")]
+    assert page.has_more is False
