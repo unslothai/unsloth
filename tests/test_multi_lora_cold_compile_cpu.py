@@ -105,7 +105,6 @@ def test_cold_fullgraph_does_not_run_grouped_probes(monkeypatch, dtype, probe):
             for A, B in zip(adapter.lora_A, adapter.lora_B):
                 A.fill_(0.01)
                 B.fill_(0.02)
-    # A fresh batch, exactly as training sets it: nothing in forward may sync on its routing.
     batch = ml.set_multi_lora_batch(experts, torch.tensor([0, 1, 0, 1]))
     assert all(adapter.batch is batch for adapter in experts.adapters.values())
     hidden = torch.full((4, 8), 0.1, dtype = dtype, requires_grad = True)
