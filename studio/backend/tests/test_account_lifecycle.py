@@ -1219,3 +1219,15 @@ def test_old_name_is_free_after_rename_and_shares_nothing(matrix):
         == 401
     )
     assert login(client, "alice", fresh["setup_code"]).status_code == 200
+
+
+def test_a_key_minted_under_the_old_name_after_rename_binds_the_renamed_account(matrix):
+    # Research runs persist the owner's username and mint a workflow key per model call.
+    client, _, _ = matrix
+    account_id = storage.get_account("alice").account_id
+    assert rename(client, "alice", "alicia").status_code == 200
+    token, row = storage.create_api_key(
+        username = "alice", name = "workflow", internal = True, account_id = account_id
+    )
+    assert row["username"] == "alicia"
+    assert storage.validate_api_key(token) == "alicia"

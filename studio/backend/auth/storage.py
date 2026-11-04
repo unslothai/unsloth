@@ -1821,6 +1821,13 @@ def create_api_key(
 
     conn = get_connection()
     try:
+        if account_id is not None:
+            # A long-lived caller (a research run) may hold a name from before a rename.
+            row = conn.execute(
+                "SELECT username FROM auth_user WHERE account_id = ?", (account_id,)
+            ).fetchone()
+            if row is not None:
+                username = row["username"]
         if expect_gen is not None:
             conn.execute("BEGIN IMMEDIATE")
             if _current_generation(conn, username) != expect_gen:
