@@ -4,6 +4,7 @@
 import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AudioApiError, runAudio } from "../api";
+import { reportAudioFailure } from "../audio-failure-actions";
 import { selectionExpired, sourceRefOf } from "../audio-run-request";
 import type { AudioSourceInputHandle } from "../components/audio-source-input";
 import type { GenerateBlocker } from "../pages/tts-workspace";
@@ -243,6 +244,7 @@ export function useSeparateGeneration({
     } catch (error) {
       if (!controller.signal.aborted) {
         updateGenerationPhase("finishing");
+        reportAudioFailure(error);
         const expired =
           error instanceof AudioApiError &&
           error.status === 404 &&

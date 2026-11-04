@@ -56,6 +56,7 @@ def test_start_forwards_the_config_as_sent_and_acknowledges_nothing(monkeypatch,
         "job_id": "job-7",
         "status": "queued",
         "message": "Queued",
+        "config": None,
         "start_request_id": sent_id,
     }
     assert "x-unsloth-hf-token" not in studio.state.calls[0][2]
@@ -79,6 +80,9 @@ def test_a_refused_start_is_acknowledged(monkeypatch, answer):
 
 
 def test_validate_only_starts_nothing(monkeypatch):
+    monkeypatch.setattr(
+        "utils.models.model_config.detect_audio_type_checked", lambda *a, **k: (None, True)
+    )
     result, studio = _start(monkeypatch, {"config": CONFIG, "validate_only": True})
     assert result["structuredContent"]["status"] == "valid"
     assert result["structuredContent"]["job_id"] is None
@@ -91,6 +95,7 @@ def test_kind_routes_to_the_matching_start_route(monkeypatch):
         "job_id": "diff-1",
         "status": "queued",
         "message": None,
+        "config": None,
         "start_request_id": None,
     }
     assert "/srv" not in json.dumps(result)

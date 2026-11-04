@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, expect, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
@@ -21,6 +22,7 @@ BASE_URL = os.environ.get("STUDIO_E2E_URL", "http://127.0.0.1:8000").rstrip("/")
 OWNER_PASSWORD = os.environ.get("STUDIO_E2E_OWNER_PASSWORD")
 ENGINE = os.environ.get("PW_ENGINE", "chromium")
 STEP_TIMEOUT_MS = 30_000
+ART_DIR = os.environ.get("PW_ART_DIR")
 
 
 def api(
@@ -46,8 +48,60 @@ def api(
             return error.code, {}
 
 
+def open_login(page: Page) -> None:
+    """After a log-out the open chat page's requests start failing with 401 and the app sends itself to
+    /login (redirectToAuth), which can abort this navigation with ERR_ABORTED. Retry that abort once.
+
+    On CI this navigation has also timed out once in a while after the server answered /login: one of
+    the page's requests never finished, so "load" never fired. Record which requests were still open,
+    then retry once. A second abort or timeout is a real failure."""
+    url = f"{BASE_URL}/login"
+    for attempt in (1, 2):
+        pending: dict = {}
+        on_request = lambda request: pending.__setitem__(request, request.url)
+        on_done = lambda request: pending.pop(request, None)
+        page.on("request", on_request)
+        page.on("requestfinished", on_done)
+        page.on("requestfailed", on_done)
+        try:
+            page.goto(url)
+            return
+        except PlaywrightTimeoutError:
+            if attempt == 2:
+                raise
+            record_stalled_login(page, sorted(pending.values()))
+        except PlaywrightError as error:
+            if "ERR_ABORTED" not in str(error) or attempt == 2:
+                raise
+            page.wait_for_load_state()
+        finally:
+            page.remove_listener("request", on_request)
+            page.remove_listener("requestfinished", on_done)
+            page.remove_listener("requestfailed", on_done)
+
+
+def record_stalled_login(page: Page, unfinished: list[str]) -> None:
+    try:
+        ready_state = page.evaluate("() => document.readyState")
+    except PlaywrightError as error:
+        ready_state = f"unreadable: {error}"
+    state = {"url": page.url, "ready_state": ready_state, "unfinished_requests": unfinished}
+    print(
+        f"WARN: /login did not fire load in {STEP_TIMEOUT_MS} ms, retrying once: {json.dumps(state)}"
+    )
+    if not ART_DIR:
+        return
+    os.makedirs(ART_DIR, exist_ok = True)
+    with open(os.path.join(ART_DIR, "login-load-timeout.json"), "w", encoding = "utf-8") as handle:
+        json.dump(state, handle, indent = 2)
+    try:
+        page.screenshot(path = os.path.join(ART_DIR, "login-load-timeout.png"), timeout = 10_000)
+    except PlaywrightError:
+        pass
+
+
 def login(page: Page, username: str, password: str) -> None:
-    page.goto(f"{BASE_URL}/login")
+    open_login(page)
     _, status = api("GET", "/api/auth/status")
     username_field = page.get_by_role("textbox", name = "Username", exact = True)
     if status.get("login_mode") == "multi":
@@ -116,7 +170,7 @@ def run(page: Page, context) -> None:
         assert after.get("login_mode") == "multi", after
 
         log_out(page)
-        page.goto(f"{BASE_URL}/login")
+        open_login(page)
         second_tab = context.new_page()
         second_tab.goto(f"{BASE_URL}/login")
         expect(second_tab.locator("#username")).to_be_visible(timeout = STEP_TIMEOUT_MS)

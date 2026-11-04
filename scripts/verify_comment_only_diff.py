@@ -9,30 +9,7 @@
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU Lesser General Public License for more details.
 
-"""Deterministic comment / docstring-only verifier.
-
-Compares a list of changed files between two git refs and reports whether
-each diff is strictly comments / docstrings (Python) or comments
-(YAML / GitHub Actions). Useful for gating a "comment trim" /
-"docstring refactor" PR against accidental code drift.
-
-Per .py file: parse both revs into AST, strip module / class / function
-docstrings, then compare ast.unparse output. Pure Python comments are
-discarded by the parser by construction, so any post-strip diff is real
-code. Per .yml file: yaml.safe_load both sides and compare the parsed
-Python object; if scalar values differ, also strip shell comments inside
-``run: |`` block bodies before comparing. Exit code 0 = all OK, 1 = at
-least one file has a real (non-comment) diff or an error.
-
-Usage:
-    python scripts/verify_comment_only_diff.py [--base REF] [--head REF] path ...
-
-Defaults: --base origin/main, --head HEAD. Paths are repo-relative.
-
-Example:
-    git diff --name-only origin/main..HEAD \\
-      | xargs python scripts/verify_comment_only_diff.py --base origin/main
-"""
+"""Verifies a git diff changes only comments/docstrings (AST compare for .py, YAML compare for .yml)."""
 
 from __future__ import annotations
 

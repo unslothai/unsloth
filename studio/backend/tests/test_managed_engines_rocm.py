@@ -99,19 +99,19 @@ def test_rocm_engine_stays_isolated_even_when_studio_matches_its_lock(rocm, monk
     assert not plan["shared"] and not plan["provided"]
 
 
-def test_windows_waits_for_hardware_detection_before_choosing_the_profile(monkeypatch):
+def test_windows_uses_installed_build_metadata_before_hardware_detection(monkeypatch):
     # IS_ROCM is False until detection settles; Windows has no KFD to fall back on.
+    from core import _torchao_stub
     from utils.hardware import hardware
 
     monkeypatch.setattr(install.platform, "system", lambda: "Windows")
     monkeypatch.setattr(hardware, "IS_ROCM", False)
     monkeypatch.setattr(hardware, "DETECTION_COMPLETE", threading.Event())
-
-    def detect(*_a, **_k):
-        hardware.IS_ROCM = True
-        hardware.DETECTION_COMPLETE.set()
-
-    monkeypatch.setattr(hardware, "ensure_hardware_detected", detect)
+    monkeypatch.delitem(install.sys.modules, "torch", raising = False)
+    monkeypatch.setattr(_torchao_stub, "_installed_torch_is_rocm", lambda: True)
+    monkeypatch.setattr(
+        hardware, "ensure_hardware_detected", lambda: pytest.fail("profile imported torch")
+    )
     assert install.gpu_platform() == "rocm"
     assert install.profile("vllm")["lock"] == "vllm-linux-rocm723"
 
@@ -282,6 +282,18 @@ def test_sdk_rocm_torch_still_maps_each_gpu_to_its_target(monkeypatch):
     assert install._rocm_gpu_arches() == {0: "gfx1100", 1: "gfx1030"}
 
 
+def test_cold_status_does_not_judge_an_overridden_gpu_by_its_kernel_target(amd_host, monkeypatch):
+    amd_host.targets["value"] = ["gfx1102"]
+    monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
+    monkeypatch.setattr(install, "_rocm_arches", None)
+    monkeypatch.delitem(install.sys.modules, "torch", raising = False)
+    assert install.support_reason("vllm", wait = False) == "Checking for a supported AMD GPU."
+    monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION")
+    assert install.support_reason("vllm", wait = False).startswith("Requires an AMD Instinct")
+    amd_host.targets["value"] = None
+    assert install.support_reason("vllm", wait = False) == "Checking for a supported AMD GPU."
+
+
 def test_sglang_on_amd_points_to_vllm(amd_host):
     assert install.support_reason("sglang", wait = False) == (
         "SGLang requires an NVIDIA GPU. Use vLLM on AMD GPUs."
@@ -298,7 +310,9 @@ def test_status_lists_the_precisions_the_build_loads(amd_host, monkeypatch, tmp_
     assert "int4" in install.status("vllm")["precisions"]
 
 
-def test_engine_port_stays_below_the_limit_when_the_os_offers_high_ports(monkeypatch):
+def test_engine_port_stays_below_the_limit_when_the_os_offers_high_ports(
+    monkeypatch, real_engine_free_port
+):
     # Windows ephemeral ports start at 49152; past 55535 every OS-chosen port was refused.
     taken = {30001}
 

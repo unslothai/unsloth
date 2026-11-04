@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Harness for the #8483 deep research freeze, driven by tests/studio/playwright_research_freeze.py.
-// Real activity panel and report renderer against the real store, so the measured main-thread cost
-// of a streaming run is the app's, not a mock's.
-// Same shape as smoke-ansi.html/smoke-ansi-main.tsx: a vite entry, no backend, no auth.
+// Harness for tests/studio/playwright_research_freeze.py; real panel and store, no backend.
 
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
 import { ResearchActivityPanel } from "@/features/chat";
@@ -53,9 +50,7 @@ function push(
   runPatch?: Partial<ResearchRun>,
 ): void {
   seq += 1;
-  // Always a fresh run object, as research-api.ts did for deltas before #8483. Held constant on
-  // purpose: this harness measures the panel and report renderer, not run identity, which
-  // tests/research-run-identity.test.ts covers against the real followResearchRun.
+  // Fresh run object each time on purpose; run identity is covered by research-run-identity.test.ts.
   const run: ResearchRun = {
     ...currentRun,
     ...runPatch,
@@ -74,16 +69,13 @@ function push(
 }
 
 function Harness(): ReactElement {
-  // Mounted by seed(), not at start: the panel's scroll hook is a useLayoutEffect keyed on runId,
-  // so rendering with no session takes the loading branch, observes no viewport, and never re-runs.
-  // The app only opens the panel for a run it already holds; the harness must do the same.
+  // Mounted by seed(): the scroll hook keys on runId and never re-runs from the loading branch.
   const [panelMounted, setPanelMounted] = useState(false);
   const [report, setReport] = useState<string | null>(null);
   const [clicks, setClicks] = useState(0);
 
   useEffect(() => {
     const api = {
-      /** Seed a run the panel can render. */
       seed(): void {
         currentRun = baseRun();
         seq = 0;
@@ -91,7 +83,6 @@ function Harness(): ReactElement {
         push("run.started", {}, { status: "running" });
         setPanelMounted(true);
       },
-      /** One reasoning delta, the event the synthesis phase emits ~12x a second. */
       delta(text: string, phase = "synthesis"): void {
         push("reasoning.updated", {
           callId: "call-1",
@@ -100,11 +91,9 @@ function Harness(): ReactElement {
           reasoningDelta: text,
         });
       },
-      /** One report-progress delta. */
       reportDelta(length: number): void {
         push("report.updated", { attempt: 0, length, delta: 32 });
       },
-      /** A search step plus its sources: what grows the activity list row by row. */
       step(position: number): void {
         push("step.started", {
           attempt: 0,
@@ -128,7 +117,6 @@ function Harness(): ReactElement {
           sourceCount: 4,
         });
       },
-      /** A plan awaiting approval, which mounts PlanReview's modal Dialog. */
       awaitApproval(): void {
         push(
           "plan.ready",
@@ -145,25 +133,21 @@ function Harness(): ReactElement {
           },
         );
       },
-      /** Approve it: the status change unmounts PlanReview while it is open. */
       approve(): void {
         push("run.approved", {}, { status: "queued" });
       },
-      /** Unmount the whole panel, as closing the research pane does. */
       closePanel(): void {
         setPanelMounted(false);
       },
       openPanel(): void {
         setPanelMounted(true);
       },
-      /** Publish a finished report through the real renderer. */
       publishReport(markdown: string): void {
         setReport(markdown);
       },
       clearReport(): void {
         setReport(null);
       },
-      /** What the store holds, for assertions about activity count and status. */
       state(): { activities: number; status: string | undefined } {
         const session = useResearchRunStore.getState().sessions[RUN_ID];
         return {
@@ -189,7 +173,7 @@ function Harness(): ReactElement {
         ) : null}
       </div>
       <div style={{ flex: 1, overflow: "auto", padding: "12px" }}>
-        {/* The click probe: a stranded body pointer-events:none stops this counting up. */}
+        {/* A stranded body pointer-events:none stops this counting up. */}
         <button
           type="button"
           data-smoke="click-probe"

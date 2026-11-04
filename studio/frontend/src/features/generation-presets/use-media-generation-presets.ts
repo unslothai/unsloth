@@ -65,11 +65,9 @@ export function useMediaGenerationPresets<Params extends object>({
   const [hydrationSource, setHydrationSource] = useState<
     "pending" | "fresh" | "saved" | "claiming" | "claimed" | "unreadable"
   >("pending");
-  // Settled, not readable: an unreadable store still answers "stored settings do not own the form",
-  // which is what the load-state controls wait for. Only the preset UI itself needs a readable store.
+  // Settled, not readable: load-state controls only need an answer, not a readable store.
   const hydrated = hydrationSource !== "pending";
-  // Whether the store supplied the recipe. Model defaults must not seed over it. This is the
-  // opposite of the rule for load options, which the resident build owns (features/resident-load).
+  // Model defaults must not seed over a stored recipe.
   const storedRecipe = hydrationSource === "saved";
   const presetsReady =
     hydrationSource === "fresh" ||
@@ -85,8 +83,7 @@ export function useMediaGenerationPresets<Params extends object>({
   const inflightWriteRef = useRef<Promise<unknown>>(Promise.resolve());
   const baselineParamsRef = useRef(defaultParams);
   const activePresetRef = useRef(activePreset);
-  // Bumped by every action that takes over the form, so a write that resolves late can still
-  // update the list without moving a selection the user made while it was in flight.
+  // Bumped by every form takeover so late writes do not move a newer selection.
   const formClaim = useRef(0);
   const committedRecipeClaim = useRef(0);
   const defaultParamsRef = useRef(defaultParams);
@@ -115,8 +112,6 @@ export function useMediaGenerationPresets<Params extends object>({
     [customPresets, defaultParams],
   );
 
-  // `custom` for a store that holds named presets but no recipe of its own: the library is still
-  // the user's, and only the recipe falls back to the model's defaults.
   const hydrateLocalSettings = useCallback(
     (
       source: "fresh" | "unreadable",
@@ -143,8 +138,7 @@ export function useMediaGenerationPresets<Params extends object>({
       const custom = settings.customPresets ?? [];
       deferredFreshSettingsRef.current = false;
       setCustomPresets(custom);
-      // A model pick made while the request was in flight is newer than storage. Keep its form
-      // values, but still hydrate the named presets so the user's library remains available.
+      // A model pick made mid-request is newer than storage: keep its values, still load presets.
       if (formClaim.current !== 0) {
         const committed = committedRecipeClaim.current === formClaim.current;
         deferredSavedSettingsRef.current = committed ? null : settings;
@@ -159,7 +153,6 @@ export function useMediaGenerationPresets<Params extends object>({
       const selected = available.has(settings.activePreset)
         ? settings.activePreset
         : DEFAULT_PRESET_NAME;
-      // The baseline owns model defaults applied before hydration; the resident prop can be stale.
       const currentDefaultParams = baselineParamsRef.current;
       const definition = custom.find((preset) => preset.name === selected) ?? {
         name: DEFAULT_PRESET_NAME,
@@ -167,9 +160,7 @@ export function useMediaGenerationPresets<Params extends object>({
       };
       baselineParamsRef.current = definition.params;
       setActivePreset(definition.name);
-      // Unconditional: comparing against the mount-time value cannot tell a user edit from a
-      // model-driven one, and guessing wrong autosaved a resident model's defaults over the
-      // stored recipe. Ordering settles it -- the store answers, then defaults fill the rest.
+      // Unconditional: the store answers first, then model defaults fill the rest.
       applyParamsRef.current(settings.currentParams);
       setHydrationSource("saved");
     },
@@ -193,8 +184,7 @@ export function useMediaGenerationPresets<Params extends object>({
         if (cancelled) {
           return;
         }
-        // Only the read failed. Settle on local defaults so the controls waiting on hydration
-        // still work, but never write back over a store this session could not read.
+        // Never write back over a store this session could not read.
         hydrateLocalSettings("unreadable");
         toast.error(`Could not load ${kind} presets`);
       });
@@ -203,8 +193,7 @@ export function useMediaGenerationPresets<Params extends object>({
     };
   }, [hydrateLocalSettings, hydrateSavedSettings, kind]);
 
-  // Explicit model picks own the form over a settings request that was already in flight. A load
-  // that fails gives that ownership back, provided no newer form action superseded the pick.
+  // A failed load gives ownership back unless a newer form action superseded the pick.
   const claimRecipe = useCallback(() => {
     const previousClaim = formClaim.current;
     const previousCommittedClaim = committedRecipeClaim.current;
@@ -253,9 +242,7 @@ export function useMediaGenerationPresets<Params extends object>({
     };
   }, [hydrateSavedSettings]);
 
-  // How many actions have taken the form so far. A pick records it and compares later: a different
-  // value means something newer owns the form, so the pick's defaults must not land on top of it
-  // and its rollback is not the one to restore. Read per pick, so each baselines on itself.
+  // A pick compares this later: a changed value means something newer owns the form.
   const formClaimId = useCallback(() => formClaim.current, []);
 
   const settings = useMemo<MediaGenerationPresetState<Params>>(
@@ -269,9 +256,7 @@ export function useMediaGenerationPresets<Params extends object>({
     latestSettingsRef.current = settings;
   }, [settings]);
 
-  // One state write at a time. Two in flight and the store keeps whichever the backend saw LAST,
-  // so an older snapshot could win and the newest recipe come back changed on the next read.
-  // Same chain the chat settings path keeps, for the same reason.
+  // One write at a time, or an older snapshot could land last and win.
   const queueWrite = useCallback((write: () => Promise<unknown>) => {
     inflightWriteRef.current = inflightWriteRef.current
       .catch(() => undefined)
@@ -364,8 +349,7 @@ export function useMediaGenerationPresets<Params extends object>({
       try {
         await upsertMediaGenerationPreset(kind, preset);
       } catch (error) {
-        // A refused write took nothing over, so it must not keep the claim it made: a pending
-        // model pick would go on reading the form as claimed by something newer than itself.
+        // A refused write took nothing over, so release its claim.
         if (formClaim.current === claim) formClaim.current = previousClaim;
         toast.error(refusalMessage(error, `Could not save ${kind} preset`));
         return null;
@@ -384,9 +368,7 @@ export function useMediaGenerationPresets<Params extends object>({
     [customPresets, kind, presetsReady],
   );
 
-  // A delete always leaves Default selected: the preset is gone whoever owns the form, and naming
-  // it would point the control at a definition that no longer exists. The form VALUES follow only
-  // when this delete still owns the form; an edit made while the request was in flight owns it.
+  // Always select Default after delete; form values follow only if this delete still owns it.
   const restoreDefaultAfterDelete = useCallback(
     (paramsBeforeDelete: Params, ownsForm: boolean) => {
       const formUnchanged =
@@ -415,7 +397,6 @@ export function useMediaGenerationPresets<Params extends object>({
     try {
       await deleteMediaGenerationPreset(kind, deletedName);
     } catch (error) {
-      // Same as a refused save: a delete that did not happen has not taken the form.
       if (formClaim.current === claim) formClaim.current = previousClaim;
       toast.error(refusalMessage(error, `Could not delete ${kind} preset`));
       return false;

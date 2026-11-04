@@ -78,7 +78,6 @@ def test_the_native_catalog_carries_per_model_capabilities(monkeypatch):
     by_id = {m["id"]: m for m in models}
     assert by_id["qwen3:8b"]["capabilities"] == ["completion", "tools", "thinking"]
     assert by_id["llama3.2:3b"]["capabilities"] == ["completion", "tools"]
-    # A row that says nothing must not read as "explicitly not thinking".
     assert "capabilities" not in by_id["vicuna:7b"]
 
 
@@ -114,7 +113,6 @@ def test_a_non_ollama_provider_never_queries_tags(monkeypatch):
     [
         (["thinking"], ["thinking"]),
         ([], []),
-        # Foreign shapes are dropped, never surfaced as a broken capability list.
         ("thinking", None),
         ({"thinking": True}, None),
         (["thinking", 3, "", None], ["thinking"]),

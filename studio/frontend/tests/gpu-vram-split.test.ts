@@ -39,7 +39,7 @@ test("a shared pool counts once even when several devices report it", () => {
       memory_total_gb: 12.15,
       shared_memory: true,
       shared_memory_host_backed_gb: 10.15,
-    }, // same host pool, separate reserved heaps
+    },
   ];
   assert.deepEqual(gpuMemoryTotalsGb(devices), {
     dedicated: 12,
@@ -107,7 +107,6 @@ test("all-dedicated systems report zero shared", () => {
 });
 
 test("float error does not leak into the halves", () => {
-  // 2dp inputs; the derived halves must stay at the same precision.
   const devices = [{ memory_total_gb: 179.06 }, { memory_total_gb: 179.06 }];
   assert.equal(gpuMemoryTotalsGb(devices).dedicated, 358.12);
 });

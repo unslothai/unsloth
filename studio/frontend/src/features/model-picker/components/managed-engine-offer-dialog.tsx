@@ -124,6 +124,7 @@ export function ManagedEngineOfferDialog() {
           <AlertDialogCancel variant="ghost">Cancel</AlertDialogCancel>
           {ready.map((engine) => (
             <AlertDialogAction
+              variant="dark"
               key={engine.engine}
               onClick={() => resolve(engine.engine)}
             >

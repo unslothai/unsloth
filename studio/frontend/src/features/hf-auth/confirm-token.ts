@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// These stores are used outside React and are not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth/session-events";
 // eslint-disable-next-line no-restricted-imports
@@ -20,16 +19,12 @@ interface PrepareHfTokenOptions {
   allowAnonymous?: boolean;
 }
 
-// A caller can retain the pre-dialog payload while the shared store is cleared. Remember that
-// one-session choice so a follow-up /load does not prompt again after an anonymous /validate.
+// Remember the anonymous choice so a later /load does not prompt again.
 const anonymousForSession = new Set<string>();
 
-// One load prepares the same token three times (pollers, validateModel, loadModel), so a
-// burst collapses to one call rather than threading a prepared credential through every
-// signature. Short and positive-only: "invalid" is never cached, so the dialog still
-// appears and an expiring token is re-checked once the window lapses.
+// One load validates the same token three times; cache positive results only, briefly.
 const VALIDATION_REUSE_MS = 15_000;
-// Bumped on every clear, so an in-flight request cannot repopulate the cache afterwards.
+// Bumped on every clear, so an in-flight request cannot repopulate the cache.
 let cacheGeneration = 0;
 const recentlyValid = new Map<string, number>();
 const inFlight = new Map<string, Promise<HfTokenValidationResult>>();
@@ -54,22 +49,17 @@ function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
   if (pending) {
     return pending;
   }
-  // Clearing cannot cancel an in-flight request, so a logout mid-validation would have
-  // the late resolution write the raw token back, and expiry only runs on the next
-  // preparation. The generation makes a stale resolution non-cacheable.
   const generation = cacheGeneration;
   const request = validateHfToken(token)
     .then((result) => {
-      // Only a definitive pass is reusable: "unavailable" says nothing, and reusing it
-      // would suppress the dialog for a token that is genuinely bad.
+      // Only a definitive pass is reusable; "unavailable" would suppress the dialog wrongly.
       if (result.status === "valid" && generation === cacheGeneration) {
         recentlyValid.set(token, Date.now());
       }
       return result;
     })
     .finally(() => {
-      // Only if still ours: a forget-then-prepare can put a live replacement in this
-      // slot, and an unconditional delete would evict it.
+      // Only if still ours: a replacement may now occupy this slot.
       if (inFlight.get(token) === request) {
         inFlight.delete(token);
       }
@@ -78,7 +68,6 @@ function validateOncePerBurst(token: string): Promise<HfTokenValidationResult> {
   return request;
 }
 
-// Called with no argument the whole cache goes; with one, just that credential.
 export function forgetHfTokenValidation(token?: string): void {
   cacheGeneration += 1;
   if (token == null) {
@@ -90,28 +79,24 @@ export function forgetHfTokenValidation(token?: string): void {
   inFlight.delete(token);
 }
 
-// A logout must not leave a bearer token in module memory, the same reason
-// hf-token-store.ts resets on this event. Replacing it drops the superseded key too.
+// A logout must not leave a bearer token in module memory.
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     forgetHfTokenValidation();
-    // anonymousForSession is deliberately left alone: it predates this cache and records a
-    // user's choice rather than a Hub verdict.
+    // anonymousForSession records a user choice, not a Hub verdict, so it is kept.
   });
 }
 
 let lastKnownStoredToken: string | null = null;
 let tokenChangeSubscribed = false;
 
-// Subscribed on first use, not at module scope: reading a barrel-imported value while
-// this module loads throws if the import cycle re-enters (module-scope-cycle-safety).
+// Subscribed lazily: module-scope reads throw if the import cycle re-enters.
 function ensureTokenChangeSubscription(): void {
   if (tokenChangeSubscribed || typeof useHfTokenStore.subscribe !== "function") {
     return;
   }
   tokenChangeSubscribed = true;
-  // Seeded, not left null: zustand does not fire subscribe on install, so replacing an
-  // already-stored token would read as initialization and keep its window.
+  // Seeded: zustand does not fire subscribe on install.
   lastKnownStoredToken = useHfTokenStore.getState().token?.trim() ?? "";
   useHfTokenStore.subscribe((state) => {
     const next = state.token?.trim() ?? "";
@@ -140,11 +125,10 @@ export async function prepareHfTokenForUse(
   try {
     validation = await validateOncePerBurst(normalized);
   } catch {
-    // Validation is advisory. Let the real operation retain its own error.
     return { proceed: true, token: normalized };
   }
   if (validation.status !== "invalid") {
-    // A connectivity failure or rate limit cannot prove a token is bad; let the real operation run.
+    // A connectivity failure or rate limit cannot prove a token is bad.
     return { proceed: true, token: normalized };
   }
 

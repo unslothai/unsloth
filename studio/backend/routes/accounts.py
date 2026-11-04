@@ -3,15 +3,16 @@
 
 """Owner-managed account lifecycle. Private roots are retired, never erased."""
 
+import json
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from auth import policy, storage
-from auth.authentication import get_current_subject
+from auth.authentication import authenticated_via_api_key, get_current_subject
 from models.auth import (
     AccountActiveRequest,
     AccountListResponse,
@@ -19,14 +20,29 @@ from models.auth import (
     AccountResponse,
     AccountSetupResponse,
     CreateAccountRequest,
+    OwnerLoginAliasRequest,
 )
 from hub.services.models import account_access
 from state import active_generations
-from utils.account_context import AccountContext, run_as
+from storage import sqlite_gate
+from utils.account_context import OWNER, AccountContext, run_as
+from utils.personalization_settings import PERSONALIZATION_SETTING_KEY
 from utils.paths import storage_roots
 
 
-router = APIRouter(dependencies = [Depends(get_current_subject), Depends(policy.require_owner)])
+def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
+    # A setup code signs in as the account, so an API key or keyless caller must not mint one.
+    if via_api_key:
+        raise HTTPException(status_code = 403, detail = "Account management requires a UI session.")
+
+
+router = APIRouter(
+    dependencies = [
+        Depends(get_current_subject),
+        Depends(policy.require_owner),
+        Depends(_require_ui_session),
+    ]
+)
 
 
 @contextmanager
@@ -51,8 +67,7 @@ def retire_account_roots(account: AccountContext):
     account_access.retire_resident_shares(account.account_id)
     from core.inference.external_provider import retire_account_clients
 
-    # Its provider clients hold a cookie jar and idle sockets, and the cache they sit in is
-    # keyed by account, so nothing else would ever drop them.
+    # Cache is keyed by account, so nothing else would drop these clients.
     retire_account_clients(account.account_id)
     from core.inference.mcp_client import close_mcp_sessions, invalidate_tool_cache
     from core.training.account_jobs import retire_account_jobs
@@ -83,6 +98,10 @@ def retire_account_roots(account: AccountContext):
     from storage.studio_db import close_wal_keeper_for
 
     close_wal_keeper_for(run_as(account, storage_roots.workspace_root) / "studio.db")
+    from storage import rag_db
+
+    # Built from the workspace like studio.db: rag_db_path() refuses an escaping link, which must not block deletion.
+    rag_db.close_wal_keeper_for(run_as(account, storage_roots.workspace_root) / "rag" / "rag.db")
     from core.inference import file_history
 
     file_history.close_store(run_as(account, storage_roots.account_path, "file_history"))
@@ -127,9 +146,44 @@ def retire_account_roots(account: AccountContext):
     return restore
 
 
+def _profile_of(account: dict) -> dict:
+    """Read-only: get_connection would create and migrate a studio.db per listed account."""
+    context = (
+        OWNER
+        if account["role"] == "owner"
+        else AccountContext(account["account_id"], account["username"], account["role"])
+    )
+    try:
+        path = run_as(context, storage_roots.studio_db_path)
+        if not path.is_file():
+            return {}
+        with closing(sqlite_gate.connect(f"{path.resolve().as_uri()}?mode=ro", uri = True)) as conn:
+            row = conn.execute(
+                "SELECT value_json FROM app_settings WHERE key = ?", (PERSONALIZATION_SETTING_KEY,)
+            ).fetchone()
+        profile = json.loads(row[0]).get("profile") if row else None
+    except Exception:  # noqa: BLE001 - a missing or unreadable profile just shows the username
+        return {}
+    if not isinstance(profile, dict):
+        return {}
+    name, avatar = profile.get("displayName"), profile.get("avatarDataUrl")
+    return {
+        "display_name": name.strip() if isinstance(name, str) and name.strip() else None,
+        "avatar_url": avatar if isinstance(avatar, str) and avatar else None,
+    }
+
+
 @router.get("", response_model = AccountListResponse)
 def list_accounts():
-    return {"accounts": storage.list_accounts()}
+    return {
+        "accounts": [{**account, **_profile_of(account)} for account in storage.list_accounts()]
+    }
+
+
+@router.put("/owner/login-alias", response_model = OwnerLoginAliasRequest)
+def set_owner_login_alias(payload: OwnerLoginAliasRequest):
+    with _account_errors():
+        return {"login_alias": storage.set_owner_login_alias(payload.login_alias)}
 
 
 @router.post("", response_model = AccountSetupResponse, status_code = status.HTTP_201_CREATED)
@@ -157,11 +211,14 @@ def set_account_active(account_id: str, payload: AccountActiveRequest):
             restore_account_clients(account_id)
             active_generations.lift_fence(account_id)
         else:
+            from core.scheduled_tasks.scheduler import cancel_account_runs
             from routes.inference import retire_account_loads
 
             # Fence first, so a request registering after the sweep is cancelled too.
             active_generations.fence(account_id)
             active_generations.cancel_all(account_id)
+            # A scheduled run still waiting for the model gate has not registered yet.
+            cancel_account_runs(account_id)
             retire_account_loads(account_id)
             account_access.retire_resident_shares(account_id)
         return result

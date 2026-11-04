@@ -9,16 +9,16 @@ import {
 import { BulbIcon } from "@/lib/bulb-icon";
 import { AiSpeechIcon } from "@/lib/hugeicons-derived";
 import { cn } from "@/lib/utils";
+import { WrenchIcon } from "@/lib/wrench-icon";
 import {
-  Chat01Icon,
+  Comment01Icon,
   CodeIcon,
+  FlimSlateIcon,
   GlobeIcon,
   ImageIcon,
   LayoutTable02Icon,
-  LockIcon,
   LockKeyIcon,
   ViewIcon,
-  Wrench01Icon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -31,13 +31,22 @@ const CAPABILITY_ICON: Record<
 > = {
   vision: ViewIcon,
   audio: AiSpeechIcon,
-  tools: Wrench01Icon,
+  tools: WrenchIcon,
   code: CodeIcon,
   embedding: LayoutTable02Icon,
   diffusion: ImageIcon,
   multilingual: GlobeIcon,
-  conversational: Chat01Icon,
+  conversational: Comment01Icon,
 };
+
+// Video gen shares the diffusion key, so it takes the sidebar's Video icon by label.
+function capabilityIcon(
+  key: Exclude<CapabilityKey, "reasoning">,
+  label: string,
+): IconSvgElement {
+  if (key === "diffusion" && label === "Video gen") return FlimSlateIcon;
+  return CAPABILITY_ICON[key];
+}
 
 const CAPABILITY_TONE: Record<CapabilityKey, string> = {
   vision:
@@ -116,7 +125,7 @@ export function AccessGlyphs({
     <>
       {isPrivate && (
         <AccessGlyph
-          icon={LockIcon}
+          icon={LockKeyIcon}
           label="Private"
           tooltip={tooltip}
           className="text-muted-foreground/70"
@@ -156,7 +165,7 @@ export function CapabilityPill({
         <BulbIcon className="size-3 shrink-0" />
       ) : (
         <HugeiconsIcon
-          icon={CAPABILITY_ICON[capability.key]}
+          icon={capabilityIcon(capability.key, capability.label)}
           strokeWidth={1.75}
           className="size-3"
         />

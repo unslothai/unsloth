@@ -9,7 +9,7 @@ import {
 } from "@/features/hub/download-manager";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import type { LocalDatasetInfo } from "./api";
+import type { LocalDatasetInfo, LocalModelInfo } from "./api";
 import {
   activeDownloadRepoKeys,
   dedupeSameSourceHubCacheRows,
@@ -75,6 +75,8 @@ type HubInventoryOptions = {
   kind?: HubInventoryKind;
   enabled?: boolean;
   includeLocal?: boolean;
+  /** Also list Studio's own fine-tunes and exports (the Hub's On Device list). */
+  includeUnslothModels?: boolean;
   includeUmbrellaFolders?: boolean;
 };
 
@@ -89,6 +91,12 @@ const DATASET_HUB_CACHE_SOURCES = [
 
 const LOCAL_MODEL_INVENTORY_SOURCE = [
   "localModels",
+] as const satisfies readonly DeviceInventorySource[];
+
+const EMPTY_UNSLOTH_ROWS: LocalModelInfo[] = [];
+
+const UNSLOTH_MODEL_INVENTORY_SOURCE = [
+  "unslothModels",
 ] as const satisfies readonly DeviceInventorySource[];
 
 const LOCAL_DATASET_INVENTORY_SOURCE = [
@@ -274,7 +282,6 @@ function liveDownloadInventoryRows(
           load_id: job.repoId,
           model_format: modelFormat,
           size_bytes: job.displayBytes,
-          // live jobs already use epoch milliseconds
           last_modified: job.startedAt,
           partial: true,
           partial_transport: null,
@@ -313,6 +320,16 @@ export function useHubInventory(
       enabled: enabled && !isDatasetMode && includeLocal,
     },
   );
+  const includeUnslothModels = options.includeUnslothModels ?? false;
+  // Best effort: a failed scan of Studio's outputs never holds back or fails the rest.
+  const unslothModelInventory = useDeviceInventorySources(
+    UNSLOTH_MODEL_INVENTORY_SOURCE,
+    {
+      hfToken,
+      enabled:
+        enabled && !isDatasetMode && includeLocal && includeUnslothModels,
+    },
+  );
   const localDatasetInventory = useDeviceInventorySources(
     LOCAL_DATASET_INVENTORY_SOURCE,
     {
@@ -329,6 +346,15 @@ export function useHubInventory(
   const refreshDatasetInventory = datasetInventory.refresh;
   const refreshLocalModelInventory = localModelInventory.refresh;
   const refreshLocalDatasetInventory = localDatasetInventory.refresh;
+  const refreshUnslothModelInventory = unslothModelInventory.refresh;
+  // Training and export finish elsewhere without bumping the inventory version, so each visit rescans.
+  const unslothModelsEnabled =
+    enabled && !isDatasetMode && includeLocal && includeUnslothModels;
+  useEffect(() => {
+    if (unslothModelsEnabled) {
+      refreshUnslothModelInventory().catch(() => undefined);
+    }
+  }, [unslothModelsEnabled, refreshUnslothModelInventory]);
   const refreshModelInventoryIfOlderThan = modelInventory.refreshIfOlderThan;
   const refreshDatasetInventoryIfOlderThan =
     datasetInventory.refreshIfOlderThan;
@@ -532,9 +558,17 @@ export function useHubInventory(
     [cachedDatasets, isDatasetMode, liveDownloadRows],
   );
 
+  const unslothModelRows = includeUnslothModels
+    ? unslothModelInventory.unslothModels.rows
+    : EMPTY_UNSLOTH_ROWS;
   const localRows = useMemo(
-    () => buildLocalInventoryRows(localModelsSource.rows),
-    [localModelsSource.rows],
+    () =>
+      buildLocalInventoryRows(
+        unslothModelRows.length > 0
+          ? [...localModelsSource.rows, ...unslothModelRows]
+          : localModelsSource.rows,
+      ),
+    [localModelsSource.rows, unslothModelRows],
   );
 
   const localDatasetRows = useMemo<LocalInventoryRow[]>(() => {
@@ -680,9 +714,14 @@ export function useHubInventory(
     await Promise.all([
       refreshModelInventory(),
       ...(includeLocal ? [refreshLocalModelInventory()] : []),
+      ...(includeLocal && includeUnslothModels
+        ? [refreshUnslothModelInventory().catch(() => undefined)]
+        : []),
     ]);
   }, [
     includeLocal,
+    includeUnslothModels,
+    refreshUnslothModelInventory,
     isDatasetMode,
     refreshDatasetInventory,
     refreshLocalDatasetInventory,

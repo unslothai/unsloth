@@ -1,16 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Deactivating the last managed account must not open the foreign-work fences.
-
-set_account_active() only signals a generation; it does not wait for it to unwind, and a
-wedged producer can hold its GPU reservation indefinitely. Dropping the ACTIVE count to one
-makes installation_is_multi_user() False while the deactivated account's chat generation and
-its supervisor task are both still live, so every fence keyed on the login mode opens:
-the owner tears the shared backend down underneath that generation, and an owner run reusing
-the same client-chosen run id is admitted into a slot the foreign supervisor task still owns.
-Both must key on account_scope() / installation_has_managed_accounts() instead.
-"""
+"""Key fences on account_scope(), since deactivating the last account drops the active count to one."""
 
 from __future__ import annotations
 
@@ -138,7 +129,6 @@ async def test_owner_run_cannot_take_a_deactivated_accounts_supervisor_slot(
     ):
         deactivatable["value"] = False
         started: list = []
-        # A live task under the bare id: start() returns without scheduling anything.
         supervisor = SimpleNamespace(
             _tasks = {"run-1": object()},
             start = lambda run_id, **identity: started.append(run_id),

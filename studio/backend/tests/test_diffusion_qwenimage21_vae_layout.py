@@ -41,7 +41,7 @@ def test_qwen_image_21_vae_goes_channels_last_when_the_fused_norms_install():
 def test_apply_speed_optims_layout_follows_the_fused_planner(monkeypatch, planned):
     vae, calls = _vae("AutoencoderKLQwenImage21")
     monkeypatch.setattr(ds_mod, "_fused_vae_planned", lambda pipe: planned)
-    monkeypatch.setattr(ds_mod, "_install_fused_vae", lambda pipe, logger: planned)
+    monkeypatch.setattr(ds_mod, "_install_fused_vae", lambda pipe, logger, encoder = True: planned)
     monkeypatch.setattr(ds_mod, "_enable_cudnn_benchmark", lambda logger: True)
     monkeypatch.setattr(ds_mod, "_compile_repeated_blocks", lambda *a, **k: False)
     monkeypatch.setattr(ds_mod, "compile_eligible", lambda *a, **k: False)

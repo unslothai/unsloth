@@ -4,38 +4,30 @@
 import { type RefObject, useEffect } from "react";
 
 /**
- * Swallow the outside click that dismisses a non-modal menu before it activates an adjacent
- * control. Capture on `document` precedes React and Radix; module state survives content unmount
- * until the owed click, cancel, blur, new gesture, or release grace. Pointer identity, keyboard
- * activation, and focus are tracked, and touch dismissal is re-raised after the swallowed click.
+ * Swallow the outside click that dismisses a non-modal menu before it activates another control.
+ * Capture on `document` precedes React and Radix; state survives content unmount until the click.
  */
 
-/** Menu and popper surfaces are selections, not dismissals. */
 const MENU_SURFACE =
   '[role="menu"],[role="menuitem"],[data-radix-popper-content-wrapper]';
 
-/** Shared state survives menu-content unmount during dismissal. */
+/** Module-level so it survives menu-content unmount during dismissal. */
 let armed = false;
 let graceTimer: number | undefined;
-/** Touch dismissal is deferred by Radix until the resulting click. */
+/** Radix defers touch dismissal until the resulting click. */
 let armedByTouch = false;
-/** Tracks whether the guarded pointer still owes a click. */
 let pointerIsDown = false;
-/** Only the armed pointer may end the guarded gesture. */
 let armedPointerId: number | undefined;
 /** Space activates on keyup; Enter activates on keydown. */
 let activationKeyIsDown = false;
 /** The pointer click was handled; a held Space keyup still owes one click. */
 let keyboardOnly = false;
-/** Used to undo focus taken by the swallowed press. */
 let armedPressTarget: Node | undefined;
 let focusBeforePress: Element | null = null;
 let armedTrigger: HTMLElement | null = null;
 
-/** Maximum post-release click delay. */
 const CLICK_GRACE_MS = 500;
 
-/** Keys that activate on keyup. */
 const isActivationKey = (event: KeyboardEvent): boolean =>
   event.key === " " || event.key === "Spacebar";
 
@@ -79,7 +71,6 @@ const disarm = (): void => {
   window.removeEventListener("blur", disarmAndReleaseFocus);
 };
 
-/** The release or cancel of a pointer that is not the one the guard armed for. */
 const isAnotherPointer = (event: PointerEvent): boolean =>
   armedPointerId !== undefined && event.pointerId !== armedPointerId;
 
@@ -99,12 +90,11 @@ function startGrace(event: PointerEvent): void {
   graceTimer = window.setTimeout(disarmAndReleaseFocus, CLICK_GRACE_MS);
 }
 
-/** Anything the user types into. Dismissing a menu by clicking into it must leave the caret. */
+/** Dismissing a menu by clicking into a text field must leave the caret there. */
 const TEXT_ENTRY = "input,textarea,select";
 
 function releaseFocusTakenByTheGuardedPress(): void {
-  // Swallowing the click is not enough: move focus away from the control focused by this guarded
-  // press, so a later Space key cannot activate it.
+  // Move focus off the control this press focused, so a later Space cannot activate it.
   const active = document.activeElement;
   if (!(active instanceof HTMLElement)) return;
   if (active === focusBeforePress) return;
@@ -127,13 +117,11 @@ function releaseFocusTakenByTheGuardedPress(): void {
   active.blur();
 }
 
-/** Retire a gesture that produced no click without leaving its pressed control focused. */
 function disarmAndReleaseFocus(): void {
   releaseFocusTakenByTheGuardedPress();
   disarm();
 }
 
-/** A new pointer supersedes an uncompleted gesture. */
 function disarmOnNewPointerDown(event: PointerEvent): void {
   if (pointerIsDown && isAnotherPointer(event)) return;
   disarmAndReleaseFocus();
@@ -166,8 +154,7 @@ function swallowClick(event: Event): void {
   releaseFocusTakenByTheGuardedPress();
   disarm();
   if (!touch) return;
-  // Radix defers touch dismissal to a document click. Re-raise a non-bubbling synthetic click
-  // after removing this guard so Radix can close the menu without re-entering the swallower.
+  // Radix closes touch menus on a document click. Re-raise a non-bubbling one after removing the guard.
   document.dispatchEvent(new MouseEvent("click", { bubbles: false }));
 }
 
@@ -196,7 +183,6 @@ const arm = (
   window.addEventListener("blur", disarmAndReleaseFocus);
 };
 
-/** Install the watcher for one open menu. */
 export function installDismissingClickGuard(
   triggerRef?: RefObject<HTMLElement | null>,
 ): () => void {
@@ -221,7 +207,6 @@ export function installDismissingClickGuard(
   };
 }
 
-/** Mount the guard inside an open non-modal menu's content. */
 export function useDismissingClickGuard(
   triggerRef: RefObject<HTMLElement | null>,
 ): void {

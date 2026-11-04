@@ -17,9 +17,7 @@ const { parseSampler } = await import(
 
 type SamplerConfig = Parameters<typeof buildSamplerColumn>[0];
 
-// Saving writes the payload, reopening re-imports that same payload
-// (use-recipe-persistence re-imports the stored payload on load), so whatever
-// survives this is what the user still sees after a reopen.
+// Reopen re-imports the stored payload, so the round trip is what the user sees.
 function roundTrip(config: SamplerConfig): SamplerConfig {
   const buildErrors: string[] = [];
   const column = buildSamplerColumn(config, buildErrors);
@@ -74,10 +72,7 @@ test("a uuid sampler keeps its format across a save and reopen", () => {
 });
 
 test("a uuid prefix survives even when its value is a reserved word", () => {
-  // buildSamplerParams reads "short" / "upper" / "uuid4" as modes, so a prefix whose
-  // own value is one of those has to come back escaped or the next save turns the
-  // prefix into a flag. Checked as payload stability over two save/reopen cycles,
-  // which is what a user actually does.
+  // "short"/"upper"/"uuid4" are modes, so a prefix with one of those values must be escaped.
   for (const uuidFormat of [
     "MY-",
     "short",

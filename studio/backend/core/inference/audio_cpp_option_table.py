@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-model request options and recommended values for the pinned audio.cpp runtime.
-
-The published GGUFs often embed a spec older than the runtime, and some families declare no request
-options at all even though their loaders read them. ``STUDIO_OPTION_LISTS`` names the options such a
-family reads; it is used only when neither the runtime nor the GGUF declares any. ``OPTION_RULES`` then
-adjusts whichever list a model ends up with: the value Unsloth Studio recommends (shown in Advanced
-and sent when the user leaves it alone), tighter bounds, and options a workflow has no use for.
-
-Recommended values come from audio.cpp's own web UI table (``webui/configs/model_params.json``),
-else the runtime's default in the C++ loader, else the upstream model card; each one names its source.
-A default of ``None`` sends nothing, for options the runtime works out per request. The table holds
-only for the tags it was checked against.
-"""
+"""STUDIO_OPTION_LISTS: options a family's loader reads, used only if neither runtime nor GGUF
+declares any. OPTION_RULES: recommended values (a None default sends nothing), bounds, unused
+options; from webui/configs/model_params.json, else C++ loader default, else model card. Only for
+checked tags."""
 
 from __future__ import annotations
 
@@ -39,6 +30,16 @@ ENUM_PRESETS: Mapping[str, tuple[str, ...]] = MappingProxyType(
 )
 
 _EMPTY: Mapping[str, Any] = MappingProxyType({})
+
+# (legacy, canonical) option names renamed in audio.cpp v0.9.2 (0xShug0/audio.cpp#926), which still
+# reads the legacy name. A fixed table, not one per release.
+OPTION_RENAMES: Mapping[str, tuple[tuple[str, str], ...]] = MappingProxyType(
+    {
+        "chatterbox": (("s3gen_cfg_rate", "flow_guidance_scale"),),
+        "seed_vc": (("length_adjust", "duration_scale"),),
+        "ace_step": (("lm_cfg_scale", "lm_guidance_scale"),),
+    }
+)
 
 
 @dataclass(frozen = True)

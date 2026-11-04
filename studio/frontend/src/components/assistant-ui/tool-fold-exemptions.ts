@@ -1,10 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Which tool calls stay visible whatever the fold and collapse preferences say. One place for the
-// rule, so the tool group that shows the run and the Thinking header that counts it agree.
+// Tool calls that stay visible whatever the fold preferences say; shared by the group and header.
 
-import { hasCreatedFiles } from "./sandbox-files.ts";
+import { MEDIA_CHAT_TOOLS, hasCreatedFiles } from "./sandbox-files.ts";
 
 export interface ToolPartLike {
   readonly type: string;
@@ -13,7 +12,6 @@ export interface ToolPartLike {
   readonly result?: unknown;
 }
 
-/** An MCP-style result with images in it, the shape the fallback card shows previews for. */
 export function carriesImages(result: unknown): boolean {
   if (typeof result !== "object" || result === null) {
     return false;
@@ -33,7 +31,7 @@ export function carriesImages(result: unknown): boolean {
   );
 }
 
-/** Canvases, Python, generated images, results that carry images and anything that wrote a
+/** Canvases, Python, generated images and videos, results that carry images and anything that wrote a
  *  file: their output lives only in the card, so it is never tucked away. */
 export function holdsOwnOutput(part: ToolPartLike): boolean {
   return (
@@ -41,6 +39,7 @@ export function holdsOwnOutput(part: ToolPartLike): boolean {
     (part.toolName === "render_html" ||
       part.toolName === "python" ||
       part.toolName === "image_generation" ||
+      MEDIA_CHAT_TOOLS.has(part.toolName ?? "") ||
       carriesImages(part.result) ||
       hasCreatedFiles(part.toolName, part.result))
   );
@@ -58,7 +57,6 @@ export function awaitsConfirmation(
   );
 }
 
-/** Whether the run of calls at [start, end] stays visible instead of folding. */
 export function toolRunIsExempt(
   parts: readonly ToolPartLike[],
   start: number,

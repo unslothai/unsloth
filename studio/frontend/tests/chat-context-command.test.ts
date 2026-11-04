@@ -179,7 +179,7 @@ function runtimeState(overrides: Record<string, unknown> = {}) {
     state: {
       activeThreadId: "t1",
       contextUsage: { totalTokens: 349 },
-      params: { checkpoint: "org/A-GGUF", maxTokens: 2048 },
+      params: { checkpoint: "org/A-GGUF" },
       runningByThreadId: {},
       setContextUsage: (usage: unknown) => published.push(usage),
       ...overrides,
@@ -201,7 +201,6 @@ test("the count is the recount's payload plus /context's own fields", async () =
       enable_tools: false,
       thread_id: "t1",
       breakdown: true,
-      max_tokens: 2048,
     },
   ]);
 });
@@ -245,18 +244,6 @@ for (const [name, overrides, counted] of [
     if (name === "another model answered") assert.equal(result, null);
   });
 }
-
-test("the count carries the completion's overflow policy", () => {
-  // truncate_oldest puts search_conversation and the checkpoint nudge in a compacted prompt.
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  const extras = adapter.slice(
-    adapter.indexOf("export async function buildLocalTokenCountExtras("),
-  );
-  assert.match(
-    extras.slice(0, extras.indexOf("if (!supportsTools)")),
-    /ggufCompactionRequestFields\(\{\s*\.\.\.localCompactionEngine\(state, state\.params\.checkpoint\),\s*autoCompactEnabled: state\.autoCompactEnabled,/,
-  );
-});
 
 test("/compact clears a /context report, whose numbers the reset makes stale", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");

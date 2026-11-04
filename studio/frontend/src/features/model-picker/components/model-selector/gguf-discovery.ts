@@ -15,13 +15,18 @@ function withHubState<V extends GgufVariantDetail>(
     update_available: published?.update_available ?? local.update_available,
     pending_drafter_filename: drafter?.pending_drafter_filename,
     pending_drafter_size_bytes: drafter?.pending_drafter_size_bytes,
-    // The Hub's sizes count companions (mmproj, drafter) and an update's new revision.
     ...(published
       ? {
           size_bytes: published.size_bytes,
           download_size_bytes: published.download_size_bytes,
         }
       : {}),
+    // A newer revision's reading wins, even 0; else local, with the Hub filling an unread 0.
+    lookup_table_bytes: published?.update_available
+      ? (published.lookup_table_bytes ?? 0)
+      : published
+        ? local.lookup_table_bytes || published.lookup_table_bytes
+        : local.lookup_table_bytes,
   };
 }
 
@@ -40,7 +45,6 @@ export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
   try {
     cached = await list(true);
   } catch (error) {
-    // A disk answer the Hub can still give (moved cache, token-only access) falls back to it.
     if (options.signal?.aborted || !options.canDiscoverRemote()) throw error;
     return list(false);
   }
@@ -66,51 +70,7 @@ export async function loadPickerGgufVariants<T extends GgufVariantsResponse>(
       default_variant: remote.default_variant ?? cached.default_variant,
     };
   } catch {
-    // A remote timeout or connection error must not replace the usable disk answer.
+    // A remote error must not replace the usable disk answer.
     return cached;
   }
-}
-
-/** Whether a reachable Hub reports an update or a missing companion for a cached quant: only the
- *  expander carries those actions, so the collapsed row must give way. */
-export async function hubWithdrawsSoleQuant<T extends GgufVariantsResponse>(
-  listRemote: () => Promise<T>,
-  quant: string,
-): Promise<boolean> {
-  let remote: T;
-  try {
-    remote = await listRemote();
-  } catch {
-    return false;
-  }
-  const published = remote.variants.find(
-    (v) => v.quant.toLowerCase() === quant.toLowerCase(),
-  );
-  return Boolean(
-    published?.update_available || published?.pending_drafter_filename,
-  );
-}
-
-export function createTaskLimiter(limit: number) {
-  let active = 0;
-  const queue: (() => void)[] = [];
-  const next = () => {
-    if (active >= limit) return;
-    const start = queue.shift();
-    if (start) start();
-  };
-  return function run<R>(task: () => Promise<R>): Promise<R> {
-    return new Promise<R>((resolve, reject) => {
-      queue.push(() => {
-        active += 1;
-        task()
-          .then(resolve, reject)
-          .finally(() => {
-            active -= 1;
-            next();
-          });
-      });
-      next();
-    });
-  };
 }

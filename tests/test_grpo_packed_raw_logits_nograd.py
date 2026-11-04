@@ -248,7 +248,11 @@ def _batch():
     )
 
 
-def _run_packed_block(hidden_states = False, model = None):
+def _run_packed_block(
+    hidden_states = False,
+    model = None,
+    **overrides,
+):
     """Exec the real packed + verify block and hand back its locals."""
     if model is None:
         model = _Model(hidden_states = hidden_states)
@@ -298,6 +302,7 @@ def _run_packed_block(hidden_states = False, model = None):
         "logit_softcapping": 0.0,
         "temperature": 1.0,
     }
+    namespace.update(overrides)
     exec(_packed_block_source(), namespace)
     return namespace, model, input_ids, max_left_pad
 

@@ -470,7 +470,8 @@ def main() -> None:
         if not CHECKPOINT_CACHED:
             assert "Model file" in panel_text
         assert page.get_by_text("Downloading model requirements", exact = False).count() == 0
-        pick_toast = page.locator("[data-sonner-toast]").filter(has_text = "Downloading model…")
+        # The pick toast names the picked repo (#15335).
+        pick_toast = page.locator("[data-sonner-toast]").filter(has_text = f"Downloading {REPO_ID}…")
         if DOWNLOAD_ONLY:
             assert pick_toast.count() == 0
         else:

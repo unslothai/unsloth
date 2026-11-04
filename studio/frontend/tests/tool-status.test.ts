@@ -10,7 +10,7 @@ import {
 } from "../src/features/chat/utils/tool-status.ts";
 
 test("the nudge status is the exact string the backend sends", () => {
-  // Mirrors tool_call_parser.py, so a reword on either side must break here.
+  // Mirrors tool_call_parser.py; a reword on either side must break here.
   assert.equal(NUDGE_TOOL_CALLS_STATUS, "Nudging tool calls");
   assert.equal(toolStatusKind(NUDGE_TOOL_CALLS_STATUS), "nudge");
 });
@@ -21,7 +21,6 @@ test("sandbox tools keep the terminal glyph", () => {
     "Running Python...",
     "Running: ls -la",
     "Running command...",
-    // edit_file is as local as the other two, but reports "Editing: name".
     "Editing: chart.py",
     "Editing file...",
   ]) {
@@ -42,7 +41,6 @@ test("every other status keeps the globe", () => {
 });
 
 test("a status that merely mentions nudging is not the nudge itself", () => {
-  // Exact match only: a tool named after the phrase must not steal the spinner.
   assert.equal(toolStatusKind("Calling: Nudging tool calls"), "web");
   assert.equal(toolStatusKind("Nudging tool calls again"), "web");
 });

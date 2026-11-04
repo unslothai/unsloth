@@ -1,20 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Every launch flag is gated on the binary advertising it.
-
-The probe checks 17 optional flags with _is_real before emitting them, but
---flash-attn, --no-context-shift and --jinja were emitted unconditionally. That
-is fine for the pinned prebuilt, which has all three. It is not fine for a stale
-or user-supplied LLAMA_SERVER_PATH, which Unsloth explicitly supports: an unknown
-argument makes llama-server exit immediately rather than start degraded, and the
-user sees a generic startup failure.
-
-These three differ from the other 17 in one important way: they are part of
-today's command on every launch, so their gates FAIL OPEN. An unreadable or
-unparseable --help must keep emitting them; only a build whose help positively
-lacks one may drop it.
-"""
+"""Launch flags are gated on --help; the three always-emitted ones fail open on unreadable help."""
 
 from __future__ import annotations
 
@@ -55,8 +42,7 @@ GATED = (
     "flash_attn_takes_value",
 )
 
-# Help text as llama.cpp actually prints it: the declaration starts at column 0
-# and its description is padded to column 40 (common_arg::to_string).
+# llama.cpp help format: declaration at column 0, description padded to column 40
 NEW_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -68,7 +54,6 @@ NEW_HELP = (
     "--jinja, --no-jinja                     whether to use jinja template engine for\n"
     "                                        chat (default: disabled)\n"
 )
-# The pre-enum vintage: -fa is a bare boolean and there is no --jinja.
 OLD_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -77,7 +62,6 @@ OLD_HELP = (
     "--no-context-shift                      disables context shift on infinite text\n"
     "                                        generation\n"
 )
-# A build predating flash attention: the flag does not exist at all.
 NO_FLASH_ATTN_HELP = (
     "usage: llama-server [options]\n"
     "\n"
@@ -86,7 +70,6 @@ NO_FLASH_ATTN_HELP = (
     "--no-context-shift                      disables context shift on infinite text\n"
     "                                        generation\n"
 )
-# What a wrapper prints before it gives up: real flags, but only some of them.
 PARTIAL_HELP = (
     "usage: llama-server [options]\n\n-m,    --model FNAME                    model path\n"
 )
@@ -99,11 +82,7 @@ def probe(
     returncode = 0,
     stream = "stdout",
 ):
-    """Run the real probe against a stubbed ``llama-server --help``.
-
-    ``subprocess`` is stubbed rather than a script dropped on disk so the test
-    means the same thing on Windows, where a shebang file is not executable.
-    """
+    """Stubs subprocess instead of writing a script, since a shebang file is not executable on Windows."""
     binary = tmp_path / "llama-server"
     binary.write_text("")
     completed = subprocess.CompletedProcess(
@@ -133,14 +112,7 @@ class TestTheGatesFailOpen:
     def test_a_nonzero_help_keeps_every_flag(
         self, tmp_path, monkeypatch, label, help_text, returncode, key
     ):
-        """A partial listing is still a FAILED probe.
-
-        The wrapper case that motivates this: it prints a few parseable options
-        and then exits nonzero. ``blocks`` is non-empty, but nothing in it is
-        authoritative, and reading it as "flag absent" would drop
-        ``--no-context-shift`` (context silently rotates again) or ``--jinja``
-        (no template rendering) on a launch the probe never understood.
-        """
+        """A partial listing from a failed probe is not evidence of absence, so no flag may be dropped."""
         assert probe(tmp_path, monkeypatch, help_text, returncode)[key] is True
 
     @pytest.mark.parametrize("key", GATED)
@@ -183,13 +155,8 @@ class TestASuccessfulProbeIsAuthoritative:
         assert caps["flash_attn_takes_value"] is False
 
     def test_a_build_without_flash_attention_drops_the_flag_itself(self, tmp_path, monkeypatch):
-        """The value form is not the only way -fa breaks a launch.
-
-        llama.cpp gained flash attention in b2775; anything older has no flag to
-        emit, and emitting it is an immediate "invalid argument" exit. Gating the
-        value alone would still send the flag. There is no speed to protect here:
-        the build the probe just read has no flash attention at all.
-        """
+        """Builds older than b2775 have no flash attention flag, and emitting -fa exits as invalid
+        argument."""
         caps = probe(tmp_path, monkeypatch, NO_FLASH_ATTN_HELP)
         assert caps["supports_flash_attn"] is False
         assert caps["supports_no_context_shift"] is True
@@ -242,13 +209,7 @@ class TestFlashAttentionValueForm:
 
 
 class TestTheCrashRecoveryMatchesTheEmittedForm:
-    """``_with_flash_attn_off`` has to speak the same dialect the launch does.
-
-    llama.cpp looks every argv token up verbatim (only ``_`` becomes ``-``); it
-    never splits on ``=``. So ``--flash-attn=off`` is "invalid argument" on every
-    build, and the bare form only exists on builds whose flag takes no value at
-    all. The retry therefore drops a bare flag instead of giving it a value.
-    """
+    """llama.cpp matches argv tokens verbatim and never splits on =, so the retry drops a bare flag."""
 
     @pytest.mark.parametrize("flag", ["--flash-attn", "-fa"])
     def test_a_bare_flag_is_dropped(self, flag):
@@ -324,22 +285,13 @@ def _flash_attn_env_scrub(*, known_off: bool) -> dict:
 
 
 class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
-    """A build with no --flash-attn never reads LLAMA_ARG_FLASH_ATTN either.
+    """Without the flag llama.cpp ignores LLAMA_ARG_FLASH_ATTN; recording it on under-sizes the V cache."""
 
-    llama.cpp resolves each LLAMA_ARG_* variable through the common_arg that
-    declares it, so a binary predating the flag registers neither. Unsloth still
-    reads the inherited env when it records what the child is running, and a
-    recorded-on flash attention under-sizes the padded V cache the resume-slot
-    estimate is capped on.
-    """
-
-    # What the gate leaves on the command line for such a build: no -fa at all.
     CMD = ["llama-server", "-m", "m.gguf", "--no-context-shift", "-c", "8192"]
 
     def test_the_inherited_value_is_dropped(self):
         env = _flash_attn_env_scrub(known_off = True)
         assert "LLAMA_ARG_FLASH_ATTN" not in env
-        # ...and nothing else in the inherited env is touched.
         assert env == {"LLAMA_ARG_CTX_SIZE": "4096"}
 
     def test_the_recorded_state_then_matches_the_launch(self):
@@ -360,15 +312,7 @@ class TestAFlaglessBuildIgnoresTheFlashAttentionEnv:
 
 
 class _SelfShim:
-    """Stand-in for the backend instance the fixup block runs against.
-
-    The block reads instance state (``_kv_lora_rank``, ``_architecture``,
-    ``_mtp_draft_path``) as well as class methods, and binding the class itself
-    meant any new ``self.<attr>`` in that block raised AttributeError here rather
-    than failing on its merits. Anything not set on the shim falls through to the
-    class, and a plain function found there is bound to the shim so the block can
-    call ``self.<method>()`` the way the real backend does.
-    """
+    """Stand-in self for the fixup block; unset attributes fall through to the class; methods bind to it."""
 
     def __init__(
         self,
@@ -421,14 +365,7 @@ def _flagless_v_cache_fixup(
 
 
 class TestAFlaglessBuildCannotRunAQuantizedVCache:
-    """Dropping --flash-attn has to take the quantized V cache with it.
-
-    llama.cpp aborts init with "V cache quantization requires flash_attn", and
-    the KV type is emitted straight from the user's setting with no flash-attn
-    coupling. The crash-recovery rung resets V for exactly this abort, but
-    _with_flash_attn_off returns None when the argv has no flag to turn off, so
-    on a build that never had one nothing downstream would catch it.
-    """
+    """A quantized V cache also needs flash attention, so dropping the flag must reset V too."""
 
     CMD = [
         "llama-server",
@@ -479,11 +416,7 @@ class TestAFlaglessBuildCannotRunAQuantizedVCache:
 
 
 class TestTheFlaglessFixupKeepsMlaKAndVEqual:
-    """An MLA model rejects K != V outright, above the V-quantization check.
-
-    So the launch-site reset, which normally leaves K quantized on purpose,
-    has to bring K down with V there or it trades one abort for another.
-    """
+    """MLA rejects unequal K and V cache types, so the launch-site V reset must bring K down too."""
 
     CMD = [
         "llama-server",
@@ -506,7 +439,6 @@ class TestTheFlaglessFixupKeepsMlaKAndVEqual:
         assert cmd[cmd.index("--cache-type-v") + 1] == "f16"
 
 
-# The -lv block of b11160 and later (llama.cpp "logs : reduce", #23021).
 TRACE_HELP = NEW_HELP + (
     "-lv,   --verbosity, --log-verbosity N   Set the verbosity threshold. Messages with a higher verbosity will be\n"
     "                                        ignored. Values:\n"
@@ -607,7 +539,6 @@ def test_the_offload_report_covers_metal_and_env_pinned_layers():
     assert "_offload_counts[0] <= 0" in src
     start = src.index("self._offload_overridden = ")
     assignment = src[start : src.index("\n                if ", start)]
-    # A --device the gpu_ids pin stripped never reached the child, so it pins nothing.
     assert "self._strip_device_extra_args(extra_args)" in assignment
     assert "if _gpu_ids_own_device_flags" in assignment
     assert "_env_fixes_gpu_layers(env)" in assignment

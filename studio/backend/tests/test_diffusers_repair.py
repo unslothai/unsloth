@@ -56,7 +56,6 @@ def _installed_diffusers(monkeypatch, direct_url):
     "direct_url, expected",
     [
         (None, True),  # a PyPI wheel records no direct_url.json
-        # A local checkout, editable or not, is the user's own build.
         ({"url": "file:///src/diffusers", "dir_info": {"editable": True}}, False),
         ({"url": "https://github.com/huggingface/diffusers", "vcs_info": {"vcs": "git"}}, False),
         (
@@ -93,7 +92,6 @@ def test_a_release_install_runs_the_installer_step_and_reports_it(monkeypatch):
 
     monkeypatch.setattr(dr.subprocess, "Popen", fake_popen)
     assert dr.repair_diffusers_before_imports(lines.append) is True
-    # The slow fetch first, into uv's cache only, then the install from it.
     assert [argv for argv, _env in calls] == [
         [sys.executable, str(dr._INSTALLER), "--prefetch-diffusers-main"],
         [sys.executable, str(dr._INSTALLER), "--repair-diffusers-main"],
@@ -132,8 +130,7 @@ def _slow_installer(
     monkeypatch.setattr(dr, "_INSTALLER", installer)
     monkeypatch.setattr(dr, "_REPAIR_TIMEOUT_S", timeout_s)
     monkeypatch.setattr(dr, "_INSTALL_MIN_TIMEOUT_S", timeout_s)
-    # The tree kill names descendants before it signals, so a child forked in between is missed.
-    # A slow runner's installer can still be starting at the deadline: let it spawn first.
+    # The tree kill names descendants before signalling, so let the installer spawn first.
     import utils.process_lifetime as pl
 
     real_terminate = pl.terminate_pid
@@ -322,7 +319,7 @@ def _manifest(monkeypatch, manifest):
 @pytest.mark.parametrize(
     "min_python, manifest",
     [
-        ((99, 0), {}),  # Python 3.9 against the real (3, 10) floor
+        ((99, 0), {}),  # an interpreter below the floor (3.9 / 3.10 against the real (3, 11))
         ((3, 0), {"diffusers_main_repair": "failed"}),
         ((3, 0), {"step_results": {"diffusers-main.txt": "failed"}}),
     ],
@@ -445,7 +442,8 @@ def test_the_installer_exposes_the_repair_flag():
 def _release_mode(monkeypatch, installed):
     import importlib.metadata
 
-    monkeypatch.setattr(dr, "_main_pin_active", _REAL_MAIN_PIN_ACTIVE)
+    # Release mode is a commented-out main pin, whichever state the shipped file is in.
+    monkeypatch.setattr(dr, "_main_pin_active", lambda: False)
     monkeypatch.setattr(dr, "_installer_would_skip", _REAL_INSTALLER_WOULD_SKIP)
     real_version = importlib.metadata.version
     monkeypatch.setattr(
@@ -457,12 +455,36 @@ def _release_mode(monkeypatch, installed):
 
 
 def test_the_shipped_main_pin_is_inactive():
+    # 0.42.1 carries FLUX.3 Klein (huggingface/diffusers#15046), so no main build is pinned.
     assert _REAL_MAIN_PIN_ACTIVE() is False
 
 
-@pytest.mark.parametrize("installed", ["0.41.0", "0.41.0.post1"])
+@pytest.mark.skipif(sys.version_info < (3, 11), reason = "diffusers-pin.txt names 0.42.1 from 3.11")
+@pytest.mark.parametrize("installed", ["0.42.1", "0.42.1.post1"])
 def test_a_current_release_starts_nothing(monkeypatch, installed):
     _release_mode(monkeypatch, installed)
+    monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
+    lines = []
+    assert dr.repair_diffusers_before_imports(lines.append) is False and lines == []
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason = "diffusers-pin.txt names 0.42.1 from 3.11")
+def test_the_release_behind_is_0_41_on_python_311(monkeypatch):
+    _release_mode(monkeypatch, "0.41.0")
+    assert dr._release_behind() is True
+
+
+def test_the_retired_main_build_is_left_for_the_update(monkeypatch):
+    """The d42ebf9c git build reports 0.41.0.dev0; startup repair touches index installs only, and the build still
+    has FLUX.3, so it stays until an update's dependency pass replaces it with the release."""
+    _release_mode(monkeypatch, "0.41.0.dev0")
+    _installed_diffusers(
+        monkeypatch,
+        {
+            "url": "https://github.com/huggingface/diffusers.git",
+            "vcs_info": {"vcs": "git", "commit_id": "d42ebf9c6e0b46103b74283f5324357a67acaa04"},
+        },
+    )
     monkeypatch.setattr(dr, "_run_installer", lambda *a, **k: pytest.fail("started a repair"))
     lines = []
     assert dr.repair_diffusers_before_imports(lines.append) is False and lines == []

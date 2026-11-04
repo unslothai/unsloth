@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The selector trigger names a lora by the segment before its first slash, so the
-// training run shows rather than "<run>/<model>". Local inventory names carry real
-// slashes, so the same strip left an Ollama row reading "hf.co". Pinned end to end:
-// what Chat feeds the selector, and what the trigger then renders.
+// Local inventory names have real slashes, so the lora first-segment strip must not apply.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -64,8 +61,6 @@ test("an LM Studio pick shows the model folder, not the publisher", () => {
 });
 
 test("an Ollama pick keeps the slashes in its repo name", () => {
-  // ollama pull hf.co/unsloth/Qwen3-8B-GGUF:Q4_K_M; repo_name keeps its host and
-  // namespace for anything outside registry.ollama.ai/library.
   const options = chatLocalModelOptions([
     localRow({
       id: "ollama-manifest:%2Fhome%2Fu%2F.ollama%2Fmanifests%2Fhf.co%2Funsloth",

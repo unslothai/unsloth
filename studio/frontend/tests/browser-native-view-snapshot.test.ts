@@ -730,6 +730,43 @@ test("a native page begun beside a temporary chat keeps it through a redirect an
   }
 });
 
+test("a temporary chat's hidden page stays temporary when it navigates while another chat is shown", async () => {
+  const { useChatRuntimeStore } = await import("@/features/chat");
+  const runtime = useChatRuntimeStore.getState();
+  const store = useBrowserStore.getState();
+  const g = globalThis as { nativeViewListener?: (event: { payload: unknown }) => void; nativeViewVisits?: unknown };
+  const shown = store.chat;
+  runtime.setIncognito(true);
+  store.showChat("single:temporary-hidden");
+  store.openUrl("https://private.example/");
+  const tabId = useBrowserStore.getState().activeTabId as string;
+  const stop = startNativeViews();
+  try {
+    await frame();
+    const visits: { url: string; temporary: boolean }[] = [];
+    g.nativeViewVisits = visits;
+    const load = (url: string, loading: boolean) =>
+      g.nativeViewListener?.({ payload: { kind: "load", tabId, url, loading } });
+    load("https://private.example/", true);
+    load("https://private.example/", false);
+    store.showChat("single:ordinary-shown");
+    runtime.setIncognito(false);
+    await frame();
+    assert.ok(useBrowserStore.getState().tabs.some((tab) => tab.id === tabId));
+    load("https://private.example/next", true);
+    load("https://private.example/next", false);
+    assert.deepEqual(visits, [
+      { url: "https://private.example/", temporary: true },
+      { url: "https://private.example/next", temporary: true },
+    ]);
+  } finally {
+    runtime.setIncognito(false);
+    delete g.nativeViewVisits;
+    stop();
+    useBrowserStore.getState().showChat(shown);
+  }
+});
+
 test("a new address asked for beside a temporary chat stays temporary when its native load starts after it", async () => {
   const { useChatRuntimeStore } = await import("@/features/chat");
   const stop = startNativeViews();

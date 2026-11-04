@@ -1,17 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Which platforms the post-reduction context re-fit is allowed to touch.
-
-Its guard -- ``use_fit and n_parallel > 1 and gpus and self._can_estimate_kv()
-and effective_ctx > 0`` -- encodes a hardware claim that is easy to lose in a
-refactor. ``gpus`` is empty on Metal (no torch.cuda device is enumerated, which
-is why the Apple arm exists) and on any CPU-only host; tensor-parallel clears
-``use_fit`` first; manual memory mode empties ``gpus``. All are excluded.
-
-These watch the predicate, not the argv, so a cell that starts entering the
-block fails here even when its numbers happen not to move.
-"""
+"""Metal, CPU-only, tensor-parallel and manual-memory hosts are excluded from the context re-fit."""
 
 from __future__ import annotations
 
@@ -99,15 +89,7 @@ class _RefitSpy:
         return False
 
 
-# The shared fixture the platform cells run on: a load that does not fit at the
-# asked slot count but does fit at a reduced one, so the re-fit has something to do.
-# Named because whether it still sits in that band depends on _FIT_MIN_CTX, and
-# test_the_fixture_still_reaches_the_refit_at_this_fit_floor reports it by name when
-# a floor change moves it out. This weight was picked by sweeping the band at
-# _FIT_MIN_CTX 4096, 8192 and 16384 and taking a value reducible at all three, so
-# the next floor change is less likely to move it out again: at 10_200 only 4096
-# reduced, and the 4096 -> 8192 raise left the load fitting whole at the floor
-# with --fit on, which is the planner's other answer and not this file's subject.
+# Reducible at each of 4096, 8192 and 16384, so a later floor change is less likely to move it out.
 _FIXTURE_WEIGHTS_MIB = 8_800
 _FIXTURE_SLOTS = 4
 
@@ -153,8 +135,7 @@ def _plan(
 
         backend._read_gguf_metadata = read
         backend._get_gguf_size_bytes = lambda _path: weights_mib * MIB
-        del backend._can_estimate_kv  # the real one, now that the dims are set
-        # The per-slot cost the re-fit trades against (see the helper).
+        del backend._can_estimate_kv
         _install_slot_scaled_compute(backend)
         backend.probe_server_capabilities = lambda _binary = None: {
             "mtp_token": "draft-mtp",
@@ -189,15 +170,8 @@ def _plan(
 
 class TestWhoTheRefitIsAllowedToTouch:
     def test_the_fixture_still_reaches_the_refit_at_this_fit_floor(self, tmp_path):
-        """Anti-vacuity, and the first thing to read when the cells below go red.
-
-        Every REACHABLE cell shares one fixture, and whether that fixture reaches
-        the re-fit at all depends on _FIT_MIN_CTX: the probe prices each candidate
-        at the floor, so raising the floor can leave no slot count that fits, and
-        `if not _uf_slots:` then skips the whole reduction. That turns all nine
-        cells red at once with `assert 0 > 0`, which reads like the re-fit was
-        deleted when the block is untouched and only the fixture went stale.
-        """
+        """If the nine cells fail with assert 0 > 0, the fixture no longer reaches the re-fit at
+        _FIT_MIN_CTX."""
         got, entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
         assert entries > 0, (
             f"the shared fixture ({_FIXTURE_WEIGHTS_MIB} MiB of weights on a "
@@ -228,7 +202,7 @@ class TestWhoTheRefitIsAllowedToTouch:
         """No enumerated GPU means the Apple arm owns the plan, untouched."""
         got, entries = _plan(tmp_path, os_key = os_key, vendor = "nvidia")
         assert entries == 0
-        assert got["ngl"] is None  # never pinned to a device that does not exist
+        assert got["ngl"] is None
 
     def test_tensor_parallel_is_excluded(self, tmp_path):
         """The tensor arm has no --fit valve, so the re-fit must stay out."""
@@ -260,7 +234,6 @@ class TestWindowsPlansLikeLinux:
         win, win_entries = _plan(tmp_path, os_key = "windows", vendor = "nvidia")
         linux, linux_entries = _plan(tmp_path, os_key = "linux", vendor = "nvidia")
         assert win_entries == linux_entries > 0
-        # Same plan either way; only the Windows-only thread pin differs.
         assert (win["ctx"], win["slots"], win["fit"]) == (
             linux["ctx"],
             linux["slots"],

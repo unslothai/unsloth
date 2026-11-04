@@ -211,9 +211,9 @@ export function installPageAgent(): PageAgent {
     return words.join(" ");
   };
 
-  const nameOf = (el: Element): string => {
+  const nameOf = (el: Element, max = 80): string => {
     const aria = el.getAttribute("aria-label");
-    if (aria?.trim()) return clean(aria);
+    if (aria?.trim()) return clean(aria, max);
     const labelledBy = el.getAttribute("aria-labelledby");
     if (labelledBy) {
       // Read as the user sees it: a hidden or 1px element must not name the control.
@@ -226,25 +226,25 @@ export function installPageAgent(): PageAgent {
           return visibleText(label);
         })
         .join(" ");
-      if (text.trim()) return clean(text);
+      if (text.trim()) return clean(text, max);
     }
     const field = el as HTMLInputElement;
     if (field.labels?.length) {
       const text = Array.from(field.labels)
         .map((label) => visibleText(label))
         .join(" ");
-      if (text.trim()) return clean(text);
+      if (text.trim()) return clean(text, max);
     }
     const tag = el.tagName.toLowerCase();
-    if (tag === "input" && ["button", "submit", "reset"].includes(field.type) && field.value) return clean(field.value);
-    if (tag === "input" && field.type === "image" && el.getAttribute("alt")) return clean(el.getAttribute("alt"));
+    if (tag === "input" && ["button", "submit", "reset"].includes(field.type) && field.value) return clean(field.value, max);
+    if (tag === "input" && field.type === "image" && el.getAttribute("alt")) return clean(el.getAttribute("alt"), max);
     if (tag === "input" || tag === "textarea") {
       const hint = el.getAttribute("placeholder") || el.getAttribute("title") || el.getAttribute("name");
-      return clean(hint);
+      return clean(hint, max);
     }
-    if (tag === "select") return clean(el.getAttribute("title") || el.getAttribute("name"));
+    if (tag === "select") return clean(el.getAttribute("title") || el.getAttribute("name"), max);
     const text = visibleText(el);
-    if (text.trim()) return clean(text);
+    if (text.trim()) return clean(text, max);
     // An icon link: its picture's alt, or a title on it or inside it (an upvote arrow).
     const img = el.querySelector("img[alt]");
     const titled = el.querySelector("[title], [aria-label]");
@@ -253,6 +253,7 @@ export function installPageAgent(): PageAgent {
         el.getAttribute("title") ||
         titled?.getAttribute("aria-label") ||
         titled?.getAttribute("title"),
+      max,
     );
   };
 
@@ -375,7 +376,8 @@ export function installPageAgent(): PageAgent {
     };
     const flush = () => {
       const text = clean(buffer, 400);
-      if (text && bufferShown && text.length > 1) push(text);
+      // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
+      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) push(text);
       buffer = "";
       bufferShown = false;
     };
@@ -820,7 +822,8 @@ export function installPageAgent(): PageAgent {
     const href = anchor?.href ?? "";
     if (!anchor || !/^https?:/i.test(href)) return null;
     const target = new URL(href);
-    const hashOnly = target.hash && target.href.split("#")[0] === pageUrl().href.split("#")[0];
+    // href="#" has an empty hash, yet stays on the page like any other fragment.
+    const hashOnly = href.includes("#") && target.href.split("#")[0] === pageUrl().href.split("#")[0];
     return !hashOnly && (directLinks || anchor.target === "_blank") ? href : null;
   };
 
@@ -1141,6 +1144,17 @@ export function installPageAgent(): PageAgent {
         return { ok: true, note: "Submitted the form." };
       }
       if (tag === "button" || tag === "a" || BUTTON_INPUTS.has(inputType)) (target as HTMLElement).click();
+      // A synthetic Enter inserts no line break.
+      else if (tag === "textarea") {
+        const area = target as HTMLTextAreaElement;
+        if (area.readOnly || area.matches(":disabled")) return { ok: false, error: "that key does nothing in this field; click or type instead." };
+        const end = area.selectionEnd ?? area.value.length;
+        const start = area.selectionStart ?? end;
+        setValue(area, `${area.value.slice(0, start)}\n${area.value.slice(end)}`);
+        area.setSelectionRange?.(start + 1, start + 1);
+      } else if ((target as HTMLElement).isContentEditable) {
+        if (!document.execCommand("insertParagraph")) document.execCommand("insertText", false, "\n");
+      }
     } else if (name === "Space" && (tag === "button" || (tag === "input" && ["checkbox", "radio"].includes((target as HTMLInputElement).type)))) {
       (target as HTMLElement).click();
     } else if ((name === "Backspace" || name === "Delete") && (tag === "input" || tag === "textarea")) {
@@ -1197,7 +1211,8 @@ export function installPageAgent(): PageAgent {
     if (tag === "textarea" || (tag === "input" && TEXT_INPUTS.has(field.type.toLowerCase()))) {
       // A date or time field drops a value it can't parse: tried on a detached field of the same
       // type first, so a bad value never blanks the page's field or fires its change handlers.
-      const format = DATE_FORMATS[field.type.toLowerCase()];
+      // A number field drops text too, which would read as "typed" with the field left empty.
+      const format = DATE_FORMATS[field.type.toLowerCase()] ?? (field.type.toLowerCase() === "number" ? "a number such as 42" : "");
       if (format && text) {
         const probe = document.createElement("input");
         probe.type = field.type;
@@ -1221,6 +1236,8 @@ export function installPageAgent(): PageAgent {
 
   const findOption = (select: HTMLSelectElement, value: string): HTMLOptionElement | undefined => {
     const wanted = value.trim().toLowerCase();
+    // An empty value would match the first option by inclusion.
+    if (!wanted) return undefined;
     return (
       Array.from(select.options).find(
         (candidate) => candidate.text.trim().toLowerCase() === wanted || candidate.value.toLowerCase() === wanted,
@@ -1242,7 +1259,21 @@ export function installPageAgent(): PageAgent {
     }
     const role = roleOf(el);
     if (role === "checkbox" || role === "radio" || role === "switch") {
-      const on = ["true", "on", "yes", "checked", "1", "check"].includes(value.trim().toLowerCase());
+      const wanted = clean(value, Infinity).toLowerCase();
+      const onWords = ["true", "on", "yes", "checked", "1", "check"];
+      const offWords = ["false", "off", "no", "unchecked", "0", "uncheck"];
+      let on = onWords.includes(wanted);
+      // State commands keep their meaning even when a label or HTML value says "No".
+      if (!on && !offWords.includes(wanted)) {
+        const label = nameOf(el, Infinity);
+        on = Boolean(wanted) && (
+          wanted === label.toLowerCase() || wanted === clean(label).toLowerCase() ||
+          (el instanceof HTMLInputElement && wanted === clean(el.value, Infinity).toLowerCase())
+        );
+        if (!on) {
+          return { ok: false, error: `${ref} is a ${role}; value must be "true", "false" or its own label. Pick the ref of the option to choose.` };
+        }
+      }
       const current = el instanceof HTMLInputElement ? el.checked : el.getAttribute("aria-checked") === "true";
       if (current && !on && role === "radio") {
         return { ok: false, error: `${ref} is a radio button; select another option in its group instead.` };

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GET /api/models/list must label the resident GGUF the way the chat model bar reads it.
-
-The bar renders the ``name`` of the models[] entry whose ``id`` is the client's
-``params.checkpoint``, which for a cached GGUF is the snapshot directory. Splitting that
-raw identifier on "/" showed the commit sha on POSIX and the whole home dir on Windows.
-"""
+"""The bar renders the models[] name; splitting the snapshot path on slash showed a commit sha."""
 
 import asyncio
 import sys
@@ -52,7 +47,7 @@ class _FakeUnsloth:
 
 
 def _list_models(monkeypatch, llama):
-    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _FakeUnsloth())
+    monkeypatch.setattr(models_route, "peek_inference_backend", lambda: _FakeUnsloth())
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
     return asyncio.run(models_route.list_models(current_subject = "unsloth")).models
 
@@ -63,8 +58,6 @@ def test_hf_cache_snapshot_is_labelled_by_its_repo_leaf(monkeypatch):
 
         assert len(entries) == 1
         entry = entries[0]
-        # The id stays the checkpoint the client holds, so the picker still finds
-        # this entry; only the label is cleaned up.
         assert entry.id == snapshot
         assert entry.name == "DeepSeek-V4-Flash-0731-GGUF"
         assert entry.is_gguf is True
@@ -77,9 +70,6 @@ def test_standalone_gguf_is_labelled_by_its_file_stem(monkeypatch):
 
 
 def test_native_lease_keeps_the_path_shaped_id_agents_tab_filters_on(monkeypatch):
-    # agents-tab's discoverGgufModels drops path-shaped ids so a native lease's label,
-    # which cannot reload the file, never lands in a --model command. Only the label
-    # is cleaned here.
     entries = _list_models(
         monkeypatch,
         _FakeLlama(
@@ -97,7 +87,7 @@ def test_plain_repo_ids_are_unchanged(monkeypatch):
     class _Backend(_FakeUnsloth):
         default_models = ["unsloth/Qwen3-4B-Instruct-2507", "Qwen3-4B"]
 
-    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(models_route, "peek_inference_backend", lambda: _Backend())
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(None))
 
     entries = asyncio.run(models_route.list_models(current_subject = "unsloth")).models
@@ -109,8 +99,6 @@ def test_plain_repo_ids_are_unchanged(monkeypatch):
 
 
 def test_already_resident_load_response_never_echoes_the_snapshot_path(monkeypatch):
-    # The already-loaded fast path leaves display_name unset, so the response fell back
-    # to the identifier the GGUF loaded from, and the client labelled the model with it.
     import routes.inference as inf_route
 
     monkeypatch.setattr(inf_route, "_llama_runtime_fields", lambda backend: {})
@@ -124,7 +112,6 @@ def test_already_resident_load_response_never_echoes_the_snapshot_path(monkeypat
     )
 
     assert resp.display_name == "DeepSeek-V4-Flash-0731-GGUF"
-    # The loadable identifier itself is unchanged.
     assert resp.model == _POSIX_SNAPSHOT
 
 
@@ -146,12 +133,10 @@ def test_an_explicit_display_name_still_wins(monkeypatch):
 
 
 def test_a_hub_repo_id_ending_in_gguf_keeps_its_suffix(monkeypatch):
-    # These are real repo ids, not file paths, so the label is the whole repo leaf;
-    # only a >= 2-slash id names a file inside a repo.
     class _Backend(_FakeUnsloth):
         default_models = ["lex-au/Orpheus-3b-FT-Q8_0.gguf"]
 
-    monkeypatch.setattr(models_route, "get_inference_backend", lambda: _Backend())
+    monkeypatch.setattr(models_route, "peek_inference_backend", lambda: _Backend())
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: _FakeLlama(None))
 
     entries = asyncio.run(models_route.list_models(current_subject = "unsloth")).models

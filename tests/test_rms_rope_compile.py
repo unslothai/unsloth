@@ -267,6 +267,48 @@ def test_bf16_without_native_support_stays_untraced(monkeypatch):
     assert _graph_breaks() > 0
 
 
+@pytest.mark.parametrize("fullgraph", [False, True], ids = ["default", "fullgraph"])
+def test_rope_cache_cold_build_traces_without_graph_breaks(fullgraph):
+    """A compiled block that builds the per-device RoPE cache first (a device_map split, or an
+    attention that reads the cache itself) traces it with no graph break, as before lazy caches."""
+    from transformers import LlamaConfig
+    from unsloth.models.llama import LlamaRotaryEmbedding
+
+    config = LlamaConfig(hidden_size = 256, num_attention_heads = 4, max_position_embeddings = 4096)
+    rope = LlamaRotaryEmbedding(config = config)
+
+    def attention(V):
+        seq = V.shape[-2]
+        rope.extend_rope_embedding(V, seq_len = seq)
+        cos, sin = rope.get_cached(seq, V.device.index)
+        return V * cos[:seq] + sin[:seq]
+
+    torch._dynamo.reset()
+    dynamo_utils.counters.clear()
+    compiled = torch.compile(attention, dynamic = True, fullgraph = fullgraph, backend = "eager")
+    for seq in (64, 80, 96):
+        V = torch.randn(1, seq, 4, 64, device = "cuda").transpose(1, 2).contiguous()
+        torch.testing.assert_close(compiled(V), attention(V))
+    assert _graph_breaks() == 0
+
+
+@pytest.mark.parametrize("gemma", [False, True], ids = ["llama", "gemma"])
+@pytest.mark.parametrize("dim", [64, 4096])
+def test_rms_layernorm_dynamic_shapes(dim, gemma):
+    """dynamic=True gives the op's fake run a symbolic width, which the per-width settings cache
+    cannot hash; a compiled norm must still trace in one graph and match eager bytes."""
+    if not TRACEABLE:
+        pytest.skip("this torch has no torch.library.triton_op")
+    torch._dynamo.reset()
+    compiled = torch.compile(
+        lambda n, x, gm: fast_rms_layernorm(n, x, gm), fullgraph = True, dynamic = True
+    )
+    for seq in (16, 24, 40):
+        shape = (2, seq, dim)
+        eager = _rms_case(fast_rms_layernorm, shape, CDTYPE, gemma, False)
+        _assert_rms_matches(eager, _rms_case(compiled, shape, CDTYPE, gemma, False))
+
+
 def test_rope_dynamic_shapes():
     """dynamic=True makes the launch grid SymInts (divmod rejected them)."""
     if not TRACEABLE:

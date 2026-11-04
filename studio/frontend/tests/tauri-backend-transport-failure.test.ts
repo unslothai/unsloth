@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// #10520: a firewall filter delayed the loopback handshake and Desktop said "Unsloth isn't running" about a healthy backend.
+// A filtered loopback handshake must not report a healthy backend as not running.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -24,7 +24,6 @@ function loadAuthApi(options: {
   port: number | null;
   getPort?: () => number | null;
   checkHealth?: (port: number) => boolean | Promise<boolean>;
-  /** `check_backend_is_gone`. Default false: the ladder the tree had before the fast path. */
   checkGone?: (port: number) => boolean | Promise<boolean>;
   isTauri?: boolean;
   onInvoke?: (command: string, args: Record<string, unknown>) => void;
@@ -239,7 +238,6 @@ test("no validated port yet means nothing is asked and nothing is claimed", asyn
   };
 
   try {
-    // The placeholder base before server-port arrives is port 0, which never connects.
     const authApi = loadAuthApi({
       port: null,
       checkHealth: () => true,
@@ -261,7 +259,6 @@ test("no validated port yet means nothing is asked and nothing is claimed", asyn
 });
 
 test("panels that all lose the backend at once share one native probe", async () => {
-  // The whole hub loses its connection in the same tick and each probe waits out the launcher's budget.
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new TypeError("fetch failed");
@@ -315,7 +312,6 @@ test("panels that all lose the backend at once share one native probe", async ()
 });
 
 test("updating an existing install does not go through the changed path", async () => {
-  // The update deliberately stops the backend, so pin that this flow uses commands and events, not HTTP.
   const update = await readFile(
     new URL("../src/hooks/use-tauri-update.ts", import.meta.url),
     "utf8",
@@ -330,7 +326,6 @@ test("updating an existing install does not go through the changed path", async 
     "the update flow now issues its own fetch, which the transport path wraps",
   );
 
-  // A webview newer than its shell asks for nothing new; the rejected invoke is covered above.
   const backend = await readFile(
     new URL("../src/hooks/use-tauri-backend.ts", import.meta.url),
     "utf8",
@@ -341,9 +336,7 @@ test("updating an existing install does not go through the changed path", async 
     "utf8",
   );
   assert.ok(main.includes("commands::check_health,"));
-  // check_health collapses a stalled probe onto false, the verdict this file exists to stop showing.
   assert.ok(main.includes("commands::check_backend_present,"));
-  // The fast path's command. Unregistered, every invoke rejects and the ladder is the old one.
   assert.ok(main.includes("commands::check_backend_is_gone,"));
   const authApiSrc = await readFile(
     new URL("../src/features/auth/api.ts", import.meta.url),
@@ -356,7 +349,6 @@ test("updating an existing install does not go through the changed path", async 
 });
 
 test("the background chat storage filter accepts every transport verdict", async () => {
-  // Read as source: the module pulls in the Dexie database only a browser build can load.
   const source = await readFile(
     new URL(
       "../src/features/chat/utils/chat-history-storage.ts",
@@ -382,7 +374,7 @@ test("the background chat storage filter accepts every transport verdict", async
 });
 
 test("a POST is not retried on the long ladder", async () => {
-  // A network error is not an answer: the backend may have committed the request, so a retry can duplicate it.
+  // A network error is not an answer: the request may have committed, so a retry can duplicate it.
   const port = 61797;
   const originalFetch = globalThis.fetch;
   let attempts = 0;
@@ -410,7 +402,7 @@ test("a POST is not retried on the long ladder", async () => {
 });
 
 test("a probe pending against the old port is not the answer about the new one", async () => {
-  // setApiBase can move the port inside a probe's 10s budget, so a shared pending promise reports the PREVIOUS backend.
+  // setApiBase can move the port mid-probe, so a shared pending promise reports the old backend.
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     throw new TypeError("fetch failed");
@@ -461,13 +453,10 @@ test("a probe pending against the old port is not the answer about the new one",
   }
 });
 
-// The ladder the fast path short-circuits, as the source states it.
 const LONG_LADDER_MS = 250 + 750 + 1500 + 3000 + 5000;
 const LONG_LADDER_ATTEMPTS = 6;
 
 test("a backend that is provably gone is reported without sleeping out the ladder", async () => {
-  // A refused port with nothing of ours coming up on it: the native side has already
-  // answered the question the remaining 10.5s of sleeping would ask five more times.
   const port = 61820;
   const asked: string[] = [];
   const originalFetch = globalThis.fetch;
@@ -509,8 +498,6 @@ test("a backend that is provably gone is reported without sleeping out the ladde
 });
 
 test("a backend that is merely slow still gets every rung and the busy message", async () => {
-  // The other direction. `check_backend_is_gone` is false for a port we are bringing up and
-  // for one whose handshake is filtered, and neither may lose a single retry.
   const port = 61821;
   const originalFetch = globalThis.fetch;
   let attempts = 0;
@@ -558,7 +545,7 @@ test("a backend that is merely slow still gets every rung and the busy message",
 });
 
 test("a shell too old for the command keeps the ladder it has today", async () => {
-  // The webview ships ahead of the shell it runs in. A rejected invoke is not an answer.
+  // The webview ships ahead of its shell; a rejected invoke is not an answer.
   const port = 61822;
   const originalFetch = globalThis.fetch;
   let attempts = 0;
@@ -589,8 +576,7 @@ test("a shell too old for the command keeps the ladder it has today", async () =
 });
 
 test("the browser build asks nothing and behaves exactly as it did", async () => {
-  // `fetch` in a browser reports a refused connection and a timed-out one as the same
-  // opaque TypeError, so there is nothing to be fast about and no native side to ask.
+  // Browser fetch reports refused and timed-out connections as the same opaque TypeError.
   const invoked: string[] = [];
   const originalFetch = globalThis.fetch;
   let attempts = 0;
@@ -655,7 +641,6 @@ test("panels that all lose the backend at once share one absence probe", async (
       );
 
     const first = call();
-    // Bounded: a build that never probes must fail on the count below, not hang here.
     await Promise.race([
       probeStarted,
       new Promise<void>((resolve) => {
@@ -675,11 +660,7 @@ test("panels that all lose the backend at once share one absence probe", async (
 });
 
 test("a port nobody here owns that binds late is given up on, and that is the trade", async () => {
-  // The other side of the fast path, pinned so it cannot change by accident. A refusal
-  // proves nothing is listening NOW, not that nothing will bind later, so a backend the
-  // shell did not start -- one attached to from outside Desktop, restarting -- is reported
-  // gone rather than waited for. The owned case above keeps every rung; this one does not,
-  // and the ownership answer is the whole difference between them.
+  // A refusal proves nothing listens NOW; an unowned backend is reported gone, not waited for.
   const port = await reserveLoopbackPort();
   const server = createServer((_request, response) => {
     response.writeHead(200, { "Content-Type": "application/json" });
@@ -694,7 +675,6 @@ test("a port nobody here owns that binds late is given up on, and that is the tr
 
   try {
     listenAfter(server, port, SLOW_LOOPBACK_ACCEPT_DELAY_MS);
-    // What a truthful native side answers for this port: refused, and owned by nobody here.
     const authApi = loadAuthApi({ port, checkGone: () => true, checkHealth: () => false });
     const error = await authApi.authFetch("/api/models").then(
       () => null,

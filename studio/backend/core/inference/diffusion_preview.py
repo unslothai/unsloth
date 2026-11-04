@@ -1,17 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Live latent previews for the image and video denoise loops.
-
-Each snapshot projects the latent to a small RGB picture with a fitted per-family linear map
-(``diffusion_preview_factors``), copies it into a pinned slot with ``non_blocking=True`` plus a CUDA
-event, and a worker thread JPEG-encodes it once ``Event.query()`` says it landed. The denoise thread
-never syncs or reads host memory the GPU is writing, every CUDA call sits inside the CUDA-graph capture
-hold-off, and the latent is only read, so the final image is identical with previews on or off.
-
-Snapshots are planned by STEP, not host time: under CUDA graphs the host enqueues every step long
-before the GPU runs it. Kill switch: ``UNSLOTH_DIFFUSION_PREVIEW=0``.
-"""
+"""Live denoise previews: async pinned copies, JPEG off-thread, planned per step; denoise thread
+never syncs; latent only read, so final image unchanged; UNSLOTH_DIFFUSION_PREVIEW=0 disables"""
 
 from __future__ import annotations
 
@@ -62,6 +53,17 @@ def preview_wanted(requested: Optional[bool]) -> bool:
     return True if requested is None else bool(requested)
 
 
+def preview_available(family: Optional[str], device: Any) -> bool:
+    """Mirrors ``LatentPreviewer.create``: kill switch off, a fitted map, and CUDA (no event to poll elsewhere)."""
+    if not env_enabled() or factors_for(family) is None:
+        return False
+    try:
+        import torch
+        return torch.device(device).type == "cuda" and torch.cuda.is_available()
+    except Exception:  # noqa: BLE001 - a status read must never fail on this
+        return False
+
+
 @functools.lru_cache(maxsize = 64)
 def factors_for(family: Optional[str]) -> Optional[LatentRGB]:
     """Cached so a family keeps one object, and its device copy is uploaded once per process."""
@@ -86,6 +88,9 @@ def latent_grid(latents: Any, spec: LatentRGB, height: int, width: int) -> Any:
     """First image / frame as a (gh, gw, D) view, or None. Packed tokens take their grid from the render
     size, which must tile the sequence exactly."""
     if spec.layout == "tokens":
+        if latents.ndim == 4 and latents.shape[1] == spec.channels:
+            # The same packed channels kept spatial (MOSS-Image runs FLUX.2 latents as [B, 128, h, w]).
+            return latents[0].permute(1, 2, 0)
         gh, gw = int(height) // spec.down, int(width) // spec.down
         if latents.ndim != 3 or latents.shape[-1] != spec.channels or gh <= 0 or gw <= 0:
             return None
@@ -244,6 +249,7 @@ class LatentPreviewer:
         # One slot per planned snapshot: with the host far ahead every one can be in flight at once.
         self.stride = max(1, math.ceil(total / max(1, int(max_snapshots))))
         n_slots = total // self.stride + 2
+        # Pinned even on an integrated GPU: a few MB, and an unpinned copy would make the denoise thread wait each snapshot.
         pinned = torch.empty(n_slots * cap, dtype = torch.uint8, pin_memory = True)
         self._slots = [
             {

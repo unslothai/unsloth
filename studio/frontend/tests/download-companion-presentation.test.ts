@@ -68,7 +68,6 @@ test("companion presentation keeps backend baseline-adjusted progress", () => {
 
   assert.deepEqual(
     presentedProgress({
-      // snapshot_progress has already removed the cached 100-byte main model.
       expectedBytes: 20,
       downloadedBytes: 5,
       fraction: 0.25,
