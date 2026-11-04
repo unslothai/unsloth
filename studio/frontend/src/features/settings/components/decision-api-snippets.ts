@@ -58,7 +58,7 @@ export function buildDecisionCurl({
   if (os === "windows") {
     // Set-Content writes ascii: \u escapes survive it, raw non-English text does not.
     const ascii = body.replace(
-      /[\u0080-￿]/g,
+      /[\u0080-\uffff]/g,
       (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
     );
     return `$body = '${psSingle(ascii)}'
