@@ -3003,8 +3003,8 @@ export const ptBR = {
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       turnNavigation: "Navegação por turnos",
       turnNavigationDescription: "Mostra suas mensagens como uma barra na borda esquerda de chats longos. Passe o cursor para ver um turno, clique para ir até ele e marque turnos para encontrá-los depois.",
-      composerAtBottom: "Caixa de texto embaixo",
-      composerAtBottomDescription: "Comece novas conversas com a caixa de texto na parte de baixo da página, não no meio.",
+      composerPosition: "Posição da caixa de texto",
+      composerPositionDescription: "Onde a caixa de texto fica ao começar uma nova conversa, do topo da página até embaixo.",
       projectAttachments: "Compartilhar arquivos em todo o projeto",
       projectAttachmentsDescription:
         "Disponibiliza novos anexos para todos os chats do projeto.",

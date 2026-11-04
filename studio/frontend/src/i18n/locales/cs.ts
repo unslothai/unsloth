@@ -3255,9 +3255,8 @@ export const cs = {
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
       turnNavigation: "Navigace v kolech",
       turnNavigationDescription: "Zobrazí vaše zprávy jako lištu u levého okraje dlouhých chatů. Najetím zobrazíte náhled kola, kliknutím na něj přejdete a záložkami si kola označíte.",
-      composerAtBottom: "Pole zprávy dole",
-      composerAtBottomDescription:
-        "Zahajovat nové chaty s polem zprávy v dolní části stránky místo uprostřed.",
+      composerPosition: "Umístění pole zprávy",
+      composerPositionDescription: "Kde je pole zprávy při zahájení nového chatu, od horní části stránky až dolů.",
       projectAttachments: "Sdílet soubory v rámci projektu",
       projectAttachmentsDescription:
         "Zpřístupnit nové přílohy chatu všem chatům v projektu.",

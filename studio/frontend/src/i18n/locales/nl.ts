@@ -3279,9 +3279,8 @@ export const nl = {
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
       turnNavigation: "Beurtnavigatie",
       turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
-      composerAtBottom: "Invoerveld onderaan",
-      composerAtBottomDescription:
-        "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",
+      composerPosition: "Positie van het invoerveld",
+      composerPositionDescription: "Waar het invoerveld staat bij het starten van een nieuwe chat, van de bovenkant van de pagina tot onderaan.",
       projectAttachments: "Bestanden delen binnen een project",
       projectAttachmentsDescription:
         "Nieuwe chatbijlagen beschikbaar maken voor elke chat in het project.",
