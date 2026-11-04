@@ -55,6 +55,7 @@ export interface DiffusionStatus {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   speed_optims?: string[];
   attention_backend?: string | null;
@@ -315,6 +316,8 @@ export interface GalleryImage {
   batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
+  generation_seconds?: number | null;
+  generation_count?: number | null;
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
@@ -326,6 +329,7 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   attention_backend?: string | null;
   transformer_cache?: string | null;

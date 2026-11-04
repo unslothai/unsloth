@@ -715,7 +715,9 @@ def keep_h3_te_resident(
         target = getattr(text_encoder, "model", None)
         if target is None or not h3_te_resident_enabled():
             return 0
-        entries = _streamed_host_tensors(target, groups)
+        undo = _undo_list(target)  # marks the share as managed: later calls top it up
+        copied_ids = {id(e[3]) for e in undo}
+        entries = [e for e in _streamed_host_tensors(target, groups) if id(e[2]) not in copied_ids]
         need = -(-sum(h.numel() * h.element_size() for _g, _t, h in entries) // (1 << 20))
         if need <= 0:
             return 0
@@ -748,7 +750,7 @@ def keep_h3_te_resident(
             if nbytes <= budget:
                 chosen.append(entry)
                 budget -= nbytes
-        copied = _copy_host_tensors_(chosen)
+        copied = _copy_host_tensors_(chosen, undo = undo)
         mib = copied >> 20
         if logger is not None:
             logger.info(
@@ -764,7 +766,69 @@ def keep_h3_te_resident(
         return 0
 
 
-def _copy_host_tensors_(entries: list) -> int:
+_TE_RESIDENT_UNDO_ATTR = "_unsloth_te_resident_undo"
+
+
+def _undo_list(target: Any) -> list:
+    undo = getattr(target, _TE_RESIDENT_UNDO_ATTR, None)
+    if undo is None:
+        undo = []
+        try:
+            setattr(target, _TE_RESIDENT_UNDO_ATTR, undo)
+        except Exception:  # noqa: BLE001 -- no undo: the share cannot yield
+            return []
+    return undo
+
+
+def top_up_h3_te_resident(text_encoder: Any, *, logger: Any = None) -> int:
+    """``keep_h3_te_resident`` again after the load (a re-fit released resident denoiser host copies): copies the
+    next share of the still-mapped conditioner. Only for a share the load already manages. Returns MiB copied."""
+    target = getattr(text_encoder, "model", None)
+    if target is None or getattr(target, _TE_RESIDENT_UNDO_ATTR, None) is None:
+        return 0
+    return keep_h3_te_resident(text_encoder, logger = logger)
+
+
+def yield_h3_te_resident(
+    text_encoder: Any,
+    nbytes: int,
+    *,
+    logger: Any = None,
+) -> int:
+    """Return up to ``nbytes`` of the conditioner's resident share to its memory mapping (last copied first: vision,
+    then the deepest language layers), so the anonymous copies are freed. Returns bytes given back. Never raises."""
+    try:
+        target = getattr(text_encoder, "model", None)
+        undo = getattr(target, _TE_RESIDENT_UNDO_ATTR, None) if target is not None else None
+        if not undo or nbytes <= 0:
+            return 0
+        import torch
+
+        freed = 0
+        with torch.no_grad():
+            while undo and freed < nbytes:
+                group, tensor, mapped, copy = undo.pop()
+                cpu = getattr(group, "cpu_param_dict", None)
+                if cpu is not None and cpu.get(tensor) is copy:
+                    cpu[tensor] = mapped
+                if tensor.device.type == "cpu" and tensor.data_ptr() == copy.data_ptr():
+                    tensor.data = mapped
+                freed += copy.numel() * copy.element_size()
+                del copy
+        if logger is not None:
+            logger.info(
+                "video.h3_te_resident: %d MiB of the conditioner's resident share returned to its mapping "
+                "(host RAM for a demoted denoiser block)",
+                freed >> 20,
+            )
+        return freed
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.warning("video.h3_te_resident: could not yield the resident share: %s", exc)
+        return 0
+
+
+def _copy_host_tensors_(entries: list, undo: Optional[list] = None) -> int:
     import torch
     from concurrent.futures import ThreadPoolExecutor
 
@@ -783,5 +847,7 @@ def _copy_host_tensors_(entries: list) -> int:
                 cpu[tensor] = new
             if tensor.device.type == "cpu" and tensor.data_ptr() == host.data_ptr():
                 tensor.data = new
+            if undo is not None:
+                undo.append((group, tensor, host, new))
             copied += new.numel() * new.element_size()
     return copied

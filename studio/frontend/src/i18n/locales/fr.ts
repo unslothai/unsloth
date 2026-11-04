@@ -1065,6 +1065,7 @@ export const fr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Définissez le mot de passe du propriétaire de l’installation avant d’ajouter un autre compte. Vous l’utiliserez pour vous connecter une fois que cette installation aura plusieurs comptes.",
       signsInAs: "Se connecte en tant que {username}",
       signsInAsOwner: "Se connecte en tant que {alias} ou {username}",
       signInName: "Votre nom de connexion",
@@ -1882,6 +1883,26 @@ export const fr = {
       autoTitleNewChats: "Titrer automatiquement les nouvelles discussions",
       autoTitleNewChatsDescription:
         "Générer un titre court à partir du premier message.",
+      mlWarmup: {
+        sectionTitle: "Performances au démarrage",
+        description: "Préparez les fonctionnalités sélectionnées pour accélérer leur première utilisation. Toutes sont désactivées par défaut. Ces options peuvent charger des dépendances partagées et augmenter l'utilisation de RAM au repos.",
+        restartRequired: "Les modifications s'appliquent après le redémarrage d'Unsloth.",
+        hardwareLabel: "Détection du matériel",
+        hardwareDescription: "Détecter les GPU et préparer PyTorch.",
+        textLabel: "Modèles de texte",
+        textDescription: "Préparer la prise en charge des modèles de texte par Transformers.",
+        datasetsLabel: "Préparation des jeux de données",
+        datasetsDescription: "Préparer Datasets et ses dépendances pour les aperçus et le traitement.",
+        mediaLabel: "Modèles d'image et de vidéo",
+        mediaDescription: "Préparer Diffusers et les dépendances partagées des modèles.",
+        advanced: "Avancé",
+        quantizationLabel: "Vérifications préalables à la quantification d'image",
+        quantizationDescription: "Vérifier la compatibilité avant le premier chargement d'un modèle d'image quantifié. Peut brièvement augmenter l'utilisation de RAM.",
+        requiredBySelections: "Requis par vos sélections.",
+        disabledByEnv: "Désactivé par UNSLOTH_STUDIO_DISABLE_TORCH_WARM dans l'environnement du backend.",
+        loadError: "Échec du chargement des paramètres de préparation au démarrage.",
+        saveError: "Échec de l'enregistrement des paramètres de préparation au démarrage.",
+      },
       helperLlm: {
         sectionTitle: "LLM assistant",
         preloadOnStartup: "Précharger le LLM assistant au démarrage",
@@ -1938,6 +1959,7 @@ export const fr = {
         saveError:
           "Échec de l'enregistrement des paramètres de changement automatique de modèle.",
         idleError: "Saisissez 0 pour garder le modèle chargé, ou au moins 60 secondes.",
+        idleUnsaved: "Pas encore enregistré.",
         autoDownload: "Télécharger les modèles manquants",
         autoDownloadDescription:
           "Récupérer un GGUF indiqué dans une requête API qui n'est pas encore téléchargé. Toute personne disposant d'une clé API peut alors consommer de l'espace disque et de la bande passante.",
@@ -3004,8 +3026,8 @@ export const fr = {
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
       turnNavigation: "Navigation par tours",
       turnNavigationDescription: "Affiche vos messages sous forme de barre sur le bord gauche des longues discussions. Survolez un tour pour l’aperçu, cliquez pour y aller et ajoutez-le aux favoris pour le retrouver.",
-      composerAtBottom: "Zone de saisie en bas",
-      composerAtBottomDescription: "Commencer les nouvelles discussions avec la zone de saisie en bas de la page plutôt qu'au centre.",
+      composerPosition: "Position de la zone de saisie",
+      composerPositionDescription: "Emplacement de la zone de saisie au début d'une nouvelle discussion, du haut de la page jusqu'en bas.",
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
         "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
@@ -3486,6 +3508,9 @@ export const fr = {
         docs: "Documentation",
         docsLabel: "Ouvrir la documentation de l'API de décision",
         description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
+        codeTitle: "Appeler depuis le code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Les autres clients MCP se connectent ici avec le même jeton.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
         enableRemoteDescription: "Sert /v1/systemone.",
@@ -3642,7 +3667,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "L’application est connectée à un serveur Unsloth déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
+          "Connectée à un serveur Unsloth sur le port {port} que cette application n’a pas démarré, comme `unsloth studio` dans un terminal. Arrêtez-le là où il a été démarré, puis quittez et rouvrez l’application pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",
@@ -3968,8 +3993,6 @@ export const fr = {
             "Ce jeu de données semble contenir des images, ce qui empêche son utilisation en streaming.",
           audioDataset:
             "Ce jeu de données semble contenir de l'audio, ce qui empêche son utilisation en streaming.",
-          appleSilicon:
-            "Le streaming n'est pas encore pris en charge sur Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "réponses de l'assistant uniquement",
@@ -5160,6 +5183,8 @@ export const fr = {
     removeLevel: "Retirer le niveau {n}",
     addLevel: "Ajouter un niveau",
     jsonHelp: "Le corps de la requête. Exécuter l'envoie tel quel.",
+    copyBody: "Copier le corps",
+    copyCurl: "Copier en cURL",
     examples: "Exemples",
     presetToolApproval: "Approuver les appels d'outils d'un agent",
     presetPromptInjection: "Détecter l'injection de prompt",
@@ -5545,6 +5570,7 @@ export const fr = {
   generationStats: {
     working: "Traitement en cours...",
     processingPrompt: "Traitement du prompt {percent} %",
+    compactingContext: "Compactage du contexte...",
     timeLeft: "reste {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",

@@ -964,6 +964,7 @@ export const it = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Imposta la password del proprietario dell'installazione prima di aggiungere un altro account. La userai per accedere quando questa installazione avrà più account.",
       signsInAs: "Accede come {username}",
       signsInAsOwner: "Accede come {alias} o {username}",
       signInName: "Il tuo nome di accesso",
@@ -1781,6 +1782,26 @@ export const it = {
       autoTitleNewChats: "Titola automaticamente le nuove chat",
       autoTitleNewChatsDescription:
         "Genera un titolo breve a partire dal primo messaggio.",
+      mlWarmup: {
+        sectionTitle: "Prestazioni all'avvio",
+        description: "Prepara le funzionalità selezionate per velocizzarne il primo utilizzo. Sono tutte disattivate per impostazione predefinita. Queste opzioni possono caricare dipendenze condivise e aumentare l'uso di RAM quando l'applicazione è inattiva.",
+        restartRequired: "Le modifiche si applicano dopo il riavvio di Unsloth.",
+        hardwareLabel: "Rilevamento hardware",
+        hardwareDescription: "Rilevare le GPU e preparare PyTorch.",
+        textLabel: "Modelli di testo",
+        textDescription: "Preparare il supporto di Transformers per i modelli di testo.",
+        datasetsLabel: "Preparazione dei dataset",
+        datasetsDescription: "Preparare Datasets e le sue dipendenze per le anteprime e l'elaborazione.",
+        mediaLabel: "Modelli di immagini e video",
+        mediaDescription: "Preparare Diffusers e le dipendenze condivise dei modelli.",
+        advanced: "Avanzate",
+        quantizationLabel: "Controlli preliminari della quantizzazione delle immagini",
+        quantizationDescription: "Verificare la compatibilità prima del primo caricamento di un modello di immagini quantizzato. Può aumentare brevemente l'uso di RAM.",
+        requiredBySelections: "Richiesto dalle opzioni selezionate.",
+        disabledByEnv: "Disattivato da UNSLOTH_STUDIO_DISABLE_TORCH_WARM nell'ambiente del backend.",
+        loadError: "Caricamento delle impostazioni di preparazione all'avvio non riuscito.",
+        saveError: "Salvataggio delle impostazioni di preparazione all'avvio non riuscito.",
+      },
       helperLlm: {
         sectionTitle: "LLM di supporto",
         preloadOnStartup: "Scarica in anticipo l'LLM di supporto all'avvio",
@@ -1843,6 +1864,7 @@ export const it = {
           "Salvataggio delle impostazioni di cambio automatico del modello non riuscito.",
         idleError:
           "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
+        idleUnsaved: "Non ancora salvato.",
         keepKv:
           "Mantieni il contesto della chat tra gli scaricamenti",
         keepKvDescription:
@@ -2904,8 +2926,8 @@ export const it = {
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       turnNavigation: "Navigazione dei turni",
       turnNavigationDescription: "Mostra i tuoi messaggi come una barra sul bordo sinistro delle chat lunghe. Passa sopra un turno per l’anteprima, fai clic per raggiungerlo e aggiungilo ai segnalibri per ritrovarlo.",
-      composerAtBottom: "Casella di testo in basso",
-      composerAtBottomDescription: "Avvia le nuove chat con la casella di testo in fondo alla pagina invece che al centro.",
+      composerPosition: "Posizione della casella di testo",
+      composerPositionDescription: "Dove si trova la casella di testo quando inizi una nuova chat, dalla parte alta della pagina fino in fondo.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
         "Rende i nuovi allegati disponibili in tutte le chat del progetto.",
@@ -3383,6 +3405,9 @@ export const it = {
         docs: "Documentazione",
         docsLabel: "Apri la documentazione dell'API decisionale",
         description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
+        codeTitle: "Chiamalo dal codice",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Gli altri client MCP si collegano qui con lo stesso token.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",
         enableRemoteDescription: "Gestisce /v1/systemone.",
@@ -3538,7 +3563,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "L’app si è connessa a un server Unsloth già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
+          "Connessa a un server Unsloth sulla porta {port} che questa app non ha avviato, come `unsloth studio` in un terminale. Arrestalo dove è stato avviato, poi chiudi e riapri l’app per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:
@@ -4032,8 +4057,6 @@ export const it = {
             "Questo dataset sembra contenere immagini, che non possono essere trasmesse in streaming.",
           audioDataset:
             "Questo dataset sembra contenere audio, che non può essere trasmesso in streaming.",
-          appleSilicon:
-            "Lo streaming non è ancora supportato su Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo completamenti dell'assistente",
@@ -5145,6 +5168,8 @@ export const it = {
     removeLevel: "Rimuovi il livello {n}",
     addLevel: "Aggiungi livello",
     jsonHelp: "Il corpo della richiesta. Esegui lo invia così com'è.",
+    copyBody: "Copia body",
+    copyCurl: "Copia come cURL",
     examples: "Esempi",
     presetToolApproval: "Approvare le chiamate agli strumenti di un agente",
     presetPromptInjection: "Individuare la prompt injection",
@@ -5530,6 +5555,7 @@ export const it = {
   generationStats: {
     working: "Elaborazione...",
     processingPrompt: "Elaborazione del prompt {percent}%",
+    compactingContext: "Compattazione del contesto...",
     timeLeft: "{eta} rimanenti",
     tokensOne: "{count} token",
     tokens: "{count} token",

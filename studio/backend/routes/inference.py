@@ -280,11 +280,15 @@ _CANCEL_EXECUTOR = ThreadPoolExecutor(max_workers = 2, thread_name_prefix = "inf
 
 
 def _loaded_chat_template() -> Optional[str]:
-    """Chat template of the currently loaded GGUF model, if any."""
+    """Chat template llama-server renders for the loaded GGUF: the override when one is set."""
     try:
-        return get_llama_cpp_backend().chat_template
+        backend = get_llama_cpp_backend()
+        return backend.chat_template_override or backend.chat_template
     except Exception:
         return None
+
+
+_LLAMA_ERROR_BODY_RE = _re.compile(r"llama-server returned \d{3}: (.*)", _re.DOTALL)
 
 
 def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Optional[str]:
@@ -293,13 +297,23 @@ def _template_raise_message(error_text: str, chat_template: Optional[str]) -> Op
     llama-server text. Anchors on llama.cpp's "Jinja Exception:" prefix."""
     if not chat_template:
         return None
+    # Decode the JSON error body first: it escapes quotes inside the raised message.
+    stops = ('"', "\n")
+    body = _LLAMA_ERROR_BODY_RE.match(error_text)
+    if body:
+        try:
+            decoded = error_message_from_chunk(json.loads(body.group(1)))
+        except ValueError:
+            decoded = None
+        if decoded:
+            error_text, stops = decoded, ("\n",)
     marker = "Jinja Exception:"
     idx = error_text.find(marker)
     if idx == -1:
         return None
     candidate = error_text[idx + len(marker) :]
-    # llama-server appends JSON after the message; cut at the first boundary.
-    for stop in ('"', "\n"):
+    # Undecoded, llama-server appends JSON after the message; cut at the first boundary.
+    for stop in stops:
         cut = candidate.find(stop)
         if cut != -1:
             candidate = candidate[:cut]
@@ -3928,6 +3942,35 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
         const annotationFactory = (post) => {
           /* ANNOTATE_JS */
         };
+        // No eval under this CSP: the page agent arrives as an inline script, on a one-time key.
+        const buildAgent = (() => {
+          let apply, create, root, setText, append, detach, random, join, Words;
+          try {
+            apply = Reflect.apply;
+            create = Document.prototype.createElement;
+            root = Object.getOwnPropertyDescriptor(Document.prototype, "documentElement").get;
+            setText = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, "text").set;
+            append = Node.prototype.appendChild;
+            detach = Element.prototype.remove;
+            random = Crypto.prototype.getRandomValues;
+            join = Array.prototype.join;
+            Words = Uint32Array;
+          } catch {
+            return () => null;
+          }
+          return (code) => {
+            const parent = apply(root, document, []);
+            if (!parent) return null;
+            const key = "unslothAgent" + apply(join, apply(random, crypto, [new Words(4)]), ["_"]);
+            const script = apply(create, document, ["script"]);
+            apply(setText, script, ["window." + key + " = " + code]);
+            apply(append, parent, [script]);
+            apply(detach, script, []);
+            const agent = window[key];
+            delete window[key];
+            return agent && typeof agent.run === "function" ? agent : null;
+          };
+        })();
         // Named for canvasStack() in the frontend, which trims from this frame down.
         const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
@@ -3941,6 +3984,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.close();
           // Instantiate only on a parent command; the factory predates the page's meta CSP.
           let annotation = null;
+          let agent = null;
           const postAnnotation = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
           window.addEventListener("message", (event) => {
             if (event.source !== parent) return;
@@ -3953,6 +3997,10 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
               else annotation?.stop();
             } else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
             else if (data.command === "annotateNumbers") annotation?.number(data.numbers);
+            else if (data.command === "agent" && typeof data.id === "string") {
+              if (!agent && typeof data.code === "string" && data.code.length <= 262144) agent = buildAgent(data.code);
+              postAnnotation({ type: "agent", id: data.id, installed: Boolean(agent), result: agent ? agent.run(data.op || {}) : null });
+            }
           });
           postAnnotation({ type: "annotate", event: "ready" });
           // document.open() drops listeners bound before it, so rebind here.
@@ -7165,7 +7213,22 @@ class _PrefillProgressSignal:
         self._decode: Optional[dict] = None
         self._decode_sent_at = 0.0
         self._decode_started = False
+        # Counters, not a frame: one fit reports once, and the event loop sends each new report once.
+        self._compactions = 0
+        self._compactions_sent = 0
         self.wants_timings = inner is not None or live
+
+    def round_ended(self) -> None:
+        """A tool result closed the pass: its unsent prefill and decode figures must not follow into the next round."""
+        self._prefill_sent = self._prefill
+        self._decode = None
+        self._decode_started = False
+
+    def compacting(self) -> None:
+        if self._live:
+            # Cleared first: a figure from the last pass sent after this report would clear the label on the client.
+            self.round_ended()
+            self._compactions += 1
 
     @property
     def needs_phase(self) -> bool:
@@ -7241,6 +7304,11 @@ class _PrefillProgressSignal:
         once per ``_LIVE_DECODE_FRAME_INTERVAL_S``. None when nothing is due."""
         if not self._live:
             return None
+        # Before prefill: a pending report always precedes the prompt pass that follows its fit.
+        compactions = self._compactions
+        if compactions != self._compactions_sent:
+            self._compactions_sent = compactions
+            return 'data: {"type":"generation_progress","phase":"compacting"}\n\n'
         prefill = self._prefill
         if prefill is not None and prefill is not self._prefill_sent:
             self._prefill_sent = prefill
@@ -14859,7 +14927,8 @@ def _mlx_estimate_fitted_context(config, model_dir: str, load_in_4bit: bool, kv_
         ceiling,
         load_in_4bit = load_in_4bit,
         retains_history = (
-            not getattr(config, "is_vision", False) or mlx_vlm_snapshot_store_available()
+            not (getattr(config, "is_vision", False) or route.get("vision"))
+            or mlx_vlm_snapshot_store_available()
         ),
         kv_bits = kv_bits,
         **route,
@@ -14943,7 +15012,6 @@ def _mlx_offload_warning(info: dict) -> Optional[str]:
 
 def _mlx_estimate_speculates(request, model_dir) -> bool:
     from core.inference import mlx_speculative
-    from core.inference.mlx_inference import parse_mlx_kv_quant
     from core.inference.mlx_memory import _loads_as_vision, _snapshot_config
 
     mode = mlx_speculative.mlx_spec_mode(request.speculative_type)
@@ -14951,10 +15019,7 @@ def _mlx_estimate_speculates(request, model_dir) -> bool:
         mode, _loads_as_vision(_snapshot_config(model_dir) or {}), request.spec_draft_model
     ):
         return False
-    bits, turboquant = parse_mlx_kv_quant(request.mlx_kv_quant)
-    legacy_bits = request.mlx_kv_quant is None and request.mlx_kv_bits is not None
-    kv_quant = bits is not None or turboquant or legacy_bits
-    return not mlx_speculative.speculation_refusal(kv_quant = kv_quant, distributed = False, lora = False)
+    return not mlx_speculative.speculation_refusal(distributed = False, lora = False)
 
 
 def _mlx_estimate_drafter(
@@ -14965,6 +15030,7 @@ def _mlx_estimate_drafter(
     load_in_4bit: bool,
     offload_route: Optional[dict] = None,
     baseline: Optional[dict] = None,
+    kv_bits: Optional[int] = None,
 ):
     """``((path, builtin), fitted context, speculates, stretched)`` of an MLX load of *request*: the drafter it
     would attach, chosen as the load chooses it, whether it speculates at all (so loads through mlx-vlm), and
@@ -14992,6 +15058,7 @@ def _mlx_estimate_drafter(
             load_in_4bit = load_in_4bit,
             costless = mode == "auto",
             baseline = baseline,
+            kv_bits = kv_bits,
             **kwargs,
             **(offload_route or {}),
         )
@@ -15036,16 +15103,18 @@ def _mlx_load_estimate(
         mlx_kv_quant_is_refused,
         mlx_vlm_snapshot_store_available,
     )
-    from core.inference.mlx_memory import mlx_memory_breakdown
+    from core.inference.mlx_memory import MlxTurboQuant, mlx_memory_breakdown
 
     load_in_4bit = _mlx_estimate_load_in_4bit(config, request)
     kv_bits = _mlx_estimate_kv_bits(request.mlx_kv_quant, request.mlx_kv_bits)
+    turboquant = isinstance(kv_bits, MlxTurboQuant)
     # A width the cache takes makes the window a budget, pinned or fit.
-    if kv_bits is not None and mlx_kv_quant_is_refused(model_dir, kv_bits):
+    if kv_bits is not None and not turboquant and mlx_kv_quant_is_refused(model_dir, kv_bits):
         kv_bits = None
     named_ctx = request.max_seq_length or 0
+    # As the load, which plans offload for a TurboQuant cache at full width.
     offload, offloadable, offload_baseline = _mlx_estimate_offload(
-        request, config, model_identifier, model_dir, load_in_4bit, kv_bits
+        request, config, model_identifier, model_dir, load_in_4bit, None if turboquant else kv_bits
     )
     drafter, fitted_ctx, speculates, stretched = _mlx_estimate_drafter(
         request,
@@ -15055,8 +15124,10 @@ def _mlx_load_estimate(
         load_in_4bit,
         offload,
         offload_baseline,
+        kv_bits,
     )
-    route = {**({"vision": True} if speculates else {}), **offload}
+    # TurboQuant lives on mlx-vlm, which a text load then takes.
+    route = {**({"vision": True} if speculates or turboquant else {}), **offload}
     if not named_ctx and fitted_ctx is None:
         fitted_ctx = _mlx_estimate_fitted_context(config, model_dir, load_in_4bit, kv_bits, **route)
     priced_ctx = named_ctx or fitted_ctx or _mlx_estimate_ceiling(model_dir)
@@ -15081,12 +15152,13 @@ def _mlx_load_estimate(
             priced_ctx,
             SimpleNamespace(path = drafter[0], builtin = drafter[1]),
             load_in_4bit = load_in_4bit,
+            kv_bits = kv_bits,
             **offload,
         )
     if breakdown is None:
         return "unsizable", None
     retains_history = (
-        not (getattr(config, "is_vision", False) or speculates)
+        not (getattr(config, "is_vision", False) or speculates or turboquant)
         or mlx_vlm_snapshot_store_available()
     )
     return None, _MlxLoadEstimate(
@@ -15274,10 +15346,15 @@ def _mlx_estimate_load_in_4bit(config, request) -> bool:
     )
 
 
-def _mlx_estimate_kv_bits(mlx_kv_quant, mlx_kv_bits = None) -> Optional[int]:
-    """The mx.quantize width the load would price, or None for a full-width cache."""
+def _mlx_estimate_kv_bits(mlx_kv_quant, mlx_kv_bits = None):
+    """The mx.quantize width or ``MlxTurboQuant`` the load would price, or None for a full-width cache."""
     try:
-        from core.inference.mlx_inference import MLX_KV_BITS_CHOICES, parse_mlx_kv_quant
+        from core.inference.mlx_inference import (
+            MLX_KV_BITS_CHOICES,
+            MLX_TURBOQUANT_BITS_CHOICES,
+            parse_mlx_kv_quant,
+        )
+        from core.inference.mlx_memory import MlxTurboQuant
     except Exception:
         return None
     if mlx_kv_quant is None:
@@ -15285,10 +15362,9 @@ def _mlx_estimate_kv_bits(mlx_kv_quant, mlx_kv_bits = None) -> Optional[int]:
             return None
         return mlx_kv_bits if mlx_kv_bits in MLX_KV_BITS_CHOICES else None
     bits, turboquant = parse_mlx_kv_quant(mlx_kv_quant)
-    # TurboQuant's layout is not one the planner prices; the load fits it at full width too.
-    if turboquant or bits not in MLX_KV_BITS_CHOICES:
-        return None
-    return bits
+    if turboquant:
+        return MlxTurboQuant(bits) if bits in MLX_TURBOQUANT_BITS_CHOICES else None
+    return bits if bits in MLX_KV_BITS_CHOICES else None
 
 
 def _is_embedding_gguf(config: ModelConfig) -> bool:
@@ -16025,7 +16101,7 @@ def _native_audio_cpu_load(config, request) -> bool:
 
     audio_type = getattr(config, "audio_type", None)
     return audio_type in NATIVE_AUDIO_TYPES and audio_load_runs_on_cpu(
-        audio_type, getattr(request, "audio_device", None)
+        audio_type, getattr(request, "audio_device", None), getattr(config, "audio_cpp", None)
     )
 
 
@@ -16037,6 +16113,9 @@ def _resident_audio_placement_matches(backend, request) -> bool:
     resident = backend.models.get(backend.active_model_name, {})
     audio_type = resident.get("audio_type")
     if audio_type not in NATIVE_AUDIO_TYPES:
+        return True
+    if resident.get("audio_cpu_only"):
+        # A CPU-only package lands on the CPU whatever the device, so no request moves it.
         return True
     device = getattr(request, "audio_device", None)
     if resident.get("audio_device_fallback") == "cpu":
@@ -16155,7 +16234,9 @@ async def _preflight_native_audio_placement(
             # Umbrella id: size from the one variant it loads, not repository bytes.
             audio_cpp_model = getattr(config, "audio_cpp", None)
             if audio_cpp_model is not None:
-                required_gb = audio_cpp_resident_gb(audio_cpp_model.size_bytes)
+                required_gb = audio_cpp_resident_gb(
+                    audio_cpp_model.size_bytes, audio_cpp_model.family
+                )
         elif len(targets) > 1:
             required_gb = 0.0
             for target in targets:
@@ -19806,6 +19887,7 @@ async def _load_model_impl(
             inference_config,
             request.hf_token,
             trust_remote_code_used = bool(getattr(request, "trust_remote_code", False)),
+            loaded_auto_map = _model_info.get("loaded_auto_map"),
         )
         try:
             backend.models.setdefault(config.identifier, {})["requires_trust_remote_code"] = (
@@ -20086,11 +20168,15 @@ def _resolve_loaded_trust_remote_code(
     inference_config,
     hf_token = None,
     trust_remote_code_used = False,
+    loaded_auto_map = None,
 ) -> bool:
-    """Resolves a loaded model's TRC: stored value, value used, YAML default, then raw auto_map."""
+    """Resolves a loaded model's TRC: stored value, value used, YAML default, then raw auto_map,
+    which `loaded_auto_map` answers without the Hub when the worker read it from the loaded files."""
     known = _stored_trust_remote_code(model_info, inference_config, trust_remote_code_used)
     if known is not None:
         return known
+    if loaded_auto_map is not None:
+        return bool(loaded_auto_map)
     return _auto_map_trust_remote_code(model_id, hf_token)
 
 
@@ -21554,6 +21640,9 @@ async def _unload_model_impl(request: UnloadRequest, current_subject: str):
                 await _drain_and_recancel_before_teardown(
                     force = request.force_cancel_active, action = "Unloading the model"
                 )
+                from core.inference.chat_swap_kv import save_chat_kv_before_unload
+
+                await save_chat_kv_before_unload()
                 # Off the loop: a long teardown would block the event loop and this route's own padding.
                 await asyncio.to_thread(llama_backend.unload_model)
                 note_model_unloaded()
@@ -27162,8 +27251,7 @@ def _messages_have_input_audio(messages) -> bool:
 
 
 def _messages_have_embedded_image(messages) -> bool:
-    """True only for inline base64 image data URLs; durable runs would persist them into every later
-    turn."""
+    """True only for inline base64 image data URLs."""
     for msg in messages:
         content = getattr(msg, "content", None)
         if not isinstance(content, list):
@@ -32409,6 +32497,8 @@ async def produce_openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
+                            if event["type"] == "tool_end":
+                                _gguf_prefill_signal.round_ended()
                             if event["type"] == "tool_start":
                                 # Gated with the card since the stamp is set once: a caller that cannot
                                 # see the card would otherwise report the tool run as its TTFT.
@@ -36445,6 +36535,10 @@ def _servable_catalog_scan(catalog, catalog_at: Optional[float]):
         hit = _fresh()
         if hit is not None:
             return hit
+        from utils.hardware import hardware as hw
+
+        # Non-GGUF servability needs the device; undetected hardware would list GGUF only.
+        hw.ensure_hardware_detected()
         # Captured before the scan so an invalidation during it leaves the entry stale.
         generation = _servability_generation()
         scanned = []
@@ -43242,7 +43336,9 @@ def _anthropic_in_process_sse(
                 emitter, chunk, request, disable_parallel_tool_use
             )
 
-        finish = emitter.finish
+        def finish():
+            return [] if source.cancelled else emitter.finish()
+
     # The chat handler's tracker holds cancel_id and session_id; the message id is Messages' own.
     tracker = _TrackedCancel(source.cancel_event, message_id, track_run = False)
     tracker.__enter__()
@@ -45592,6 +45688,9 @@ async def _anthropic_passthrough_stream(
                 )
             finally:
                 _release_admission(tracker = _tracker)
+
+        if cancel_event.is_set():
+            return
 
         for line in emitter.finish():
             yield line
@@ -49004,6 +49103,7 @@ async def _external_image_generation(
         timeout = 600.0,
     )
     owner = current_account_id()
+    generation_started = time.perf_counter()
     task = asyncio.create_task(
         client.create_images(
             prompt = body.prompt,
@@ -49047,6 +49147,7 @@ async def _external_image_generation(
                 status_code = 502, detail = "The image endpoint did not return a usable image."
             ) from exc
 
+        generation_seconds = time.perf_counter() - generation_started
         created_at = time.time()
 
         def _persist() -> list[dict]:
@@ -49063,6 +49164,8 @@ async def _external_image_generation(
                             "seed": body.seed or 0,
                             "batch_index": index,
                             "batch_size": body.batch_size,
+                            "generation_seconds": generation_seconds,
+                            "generation_count": len(images),
                             "model": external_model,
                             "model_kind": "connection",
                             "created_at": created_at,
@@ -49202,6 +49305,7 @@ async def _generate_diffusion_image_run(
         else None
     )
     submitted = request
+    generation_started = time.perf_counter()
     # FLUX.3 prompt upsampling runs ahead of the run, so the sidecar can leave the VRAM before the DiT denoises.
     enhancement = await _enhance_generate_prompts(backend, request)
     if enhancement.status != "applied":
@@ -49345,6 +49449,7 @@ async def _generate_diffusion_image_run(
             _diffusion_persist_active -= 1
             raise
 
+    generation_seconds = time.perf_counter() - generation_started
     # Persist each image with its full recipe. BOTH engines batch with a distinct seed per image, returned in ``seeds``, so each is individually reproducible.
     created_at = time.time()
     per_image_seeds = result.get("seeds")
@@ -49387,6 +49492,8 @@ async def _generate_diffusion_image_run(
                         "batch_index": index,
                         # The batch shares one seed, so reproducing a batch_index>0 image needs the original batch_size.
                         "batch_size": 1 if list_driven else request.batch_size,
+                        "generation_seconds": generation_seconds,
+                        "generation_count": len(result["images"]),
                         "model": result.get("repo_id"),
                         **({"engine": result["engine"]} if result.get("engine") else {}),
                         # The BUILD the image came off, not just the repo id: a GGUF repo holds many quants, a dense load may be torchao-
@@ -49398,6 +49505,7 @@ async def _generate_diffusion_image_run(
                         "text_encoder_quant": result.get("text_encoder_quant"),
                         "memory_mode": result.get("memory_mode"),
                         "offload_policy": result.get("offload_policy"),
+                        "denoiser_offload": result.get("denoiser_offload"),
                         "speed_mode": result.get("speed_mode"),
                         "attention_backend": result.get("attention_backend"),
                         "transformer_cache": result.get("transformer_cache"),
@@ -51227,6 +51335,7 @@ async def _generate_openai_images(
         openai_errors = True,
         hf_token = hf_token,
     )
+    generation_started = time.perf_counter()
 
     # Use the active engine (diffusers OR native sd.cpp), the same accessor /images/generate uses.
     backend = get_active_diffusion_engine()
@@ -51310,6 +51419,7 @@ async def _generate_openai_images(
             logger.error("openai_images.generate_failed: %s", exc)
             raise HTTPException(status_code = 500, detail = _generate_failure_detail(str(exc)))
 
+    generation_seconds = time.perf_counter() - generation_started
     # A local-directory load puts the host path in repo_id, and the monitor row is tunnelled.
     _served_repo = str(result.get("repo_id") or "")
     api_monitor.relabel(monitor_id, public_model_id(_served_repo) or _served_repo)
@@ -51326,6 +51436,8 @@ async def _generate_openai_images(
         "guidance": guidance,
         # The batch shares one base seed, so restoring a batch_index>0 sibling needs the original batch_size.
         "batch_size": body.n,
+        "generation_seconds": generation_seconds,
+        "generation_count": len(result["images"]),
         "model": result.get("repo_id"),
         # Same build record as /images/generate, so the gallery entry can name the GGUF quant and precision.
         "model_kind": result.get("model_kind"),
@@ -51334,6 +51446,7 @@ async def _generate_openai_images(
         "text_encoder_quant": result.get("text_encoder_quant"),
         "memory_mode": result.get("memory_mode"),
         "offload_policy": result.get("offload_policy"),
+        "denoiser_offload": result.get("denoiser_offload"),
         "speed_mode": result.get("speed_mode"),
         "attention_backend": result.get("attention_backend"),
         "transformer_cache": result.get("transformer_cache"),

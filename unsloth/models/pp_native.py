@@ -104,11 +104,8 @@ class PPConfig:
 
 class _StageOutput(BaseException):
     """Raised by the pass-through after a non-last stage's last layer: the stage output. A BaseException,
-    so no `except Exception` inside a model forward swallows it."""
-
-    def __init__(self, hidden):
-        super().__init__()
-        self.hidden = hidden
+    so no `except Exception` inside a model forward swallows it. The hidden states ride in `args`:
+    Dynamo cannot trace a custom exception `__init__` (a graph break, an error under fullgraph)."""
 
 
 def _unwrap(model):
@@ -1119,7 +1116,7 @@ class _PPStageModule(nn.Module):
                 ctx.router_logits = []
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
         except _StageOutput as stop:
-            hidden = stop.hidden
+            hidden = stop.args[0]
             if hidden.shape[-1] != self._pp_hidden or hidden.dim() != 3:
                 raise RuntimeError(
                     f"Unsloth: pipeline stage output has shape {tuple(hidden.shape)}, expected "
@@ -1444,11 +1441,14 @@ class PipelineParallel:
         policy = MixedPrecisionPolicy(
             param_dtype = None,
             reduce_dtype = getattr(mp_policy, "reduce_dtype", None),
-            cast_forward_inputs = False,  # the received hidden states keep PPConfig.activation_dtype
+            cast_forward_inputs = False,
         )
         fully_shard(self.module, mesh = dp_mesh, mp_policy = policy, reshard_after_forward = False)
+        from .fsdp2_save import _install_replicated_grad_reset
+
+        _install_replicated_grad_reset(self.module)
         self.dp_mesh = dp_mesh
-        self._shapes.clear()  # stages built before hold the unwrapped module
+        self._shapes.clear()
 
     @property
     def is_first(self):
@@ -1774,7 +1774,11 @@ class PipelineParallel:
 
         state = self.model.__dict__.setdefault("_unsloth_replicated_grad_state", {"queued": False})
         _sync_replicated_grads(
-            params, dist, model_mesh(self.model) or self.dp_mesh, state.setdefault("buffers", {})
+            params,
+            dist,
+            model_mesh(self.model) or self.dp_mesh,
+            state.setdefault("buffers", {}),
+            state.pop("pending", None),
         )
 
     def _grad_copies(self, grad):
@@ -1841,12 +1845,10 @@ class PipelineParallel:
         return total.float()
 
     def unscale_(self, scaler, optimizer):
-        """scaler.unscale_(optimizer), then found_inf is the MAX over every stage, so all stages skip the
-        same steps (scaler.step / scaler.update after this)."""
+        """Unscale gradients and agree on overflow across stages before scaler.step / scaler.update."""
+        if scaler.is_enabled():
+            self._bind_scaler(scaler)
         scaler.unscale_(optimizer)
-        if not scaler.is_enabled():
-            return
-        self._agree_found_inf(scaler, optimizer)
 
     def _bind_scaler(self, scaler):
         """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips.

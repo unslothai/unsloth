@@ -1058,6 +1058,7 @@ export const zhCN = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "添加其他账户前，请先设置此安装实例所有者的密码。此安装实例有多个账户后，你将使用该密码登录。",
       signsInAs: "以 {username} 登录",
       signsInAsOwner: "以 {alias} 或 {username} 登录",
       signInName: "你的登录名",
@@ -1854,6 +1855,26 @@ export const zhCN = {
       chatDefaults: "聊天默认设置",
       autoTitleNewChats: "自动为新聊天命名",
       autoTitleNewChatsDescription: "根据第一条消息生成简短标题。",
+      mlWarmup: {
+        sectionTitle: "启动性能",
+        description: "提前准备所选功能，加快首次使用。所有选项默认关闭。启用后可能加载共享依赖项，并增加空闲时的 RAM 占用。",
+        restartRequired: "更改将在重启 Unsloth 后生效。",
+        hardwareLabel: "硬件检测",
+        hardwareDescription: "检测 GPU 并准备 PyTorch。",
+        textLabel: "文本模型",
+        textDescription: "准备 Transformers 文本模型支持。",
+        datasetsLabel: "数据集准备",
+        datasetsDescription: "准备 Datasets 及其依赖项，以供预览和处理使用。",
+        mediaLabel: "图像和视频模型",
+        mediaDescription: "准备 Diffusers 及模型共享的依赖项。",
+        advanced: "高级",
+        quantizationLabel: "图像量化预检查",
+        quantizationDescription: "在首次加载量化图像模型前检查支持情况。可能短暂增加 RAM 占用。",
+        requiredBySelections: "所选选项需要此功能。",
+        disabledByEnv: "已由后端环境中的 UNSLOTH_STUDIO_DISABLE_TORCH_WARM 禁用。",
+        loadError: "加载启动准备设置失败。",
+        saveError: "保存启动准备设置失败。",
+      },
       helperLlm: {
         sectionTitle: "辅助 LLM",
         preloadOnStartup: "启动时预缓存辅助 LLM",
@@ -1904,6 +1925,7 @@ export const zhCN = {
         loadError: "加载模型自动切换设置失败。",
         saveError: "保存模型自动切换设置失败。",
         idleError: "输入 0 保持模型加载，或输入至少 60 秒。",
+        idleUnsaved: "尚未保存。",
         autoDownload: "下载缺失的模型",
         autoDownloadDescription:
           "获取 API 请求中指定但尚未下载的 GGUF。开启后，任何持有 API 密钥的人都可以占用你的磁盘空间和带宽。",
@@ -2924,8 +2946,8 @@ export const zhCN = {
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       turnNavigation: "轮次导航",
       turnNavigationDescription: "在长对话的左边缘以导轨形式显示你的消息。悬停可预览某一轮，点击可跳转，并可加书签以便再次找到。",
-      composerAtBottom: "输入框置底",
-      composerAtBottomDescription: "新聊天时将输入框放在页面底部，而不是中间。",
+      composerPosition: "输入框位置",
+      composerPositionDescription: "新聊天时输入框的位置，可从页面顶部调到底部。",
       projectAttachments: "在项目内共享文件",
       projectAttachmentsDescription:
         "让项目内的所有聊天都能使用新添加的聊天附件。",
@@ -3385,6 +3407,9 @@ export const zhCN = {
         docs: "文档",
         docsLabel: "打开决策 API 文档",
         description: "使用本机模型或连接中的决策模型回答关于文本的是/否、选择和评分问题。可配合 TypeSafe SDK 使用。",
+        codeTitle: "通过代码调用",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "其他 MCP 客户端使用同一令牌连接到此处。",
         enable: "处理请求",
         enableDescription: "提供 /v1/systemone。开启后会下载模型。",
         enableRemoteDescription: "提供 /v1/systemone。",
@@ -3534,7 +3559,7 @@ export const zhCN = {
         desktopAvailable: "桌面应用 {version} 已可用",
         desktopAvailableDescription: "立即更新，完成后桌面应用将自动重启。",
         desktopExternalServer:
-          "应用已连接到正在运行的 Unsloth 服务器，无法更新该服务器。请先停止该服务器，再退出并重新打开桌面应用以进行更新。",
+          "已连接到端口 {port} 上并非由此应用启动的 Unsloth 服务器，例如在终端中运行的 `unsloth studio`。请在启动它的地方停止它，然后退出并重新打开应用以进行更新。",
         desktopManualInstall: "打开发布页面，安装最新的 Linux 软件包。",
         desktopCheckFailed: "无法检查更新",
         desktopCheckFailedDescription: "请检查网络连接后重试。",
@@ -3829,8 +3854,6 @@ export const zhCN = {
             "Embedding 模型不支持流式传输（训练需要完整数据集）。",
           imageDataset: "此数据集似乎包含图像，无法进行流式传输。",
           audioDataset: "此数据集似乎包含音频，无法进行流式传输。",
-          appleSilicon:
-            "Apple Silicon（MLX）暂不支持流式传输。",
         },
         options: {
           trainOnCompletions: "仅助手回复",
@@ -4978,6 +5001,8 @@ export const zhCN = {
     removeLevel: "移除等级 {n}",
     addLevel: "添加等级",
     jsonHelp: "请求正文。运行时会按原样发送。",
+    copyBody: "复制请求体",
+    copyCurl: "复制为 cURL",
     examples: "示例",
     presetToolApproval: "审批智能体的工具调用",
     presetPromptInjection: "识别提示词注入",
@@ -5363,6 +5388,7 @@ export const zhCN = {
   generationStats: {
     working: "正在处理...",
     processingPrompt: "正在处理提示词 {percent}%",
+    compactingContext: "正在压缩上下文...",
     timeLeft: "剩余 {eta}",
     tokensOne: "{count} 个 token",
     tokens: "{count} 个 token",

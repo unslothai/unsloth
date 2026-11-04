@@ -88,7 +88,10 @@ import {
   PROVIDER_MAX_OUTPUT_TOKENS_MIN,
   connectionApiFields,
   getExternalProviderApiKey,
+  connectionPickerValue,
   isCustomProviderType,
+  isOpenCodeProviderType,
+  OPENCODE_PLANS,
   isDecisionConnection,
   LEGACY_CUSTOM_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
@@ -119,7 +122,7 @@ const PROVIDER_FORM_EASE: [number, number, number, number] = [
 const PROVIDER_FORM_DURATION = 0.2;
 const CUSTOM_PROVIDER_MISSING_KEY_MESSAGE =
   "No API key found. Add a valid API key for this connection.";
-const HIDDEN_PROVIDER_TYPES = new Set(["qwen"]);
+const HIDDEN_PROVIDER_TYPES = new Set(["qwen", "opencode_go"]);
 
 // Ends the open provider menu just above this item so the rows from it on need a scroll.
 function capProviderMenuAtItem(item: HTMLElement | null) {
@@ -134,10 +137,16 @@ function capProviderMenuAtItem(item: HTMLElement | null) {
   ) {
     top += node.offsetTop;
   }
-  const viewport = item.closest<HTMLElement>("[data-radix-select-viewport]");
-  top -= viewport?.scrollTop ?? 0;
   top += Number.parseFloat(getComputedStyle(content).paddingBottom) || 0;
   content.style.maxHeight = `min(var(--radix-select-content-available-height), ${top}px)`;
+}
+
+function hasPublicModelCatalog(providerType: string | null | undefined): boolean {
+  return providerType === "openrouter";
+}
+
+export function withSavedModelIds(catalog: string[], saved: string[]): string[] {
+  return [...catalog, ...saved.filter((id) => !catalog.includes(id))];
 }
 
 function parseManualModelIds(text: string): string[] {
@@ -276,6 +285,8 @@ export function ChatProvidersSettings({
 }: ChatProvidersSettingsProps) {
   const providersRef = useRef(providers);
   const seededProviderTypeRef = useRef<string | null>(null);
+  // One object per automatic load: a reopened form reuses the key, never the request.
+  const autoLoadedCatalogRef = useRef<{ key: string } | null>(null);
   // One-shot latch; user navigation sets it too so a slow first sync cannot pull them into the form.
   const autoOpenedAddFormRef = useRef(false);
   const [page, setPage] = useState<"list" | "form">("list");
@@ -301,6 +312,8 @@ export function ChatProvidersSettings({
   const [syncingProviders, setSyncingProviders] = useState(false);
   const [registryLoading, setRegistryLoading] = useState(false);
   const [modelsLoading, setModelsLoading] = useState(false);
+  // Kept apart from modelsLoading: an automatic catalog load must not hold up saving.
+  const [catalogAutoLoad, setCatalogAutoLoad] = useState<{ key: string } | null>(null);
   const codexCatalogRequestRef = useRef(0);
   const [mutatingProvider, setMutatingProvider] = useState(false);
   const [testingProviderIds, setTestingProviderIds] = useState<
@@ -353,6 +366,19 @@ export function ChatProvidersSettings({
       toExternalBackendProviderType(providerType),
       null,
     ) === true;
+
+  const chooseProviderType = (value: string) => {
+    if (editingProviderId) return;
+    setProviderType(value);
+    setReasoningConfig(null);
+    setAvailableModels([]);
+    setSelectedModelIds([]);
+    setManualModelIds("");
+    setModelSearchQuery("");
+    if (isCustomProviderType(value)) {
+      setCustomProviderName(customProviderDisplayName(value));
+    }
+  };
 
   const registryByType = useMemo(
     () => new Map(registry.map((entry) => [entry.provider_type, entry])),
@@ -433,10 +459,18 @@ export function ChatProvidersSettings({
   const missingModelCatalogApiKey =
     !isCustomProvider &&
     !isCuratedModelList &&
+    !hasPublicModelCatalog(providerType) &&
     apiKey.trim().length === 0 &&
     !(editingProviderHasSavedKey && !clearApiKeyRequested);
+  const autoLoadCatalogKey =
+    page === "form" && hasPublicModelCatalog(providerType)
+      ? `${editingProviderId ?? "new"}:${providerType}`
+      : null;
+  const catalogAutoLoading =
+    catalogAutoLoad !== null && catalogAutoLoad.key === autoLoadCatalogKey;
   const loadModelsDisabled =
     modelsLoading ||
+    catalogAutoLoading ||
     mutatingProvider ||
     isManualModelList ||
     missingModelCatalogBaseUrl ||
@@ -480,6 +514,17 @@ export function ChatProvidersSettings({
   }, [providers]);
 
   useEffect(() => {
+    if (!autoLoadCatalogKey) return;
+    const autoLoad = { key: autoLoadCatalogKey };
+    autoLoadedCatalogRef.current = autoLoad;
+    void loadModels({ autoLoad });
+    // Leaving the form or unmounting retires the request, so its response cannot write stale state.
+    return () => {
+      if (autoLoadedCatalogRef.current === autoLoad) autoLoadedCatalogRef.current = null;
+    };
+  }, [autoLoadCatalogKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
     if (!providerType || editingProviderId) return;
     if (seededProviderTypeRef.current === providerType) return;
     seededProviderTypeRef.current = providerType;
@@ -495,8 +540,9 @@ export function ChatProvidersSettings({
       }
       return;
     }
-    // Seed defaults only for curated providers; others stay empty until "Load available models".
-    const seedDefaults = entry.model_list_mode === "curated";
+    // Seed defaults for curated providers and OpenRouter; others stay empty until "Load available models".
+    const seedDefaults =
+      entry.model_list_mode === "curated" || hasPublicModelCatalog(providerType);
     setAvailableModels(seedDefaults ? [...entry.default_models] : []);
     setSelectedModelIds(
       isDecisionConnection({ providerType })
@@ -615,7 +661,11 @@ export function ChatProvidersSettings({
   function openAddProvider() {
     resetForm();
     const entry = providerType ? registryByType.get(providerType) : null;
-    if (entry?.model_list_mode === "curated") {
+    if (
+      entry &&
+      (entry.model_list_mode === "curated" ||
+        hasPublicModelCatalog(providerType))
+    ) {
       setAvailableModels([...entry.default_models]);
     }
     if (entry && isDecisionConnection({ providerType: entry.provider_type })) {
@@ -693,7 +743,10 @@ export function ChatProvidersSettings({
     return value;
   }
 
-  async function loadModels() {
+  async function loadModels({
+    autoLoad,
+  }: { autoLoad?: { key: string } } = {}) {
+    const silent = autoLoad !== undefined;
     if (!providerType) {
       toast.error("Choose a connection first.");
       return;
@@ -728,7 +781,12 @@ export function ChatProvidersSettings({
       );
       return;
     }
-    if (!isCustomProvider && !apiKey.trim() && !editingProviderHasSavedKey) {
+    if (
+      !isCustomProvider &&
+      !hasPublicModelCatalog(providerType) &&
+      !apiKey.trim() &&
+      !editingProviderHasSavedKey
+    ) {
       toast.error("Add an API key first.");
       return;
     }
@@ -741,23 +799,28 @@ export function ChatProvidersSettings({
       toast.info("Save the new Base URL first, then load its models.");
       return;
     }
-    setModelsLoading(true);
+    if (silent) setCatalogAutoLoad(autoLoad);
+    else setModelsLoading(true);
     try {
-      const baseUrl = parseBaseUrlForProvider(
-        baseUrlDraft,
-        supportsRemoteModelCatalog(providerType),
-        providerType,
-      );
+      // Auto-loads can run before the form drops the previous provider's key and Base URL.
+      const baseUrl = silent
+        ? editingProvider?.baseUrl || null
+        : parseBaseUrlForProvider(
+            baseUrlDraft,
+            supportsRemoteModelCatalog(providerType),
+            providerType,
+          );
       const backendProviderType =
         toExternalBackendProviderType(providerType) ?? providerType;
       const models = await listProviderModels({
         providerType: backendProviderType,
 
         providerId: editingProviderId,
-        apiKey: apiKey.trim(),
+        apiKey: silent ? "" : apiKey.trim(),
         baseUrl,
         apiType: providerType === LEGACY_CUSTOM_PROVIDER_TYPE ? apiType : undefined,
       });
+      if (silent && autoLoadedCatalogRef.current !== autoLoad) return;
       // The picker keeps only ids, so per-model capabilities are learned here or lost.
       learnCatalogModelCapabilities(providerType, models);
       const registryDefaults = supportsRemoteModelCatalog(providerType)
@@ -772,17 +835,22 @@ export function ChatProvidersSettings({
           ].filter((id) => id.length > 0),
         ),
       ]);
-      setAvailableModels(modelIds);
-      setSelectedModelIds((prev) =>
-        prev.filter((id) => modelIds.includes(id)),
-      );
-      if (modelIds.length === 0) {
+      // OpenRouter routing variants (:nitro, :floor) are valid ids that /models never lists.
+      if (silent || hasPublicModelCatalog(providerType)) {
+        setAvailableModels(withSavedModelIds(modelIds, selectedModelIds));
+      } else {
+        setAvailableModels(modelIds);
+        setSelectedModelIds((prev) =>
+          prev.filter((id) => modelIds.includes(id)),
+        );
+      }
+      if (!silent && modelIds.length === 0) {
         const hint =
           providerType === LEGACY_CUSTOM_PROVIDER_TYPE && apiType === "systemone"
             ? SYSTEM_ONE_EMPTY_CATALOG_HINT
             : emptyCatalogHint(providerType);
         toast.info(hint.title, { description: hint.description });
-      } else {
+      } else if (!silent) {
         toast.success(
           `Found ${modelIds.length} ${modelIds.length === 1 ? "model" : "models"}.`,
         );
@@ -796,12 +864,13 @@ export function ChatProvidersSettings({
           ),
         );
       }
-      setModelSearchQuery("");
+      if (!silent) setModelSearchQuery("");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";
-      toast.error(`Could not load models: ${message}`);
+      if (!silent) toast.error(`Could not load models: ${message}`);
     } finally {
-      setModelsLoading(false);
+      if (silent) setCatalogAutoLoad((current) => (current === autoLoad ? null : current));
+      else setModelsLoading(false);
     }
   }
 
@@ -1511,19 +1580,8 @@ export function ChatProvidersSettings({
                   </p>
                 </div>
                 <Select
-                  value={providerType}
-                  onValueChange={(value) => {
-                    if (editingProviderId) return;
-                    setProviderType(value);
-                    setReasoningConfig(null);
-                    setAvailableModels([]);
-                    setSelectedModelIds([]);
-                    setManualModelIds("");
-                    setModelSearchQuery("");
-                    if (isCustomProviderType(value)) {
-                      setCustomProviderName(customProviderDisplayName(value));
-                    }
-                  }}
+                  value={connectionPickerValue(providerType)}
+                  onValueChange={chooseProviderType}
                 >
                   <SelectTrigger
                     id="provider-preset"
@@ -1579,7 +1637,9 @@ export function ChatProvidersSettings({
                                 className="size-4"
                                 title={entry.display_name}
                               />
-                              <span className="truncate">{entry.display_name}</span>
+                              <span className="truncate">
+                                {entry.provider_type === "opencode" ? "OpenCode" : entry.display_name}
+                              </span>
                             </span>
                           </SelectItem>
                         ))}
@@ -1587,6 +1647,35 @@ export function ChatProvidersSettings({
                   </SelectContent>
                 </Select>
               </div>
+
+              {isOpenCodeProviderType(providerType) ? (
+                <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
+                  <div className="flex min-w-0 flex-col gap-0.5">
+                    <Label htmlFor="provider-opencode-plan" className="text-sm font-medium">
+                      Plan
+                    </Label>
+                    <p className="text-xs leading-snug text-muted-foreground">
+                      The same OpenCode key works for both.
+                    </p>
+                  </div>
+                  <Select value={providerType} onValueChange={chooseProviderType}>
+                    <SelectTrigger
+                      id="provider-opencode-plan"
+                      className="mt-[var(--ui-title-cap-inset)] h-9 w-full text-sm @max-[520px]:mt-0"
+                      disabled={editingProviderId != null}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {OPENCODE_PLANS.map((plan) => (
+                        <SelectItem key={plan.providerType} value={plan.providerType}>
+                          {plan.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              ) : null}
 
               {showApiKeyField ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
@@ -2022,7 +2111,7 @@ export function ChatProvidersSettings({
                       title={loadModelsTitle}
                       onClick={() => void loadModels()}
                     >
-                      {modelsLoading ? (
+                      {modelsLoading || catalogAutoLoading ? (
                         <>
                           <Spinner className="mr-2 size-3.5" />
                           Loading…

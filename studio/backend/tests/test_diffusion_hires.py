@@ -1579,3 +1579,63 @@ def test_upscale_default_strength_keeps_one_step_and_hires_refine_is_untouched()
     assert n == 3 and hires.steps_run(n, 0.35, hires.RULE_FLOOR) == 1
     refine = hires.refine_inference_steps(1, 0.35, hires.RULE_FLOOR)
     assert hires.min_inference_steps(refine, 0.35, hires.RULE_FLOOR) == refine
+
+
+@pytest.mark.parametrize(
+    "base, refines, expected",
+    [
+        ("resident", ["resident", "resident"], "resident"),
+        # the larger refine streamed where the base stayed resident: no one placement describes the image
+        ("resident", ["streamed", "streamed"], None),
+        ("resident", ["resident", "streamed"], None),
+        ("streamed", ["streamed", "streamed"], "streamed"),
+        (None, [None, None], None),
+    ],
+)
+def test_hires_records_a_placement_only_when_every_pass_agrees(base, refines, expected):
+    import contextlib
+    import threading
+
+    from PIL import Image
+
+    class _Backend:
+        def __init__(self):
+            self._state = types.SimpleNamespace(
+                family = _fam("z-image"), offload_policy = "group", device = "cpu"
+            )
+            self._lock = threading.Lock()
+            self._generation_cancel_lock = threading.Lock()
+            self._gen = None
+            self._active_generate_cancel = None
+            self._active_generate_account = None
+
+        @contextlib.contextmanager
+        def _generation_slot(self, cancel):
+            yield
+
+    queued = list(refines)
+
+    def fake_generate(backend, **kw):
+        ctx = kw.pop("_hires_pass")
+        if not ctx.refine:
+            return {
+                "images": [Image.new("RGB", (256, 256))] * 2,
+                "seed": 5,
+                "seeds": [5, 6],
+                "denoiser_offload": base,
+            }
+        return {
+            "images": [ctx.source],
+            "seed": kw["seed"],
+            "seeds": [kw["seed"]],
+            "denoiser_offload": queued.pop(0),
+        }
+
+    out = hires.run_hires(
+        _Backend(),
+        fake_generate,
+        hires.HiresParams(denoise = 0.4, steps = 6),
+        {"prompt": "p", "width": 256, "height": 256, "steps": 8, "seed": 5, "batch_size": 2},
+    )
+    assert not queued
+    assert out["denoiser_offload"] == expected

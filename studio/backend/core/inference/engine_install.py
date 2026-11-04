@@ -152,10 +152,19 @@ def gpu_platform() -> str:
     global _kfd_has_amd_gpu
     from utils.hardware import hardware
 
-    # IS_ROCM reads False until background detection settles; never pick CUDA meanwhile.
-    if not hardware.DETECTION_COMPLETE.is_set():
-        hardware.ensure_hardware_detected()
-    if hardware.IS_ROCM:
+    # Status is read by idle Chat. The wheel's build family is enough to choose
+    # an engine profile; discovering it must not initialize the ML runtime.
+    if hardware.DETECTION_COMPLETE.is_set():
+        is_rocm = hardware.IS_ROCM
+    else:
+        from core._torchao_stub import _installed_torch_is_rocm, _module_is_rocm
+        torch = sys.modules.get("torch")
+        is_rocm = (
+            _module_is_rocm(torch)
+            if getattr(torch, "__version__", None) is not None
+            else _installed_torch_is_rocm()
+        )
+    if is_rocm:
         return "rocm"
     if platform.system() != "Linux" or os.path.exists("/proc/driver/nvidia/version"):
         return "cuda"
@@ -785,6 +794,17 @@ def _rocm_gpu_arches() -> dict[int, str]:
     return _rocm_arches
 
 
+def _known_rocm_gpu_arches(*, wait: bool) -> dict[int, str]:
+    """Status uses existing runtime information or sysfs; a load may initialize torch.
+
+    Do not cache an empty provisional answer: first use must still run the real
+    probe, including GPU masks and HSA_OVERRIDE_GFX_VERSION.
+    """
+    if wait or "torch" in sys.modules:
+        return _rocm_gpu_arches()
+    return _rocm_arches or {}
+
+
 def _unsupported_amd_gpu(found: list[str]) -> str:
     return (
         "Requires an AMD Instinct MI200, MI300 or MI350, Radeon RX 7700 to 7900, Radeon RX 9000, or Ryzen AI Max or AI 300 GPU"
@@ -804,7 +824,7 @@ def _rocm_reason(
     wanted = profile(engine)
     if wsl_host.active():
         # ROCm is checked inside WSL; a target torch or the driver already names (the selected GPU's) refuses first.
-        arches = _rocm_gpu_arches() if gpu_id is not None else {}
+        arches = _known_rocm_gpu_arches(wait = wait) if gpu_id is not None else {}
         if gpu_id in arches:
             known = [arches[gpu_id]]
         else:
@@ -860,7 +880,17 @@ def _rocm_reason(
         )
 
     # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
-    arches = _rocm_gpu_arches()
+    arches = _known_rocm_gpu_arches(wait = wait)
+    if (
+        not arches
+        and _rocm_arches is None
+        and (
+            os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
+            or amd_kfd_gpu_gfx_targets() is None
+        )
+    ):
+        # The kernel's target ignores the override, or is unreadable; stay provisional until torch reports one.
+        return "Checking for a supported AMD GPU."
     if gpu_id is None:
         selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
     elif gpu_id in arches:

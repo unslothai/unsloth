@@ -1568,7 +1568,8 @@ class McpToolList(list):
 
 
 def _capabilities(client) -> Any:
-    return getattr(getattr(client, "initialize_result", None), "capabilities", None)
+    # initialize_result stays None on a modern connection, which has no initialize handshake.
+    return getattr(client, "server_capabilities", None)
 
 
 async def _list_resources(client) -> Optional[list[dict]]:
@@ -1581,7 +1582,7 @@ async def _list_resources(client) -> Optional[list[dict]]:
         while len(listed) < MAX_MCP_RESOURCES:
             page = await client.list_resources_mcp(cursor = cursor)
             listed.extend(getattr(page, "resources", None) or ())
-            cursor = getattr(page, "nextCursor", None) or getattr(page, "next_cursor", None)
+            cursor = getattr(page, "next_cursor", None)
             # A repeated cursor would loop forever.
             if not cursor or cursor in cursors:
                 break
@@ -1872,9 +1873,8 @@ def _image_mime(mime: Any) -> Optional[str]:
 
 
 def _resource_mime(obj: Any) -> Any:
-    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
-    mime = getattr(obj, "mimeType", None)
-    return mime if mime is not None else getattr(obj, "mime_type", None)
+    # mcp 2.x exposes mime_type; mimeType is only a constructor alias there
+    return obj.mime_type if hasattr(obj, "mime_type") else getattr(obj, "mimeType", None)
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
