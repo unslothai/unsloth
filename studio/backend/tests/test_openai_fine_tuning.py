@@ -1841,3 +1841,26 @@ def test_a_cursor_on_a_job_that_starts_during_the_request_still_pages(queue, mon
     job, first, second = _run(flow())
     assert [j.id for j in first.data] == [job.id]
     assert [j.id for j in second.data] == ["ftjob_20261001_000000_old"]
+
+
+def test_a_newer_cancelled_job_is_not_skipped_when_an_older_one_starts_between_pages(
+    queue, monkeypatch
+):
+    client, _calls, _live, gpu = queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        older = await _create(client, uploaded.id)
+        clock["t"] += 10
+        newer = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.cancel(newer.id)
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        rest = [j.id async for j in client.fine_tuning.jobs.list(after = first.data[0].id, limit = 1)]
+        return older, newer, [j.id for j in first.data] + rest
+
+    older, newer, walked = _run(flow())
+    assert sorted(walked) == sorted([older.id, newer.id])

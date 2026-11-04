@@ -1125,12 +1125,11 @@ def _iter_runs() -> Iterator[dict[str, Any]]:
 
 
 def _ordered_jobs(
-    queued: list[dict[str, Any]], terminal: list[dict[str, Any]], live: dict[str, dict[str, Any]]
+    pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # Keep waiting jobs ahead of runs and preserve the existing live/history order.
-    # Retained terminal jobs go before the first older run, with runs winning ties.
-    yield from ((job, False) for job in queued)
-    remaining = deque(sorted(terminal, key = lambda job: job["created_at"], reverse = True))
+    # Queue entries merge into the runs by creation time, ties first: a started job keeps its
+    # queue creation time, so starting it between pages cannot move another entry across a cursor.
+    remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
     # A live run can acquire its history row between the status and history reads.
     history = ((run, True) for run in _iter_runs() if run["id"] not in live)
     for row, is_run in chain(((job, False) for job in live.values()), history):
@@ -1139,15 +1138,14 @@ def _ordered_jobs(
             if is_run
             else row["created_at"]
         )
-        while remaining and remaining[0]["created_at"] > created_at:
+        while remaining and remaining[0]["created_at"] >= created_at:
             yield remaining.popleft(), False
         yield row, is_run
     yield from ((job, False) for job in remaining)
 
 
 def _list_job_page(
-    queued: list[dict[str, Any]],
-    terminal: list[dict[str, Any]],
+    pending: list[dict[str, Any]],
     live: dict[str, dict[str, Any]],
     after: Optional[str],
     after_run: Optional[str],
@@ -1155,7 +1153,7 @@ def _list_job_page(
     via_api_key: bool,
 ) -> dict[str, Any]:
     jobs, seen = [], set()
-    for row, is_run in _ordered_jobs(queued, terminal, live):
+    for row, is_run in _ordered_jobs(pending, live):
         # A queued job can start while the page is built: list it once, and let its queue id
         # still match the cursor.
         public_id = (_RUN_ALIAS.get(row["id"]) or _job_id(row["id"])) if is_run else row["id"]
@@ -1193,13 +1191,13 @@ async def list_fine_tuning_jobs(
                     after = job["id"]
 
     # After the awaits, so a job that started meanwhile is listed as its run.
-    queued, terminal = [], []
-    for entry in reversed(_ALIASES.values()):
-        if _own_alias(entry.alias) is not None:
-            group = queued if entry.status in ("queued", "starting") else terminal
-            group.append(_for_caller(_queued_job(entry), via_api_key))
+    pending = [
+        _for_caller(_queued_job(entry), via_api_key)
+        for entry in reversed(_ALIASES.values())
+        if _own_alias(entry.alias) is not None
+    ]
     return await asyncio.to_thread(
-        _list_job_page, queued, terminal, live, after, after_run, limit, via_api_key
+        _list_job_page, pending, live, after, after_run, limit, via_api_key
     )
 
 
