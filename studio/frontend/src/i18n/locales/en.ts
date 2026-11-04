@@ -1878,6 +1878,29 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a title from the first message.",
+      mlWarmup: {
+        sectionTitle: "Startup performance",
+        description:
+          "Prepare selected features for faster first use. All off by default. Options may load shared dependencies and use more RAM while idle.",
+        restartRequired: "Changes apply after restarting Unsloth.",
+        hardwareLabel: "Hardware detection",
+        hardwareDescription: "Detect GPUs and prepare PyTorch.",
+        textLabel: "Text models",
+        textDescription: "Prepare Transformers text-model support.",
+        datasetsLabel: "Dataset preparation",
+        datasetsDescription: "Prepare Datasets and its dependencies for previews and processing.",
+        mediaLabel: "Image and video models",
+        mediaDescription: "Prepare Diffusers and shared model dependencies.",
+        advanced: "Advanced",
+        quantizationLabel: "Image quantization prechecks",
+        quantizationDescription:
+          "Check support before the first quantized image model load. Can briefly increase RAM use.",
+        requiredBySelections: "Required by your selections.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_STUDIO_DISABLE_TORCH_WARM in the backend environment.",
+        loadError: "Failed to load startup warmup settings.",
+        saveError: "Failed to save startup warmup settings.",
+      },
       helperLlm: {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
@@ -1942,7 +1965,7 @@ export const en = {
         idleUnsaved: "Not saved yet.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before a model is unloaded or switched, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
         keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
@@ -3606,7 +3629,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app connected to an already-running Unsloth server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
+          "Connected to an Unsloth server on port {port} that this app did not start, such as `unsloth studio` in a terminal. Stop it where it was started, then quit and reopen the app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",

@@ -2289,7 +2289,7 @@ def _route(
     try:
         return _decide(target, state, questions, images, audio)
     except NativeContextOverflow as exc:
-        # Auto answers on PyTorch only what its longer window can hold; at equal windows it would refuse too.
+        # Auto answers on PyTorch only what its longer window can hold, and only from a download already made.
         from .catalog import clef_unsupported_reason
 
         if (
@@ -2298,6 +2298,7 @@ def _route(
             or images
             or exc.limit >= MAX_LENGTH
             or clef_unsupported_reason() is not None
+            or not is_cached(checkpoint)
         ):
             raise Unavailable(422, "invalid_request_error", str(exc)) from None
         _fallback_reason = "The request is longer than the llama.cpp context."

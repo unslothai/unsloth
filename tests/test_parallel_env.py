@@ -442,7 +442,7 @@ def test_tensor_parallel_alone_keeps_what_tp_native_supports():
         (dict(cp = 2, cp_backend = "ring", hybrid = True), "cp backend", "cp_backend=ulysses"),
         (dict(cp = 2, cp_backend = "ring", trainer = "dpo"), "cp backend", "cp_backend=ulysses"),
         (dict(cp = 2, cp_backend = "ring", sm = 7), "cp backend", "cp_backend=ulysses"),
-        (dict(cp = 2, cp_backend = "ulysses", windowed = True), "cp x attention", "drop cp"),
+        (dict(cp = 2, cp_backend = "ring", windowed = True), "cp x attention", "cp_backend=ulysses"),
         (dict(cp = 2, torch = (2, 6)), "cp x torch", "upgrade torch"),
         (dict(pp = 2, trainer = "grpo"), "pp x trainer", "drop pp"),
         (dict(pp = 2, packing = True), "pp x packing", "packing = False"),
@@ -467,6 +467,7 @@ def test_every_refusal_names_its_axis_and_the_alternative(query, axis, instead):
         dict(cp = 2, cp_backend = "ulysses", packing = True, hybrid = True),
         dict(cp = 2, cp_backend = "ulysses", trainer = "grpo"),
         dict(cp = 2, cp_backend = "ring", sm = 9),
+        dict(cp = 2, cp_backend = "ulysses", windowed = True),  # Ulysses runs the model's own attention
         dict(pp = 2, tp = 2, dp = 2, fsdp2 = True),
         dict(tp = 2, mode = "qlora"),
         dict(dp = 4, mode = "full", fsdp2 = True),
@@ -517,7 +518,10 @@ def test_cp_env_with_a_plain_trainer_is_refused(clean_env):
         def __init__(self):
             pass
 
-    with pytest.raises(NotImplementedError, match = r"cp x trainer: .*Plain would train every rank"):
+    with pytest.raises(
+        NotImplementedError,
+        match = r"cp x trainer: .*Plain is not one of the trainers .*Instead: use SFTTrainer",
+    ):
         _utils._parallel_capabilities_pre(Plain(), Plain.__init__, (), {}, None)
 
 
@@ -578,6 +582,9 @@ def test_every_contract_axis_has_declared_features():
     } <= names
     for f in caps.FEATURES:
         assert f.module and f.scope in ("instance", "class"), f
+        # Context parallel binds its trainer wrappers per instance now (context_parallel._bind_instance_methods):
+        # no feature still patches a class.
+        assert f.scope == "instance", f.name
         assert set(f.hooks) | set(f.exclusive) <= set(caps.HOOKS), (f.name, f.hooks, f.exclusive)
         assert set(f.consumes) | set(f.uses) | set(f.produces) <= set(caps.METADATA), f.name
         assert set(f.mesh) <= {"dp", "tp", "pp", "cp"}, f.name
@@ -590,7 +597,7 @@ def test_every_contract_axis_has_declared_features():
     [
         (
             dict(pp = 2, cp = 2, cp_backend = "ulysses"),
-            r"pp x cp.ulysses: both run Trainer.training_step",
+            r"pp x cp.ulysses: both run trainer.training_step",
         ),
         (dict(attention = "flash_varlen"), r"flash_varlen consumes cu_seqlens"),
     ],

@@ -1883,6 +1883,26 @@ export const fr = {
       autoTitleNewChats: "Titrer automatiquement les nouvelles discussions",
       autoTitleNewChatsDescription:
         "Générer un titre court à partir du premier message.",
+      mlWarmup: {
+        sectionTitle: "Performances au démarrage",
+        description: "Préparez les fonctionnalités sélectionnées pour accélérer leur première utilisation. Toutes sont désactivées par défaut. Ces options peuvent charger des dépendances partagées et augmenter l'utilisation de RAM au repos.",
+        restartRequired: "Les modifications s'appliquent après le redémarrage d'Unsloth.",
+        hardwareLabel: "Détection du matériel",
+        hardwareDescription: "Détecter les GPU et préparer PyTorch.",
+        textLabel: "Modèles de texte",
+        textDescription: "Préparer la prise en charge des modèles de texte par Transformers.",
+        datasetsLabel: "Préparation des jeux de données",
+        datasetsDescription: "Préparer Datasets et ses dépendances pour les aperçus et le traitement.",
+        mediaLabel: "Modèles d'image et de vidéo",
+        mediaDescription: "Préparer Diffusers et les dépendances partagées des modèles.",
+        advanced: "Avancé",
+        quantizationLabel: "Vérifications préalables à la quantification d'image",
+        quantizationDescription: "Vérifier la compatibilité avant le premier chargement d'un modèle d'image quantifié. Peut brièvement augmenter l'utilisation de RAM.",
+        requiredBySelections: "Requis par vos sélections.",
+        disabledByEnv: "Désactivé par UNSLOTH_STUDIO_DISABLE_TORCH_WARM dans l'environnement du backend.",
+        loadError: "Échec du chargement des paramètres de préparation au démarrage.",
+        saveError: "Échec de l'enregistrement des paramètres de préparation au démarrage.",
+      },
       helperLlm: {
         sectionTitle: "LLM assistant",
         preloadOnStartup: "Précharger le LLM assistant au démarrage",
@@ -3644,7 +3664,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "L’application est connectée à un serveur Unsloth déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
+          "Connectée à un serveur Unsloth sur le port {port} que cette application n’a pas démarré, comme `unsloth studio` dans un terminal. Arrêtez-le là où il a été démarré, puis quittez et rouvrez l’application pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",

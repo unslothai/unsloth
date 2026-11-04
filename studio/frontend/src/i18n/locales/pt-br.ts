@@ -1877,6 +1877,26 @@ export const ptBR = {
       autoTitleNewChats: "Gerar título automático para novos chats",
       autoTitleNewChatsDescription:
         "Gera um título curto a partir da primeira mensagem.",
+      mlWarmup: {
+        sectionTitle: "Desempenho na inicialização",
+        description: "Prepare os recursos selecionados para acelerar o primeiro uso. Todos vêm desativados por padrão. Essas opções podem carregar dependências compartilhadas e aumentar o uso de RAM enquanto o aplicativo estiver ocioso.",
+        restartRequired: "As alterações são aplicadas após reiniciar o Unsloth.",
+        hardwareLabel: "Detecção de hardware",
+        hardwareDescription: "Detectar unidades GPU e preparar o PyTorch.",
+        textLabel: "Modelos de texto",
+        textDescription: "Preparar o suporte do Transformers para modelos de texto.",
+        datasetsLabel: "Preparação de conjuntos de dados",
+        datasetsDescription: "Preparar o Datasets e suas dependências para prévias e processamento.",
+        mediaLabel: "Modelos de imagem e vídeo",
+        mediaDescription: "Preparar o Diffusers e as dependências compartilhadas dos modelos.",
+        advanced: "Avançado",
+        quantizationLabel: "Verificações prévias de quantização de imagem",
+        quantizationDescription: "Verificar a compatibilidade antes de carregar um modelo de imagem quantizado pela primeira vez. Pode aumentar brevemente o uso de RAM.",
+        requiredBySelections: "Necessário para as opções selecionadas.",
+        disabledByEnv: "Desativado por UNSLOTH_STUDIO_DISABLE_TORCH_WARM no ambiente do backend.",
+        loadError: "Falha ao carregar as configurações de preparação na inicialização.",
+        saveError: "Falha ao salvar as configurações de preparação na inicialização.",
+      },
       helperLlm: {
         sectionTitle: "LLM auxiliar",
         preloadOnStartup: "Armazenar o LLM auxiliar em cache na inicialização",
@@ -3611,7 +3631,7 @@ export const ptBR = {
         desktopAvailableDescription:
           "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
         desktopExternalServer:
-          "O aplicativo se conectou a um servidor Unsloth que já estava em execução e não pode atualizá-lo. Pare esse servidor, feche e reabra o aplicativo desktop para atualizar.",
+          "Conectado a um servidor Unsloth na porta {port} que este aplicativo não iniciou, como o `unsloth studio` em um terminal. Pare-o onde ele foi iniciado e depois feche e reabra o aplicativo para atualizar.",
         desktopManualInstall:
           "Abra a página de lançamentos para instalar o pacote mais recente para Linux.",
         desktopCheckFailed: "Não foi possível verificar se há atualizações",
