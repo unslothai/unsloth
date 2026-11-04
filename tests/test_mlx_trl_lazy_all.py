@@ -311,6 +311,9 @@ o_cfg = trl.DPOConfig(max_steps=100, warmup_ratio=0.1)
 o = trl.DPOTrainer(model=model, args=o_cfg, train_dataset=[], loraplus_lr_ratio=16, warmup_steps=30, optim="adamw_torch")
 assert o.args.lora_plus_ratio == 16 and o.args.optim == "adamw"
 assert o.args.warmup_steps == 30 and o.args._unsloth_mlx_warmup_steps_explicit
+for trainer, cfg_ in ((trl.DPOTrainer, o_cfg), (trl.SFTTrainer, trl.SFTConfig(max_steps=1))):
+    for kw in ({"lora_plus_ratio": 8, "loraplus_lr_ratio": 16}, {"loraplus_lr_ratio": 16, "lora_plus_ratio": 8}):
+        assert trainer(model=model, args=cfg_, train_dataset=[], **kw).args.lora_plus_ratio == 8, kw
 r = trl.DPOTrainer(model=model, args=o_cfg, train_dataset=[], max_steps=200)
 assert r.args.warmup_steps == 20, r.args.warmup_steps
 
@@ -549,7 +552,9 @@ def test_trl_configs_built_before_the_shim_keep_their_meaning():
     try:
         importlib.metadata.version("trl")
     except importlib.metadata.PackageNotFoundError:
-        pytest.skip("needs a real trl install")
+        pytest.skip(
+            reason = "trl is not installed, so no real DPOConfig can be built before the shim"
+        )
     _run_shim_probe(
         """
 assert RealDPO is not trl.DPOConfig

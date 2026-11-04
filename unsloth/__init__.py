@@ -1262,14 +1262,11 @@ if _IS_MLX:
                 config_class, "max_grad_norm", None
             ):
                 values.pop("max_grad_norm", None)
-        values.update(
-            {
-                (
-                    key if key == "max_length" else _MLX_TRAINING_ARGUMENT_ALIASES.get(key, key)
-                ): value
-                for key, value in overrides.items()
-            }
-        )
+        for key, value in overrides.items():
+            target = key if key == "max_length" else _MLX_TRAINING_ARGUMENT_ALIASES.get(key, key)
+            # The canonical spelling wins over its alias, whatever the keyword order.
+            if target == key or target not in overrides:
+                values[target] = value
         if hasattr(config_class, "_unsloth_mlx_trl_arguments"):
             values["_unsloth_mlx_config_copy"] = True
         coerced = config_class(**values)
