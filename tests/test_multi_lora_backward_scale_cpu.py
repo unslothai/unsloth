@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""MultiLoRA_W backward: the LoRA scale is applied once, in fp32, after dY @ B is stored.
+"""MultiLoRA_W backward: dH = scale * dY @ B is kept in fp32, so it cannot overflow for any scale, and
+the scale reaches dA, dB and dX exactly once.
 
 Runs the real Triton kernels on CPU through TRITON_INTERPRET=1 in a subprocess, with only the dense
 helpers (dequantize, base matmul) stubbed, as test_multi_lora.py does."""
@@ -61,13 +62,15 @@ _SCRIPT = textwrap.dedent(
         Y = torch.stack(rows)
         return torch.autograd.grad(Y, (X, A, B), dY.double())
 
-    if mode == "fp16_overflow":
-        # scale 2 * (dY @ B) = 80000 does not fit in fp16 (max 65504); the true grads are about 800.
+    if mode.startswith("fp16_overflow"):
+        # dY = 40000 does fit in fp16 (max 65504), but scale 2 * dY @ B (B = 1) and dY @ B alone with
+        # B = 2 (then scale 0.5) are 80000 and do not; the true grads are about 800 and 400.
+        scale, b = (2.0, 1.0) if mode == "fp16_overflow_scale_2" else (0.5, 2.0)
         X = torch.tensor([[0.01]], dtype = torch.float16, requires_grad = True)
         W = torch.zeros(1, 1, dtype = torch.float16)
         A = torch.tensor([[[0.01]]], requires_grad = True)
-        B = torch.ones(1, 1, 1, requires_grad = True)
-        scales = torch.tensor([2.0])
+        B = torch.full((1, 1, 1), b, requires_grad = True)
+        scales = torch.tensor([scale])
         ids = torch.tensor([0])
         batch = ml.MultiLoraBatch.from_adapter_ids(ids, 1)
         Y = ml.MultiLoRA_W.apply(X, W, None, A, B, scales, batch.sorted_idx, batch.seg_start)
@@ -107,7 +110,9 @@ _SCRIPT = textwrap.dedent(
 )
 
 
-@pytest.mark.parametrize("mode", ["fp16_overflow", "fp32_three_adapter_parity"])
+@pytest.mark.parametrize(
+    "mode", ["fp16_overflow_scale_2", "fp16_overflow_scale_0.5", "fp32_three_adapter_parity"]
+)
 def test_backward_applies_the_scale_once_after_the_low_precision_store(tmp_path, mode):
     pytest.importorskip("triton")
     script = tmp_path / "backward_scale.py"

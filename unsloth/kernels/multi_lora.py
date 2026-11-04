@@ -137,6 +137,7 @@ if HAS_TRITON:
         ADD: tl.constexpr,
         SCALE: tl.constexpr,
         IEEE: tl.constexpr,
+        UPCAST: tl.constexpr,
         BLOCK_M: tl.constexpr,
         BLOCK_N: tl.constexpr,
         BLOCK_K: tl.constexpr,
@@ -183,6 +184,8 @@ if HAS_TRITON:
                 mask = mask_k[:, None] & mask_n[None, :],
                 other = 0.0,
             )
+            if UPCAST:  # an fp32 operand (dH) with a 16-bit one: the dot runs in fp32
+                a, b = a.to(tl.float32), b.to(tl.float32)
             if IEEE:
                 acc += tl.dot(a, b, input_precision = "ieee")
             else:
@@ -214,6 +217,7 @@ if HAS_TRITON:
         Q_SORTED: tl.constexpr,
         SCALE: tl.constexpr,
         IEEE: tl.constexpr,
+        UPCAST: tl.constexpr,
         BLOCK_T: tl.constexpr,
         BLOCK_I: tl.constexpr,
         BLOCK_J: tl.constexpr,
@@ -254,6 +258,8 @@ if HAS_TRITON:
                 mask = mask_t[:, None] & mask_j[None, :],
                 other = 0.0,
             )
+            if UPCAST:
+                p, q = p.to(tl.float32), q.to(tl.float32)
             if IEEE:
                 acc += tl.dot(p, q, input_precision = "ieee")
             else:
@@ -311,7 +317,8 @@ def _launch_seg_mm(
         OUT_SORTED = out_sorted,
         ADD = add,
         SCALE = scales is not None,
-        IEEE = inp.dtype == torch.float32,
+        IEEE = inp.dtype == torch.float32 and W.dtype == torch.float32,
+        UPCAST = inp.dtype != W.dtype,
         BLOCK_M = BLOCK_M,
         BLOCK_N = BLOCK_N,
         BLOCK_K = BLOCK_K,
@@ -351,7 +358,8 @@ def _launch_seg_wgrad(
         P_SORTED = p_sorted,
         Q_SORTED = q_sorted,
         SCALE = scales is not None,
-        IEEE = P.dtype == torch.float32,
+        IEEE = P.dtype == torch.float32 and Q.dtype == torch.float32,
+        UPCAST = P.dtype != Q.dtype,
         BLOCK_T = 64,
         BLOCK_I = BLOCK_I,
         BLOCK_J = BLOCK_J,
@@ -507,15 +515,16 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
-        # dH = dY @ B_u stays unscaled: scale_u is applied in fp32 inside the dA and dX kernels, as
-        # single LoRA does, so a large dY times scale_u cannot overflow the fp16 / bf16 dH store.
-        dH = torch.empty(X.shape[0], R, dtype = dtype, device = X.device)
+        # dH = scale_u * dY @ B_u is kept in fp32 (tokens x R, small): stored in fp16 / bf16, a large dY
+        # times any scale, or dY @ B_u alone, can overflow to inf. The scale is applied once, here, so
+        # dA and dX read it already scaled; their kernels upcast X / A to fp32 to read it.
+        dH = torch.empty(X.shape[0], R, dtype = torch.float32, device = X.device)
         _seg_mm(
-            dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, None, False, True, False
+            dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False
         )
         dA = torch.empty(A.shape, dtype = torch.float32, device = X.device)
         dB = torch.empty(B.shape, dtype = torch.float32, device = X.device)
-        _seg_wgrad(dH, X, dA, batch, scales, True, False)
+        _seg_wgrad(dH, X, dA, batch, None, True, False)
         _seg_wgrad(dY, H, dB, batch, scales, False, True)
         W = fast_dequantize(W.t(), W_quant, dtype = dtype).to(dtype)
         dX = dY @ W.t()
@@ -527,7 +536,7 @@ class MultiLoRA_W(torch.autograd.Function):
             A.shape[2],
             dX,
             batch,
-            scales,
+            None,
             True,
             False,
             True,
