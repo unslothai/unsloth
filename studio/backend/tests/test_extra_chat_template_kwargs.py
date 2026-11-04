@@ -274,3 +274,27 @@ def test_the_public_token_count_prices_the_extra_keys(monkeypatch):
     )
 
     assert counted["chat_template_kwargs"] == {"verification": True, "enable_thinking": True}
+
+
+def test_the_default_system_probe_renders_with_the_extra_keys(monkeypatch):
+    import routes.inference as inference_route
+    from utils.current_date_prompt_settings import template_system_turn
+    from datetime import date
+
+    backend = _reasoning_backend()
+    backend._process = object()
+    backend._healthy = True
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    payload = _chat_payload(
+        chat_template_kwargs = {"enable_thinking": True, "verification": True, "nested": {"a": 1}}
+    )
+    _normalize_chat_reasoning_controls(payload)
+
+    controls = inference_route._template_controls(payload)
+
+    assert dict(controls) == {"verification": True, "enable_thinking": True}
+    template = (
+        "{% if messages[0].role != 'system' %}<system>{{ 'VERIFY' if verification else 'PLAIN' }}</system>"
+        "{% endif %}{% for m in messages %}<{{ m.role }}>{{ m.content }}</{{ m.role }}>{% endfor %}"
+    )
+    assert template_system_turn(template, date(2026, 1, 1), False, controls)[1] == "VERIFY"

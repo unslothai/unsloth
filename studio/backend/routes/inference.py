@@ -6386,16 +6386,24 @@ def _local_template_system_turn(
 
 
 def _template_controls(payload: Any) -> tuple:
-    """The reasoning controls this request's chat template is rendered with."""
+    """The template kwargs this request's chat template is rendered with."""
     names = ("enable_thinking", "reasoning_effort", "preserve_thinking")
     values = [getattr(payload, name, None) for name in names]
+    # Scalar extras only: the probe result is lru-cached on these, so values must hash.
+    extras = {
+        key: value
+        for key, value in (_extra_chat_template_kwargs(payload) or {}).items()
+        if value is None or isinstance(value, (str, int, float, bool))
+    }
     try:
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
-            return tuple(sorted((llama._request_reasoning_kwargs(*values) or {}).items()))
+            kwargs = llama._request_reasoning_kwargs(*values) or {}
+            return tuple(sorted({**extras, **kwargs}.items()))
     except Exception:
         pass
-    return tuple((name, value) for name, value in zip(names, values) if value is not None)
+    controls = tuple((name, value) for name, value in zip(names, values) if value is not None)
+    return tuple(sorted({**extras, **dict(controls)}.items())) if extras else controls
 
 
 def _apply_current_date_prompt(
