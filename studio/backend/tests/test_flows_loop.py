@@ -704,3 +704,55 @@ def test_a_short_test_question_asked_again_never_reaches_the_seed():
     leaked = {"prompt": "Billed twice?", "response": "Refund the duplicate", "model_output": "x"}
     probe = {"prompt": "Card declined?", "response": "Retry", "model_output": "y"}
     assert loop_rounds.drop_test_rows([leaked, probe], test_rows) == [probe]
+
+
+def test_the_loop_reads_benchmarks_max_rows_within_its_range():
+    from core.flows.engine import _scorer_row_limit
+
+    bench = SPECS_BY_TYPE["train.benchmark"]
+    assert _scorer_row_limit(bench, {}) == 20
+    assert _scorer_row_limit(bench, {"max_rows": 5}) == 5
+    assert _scorer_row_limit(bench, {"max_rows": 10_000}) == 200
+    assert _scorer_row_limit(SPECS_BY_TYPE["test.bench"], {}) is None
+
+
+@run_async
+async def test_each_split_is_cut_once_to_what_the_score_step_reads(monkeypatch):
+    from core.flows.specs import P
+
+    monkeypatch.setitem(
+        SPECS_BY_TYPE,
+        "test.bench",
+        {
+            **SPECS_BY_TYPE["test.bench"],
+            "params": [P("max_rows", "int", 2, "Max rows", min = 1, max = 200)],
+        },
+    )
+    eng, _, scored = _engine()
+    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
+    assert rs.status == "completed", rs.error
+    assert scored and all(len(rows) <= 2 for _, rows in scored)
+    # Every round scores the same cut rows, and records that count.
+    tests = [rows for split, rows in scored if split == "test"]
+    assert all(rows == tests[0] for rows in tests)
+    assert all(h["test_rows"] == 2 for h in rs.nodes["loop"].outputs["history"]["rounds"])
+
+
+@run_async
+async def test_a_score_over_part_of_the_test_split_neither_wins_nor_meets_the_target():
+    eng, _, _ = _engine()
+    real = eng.handlers["test.bench"]
+
+    async def partial(ctx):
+        found = await real(ctx)
+        if ctx.inputs["dataset"]["split"] == "test":
+            # Read only one of the test rows, and passed it.
+            return {**found, "score": 1.0, "results": {"scored": 1, "errored": 0}}
+        return found
+
+    eng.handlers["test.bench"] = partial
+    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
+    assert rs.status == "completed", rs.error
+    history = rs.nodes["loop"].outputs["history"]
+    assert history["stopped"] != "target"
+    assert all(r.get("test_errored") for r in history["rounds"])

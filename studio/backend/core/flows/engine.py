@@ -2308,6 +2308,20 @@ class FlowEngine:
                         raise FlowNodeError(
                             "The Loop needs at least 2 held-out rows: one to probe, one to test"
                         )
+                    # The score step reads at most its Max rows: each split is cut to that once, so
+                    # every round scores, counts and records exactly the rows it was given.
+                    limit = _scorer_row_limit(plan.specs[scorer], scorer_params)
+                    if limit and (len(probe_rows) > limit or len(test_rows) > limit):
+                        rs.emit(
+                            "node.log",
+                            nid,
+                            {
+                                "level": "warning",
+                                "message": f"{plan.specs[scorer]['title']} scores at most {limit} rows, "
+                                f"so each round probes and tests the first {limit} of each split",
+                            },
+                        )
+                        probe_rows, test_rows = probe_rows[:limit], test_rows[:limit]
                     probe = {
                         **await self._upload_rows(ctx, probe_rows, f"loop-{nid}-probe"),
                         "split": "probe",
@@ -2364,6 +2378,12 @@ class FlowEngine:
                             "message": f"Round {r + 1}: {errored} test rows errored, so its score does not count",
                         },
                     )
+                scored = results.get("scored") if isinstance(results, dict) else None
+                if isinstance(scored, int) and scored + (
+                    errored if isinstance(errored, int) else 0
+                ) < len(test_rows):
+                    # Rows the score step never read would make its score a part of the split's.
+                    entry["test_errored"] = len(test_rows) - scored
                 counted = entry["test_score"] is not None and not entry.get("test_errored")
                 history.append(entry)
                 if counted and (best is None or entry["test_score"] > best["test_score"]):
@@ -2526,6 +2546,20 @@ def _origin(account: AccountContext, kind: Optional[str]) -> dict:
     if account.via_api_key:
         return {"kind": "api_key", "owner": False}
     return {"kind": kind or "ui", "owner": account.is_owner}
+
+
+def _scorer_row_limit(spec: dict, params: dict) -> Optional[int]:
+    """The most rows a Loop's score step reads (Benchmark's Max rows, within its range), else None."""
+    found = next((p for p in spec.get("params") or [] if p["id"] == "max_rows"), None)
+    if found is None:
+        return None
+    try:
+        value = int(params.get("max_rows") or found.get("default") or 0)
+    except (TypeError, ValueError):
+        return None
+    if found.get("max") is not None:
+        value = min(value, int(found["max"]))
+    return value if value > 0 else None
 
 
 def _implicit_local_model(recipe: Any) -> bool:
