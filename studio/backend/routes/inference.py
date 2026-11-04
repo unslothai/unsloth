@@ -21933,6 +21933,7 @@ async def generate_stream(
             headers = {"Retry-After": "1"},
         )
 
+    await _enforce_token_limit(fastapi_request, external = False)
     backend = await asyncio.to_thread(get_inference_backend)
 
     if not backend.active_model_name:
@@ -21973,6 +21974,9 @@ async def generate_stream(
     async def stream():
         gen = None
         completed = False
+        stats_holder: dict = {}
+        monitor_id = None
+        failure = None
         # Watch for disconnect: the generator only awaits to_thread(next), so it would not notice.
         disconnect_watcher = asyncio.create_task(
             _await_disconnect_then_cancel(fastapi_request, cancel_event)
@@ -21981,6 +21985,17 @@ async def generate_stream(
         _tracker = _TrackedCancel(cancel_event, model = backend.active_model_name)
         _tracker.__enter__()
         try:
+            via_api_key = _request_used_api_key(fastapi_request)
+            temporary = None if via_api_key else TemporaryUsage(uuid.uuid4().hex, "local")
+            with temporary_usage_scope(temporary):
+                monitor_id = api_monitor.start(
+                    endpoint = "/api/inference/generate/stream",
+                    method = "POST",
+                    model = backend.active_model_name,
+                    prompt = "",
+                    subject = current_subject,
+                    via_api_key = via_api_key,
+                )
             gen = backend.generate_chat_response(
                 messages = request.messages,
                 system_prompt = request.system_prompt,
@@ -21993,6 +22008,7 @@ async def generate_stream(
                 repetition_penalty = request.repetition_penalty,
                 presence_penalty = request.presence_penalty,
                 cancel_event = cancel_event,
+                stats_holder = stats_holder,
             )
             gen_step = ThreadStepper(gen).next
             _DONE = object()
@@ -22013,7 +22029,8 @@ async def generate_stream(
                 if isinstance(chunk, GenStreamError):
                     # In-band backend sentinel under a sent 200: flag failed so the middleware won't claim.
                     mark_response_failed(_gs_scope)
-                    yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
+                    failure = _friendly_gen_stream_error(chunk)
+                    yield f"data: {json.dumps({'error': failure})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
                 yield f"data: {json.dumps({'content': chunk})}\n\n"
@@ -22030,7 +22047,8 @@ async def generate_stream(
             logger.error(f"Error during generation: {e}", exc_info = True)
             # Already sent 200: flag failure out-of-band so the middleware won't claim the model.
             mark_response_failed(_gs_scope)
-            yield f"data: {json.dumps({'error': _friendly_error(e)})}\n\n"
+            failure = _friendly_error(e)
+            yield f"data: {json.dumps({'error': failure})}\n\n"
             yield "data: [DONE]\n\n"
         finally:
             # Nested so a teardown failure still unregisters; a phantom entry 409s swaps.
@@ -22045,7 +22063,17 @@ async def generate_stream(
                     except (RuntimeError, ValueError):
                         pass
             finally:
-                _tracker.__exit__(None, None, None)
+                try:
+                    stats = stats_holder.get("stats") or {}
+                    _monitor_usage(monitor_id, stats.get("usage"), timings = stats.get("timings"))
+                    if failure is not None:
+                        api_monitor.fail(monitor_id, failure)
+                    elif completed:
+                        api_monitor.finish(monitor_id)
+                    else:
+                        api_monitor.finish(monitor_id, "cancelled")
+                finally:
+                    _tracker.__exit__(None, None, None)
 
     return _sse_streaming_response(stream())
 

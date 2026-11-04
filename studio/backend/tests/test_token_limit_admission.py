@@ -41,6 +41,7 @@ def admission(tmp_path, monkeypatch):
     monkeypatch.setattr(inference, "_request_used_api_key", lambda request: False)
     app = FastAPI()
     app.include_router(inference.router, prefix = "/v1")
+    app.add_api_route("/api/inference/generate/stream", inference.generate_stream, methods = ["POST"])
     app.dependency_overrides[get_current_subject] = lambda: "owner"
     body = {"model": "unsloth/model", "messages": [{"role": "user", "content": "hi"}]}
     now = int(time.time() * 1000)
@@ -98,6 +99,52 @@ def test_token_cap_blocks_new_requests_and_preserves_disabled_behavior(admission
     studio_db.upsert_app_settings({"token_limit": {"enabled": False, "limit": 100}})
     after = client.post("/v1/chat/completions", json = body)
     assert after.status_code == before.status_code and after.content == before.content
+
+
+@pytest.mark.parametrize("api_key", [False, True])
+def test_legacy_streams_charge_usage_and_stop_at_the_allowance(admission, monkeypatch, api_key):
+    from types import SimpleNamespace
+    from core.inference import token_limit
+    from core.inference.api_monitor import ApiMonitor
+    from storage.api_usage_db import record_api_usage
+
+    client, _, _ = admission
+    monitor = ApiMonitor()
+    monitor.set_terminal_callback(record_api_usage)
+    monkeypatch.setattr(inference, "api_monitor", monitor)
+    monkeypatch.setattr(inference, "_request_used_api_key", lambda request: api_key)
+    produced = []
+
+    def generate(*, stats_holder = None, **kwargs):
+        produced.append(kwargs["messages"])
+        if stats_holder is not None:
+            stats_holder["stats"] = {
+                "usage": {"prompt_tokens": 6, "completion_tokens": 4, "total_tokens": 10}
+            }
+        yield "answer"
+
+    backend = SimpleNamespace(
+        active_model_name = "unsloth/model",
+        generate_chat_response = generate,
+        reset_generation_state = lambda *args: None,
+    )
+    monkeypatch.setattr(inference, "get_inference_backend", lambda: backend)
+    token_limit.update_settings(
+        {"enabled": True, "mode": "split", "localLimit": 110, "apiLimit": 10},
+        password = None,
+        new_password = None,
+    )
+    body = {"messages": [{"role": "user", "content": "hi"}]}
+    first = client.post("/api/inference/generate/stream", json = body)
+    assert first.status_code == 200 and '"content": "answer"' in first.text
+    pool = token_limit.status()["pools"][1 if api_key else 0]
+    assert pool["used"] == pool["limit"]
+    refused = client.post("/api/inference/generate/stream", json = body)
+    assert refused.status_code == 429
+    assert len(produced) == 1
+    token_limit.update_settings({"enabled": False}, password = None, new_password = None)
+    after = client.post("/api/inference/generate/stream", json = body)
+    assert after.content == first.content
 
 
 @pytest.mark.parametrize(
