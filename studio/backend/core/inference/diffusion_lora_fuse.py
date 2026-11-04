@@ -6,7 +6,7 @@
 PEFT runs every adapted layer as ``base(x) + B(A(x)) * scale``: two extra GEMMs per layer on every step. Once the
 same set renders twice, the second render folds ``B @ A * scale`` into the base weights (fp32 add, one rounding to the
 weight dtype) and marks each layer merged, so PEFT's forward runs the base layer alone. The original weights are kept
-in one pinned host slab and copied back before any change, so the weights-only fast path (``set_adapters``) runs on
+in pinned host chunks and copied back before any change, so the weights-only fast path (``set_adapters``) runs on
 exactly the weights it would have seen unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0."""
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from typing import Any, Optional
 LORA_FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
 _FUSED_ATTR = "_unsloth_lora_fused"
 _ALIGN = 64
+_CHUNK = 64 << 20  # a power of two: no rounding waste in the pinned host allocator
 
 
 def enabled() -> bool:
@@ -73,22 +74,34 @@ def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
         return False
     import torch
 
-    offsets, total = [], 0
-    for _layer, _active, weight in plan:
-        offsets.append(total)
-        total += -(-weight.numel() * weight.element_size() // _ALIGN) * _ALIGN
     device = plan[0][2].device
     if any(w.device != device for _l, _a, w in plan):
         return False
+    # Packed into power-of-two chunks: the pinned host allocator rounds every block up to a power of two, so one
+    # slab of the whole backup would hold up to twice its size.
+    places, sizes, used = [], [], _CHUNK
+    for _layer, _active, weight in plan:
+        nbytes = -(-weight.numel() * weight.element_size() // _ALIGN) * _ALIGN
+        if nbytes > _CHUNK:
+            places.append((len(sizes), 0))
+            sizes.append(nbytes)
+            used = _CHUNK
+            continue
+        if used + nbytes > _CHUNK:
+            sizes.append(_CHUNK)
+            used = 0
+        places.append((len(sizes) - 1, used))
+        used += nbytes
+    total = sum(sizes)
     try:
-        slab = torch.empty(total, dtype = torch.uint8, pin_memory = device.type == "cuda")
+        chunks = [torch.empty(n, dtype = torch.uint8, pin_memory = device.type == "cuda") for n in sizes]
     except Exception:  # noqa: BLE001 - no pinned host memory: stay unfused
         return False
     entries = []
     try:
-        for (layer, active, weight), off in zip(plan, offsets):
+        for (layer, active, weight), (ci, off) in zip(plan, places):
             nbytes = weight.numel() * weight.element_size()
-            backup = slab[off : off + nbytes].view(weight.dtype).view(weight.shape)
+            backup = chunks[ci][off : off + nbytes].view(weight.dtype).view(weight.shape)
             backup.copy_(weight.detach())
             delta = None
             for adapter in active:
@@ -104,7 +117,7 @@ def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
         if logger is not None:
             logger.warning("diffusion.lora_fuse: fold failed, staying unfused: %s", exc)
         return False
-    setattr(pipe, _FUSED_ATTR, {"entries": entries, "slab": slab})
+    setattr(pipe, _FUSED_ATTR, {"entries": entries, "chunks": chunks})
     if logger is not None:
         logger.info(
             "diffusion.lora_fuse: folded the unchanged LoRA set into %d layers (%d MiB kept on the host to restore)",
