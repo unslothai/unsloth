@@ -2078,6 +2078,16 @@ class FlowEngine:
                 # The step loads the generator the recipe names, so it is keyed like any picked model,
                 # not by whatever an earlier step left loaded.
                 key = dict(named)
+                if not named["variant"]:
+                    # No quant named: loading keeps the one Chat already holds of this repo.
+                    from core.flows.nodes._common import resident_identity
+                    from studio_mcp import loading
+
+                    held = await resident_identity(ctx, "chat")
+                    if isinstance(held.get("local"), str) and loading._same_id(
+                        held["local"], named["repo"]
+                    ):
+                        key["variant"] = held.get("variant")
                 if os.path.isabs(named["repo"]):
                     key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
                 return key
