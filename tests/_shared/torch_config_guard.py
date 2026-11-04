@@ -32,7 +32,7 @@ _installed = False
 
 
 class _ContextVarValue:
-    """The value a ContextVar ``user_override`` (torch 2.12+) held, since torch resets the var itself on delete."""
+    """Saved ContextVar ``user_override`` value (torch 2.12+): torch resets the var on delete, so the object would restore the default."""
 
     __slots__ = ("value",)
 
