@@ -14,17 +14,20 @@ const GLASS_SIDEBAR = [
 
 test("the sidebar footer fade paints nothing over a glass sidebar", () => {
 	const sidebar = readFileSync(new URL("../src/components/app-sidebar.tsx", import.meta.url), "utf8");
-	const fade = /ref=\{attachFade\}[\s\S]*?className=\{cn\(\s*(?:\/\/[^\n]*\n\s*)*"([^"]+)"/.exec(sidebar)?.[1] ?? "";
-	assert.match(fade, /from-\[var\(--sidebar-surface\)\]/);
-	const fadeClass = fade.split(" ").find((c) => /^[a-z][a-z-]*fade$/.test(c));
-	assert.ok(fadeClass, "the painted fade needs a class glass can target");
+	const [, slot, classes] = /ref=\{attachFade\}\s*data-slot="([^"]+)"[\s\S]*?className=\{cn\(\s*(?:\/\/[^\n]*\n\s*)*"([^"]+)"/.exec(sidebar) ?? [];
+	assert.match(classes ?? "", /from-\[var\(--sidebar-surface\)\]/);
+	const fade = `[data-slot="${slot}"]`;
 	for (const scope of GLASS_SIDEBAR) {
-		const hidden = rules.find((r) => r.selector.split(",").some((s) => s.trim() === `${scope} .${fadeClass}`));
+		const hidden = rules.find((r) => r.selector.split(",").some((s) => s.trim() === `${scope} ${fade}`));
 		assert.ok(hidden && /display:\s*none/.test(hidden.body), scope);
 		const masked = rules.find((r) =>
-			r.selector.split(",").some((s) => s.trim().startsWith(`${scope}:has(.${fadeClass}[data-visible="true"])`) && s.includes(".sidebar-scroll-fade")),
+			r.selector.split(",").some((s) => s.trim().startsWith(`${scope}:has(${fade}[data-visible="true"])`) && s.includes(".sidebar-scroll-fade")),
 		);
 		assert.ok(masked && /(^|[^-])mask-image:[^;]*transparent calc\(100% - 8px\)/.test(masked.body), scope);
+	}
+	// Glass over an opaque sidebar (no image on that route) keeps the fade.
+	for (const rule of rules.filter((r) => r.selector.includes(fade) && /display:\s*none/.test(r.body))) {
+		for (const s of rule.selector.split(",")) assert.ok(GLASS_SIDEBAR.some((scope) => s.trim().startsWith(scope)), s);
 	}
 });
 

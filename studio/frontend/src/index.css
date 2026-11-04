@@ -6146,10 +6146,6 @@ html[data-glass] {
   --glass-panel-fill: color-mix(in srgb, var(--panel-surface), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
   --glass-composer-fill: color-mix(in srgb, var(--background), var(--foreground) max(var(--glass-shade, 0%), var(--glass-pane-tone)));
 }
-/* Glass keeps the footer boundary clear; solid themes retain their scroll fade. */
-html[data-glass] [data-slot="sidebar-footer-fade"] {
-  display: none;
-}
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
 html[data-glass="macos"] [data-slot="sidebar-inner"] {
   background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
@@ -6204,13 +6200,13 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"
 html[data-glass="macos"] [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
   background-color: transparent;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .sidebar-footer-fade,
-html[data-glass="macos"] [data-slot="sidebar-inner"] .sidebar-footer-fade {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-footer-fade"],
+html[data-glass="macos"] [data-slot="sidebar-inner"] [data-slot="sidebar-footer-fade"] {
   display: none;
 }
 /* The footer fade paints the opaque sidebar colour, so on glass the list masks its own bottom edge. */
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"]:has(.sidebar-footer-fade[data-visible="true"]) .sidebar-scroll-fade,
-html[data-glass="macos"] [data-slot="sidebar-inner"]:has(.sidebar-footer-fade[data-visible="true"]) .sidebar-scroll-fade {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"]:has([data-slot="sidebar-footer-fade"][data-visible="true"]) .sidebar-scroll-fade,
+html[data-glass="macos"] [data-slot="sidebar-inner"]:has([data-slot="sidebar-footer-fade"][data-visible="true"]) .sidebar-scroll-fade {
   -webkit-mask-image: linear-gradient(to bottom, var(--sidebar-fade-top, #000) 0, #000 14px, #000 calc(100% - 40px), transparent calc(100% - 8px)),
     linear-gradient(var(--sidebar-rail-side, to left), #000 var(--sidebar-rail, 0px), transparent 0);
   mask-image: linear-gradient(to bottom, var(--sidebar-fade-top, #000) 0, #000 14px, #000 calc(100% - 40px), transparent calc(100% - 8px)),
