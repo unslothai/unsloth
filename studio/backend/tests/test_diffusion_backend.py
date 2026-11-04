@@ -14540,3 +14540,128 @@ def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
     assert dropped == [pipe]
     backend._apply_loras(_quant_lora_state(pipe), [], ev)
     assert dropped == [pipe, pipe]
+
+
+class _PinProbePipe(_FakePipe):
+    """Enters the denoise loop and decoder like diffusers, and runs out of memory on its first attempt."""
+
+    def __init__(self, fail_first: bool) -> None:
+        super().__init__()
+        self.attempts = 0
+        self.fail_first = fail_first
+        self.vae = types.SimpleNamespace(decode = lambda: None)
+
+    def progress_bar(self, *args, **kwargs):
+        return contextlib.nullcontext()
+
+    def __call__(self, **kwargs):
+        self.progress_bar(total = 1)
+        self.attempts += 1
+        if self.fail_first and self.attempts == 1:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        if hasattr(self.vae, "decode"):
+            self.vae.decode()
+        return super().__call__(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "pins, pinned_placement, expected",
+    [
+        # the 2-image attempt cannot pin and runs out of memory; both 1-image retries run whole
+        ([False, True, True], "resident", "resident"),
+        # one retry ran whole and the other streamed: no one placement describes the batch
+        ([False, True, False], "resident", None),
+        # the pin covers pipe.transformer only: a second DiT (Ideogram 4) still streams
+        ([False, True, True], "partial", "partial"),
+    ],
+)
+def test_saved_placement_counts_only_chunks_that_finished(
+    fake_runtime, tmp_path, monkeypatch, pins, pinned_placement, expected
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _PinProbePipe(fail_first = True)
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    outcomes = list(pins)
+    held = [False]
+
+    def _pin(*a, **kw):
+        if not outcomes.pop(0):
+            return None
+        held[0] = True
+        return lambda: held.__setitem__(0, False)
+
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: (1.0, 2.0, 64))
+    monkeypatch.setattr(diffusion, "pin_denoiser_for_call", _pin)
+    # the live hooks: the load streams, a held pin moves what it covers on the GPU
+    monkeypatch.setattr(
+        diffusion,
+        "denoiser_offload",
+        lambda pipe, policy: pinned_placement if held[0] else "streamed",
+    )
+
+    out = backend.generate(prompt = "p", steps = 4, batch_size = 2)
+
+    assert pipe.attempts == 3 and not outcomes
+    assert len(out["images"]) == 2
+    assert out["denoiser_offload"] == expected
+
+
+class _DeferredReturnPipe(_PinProbePipe):
+    """A resident load whose groups a VAE OOM recovery unpinned and left on a deferred return: the first forward
+    returns them, and the next decode's recovery unpins them again."""
+
+    def __init__(self, deferred: bool) -> None:
+        super().__init__(fail_first = False)
+        self.settled = not deferred
+        self.decoded = False
+        self.vae = types.SimpleNamespace(decode = lambda: setattr(self, "decoded", True))
+
+    def progress_bar(self, *args, **kwargs):
+        out = super().progress_bar(*args, **kwargs)
+        self.settled = True
+        return out
+
+    def placement(self) -> str:
+        return "resident" if self.settled and not self.decoded else "streamed"
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_saved_placement_is_read_after_the_steps_and_before_the_decode(
+    fake_runtime, tmp_path, monkeypatch, deferred
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _DeferredReturnPipe(deferred)
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: pipe.placement())
+
+    out = backend.generate(prompt = "p", steps = 4)
+
+    assert pipe.decoded
+    assert out["denoiser_offload"] == "resident"
+
+
+def test_a_pass_that_never_decodes_reads_the_placement_once_it_returns(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    # a latent-output pass (the hires latent-upscaler base) never enters the decoder
+    pipe = _PinProbePipe(fail_first = False)
+    pipe.vae = types.SimpleNamespace()
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: "resident")
+
+    assert backend.generate(prompt = "p", steps = 4)["denoiser_offload"] == "resident"

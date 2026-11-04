@@ -214,6 +214,7 @@ import {
   formatResolvedValue,
   isDenseQuantKind,
   isPrecisionRefusal,
+  denoiserPlacement,
   memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
@@ -1329,6 +1330,8 @@ function RecipePopover({
 }) {
   // PopoverContent portals to body, so the inert page wrapper cannot contain it.
   const [open, setOpen] = useState(false);
+  const recipePlacement =
+    image.offload_policy === "group" ? denoiserPlacement(image.denoiser_offload) : null;
   useEffect(() => {
     if (!active) setOpen(false);
   }, [active]);
@@ -1372,6 +1375,13 @@ function RecipePopover({
             <RecipeRow
               label="Memory"
               value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
+            />
+          ) : null}
+          {recipePlacement ? (
+            <RecipeRow
+              label="Placement"
+              value={recipePlacement.label}
+              title={recipePlacement.detail}
             />
           ) : null}
           {image.speed_mode ? (
@@ -1491,6 +1501,7 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
 function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
+  const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1535,6 +1546,13 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {placement ? (
+        <BuildRow
+          label="Placement"
+          value={placement.label}
+          badge={<InfoHint>{placement.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={

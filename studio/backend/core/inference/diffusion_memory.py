@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 from .rocm_bf16 import is_rocm_torch
 
@@ -6658,6 +6658,55 @@ def _streamed_pin_leftover_mib(
 
 
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
+
+DENOISER_RESIDENT = "resident"
+DENOISER_PARTIAL = "partial"
+DENOISER_STREAMED = "streamed"
+
+
+def denoiser_residency(pipe: Any) -> Optional[tuple[int, int]]:
+    """``(resident, total)`` offload groups across the denoisers, read off the live hooks: a denoiser another offload
+    hook moves counts as one streamed group, an unhooked one as one resident group, None when unreadable."""
+    resident = total = 0
+    try:
+        for name in _DENOISER_NAMES:
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            groups = _offload_groups(module)
+            if groups:
+                total += len(groups)
+                resident += sum(1 for g in groups if getattr(g, "_unsloth_resident", False))
+                continue
+            registry = getattr(module, "_diffusers_hook", None)
+            total += 1
+            if not (
+                any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules())
+                or any("offload" in str(key) for key in (getattr(registry, "hooks", None) or {}))
+            ):
+                resident += 1
+    except Exception:  # noqa: BLE001 - a status read must never fail the load or the render
+        return None
+    return resident, total
+
+
+def denoiser_offload(pipe: Any, offload_policy: Any) -> Optional[str]:
+    """resident | partial | streamed for a group-offloaded pipeline; None for other policies or an unreadable one."""
+    if offload_policy != OFFLOAD_GROUP or pipe is None:
+        return None
+    counts = denoiser_residency(pipe)
+    if counts is None:
+        return None
+    resident, total = counts
+    if resident >= total:
+        return DENOISER_RESIDENT
+    return DENOISER_PARTIAL if resident else DENOISER_STREAMED
+
+
+def agreed_placement(placements: Iterable[Optional[str]]) -> Optional[str]:
+    """The placement every denoise of one image ran with; None when they differ."""
+    distinct = set(placements)
+    return distinct.pop() if len(distinct) == 1 else None
 
 
 def denoisers_pinned_resident(pipe: Any) -> bool:
