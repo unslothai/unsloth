@@ -43,6 +43,24 @@ test("frames split on any CRLF or LF blank-line separator", async () => {
   assert.deepEqual(events, [{ n: 1 }, { n: 2 }, { n: 3 }]);
 });
 
+test("all SSE line endings survive every two-chunk split", async () => {
+  for (const ending of ["\n", "\r\n", "\r"]) {
+    const wire = [
+      "event: progress", 'data: {"n":', "data: 1}", "",
+      'data: {"n": 2}', "", "data: [DONE]", "",
+      'data: {"n": 3}', "", "",
+    ].join(ending);
+    for (let split = 0; split <= wire.length; split++) {
+      const events = await collect(
+        readSseJsonEvents<{ n: number }>(
+          streamOf([wire.slice(0, split), wire.slice(split)]),
+        ),
+      );
+      assert.deepEqual(events, [{ n: 1 }, { n: 2 }], `${JSON.stringify(ending)} at ${split}`);
+    }
+  }
+});
+
 test("[DONE] ends the stream and unparseable frames are skipped", async () => {
   const events = await collect(
     readSseJsonEvents<{ n: number }>(
