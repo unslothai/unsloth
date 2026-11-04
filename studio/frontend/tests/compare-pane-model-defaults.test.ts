@@ -22,16 +22,21 @@ const {
   mergeBackendRecommendedInference,
   replayMaxTokensCap,
 } = await import("../src/features/chat/presets/preset-policy.ts");
+const { resolveQwenThinkingParams } = await import(
+  "../src/features/chat/utils/qwen-sampling-table.ts"
+);
 const { loadedContextFields } = await import(
   "../src/features/model-picker/model-config/per-model-config.ts"
 );
 
 const QWEN = "unsloth/Qwen3-0.6B-GGUF";
 const GEMMA = "unsloth/gemma-3-270m-it-GGUF";
+const QWEN35 = "unsloth/Qwen3.5-27B-GGUF";
 const CONTEXT = 32768;
 const RECOMMENDED: Record<string, { temperature: number; top_p: number; top_k: number }> = {
   [QWEN]: { temperature: 0.6, top_p: 0.95, top_k: 20 },
   [GEMMA]: { temperature: 1, top_p: 0.95, top_k: 64 },
+  [QWEN35]: { temperature: 0.7, top_p: 0.8, top_k: 20 },
 };
 
 const composer = readSrc("features/chat/shared-composer.tsx");
@@ -49,6 +54,7 @@ const commitPaneLoad = new Function(
   "replayMaxTokensCap",
   "mergeBackendRecommendedInference",
   "loadedContextForParams",
+  "resolveQwenThinkingParams",
   `let upgradeUnloadedActive; ${composer.slice(start, end)}`,
 );
 
@@ -56,6 +62,7 @@ function response(model: string) {
   return {
     status: "loaded",
     model,
+    supports_reasoning: model === QWEN35,
     is_gguf: true,
     context_length: CONTEXT,
     inference: RECOMMENDED[model],
@@ -88,6 +95,7 @@ function compareLoad(model: string): void {
     replayMaxTokensCap,
     mergeBackendRecommendedInference,
     loadedContextForParams,
+    resolveQwenThinkingParams,
   );
 }
 
@@ -154,4 +162,17 @@ test("a compare pane model keeps its remembered sampling over the recommendation
   compareLoad(QWEN);
   assert.deepEqual(sampling(), { temperature: 0.6, topP: 0.95, topK: 20 });
   assert.equal(useChatRuntimeStore.getState().paramsByModel[GEMMA]?.temperature, 0.4);
+});
+
+test("a compare pane Qwen model gets the sampling for the active thinking mode", () => {
+  pickerLoad(GEMMA);
+  useChatRuntimeStore.setState({ reasoningEnabled: true });
+  compareLoad(QWEN35);
+  assert.deepEqual(sampling(), { temperature: 0.6, topP: 0.95, topK: 20 });
+
+  compareLoad(GEMMA);
+  useChatRuntimeStore.setState({ reasoningEnabled: false });
+  useChatRuntimeStore.setState({ paramsByModel: {} });
+  compareLoad(QWEN35);
+  assert.deepEqual(sampling(), { temperature: 0.7, topP: 0.8, topK: 20 });
 });

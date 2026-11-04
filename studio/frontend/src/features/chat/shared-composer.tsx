@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
@@ -1975,16 +1976,26 @@ export function SharedComposer({
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
           { maxTokensCap: paneMaxTokensCap },
         );
-        const paneParams = useChatRuntimeStore.getState().params;
+        const paneState = useChatRuntimeStore.getState();
+        const paneParams = paneState.params;
+        const paneQwenParams =
+          resp.supports_reasoning &&
+          paneState.activePresetSource === "builtin-default"
+            ? resolveQwenThinkingParams(
+                resp.model,
+                (resp.reasoning_always_on ?? false) || paneState.reasoningEnabled,
+              )
+            : null;
         store.setParams(
           {
             ...mergeBackendRecommendedInference({
               current: paneParams,
               response: resp,
               modelId: resp.model,
-              presetSource: useChatRuntimeStore.getState().activePresetSource,
+              presetSource: paneState.activePresetSource,
               loadedContextLength: loadedContextFields(resp).loadedContextLength,
             }),
+            ...paneQwenParams,
             ...(targetIsGguf
               ? {}
               : {
