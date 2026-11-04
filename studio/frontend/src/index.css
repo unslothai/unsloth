@@ -6088,10 +6088,8 @@ html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] [data-wallpaper-ch
   backdrop-filter: none;
   text-shadow: 0 1px 8px var(--background);
 }
-/* The sidebar already paints from the top of the workspace, behind the native
-   titlebar. Keep navigation clear so pinning or peeking never doubles its tint. */
-/* A viewport modal already dims the wallpaper underneath this transparent bar.
-   Only dim the navigation glyphs here; a second black wash creates a dark band. */
+/* The sidebar and any viewport backdrop already paint beneath this transparent bar;
+   repeating either here doubles the tint, so a modal dims only the navigation glyphs. */
 html[data-chat-wallpaper-ready] [data-slot="window-titlebar"]::after {
   background: transparent;
 }
