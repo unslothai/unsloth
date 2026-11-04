@@ -46,7 +46,7 @@ _override_lock = threading.Lock()
 
 
 class TokenLimitPasswordError(Exception):
-    """The limiter is password protected and the password given was missing or wrong."""
+    pass
 
 
 def hash_password(password: str, *, salt: Optional[bytes] = None) -> str:
