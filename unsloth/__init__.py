@@ -1265,6 +1265,7 @@ if _IS_MLX:
             ) or (
                 grad_clip_explicit is False
                 and hasattr(config_class, "_unsloth_mlx_trl_arguments")
+                and not isinstance(args, _MLXTRLConfig)
                 and not any(
                     _positive_mlx_training_number(values.get(name)) is not None
                     for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm")
