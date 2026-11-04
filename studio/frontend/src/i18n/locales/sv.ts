@@ -3802,7 +3802,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Ansluten till en Unsloth-server på port {port} som den här appen inte har startat, till exempel `unsloth studio` i en terminal. Stoppa den där den startades, avsluta sedan appen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",

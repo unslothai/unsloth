@@ -3932,7 +3932,7 @@ export const cs = {
         desktopAvailableDescription:
           "Aktualizujte nyní; po dokončení se desktopová aplikace restartuje.",
         desktopExternalServer:
-          "Aplikace se připojila k již spuštěnému serveru Unsloth a nemůže ho aktualizovat. Zastavte tento server, potom desktopovou aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
+          "Připojeno k serveru Unsloth na portu {port}, který tato aplikace nespustila, například `unsloth studio` v terminálu. Zastavte ho tam, kde byl spuštěn, potom aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
         desktopManualInstall:
           "Otevřete stránku vydání a nainstalujte nejnovější balíček pro Linux.",
         desktopCheckFailed: "Aktualizace se nepodařilo zkontrolovat",

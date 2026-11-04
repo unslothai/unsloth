@@ -3961,7 +3961,7 @@ export const nl = {
         desktopAvailableDescription:
           "Werk nu bij; de desktop-app start opnieuw wanneer dit klaar is.",
         desktopExternalServer:
-          "De app is verbonden met een Unsloth-server die al draaide en kan deze niet bijwerken. Stop die server, sluit de desktop-app af en open hem opnieuw om bij te werken.",
+          "Verbonden met een Unsloth-server op poort {port} die deze app niet heeft gestart, zoals `unsloth studio` in een terminal. Stop hem waar hij is gestart, sluit dan de app af en open hem opnieuw om bij te werken.",
         desktopManualInstall:
           "Open de releasepagina om het nieuwste Linux-pakket te installeren.",
         desktopCheckFailed: "Kan niet controleren op updates",

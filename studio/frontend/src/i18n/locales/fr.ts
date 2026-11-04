@@ -3664,7 +3664,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "L’application est connectée à un serveur Unsloth déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
+          "Connectée à un serveur Unsloth sur le port {port} que cette application n’a pas démarré, comme `unsloth studio` dans un terminal. Arrêtez-le là où il a été démarré, puis quittez et rouvrez l’application pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",

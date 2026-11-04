@@ -3962,7 +3962,7 @@ export const pl = {
         desktopAvailableDescription:
           "Zaktualizuj teraz, a aplikacja komputerowa uruchomi się ponownie po zakończeniu.",
         desktopExternalServer:
-          "Aplikacja połączyła się z już działającym serwerem Unsloth i nie może go zaktualizować. Zatrzymaj ten serwer, a następnie zamknij i ponownie otwórz aplikację komputerową, aby ją zaktualizować.",
+          "Połączono z serwerem Unsloth na porcie {port}, którego ta aplikacja nie uruchomiła, na przykład `unsloth studio` w terminalu. Zatrzymaj go tam, gdzie został uruchomiony, a następnie zamknij i ponownie otwórz aplikację, aby ją zaktualizować.",
         desktopManualInstall:
           "Otwórz stronę wydania, aby zainstalować najnowszy pakiet dla systemu Linux.",
         desktopCheckFailed: "Nie udało się sprawdzić aktualizacji",

@@ -3662,7 +3662,7 @@ export const de = {
         desktopAvailableDescription:
           "Aktualisieren Sie jetzt. Die Desktop-App wird nach Abschluss des Updates neu gestartet.",
         desktopExternalServer:
-          "Die App ist mit einem bereits laufenden Unsloth-Server verbunden und kann ihn nicht aktualisieren. Stoppen Sie diesen Server, beenden Sie die Desktop-App und öffnen Sie sie erneut, um das Update zu installieren.",
+          "Verbunden mit einem Unsloth-Server auf Port {port}, den diese App nicht gestartet hat, zum Beispiel `unsloth studio` in einem Terminal. Stoppen Sie ihn dort, wo er gestartet wurde, beenden Sie dann die App und öffnen Sie sie erneut, um das Update zu installieren.",
         desktopManualInstall:
           "Öffnen Sie die Release-Seite, um das neueste Linux-Paket zu installieren.",
         desktopCheckFailed: "Die Suche nach Updates ist fehlgeschlagen",

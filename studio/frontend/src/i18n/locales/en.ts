@@ -3629,7 +3629,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app connected to an already-running Unsloth server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
+          "Connected to an Unsloth server on port {port} that this app did not start, such as `unsloth studio` in a terminal. Stop it where it was started, then quit and reopen the app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",

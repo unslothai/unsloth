@@ -3560,7 +3560,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "L’app si è connessa a un server Unsloth già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
+          "Connessa a un server Unsloth sulla porta {port} che questa app non ha avviato, come `unsloth studio` in un terminale. Arrestalo dove è stato avviato, poi chiudi e riapri l’app per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:

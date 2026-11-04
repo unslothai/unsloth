@@ -3916,7 +3916,7 @@ export const vi = {
         desktopAvailableDescription:
           "Cập nhật ngay, ứng dụng máy tính sẽ khởi động lại khi hoàn tất.",
         desktopExternalServer:
-          "Ứng dụng đã kết nối với một máy chủ Unsloth đang chạy sẵn và không thể cập nhật máy chủ đó. Hãy dừng máy chủ đó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
+          "Đang kết nối với một máy chủ Unsloth trên cổng {port} mà ứng dụng này không khởi động, ví dụ `unsloth studio` trong terminal. Hãy dừng máy chủ tại nơi đã khởi động nó, rồi thoát và mở lại ứng dụng để cập nhật.",
         desktopManualInstall:
           "Mở trang phát hành để cài đặt gói Linux mới nhất.",
         desktopCheckFailed: "Không thể kiểm tra bản cập nhật",

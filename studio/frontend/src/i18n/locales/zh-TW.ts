@@ -3722,7 +3722,7 @@ export const zhTW = {
         desktopAvailable: "桌面應用程式 {version} 已推出",
         desktopAvailableDescription: "立即更新，完成後桌面應用程式將重新啟動。",
         desktopExternalServer:
-          "此應用程式連線到已在執行中的 Unsloth 伺服器，因此無法更新該伺服器。請停止該伺服器，然後結束並重新開啟桌面應用程式以進行更新。",
+          "已連線到連接埠 {port} 上並非由此應用程式啟動的 Unsloth 伺服器，例如在終端機中執行的 `unsloth studio`。請在啟動它的地方停止它，然後結束並重新開啟應用程式以進行更新。",
         desktopManualInstall: "開啟發行頁面以安裝最新的 Linux 套件。",
         desktopCheckFailed: "無法檢查更新",
         desktopCheckFailedDescription: "請檢查您的網路連線，然後再試一次。",

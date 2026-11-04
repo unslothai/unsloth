@@ -3631,7 +3631,7 @@ export const ptBR = {
         desktopAvailableDescription:
           "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
         desktopExternalServer:
-          "O aplicativo se conectou a um servidor Unsloth que já estava em execução e não pode atualizá-lo. Pare esse servidor, feche e reabra o aplicativo desktop para atualizar.",
+          "Conectado a um servidor Unsloth na porta {port} que este aplicativo não iniciou, como o `unsloth studio` em um terminal. Pare-o onde ele foi iniciado e depois feche e reabra o aplicativo para atualizar.",
         desktopManualInstall:
           "Abra a página de lançamentos para instalar o pacote mais recente para Linux.",
         desktopCheckFailed: "Não foi possível verificar se há atualizações",

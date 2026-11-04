@@ -3911,7 +3911,7 @@ export const tr = {
         desktopAvailableDescription:
           "Şimdi güncelleyin; işlem bittiğinde masaüstü uygulaması yeniden başlar.",
         desktopExternalServer:
-          "Uygulama zaten çalışan bir Unsloth sunucusuna bağlandı ve bu sunucuyu güncelleyemez. Güncellemek için o sunucuyu durdurun, ardından masaüstü uygulamasından çıkıp yeniden açın.",
+          "Bu uygulamanın başlatmadığı, {port} numaralı bağlantı noktasındaki bir Unsloth sunucusuna bağlı; örneğin bir terminaldeki `unsloth studio`. Güncellemek için sunucuyu başlatıldığı yerden durdurun, ardından uygulamadan çıkıp yeniden açın.",
         desktopManualInstall:
           "En son Linux paketini kurmak için sürüm sayfasını açın.",
         desktopCheckFailed: "Güncellemeler denetlenemedi",

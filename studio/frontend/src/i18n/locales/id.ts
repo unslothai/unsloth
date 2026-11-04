@@ -3913,7 +3913,7 @@ export const id = {
         desktopAvailableDescription:
           "Perbarui sekarang dan aplikasi desktop akan dimulai ulang setelah selesai.",
         desktopExternalServer:
-          "Aplikasi terhubung ke server Unsloth yang sudah berjalan dan tidak dapat memperbaruinya. Hentikan server tersebut, lalu tutup dan buka kembali aplikasi desktop untuk memperbarui.",
+          "Terhubung ke server Unsloth di port {port} yang tidak dijalankan oleh aplikasi ini, seperti `unsloth studio` di terminal. Hentikan server itu di tempat ia dijalankan, lalu tutup dan buka kembali aplikasi untuk memperbarui.",
         desktopManualInstall:
           "Buka halaman rilis untuk menginstal paket Linux terbaru.",
         desktopCheckFailed: "Tidak dapat memeriksa pembaruan",

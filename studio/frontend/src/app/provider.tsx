@@ -505,17 +505,17 @@ function getTauriWindowMode(
 }
 
 function TauriUpdateLayer({
-  isExternalServer,
+  externalServerPort,
   children,
   appContent,
   onUpdateScreenChange,
 }: {
-  isExternalServer: boolean;
+  externalServerPort: number | null;
   children?: ReactNode;
   appContent: ReactNode;
   onUpdateScreenChange: (shown: boolean) => void;
 }) {
-  const update = useTauriUpdate(isExternalServer);
+  const update = useTauriUpdate(externalServerPort);
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -571,7 +571,7 @@ function TauriUpdateLayer({
         info={update.info}
         dismissed={update.dismissed}
         lastFailure={update.lastFailure}
-        isExternalServer={isExternalServer}
+        externalServerPort={externalServerPort}
         updatePolicyMode={update.updatePolicyMode}
         manualReleaseUrl={update.manualReleaseUrl}
         releasePageUrl={update.releasePageUrl}
@@ -701,6 +701,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     error,
     installDiskFull,
     isExternalServer,
+    externalServerPort,
     currentStepIndex,
     progressDetail,
     startupMessage,
@@ -985,7 +986,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         >
           <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
             <TauriUpdateLayer
-              isExternalServer={isExternalServer}
+              externalServerPort={externalServerPort}
               onUpdateScreenChange={setUpdateScreenShown}
               appContent={
                 <>
