@@ -26,13 +26,12 @@ logger = get_logger(__name__)
 
 _DEFAULT_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 _OPTIMIZERS = ("adamw_8bit", "adamw_torch", "adamw_torch_fused")
-# The single job moves these into modules_to_save (unsloth.models._utils.EMBEDDING_MODULES); the batch
-# can only wrap linear layers, so it would skip embed_tokens and turn lm_head into a low-rank LoRA.
+# Copied from unsloth.models._utils.EMBEDDING_MODULES, not imported, so the route never loads unsloth.
 _EMBEDDING_TARGETS = frozenset(("embed_tokens", "lm_head"))
 
 
 def embedding_targets(target_modules) -> list[str]:
-    """Requested targets whose leaf name is embed_tokens or lm_head, the same rule as the single job."""
+    """Targets the single job trains fully (modules_to_save); batched LoRA cannot."""
     if isinstance(target_modules, str):
         target_modules = [target_modules]
     return [

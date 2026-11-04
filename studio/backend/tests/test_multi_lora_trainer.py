@@ -997,8 +997,6 @@ def test_packing_is_refused_where_packed_documents_see_each_other(monkeypatch, t
 def test_an_embedding_target_fails_instead_of_training_something_else(
     monkeypatch, tmp_path, target
 ):
-    # The single job trains these fully (modules_to_save); the batch would skip embed_tokens and give
-    # lm_head a low-rank LoRA, so it must refuse rather than export an adapter that means something else.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     events, model, pristine = _run(monkeypatch, MEMBERS[:2], target_modules = ["q_proj", target])
     for m in MEMBERS[:2]:
