@@ -504,3 +504,34 @@ def test_a_model_type_that_never_graphs_keeps_eager_oom_and_planning(G, model_ty
     G._free_bytes = lambda device: 0
     assert G.plan_call(model, _ids(16, 2048), torch.float16, 256, 4096) == ("graph", None)
     assert G.EAGER_UNFIT == 0 and model.held() == 1 and G.emptied == 0
+
+
+@pytest.mark.parametrize(
+    "max_len, prompt, replays",
+    [(0, 32, True), (33, 32, False), (34, 32, False), (35, 32, True), (288, 32, True)],
+)
+def test_a_call_too_short_to_replay_a_step_is_known(G, max_len, prompt, replays):
+    """The first decode step after a prefill always runs eagerly, so a call with at most 2 new tokens
+    never replays a captured step; an unknown length (0) may."""
+    assert G.can_replay(max_len, prompt) is replays
+
+
+def test_generate_runs_a_short_call_eagerly_when_nothing_is_kept():
+    """Graph mode only costs a short call (plan, graph-sized buffers): with no kept graphs it decodes
+    eagerly, as before, without planning. Reads llama.py (importing unsloth needs an accelerator)."""
+    import ast
+
+    tree = ast.parse((_SOURCE.parent / "llama.py").read_text(encoding = "utf-8"))
+    gen = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate"
+    )
+    guards = [
+        n for n in ast.walk(gen)
+        if isinstance(n, ast.If) and "can_replay" in ast.unparse(n.test) and "HELD" in ast.unparse(n.test)
+    ]  # fmt: skip
+    assert guards, "a short call is not routed eagerly"
+    body = ast.unparse(guards[0].body[0]) if guards[0].body else ""
+    assert "'eager'" in body or '"eager"' in body
+    assert "plan_call" not in ast.unparse(guards[0].body[0])

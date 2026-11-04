@@ -41,6 +41,7 @@ __all__ = [
     "generate_scope",
     "eager_scope",
     "graphable",
+    "can_replay",
     "plan_call",
     "record_need",
     "decode_batch",
@@ -226,6 +227,12 @@ def _kept_buffers(model, key, rows):
         if bufs is not None and bufs[0].shape[0] >= rows:
             reused += bufs[0].numel() * bufs[0].element_size()
     return kept, reused
+
+
+def can_replay(max_len, prompt):
+    """Whether a call may replay a captured step: the first decode step after the prefill always runs
+    eagerly, so at most 2 new tokens never replay. max_len 0 (unknown) may."""
+    return not max_len or max_len - prompt > 2
 
 
 def graphable(model):
