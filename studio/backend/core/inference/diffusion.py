@@ -413,6 +413,7 @@ from .diffusion_sampler import (
     DEFAULT_SAMPLER,
     apply_checkpoint_prediction_type,
     apply_pipeline_prediction_type,
+    start_root_single_marks,
     build_scheduler,
     sampler_options,
 )
@@ -9492,6 +9493,16 @@ class DiffusionBackend:
                                         )
                                     # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                     # otherwise)
+                                    _marks_future = (
+                                        start_root_single_marks(
+                                            _base_local_dir or fetch_base,
+                                            fetch_base,
+                                            hub_token,
+                                            not local_files_only,
+                                        )
+                                        if fam.single_file_is_pipeline
+                                        else None
+                                    )
                                     try:
                                         with _converted_shards_pread(dtype, small_host):
                                             pipe = pipeline_cls.from_pretrained(
@@ -9518,6 +9529,7 @@ class DiffusionBackend:
                                             # Not hf_token: that collapsed False (anonymous) to None (ambient).
                                             hf_token = hub_token,
                                             allow_network = not local_files_only,
+                                            marks_future = _marks_future,
                                         )
                                 if small_host is not None and small_host.engaged:
                                     plan = self._apply_small_host_route(
