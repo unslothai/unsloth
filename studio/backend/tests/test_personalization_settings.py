@@ -730,6 +730,65 @@ def test_personalization_put_preserves_existing_fields_on_stale_write(monkeypatc
     assert body["greetingSlothSaved"] is True
 
 
+def _appearance_cookie(response) -> str:
+    headers = [
+        h for h in response.headers.get_list("set-cookie") if h.startswith("unsloth_appearance=")
+    ]
+    assert len(headers) == 1, headers
+    return headers[0]
+
+
+def test_personalization_responses_set_the_appearance_cookie_for_the_boot_script(monkeypatch):
+    # public/theme-boot.js reads this before first paint when localStorage has no theme.
+    store: dict = {}
+    client = _shared_setup_1(monkeypatch, store)
+
+    fresh = _appearance_cookie(client.get("/api/settings/personalization"))
+    assert fresh.startswith("unsloth_appearance=system.standard;")
+
+    put = client.put(
+        "/api/settings/personalization",
+        json = {"version": 1, "appearance": {"theme": "dark", "palette": "matcha"}},
+    )
+    assert put.status_code == 200
+    cookie = _appearance_cookie(put)
+    assert cookie.startswith("unsloth_appearance=dark.matcha;")
+    lowered = cookie.lower()
+    assert "path=/" in lowered
+    assert "samesite=lax" in lowered
+    assert "max-age=" in lowered
+    # The boot script must be able to read it.
+    assert "httponly" not in lowered
+    # A plain-http local Studio would drop a Secure cookie.
+    assert "secure" not in lowered
+
+    # A later read (another browser of the same account) gets the stored appearance.
+    read = _appearance_cookie(client.get("/api/settings/personalization"))
+    assert read.startswith("unsloth_appearance=dark.matcha;")
+
+
+def test_appearance_cookie_is_secure_over_https(monkeypatch):
+    store: dict = {pers.PERSONALIZATION_SETTING_KEY: {"appearance": {"theme": "light"}}}
+    client = _shared_setup_1(monkeypatch, store)
+    client.base_url = "https://testserver"
+
+    cookie = _appearance_cookie(client.get("/api/settings/personalization"))
+    assert cookie.startswith("unsloth_appearance=light.standard;")
+    assert "secure" in cookie.lower()
+
+
+def test_appearance_cookie_ignores_an_unknown_stored_palette(monkeypatch):
+    store: dict = {
+        pers.PERSONALIZATION_SETTING_KEY: {
+            "appearance": {"theme": "dark", "palette": "from-a-newer-build"}
+        }
+    }
+    client = _shared_setup_1(monkeypatch, store)
+
+    cookie = _appearance_cookie(client.get("/api/settings/personalization"))
+    assert cookie.startswith("unsloth_appearance=dark.standard;")
+
+
 @pytest.mark.parametrize("field", ["greetingIconDataUrl", "greetingImageDataUrl"])
 @pytest.mark.parametrize(
     "value",
