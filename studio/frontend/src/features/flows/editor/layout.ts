@@ -8,6 +8,7 @@ import { useUiStore } from "../stores/ui-store";
 import { CARD_MIN_WIDTH } from "./card-size";
 import { inHandle, outHandle } from "./connection-rules";
 import type { LayoutRequest, LayoutResult } from "./layout-core";
+import { foldLayout, tidyGraph } from "./super-cards";
 import {
   type TidyContext,
   fittedCardSize,
@@ -37,6 +38,23 @@ function getWorker(): Worker {
     else entry.resolve(event.data.result ?? {});
   };
   return worker;
+}
+
+// A closed card's blocks leave React Flow, so it no longer knows their sizes; layout reads the
+// mounted canvas's own size map, so it folds the same notes the card does.
+let remembered: ReadonlyMap<string, { width: number; height: number }> =
+  new Map();
+
+export function rememberSizes(
+  sizes: ReadonlyMap<string, { width: number; height: number }>,
+): void {
+  remembered = sizes;
+}
+
+export function sizeLookup(
+  getInternalNode: (id: string) => InternalNode | undefined,
+): (id: string) => { width?: number; height?: number } | undefined {
+  return (id) => getInternalNode(id)?.measured ?? remembered.get(id);
 }
 
 function runLayout(request: LayoutRequest): Promise<LayoutResult> {
@@ -151,7 +169,13 @@ export async function autoLayout(
       return handle ? handle.y + handle.height / 2 : undefined;
     },
   };
-  const result = await runLayout(tidyRequest(ctx));
+  // A closed super card is laid out as one block; its blocks move with it.
+  const folded = foldLayout(
+    tidyRequest({ ...ctx, graph: tidyGraph(graph, useDocStore.getState().meta.editor) }),
+    useDocStore.getState(),
+    sizeLookup(getInternalNode),
+  );
+  const result = folded.unfold(await runLayout(folded.request));
   const patch = tidyPatch(ctx, result, sizes);
   useDocStore.getState().applyTidy(patch);
 }

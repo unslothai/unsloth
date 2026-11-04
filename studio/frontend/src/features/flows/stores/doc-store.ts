@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { foldedGroups, readSuperCards } from "../editor/super-card-records";
 import {
   FLOW_FORMAT,
   FLOW_FORMAT_VERSION,
@@ -242,11 +243,12 @@ export function documentSignature(doc: FlowDocument): string {
     graph: graphFromDocument(doc),
   });
   const { editor, ...rest } = canonical;
-  // The viewport is not an edit; reroutes are.
+  // The viewport is not an edit; reroutes and a collapsed super card are.
   return JSON.stringify({
     ...rest,
     reroutes: editor.reroutes,
     reroute_wires: editor.reroute_wires,
+    super_cards: editor.super_cards,
   });
 }
 
@@ -335,7 +337,10 @@ export const useDocStore = create<DocState>((set, get) => {
         withGraph(s, {
           nodes: {
             ...s.graph.nodes,
-            [node.id]: { ...node, group: node.group ?? frameAt(s.graph, node.pos) },
+            [node.id]: {
+              ...node,
+              group: node.group ?? frameAt(s.graph, node.pos, foldedGroups(s.meta.editor, s.graph)),
+            },
           },
           nodeOrder: [...s.graph.nodeOrder, node.id],
         }),
@@ -708,9 +713,10 @@ export const useDocStore = create<DocState>((set, get) => {
       commit((s) => {
         const nodes = { ...s.graph.nodes };
         const nodeOrder = [...s.graph.nodeOrder];
+        const folded = foldedGroups(s.meta.editor, s.graph);
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
-          nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos) };
+          nodes[node.id] = { ...node, group: frameAt(s.graph, node.pos, folded) };
           nodeOrder.push(node.id);
         }
         const edges = { ...s.graph.edges };
@@ -739,10 +745,19 @@ export const useDocStore = create<DocState>((set, get) => {
         const groups = { ...s.graph.groups, [group.id]: group };
         const graph = { ...s.graph, groups };
         const nodes = { ...s.graph.nodes };
+        // A frame folded into a closed card keeps its blocks and takes no others; a block hidden in
+        // a closed card keeps its frame too, since its saved position no longer says where it sits.
+        const folded = foldedGroups(s.meta.editor, s.graph);
+        const hidden = new Set(
+          readSuperCards(s.meta.editor, s.graph)
+            .filter((card) => !card.open)
+            .flatMap((card) => card.members),
+        );
         for (const id of s.graph.nodeOrder) {
           const node = nodes[id];
           const before = node.group ?? null;
-          const after = frameAt(graph, node.pos);
+          if (hidden.has(id) || (before && folded.has(before))) continue;
+          const after = frameAt(graph, node.pos, folded);
           if (before === after) continue;
           if (before !== group.id && after !== group.id) continue;
           nodes[id] = { ...node, group: after };
@@ -889,10 +904,15 @@ function removeReroutes(
   };
 }
 
-function frameAt(graph: DocGraph, pos: [number, number]): string | null {
+function frameAt(
+  graph: DocGraph,
+  pos: [number, number],
+  skip: ReadonlySet<string> = new Set(),
+): string | null {
   const [x, y] = [pos[0] + 130, pos[1] + 16];
   let best: { id: string; area: number } | null = null;
   for (const id of graph.groupOrder) {
+    if (skip.has(id)) continue;
     const [gx, gy, gw, gh] = graph.groups[id].rect;
     if (x < gx || y < gy || x > gx + gw || y > gy + gh) continue;
     if (!best || gw * gh < best.area) best = { id, area: gw * gh };
