@@ -151,7 +151,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         silu = _rbf16(gf * tl.sigmoid(gf))
         return (silu * v.to(tl.float32)).to(tl.bfloat16)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_i8(
         x_ptr,
         h_ptr,
@@ -302,7 +302,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         z = _h16_tile(x_ptr, v_ptr, gidx, live, h, h32, ROWS * CG, SWIGLU, TF32X3)
         _h16_quant_store(z, inv_t, q_ptr, gidx, live, QMIN, QMAX, FP32_SCALE)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_h16(
         x_ptr,
         v_ptr,

@@ -87,7 +87,8 @@ def _kernel() -> Any:
     global _rsqrt, _mul, _add
     _rsqrt, _mul, _add = libdevice.rsqrt, libdevice.mul_rn, libdevice.add_rn
 
-    @triton.jit
+    # n_rows keeps its % 16 hint: runtime it was 2.5% slower at even token counts on A100.
+    @triton.jit(do_not_specialize = ["n_seq"])
     def _norm_rope_kernel(
         x_ptr,
         w_ptr,
