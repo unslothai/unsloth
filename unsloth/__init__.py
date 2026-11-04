@@ -1182,7 +1182,13 @@ if _IS_MLX:
 
     def _mlx_context_length_edited(args):
         initial = getattr(args, "_unsloth_mlx_initial_max_seq_length", None)
-        return initial is not None and args.max_seq_length != initial
+        if initial is None:
+            return False
+        # Assigning zoo's default value over the filled-in one is still an edit.
+        replaced = isinstance(initial, _MLXImplicitInt) and not isinstance(
+            args.max_seq_length, _MLXImplicitInt
+        )
+        return replaced or args.max_seq_length != initial
 
     def _coerce_mlx_training_args(
         args,

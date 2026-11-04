@@ -292,6 +292,9 @@ assert (b.args.max_seq_length, b.args.max_length) == (4096, 48), "trainer budget
 import dataclasses
 swept = trl.DPOTrainer(model=long_model, args=dataclasses.replace(trl.DPOConfig(max_length=4096), beta=0.2), train_dataset=[]).args
 assert (swept.max_seq_length, swept.dataset_order, swept.beta) == (4096, "torch_randperm", 0.2), "a replaced config stays implicit"
+assigned = trl.DPOConfig(max_length=4096)
+assigned.max_seq_length = zoo.MLXTrainingConfig.max_seq_length
+assert trl.DPOTrainer(model=long_model, args=assigned, train_dataset=[]).args.max_seq_length == zoo.MLXTrainingConfig.max_seq_length
 plain = trl.DPOTrainer(model=model, args=zoo.MLXTrainingConfig(max_steps=1), train_dataset=[]).args
 assert (plain.max_grad_norm, plain.max_grad_leaf_norm) == (0.0, 1.0), "zoo's leaf clip default survives conversion"
 assert trl.DPOTrainer(model=model, args=trl.SFTConfig(max_steps=1), train_dataset=[]).args.max_grad_norm == 1.0
