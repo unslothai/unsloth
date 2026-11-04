@@ -88,6 +88,8 @@ export function jinjaScopes(text: string): JinjaScope[] {
     from: number;
     sets: { name: string; from: number }[];
   }[] = [];
+  // Open `for` and `if` blocks, innermost last, to tell a loop's own `{% else %}` from an `if`'s.
+  const blocks: ("for" | "if")[] = [];
   const ident = /[A-Za-z_][A-Za-z0-9_]*/g;
   const close = (scope: (typeof open)[number], to: number) => {
     for (const name of scope.names) scopes.push({ name, from: scope.from, to });
@@ -99,11 +101,25 @@ export function jinjaScopes(text: string): JinjaScope[] {
     const at = block.index ?? 0;
     const after = at + block[0].length;
     const loop = LOOP_RE.exec(tag);
-    if (loop)
+    if (loop) {
       open.push({ names: loop[1].match(ident) ?? [], from: after, sets: [] });
-    else if (/^endfor\b/.test(tag)) {
+      blocks.push("for");
+    } else if (/^endfor\b/.test(tag)) {
+      if (blocks[blocks.length - 1] === "for") blocks.pop();
       const scope = open.pop();
       if (scope) close(scope, at);
+    } else if (/^if\b/.test(tag)) blocks.push("if");
+    else if (/^endif\b/.test(tag)) {
+      if (blocks[blocks.length - 1] === "if") blocks.pop();
+    } else if (/^else$/.test(tag) && blocks[blocks.length - 1] === "for") {
+      // A loop's `{% else %}` runs when it had no items, in the enclosing scope: its names end here.
+      const scope = open[open.length - 1];
+      if (scope) {
+        close(scope, at);
+        scope.names = [];
+        scope.sets = [];
+        scope.from = after;
+      }
     } else {
       const set = SET_RE.exec(tag);
       const inLoop = open[open.length - 1];

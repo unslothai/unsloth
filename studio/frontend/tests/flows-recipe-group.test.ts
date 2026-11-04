@@ -1719,6 +1719,18 @@ test("setting a namespace's attribute binds no variable of that name", async () 
   );
 });
 
+test("a loop's else branch reads the enclosing scope, an if's else inside the loop does not", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{% for topic in [] %}{{ topic }}{%- else -%}{{ topic }}{% endfor %}", "topic", "subject"),
+    "{% for topic in [] %}{{ topic }}{%- else -%}{{ subject }}{% endfor %}",
+  );
+  assert.equal(
+    replaceRef("{% for topic in xs %}{% if x %}a{% else %}{{ topic }}{% endif %}{{ topic }}{% endfor %}{{ topic }}", "topic", "subject"),
+    "{% for topic in xs %}{% if x %}a{% else %}{{ topic }}{% endif %}{{ topic }}{% endfor %}{{ subject }}",
+  );
+});
+
 test("a duplicated reader gets the wire to the column it reads, and a Jinja test is not a column", async () => {
   const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
   const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");
