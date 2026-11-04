@@ -861,6 +861,21 @@ def _is_protocol_error(exc: BaseException) -> bool:
     return False
 
 
+# HTTP 404 for an unknown Mcp-Session-Id, so the request never ran: the client SDK's "Session terminated"
+# stand-in, or the server body mcp 2.x relays (Python SDK -32600 / TypeScript SDK -32001 "Session not found").
+_SESSION_GONE_MESSAGES = ("Session terminated", "Session not found")
+_SESSION_GONE_CODES = (32600, -32600, -32001)
+
+
+def _is_session_terminated(exc: BaseException) -> bool:
+    error = getattr(exc, "error", None)
+    return (
+        _is_protocol_error(exc)
+        and getattr(error, "message", None) in _SESSION_GONE_MESSAGES
+        and getattr(error, "code", None) in _SESSION_GONE_CODES
+    )
+
+
 def _transport_dead(session) -> bool:
     """Only stdio can prove a transport dead; HTTP always reads unknown, so this returns False there."""
     client = getattr(session, "client", None)
@@ -918,7 +933,7 @@ def _session_responsive(
         return not timeout_is_fatal
     except Exception as exc:  # noqa: BLE001
         # A JSON-RPC error means the transport works; reconnecting would lose session state.
-        if not _is_protocol_error(exc):
+        if _is_session_terminated(exc) or not _is_protocol_error(exc):
             return False
     session.dirty = False
     session.proved_at = time.monotonic()
@@ -1553,7 +1568,8 @@ class McpToolList(list):
 
 
 def _capabilities(client) -> Any:
-    return getattr(getattr(client, "initialize_result", None), "capabilities", None)
+    # initialize_result stays None on a modern connection, which has no initialize handshake.
+    return getattr(client, "server_capabilities", None)
 
 
 async def _list_resources(client) -> Optional[list[dict]]:
@@ -1566,7 +1582,7 @@ async def _list_resources(client) -> Optional[list[dict]]:
         while len(listed) < MAX_MCP_RESOURCES:
             page = await client.list_resources_mcp(cursor = cursor)
             listed.extend(getattr(page, "resources", None) or ())
-            cursor = getattr(page, "nextCursor", None) or getattr(page, "next_cursor", None)
+            cursor = getattr(page, "next_cursor", None)
             # A repeated cursor would loop forever.
             if not cursor or cursor in cursors:
                 break
@@ -1857,9 +1873,8 @@ def _image_mime(mime: Any) -> Optional[str]:
 
 
 def _resource_mime(obj: Any) -> Any:
-    # mcp 2.x renames mimeType to mime_type, keeping camelCase only as an alias
-    mime = getattr(obj, "mimeType", None)
-    return mime if mime is not None else getattr(obj, "mime_type", None)
+    # mcp 2.x exposes mime_type; mimeType is only a constructor alias there
+    return obj.mime_type if hasattr(obj, "mime_type") else getattr(obj, "mimeType", None)
 
 
 def _block_image(block: Any) -> Optional[tuple[str, str]]:
@@ -2233,13 +2248,18 @@ def _call_session_tool(
                 # Intentional close may look like a transport error or AttributeError; do not treat as crash
                 discard_session = True
                 raise RuntimeError("MCP server was updated or removed during the call")
+            if _is_session_terminated(exc):
+                # A 404 means the server never processed the request, so reconnect and replay once.
+                discard_session = True
+                retry = attempt == 0
             # Protocol error = server alive, keep session. Transport error: evict but DO NOT replay.
-            if _is_protocol_error(exc):
+            elif _is_protocol_error(exc):
                 # A protocol error means the server replied, so keep the session but probe it before the next call.
                 session.dirty = True
             elif not _is_tool_error(exc):
                 discard_session = True
-            raise
+            if not retry:
+                raise
         finally:
             if slot is not None:
                 session.posts.settle(slot, abandoned = False)

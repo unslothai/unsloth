@@ -3,7 +3,7 @@
 
 import { create } from "zustand";
 import { type StateStorage, createJSONStorage, persist } from "zustand/middleware";
-import { useChatRuntimeStore } from "@/features/chat";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { accountDatabaseName } from "@/lib/account-transition";
 import { syncAcrossWindows } from "@/lib/sync-across-windows";
 import { hostOf } from "./address";

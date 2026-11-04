@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 from .rocm_bf16 import is_rocm_torch
 
@@ -1239,9 +1239,6 @@ def _metal_working_set_mib() -> tuple[Optional[int], int]:
 
 
 def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
-    """Bytes inside ``memory_reserved() - memory_allocated()`` that ordinary allocations cannot reuse: the CUDA graph
-    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part). ``device`` None counts every
-    block pool and reads the whole-step pool on the current card."""
     held = 0
     try:
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
@@ -1340,6 +1337,8 @@ def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
     delay_s: float = 1.0,
+    *,
+    can_stop: Optional[Callable[[DeviceMemory], bool]] = None,
 ) -> DeviceMemory:
     """Max free over spaced reads (a transient only shrinks free); on mps, empty_cache first so freed pool is not budgeted as used memory."""
     device = getattr(target, "device", "cpu")
@@ -1364,11 +1363,13 @@ def settled_snapshot_device_memory(
         pass
     best = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
-    for _ in range(max(0, attempts - 1)):
+    for attempt in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
             # Free already within the reserve of total: nothing transient to wait out.
             if best.free_mib >= best.total_mib - max(2048, int(best.total_mib * 0.10)):
                 break
+        if attempt == 0 and can_stop is not None and can_stop(best):
+            break
         try:
             import time
             time.sleep(delay_s)
@@ -5881,7 +5882,15 @@ def apply_memory_plan(
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
-    if policy == OFFLOAD_MODEL:
+    if policy == OFFLOAD_MODEL and _stream_unet_instead_of_model_offload(pipe, placement, logger):
+        policy = OFFLOAD_GROUP
+        try:
+            pipe._unsloth_applied_plan = replace(
+                plan, offload_policy = OFFLOAD_GROUP, stream_text_encoders = True
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elif policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload(device = placement)
         keep_cpu_weights_on_offload(pipe, logger)
     elif policy == OFFLOAD_GROUP:
@@ -5990,6 +5999,154 @@ def apply_memory_plan(
         with fast_upload(modules, placement, logger = logger):
             pipe.to(placement)
     return policy, tiling_engaged
+
+
+UNET_STREAM_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM"
+# Measured SDXL 1024^2, 25 steps, diffusers 0.41, L4 bf16 / T4 fp16; MiB above weights.
+_MEASURED_UNET_OFFLOAD_DENOISE_MIB = 817
+# Streamed: worst phase is the VAE decode (L4 bf16).
+_MEASURED_UNET_STREAMED_PEAK_MIB = 2435
+# force_upcast fp16 VAE (T4) decodes in fp32.
+_MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB = 3228
+_UNET_STREAM_SLACK_MIB = 512
+# Streamed denoise: 333 MiB above the weights at 1024^2 (L4 bf16, CFG pair, incl. the ~168 MiB prefetch window), the
+# activations scaled linearly to 2048^2 so a larger canvas still fits beside the resident leaves: 168 + 4 x 165.
+_MEASURED_UNET_STREAMED_DENOISE_MIB = 828
+# =0: size the resident leaves from the decode peak for the whole render (no lending, the #16295 sizing).
+UNET_STREAM_LEND_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM_LEND"
+
+
+def unet_stream_lends_decode() -> bool:
+    """Resident UNet leaves are sized from the denoise peak and lent to the VAE decode (release_for_decode streams the
+    shortfall again before the decode and re-pins it after), as ComfyUI unloads part of the UNet for its decode."""
+    return not _env_off(UNET_STREAM_LEND_ENV)
+
+
+def unet_decode_lend(fp32_decode: bool = False) -> tuple[int, int, int, bool]:
+    """The ``DECODE_LEND_ATTR`` tuple of a streamed UNet: the decode's measured peak above the weights at 1024^2,
+    scaled linearly with the canvas (a tiled decode grows slower: it releases more than it needs, never less)."""
+    peak = (
+        _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+        if fp32_decode
+        else _MEASURED_UNET_STREAMED_PEAK_MIB
+    )
+    return (peak, peak, DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT, False)
+
+
+def _measured_reserve_mib(peak_mib: int) -> int:
+    step = _MEASURED_PEAK_ROUND_MIB
+    return int(-(-(peak_mib * _MEASURED_PEAK_MARGIN) // step) * step)
+
+
+def unet_stream_room_mib(
+    free_mib: int,
+    unet_mib: int,
+    vae_mib: int,
+    *,
+    fp32_decode: bool = False,
+    lend: Optional[bool] = None,
+) -> Optional[int]:
+    """None if whole-module offload fits; else MiB of UNet leaves to keep resident. ``lend`` (default: the kill switch
+    ``UNSLOTH_DIFFUSION_UNET_STREAM_LEND``): sized from the denoise peak, the decode borrows the shortfall through
+    release_for_decode; off: sized so the decode fits beside every resident leaf for the whole render."""
+    if unet_mib + _measured_reserve_mib(_MEASURED_UNET_OFFLOAD_DENOISE_MIB) <= free_mib:
+        return None
+    if lend is None:
+        lend = unet_stream_lends_decode()
+    if lend:
+        peak = _MEASURED_UNET_STREAMED_DENOISE_MIB
+    else:
+        peak = (
+            _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+            if fp32_decode
+            else _MEASURED_UNET_STREAMED_PEAK_MIB
+        )
+    reserve = _measured_reserve_mib(peak) + _UNET_STREAM_SLACK_MIB
+    return max(0, int(free_mib) - int(vae_mib) - reserve)
+
+
+def _vae_decodes_in_fp32(vae: Any) -> bool:
+    try:
+        import torch
+        first = next(iter(vae.parameters()), None)
+        return (
+            first is not None
+            and first.dtype == torch.float16
+            and bool(getattr(getattr(vae, "config", None), "force_upcast", False))
+        )
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _stream_unet_instead_of_model_offload(
+    pipe: Any,
+    placement: str,
+    logger: Any = None,
+) -> bool:
+    """Stream a UNet too large for whole-module offload (which OOMs on step one) leaf by leaf."""
+    if _env_off(UNET_STREAM_ENV):
+        return False
+    try:
+        import torch
+
+        unet = getattr(pipe, "unet", None)
+        if not isinstance(unet, torch.nn.Module) or getattr(pipe, "transformer", None) is not None:
+            return False
+        onload = torch.device(placement)
+        if onload.type != "cuda" or not torch.cuda.is_available():
+            return False
+        free, total = (int(x) for x in torch.cuda.mem_get_info(onload))
+        free_mib = max(0, free - user_budget_reserve_bytes(onload, total)) >> 20
+
+        def _mib(m: Any) -> int:
+            if not isinstance(m, torch.nn.Module):
+                return 0
+            ts = {id(t): t for t in list(m.parameters()) + list(m.buffers())}
+            return sum(t.numel() * t.element_size() for t in ts.values()) >> 20
+
+        unet_mib = _mib(unet)
+        vae = getattr(pipe, "vae", None)
+        fp32_decode = vae is not None and _vae_decodes_in_fp32(vae)
+        lend = unet_stream_lends_decode()
+        room = unet_stream_room_mib(
+            free_mib, unet_mib, _mib(vae), fp32_decode = fp32_decode, lend = lend
+        )
+        if room is None:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    _set_group_offload_failure(pipe, None)
+    applied = _apply_group_offload(
+        pipe,
+        placement,
+        logger,
+        stream_text_encoders = True,
+        resident_transformer_mib = room or None,
+        denoiser = "unet",
+    )
+    if applied:
+        try:
+            # deferred speed profile would rebuild weights outside the leaf hooks; read by _engage_deferred_speed
+            pipe._unsloth_unet_streamed = True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # the leaves were sized from the denoise peak: the decode borrows its shortfall (release_for_decode)
+            setattr(
+                pipe, DECODE_LEND_ATTR, unet_decode_lend(fp32_decode) if lend and room else None
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: UNet (%d MiB) does not fit %d MiB free for whole-module offload; %s",
+            unet_mib,
+            free_mib,
+            f"streaming it leaf by leaf, {room} MiB kept resident"
+            if applied
+            else "streaming failed, whole-module offload",
+        )
+    return applied
 
 
 _GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
@@ -6539,6 +6696,55 @@ def _streamed_pin_leftover_mib(
 
 
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
+
+DENOISER_RESIDENT = "resident"
+DENOISER_PARTIAL = "partial"
+DENOISER_STREAMED = "streamed"
+
+
+def denoiser_residency(pipe: Any) -> Optional[tuple[int, int]]:
+    """``(resident, total)`` offload groups across the denoisers, read off the live hooks: a denoiser another offload
+    hook moves counts as one streamed group, an unhooked one as one resident group, None when unreadable."""
+    resident = total = 0
+    try:
+        for name in _DENOISER_NAMES:
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            groups = _offload_groups(module)
+            if groups:
+                total += len(groups)
+                resident += sum(1 for g in groups if getattr(g, "_unsloth_resident", False))
+                continue
+            registry = getattr(module, "_diffusers_hook", None)
+            total += 1
+            if not (
+                any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules())
+                or any("offload" in str(key) for key in (getattr(registry, "hooks", None) or {}))
+            ):
+                resident += 1
+    except Exception:  # noqa: BLE001 - a status read must never fail the load or the render
+        return None
+    return resident, total
+
+
+def denoiser_offload(pipe: Any, offload_policy: Any) -> Optional[str]:
+    """resident | partial | streamed for a group-offloaded pipeline; None for other policies or an unreadable one."""
+    if offload_policy != OFFLOAD_GROUP or pipe is None:
+        return None
+    counts = denoiser_residency(pipe)
+    if counts is None:
+        return None
+    resident, total = counts
+    if resident >= total:
+        return DENOISER_RESIDENT
+    return DENOISER_PARTIAL if resident else DENOISER_STREAMED
+
+
+def agreed_placement(placements: Iterable[Optional[str]]) -> Optional[str]:
+    """The placement every denoise of one image ran with; None when they differ."""
+    distinct = set(placements)
+    return distinct.pop() if len(distinct) == 1 else None
 
 
 def denoisers_pinned_resident(pipe: Any) -> bool:
@@ -7439,9 +7645,11 @@ def _apply_group_offload(
     background_pin: Optional[bool] = None,
     resident_transformer_mib: Optional[int] = None,
     resident_text_encoder_mib: Optional[int] = None,
+    denoiser: str = "transformer",
 ) -> bool:
-    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back."""
-    transformer = getattr(pipe, "transformer", None)
+    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back.
+    ``denoiser="unet"`` streams leaf by leaf (UNet blocks are too coarse for groups)."""
+    transformer = getattr(pipe, denoiser, None)
     if transformer is None:
         return False
     if not stream_transformer and not stream_text_encoders:
@@ -7472,7 +7680,9 @@ def _apply_group_offload(
 
         # Dual-DiT pipelines (Ideogram 4): second DiT is as large as the first, so stream all DiTs.
         streamed: dict[str, Any] = {}
-        if stream_transformer:
+        if stream_transformer and denoiser != "transformer":
+            streamed[denoiser] = transformer
+        elif stream_transformer:
             streamed["transformer"] = transformer
             for extra in ("transformer_2", "unconditional_transformer"):
                 module = getattr(pipe, extra, None)
@@ -7496,6 +7706,9 @@ def _apply_group_offload(
             "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
             "use_stream": use_stream,
         }
+        if denoiser != "transformer":
+            gkwargs["offload_type"] = "leaf_level"
+            gkwargs.pop("num_blocks_per_group")
         # Gated on the signature so older diffusers still works.
         _params = inspect.signature(apply_group_offloading).parameters
         if use_stream:

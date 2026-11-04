@@ -63,6 +63,19 @@ def _call_arguments(text: str, callee: str) -> list[str]:
     return calls
 
 
+def _variant_select_meta(picker: str) -> str:
+    """The meta a GGUF quant row builds; its click and its gear both pass it on."""
+    meta = re.search(r"const variantSelectMeta = useCallback\(.*?\n  \);", picker, re.S)
+    assert meta, "variantSelectMeta not found"
+    assert (
+        "onClick={() => onSelect(repoId, selectMeta)}" in picker
+    ), "the quant row no longer loads from the shared meta"
+    assert (
+        "onConfigure={() => onConfigure(repoId, selectMeta)}" in picker
+    ), "the quant gear no longer opens with the shared meta"
+    return meta.group(0)
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
@@ -617,7 +630,7 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "const variantVisionHint = hasVision === false ? false : undefined;" in picker
     assert "hasVision: normalizeGgufVisionCapability(res?.has_vision)," in picker
-    assert picker.count("isVision: variantVisionHint") >= 2
+    assert "isVision: variantVisionHint," in _variant_select_meta(picker)
     assert "variantVisionHint," in picker
     assert "visionByRepo: ReadonlyMap<string, boolean>" in picker
     assert "pinnedQuantValidation.visionByRepo.get(entry.repoId) === false" in picker
@@ -677,11 +690,10 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert downloaded_pins == [
         "isDownloaded"
     ], "the sole-quant row must carry the pin only after that quant is known complete"
-    block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
-    assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
-    # A quant outside the pinned snapshot lands in a different one.
-    block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
-    assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
+    # The row and its gear share one meta. A quant outside the pinned snapshot lands in a different one.
+    assert "loadId: downloaded === true ? loadId : undefined," in _variant_select_meta(
+        picker
+    ), "the GGUF row drops the pin"
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
@@ -692,7 +704,15 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "loadPickerGgufVariants(" in picker
     sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
     assert sole and "localOnly: true," in sole.group(0)
-    assert "soleQuantNeedsExpander(" in picker and "hubWithdrawsSoleQuant(" in picker
+    # Collapsed rows read disk only; the expander asks the Hub.
+    assert "hubWithdrawsSoleQuant(" not in picker
+    assert "soleQuantNeedsExpander(" not in picker
+    sole_reader = re.search(r"function useSoleDownloadedQuants\(.*?\n}\n", picker, re.S)
+    assert sole_reader, "the sole-quant reader was renamed"
+    assert "listGgufVariantsCached(" not in sole_reader.group(0), (
+        "the collapsed rows list variants directly instead of through readSoleQuant, "
+        "which is the only caller that pins offline=true"
+    )
     assert "cachePath={c.cache_path}" in picker
 
     page = _read("features/chat/chat-page.tsx")
@@ -1494,12 +1514,10 @@ def test_variant_expander_forwards_the_gguf_filename():
     by filename and cannot map a quant label back to one, so without it every hub
     GGUF pick on Images/Video fell through to a silent return and nothing loaded."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
-    handler = re.search(r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S)
-    assert handler, "handleVariantClick not found"
-    assert "ggufFilename: filename," in handler.group(0)
+    assert "ggufFilename: filename," in _variant_select_meta(src)
     # Matched structurally, since prettier wraps the call once it grows.
-    call = re.search(r"handleVariantClick\(([^)]*)\)", src)
-    assert call, "handleVariantClick call site not found"
+    call = re.search(r"variantSelectMeta\(([^)]*)\)", src)
+    assert call, "variantSelectMeta call site not found"
     args = [a.strip() for a in call.group(1).split(",") if a.strip()]
     assert args[:2] == ["v.quant", "v.filename"], args
 
@@ -1973,9 +1991,14 @@ def test_chat_picker_routes_diffusion_picks_to_their_page():
     assert (
         'task === "image-diffusion-unsupported"' in caps
     ), "the never-loadable tag must stay hidden"
-    wrapper = re.search(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
-    assert wrapper, "the routing wrapper around onSelect is missing"
-    body = wrapper.group(0)
+    # Memoized rows forward onSelect too; the routing wrapper is the one that maps the task.
+    wrappers = [
+        m.group(0)
+        for m in re.finditer(r"const onSelect = useCallback\(.*?\n  \);", src, re.S)
+        if "mediaPageForTask" in m.group(0)
+    ]
+    assert wrappers, "the routing wrapper around onSelect is missing"
+    body = wrappers[0]
     assert "mediaPageForTask" in body and "navigateToPage" in body
     assert "if (!task)" in body
 
@@ -1994,7 +2017,10 @@ def test_video_gallery_fetches_clips_as_their_cards_come_into_view():
     """Cards show stills; only the selected clip mints a playback link, avoiding a pipeline per clip."""
     src = _read("features/video/video-page.tsx")
     assert "new IntersectionObserver(" in src
-    assert "ref={stripRef}" in src and "data-clip-id={video.id}" in src
+    assert "ref={stripRef}" in src
+    # The card is the memoized VideoStripTile, which tags itself with its own video's id.
+    tile = src[src.index("const VideoStripTile = memo(") :]
+    assert "const id = video.id;" in tile and "data-clip-id={id}" in tile
     assert 'root.querySelectorAll("[data-clip-id]")' in src
     # rootMargin applies to the root box only, so the clipping strip must BE the root.
     assert '{ root, rootMargin: "0px 600px" }' in src
@@ -3171,9 +3197,10 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     Give the parent row a gear and that inference silently inverts."""
     pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
     # Inside the parent row: a gear added beside the spacer would invert the driver's inference.
-    start = pickers.index("const renderDownloadedGgufRow")
-    parent = pickers[start : pickers.index("const renderDownloadedModelRow", start)]
-    parent_row = parent[: parent.index("{expanderOpen && (")]
+    # The parent row is the memoized DownloadedGgufDeviceRow that renderDownloadedGgufRow mounts.
+    start = pickers.index("const DownloadedGgufDeviceRow = memo(")
+    parent = pickers[start : pickers.index("\n});", start)]
+    parent_row = parent[: parent.index("{expanderOpen &&")]
     # A partial repo puts a row menu in the gutter instead; the gear invariant is about the
     # branch that expands, so read that one when the row splits on it.
     split = parent_row.find("isPartialRepo ?")
@@ -3194,6 +3221,18 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
         "the multi-quant parent row grew a gear, so the driver's 'no gear means "
         "this row expands rather than loads' inference is now wrong"
     )
+
+
+def test_a_sole_quant_row_keeps_its_gear_and_reaches_the_expander_from_its_menu():
+    """Playwright drivers open run settings from a sole-quant row's gear, and Enter on the row
+    loads, so the expander (Hub-only state: updates, pending companions) opens from the menu."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    start = pickers.index("const SoleQuantGgufDeviceRow = memo(")
+    sole = pickers[start : pickers.index("\n});", start)]
+    assert "<ModelLoadSettingsAction" in sole and "Inference settings for" in sole
+    assert 'key: "quantizations"' in sole
+    assert "actions.get().toggleGgufExpanded(c.repo_id, expanderOpen)" in sole
+    assert "{expanderOpen &&\n        renderDeviceGgufExpander({" in sole
 
 
 def test_run_settings_page_keeps_its_identifying_controls():
@@ -3568,7 +3607,7 @@ def test_format_gates_wait_for_the_server_reported_platform():
     Linux Unsloth would hide every local safetensors model."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate
+    assert "if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;" in gate
 
 
 def test_the_default_is_preflighted_before_the_managed_download():
@@ -3588,7 +3627,7 @@ def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
     """The picker hides them outright there (visibleCachedModelRows)."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "return !platform.fetched || !platform.isChatOnly();" in gate
+    assert "return platform.capabilitiesUnknown() || !platform.isChatOnly();" in gate
     assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 

@@ -66,6 +66,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    backfill_fp8_modules_to_convert,
     _prepare_compressed_tensors_model,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
@@ -88,6 +89,7 @@ from .loader_utils import (
     warn_if_bitsandbytes_quantized_nothing,
 )
 from .fsdp2_qlora import prepare_fsdp2_qlora, set_fsdp2_quant_storage
+from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ..utils.packing import (
     get_packed_info_from_kwargs,
     mask_packed_boundary_labels,
@@ -776,15 +778,17 @@ def LlamaAttention_fast_forward_inference(
     if static is not None:
         # Captured step: the cache slot is on the device; the attention itself runs eagerly
         # between two captured segments (static.attention), over the true length.
-        self.paged_attention_K.index_copy_(
-            0, static.slot, K_slot.view(1, bsz, n_kv_heads, head_dim)
+        # K and V scratch are adjacent ([2, bsz, 1, n_kv_heads * head_dim]), as are their cache
+        # rows ([rows, 2, bsz, n_kv_heads, head_dim]): one index_copy_ writes both.
+        self.paged_attention.index_copy_(
+            0, static.slot, self.temp_KV.view(1, 2, bsz, n_kv_heads, head_dim)
         )
-        self.paged_attention_V.index_copy_(
-            0, static.slot, V_slot.view(1, bsz, n_kv_heads, head_dim)
-        )
-        A = static.attention(
-            lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, True)[0]
-        )
+        if static.span is not None:
+            A = _decode_attention_span(self, Qn, static, bsz, True)
+        else:
+            A = static.attention(
+                lambda: _decode_attention_core(self, Qn, static.kv_len, static.mask, bsz, True)[0]
+            )
         A = A.transpose(1, 2).reshape(bsz, 1, attention_size)
         return fast_linear_forward(self.o_proj, A, out = self.temp_O), (None, None)
 
@@ -938,6 +942,36 @@ def _decode_attention_core(self, Qn, kv_seq_len, attention_mask, bsz, sdpa_gqa_w
                 Qn, Knn, Vnn, attn_mask = attention_mask, is_causal = is_causal
             )
     return A, Kn, Vn
+
+
+def _decode_attention_span(self, Qn, static, bsz, sdpa_gqa_with_batch_mask):
+    """softmax(Q K^T) V of one decode token inside a whole-step graph: over the first static.span
+    cache rows, rows past the true length masked by the device-side static.keep. The same ops as
+    _decode_attention_core on a longer (masked) row, so only the reduction order differs."""
+    span = static.span
+    keep = static.keep[..., :span]
+    drop = static.drop[..., :span]
+    n_heads = self.__dict__.get("_unsloth_tp_heads", self.config.num_attention_heads)
+    n_groups = self.num_key_value_groups
+    n_kv_heads = self.__dict__.get("_unsloth_tp_kv_heads", self.config.num_key_value_heads)
+    head_dim = self.head_dim
+    Knn = self.paged_attention_K[:span].permute(1, 2, 0, 3)
+    Vnn = self.paged_attention_V[:span].permute(1, 2, 0, 3)
+    if bsz == 1:
+        Qn *= self.scalar
+        A = _gqa_decode_scores(Qn, Knn, self.attention[:, :, :, :span])
+        A.masked_fill_(drop, float("-inf"))
+        A[:] = torch_nn_functional_softmax(A, dim = -1, dtype = torch.float32)
+        return _gqa_decode_values(A, Vnn, Qn)
+    # The mask is always batched here: as the eager core, Qwen3 expands K / V instead of SDPA GQA.
+    if SDPA_HAS_GQA and sdpa_gqa_with_batch_mask:
+        return scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = keep, enable_gqa = True)
+    if n_groups != 1:
+        Knn = Knn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, span, head_dim)
+        Vnn = Vnn[:, :, None, :, :].expand(bsz, n_kv_heads, n_groups, span, head_dim)
+        Knn = Knn.reshape(bsz, n_heads, span, head_dim)
+        Vnn = Vnn.reshape(bsz, n_heads, span, head_dim)
+    return scaled_dot_product_attention(Qn, Knn, Vnn, attn_mask = keep)
 
 
 _decode_graphs.register_attention(LlamaAttention_fast_forward_inference)
@@ -3741,6 +3775,16 @@ class FastLlamaModel:
                 revision = revision,
             )
         model_config.model_name = model_name
+        _fp8_backfilled = backfill_fp8_modules_to_convert(
+            model_config,
+            model_name,
+            token,
+            revision,
+            local_files_only = kwargs.get("local_files_only", False),
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            variant = kwargs.get("variant"),
+        )
         model_max_seq_length = model_config.max_position_embeddings
 
         verify_fp8_support_if_applicable(
@@ -4219,6 +4263,8 @@ class FastLlamaModel:
                     or _ct_requant
                     or _fp8_to_nf4
                     or _block_swap_saved is not None
+                    # Backfilled modules_to_convert lives only on model_config.
+                    or _fp8_backfilled
                 ):
                     # Transformers 5.x @strict init rejects extra kwargs alongside config=, so set overrides on the config instead.
                     if max_position_embeddings is not None:
@@ -4226,7 +4272,9 @@ class FastLlamaModel:
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
-                    if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
+                    if (
+                        _modelopt_rewritten or _fp8_to_nf4 or _fp8_backfilled
+                    ) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
                     try:
                         with sync_load_when_quantizing(
@@ -5163,8 +5211,16 @@ class FastLlamaModel:
             collect_garbage(after = clean_gpu_cache)
 
         from .lora_init import fast_lora_init, record_fast_pissa
+        from ._utils import block_swap_shaped
 
-        with fast_lora_init() as fast:
+        with (
+            fast_lora_init() as fast,
+            block_swap_shaped(
+                model,
+                init_lora_weights,
+                lora_config = lora_config,
+            ),
+        ):
             model = _get_peft_model(model, lora_config)
         if fast["pissa"]:
             record_fast_pissa(model)
@@ -5188,7 +5244,9 @@ class FastLlamaModel:
 
         model._saved_temp_tokenizer = _saved_temp_tokenizer
 
-        model = FastLlamaModel.patch_peft_model(model, use_gradient_checkpointing)
+        model = FastLlamaModel.patch_peft_model(
+            model, use_gradient_checkpointing, _defer_fp8_lora = True
+        )
         offload_embedding_if_tight(model)
         install_block_swap(
             model,
@@ -5196,6 +5254,7 @@ class FastLlamaModel:
             prefetch_depth = prefetch_depth,
             use_gradient_checkpointing = use_gradient_checkpointing,
         )
+        enable_fp8_lora(model)
         skip_checkpointing(model, checkpoint_skip_layers)
 
         if ensure_weight_tying:
@@ -5296,7 +5355,11 @@ class FastLlamaModel:
         return model
 
     @staticmethod
-    def patch_peft_model(model, use_gradient_checkpointing = "unsloth"):
+    def patch_peft_model(
+        model,
+        use_gradient_checkpointing = "unsloth",
+        _defer_fp8_lora = False,
+    ):
         # Persist the GC mode: for_inference() clears it every GRPO step and TrainingArguments defaults
         # it to False, which would silently disable it at train time.
         model._unsloth_gradient_checkpointing = use_gradient_checkpointing
@@ -5525,6 +5588,8 @@ class FastLlamaModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        if not _defer_fp8_lora:
+            enable_fp8_lora(model)
         _unsloth_install_pretrain_detector(model)
         _legacy_block_compile(model)
         return model
@@ -5536,6 +5601,7 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
         _tensor_parallel_for_inference(model)
+        restore_fp8_lora_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -5608,6 +5674,7 @@ class FastLlamaModel:
             m = m.model
         _for_training(m)
         apply_training_mode()
+        enable_fp8_lora(model)
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)

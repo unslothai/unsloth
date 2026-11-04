@@ -2,13 +2,23 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const sv = {
+  turns: {
+    label: "Tur {number}",
+    bookmarkedLabel: "Tur {number}, bokmärkt",
+    bookmark: "Bokmärk tur",
+    removeBookmark: "Ta bort bokmärke",
+    navigator: "Turer",
+  },
   chatBackground: {
     noBackground: "Ingen bakgrund",
     sizing: "Bildstorlek",
+    sizingPosition: "Bildstorlek och position",
     fill: "Fyll",
     fit: "Anpassa",
     stretch: "Sträck ut",
     original: "Originalstorlek",
+    fitWidth: "Anpassa till bredd",
+    fitHeight: "Anpassa till höjd",
     zoom: "Zoom",
     outline: "Kontur runt meddelandefältet",
     fade: "Tona ut mot bakgrunden",
@@ -25,11 +35,18 @@ export const sv = {
     halftone: "Raster",
     scanlines: "Skanningslinjer",
     visibility: "Synlighet",
+    conversationVisibility: "Synlighet i konversationer",
     blur: "Bildoskärpa",
     position: "Position",
+    horizontal: "Horisontell position",
+    vertical: "Vertikal position",
+    scope: "Visa på",
+    scopeNewChat: "Sidan för ny chatt",
+    scopeChats: "Chattar",
+    scopeAll: "Alla sidor",
     positionValue: "Horisontellt {x} %, vertikalt {y} %",
-    newChat: "Ny chatt",
-    conversation: "Konversation",
+    newChat: "Förhandsvisning av ny chatt",
+    conversation: "Förhandsvisning av konversation",
     prompt: "Vad vill du utforska?",
     response: "Konversationen förblir tydlig mot bakgrunden.",
     storageError: "Det gick inte att spara bakgrunden. Kontrollera webbläsarens lagringsutrymme.",
@@ -37,6 +54,26 @@ export const sv = {
     dimensionsError: "Välj en bild mindre än 40 megapixlar.",
     decodeError: "Det gick inte att läsa bilden. Prova en annan fil.",
     effectError: "Det gick inte att skapa effekten. Välj Ingen eller en annan bild.",
+    material: "Glas",
+    materialSolid: "Av",
+    materialTransparent: "Genomskinligt",
+    materialFrosted: "Frostat",
+    materialBlurred: "Suddigt",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS-systemglas",
+    materialMacosNote: "Använder macOS genomskinliga fönstermaterial så att skrivbordet syns igenom.",
+    materialNativeFailed: "Den här versionen av Unsloth Desktop kan inte använda macOS-materialet. Uppdatera appen för att aktivera det.",
+    glassTheme: "Glastema",
+    materialStyle: "Stil",
+    materialMenus: "Glasmenyer",
+    materialMenusDescription: "Rullgardinsmenyer, menyer och väljare använder också glas.",
+    materialStrength: "Glasstyrka",
+    lens: "Glaslins",
+    lensDescription: "Böjer bilden under skrivfältet som riktigt glas.",
+    lensOff: "Av",
+    lensMagnify: "Förstora",
+    lensShrink: "Förminska",
   },
 
   linkMenu: {
@@ -159,6 +196,9 @@ export const sv = {
         history: "Läser din webbhistorik",
         move: "Flyttar musen",
         drag: "Drar",
+        tabs: "Tittar på flikarna",
+        readFile: "Läser filen",
+        editFile: "Redigerar filen",
       },
     },
     title: "Webbläsare",
@@ -301,18 +341,24 @@ export const sv = {
     downloadLocationReset: "Återställ",
     askBeforeDownloadingSetting: "Fråga innan hämtning",
     askBeforeDownloadingSettingDescription: "Bekräfta filer från webbplatser innan de sparas.",
+    askBeforeProgramDownloadsSetting: "Fråga innan program hämtas",
+    askBeforeProgramDownloadsSettingDescription: "Bekräfta filer som kan köra program, till exempel .exe eller .dmg, även när andra hämtningar inte frågar.",
     downloadSitesSetting: "Behörigheter för hämtning per webbplats",
     downloadSitesSettingDescription: "Webbplatser du har valt att alltid tillåta eller blockera hämtningar från.",
     downloadSitesNone: "Markera Kom ihåg till nästa gång när du tillfrågas, så visas webbplatsen här.",
     downloadSitesFor: "Hämtningar från {host}",
     downloadSitesRemove: "Glöm {host}",
     downloadSiteAllow: "Tillåt alltid",
+    downloadSiteAllowAll: "Tillåt även program",
     downloadSiteBlock: "Blockera alltid",
     downloadPrompt: {
       title: "Hämta den här filen?",
       description: "{host} vill spara {name} på din dator.",
       dangerous: "Filer som den här kan köra program på din dator. Ladda bara ned den om du litar på {host}.",
       remember: "Kom ihåg till nästa gång",
+      once: "Fråga nästa gång",
+      site: "Alltid för {host}",
+      all: "Hämta alltid, från alla webbplatser",
       cancel: "Avbryt",
       download: "Hämta",
       blocked: "En hämtning från {host} blockerades.",
@@ -658,6 +704,8 @@ export const sv = {
     plainText: "Skrivfält med oformaterad text",
     plainTextDescription:
       "Behåll kod, Markdown och länkar som ren text. Stäng av för att visa en formaterad förhandsvisning.",
+    richPaste: "Klistra in formaterad text",
+    richPasteDescription: "Klistrar in länkar, tabeller och formatering som Markdown. {shortcut} klistrar in oformaterad text. Fullständig redigerare för formaterad text kommer snart.",
     showContext: "Användning av kontextfönstret",
     sendShortcut: "Kortkommando för att skicka",
     sendMultiline: "{mod} + Enter för uppmaningar med flera rader",
@@ -767,38 +815,6 @@ export const sv = {
     compactQueued: "Komprimering begärd för nästa meddelande",
     compactEmpty: "Inget att komprimera än",
     compactUnsupported: "Komprimering kräver en GGUF- eller MLX-modell med verktygsstöd",
-  },
-  halloween: {
-    navLabel: "Bus eller godis…",
-    title: "Bus eller godis?!",
-    description:
-      "Vi har bryggt ihop lite skräck för Unsloth, här resten av oktober.",
-    chooseTheme: "Välj ett läskigt tema",
-    spookyGreetings: "Läskiga hälsningar",
-    spookyGreetingsDescription:
-      "Sengångaren hälsar nya chattar med en liten skräck.",
-    decorations: "Spindlar och fladdermöss",
-    decorationsDescription:
-      "Spindelnät i hörnen och då och då en spindel eller fladdermus med ett halloweentema.",
-    surprise: "Bus eller godis!",
-    surpriseDescription: "Låt sengångaren välja ett tema åt dig.",
-    themesTitle: "Läskiga teman",
-    back: "Tillbaka",
-    footer: "Unsloth återgår till det normala vid midnatt den 1 november.",
-    removeNow: "Ta bort nu",
-    hideFromSidebar: "Dölj från sidofältet",
-    greeting: {
-      pumpkins: "Pumporna är snidade. Vad händer nu?",
-      brewing: "Dags att brygga",
-      trickOrTreat: "Bus eller godis?",
-      manor: "Välkommen till herrgården",
-      manorName: "Välkommen till herrgården, {name}",
-      happyHalloween: "Glad halloween",
-      happyHalloweenName: "Glad halloween, {name}",
-      spirits: "Andarna lyssnar…",
-      mysteries: "Vilka mysterier ska vi avslöja i natt?",
-      conjure: "Vad kan jag trolla fram åt dig?",
-    },
   },
   welcome: {
     goodToSeeYou: "Kul att se dig",
@@ -1023,7 +1039,7 @@ export const sv = {
       deleteProjects: "Ta bort projekt",
       deleteProjectsTitle: "Ta bort projekt",
       deleteProjectsDescription:
-        "Ta bort {count} projekt? Deras chattar tas bort permanent.",
+        "{count} projekt och alla deras chattar raderas permanent. Det går inte att ångra.",
       deleteProjectsFilesDescription:
         "Varje projekts arbetsytemapp tas bort från disken.",
       countSelected: "{count} markerade",
@@ -1035,7 +1051,7 @@ export const sv = {
       deleteChats: "Ta bort chattar",
       deleteTitle: "Ta bort chattar",
       deleteDescription:
-        "Ta bort {count} chattar? Åtgärden går inte att ångra.",
+        "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
       deleteFilesDescription:
         "Varje chatts egen sandlådemapp tas bort från disken. Filer som skrivits i ett projekt blir kvar i projektets arbetsyta.",
       deleteFilesLabel: "Ta bort filer och sandlådemapp",
@@ -1083,7 +1099,7 @@ export const sv = {
     dialog: {
       deleteChat: {
         title: "Ta bort chatt",
-        description: 'Är du säker på att du vill ta bort chatten "{name}"?',
+        description: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
       },
       deleteRun: {
         title: "Ta bort träningskörning",
@@ -1109,6 +1125,7 @@ export const sv = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Välj installationsägarens lösenord innan du lägger till ett konto till. Du använder det för att logga in när installationen har flera konton.",
       signsInAs: "Loggar in som {username}",
       signsInAsOwner: "Loggar in som {alias} eller {username}",
       signInName: "Ditt inloggningsnamn",
@@ -1971,6 +1988,26 @@ export const sv = {
       autoTitleNewChats: "Skapa automatiskt rubriker för nya chattar",
       autoTitleNewChatsDescription:
         "Generera en rubrik från det första meddelandet.",
+      mlWarmup: {
+        sectionTitle: "Prestanda vid start",
+        description: "Förbered valda funktioner för snabbare första användning. Alla är av som standard. Alternativen kan läsa in delade beroenden och använda mer RAM när appen är inaktiv.",
+        restartRequired: "Ändringarna tillämpas efter att Unsloth har startats om.",
+        hardwareLabel: "Identifiering av maskinvara",
+        hardwareDescription: "Identifiera GPU och förbered PyTorch.",
+        textLabel: "Textmodeller",
+        textDescription: "Förbered stödet för textmodeller i Transformers.",
+        datasetsLabel: "Förberedelse av dataset",
+        datasetsDescription: "Förbered Datasets och dess beroenden för förhandsvisningar och bearbetning.",
+        mediaLabel: "Bild- och videomodeller",
+        mediaDescription: "Förbered Diffusers och delade modellberoenden.",
+        advanced: "Avancerat",
+        quantizationLabel: "Förkontroller för bildkvantisering",
+        quantizationDescription: "Kontrollera stödet innan en kvantiserad bildmodell läses in för första gången. Kan tillfälligt öka RAM-användningen.",
+        requiredBySelections: "Krävs för dina val.",
+        disabledByEnv: "Inaktiverat av UNSLOTH_STUDIO_DISABLE_TORCH_WARM i backendens miljö.",
+        loadError: "Det gick inte att läsa in inställningarna för förberedelse vid start.",
+        saveError: "Det gick inte att spara inställningarna för förberedelse vid start.",
+      },
       helperLlm: {
         sectionTitle: "Hjälp-LLM",
         preloadOnStartup: "Förcacha hjälp-LLM vid start",
@@ -2030,6 +2067,7 @@ export const sv = {
           "Det gick inte att spara inställningarna för automatiskt modellbyte.",
         idleError:
           "Ange 0 för att behålla modellen inläst, eller minst 60 sekunder.",
+        idleUnsaved: "Inte sparat ännu.",
         keepKv: "Behåll chattkontext mellan avlastningar",
         keepKvDescription:
           "Spara KV-cachen före en avlastning efter inaktivitet, eller innan en bild- eller videomodell tar över GPU:n, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",
@@ -2099,6 +2137,14 @@ export const sv = {
           off: "Kör varje verktygsanrop utan att fråga. Python- och terminalkod körs fortfarande i sandlådan, som begränsar vilka filer de kan nå på din dator. Utan en fungerande OS-sandlåda frågar riskabla anrop först.",
           full: "Kör varje verktygsanrop utan att fråga och stänger av kodsandlådan, så att Python- och terminalkod kan läsa och ändra alla filer som ditt konto har åtkomst till.",
         },
+      },
+      display: {
+        title: "Visning",
+        timeFormat: "Tidsformat",
+        timeFormatDescription: "Visa tider i 12- eller 24-timmarsformat.",
+        timeFormatSystem: "Systemstandard",
+        timeFormat12: "12-timmars",
+        timeFormat24: "24-timmars",
       },
       notifications: {
         sectionTitle: "Aviseringar",
@@ -2283,10 +2329,14 @@ export const sv = {
         label: "Installationstyp",
         description:
           "Endast chatt (GGUF). Den fullständiga installationen lägger till träning, export, video, safetensors-modeller och fler funktioner för bildgenerering.",
+        descriptionCpu:
+          "Endast chatt (GGUF). Ingen GPU som stöds hittades, så den fullständiga installationen lägger till träning på CPU:n.",
         action: "Uppgradera till fullständig installation",
         confirmTitle: "Uppgradera till den fullständiga installationen?",
         confirmDescription:
           "Den här installationen med endast chatt kör GGUF-modeller. Den fullständiga installationen lägger till PyTorch för den här datorns GPU, vilket aktiverar träning, export, video, safetensors-modeller och fler funktioner för bildgenerering. Den laddar ner flera gigabyte (minst 5 GB diskutrymme) och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
+        confirmDescriptionCpu:
+          "Den här installationen med endast chatt kör GGUF-modeller. Ingen GPU som stöds hittades på den här datorn, så den fullständiga installationen lägger till PyTorch för CPU:n, vilket aktiverar träning på CPU:n. Träning på CPU är mycket långsammare än på GPU. Den kräver minst 5 GB diskutrymme och startar om servern. Chattar, modeller och inställningar behålls. Det kan ta flera minuter.",
         confirmAction: "Uppgradera",
         keywords:
           "full install upgrade installationstyp fullständig installation uppgradera endast chatt chat only gguf add training träning träna train fine-tune pytorch torch export video bildgenerering safetensors",
@@ -2331,6 +2381,13 @@ export const sv = {
       avatarShapeRounded: "Avrundad",
       greetingSloth: "Hälsning",
       greetingSlothDescription: "Visa hälsningen i nya chattar.",
+      greetingDefault: "Standard",
+      greetingCustom: "Egen",
+      greetingImage: "Bild",
+      greetingText: "Hälsningstext",
+      greetingTextDescription: "Lämna tomt för att använda de inbyggda hälsningarna.",
+      greetingFileError: "Välj en PNG, JPEG, WebP eller GIF under 10 MB.",
+      greetingImageError: "Bilden kunde inte användas. Prova en mindre.",
       chooseSloth: "Eller välj en sengångare",
       noPicture: "Ingen profilbild",
       noneLabel: "Ingen",
@@ -2448,15 +2505,26 @@ export const sv = {
         label: "Tema",
         description: "Färger som används i Unsloth, i ljust och mörkt läge.",
         standard: "Standard",
-        classic: "Klassisk",
-        minimal: "Minimal",
         moreThemes: "Fler teman",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Bus eller godis",
-        description:
-          "Halloweenteman och kusliga hälsningar, till 1 november.",
+      composer: {
+        title: "Inmatningsfält",
+      },
+      code: {
+        title: "Kod",
+        fontDescription: "Kodblock i chatten, filförhandsvisningar och API-exempel.",
+        lineNumbers: {
+          label: "Radnummer",
+          description: "Numrera raderna i kodblock i chatten.",
+        },
+        wordWrap: {
+          label: "Radbrytning",
+          description: "Bryt långa rader i kodblock i stället för att rulla i sidled.",
+        },
+        ligatures: {
+          label: "Ligaturer",
+          description: "Slå ihop tecken som => och != till ett tecken när kodtypsnittet stöder det.",
+        },
       },
       custom: {
         chatWidth: {
@@ -3074,6 +3142,8 @@ export const sv = {
         "Aviseringar är blockerade. Tillåt dem för Unsloth i webbläsarens eller systemets inställningar och försök igen.",
       replyNotificationKeywords:
         "avisering notis meddelande klar färdig svar bakgrund minimerad notify notification alert done finished reply background",
+      showLinkPreviews: "Länkförhandsvisningar",
+      showLinkPreviewsDescription: "Visa förhandsvisningar när du håller muspekaren över källänkar.",
       showResponseModel: "Svarsmodell",
       showResponseModelDescription:
         "Visa modellinformation i assistentens svar.",
@@ -3089,8 +3159,10 @@ export const sv = {
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
-      composerAtBottom: "Inmatningsfält längst ned",
-      composerAtBottomDescription: "Starta nya chattar med inmatningsfältet längst ned på sidan i stället för i mitten.",
+      turnNavigation: "Turnavigering",
+      turnNavigationDescription: "Visar dina meddelanden som en list vid vänsterkanten i långa chattar. Hovra för att förhandsgranska en tur, klicka för att hoppa dit och bokmärk turer för att hitta dem igen.",
+      composerPosition: "Inmatningsfältets placering",
+      composerPositionDescription: "Var inmatningsfältet hamnar när en ny chatt startar, från sidans överkant ända ned till botten.",
       projectAttachments: "Dela filer i ett projekt",
       projectAttachmentsDescription:
         "Gör nya chattbilagor tillgängliga för alla chattar i projektet.",
@@ -3363,10 +3435,10 @@ export const sv = {
         moveFailed: "Det gick inte att flytta chattar",
         deleteChatsTitle: "Ta bort chattar ({count})",
         deleteChatsWarning:
-          "Ta bort de valda chattarna ({count})? Detta kan inte ångras.",
+          "{count} chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleteArchivedTitle: "Ta bort {count} arkiverade chattar",
         deleteArchivedWarning:
-          "Ta bort de valda arkiverade chattarna ({count})? Detta kan inte ångras.",
+          "{count} arkiverade chattar och deras meddelanden raderas permanent. Det går inte att ångra.",
         deleting: "Tar bort...",
       },
       title: "Data",
@@ -3583,6 +3655,9 @@ export const sv = {
         docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
+        codeTitle: "Anropa från kod",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andra MCP-klienter ansluter hit med samma token.",
         enable: "Hantera begäranden",
         enableDescription:
           "Hanterar /v1/systemone. När du aktiverar det hämtas modellen.",
@@ -3730,8 +3805,6 @@ export const sv = {
         repoCheckoutFallback:
           "Om du fortfarande har arkivets checkout kör du det lokala installationsprogrammet därifrån:",
         restartAfterUpdate: "Starta om Unsloth efter uppdateringen.",
-        desktopManaged:
-          "Skrivbordsappen kontrollerar automatiskt nya appversioner. Du kan också kontrollera eller uppdatera här när som helst.",
         desktopReady: "Uppdateringar för skrivbordsappen",
         desktopReadyDescription:
           "Kontrollera om en nyare version av skrivbordsappen är tillgänglig.",
@@ -3741,7 +3814,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Ansluten till en Unsloth-server på port {port} som den här appen inte har startat, till exempel `unsloth studio` i en terminal. Stoppa den där den startades, avsluta sedan appen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -3773,6 +3846,8 @@ export const sv = {
   },
   studio: {
     routeTitle: "Träna",
+    cpuTrainingNotice:
+      "Ingen GPU hittades, så träningen körs på CPU:n. Den är mycket långsammare än GPU-träning och stöder endast textmodeller (LoRA eller fullständig finjustering).",
     wizard: {
       modelTitle: "Modell",
       modelDescription: "Välj modell och träningsmetod",
@@ -4057,7 +4132,6 @@ export const sv = {
             "Den här datauppsättningen verkar innehålla bilder, som inte kan strömmas.",
           audioDataset:
             "Den här datauppsättningen verkar innehålla ljud, som inte kan strömmas.",
-          appleSilicon: "Strömning stöds inte på Apple Silicon (MLX) ännu.",
         },
         options: {
           trainOnCompletions: "endast assistentslutföranden",
@@ -4894,9 +4968,9 @@ export const sv = {
       dialog: {
         renameChat: "Byt namn på chatt",
         deleteChatDescription:
-          "Den här chatten tas bort permanent. Det går inte att ångra.",
+          "Chatten och dess meddelanden raderas permanent. Det går inte att ångra.",
         deleteProjectDescription:
-          "Projektet och dess chattar ({count}) tas bort permanent. Det går inte att ångra.",
+          "Projektet och dess chattar ({count}) raderas permanent. Det går inte att ångra.",
         deleteFilesMany:
           "Ta även bort filerna och sandlådemapparna som de här chattarna skapade.",
         deleteProjectFilesLabel: "Ta bort projektets arbetsytemapp",
@@ -5278,6 +5352,8 @@ export const sv = {
     removeLevel: "Ta bort nivå {n}",
     addLevel: "Lägg till nivå",
     jsonHelp: "Begärans body. Kör skickar den precis som den är.",
+    copyBody: "Kopiera brödtext",
+    copyCurl: "Kopiera som cURL",
     examples: "Exempel",
     presetToolApproval: "Godkänna agentens verktygsanrop",
     presetPromptInjection: "Upptäcka promptinjektion",
@@ -5375,14 +5451,14 @@ export const sv = {
     renameChat: "Byt namn på chatt",
     chatName: "Chattnamn",
     deleteChat: "Ta bort chatt",
-    deleteChatDescription: "Vill du verkligen ta bort {name}? Dess meddelanden tas bort permanent.",
+    deleteChatDescription: 'Chatten "{name}" och dess meddelanden raderas permanent. Det går inte att ångra.',
     importChats: "Importera chattar",
     importDestination: "Välj var {name} ska importeras:",
     selectDestination: "Välj mål",
     recents: "Senaste",
     import: "Importera",
     deleteProject: "Ta bort projekt",
-    deleteProjectDescription: "Vill du verkligen ta bort {name}? Dess chattar tas bort permanent.",
+    deleteProjectDescription: 'Projektet "{name}" och alla dess chattar raderas permanent. Det går inte att ångra.',
     deleteProjectFiles: "Projektets arbetsmapp tas bort från disken.",
     deleteAll: "Ta bort allt",
     projectFallback: "projekt",
@@ -5465,6 +5541,18 @@ export const sv = {
     flaggedIntro: "Vår automatiska skanner flaggade problem, bland annat:",
     nothingFlagged:
       "Vår automatiska skanner flaggade inga oroande filer, men dubbelkolla ändå.",
+    unscannedTitle: "Modellfilerna kunde inte genomsökas",
+    unscannedBody: "{model} innehåller pickle-vikter, som kan köra kod när de läses in, och ingen genomsökning efter skadlig kod finns tillgänglig för dem, så modellen kan inte läsas in. {note}",
+    unscannedIntro: "Filer som inte kunde genomsökas:",
+    switchSourceNote: "Byt modellkälla till Hugging Face i Inställningar för att läsa in den.",
+    reconnectNote: "Anslut till Hugging Face så att genomsökningen kan läsas och försök igen.",
+    managedTitle: "Anpassad kod är avstängd för det här kontot",
+    managedNote: "Den är avstängd för hanterade konton. Be installationens ägare att aktivera den.",
+    notFoundTitle: "Hittades inte på {source}",
+    notFoundBody: "{model} hittades inte på {source}, så säkerhetskontrollerna kunde inte köras. Kontrollera namnet eller ange en token med åtkomst om förrådet är privat.",
+    notOnModelScopeBody: "{model} är inte tillgänglig på ModelScope, så säkerhetskontrollerna kunde inte köras och den kan inte läsas in därifrån. Byt modellkälla till Hugging Face i Inställningar för att använda den.",
+    checksFailedTitle: "Säkerhetskontrollerna kunde inte köras",
+    checksFailedBody: "{model} kunde inte läsas från {source}, så säkerhetskontrollerna kunde inte slutföras och den kan inte läsas in. Kontrollera anslutningen och din token och försök igen. {note}",
     enableAndContinue: "Aktivera och fortsätt",
   },
   tour: {
@@ -5647,5 +5735,61 @@ export const sv = {
     later: "Senare",
     update: "Uppdatera",
     undo: "Ångra",
+  },
+  generationStats: {
+    working: "Arbetar...",
+    processingPrompt: "Bearbetar prompt {percent}%",
+    compactingContext: "Komprimerar kontext...",
+    timeLeft: "{eta} kvar",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "utkast {accepted}/{drafted} accepterade ({percent}%)",
+    timing: {
+      trigger: "Meddelandetider",
+      firstToken: "Första token",
+      speedInStep: "Hastighet (inom steg)",
+      effective: "Effektiv",
+      output: "Utdata",
+      denoising: "Avbrusning",
+      stepsOne: "{count} steg",
+      steps: "{count} steg",
+      blocksOne: "{count} block",
+      blocks: "{count} block",
+      canvas: "Arbetsyta",
+      generation: "Generering",
+      answerTokens: "Svarstoken",
+      prompt: "Prompt",
+      total: "Totalt",
+      chunks: "Delar",
+      promptEval: "Promptbearbetning",
+      promptSpeed: "Prompthastighet",
+      speed: "Hastighet",
+      tokens: "Token",
+      draftAccepted: "Accepterade utkast",
+      denoisingSteps: "Avbrusningssteg",
+      blocksLabel: "Block",
+      cacheHits: "Cacheträffar",
+      cacheWrites: "Cacheskrivningar",
+      stopReason: "Stopporsak",
+      stoppedByYou: "Stoppad av dig",
+      endOfTurn: "Turen avslutad",
+      lengthLimit: "Längdgräns",
+      toolCall: "Verktygsanrop",
+      contentFilter: "Innehållsfilter",
+    },
+    placement: {
+      title: "Viktplacering",
+      allOnCpu: "Alla {total} lager på CPU:n",
+      split: "{gpu} av {total} lager på GPU:n, {cpu} på CPU:n",
+      allOnGpu: "Alla {total} lager på GPU:n",
+      expertCache: "Alla {total} lager på GPU:n, alla experter i RAM ({amount} expertcache på GPU:n)",
+      expertSpillOne: "Alla {total} lager på GPU:n, expertvikter för {count} lager i RAM",
+      expertSpill: "Alla {total} lager på GPU:n, expertvikter för {count} lager i RAM",
+      inUnifiedMemory: "{amount} i enhetligt minne",
+      inSharedMemory: "{amount} i delat minne",
+      inVram: "{amount} i VRAM",
+      inRam: "{amount} i RAM",
+    },
   },
 } as const;

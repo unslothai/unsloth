@@ -268,9 +268,9 @@ _hf_reachability_pin: "ContextVar[Optional[list]]" = ContextVar("hf_reachability
 
 
 @contextmanager
-def pinned_hf_reachability():
-    """Hold one reachability verdict for this block, however long it runs. Every verdict this module reaches fills it (probed, already memoised, or opted out of) and the rest read it. Nothing is pinned until something asks, so a block that never touches the Hub pays nothing."""
-    token = _hf_reachability_pin.set([])
+def pinned_hf_reachability(verdict: Optional[bool] = None):
+    """Hold one Hub reachability verdict for this block, pinned lazily on first ask; pass `verdict` if already probed."""
+    token = _hf_reachability_pin.set([] if verdict is None else [verdict])
     try:
         yield
     finally:

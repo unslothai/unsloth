@@ -246,7 +246,7 @@ try:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -280,7 +280,7 @@ except ImportError:
         decision_layout,
         is_decision_model,
     )
-    from core.inference import get_inference_backend
+    from core.inference.orchestrator import peek_inference_backend
     from utils.paths import (
         is_local_path,
         normalize_path,
@@ -616,10 +616,7 @@ def _scan_hf_cache(
             if variant_states is not None
             else None
         )
-        partial = hf_cache_scan.is_snapshot_partial(
-            "model", model_id, repo_dir, variant_state = variant_state
-        )
-        partial = partial or hf_cache_scan.is_gguf_repo_partial(
+        partial = hf_cache_scan.repo_listing_partial(
             model_id, repo_dir, variant_state = variant_state
         )
 
@@ -981,7 +978,10 @@ def collect_local_models(
         except OSError:
             continue
     try:
-        from hub.utils import download_manifest
+        from hub.utils import download_manifest, partial_verdict_cache
+
+        # Taken before the index reads the Hub state, so a write in between misses next time.
+        partial_verdict_cache.scan_token()
         variant_states = download_manifest.build_variant_state_index(
             state_repositories,
             active_hub_cache = hf_cache_dir,
@@ -2110,10 +2110,15 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        # Off-loop: building the singleton calls get_device(), which would freeze on the torch import.
-        inference_backend = await asyncio.to_thread(get_inference_backend)
+        from core.inference.defaults import get_default_models
 
-        default_models = inference_backend.default_models
+        # Chat reads this on first paint: listing suggestions must not construct the runtime or probe hardware.
+        inference_backend = peek_inference_backend()
+        default_models = await asyncio.to_thread(
+            lambda: inference_backend.default_models
+            if inference_backend is not None
+            else get_default_models(detect_hardware = False)
+        )
         if account_access.managed_account():
             default_models = [
                 m
@@ -2163,7 +2168,7 @@ async def list_models(current_subject: str = Depends(get_current_subject)):
         hide_resident = account_access.resident_hidden(
             "chat", getattr(inference_backend, "active_model_name", None)
         )
-        if not hide_resident:
+        if not hide_resident and inference_backend is not None:
             loaded_models += _orchestrator_models(inference_backend)
 
         llama_backend = get_llama_cpp_backend()
@@ -2811,6 +2816,11 @@ async def scan_model_remote_code(
             load_subdirs_by_target = consent_load_subdirs,
         )
         payload = decision.response_payload()
+        blocks = (
+            [(payload.get("block_cause"), payload.get("model_name"))]
+            if payload.get("block_cause")
+            else []
+        )
         payload["model_name"] = exact_snapshot_repo_id if exact_snapshot_path else model_name
         payload["requires_trust_remote_code"] = decision.has_remote_code
         # Prior approval lets the dialog be skipped; the scan still ran, so this is a real match.
@@ -2841,6 +2851,8 @@ async def scan_model_remote_code(
             )
             security_blocked = security_blocked or _sec.blocked
             unsafe_files.extend(_sec.unsafe_files)
+            if _sec.blocked:
+                blocks.append((_sec.block_cause, _sec.model_name))
         payload["unsafe_files"] = unsafe_files
         payload["security_blocked"] = security_blocked
         if security_blocked:
@@ -2848,6 +2860,16 @@ async def scan_model_remote_code(
             payload["approvable"] = False
             payload["requires_trust_remote_code"] = True
             payload["error_kind"] = "malware_blocked"
+        from utils.hub_settings import active_source_label
+        from utils.security.file_security import NOT_ON_SOURCE, strongest_block
+
+        block_cause, block_target = strongest_block(blocks)
+        payload["block_cause"] = block_cause
+        # A repo the source lacks declares nothing, but the load still stops at the dialog.
+        if block_cause:
+            payload["requires_trust_remote_code"] = True
+        payload["block_source"] = active_source_label()
+        payload["block_target"] = block_target if block_cause == NOT_ON_SOURCE else None
         # The findings quote paths inside the model directory.
         from hub.utils.host_paths import restore_inventory_handles
 
@@ -5624,7 +5646,10 @@ async def list_checkpoints(
     outputs_dir = account_access.private_directory(outputs_dir, "outputs")
     try:
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
-        raw_models = scan_checkpoints(outputs_dir = resolved_outputs_dir, include_decision = True)
+        # Reads every checkpoint's trainer_state.json: keep it off the event loop.
+        raw_models = await asyncio.to_thread(
+            scan_checkpoints, outputs_dir = resolved_outputs_dir, include_decision = True
+        )
 
         models = [
             ModelCheckpoints(
