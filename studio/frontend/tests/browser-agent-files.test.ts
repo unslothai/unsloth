@@ -139,6 +139,41 @@ test("a preview that misses the first call, as one just switched on from Source 
   assert.equal(snapshot.text, "ready", snapshot.error);
 });
 
+test("a click that takes the preview a while is sent once, not again after a short wait", async () => {
+  endBrowserAgentRun(RUN);
+  let clicks = 0;
+  globals.__frameAgent = (_tabId: string, op: Record<string, unknown>, _code: string, timeoutMs: number) => {
+    // As requestFrameAgent: no answer within its wait is null, though the page still runs the call.
+    const answer = (value: unknown, after = 0) =>
+      Promise.race([new Promise((resolve) => setTimeout(() => resolve(value), after)), new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))]);
+    if (op.op === "click") {
+      clicks++;
+      return answer({ installed: true, result: { ok: true } }, 2000);
+    }
+    if (op.op === "describe") return answer({ installed: true, result: { ok: true, info: { role: "button", name: "Go", tag: "button" } } });
+    if (op.op === "status") return answer({ installed: true, result: { ok: true, quietMs: 1000 } });
+    return answer({ installed: true, result: { ok: true, text: "page", links: [] } });
+  };
+  const click = await act("click", { ref: "r1" });
+  assert.equal(click.ok, true, click.error);
+  assert.equal(clicks, 1);
+});
+
+test("a screenshot of a file in a chat that is off screen is refused, not taken of the panel shown", async () => {
+  endBrowserAgentRun(RUN);
+  useBrowserStore.getState().openFile({ blob: new Blob(["notes"], { type: "text/plain" }), name: "shot.txt", contentType: "text/plain", key: "f:shot" });
+  globals.__native = true;
+  globals.__panel = false;
+  try {
+    const shot = await act("screenshot");
+    assert.equal(shot.ok, false);
+    assert.match(shot.error ?? "", /only runs while the chat is open/);
+  } finally {
+    globals.__native = false;
+    globals.__panel = true;
+  }
+});
+
 test("a PDF is read as text but not edited, and a text file has nothing to click", async () => {
   endBrowserAgentRun(RUN);
   useBrowserStore.getState().openFile({ blob: new Blob(["report body"], { type: "application/pdf" }), name: "report.pdf", contentType: "application/pdf", key: "f:pdf" });

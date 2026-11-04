@@ -92,6 +92,7 @@ const FILL_QUIET_MAX_MS = 1_000;
 const FILL_IDLE_QUIET_MS = 120;
 const PAGE_READY_MS = 4_000;
 const FILE_FRAME_TRY_MS = 1_500;
+const READ_OPS = new Set(["snapshot", "find", "status", "describe", "locate"]);
 const POST_TIMEOUT_MS = 15_000;
 const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
 export const STOPPED = "The user stopped the browser agent. Do not use browser tools again unless they ask.";
@@ -492,8 +493,8 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
       }
     } else {
       // A preview just switched on from Source drops what reaches its frame before the shell listens,
-      // and a file tab is never marked loading: short tries, so one lost call isn't the whole wait.
-      const wait = currentEntry(tab).kind === "file" ? FILE_FRAME_TRY_MS : undefined;
+      // and a file tab is never marked loading: short tries, but only for reads, which can run twice.
+      const wait = currentEntry(tab).kind === "file" && READ_OPS.has(String(request.op)) ? FILE_FRAME_TRY_MS : undefined;
       reply = await requestFrameAgent(tab.id, command, undefined, wait);
       if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource(), wait);
     }
@@ -889,6 +890,9 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       if (!chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
       context.inFile = true;
       showPreview(ready);
+      // Until the frame answers, so an action isn't the call a mounting preview drops.
+      const warm = await pageCall(ready, { op: "status" }).catch((error: Error) => ({ ok: false, error: error.message }));
+      if (!warm.ok) return { ok: false, error: warm.error ?? NO_PAGE_IN_FILE };
     }
   }
 
@@ -1588,6 +1592,8 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   const entry = currentEntry(tab);
   const kind = entry.kind === "file" ? await kindOf(entry) : null;
   if (entry.kind === "file" && kind === "image") return imageFile(entry);
+  // A file has no view of its own to capture off screen: the panel there is another chat's.
+  if (entry.kind === "file" && !chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
   if (!isTauri) return { ok: false, error: "screenshots of the browser panel need the desktop app; use browser_snapshot." };
   // A page at work off screen is captured on its own; one on screen as the panel shows it.
   const hidden = !chatOnScreen(context) && hasNativeView(tab.id);
