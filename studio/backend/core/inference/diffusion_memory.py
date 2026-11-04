@@ -6666,8 +6666,8 @@ DENOISER_STREAMED = "streamed"
 
 
 def denoiser_residency(pipe: Any) -> Optional[tuple[int, int]]:
-    """``(resident, total)`` offload groups across the denoisers, read off the live hooks: ``(0, 0)`` when none is
-    group-offloaded, a denoiser another offload hook moves counts as one streamed group, None when unreadable."""
+    """``(resident, total)`` offload groups across the denoisers, read off the live hooks: a denoiser another offload
+    hook moves counts as one streamed group, an unhooked one as one resident group, None when unreadable."""
     resident = total = 0
     try:
         for name in _DENOISER_NAMES:
@@ -6680,10 +6680,12 @@ def denoiser_residency(pipe: Any) -> Optional[tuple[int, int]]:
                 resident += sum(1 for g in groups if getattr(g, "_unsloth_resident", False))
                 continue
             registry = getattr(module, "_diffusers_hook", None)
-            if any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules()) or any(
-                "offload" in str(key) for key in (getattr(registry, "hooks", None) or {})
+            total += 1
+            if not (
+                any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules())
+                or any("offload" in str(key) for key in (getattr(registry, "hooks", None) or {}))
             ):
-                total += 1
+                resident += 1
     except Exception:  # noqa: BLE001 - a status read must never fail the load or the render
         return None
     return resident, total

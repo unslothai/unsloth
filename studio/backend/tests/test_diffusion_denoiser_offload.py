@@ -74,6 +74,12 @@ def test_a_second_streamed_denoiser_counts():
     assert dm.denoiser_offload(pipe, dm.OFFLOAD_GROUP) == dm.DENOISER_PARTIAL
 
 
+def test_an_unhooked_resident_denoiser_beside_a_streamed_one_is_partial():
+    pipe = types.SimpleNamespace(transformer = _streamed(), unconditional_transformer = _Blocks())
+    assert dm.denoiser_residency(pipe) == (1, 5)
+    assert dm.denoiser_offload(pipe, dm.OFFLOAD_GROUP) == dm.DENOISER_PARTIAL
+
+
 @pytest.mark.parametrize(
     "policy", [dm.OFFLOAD_NONE, dm.OFFLOAD_MODEL, dm.OFFLOAD_STREAMING, dm.OFFLOAD_SEQUENTIAL, None]
 )

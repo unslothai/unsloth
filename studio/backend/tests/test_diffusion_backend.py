@@ -14543,12 +14543,14 @@ def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
 
 
 class _PinProbePipe(_FakePipe):
-    """Enters the denoise loop like diffusers (progress_bar), and runs out of memory on its first attempt."""
+    """Enters the denoise loop and the decoder like diffusers (progress_bar, vae.decode), and runs out of memory on
+    its first attempt."""
 
     def __init__(self, fail_first: bool) -> None:
         super().__init__()
         self.attempts = 0
         self.fail_first = fail_first
+        self.vae = types.SimpleNamespace(decode = lambda: None)
 
     def progress_bar(self, *args, **kwargs):
         return contextlib.nullcontext()
@@ -14558,6 +14560,7 @@ class _PinProbePipe(_FakePipe):
         self.attempts += 1
         if self.fail_first and self.attempts == 1:
             raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        self.vae.decode()
         return super().__call__(**kwargs)
 
 
@@ -14607,35 +14610,38 @@ def test_saved_placement_counts_only_chunks_that_finished(
     assert out["denoiser_offload"] == expected
 
 
-class _DecodeUnpinsPipe(_PinProbePipe):
-    """A VAE OOM recovery that unpins the resident groups for the decode and defers their return."""
+class _DeferredReturnPipe(_PinProbePipe):
+    """A resident load whose groups a VAE OOM recovery unpinned and left on a deferred return: the first forward
+    returns them, and the next decode's recovery unpins them again."""
 
-    def __init__(self) -> None:
+    def __init__(self, deferred: bool) -> None:
         super().__init__(fail_first = False)
+        self.settled = not deferred
         self.decoded = False
+        self.vae = types.SimpleNamespace(decode = lambda: setattr(self, "decoded", True))
 
-    def __call__(self, **kwargs):
-        out = super().__call__(**kwargs)
-        self.decoded = True
+    def progress_bar(self, *args, **kwargs):
+        out = super().progress_bar(*args, **kwargs)
+        self.settled = True
         return out
 
+    def placement(self) -> str:
+        return "resident" if self.settled and not self.decoded else "streamed"
 
-def test_saved_placement_is_read_while_denoising_not_after_the_decode(
-    fake_runtime, tmp_path, monkeypatch
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_saved_placement_is_read_after_the_steps_and_before_the_decode(
+    fake_runtime, tmp_path, monkeypatch, deferred
 ):
     import core.inference.diffusion as diffusion
 
     backend = _loaded_backend(tmp_path)
     state = backend._state
-    pipe = _DecodeUnpinsPipe()
+    pipe = _DeferredReturnPipe(deferred)
     object.__setattr__(state, "pipe", pipe)
     object.__setattr__(state, "offload_policy", "group")
     monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
-    monkeypatch.setattr(
-        diffusion,
-        "denoiser_offload",
-        lambda pipe, policy: "streamed" if pipe.decoded else "resident",
-    )
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: pipe.placement())
 
     out = backend.generate(prompt = "p", steps = 4)
 
