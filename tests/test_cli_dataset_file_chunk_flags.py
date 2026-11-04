@@ -31,7 +31,10 @@ def _run_cli(monkeypatch, **overrides):
         def from_dict(data):
             return data
 
-    datasets = types.SimpleNamespace(Dataset = _Dataset, load_dataset = None)
+    datasets = types.ModuleType("datasets")
+    datasets.Dataset, datasets.load_dataset = _Dataset, None
+    # transformers' find_spec("datasets") raises on a module without __spec__.
+    datasets.__spec__ = importlib.util.spec_from_loader("datasets", loader = None)
     monkeypatch.setitem(sys.modules, "datasets", datasets)
     raw_text = types.ModuleType("raw_text_under_test")
     source = RAW_TEXT_PATH.read_text(encoding = "utf-8")
