@@ -2321,7 +2321,19 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
         if model_config is None:
             model_config = getattr(getattr(engine, "vllm_config", None), "model_config", None)
         max_model_len = getattr(model_config, "max_model_len", None)
-        if not isinstance(max_model_len, int):
+        if model_config is None:
+            # Server mode: no local engine, so use the configured vLLM length, else the model's context
+            # (the text config for VLMs), as TRL does when it has no engine to ask.
+            max_model_len = getattr(getattr(trainer, "args", None), "vllm_max_model_length", None)
+            if max_model_len is None:
+                config = getattr(getattr(trainer, "model", None), "config", None)
+                get_text_config = getattr(config, "get_text_config", None)
+                if callable(get_text_config):
+                    config = get_text_config()
+                elif getattr(config, "text_config", None) is not None:
+                    config = config.text_config
+                max_model_len = getattr(config, "max_position_embeddings", None)
+        if not isinstance(max_model_len, int) or isinstance(max_model_len, bool):
             max_model_len = None
     if (
         max_model_len is not None
