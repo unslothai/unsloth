@@ -1668,14 +1668,9 @@ def _unsloth_grpo_autocast_forced_float32(self):
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
-    """Turn GRPO's packed forwards off for a model that mixes tokens across packed rows.
-
-    Sequence packing and PrefixGrouper score a batch as one flattened stream with per-row position_ids.
-    DeepSeek V4's compressors, Zaya's CCA and RecurrentGemma's RG-LRU pool or recur over that stream
-    whatever position_ids say, which is why SFT keeps padding-free off for them (packing_boundary_blocker).
-    Their leak is ~0.1 nats per token on tiny fp32 models, under the packed paths' 0.7 nat self-verify,
-    so the verify alone would enable packing and score every row after the first with another row's
-    state. Decided once per trainer; the flags below are the ones each packed path already honours."""
+    """Packed GRPO forwards off, once per trainer, for models whose compressors / recurrences mix packed rows
+    (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed self-verify. Zoo's grad PrefixGrouper
+    verifies only against the grad packed forward, so turning that off covers it."""
     if getattr(self, "_unsloth_packing_boundary_checked", False):
         return
     self._unsloth_packing_boundary_checked = True
@@ -1689,10 +1684,9 @@ def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
         return
     if blocker is None:
         return
-    unwrapped._unsloth_seq_packing_nograd_ok = False  # unsloth's no-grad packed forward
-    unwrapped._unsloth_seq_packing_grad_ok = False  # unsloth_zoo's grad packed forward
-    unwrapped._unsloth_prefix_grouper_nograd_disabled = True  # unsloth's no-grad PrefixGrouper
-    unwrapped._unsloth_prefix_grouper_disabled = True  # unsloth_zoo's grad PrefixGrouper
+    unwrapped._unsloth_seq_packing_nograd_ok = False
+    unwrapped._unsloth_seq_packing_grad_ok = False
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True
 
 
 def _unsloth_grpo_autocast(self):
@@ -5098,7 +5092,7 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
-        # The zoo loss runs its own packed forwards; refuse them here too (the logps pass can be skipped).
+        # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
         _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:

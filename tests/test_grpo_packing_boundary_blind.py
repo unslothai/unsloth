@@ -21,7 +21,6 @@ FLAGS = (
     "_unsloth_seq_packing_nograd_ok",
     "_unsloth_seq_packing_grad_ok",
     "_unsloth_prefix_grouper_nograd_disabled",
-    "_unsloth_prefix_grouper_disabled",
 )
 
 
@@ -88,7 +87,6 @@ def test_every_packed_path_is_refused_once(model):
     assert model.__dict__["_unsloth_seq_packing_nograd_ok"] is False
     assert model.__dict__["_unsloth_seq_packing_grad_ok"] is False
     assert model.__dict__["_unsloth_prefix_grouper_nograd_disabled"] is True
-    assert model.__dict__["_unsloth_prefix_grouper_disabled"] is True
     # Decided once per trainer: a later call does not re-walk the model.
     model.__dict__["_unsloth_seq_packing_grad_ok"] = True
     _helper()(trainer, model)
