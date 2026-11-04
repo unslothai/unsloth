@@ -144,9 +144,10 @@ def _server_trainer(
     [
         {"vllm_max_model_length": 512},
         {"vllm_max_model_length": None},
+        {"vllm_max_model_length": -1},
         {"vllm_max_model_length": None, "vlm": True},
     ],
-    ids = ["vllm_max_model_length", "max_position_embeddings", "vlm_text_config"],
+    ids = ["vllm_max_model_length", "max_position_embeddings", "vllm_auto_length", "vlm_text_config"],
 )
 @pytest.mark.parametrize("name", NAMES)
 def test_completion_cut_by_server_context_is_truncated(name, server):
