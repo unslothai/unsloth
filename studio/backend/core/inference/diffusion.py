@@ -6856,11 +6856,28 @@ class DiffusionBackend:
         replaced = tuple(component_overrides.components) if component_overrides else ()
         if component_overrides is not None and component_overrides.text_encoder_components:
             text_encoder_quant = _te_quant_for_supplied_encoders(text_encoder_quant)
+        # The same bf16-encoder decision _run_load makes for an unset request, so the plan stages the dense encoder the
+        # load will open instead of the int8 file it will not.
+        te_bf16_auto = (
+            allow_device_probe
+            and not (
+                component_overrides is not None and component_overrides.text_encoder_components
+            )
+            and te_bf16_auto_wanted(
+                text_encoder_quant,
+                getattr(fam, "name", None),
+                getattr(fam, "te_quant_auto", None),
+                kind,
+            )
+            and self._te_bf16_auto_room(
+                fam, base, kind, {**load_kwargs, "repo_id": repo_id, "hf_token": hf_token}
+            )
+        )
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards
         # Resolved through the same tri-state the loader uses, so the size the picker SHOWS is the size the load will
         # actually move on a family whose unset request takes a hosted encoder.
         te_quant_planned, _ = resolve_te_quant_request(
-            text_encoder_quant, getattr(fam, "te_quant_auto", None)
+            "none" if te_bf16_auto else text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
         te_files = (
             {

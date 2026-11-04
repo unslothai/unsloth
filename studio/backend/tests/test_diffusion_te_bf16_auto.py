@@ -170,3 +170,28 @@ def test_seeded_int8_denoiser_is_priced_on_its_artifact(backend):
     assert backend(64, "int8") is True
     assert backend(56, "int8") is False
     assert backend(24, "int8") is False
+
+
+class _PlannedTe(Exception):
+    pass
+
+
+@pytest.mark.parametrize("room, expected", [(True, None), (False, "int8")])
+def test_download_plan_stages_the_encoder_the_load_will_open(monkeypatch, room, expected):
+    # The Images page stages /images/download-plan before it loads: the plan must take the same bf16 decision as
+    # _run_load, or a fresh download fetches the unused int8 file and the load then pulls the dense encoder too.
+    from core.inference import diffusion as dmod
+
+    b = object.__new__(dmod.DiffusionBackend)
+    for name in ("flux2_pick_mismatch", "flux3_pick_mismatch", "speech_pick_refusal"):
+        monkeypatch.setattr(dmod, name, lambda *_a, **_k: None)
+    monkeypatch.setattr(b, "_comfy_text_encoders", lambda *_a, **_k: None, raising = False)
+    monkeypatch.setattr(b, "_te_bf16_auto_room", lambda *_a, **_k: room, raising = False)
+
+    def planned(_fam, te_quant, *_a, **_k):
+        raise _PlannedTe(te_quant)
+
+    monkeypatch.setattr(b, "_te_prequant_plan_files", planned, raising = False)
+    with pytest.raises(_PlannedTe) as seen:
+        b.download_plan("Qwen/Qwen-Image-2512", memory_verdict = False)
+    assert seen.value.args[0] == expected
