@@ -173,3 +173,51 @@ def test_chat_request_rejects_reserved_extra_headers():
             messages = [{"role": "user", "content": "hello"}],
             extra_headers = {"Authorization": "Bearer secret"},
         )
+
+
+@pytest.mark.parametrize("may_use_saved", [True, False])
+def test_saved_headers_follow_the_saved_key_gate(monkeypatch, may_use_saved):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf_mod
+
+    class ClientReached(Exception):
+        pass
+
+    row = {
+        "id": "provider-1",
+        "provider_type": "custom",
+        "display_name": "Gateway",
+        "base_url": "https://gw.example/v1",
+        "api_type": "chat_completions",
+        "is_enabled": True,
+        "reasoning_config": None,
+        "extra_headers": {"X-Gateway-Token": "saved-secret"},
+    }
+    monkeypatch.setattr(inf_mod.providers_db, "get_provider", lambda _pid: dict(row))
+    monkeypatch.setattr(inf_mod, "_request_may_use_saved_provider_key", lambda _r: may_use_saved)
+    monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", lambda *a, **k: None)
+
+    def client(**kwargs):
+        raise ClientReached(kwargs)
+
+    monkeypatch.setattr(inf_mod, "ExternalProviderClient", client)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_id = "provider-1",
+        external_model = "m",
+    )
+    request = SimpleNamespace(headers = {}, state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(ClientReached) as reached:
+        _drive(inf_mod._proxy_to_external_provider(payload, request))
+    sent = reached.value.args[0].get("extra_headers")
+    assert sent == ({"X-Gateway-Token": "saved-secret"} if may_use_saved else None)
+
+
+def test_saved_extra_headers_helper_honours_api_keys(monkeypatch):
+    from routes import inference as inf_mod
+
+    row = {"extra_headers": {"X-Gateway-Token": "saved-secret"}}
+    monkeypatch.setattr(inf_mod, "_request_has_api_key", lambda _r: False)
+    assert inf_mod._saved_extra_headers(row, object()) == row["extra_headers"]
+    monkeypatch.setattr(inf_mod, "_request_has_api_key", lambda _r: True)
+    assert inf_mod._saved_extra_headers(row, object()) == {}

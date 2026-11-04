@@ -147,11 +147,12 @@ def _log_provider_failure(event: str, exc: Exception, **fields) -> None:
 _SHARED_READ_ONLY = "This connection is shared by the installation owner. Only they can change it."
 
 
-def _request_extra_headers(payload) -> dict[str, str]:
+def _request_extra_headers(payload, via_api_key: bool) -> dict[str, str]:
     if "extra_headers" in getattr(payload, "model_fields_set", set()):
         return normalize_provider_extra_headers(payload.extra_headers)
     provider_id = getattr(payload, "provider_id", None)
-    if not provider_id or payload.encrypted_api_key:
+    # Saved headers can carry credentials: same gate as the saved key.
+    if not provider_id or payload.encrypted_api_key or via_api_key:
         return {}
     row = providers_db.get_provider(provider_id)
     # Saved headers go only to the saved endpoint, like the saved key.
@@ -160,7 +161,7 @@ def _request_extra_headers(payload) -> dict[str, str]:
     return normalize_provider_extra_headers(row.get("extra_headers"))
 
 
-def _provider_response(row: dict) -> ProviderResponse:
+def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResponse:
     has_api_key = credential_secrets.provider_api_key_saved(row["id"])
     return ProviderResponse(
         id = row["id"],
@@ -169,10 +170,10 @@ def _provider_response(row: dict) -> ProviderResponse:
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
-        # Header values can carry credentials; other accounts use them without seeing them.
+        # Header values can carry credentials; other accounts and API keys never read them.
         extra_headers = (
             {}
-            if row.get("shared_by_owner")
+            if hide_headers or row.get("shared_by_owner")
             else normalize_provider_extra_headers(row.get("extra_headers"))
         ),
         is_enabled = bool(row["is_enabled"]),
@@ -321,10 +322,13 @@ async def get_pricing_snapshot(current_subject: str = Depends(get_current_subjec
 
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/", response_model = list[ProviderResponse])
-def list_provider_configs(_current_subject: str = Depends(get_current_subject)):
+def list_provider_configs(
+    _current_subject: str = Depends(get_current_subject),
+    via_api_key: bool = Depends(authenticated_via_api_key),
+):
     """List all saved provider configurations."""
     rows = providers_db.list_providers()
-    return [_provider_response(row) for row in rows]
+    return [_provider_response(row, hide_headers = via_api_key) for row in rows]
 
 
 @router.post("/", response_model = ProviderResponse, status_code = 201)
@@ -1008,7 +1012,7 @@ async def test_provider(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
-        extra_headers = _request_extra_headers(payload),
+        extra_headers = _request_extra_headers(payload, via_api_key),
         timeout = _PROVIDER_CONNECTIVITY_TIMEOUT_SECONDS,
     )
 
@@ -1186,7 +1190,10 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         raise HTTPException(status_code = 400, detail = str(exc)) from None
 
     # Per credential: one key's model list is not another caller's.
-    key_digest = hashlib.sha256((api_key or "").encode("utf-8")).hexdigest()[:16]
+    extra_headers = _request_extra_headers(payload, via_api_key)
+    key_digest = hashlib.sha256(
+        json.dumps([api_key or "", extra_headers], sort_keys = True).encode("utf-8")
+    ).hexdigest()[:16]
     cache_key = f"{payload.provider_type}\n{base_url}\n{key_digest}"
     cached = _model_capability_cache.get(cache_key)
     if cached is not None and time.monotonic() - cached[0] < _MODEL_CAPABILITY_CACHE_TTL_SECONDS:
@@ -1198,7 +1205,7 @@ async def _list_model_capabilities(payload: ProviderModelsRequest, via_api_key: 
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
-        extra_headers = _request_extra_headers(payload),
+        extra_headers = extra_headers,
         timeout = 15.0,
     )
     try:
@@ -1285,7 +1292,7 @@ async def list_provider_models(
         base_url = base_url,
         api_key = api_key,
         api_type = payload.api_type,
-        extra_headers = _request_extra_headers(payload),
+        extra_headers = _request_extra_headers(payload, via_api_key),
         timeout = 15.0,
     )
 

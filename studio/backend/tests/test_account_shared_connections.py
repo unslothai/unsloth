@@ -490,3 +490,69 @@ def test_shared_extra_headers_stay_with_the_saved_endpoint(monkeypatch, header_u
         )
     assert response.status_code == 200, response.text
     assert seen == [None]
+
+
+def api_key_client_for(account):
+    client = client_for(account)
+    client.app.dependency_overrides[authenticated_via_api_key] = lambda: True
+    return client
+
+
+def test_api_key_callers_neither_read_nor_spend_saved_headers(monkeypatch, header_upstream):
+    base_url, seen = header_upstream
+    mpu.set_managed_private_provider_urls_allowed(True)
+    with client_for(OWNER) as client:
+        created = client.post(
+            "/providers/",
+            json = {
+                "provider_type": "custom",
+                "display_name": "Header Gateway",
+                "base_url": base_url,
+                "models": UPSTREAM_MODELS[:1],
+                "extra_headers": {"X-Gateway-Token": "owner-header-secret"},
+            },
+        )
+    assert created.status_code == 201, created.text
+    provider_id = created.json()["id"]
+    with api_key_client_for(OWNER) as client:
+        [row] = client.get("/providers/").json()
+        assert "owner-header-secret" not in json.dumps(row)
+        response = client.post(
+            "/providers/models", json = {"provider_type": "custom", "provider_id": provider_id}
+        )
+    assert response.status_code == 200, response.text
+    with client_for(OWNER) as client:
+        response = client.post(
+            "/providers/models", json = {"provider_type": "custom", "provider_id": provider_id}
+        )
+    assert response.status_code == 200, response.text
+    assert seen == [None, "owner-header-secret"]
+
+
+def test_capability_cache_is_keyed_by_headers(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            calls.append(kwargs["extra_headers"])
+
+        async def list_models(self):
+            return [{"id": "m"}]
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(providers, "ExternalProviderClient", FakeClient)
+    monkeypatch.setattr(providers, "resolve_provider_api_key_or_400", lambda *a, **k: "shared-key")
+    monkeypatch.setattr(providers, "validate_provider_base_url", lambda url: url)
+    providers._model_capability_cache.clear()
+    from models.providers import ProviderModelsRequest
+
+    for tenant in ("a", "b", "a"):
+        payload = ProviderModelsRequest(
+            provider_type = "openrouter",
+            base_url = "https://gw.example/v1",
+            extra_headers = {"X-Tenant": tenant},
+        )
+        asyncio.run(providers._list_model_capabilities(payload, False))
+    assert calls == [{"X-Tenant": "a"}, {"X-Tenant": "b"}]

@@ -366,7 +366,9 @@ async def _connection_decide(
     except ValueError as exc:
         raise _error(503, "api_usage_error", str(exc)) from None
     api_key = await arun_as(OWNER, _connection_key(provider_id, config))
-    client = ExternalProviderClient(config["provider_type"], base_url, api_key)
+    client = ExternalProviderClient(
+        config["provider_type"], base_url, api_key, extra_headers = config.get("extra_headers")
+    )
     try:
         result = await client.create_decision(connection.model, state, questions)
     except httpx.HTTPStatusError as exc:
@@ -418,7 +420,13 @@ async def refresh_listed_decision_models() -> None:
                 None,
                 prefer_saved_key = True,
             )
-            client = ExternalProviderClient(row["provider_type"], row["base_url"], api_key, 10.0)
+            client = ExternalProviderClient(
+                row["provider_type"],
+                row["base_url"],
+                api_key,
+                10.0,
+                extra_headers = row.get("extra_headers"),
+            )
             models = await arun_as(OWNER, client.list_decision_models())
         except Exception:
             models = []

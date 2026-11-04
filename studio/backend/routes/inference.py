@@ -3536,6 +3536,13 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
 
 # A UI session, the Deep Research key, or the key `unsloth start` minted for the owner's coding
 # agents. Every other API key, keyless caller and data-recipe key still gets nothing.
+def _saved_extra_headers(row: Optional[dict], request: Any) -> dict:
+    """A saved row's headers, under the same API-key gate as its saved key."""
+    if not row or _request_has_api_key(request):
+        return {}
+    return row.get("extra_headers") or {}
+
+
 def _request_may_use_saved_provider_key(request: Any) -> bool:
     if not _request_has_api_key(request) or _request_is_saved_credential_workflow(request):
         return True
@@ -23685,6 +23692,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        extra_headers = _saved_extra_headers(current, request),
     )
     # FastAPI does not cancel non-streaming handlers on disconnect; paid synthesis would continue.
     speech_task = asyncio.create_task(
@@ -23964,6 +23972,7 @@ async def _external_stt_transcription(
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        extra_headers = _saved_extra_headers(current, request),
     )
     transcription_task = asyncio.create_task(
         client.create_transcription(
@@ -28256,12 +28265,16 @@ async def _proxy_to_external_provider(
             account_access.require_connection_model_allowed(
                 current, payload.external_model or payload.model
             )
+            may_use_saved = _request_may_use_saved_provider_key(request)
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
                 payload.encrypted_api_key,
-                allow_saved_key = _request_may_use_saved_provider_key(request),
+                allow_saved_key = may_use_saved,
             )
+            if not payload.encrypted_api_key:
+                # Saved headers can carry credentials: same gate as the saved key.
+                extra_headers = current.get("extra_headers") if may_use_saved else None
     else:
         api_key = resolve_provider_api_key_or_400(
             payload.provider_id,
@@ -47811,6 +47824,7 @@ async def _external_image_generation(
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        extra_headers = _saved_extra_headers(current, request),
         timeout = 600.0,
     )
     owner = current_account_id()
