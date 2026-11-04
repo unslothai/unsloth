@@ -14,6 +14,18 @@ from unsloth.kernels import fp8 as F8
 LARGE = (14336, 4096)  # Llama-3.1-8B MLP: 112 MiB in bf16, spills L4's 48 MiB L2
 
 
+def _cpu_scaled_mm_rowwise_float32():
+    # CPU rowwise _scaled_mm with float32 output: torch 2.10 and older only support per-tensor scales there.
+    try:
+        a = torch.ones(16, 16).to(torch.float8_e4m3fn)
+        torch._scaled_mm(
+            a, a.t(), scale_a = torch.ones(16, 1), scale_b = torch.ones(1, 16), out_dtype = torch.float32
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _cpu_scaled_mm_fp16():
     try:
         a = torch.ones(16, 16).to(torch.float8_e4m3fn)
@@ -213,6 +225,10 @@ def test_compiled_float32_dequant_adds_no_row_guard(monkeypatch, mark):
     assert _compile_count(fn, [8, 128, 64, 256], K, torch.float32, mark) == 1
 
 
+@pytest.mark.skipif(
+    not _cpu_scaled_mm_rowwise_float32(),
+    reason = "needs CPU rowwise torch._scaled_mm with float32 output",
+)
 def test_compiled_float32_with_float32_output_still_routes_by_rows(monkeypatch):
     monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", True)
     monkeypatch.setattr(
