@@ -780,9 +780,18 @@ const viewBounds = new Map<string, Bounds>();
 // Pages kept open while their chat is off screen, excluded from the idle-view cap.
 let background: string[] = [];
 const openingInBackground = new Set<string>();
+const viewOperations = new Map<string, Promise<void>>();
 let watchingBackground = false;
 // A panel is mounted (startNativeViews running), which prunes and closes hidden pages itself.
 let panelUp = false;
+
+function withNativeView(tabId: string, operation: () => Promise<void>): Promise<void> {
+  const next = (viewOperations.get(tabId) ?? Promise.resolve()).then(operation);
+  const settled = next.then(() => undefined, () => undefined);
+  viewOperations.set(tabId, settled);
+  void settled.then(() => { if (viewOperations.get(tabId) === settled) viewOperations.delete(tabId); });
+  return next;
+}
 
 export function keepInBackground(tabId: string): void {
   background = [...background.filter((id) => id !== tabId), tabId];
@@ -818,23 +827,26 @@ function syncBackground(): void {
 
 async function openInBackground(tabId: string, url: string, key: number): Promise<void> {
   openingInBackground.add(tabId);
-  const resumed = resume.get(tabId);
   try {
-    if (views.has(tabId)) {
-      await call("browser_view_navigate", { tabId, url });
-      zooms.delete(tabId);
-    } else {
-      const bounds = viewBounds.get(tabId) ??
-        shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
-      openedTabs.add(tabId);
-      await call("browser_view_open_background", { tabId, url: resumed?.entry === key ? resumed.url : url, bounds });
-      viewBounds.set(tabId, bounds);
-      recency = [...recency.filter((id) => id !== tabId), tabId];
-    }
-    views.set(tabId, key);
-    if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
-      useBrowserStore.getState().updateTab(tabId, { nativeError: null });
-    }
+    await withNativeView(tabId, async () => {
+      if (!background.includes(tabId) || views.get(tabId) === key) return;
+      const resumed = resume.get(tabId);
+      if (views.has(tabId)) {
+        await call("browser_view_navigate", { tabId, url });
+        zooms.delete(tabId);
+      } else {
+        const bounds = viewBounds.get(tabId) ??
+          shownBounds ?? { x: 0, y: 0, width: Math.round(window.innerWidth / 2), height: window.innerHeight, viewportWidth: window.innerWidth };
+        openedTabs.add(tabId);
+        await call("browser_view_open_background", { tabId, url: resumed?.entry === key ? resumed.url : url, bounds });
+        viewBounds.set(tabId, bounds);
+        recency = [...recency.filter((id) => id !== tabId), tabId];
+      }
+      views.set(tabId, key);
+      if (useBrowserStore.getState().tabs.find((tab) => tab.id === tabId)?.nativeError) {
+        useBrowserStore.getState().updateTab(tabId, { nativeError: null });
+      }
+    });
   } catch (cause) {
     useBrowserStore.getState().updateTab(tabId, { loading: false, nativeError: error(cause) });
     // Not retried here: the agent's next action asks again.
@@ -986,48 +998,51 @@ async function applyView(desired: Desired): Promise<void> {
     return;
   }
   const { tabId, url, entry, zoom, bounds } = desired;
-  const existed = views.has(tabId);
-  const loaded = views.get(tabId);
-  const resumed = resume.get(tabId);
   const started = generation;
-  const stale = () => {
-    if (started === generation) return false;
-    void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
-    return true;
-  };
-  try {
-    openedTabs.add(tabId);
-    await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
-    if (stale()) return;
-    parkedView = null;
-    staleSnapshot = null;
-    coverFails = 0;
-    clearSnapshot();
-    // After the move, so hole and page update together.
-    if (layered) openHole(tabId, bounds);
-    shownBounds = bounds;
-    viewBounds.set(tabId, bounds);
-    setShownView(tabId);
-    // record the entry after navigation succeeds so failures remain retryable.
-    if (existed && loaded !== entry) {
-      await call("browser_view_navigate", { tabId, url });
-      zooms.delete(tabId);
+  await withNativeView(tabId, async () => {
+    if (started !== generation) return;
+    const existed = views.has(tabId);
+    const loaded = views.get(tabId);
+    const resumed = resume.get(tabId);
+    const stale = () => {
+      if (started === generation) return false;
+      void call("browser_view_close", { tabId, forgetLocal: !onLocalOrigin(tabId) }).catch(() => undefined);
+      return true;
+    };
+    try {
+      openedTabs.add(tabId);
+      await call("browser_view_show", { tabId, url: resumed?.entry === entry ? resumed.url : url, bounds });
       if (stale()) return;
-    }
-    views.set(tabId, entry);
-    if ((zooms.get(tabId) ?? 1) !== zoom) {
-      zooms.set(tabId, zoom);
-      await call("browser_view_zoom", { tabId, zoom });
+      parkedView = null;
+      staleSnapshot = null;
+      coverFails = 0;
+      clearSnapshot();
+      // After the move, so hole and page update together.
+      if (layered) openHole(tabId, bounds);
+      shownBounds = bounds;
+      viewBounds.set(tabId, bounds);
+      setShownView(tabId);
+      // record the entry after navigation succeeds so failures remain retryable.
+      if (existed && loaded !== entry) {
+        await call("browser_view_navigate", { tabId, url });
+        zooms.delete(tabId);
+        if (stale()) return;
+      }
+      views.set(tabId, entry);
+      if ((zooms.get(tabId) ?? 1) !== zoom) {
+        zooms.set(tabId, zoom);
+        await call("browser_view_zoom", { tabId, zoom });
+        if (stale()) return;
+      }
+    } catch (cause) {
       if (stale()) return;
+      useBrowserStore.getState().updateTab(tabId, {
+        loading: false,
+        nativeError: nativeErrorText(error(cause)),
+      });
     }
-  } catch (cause) {
-    if (stale()) return;
-    useBrowserStore.getState().updateTab(tabId, {
-      loading: false,
-      nativeError: nativeErrorText(error(cause)),
-    });
-  }
-  recency = [...recency.filter((id) => id !== tabId), tabId];
+    recency = [...recency.filter((id) => id !== tabId), tabId];
+  });
 }
 
 // One call in flight; only the newest state waits, so a drag cannot queue stale bounds.
@@ -1158,8 +1173,7 @@ export function startNativeViews(): () => void {
     window.clearInterval(interval);
     panelUp = false;
     tooltipHold = 0;
-    // close pages because hidden native views keep scripts and media running; a page at work
-    // in the background is only hidden.
+    // Owned targets keep their documents when the panel closes.
     generation += 1;
     pending = null;
     parkedView = null;

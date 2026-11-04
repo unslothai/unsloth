@@ -88,7 +88,7 @@ test("history navigation and reload recover a page without a ready agent frame",
   try {
     for (const op of ["back", "forward", "reload"]) {
       ready = false;
-      store.updateTab(tab, { pageError: "fetch failed" });
+      store.updateTab(tab, { pageError: true });
       await runBrowserAction({ id: `recover-${op}`, sessionId: "s", op, policy: { allowedDomains: [], blockedDomains: [] } }, { runKey: "recovery", chat, userText: "Retry the page at https://example.com" });
       assert.equal(posts.at(-1)?.result.ok, true, posts.at(-1)?.result.error);
     }

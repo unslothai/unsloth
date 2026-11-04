@@ -96,7 +96,7 @@ const calls: Call[] = [];
 
 register("./helpers/native-share-resolver.mjs", import.meta.url);
 const { useBrowserStore } = await import("../src/features/browser/store.ts");
-const { startNativeViews, keepInBackground } = await import("../src/features/browser/native-view.ts");
+const { startNativeViews, keepInBackground, releaseBackground, hasNativeView } = await import("../src/features/browser/native-view.ts");
 const { shareAgentTab } = await import("../src/features/browser/agent/tab-sharing.ts");
 const agent = await import("../src/features/browser/agent/agent-store.ts");
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
@@ -158,3 +158,66 @@ test("an agent-owned page survives its run and closes when the tab is closed", a
   store.closeTab(tab); await settle();
   assert.equal(count("browser_view_close", tab), closed + 1);
 });
+
+for (const first of ["panel", "agent"] as const) {
+  test(`${first}-first native creation is shared with the other opener`, async () => {
+    const store = useBrowserStore.getState();
+    const tab = store.openTabIn(store.chat, `https://example.com/race-${first}`)!;
+    const bridge = globalThis as unknown as { nativeViewCall: (command: string, args?: Record<string, unknown>) => Promise<unknown> };
+    const original = bridge.nativeViewCall;
+    let release: (() => void) | undefined;
+    let creating = false;
+    let created = false;
+    let duplicate = false;
+    let stop: (() => void) | undefined;
+    let otherTab: string | null = null;
+    bridge.nativeViewCall = (command, args) => {
+      if (args?.tabId === tab && ["browser_view_show", "browser_view_open_background"].includes(command) && !created) {
+        if (creating) {
+          duplicate = true;
+          return Promise.reject(new Error(`a webview with label ${tab} already exists`));
+        }
+        creating = true;
+        return new Promise((resolve) => {
+          release = () => { created = true; creating = false; resolve(undefined); };
+        });
+      }
+      return original(command, args);
+    };
+    try {
+      if (first === "agent") {
+        keepInBackground(tab);
+        await settle();
+      }
+      stop = startNativeViews();
+      await frame();
+      if (first === "panel") keepInBackground(tab);
+      await settle();
+      assert.equal(duplicate, false, "foreground/background creation overlapped");
+      assert.ok(release, "the native creation path did not run");
+      otherTab = store.openTabIn("single:independent-native", "https://example.com/independent");
+      assert.ok(otherTab);
+      keepInBackground(otherTab);
+      await settle();
+      assert.equal(created, false);
+      assert.ok(count("browser_view_open_background", otherTab) > 0, "another chat must not wait for this tab's creation");
+      release();
+      await frame();
+      await frame();
+      assert.equal(useBrowserStore.getState().tabs.find((item) => item.id === tab)?.nativeError ?? null, null);
+      assert.equal(hasNativeView(tab), true);
+      assert.equal(count("browser_view_navigate", tab), 0, "joining creation must preserve its document");
+    } finally {
+      release?.();
+      await settle();
+      stop?.();
+      releaseBackground(tab);
+      useBrowserStore.getState().closeTab(tab);
+      if (otherTab) {
+        releaseBackground(otherTab);
+        useBrowserStore.getState().closeTab(otherTab);
+      }
+      bridge.nativeViewCall = original;
+    }
+  });
+}
