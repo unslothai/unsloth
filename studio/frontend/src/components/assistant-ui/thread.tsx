@@ -2782,7 +2782,7 @@ const ThreadWelcome: FC<{
     (s) => s.newChatComposerPosition,
   );
   const composerAtBottom = composerPosition >= COMPOSER_POSITION_BOTTOM;
-  // Up to the middle the top padding shrinks toward the top; past it, spacers split the leftover height.
+  // Below 50 the top padding shrinks; above it, spacers split the leftover height.
   const lift =
     Math.min(composerPosition, COMPOSER_POSITION_MIDDLE) /
     COMPOSER_POSITION_MIDDLE;
