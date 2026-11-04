@@ -19,7 +19,6 @@ import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
   ImageCropIcon,
@@ -34,7 +33,7 @@ import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { GalleryItemMenu, GalleryPinBadge } from "@/components/gallery-item-menu";
 import { MediaRailResizeHandle } from "@/components/media-rail-resize-handle";
 import { MediaViewer } from "@/components/media-viewer";
-import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MEDIA_RAIL_ROOT_ATTR, useMediaRailWidth } from "@/hooks/use-media-rail-width";
 import { StripDropLine } from "@/components/gallery-strip-reorder";
 import { type StripDropCue, useStripReorder } from "@/hooks/use-strip-reorder";
@@ -4928,7 +4927,7 @@ function VideoGenerator({
                       onClick={() => setClearConfirmOpen(true)}
                       className="btn-fill flex h-16 w-16 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-muted-foreground transition-colors hover:text-destructive"
                     >
-                      <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                      <HugeiconsIcon icon={TrashIcon} className="size-4" />
                       <span className="text-ui-9 font-medium">Clear all</span>
                     </button>
                   </TooltipTrigger>

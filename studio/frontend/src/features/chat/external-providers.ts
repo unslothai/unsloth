@@ -376,6 +376,22 @@ export function supportsProviderMaxOutputTokens(
   );
 }
 
+// One picker entry: the plan picks the registry type, and with it the URL that decides the billing.
+export const OPENCODE_PLANS = [
+  { providerType: "opencode", label: "Console" },
+  { providerType: "opencode_go", label: "Go" },
+] as const;
+
+export function isOpenCodeProviderType(
+  providerType: string | null | undefined,
+): boolean {
+  return OPENCODE_PLANS.some((plan) => plan.providerType === providerType);
+}
+
+export function connectionPickerValue(providerType: string): string {
+  return isOpenCodeProviderType(providerType) ? "opencode" : providerType;
+}
+
 export const CUSTOM_PROVIDER_PRESETS = [
   {
     providerType: "llama_cpp",
@@ -519,9 +535,9 @@ export function toExternalBackendProviderType(
     : providerType;
 }
 
-const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
+export const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
-const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
+export const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";
 
 function canUseStorage(): boolean {
