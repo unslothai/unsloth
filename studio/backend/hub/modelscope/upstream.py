@@ -117,6 +117,26 @@ _PINNED_COMMITS = {
         "ggml-org/julia-1-gguf",
         "16fee17949206fbf58da9347daea44d792a81211",
     ): "75a35d1ee9701238e520fce8a3c8c5a546f63c65",
+    (
+        "model",
+        "liquidai/d1-omni-600m-gguf",
+        "8eb2d2a1c5404bba8a34a88bd8e159c242197d51",
+    ): "34f9c859701c5a1b041644078fc7216cc24f9705",
+    (
+        "model",
+        "liquidai/d1-2b-gguf",
+        "e968f6575f0d4fad928312d7af15cad90fd365c0",
+    ): "6eb1050a62fcfd4b9349c596f8b04d67e39c1bd1",
+    (
+        "model",
+        "liquidai/d1-omni-2b-gguf",
+        "c53ae0b1f92b17065e9158d34019c9ca1ea5bcf8",
+    ): "d0a359d1e918b90329fa449baa8519f7c7c2a2ef",
+    (
+        "model",
+        "liquidai/d1-3b-gguf",
+        "bb1e436ea78eb96a3f1acb6da865f70c2fbeb563",
+    ): "49d07e1e9b33827c7dfbdeaeb3437828d63d7e67",
 }
 
 
