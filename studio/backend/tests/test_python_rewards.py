@@ -1330,3 +1330,13 @@ def test_the_host_never_writes_or_reads_through_a_link_the_reward_planted(tmp_pa
     os.symlink(target, res)
     with pytest.raises(OSError):
         io.take(str(res))
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason = "POSIX FIFOs")
+def test_a_fifo_the_reward_left_is_refused_not_waited_on(tmp_path):
+    from core.training import reward_worker_main as io
+
+    log = tmp_path / "worker.log"
+    os.mkfifo(log)
+    with pytest.raises(OSError, match = "not a regular file"):
+        io.read_text(str(log))
