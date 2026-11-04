@@ -133,10 +133,11 @@ function useRecipeRuns(
       try {
         // The recipe job manager keeps only the newest job; an older run pages from its saved parquet.
         const saved = savedRunDataset(record);
-        const response = await getRecipeJobDataset(record.jobId, {
-          limit: size,
-          offset,
-        }).catch(async (error) => {
+        // The job's dataset is the untransformed one, so a transform's pages read its own output.
+        const fromJob = record.output_ref
+          ? Promise.reject(new Error("transformed output"))
+          : getRecipeJobDataset(record.jobId, { limit: size, offset });
+        const response = await fromJob.catch(async (error) => {
           if (!saved) throw error;
           const read = await datasetRows(saved, offset, size);
           // That reader stops at its view window; pages past it would load empty.

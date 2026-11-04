@@ -332,7 +332,7 @@ def test_the_dataset_counts_every_batch_not_the_last_one():
     assert out["dataset"]["rows"] == 6
 
 
-def test_a_schema_transform_is_the_recipe_output(tmp_path):
+def test_a_schema_transform_is_the_recipe_output(tmp_path, monkeypatch):
     pd = pytest.importorskip("pandas")
     pytest.importorskip("pyarrow")
     payload = copy.deepcopy(SQL)
@@ -357,17 +357,25 @@ def test_a_schema_transform_is_the_recipe_output(tmp_path):
                 return status
             if url.endswith("/dataset"):
                 return {"dataset": [{"sql_prompt": "Find", "sql": "SELECT 1"}], "total": 1}
+            if url.endswith("/analysis"):
+                return {}
             raise AssertionError(url)
 
         return answer
 
+    from storage import flows_db
+
+    saved = []
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
     full = {"status": "completed", "rows": 1, "artifact_path": str(run)}
-    ctx = _Ctx(
+    ctx = _FlowCtx(
         routes(run, full),
         params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "full"},
     )
     out = asyncio.run(data.recipe_group(ctx))
     assert out["dataset"]["ref"] == "recipes/recipe_sql/processors-files/chat"
+    # The Runs view pages that output, not the job's untransformed rows.
+    assert saved[-1]["output_ref"] == out["dataset"]["ref"]
     assert out["dataset"]["columns"] == ["prompt", "answer"]
     assert out["preview"] == [{"prompt": "Find", "answer": "SELECT 1"}]
 
@@ -1198,5 +1206,12 @@ def test_a_seed_file_edited_in_place_is_a_new_dataset(tmp_path, monkeypatch):
     before = key(wired)
     (folder / "a.parquet").write_bytes(b"xy")
     assert key(wired) != before
+    # A document seed in the plugin's older single-path form is keyed on its file too.
+    doc = tmp_path / "doc.extracted.txt"
+    doc.write_text("one")
+    recipe["seed_config"] = {"source": {"seed_type": "unstructured", "path": str(doc)}}
+    before = key()
+    doc.write_text("two!")
+    assert before and before["seed_files"] and key() != before
     # No local seed: the key is what it was.
     assert key(Ctx()) is not None and data.seed_files({}, None) is None

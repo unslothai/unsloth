@@ -329,9 +329,16 @@ class RunHistory:
         await self.update(**fields)
 
     async def finish(
-        self, ctx: NodeContext, job_id: str, preview: list, total: Any, kept: Optional[list]
+        self,
+        ctx: NodeContext,
+        job_id: str,
+        preview: list,
+        total: Any,
+        kept: Optional[list],
+        output: Optional[str] = None,
     ) -> None:
-        """``kept`` is every row when the step already read them all (a run with no saved artifact)."""
+        """``kept`` is every row when the step already read them all (a run with no saved artifact);
+        ``output`` is the dataset the run's pages read when it is not the job's own (a schema transform's)."""
         if not self.enabled:
             return
         rows, analysis = preview, None
@@ -352,6 +359,7 @@ class RunHistory:
             dataset = rows,
             datasetTotal = total if isinstance(total, int) else len(rows),
             analysis = analysis if isinstance(analysis, dict) else None,
+            **({"output_ref": output} if output else {}),
         )
 
 
@@ -500,7 +508,14 @@ async def run_recipe(
                 first = made_columns,
             )
         # Completed only once its dataset is in hand: an empty job or a refused upload is a failed run.
-        await history.finish(ctx, job_id, preview, total, kept)
+        await history.finish(
+            ctx,
+            job_id,
+            preview,
+            total,
+            kept,
+            output = dataset["ref"] if isinstance(reshaped, str) else None,
+        )
     except BaseException as exc:
         # A Stop or failure anywhere before the record is finished would leave it running, and the
         # Runs pane polling it.
@@ -602,7 +617,8 @@ def seed_files(recipe: Any, wired: Any) -> Optional[str]:
         if isinstance(source, dict) and source.get("seed_type") == "local":
             patterns.append(source.get("path"))
         elif isinstance(source, dict) and source.get("seed_type") == "unstructured":
-            patterns.extend(source.get("paths") or [])
+            # The seed plugin still takes the older single `path`.
+            patterns.extend(source.get("paths") or [source.get("path")])
     files = set()
     for pattern in patterns:
         if not isinstance(pattern, str) or not os.path.isabs(pattern):

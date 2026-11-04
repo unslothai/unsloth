@@ -12,9 +12,7 @@ import type { RecipeRunsTarget } from "../stores/ui-store";
 /** The backend's records for a Recipe Dataset step, in the order Recipe Studio lists its own. */
 export function toRunRecords(raw: unknown[]): RecipeExecutionRecord[] {
   return sortExecutions(
-    raw.map((record) =>
-      withExecutionDefaults(record as RecipeExecutionRecord),
-    ),
+    raw.map((record) => withExecutionDefaults(record as RecipeExecutionRecord)),
   );
 }
 
@@ -46,10 +44,21 @@ export function runsAreLive(
 
 /** A finished run's saved parquet as a flow `dataset` value, so its pages outlive the recipe job. */
 export function savedRunDataset(
-  record: Pick<RecipeExecutionRecord, "artifact_path">,
+  record: Pick<RecipeExecutionRecord, "artifact_path" | "output_ref">,
 ): { kind: "dataset"; source: "recipe"; ref: string } | null {
-  const name = record.artifact_path?.trim().split(/[\\/]/).filter(Boolean).pop();
+  // A schema transform's rows are the run's output; they are saved beside the job's own.
+  if (record.output_ref)
+    return { kind: "dataset", source: "recipe", ref: record.output_ref };
+  const name = record.artifact_path
+    ?.trim()
+    .split(/[\\/]/)
+    .filter(Boolean)
+    .pop();
   return name
-    ? { kind: "dataset", source: "recipe", ref: `recipes/${name}/parquet-files` }
+    ? {
+        kind: "dataset",
+        source: "recipe",
+        ref: `recipes/${name}/parquet-files`,
+      }
     : null;
 }
