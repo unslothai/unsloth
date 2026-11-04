@@ -151,7 +151,7 @@ _MEASURED_PROFILES = {
     "yue2": (1.0, 5.1, 7.1),
 }
 # family -> lowest NVIDIA compute capability its profile holds on. Lower cards, and machines whose
-# cards nvidia-smi cannot read, keep the generic formula: YuE2 peaks 2-4.5 GiB higher on a T4.
+# cards nvidia-smi cannot read, keep the generic formula: YuE2 peaks 2.5-4 GiB higher on a T4.
 _PROFILE_MIN_CAPABILITY = {"yue2": (8, 0)}
 
 
