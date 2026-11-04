@@ -160,7 +160,10 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   const greetings = [draft.firstMes, ...draft.alternateGreetings];
   const permanent = estimateTokens(
-    [draft.description, draft.personality, draft.scenario, draft.mesExample, draft.systemPrompt].join("\n"),
+    [draft.description, draft.personality, draft.scenario, draft.mesExample, draft.systemPrompt]
+      .map((field) => field.trim())
+      .filter(Boolean)
+      .join("\n"),
   );
   const nameMissing = !draft.name.trim();
   const hasImage = picture === "remove" ? false : Boolean(previewUrl) || Boolean(original?.hasAvatar);
@@ -502,8 +505,8 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
       <div className="sticky bottom-4 z-30 mt-10">
         <div className="flex w-full items-center gap-3 rounded-full bg-popover/95 py-2 pl-5 pr-2 shadow-[0_16px_40px_-18px_rgb(0_0_0/0.45)] ring-1 ring-border backdrop-blur">
           <span className="min-w-0 flex-1 truncate text-ui-13 text-muted-foreground" data-testid="editor-token-estimate">
-            {t("characters.editor.tokens", { count: permanent.toLocaleString() })}
-            {contextLength
+            {permanent > 0 ? t("characters.editor.tokens", { count: permanent.toLocaleString() }) : null}
+            {permanent > 0 && contextLength
               ? ` · ${t("characters.editor.tokensOfContext", { percent: Math.max(1, Math.round((permanent / contextLength) * 100)) })}`
               : ""}
           </span>
