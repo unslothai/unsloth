@@ -204,3 +204,48 @@ def test_the_conditioner_top_up_copies_only_what_is_still_mapped(monkeypatch):
     assert len(undo) == 2
     te.keep_h3_te_resident(holder, groups = [group])  # a top-up: nothing still mapped
     assert len(undo) == 2
+
+
+def test_a_mostly_released_slab_is_compacted_so_it_can_be_freed(monkeypatch):
+    """First-fit packs a later block's small weights into an earlier slab's tail: once the resident blocks drop their
+    copies, those few weights alone would keep the whole slab pinned. They move to their own copies (exact)."""
+    from core.inference import video_minimax_h3_residency as res
+
+    monkeypatch.setattr(res, "_H3_COMPACT_MIN_SLAB", 0)
+    monkeypatch.setattr(res, "_pin_host_tensor", lambda src: src.clone())
+    slab = torch.arange(4096, dtype = torch.float32)
+    big = _HostGroup(0, n = 60)  # 60*60 + 60 = 3660 floats: most of the slab
+    small = _HostGroup(1, n = 4)  # 20 floats in the slab's tail
+    off = 0
+    for g in (big, small):
+        for p in g.modules[0].parameters():
+            view = slab[off : off + p.numel()].view(p.shape)
+            view.copy_(p.data)
+            g.cpu_param_dict[p] = view
+            p.data = view
+            off += p.numel()
+    want = [p.data.clone() for p in small.modules[0].parameters()]
+    r = _residency(0)
+    r.blocks = [big, small]
+    r.block_bytes = [res.group_payload_bytes(g) for g in r.blocks]
+    r.fit(r.block_bytes[0], initial = True)
+    assert r.resident_blocks() == 1 and big.cpu_param_dict == {}
+    for p, w in zip(small.modules[0].parameters(), want):
+        host = small.cpu_param_dict[p]
+        assert host.untyped_storage().data_ptr() != slab.untyped_storage().data_ptr()
+        assert torch.equal(host, w)
+        assert p.data.data_ptr() == host.data_ptr()  # the streamed weight reads its new copy
+
+
+def test_a_well_used_slab_is_left_alone(monkeypatch):
+    from core.inference import video_minimax_h3_residency as res
+
+    monkeypatch.setattr(res, "_H3_COMPACT_MIN_SLAB", 0)
+    slab = torch.zeros(30)  # 20 of 30 floats still used
+    g = _HostGroup(0, n = 4)
+    off = 0
+    for p in g.modules[0].parameters():
+        g.cpu_param_dict[p] = slab[off : off + p.numel()].view(p.shape)
+        off += p.numel()
+    assert res.compact_host_slabs([g]) == 0
+    assert all(h.untyped_storage().data_ptr() == slab.untyped_storage().data_ptr() for h in g.cpu_param_dict.values())

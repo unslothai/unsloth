@@ -234,6 +234,60 @@ def _is_wrapper(tensor: Any) -> bool:
     return is_traceable_wrapper_subclass(tensor)
 
 
+# A slab still alive only for a few small weights of other groups (first-fit packs them into earlier slabs' tails)
+# is compacted: those weights move to their own pinned copies so the slab is freed. Fraction of the slab still used.
+H3_COMPACT_MAX_LIVE_FRACTION = 0.25
+_H3_COMPACT_MIN_SLAB = 64 << 20
+
+
+def compact_host_slabs(groups: list, logger: Any = None) -> int:
+    """Move the host weights that keep a mostly-released pinned slab alive into fresh pinned copies (exact copies,
+    re-pointed like the arena's own pin), so the slab returns to the OS. Returns bytes of slabs freed (estimated)."""
+    from .diffusion_pinned_arena import _repoint
+
+    live: dict = {}
+    sizes: dict = {}
+    for group in groups:
+        cpu = getattr(group, "cpu_param_dict", None) or {}
+        for tensor, host in list(cpu.items()):
+            for leaf in _host_leaves(host):
+                if leaf.device.type != "cpu":
+                    continue
+                storage = leaf.untyped_storage()
+                key = storage.data_ptr()
+                sizes[key] = int(storage.nbytes())
+                live.setdefault(key, []).append((group, tensor, host, int(leaf.numel()) * int(leaf.element_size())))
+    freed = moved = 0
+    for key, entries in live.items():
+        size = sizes[key]
+        used = sum(e[3] for e in entries)
+        if size < _H3_COMPACT_MIN_SLAB or used > H3_COMPACT_MAX_LIVE_FRACTION * size:
+            continue
+        for group, tensor, host, _n in entries:
+            cpu = group.cpu_param_dict
+            if cpu.get(tensor) is not host:
+                continue  # already moved through another leaf
+            new = _pin_host_tensor(host)
+            cpu[tensor] = new
+            if _reads(tensor, host):
+                _repoint(tensor, new)
+            moved += _host_leaf_bytes(host)
+        freed += size
+    if freed:
+        try:
+            from .diffusion_offload_prefetch import bump_placement_epoch
+            bump_placement_epoch()
+        except Exception:  # noqa: BLE001
+            pass
+        if logger is not None:
+            logger.info(
+                "video.h3_residency: compacted %.2f GB of pinned slabs (moved %.1f MB of other blocks' weights)",
+                freed / 1e9,
+                moved / 1e6,
+            )
+    return freed
+
+
 def _host_empty_cache() -> None:
     try:
         from .diffusion_memory import _host_empty_cache as empty
@@ -370,6 +424,12 @@ class H3Residency:
         # Block groups only: the top-level group keeps its own pinned copy (it is re-pinned by its own path).
         freed = sum(release_host_copy(self.blocks[i], logger = self.logger) for i in range(n))
         if freed:
+            groups = list(self.blocks) + ([self.top] if self.top is not None else [])
+            try:
+                compact_host_slabs(groups, logger = self.logger)
+            except Exception as exc:  # noqa: BLE001 -- the released copies are still dropped
+                if self.logger is not None:
+                    self.logger.warning("video.h3_residency: slab compaction skipped: %s", exc)
             _host_empty_cache()
         self.released_bytes = sum(released_host_bytes(g) for g in self.blocks)
 
