@@ -143,24 +143,19 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(10090406336, "ace_step") == 15.8 > 14.7
 
 
-# YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16. Their peaks on an RTX
-# 3090 / RTX 6000 Ada with 20,000 characters of lyrics at the 360 s cap: 6.6 / 8.1 / 11.0 GiB and
-# 6.8 / 8.3 / 11.2 GiB.
+# YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16. Their highest peaks with
+# 20,000 characters of lyrics at the 360 s cap, on an RTX 3090 through Vulkan: 6.5 / 8.6 / 11.9 GiB
+# (CUDA: 6.6 / 8.1 / 11.0 GiB; RTX 6000 Ada CUDA: 6.8 / 8.3 / 11.2 GiB).
 YUE2_BYTES = (2933424181, 4531978293, 7529267253)
-
-
-MEASURED = (7.83, 9.32, 12.11)
-VULKAN = (7.73, 9.51, 12.86)
+MEASURED = (7.73, 9.51, 12.86)
 GENERIC = (8.33, 12.05, 19.03)
 
 
-def _machine(monkeypatch, backend, capabilities):
-    from core.inference import audio_cpp_server
+def _cards(monkeypatch, *answers):
     from utils.hardware import nvidia
 
-    monkeypatch.setattr(audio_cpp_server, "runtime_backend", lambda: backend)
-    answers = capabilities if isinstance(capabilities, list) else [capabilities]
-    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(answers.pop(0)))
+    queue = [answer for answer in answers for _ in YUE2_BYTES]
+    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(queue.pop(0)))
 
 
 def _yue2():
@@ -168,34 +163,29 @@ def _yue2():
 
 
 @pytest.mark.parametrize(
-    "backend, capabilities, expected",
+    "capabilities, expected",
     [
-        ("cuda", {0: (8, 6)}, MEASURED),
-        ("cuda", {0: (8, 9)}, MEASURED),
-        ("cuda", {0: (12, 0)}, MEASURED),
-        # Below Ampere, unreadable cards, or any older card beside a new one: the generic formula.
-        ("cuda", {0: (7, 5)}, GENERIC),
-        ("cuda", {}, GENERIC),
-        ("cuda", {0: (8, 9), 1: (7, 5)}, GENERIC),
-        # Vulkan on the same card peaks up to 0.9 GiB higher (3090: 6.5 / 8.6 / 11.9 GiB).
-        ("vulkan", {0: (8, 6)}, VULKAN),
-        ("vulkan", {0: (7, 5)}, GENERIC),
-        ("cpu", {0: (8, 6)}, GENERIC),
-        (None, {0: (8, 6)}, GENERIC),
+        ({0: (8, 6)}, MEASURED),
+        ({0: (8, 9)}, MEASURED),
+        ({0: (12, 0)}, MEASURED),
+        # No NVIDIA card (AMD, Intel): the same weights, the same profile.
+        ({}, MEASURED),
+        # Any pre-Ampere NVIDIA card, alone or beside a newer one: the generic formula.
+        ({0: (7, 5)}, GENERIC),
+        ({0: (8, 9), 1: (7, 5)}, GENERIC),
     ],
 )
-def test_yue2_uses_its_profile_only_on_cuda_with_ampere_or_newer(
-    monkeypatch, backend, capabilities, expected
+def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_is_present(
+    monkeypatch, capabilities, expected
 ):
-    _machine(monkeypatch, backend, [capabilities] * len(YUE2_BYTES))
+    _cards(monkeypatch, capabilities)
     assert _yue2() == expected
 
 
 def test_the_yue2_estimate_follows_the_current_inventory(monkeypatch):
-    # A failed probe, then the card is read, then an older card is added: each read is honored.
-    answers = [{}] * 3 + [{0: (8, 6)}] * 3 + [{0: (8, 6), 1: (7, 5)}] * 3
-    _machine(monkeypatch, "cuda", answers)
-    assert (_yue2(), _yue2(), _yue2()) == (GENERIC, MEASURED, GENERIC)
+    # An older card is added, then removed again: each read is honored.
+    _cards(monkeypatch, {0: (8, 6)}, {0: (8, 6), 1: (7, 5)}, {0: (8, 6)})
+    assert (_yue2(), _yue2(), _yue2()) == (MEASURED, GENERIC, MEASURED)
 
 
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():

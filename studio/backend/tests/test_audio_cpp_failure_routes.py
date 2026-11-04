@@ -184,28 +184,27 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
 
 
 @pytest.mark.parametrize(
-    "backend, capabilities, fits",
+    "capabilities, free_gb, fits",
     [
-        ("cuda", {0: (8, 6)}, True),
-        ("cuda", {0: (7, 5)}, False),
-        ("cuda", {}, False),
-        # The Vulkan profile asks 9.51 GiB, just over this card.
-        ("vulkan", {0: (8, 6)}, False),
+        # #16627: YuE2 Q8_0 needs 9.51 GiB; it peaks at 8.6 GiB at worst on an Ampere card.
+        ({0: (8, 6)}, 9.6, True),
+        ({}, 9.6, True),
+        ({0: (8, 6)}, 9.4, False),
+        # A pre-Ampere card keeps the generic 12.05 GiB.
+        ({0: (7, 5)}, 9.6, False),
     ],
 )
-def test_yue2_q8_on_a_10gb_ampere_card(monkeypatch, backend, capabilities, fits):
-    # #16627: an RTX 3080 10 GB has about 9.5 GiB free. YuE2 Q8_0 peaks at 8.3 GiB at worst on CUDA.
+def test_yue2_q8_on_a_10gb_card(monkeypatch, capabilities, free_gb, fits):
     from utils.hardware import nvidia
 
     monkeypatch.setattr(af, "offload_options", lambda model: [])
-    monkeypatch.setattr(srv, "runtime_backend", lambda: backend)
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(capabilities))
     base = _model(sizes = (3,))
     variant = dataclasses.replace(
         base.variant, files = (dataclasses.replace(base.variant.files[0], size = 4531978293),)
     )
     model = dataclasses.replace(base, family = "yue2", variant = variant, variants = (variant,))
-    availability = ri._NativeAudioAvailability({0: 9.5}, {0: 0.0})
+    availability = ri._NativeAudioAvailability({0: free_gb}, {0: 0.0})
     prepared = ([0], {"selection_mode": "fallback_all"})
     if not fits:
         with pytest.raises(HTTPException) as raised:
@@ -213,7 +212,7 @@ def test_yue2_q8_on_a_10gb_ampere_card(monkeypatch, backend, capabilities, fits)
         assert raised.value.detail["code"] == "out_of_memory"
         return
     placement = _preflight(None, availability = availability, prepared = prepared, model = model)
-    assert placement.resolved_gpu_ids == [0] and placement.native_required_gb == 9.32
+    assert placement.resolved_gpu_ids == [0] and placement.native_required_gb == 9.51
 
 
 def test_generation_crash_oom_maps_to_out_of_memory(monkeypatch):

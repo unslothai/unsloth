@@ -136,7 +136,7 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
 
 # GiB; resident = weights * per_weight + fixed. Generic matches Qwen3-TTS at its 8192-token cap.
 _GENERIC_PROFILE = (2.5, 1.5)
-# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
+# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 peak plus at least
 # 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
 _MEASURED_PROFILES = {
     # Peak is a 240 s cover (the longest edit), above a 240 s song.
@@ -146,30 +146,18 @@ _MEASURED_PROFILES = {
     "kokoro_tts": (1.0, 3.5, 0.2),
     "voxcpm2": (2.2, 4.7, 4.5),
     "voxtral_tts": (1.0, 2.0, 4.4),
+    # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap, highest on Vulkan.
+    "yue2": (1.2, 4.45, 7.1),
 }
-# family -> runtime backend -> profile, for families whose peak depends on both. Measured on NVIDIA
-# sm_86 / sm_89 only; other cards, backends and unreadable cards keep the generic formula (YuE2
-# peaks 2.5-4 GiB higher on a T4). YuE2: 20,000 characters of lyrics run to the 360 s cap.
-_BACKEND_PROFILES = {
-    "yue2": {"cuda": (1.0, 5.1, 7.1), "vulkan": (1.2, 4.45, 7.1)},
-}
-_BACKEND_PROFILE_MIN_CAPABILITY = (8, 0)
+# Families measured far higher on pre-Ampere NVIDIA cards (YuE2 on a T4): the generic formula there.
+_NOT_BEFORE_AMPERE = frozenset({"yue2"})
 
 
-def _backend_profile(profiles: dict) -> Optional[tuple[float, float, float]]:
-    """The profile for the runtime's backend, when the least capable NVIDIA card (a load may land on
-    any) is new enough. Read on every call: gpu_query caches the inventory and drops it on
-    invalidation."""
-    from core.inference.audio_cpp_server import runtime_backend
+def _has_pre_ampere_nvidia_card() -> bool:
+    """Read on every call: gpu_query caches the inventory and drops it on invalidation."""
     from utils.hardware import nvidia
 
-    profile = profiles.get(runtime_backend() or "")
-    if profile is None:
-        return None
-    capabilities = nvidia.get_compute_capabilities()
-    if not capabilities or min(capabilities.values()) < _BACKEND_PROFILE_MIN_CAPABILITY:
-        return None
-    return profile
+    return any(capability < (8, 0) for capability in nvidia.get_compute_capabilities().values())
 
 
 def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
@@ -178,11 +166,8 @@ def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float
     larger of that profile and the generic one."""
     weights_gb = size_bytes / (1024**3)
     generic = weights_gb * _GENERIC_PROFILE[0] + _GENERIC_PROFILE[1]
-    by_backend = _BACKEND_PROFILES.get(family or "")
-    profile = (
-        _backend_profile(by_backend) if by_backend else _MEASURED_PROFILES.get(family or "")
-    )
-    if profile is None:
+    profile = _MEASURED_PROFILES.get(family or "")
+    if profile is None or (family in _NOT_BEFORE_AMPERE and _has_pre_ampere_nvidia_card()):
         return round(generic, 2)
     per_weight, fixed, measured_up_to_gb = profile
     measured = weights_gb * per_weight + fixed
