@@ -92,12 +92,13 @@ test("glass adds no outer shadows, only inset light", () => {
 	}
 });
 
-test("other pages under glass read over one tinted pane with a readable floor", () => {
+test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  background-color: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(max\(clamp\(var\(--glass-page-floor\)/);
+	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  background-color: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\)/);
 	const pane = /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.doesNotMatch(pane, /backdrop-filter/);
-	assert.match(css, /\[data-wallpaper-route="page"\] > \.chat-wallpaper\[data-ready\] \.chat-wallpaper-artwork \{\n  filter: blur\(/);
+	// The image stays as sharp as beside a chat: no page-only blur on the artwork.
+	assert.doesNotMatch(css, /\[data-wallpaper-route="page"\][^{]*\.chat-wallpaper-artwork \{/);
 });
 
 test("glass lens modes repair malformed data and scale the right way", () => {

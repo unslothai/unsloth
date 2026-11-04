@@ -6586,11 +6586,9 @@ html[data-glass^="liquid"] [data-auth-wallpaper]:has(> .chat-wallpaper[data-read
 
 .glass-backdrop { background: var(--background); }
 
-html {
-  --glass-page-floor: 70%;
-}
+/* Pages take the sidebar's tint, so the wallpaper reads as clearly as it does beside a chat. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
-  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(clamp(var(--glass-page-floor), calc(var(--glass-tint) + 22%), 88%), var(--glass-read-floor, 0%)) * var(--glass-opacity, 1))), transparent);
+  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
   background-image: var(--glass-sheen, none);
   --background: color-mix(in srgb, var(--glass-page-bg) 35%, transparent);
   --card: color-mix(in srgb, var(--glass-page-card) 55%, transparent);
@@ -6610,11 +6608,8 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   --color-panel-surface-hover: var(--glass-hover);
   --color-chat-icon-bg-hover: var(--glass-hover);
 }
-html.dark { --glass-page-floor: 60%; }
-/* Frost the image, not the pane: a backdrop-root pane makes sticky headers inside re-tint it into bands. */
-html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready] .chat-wallpaper-artwork {
-  filter: blur(max(var(--glass-blur), 22px)) saturate(var(--glass-saturate)) !important;
-}
+/* No frost on the image or the pane: the image stays as sharp as beside a chat, and a backdrop-root
+   pane makes sticky headers inside re-tint it into bands. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
   content: none;
 }
