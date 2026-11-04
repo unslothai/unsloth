@@ -3904,8 +3904,6 @@ export const ja = {
             "このデータセットには画像が含まれているように見えるため、ストリーミングできません。",
           audioDataset:
             "このデータセットには音声が含まれているように見えるため、ストリーミングできません。",
-          appleSilicon:
-            "Apple Silicon (MLX) ではストリーミングをまだサポートしていません。",
         },
         options: {
           trainOnCompletions: "アシスタントの応答のみ学習",

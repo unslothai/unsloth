@@ -45,6 +45,7 @@ from utils.training_runs import (
 from utils.audio_tokens import (
     AUDIO_TOKENIZER_CONFIG_PATHS as _AUDIO_TOKENIZER_CONFIG_PATHS,
     classify_audio_tokens as _check_token_patterns,
+    declares_audio_token as _declares_audio_token,
     is_audio_input_type,
     may_hold_audio_tokens as _may_hold_audio_tokens,
 )
@@ -1820,6 +1821,32 @@ def _detect_audio_from_config(
         return None
 
 
+def _read_local_model_config(root: Path, missing_is_absent: bool) -> Optional[dict]:
+    """None when config.json cannot be read. A cache snapshot can hold the tokenizer without
+    it (a tokenizer-only download), so there a missing file is unknown, not absent, unless the
+    snapshot is an adapter repo, which never ships one."""
+    config_file = root / "config.json"
+    if not config_file.is_file():
+        return {} if missing_is_absent or (root / "adapter_config.json").is_file() else None
+    try:
+        config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+    return config if isinstance(config, dict) else {}
+
+
+def _classify_audio_tokenizer(tok_config: dict, read_model_config) -> Tuple[Optional[str], bool]:
+    """(audio_type, known). A declared audio_token is audio input only with an audio encoder:
+    Gemma 4 26B/31B carry the token and none, so config.json decides, read only for that case."""
+    result = _check_token_patterns(tok_config)
+    if result or not _declares_audio_token(tok_config):
+        return result, True
+    model_config = read_model_config()
+    if model_config is None:
+        return None, False
+    return ("audio_vlm" if model_config.get("audio_config") else None), True
+
+
 def _detect_audio_from_tokenizer(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1829,6 +1856,8 @@ def _detect_audio_from_tokenizer(
     """Returns definitive False only on a transient read failure, so callers retry instead of caching."""
 
     read_any = False  # parsed at least one tokenizer_config -> a None is definitive
+    # A declared audio_token whose encoder config could not be read keeps every negative unknown.
+    unresolved = False
 
     # 1) Selected local directory or local HF cache first (works for gated/offline models)
     try:
@@ -1864,7 +1893,8 @@ def _detect_audio_from_tokenizer(
 
         current: list = []  # resolved lazily: only a negative answer needs it
         # Only a read standing in for the Hub copy has to prove the file whole.
-        may_answer_for_hub = not local_files_only and not is_local_path(model_name)
+        local_model = is_local_path(model_name)
+        may_answer_for_hub = not local_files_only and not local_model
         for root in roots:
             root_read: set = set()
             for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
@@ -1881,20 +1911,29 @@ def _detect_audio_from_tokenizer(
                             except Exception:
                                 continue
                             # Raw scan misses escaped markers (Go's encoding/json writes them), so decode first.
-                            result = _check_token_patterns(decoded)
+                            result, known = _classify_audio_tokenizer(
+                                decoded, lambda: _read_local_model_config(root, local_model)
+                            )
                             if result:
                                 return result, True
+                            if not known:
+                                unresolved = True
+                                continue
                         elif not raw.rstrip().endswith("}"):
                             continue
                         read_any = True
                         root_read.add(tok_path)
                         continue
-                    tok_config = json.loads(raw)
-                    read_any = True
-                    root_read.add(tok_path)
-                    result = _check_token_patterns(tok_config)
+                    result, known = _classify_audio_tokenizer(
+                        json.loads(raw), lambda: _read_local_model_config(root, local_model)
+                    )
                     if result:
                         return result, True
+                    if not known:
+                        unresolved = True
+                        continue
+                    read_any = True
+                    root_read.add(tok_path)
                 except Exception as e:
                     logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
             # Negatives are cached for the process, so only answer negatively after reading every path.
@@ -1917,17 +1956,17 @@ def _detect_audio_from_tokenizer(
 
     # This raw requests.get ignores HF offline flags, so gate it explicitly.
     if local_files_only or _env_offline():
-        return None, read_any
+        return None, read_any and not unresolved
 
     # A filesystem path is not a repo id, so no Hub URL; the local read is the whole answer, or /loras blocks the event loop on timeouts.
     if is_local_path(model_name):
-        return None, read_any
+        return None, read_any and not unresolved
 
     try:
         import requests
         import os
     except Exception:
-        return None, read_any
+        return None, read_any and not unresolved
 
     # `False` is falsy, so `or` would reach past it to the ambient credential.
     token = None if is_anonymous(hf_token) else (hf_token or os.environ.get("HF_TOKEN"))
@@ -1940,6 +1979,21 @@ def _detect_audio_from_tokenizer(
     from utils.hf_endpoint import get_hf_endpoint
 
     hf_endpoint = get_hf_endpoint()
+
+    def _fetch_model_config() -> Optional[dict]:
+        url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/config.json"
+        try:
+            resp = requests.get(url, headers = headers, timeout = 15)
+            if resp.status_code == 404:
+                return {}
+            if not resp.ok:
+                return None
+            config = resp.json()
+        except Exception as e:
+            logger.debug(f"Could not fetch config.json for {model_name}: {e}")
+            return None
+        return config if isinstance(config, dict) else {}
+
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
         url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
@@ -1959,13 +2013,16 @@ def _detect_audio_from_tokenizer(
             logger.debug(f"Bad tokenizer_config for {model_name}/{tok_path}: {e}")
             transient = True
             continue
-        read_any = True
-        result = _check_token_patterns(tok_config)
+        result, known = _classify_audio_tokenizer(tok_config, _fetch_model_config)
         if result:
             return result, True
+        if not known:
+            unresolved = True
+            continue
+        read_any = True
 
     # No audio tokens: definitive unless every attempt failed transiently.
-    return None, (read_any or not transient)
+    return None, (read_any or not transient) and not unresolved
 
 
 def _is_mmproj(filename: str) -> bool:

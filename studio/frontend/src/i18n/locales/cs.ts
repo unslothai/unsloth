@@ -4255,8 +4255,6 @@ export const cs = {
             "Tato datová sada vypadá jako obrázky, které nelze streamovat.",
           audioDataset:
             "Tato datová sada vypadá jako zvuk, který nelze streamovat.",
-          appleSilicon:
-            "Streamování zatím není na Apple Silicon (MLX) podporováno.",
         },
         options: {
           trainOnCompletions: "pouze odpovědi asistenta",

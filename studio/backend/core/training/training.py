@@ -271,6 +271,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "model_revision": values.get("model_revision"),
         "actual_model_repo_id": values.get("actual_model_repo_id"),
         "resume_model_load_mode": values.get("resume_model_load_mode"),
+        "resume_expected_model": values.get("resume_expected_model"),
         "dataset_known_cached": values.get("dataset_known_cached", False),
         "dataset_local_path": values.get("dataset_local_path"),
         "dataset_snapshot_path": values.get("dataset_snapshot_path"),
@@ -594,9 +595,16 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
 
     hf_dataset = config.get("hf_dataset") or ""
     requested_ds_pin = config.get("dataset_snapshot_path")
+    requested_revision = config.get("dataset_revision")
     ds_claimed = bool(config.get("dataset_known_cached") or config.get("dataset_local_path"))
     config["dataset_revision"] = None
-    if not hf_dataset or config.get("dataset_streaming"):
+    if hf_dataset and config.get("dataset_streaming"):
+        config["dataset_snapshot_path"] = None
+        # A resume replays the commit the route took from its run; a new run pins the current one.
+        config["dataset_revision"] = (
+            requested_revision if resume else _hub_dataset_commit(config, hf_dataset, warnings)
+        )
+    elif not hf_dataset:
         config["dataset_snapshot_path"] = None
     elif resume and requested_ds_pin:
         from hub.utils.dataset_cache import (
@@ -647,6 +655,27 @@ def _apply_cache_pins(config: dict[str, Any]) -> None:
         config["dataset_snapshot_path"] = None
 
     config["cache_pin_warnings"] = warnings
+
+
+def _hub_dataset_commit(
+    config: dict[str, Any], hf_dataset: str, warnings: list[str]
+) -> Optional[str]:
+    """The commit a new streaming run reads, so a resume can replay the same rows."""
+    from huggingface_hub import HfApi
+
+    token = hf_token_arg(
+        config.get("hf_token") or "", allow_ambient_token = config.get("allow_ambient", True)
+    )
+    try:
+        commit = HfApi().dataset_info(hf_dataset, token = token, timeout = 15).sha
+    except Exception as exc:
+        logger.info("Could not resolve the commit of streamed dataset %s: %s", hf_dataset, exc)
+        commit = None
+    if not commit:
+        warnings.append(
+            f"Streaming {hf_dataset} from its latest revision, so this run cannot be resumed."
+        )
+    return commit
 
 
 def _finite_or_none(value: Any) -> Optional[float]:
@@ -964,13 +993,6 @@ class _MLXTrainerAdapter:
             return False
         if not self._dataset_config:
             self._update_progress(error = "Dataset not loaded")
-            return False
-        if self.is_cpt:
-            self._update_progress(
-                error = "Continued Pretraining is not supported for MLX training yet.",
-                is_training = False,
-                is_completed = False,
-            )
             return False
 
         config = self._build_worker_config(training_args)
@@ -1855,10 +1877,9 @@ class TrainingBackend:
                     "retry when it completes."
                 )
 
-            if (
-                config.get("require_exact_resume_resources")
-                or config.get("require_exact_model_resource")
-            ) and config.get("load_in_4bit"):
+            from .provenance import resume_requires_original_load_mode
+
+            if resume_requires_original_load_mode(config) and config.get("load_in_4bit"):
                 from .provenance import effective_training_load_in_4bit
                 effective_training_load_in_4bit(
                     config,
