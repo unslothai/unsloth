@@ -2229,9 +2229,7 @@ def _peft_state_dict(model, **kwargs):
     its selection inside save_pretrained and must see the same model)."""
     from peft import get_peft_model_state_dict
 
-    # unsloth_zoo's expert LoRA factor swap wraps the getter and returns new (converted) tensors, which the
-    # identity match below cannot find. Select with the unwrapped getter; save_pretrained still runs the
-    # wrapped one on the gathered state, so the written adapter is converted exactly as in one process.
+    # zoo's expert factor swap wrapper returns new tensors the id match cannot find; save_pretrained still converts.
     get_peft_model_state_dict = getattr(
         get_peft_model_state_dict, "__wrapped__", get_peft_model_state_dict
     )

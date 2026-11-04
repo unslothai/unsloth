@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""save_tp_adapter on expert LoRA factors under data parallel x tensor parallel (DTensor adapters from FSDP2
-fully_shard). unsloth_zoo's expert factor swap wraps get_peft_model_state_dict and returns new tensors, so the
-selection must run on the unwrapped getter; the written adapter must still be the converted one that a
-single-process save_pretrained writes."""
+"""save_tp_adapter on FSDP2 DTensor expert LoRA factors must match single-process save_pretrained."""
 
 import multiprocessing
 import os
@@ -69,7 +66,7 @@ def _case(rank, world, tmp, mode):
     try:
         import importlib.util
 
-        # conftest's device spoof (spawned ranks do not run it); unsloth_zoo checks the device at import.
+        # spawned ranks skip conftest's device spoof, which unsloth_zoo needs at import
         spec = importlib.util.spec_from_file_location(
             "_tp_conftest", os.path.join(REPO, "tests", "conftest.py")
         )
@@ -155,7 +152,7 @@ def _spawn(mode, world = 2):
 def test_tp_save_matches_single_process_after_expert_factor_swap(mode):
     results = _spawn(mode)
     for rank, res in enumerate(results):
-        assert res["dtensors"] > 0, (rank, res)  # the adapters really are DTensors
+        assert res["dtensors"] > 0, (rank, res)
         assert "error" not in res, (rank, res["error"])
     single, tp = results[0]["single"], results[0]["tp"]
     assert sorted(single) == sorted(tp)
@@ -163,7 +160,7 @@ def test_tp_save_matches_single_process_after_expert_factor_swap(mode):
         assert single[key].shape == tp[key].shape, (key, single[key].shape, tp[key].shape)
         torch.testing.assert_close(tp[key], single[key], rtol = 0, atol = 0, msg = key)
     if mode == "swap":
-        # Converted (vanilla PEFT) layout, not the trained one: down_proj is the outer wrapper.
+        # converted (vanilla PEFT) layout; down_proj is the outer wrapper
         shapes = {k.split("model.experts.")[-1]: list(v.shape) for k, v in tp.items()}
         assert shapes == {
             "base_layer.lora_A.weight": [8, 24],
