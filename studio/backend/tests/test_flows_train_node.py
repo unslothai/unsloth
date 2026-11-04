@@ -1181,6 +1181,30 @@ def test_a_chat_model_on_vllm_is_put_back_on_vllm(monkeypatch):
     assert loads[0]["extra_body"] is None
 
 
+def test_a_gguf_held_in_ram_is_put_back_in_ram(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {
+        "model_identifier": "unsloth/Qwen3-4B-GGUF",
+        "gguf_variant": "Q4_K_M",
+        "gpu_memory_mode": "manual",
+        "gpu_layers": 0,
+        "n_cpu_moe": None,
+    }
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"gpu_memory_mode": "manual", "gpu_layers": 0}
+
+
 def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monkeypatch):
     loads = []
 

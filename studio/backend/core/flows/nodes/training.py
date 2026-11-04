@@ -394,6 +394,16 @@ _MEDIA_PATH = re.compile(
 )
 
 
+def _names_media_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_MEDIA_PATH.search(value.encode()))
+    if isinstance(value, dict):
+        return any(_names_media_value(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_names_media_value(v) for v in value)
+    return False
+
+
 def _names_media(file: str) -> bool:
     if file.lower().endswith(".parquet"):
         # Compressed pages hide the text: read the string columns.
@@ -405,12 +415,12 @@ def _names_media(file: str) -> bool:
         except Exception:
             table = None
         if table is not None:
+            # An Image or Audio column keeps its file under a struct ({"bytes", "path"}), or a list of them.
             return any(
-                _MEDIA_PATH.search(v.encode())
+                _names_media_value(v)
                 for column in table.columns
-                if pa.types.is_string(column.type) or pa.types.is_large_string(column.type)
+                if not pa.types.is_binary(column.type)
                 for v in column.to_pylist()
-                if isinstance(v, str)
             )
     with open(file, "rb") as fh:
         # The overlap keeps a name split across two reads.
@@ -461,6 +471,13 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
         base = resolve_host_path_reference(base) or ""
         if not os.path.isabs(base):
             return None
+    from core.flows.nodes.data import _REPO
+
+    if not os.path.isabs(base) and not _REPO.match(base):
+        # A relative local folder (./my-model) loads from where Studio runs, so it is fingerprinted there.
+        if not os.path.exists(base):
+            return None
+        base = os.path.abspath(base)
     if os.path.isabs(base):
         from core.flows.engine import _local_fingerprint
 
@@ -476,7 +493,6 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
                 return None
             found["adapter_base"] = inner
         return found
-    from core.flows.nodes.data import _REPO
     from core.training.account_jobs import account_hf_token
 
     if _REPO.match(base):
@@ -1184,11 +1200,15 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
         found["max_seq_length"] = context
     if isinstance(status.get("load_in_4bit"), bool):
         found["load_in_4bit"] = status["load_in_4bit"]
+    extra = {}
     # A model served by vLLM or SGLang goes back on that engine, with its launch settings.
     if status.get("engine") in ("vllm", "sglang"):
-        found["engine"] = {
-            k: status[k] for k in ENGINE_FIELDS if k in status and status[k] is not None
-        }
+        extra.update({k: status[k] for k in ENGINE_FIELDS if status.get(k) is not None})
+    # A GGUF placed by hand (all in RAM at gpu_layers 0, say) goes back where it was.
+    if status.get("gpu_memory_mode") == "manual":
+        extra.update({k: status[k] for k in PLACEMENT_FIELDS if status.get(k) is not None})
+    if extra:
+        found["extra"] = extra
     return found
 
 
@@ -1200,6 +1220,7 @@ ENGINE_FIELDS = (
     "engine_seed",
     "engine_gpu_memory_utilization",
 )
+PLACEMENT_FIELDS = ("gpu_memory_mode", "gpu_layers", "n_cpu_moe")
 
 
 async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
@@ -1224,7 +1245,7 @@ async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replace
             hf_token = None,
             kind = "llm",
             deadline = time.monotonic() + 1800,
-            extra_body = previous.get("engine") or None,
+            extra_body = previous.get("extra") or None,
         )
         note_loaded(ctx, "llm", previous["repo"])
         ctx.resident.clear()

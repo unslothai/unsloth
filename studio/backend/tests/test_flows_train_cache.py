@@ -324,3 +324,37 @@ def test_rows_that_name_image_files_are_never_reused(tmp_path):
     plain = tmp_path / "plain.jsonl"
     plain.write_text('{"q": "What is a png file?", "a": "An image format."}\n')
     assert training._content_hash(str(plain))
+
+
+def test_parquet_image_columns_that_name_files_are_never_reused(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    folder = tmp_path / "pq"
+    folder.mkdir()
+    image = pa.struct([("bytes", pa.binary()), ("path", pa.string())])
+    table = pa.table({"image": pa.array([{"bytes": None, "path": "sample.png"}], type = image)})
+    pq.write_table(table, folder / "a.parquet")
+    assert training._content_hash(f"{folder}/*.parquet") is None
+    embedded = pa.table({"image": pa.array([{"bytes": b"\x89PNG", "path": None}], type = image)})
+    pq.write_table(embedded, folder / "a.parquet")
+    assert training._content_hash(f"{folder}/*.parquet")
+
+
+def test_a_relative_local_base_model_is_fingerprinted(tmp_path, monkeypatch):
+    import asyncio
+
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "my-model").mkdir()
+    (tmp_path / "my-model" / "model.safetensors").write_bytes(b"one")
+
+    class Ctx:
+        caller = None
+        params: dict = {}
+
+    first = asyncio.run(training._model_material(Ctx(), "./my-model"))
+    assert first and first["base_model_files"]
+    (tmp_path / "my-model" / "model.safetensors").write_bytes(b"three")
+    assert asyncio.run(training._model_material(Ctx(), "./my-model")) != first
+    # A relative path that is not there cannot be identified: train again.
+    assert asyncio.run(training._model_material(Ctx(), "./gone")) is None
