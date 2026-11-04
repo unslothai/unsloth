@@ -60,7 +60,8 @@ TRAINING_POLL_S = 2.0
 IDLE_UNLOAD_S = 300.0
 # Binaries (path, mtime) whose server answered without a "decisions" output.
 _incapable: set[tuple[str, int]] = set()
-_unloadable: set = set()
+# (binary key, llama.cpp form of a Laya export) the build refused to load.
+_unloadable: set[tuple[tuple[str, int], Checkpoint]] = set()
 _LAYA_OPTION_TOKENS = 48
 _LOAD_REFUSALS = ("unknown model architecture", "error loading model vocabulary")
 
@@ -1185,21 +1186,27 @@ def _stock_laya(checkpoint) -> bool:
     return checkpoint.layout == "laya" and not checkpoint.is_local
 
 
-def _laya_max_len(checkpoint: Checkpoint) -> int:
+def _laya_config(checkpoint: Checkpoint) -> dict[str, Any]:
     import json
     config = Path(checkpoint.source).expanduser() / "rl_agent_config.json"
-    return int(json.loads(config.read_text(encoding = "utf-8")).get("max_len", 512))
+    return json.loads(config.read_text(encoding = "utf-8"))
 
 
 @functools.lru_cache(maxsize = 4)
-def _export_tokenizer(checkpoint: Checkpoint):
+def _export_counter(checkpoint: Checkpoint):
+    """(token count, head_max_len) for an exported Laya folder, read without torch."""
     import json
 
     from tokenizers import Tokenizer
 
     folder = Path(checkpoint.source).expanduser() / "tokenizer"
     mask = json.loads((folder / "tokenizer_config.json").read_text(encoding = "utf-8"))["mask_token"]
-    return Tokenizer.from_file(str(folder / "tokenizer.json")), mask
+    tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
+
+    def count(text: str) -> int:
+        return len(tokenizer.encode(text.replace(mask, " "), add_special_tokens = False).ids)
+
+    return count, int(_laya_config(checkpoint).get("head_max_len", 192))
 
 
 def _export_criterion(value) -> str:
@@ -1230,42 +1237,43 @@ def _export_options(question: dict[str, Any]) -> list[str]:
     ]
 
 
+def _cut_problem(sizes: list[int], head: int, head_max_len: int) -> str | None:
+    """What build_sequence would cut: past the option budget each option keeps its share, instructions what is left."""
+    budget = head_max_len - 16
+    if sum(sizes) > budget and max(sizes) > max(4, budget // len(sizes)):
+        return f"options would be cut short to fit Laya's {budget}-token option budget. Use fewer or shorter criteria"
+    if head > max(8, head_max_len - sum(sizes)):
+        return (
+            f"instructions would be cut short to fit beside its options in Laya's {head_max_len}-token "
+            "question budget. Use shorter instructions or fewer criteria"
+        )
+    return None
+
+
 def _refuse_cut_questions(checkpoint: Checkpoint, questions: dict[str, dict[str, Any]]) -> None:
     """llama.cpp cuts what does not fit Laya's question budget without saying so; refused here as PyTorch refuses it."""
     import json
 
-    from .native_worker import resolve_binary
-
     try:
-        tokenizer, mask = _export_tokenizer(checkpoint)
+        count, head_max_len = _export_counter(checkpoint)
     except Exception as exc:
-        _unloadable.add((_binary_key(resolve_binary()), checkpoint))
         raise Unavailable(
             503, "model_unavailable", f"Could not read the tokenizer of {checkpoint.name}: {exc}"
         ) from None
-    count = lambda text: len(
-        tokenizer.encode(text.replace(mask, " "), add_special_tokens = False).ids
-    )
-    config = Path(checkpoint.source).expanduser() / "rl_agent_config.json"
-    head_max_len = int(json.loads(config.read_text(encoding = "utf-8")).get("head_max_len", 192))
     for name, question in questions.items():
         sizes = [
             1 + min(_LAYA_OPTION_TOKENS, count(f" {option}"))
             for option in _export_options(question)
         ]
-        budget = head_max_len - 16
-        if sum(sizes) > budget and max(sizes) > max(4, budget // len(sizes)):
-            problem = f"options would be cut short to fit Laya's {budget}-token option budget. Use fewer or shorter criteria"
-        else:
-            instructions = question.get("instructions") or name
-            if not isinstance(instructions, str):
-                instructions = json.dumps(instructions, ensure_ascii = False)
-            if count(f"{question['type']} question: {instructions}") <= max(
-                8, head_max_len - sum(sizes)
-            ):
-                continue
-            problem = f"instructions would be cut short to fit beside its options in Laya's {head_max_len}-token question budget. Use shorter instructions or fewer criteria"
-        raise Unavailable(422, "invalid_request_error", f"Question {name!r} {problem}.")
+        # As native_worker._wire_questions sends it and laya's _to_internal reads it.
+        instructions = question.get("instructions")
+        if instructions in (None, ""):
+            instructions = str(name)
+        elif not isinstance(instructions, str):
+            instructions = json.dumps(instructions)
+        head = count(f"{question['type']} question: {instructions}")
+        if (problem := _cut_problem(sizes, head, head_max_len)) is not None:
+            raise Unavailable(422, "invalid_request_error", f"Question {name!r} {problem}.")
 
 
 def _load_native(checkpoint: Checkpoint):
@@ -1299,7 +1307,7 @@ def _load_native(checkpoint: Checkpoint):
             checkpoint.name,
             gpu = gpu,
             clef_answers = checkpoint.layout == "clef",
-            ctx = min(get_native_ctx(), _laya_max_len(checkpoint))
+            ctx = min(get_native_ctx(), int(_laya_config(checkpoint).get("max_len", 512)))
             if checkpoint.layout == "laya"
             else get_native_ctx(),
             cancelled = lambda: (gpu and _training_active()) or _unloaded(),
@@ -1310,14 +1318,14 @@ def _load_native(checkpoint: Checkpoint):
                 f"{checkpoint.name} needs the GPU, which a training run took while it loaded."
             )
     except BaseException as exc:
-        if isinstance(exc, NativeIncapable) and (binary := resolve_binary()):
-            _incapable.add(_binary_key(binary))
-        if (
-            isinstance(exc, NativeLoadError)
-            and _is_laya_export(checkpoint)
-            and any(refusal in str(exc) for refusal in _LOAD_REFUSALS)
-        ):
-            if binary := resolve_binary():
+        if isinstance(exc, NativeError) and (binary := resolve_binary()):
+            if isinstance(exc, NativeIncapable):
+                _incapable.add(_binary_key(binary))
+            elif (
+                isinstance(exc, NativeLoadError)
+                and _is_laya_export(checkpoint)
+                and any(refusal in str(exc) for refusal in _LOAD_REFUSALS)
+            ):
                 _unloadable.add((_binary_key(binary), checkpoint))
         if gpu:
             gpu_arbiter.release(gpu_arbiter.DECISIONS)
@@ -1821,23 +1829,14 @@ def _head(agent, question: dict[str, Any], max_len: int, head_max_len: int):
         internal = agent._to_internal(question)
         tok = agent.tok
         options = [" " + o.replace(tok.mask_token, " ") for o in render_options(internal)]
-        sizes = [1 + min(48, len(tok(o, add_special_tokens = False)["input_ids"])) for o in options]
-        # build_sequence's rule: past this budget, each option keeps only its share of it.
-        budget = head_max_len - 16
-        share = max(4, budget // len(sizes))
-        if sum(sizes) > budget and max(sizes) > share:
-            raise ValueError(
-                f"options would be cut short to fit Laya's {budget}-token option budget. "
-                "Use fewer or shorter criteria"
-            )
+        sizes = [
+            1 + min(_LAYA_OPTION_TOKENS, len(tok(o, add_special_tokens = False)["input_ids"]))
+            for o in options
+        ]
         ins = str(internal["ins"]).replace(tok.mask_token, " ")
         head = tok(f"{internal['t']} question: {ins}", add_special_tokens = False)["input_ids"]
-        if len(head) > max(8, head_max_len - sum(sizes)):
-            raise ValueError(
-                f"instructions would be cut short to fit beside its options in Laya's "
-                f"{head_max_len}-token question budget. Use shorter instructions or fewer "
-                "criteria"
-            )
+        if (problem := _cut_problem(sizes, len(head), head_max_len)) is not None:
+            raise ValueError(problem)
         ids, markers = build_sequence(tok, "", internal, max_len, head_max_len)
         if len(markers) != len(sizes):
             raise ValueError(

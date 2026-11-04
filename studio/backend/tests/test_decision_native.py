@@ -223,6 +223,7 @@ def home(tmp_path, monkeypatch):
     ):
         monkeypatch.setattr(laya_runtime, name, None)
     monkeypatch.setattr(laya_runtime, "_incapable", set())
+    monkeypatch.setattr(laya_runtime, "_unloadable", set())
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
     monkeypatch.setattr(systemone_settings, "gpu_available", lambda: False)
