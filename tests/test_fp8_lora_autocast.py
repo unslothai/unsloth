@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The FP8 LoRA base forward must follow autocast like the F.linear it replaces: compute and return in the
-autocast dtype, so an fp16 input under bf16 autocast does not overflow and an fp32 input comes back bf16."""
+"""The FP8 LoRA base forward must follow autocast like F.linear."""
 
 from __future__ import annotations
 
@@ -62,7 +61,7 @@ def test_fp8_base_follows_bf16_autocast(input_dtype, bias, compiled):
     with torch.autocast("cpu", dtype = torch.bfloat16):
         ref = F.linear(x, weight, bias_ref)
         got = call(x)
-    assert FL.FP8_LORA_STATS["quantize"] == 0  # the cached fp8 copy, no requantize
+    assert FL.FP8_LORA_STATS["quantize"] == 0
     assert ref.dtype == torch.bfloat16
     assert got.dtype == ref.dtype
     assert _rel(got, ref) < FP8_FWD_TOL
