@@ -1125,7 +1125,9 @@ def collect_local_models(
         local_models += [
             m
             if m.source in ("hf_cache", "ollama", "hermes")
-            else m.model_copy(update = {"source": "custom"})
+            else m.model_copy(
+                update = {"source": "custom", "source_label": folder.get("label") or None}
+            )
             for m in custom_models
         ]
 
@@ -1269,7 +1271,9 @@ async def _shared_compat_local_inventory_scan(
             Path(_compat_inventory_path_identity(models_root)),
             scan_sources,
             tuple(
-                identity + ("\x00r" if folder.get("recursive") else "")
+                identity
+                + ("\x00r" if folder.get("recursive") else "")
+                + ("\x00l" + folder["label"] if folder.get("label") else "")
                 for identity, folder in zip(identities, custom_folders)
             ),
             epoch,
@@ -1398,7 +1402,7 @@ async def add_scan_folder_endpoint(
 
     try:
         folder, inserted = await asyncio.to_thread(
-            add_scan_folder_with_status, body.path, body.recursive
+            add_scan_folder_with_status, body.path, body.recursive, body.label
         )
     except ValueError as e:
         logger.warning("Scan folder rejected: %s (path=%s)", e, body.path)
