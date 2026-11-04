@@ -24,7 +24,6 @@ def _model(proj: nn.Module) -> nn.Module:
 def _assert_refused_untouched(model: nn.Module, proj: nn.Module) -> None:
     with pytest.raises(NotImplementedError, match = r"layer\.proj.*4-bit or in 16-bit"):
         ml.inject_multi_lora(model, ["proj", "dense"], num_adapters = 2, r = 2)
-    # Refused before anything changed: nothing wrapped, nothing frozen.
     assert model.layer.proj is proj
     assert isinstance(model.layer.dense, nn.Linear)
     assert model.layer.dense.weight.requires_grad
@@ -39,7 +38,6 @@ def test_bitsandbytes_linear8bit_base_is_refused():
 
 
 def test_a_weight_carrying_int8_scales_is_refused():
-    # Stand-in for any wrapper around an Int8Params weight: the per-row SCB scales mark it.
     proj = nn.Linear(16, 12, bias = False)
     proj.weight.SCB = torch.ones(12)
     _assert_refused_untouched(_model(proj), proj)
