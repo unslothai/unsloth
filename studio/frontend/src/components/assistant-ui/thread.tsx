@@ -2809,10 +2809,13 @@ const ThreadWelcome: FC<{
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
             : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
           // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          // An image greeting rises 76px above its row, so its padding never drops below that.
           !composerAtBottom &&
-            (greeting.kind !== "off" || incognito
-              ? "pt-[calc(27.5dvh*var(--welcome-lift,1))]"
-              : "pt-[calc(27.5dvh*var(--welcome-lift,1)_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
+            (greeting.kind === "image" && !incognito
+              ? "pt-[max(calc(76px*var(--ui-space-scale,1)),calc(27.5dvh*var(--welcome-lift,1)))]"
+              : greeting.kind !== "off" || incognito
+                ? "pt-[calc(27.5dvh*var(--welcome-lift,1))]"
+                : "pt-[calc(27.5dvh*var(--welcome-lift,1)_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
         )}
         style={{ "--welcome-lift": lift } as CSSProperties}
       >
