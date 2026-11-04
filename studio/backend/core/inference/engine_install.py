@@ -847,7 +847,11 @@ def _rocm_reason(
         return "Requires ROCm {}.{} or a newer {}.x release installed in /opt/rocm".format(
             *wanted["rocm"], wanted["rocm"][0]
         ) + (" (found {}.{}).".format(*found) if found else ".")
-    from utils.hardware.amd import _a_bare_soname_resolves, amd_kfd_gpu_gfx_targets
+    from utils.hardware.amd import (
+        _a_bare_soname_resolves,
+        amd_kfd_gpu_gfx_targets,
+        hsa_override_gfx_target,
+    )
 
     missing = [soname for soname in ROCM_LIBRARIES if not (ROCM_HOME / "lib" / soname).exists()]
     if missing:
@@ -881,6 +885,15 @@ def _rocm_reason(
 
     # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
     arches = _known_rocm_gpu_arches(wait = wait)
+    if (
+        not arches
+        and _rocm_arches is None
+        and os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
+    ):
+        # Before torch reports: ROCr presents a readable global override for every GPU KFD lists.
+        override, kernel = hsa_override_gfx_target(), amd_kfd_gpu_gfx_targets()
+        if override is not None and kernel is not None:
+            arches = {gpu: override for gpu in range(len(kernel))}
     if (
         not arches
         and _rocm_arches is None
