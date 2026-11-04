@@ -488,6 +488,8 @@ async def run_benchmark(
             logger.info("Minted ephemeral API key for benchmark run")
 
         model_label = _run_model_label(request.checkpoint_path)
+        # Checked under the scoring hold: the model the caller loaded is still the one loaded.
+        lm_eval_kwargs["_expected_model"] = request.expected_model
 
         # ── Run lm_eval in the orchestrator worker thread ─────────
         backend.clear_logs()

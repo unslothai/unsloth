@@ -90,6 +90,12 @@ class BenchmarkRunRequest(BaseModel):
     recipe: Optional[RecipeHeldoutSpec] = Field(
         None, description = "Inputs for the recipe_heldout task (Flows Benchmark node)"
     )
+    expected_model: Optional[str] = Field(
+        None,
+        max_length = 1024,
+        description = "The model the caller loaded to score; the run fails if another is loaded "
+        "by the time scoring starts",
+    )
     run_token: Optional[str] = Field(
         None,
         max_length = 64,

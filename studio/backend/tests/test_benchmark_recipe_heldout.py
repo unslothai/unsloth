@@ -496,3 +496,25 @@ def test_an_lm_eval_run_holds_the_model_for_its_whole_life(monkeypatch):
     assert orchestrator._held_benchmark_task({}) == {"results": {}}
     assert seen == [(True, True)]
     assert not bench_routes.scoring_active() and not gpu_arbiter.lease_held()
+
+
+def test_the_judge_sees_the_system_instructions_the_answer_was_given():
+    judged = []
+
+    def chat(target, messages):
+        if target == "judge":
+            judged.append(messages[-1]["content"])
+            return "FAIL\nIt broke the rule." if "Always reply in French" in judged[-1] else "PASS"
+        return "Hello"
+
+    result = run_benchmark(
+        {
+            "rows": [{"question": "Greet me"}],
+            "prompt_column": "question",
+            "scorer": "judge",
+            "system_prompt": "Always reply in French.",
+        },
+        chat = chat,
+    )
+    assert "System instructions the answer was given:\nAlways reply in French." in judged[0]
+    assert result["candidate"]["score"] == pytest.approx(0.0)

@@ -170,6 +170,15 @@ async def _require_primary(ctx: NodeContext, ref: str, label: str) -> None:
         )
 
 
+async def _loaded_identity() -> Optional[str]:
+    """What this node loaded, as the eval checks it once scoring holds the model; None if unknown."""
+    from routes.benchmarks import loaded_identity
+    try:
+        return await asyncio.to_thread(loaded_identity) or None
+    except Exception:
+        return None
+
+
 async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
     """Load what is being scored; (label, is_lora)."""
     wired = ctx.inputs.get("model")
@@ -388,7 +397,12 @@ def _labelled(rows: list[dict], columns: tuple, ctx: NodeContext) -> list[dict]:
 
 
 async def _recipe_heldout(
-    ctx: NodeContext, label: str, is_lora: bool, max_rows: int, token: str
+    ctx: NodeContext,
+    label: str,
+    is_lora: bool,
+    max_rows: int,
+    token: str,
+    expected: Optional[str] = None,
 ) -> dict:
     rows = await _read_rows(ctx, ctx.inputs.get("dataset"), max_rows)
     columns = sorted({k for r in rows for k in r})
@@ -453,6 +467,7 @@ async def _recipe_heldout(
             "task": RECIPE_TASK,
             "recipe": spec,
             "run_token": token,
+            **({"expected_model": expected} if expected else {}),
         },
     )
     done = done if isinstance(done, dict) else {}
@@ -522,7 +537,13 @@ async def _recipe_heldout(
 
 
 async def _lm_eval(
-    ctx: NodeContext, task: str, label: str, is_lora: bool, max_rows: int, token: str
+    ctx: NodeContext,
+    task: str,
+    label: str,
+    is_lora: bool,
+    max_rows: int,
+    token: str,
+    expected: Optional[str] = None,
 ) -> dict:
     from studio_mcp import loading
 
@@ -549,6 +570,7 @@ async def _lm_eval(
             "task": task,
             "limit": max_rows,
             "run_token": token,
+            **({"expected_model": expected} if expected else {}),
         },
     )
     done = done if isinstance(done, dict) else {}
@@ -638,10 +660,12 @@ async def benchmark(ctx: NodeContext) -> dict:
     try:
         label, is_lora = await _load_target(ctx)
         loaded = True
+        # Read now: the eval fails if, by the time scoring holds the model, another one is loaded.
+        expected = await _loaded_identity()
         if task == RECIPE_TASK:
-            found = await _recipe_heldout(ctx, label, is_lora, max_rows, token)
+            found = await _recipe_heldout(ctx, label, is_lora, max_rows, token, expected)
         else:
-            found = await _lm_eval(ctx, task, label, is_lora, max_rows, token)
+            found = await _lm_eval(ctx, task, label, is_lora, max_rows, token, expected)
     finally:
         if not loaded:
             await _settle_loads(ctx)

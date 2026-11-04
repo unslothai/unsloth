@@ -87,12 +87,17 @@ def score_with_validator(scorer: str, output: str, reference: str | None) -> tup
 
 
 def build_judge_messages(
-    rubric: str, prompt: str, output: str, reference: str | None
+    rubric: str,
+    prompt: str,
+    output: str,
+    reference: str | None,
+    system: str = "",
 ) -> list[dict[str, str]]:
-    parts = [
-        f"Criteria: {rubric.strip() or DEFAULT_JUDGE_RUBRIC}",
-        f"Instruction:\n{prompt}",
-    ]
+    parts = [f"Criteria: {rubric.strip() or DEFAULT_JUDGE_RUBRIC}"]
+    if system.strip():
+        # The answer was asked under this system message: its rules are part of the task graded.
+        parts.append(f"System instructions the answer was given:\n{system}")
+    parts.append(f"Instruction:\n{prompt}")
     if reference:
         parts.append(f"Reference answer:\n{reference}")
     parts.append(f"Answer to grade:\n{output}")
@@ -126,13 +131,19 @@ def _cell(row: dict[str, Any], column: str | None) -> str:
 
 
 def _score_answer(
-    spec: dict[str, Any], chat: ChatFn, prompt: str, output: str, reference: str
+    spec: dict[str, Any],
+    chat: ChatFn,
+    prompt: str,
+    output: str,
+    reference: str,
+    system: str = "",
 ) -> tuple[bool, str]:
     scorer = spec["scorer"]
     if scorer != "judge":
         return score_with_validator(scorer, output, reference)
     verdict_text = chat(
-        "judge", build_judge_messages(spec.get("rubric") or "", prompt, output, reference or None)
+        "judge",
+        build_judge_messages(spec.get("rubric") or "", prompt, output, reference or None, system),
     )
     verdict = parse_judge_verdict(verdict_text)
     if verdict is None:
@@ -193,7 +204,7 @@ def run_benchmark(
             }
             try:
                 output = strip_thinking(chat(target, messages))
-                passed, reason = _score_answer(spec, chat, prompt, output, reference)
+                passed, reason = _score_answer(spec, chat, prompt, output, reference, system)
                 result.update(output = output, passed = passed, reason = reason)
             except Exception as exc:
                 result["error"] = str(exc)[:500] or type(exc).__name__

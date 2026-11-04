@@ -45,10 +45,11 @@ def _recipe_task(params: dict) -> dict:
     targets = params["targets"]
     # The worker can outlive a Stop, so it revokes the run's key itself once the adapter is back on.
     params["key_claimed"] = True
-    from routes.benchmarks import scoring_hold
+    from routes.benchmarks import check_resident, scoring_hold
 
     try:
         with httpx.Client() as client, scoring_hold():
+            check_resident(params.get("expected_model"))
             try:
                 return run_benchmark(
                     params["spec"],
@@ -219,6 +220,7 @@ async def run_recipe_heldout(
         else:
             baseline_model = ""
         params = {
+            "expected_model": request.expected_model,
             "spec": {
                 "rows": rows,
                 "prompt_column": spec.prompt_column,

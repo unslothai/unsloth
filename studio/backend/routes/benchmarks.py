@@ -264,6 +264,24 @@ def sweep_refusal() -> None:
         )
 
 
+def loaded_identity() -> str:
+    """The model Chat's main slot holds, with its quant: what a scoring answers with."""
+    from routes.data_recipe.jobs import _loaded_local_model_identity
+
+    _, model, variant = _loaded_local_model_identity()
+    return f"{model}:{variant}" if variant else model
+
+
+def check_resident(expected: Optional[str]) -> None:
+    """Under the scoring hold: the model a caller loaded is still the one loaded. Between its load and
+    the hold another client could swap it, and the run would score that model under the first's name."""
+    if expected and (now := loaded_identity()) != expected:
+        raise RuntimeError(
+            f"The model to score changed after it was loaded ({now or 'nothing'} is loaded now, "
+            f"not {expected}). Run the benchmark again."
+        )
+
+
 def scoring_active() -> bool:
     """A held-out scoring is running: no model may be switched in under it, by any path."""
     with _lease_lock:

@@ -890,3 +890,25 @@ def test_an_alpaca_input_of_zero_is_part_of_the_question():
         benchmark._alpaca_question({"instruction": "Negate", "input": False}) == "Negate\n\nFalse"
     )
     assert benchmark._alpaca_question({"instruction": "Say hi", "input": None}) == "Say hi"
+
+
+def test_the_eval_is_told_which_model_the_node_loaded(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", True
+
+    reads = []
+
+    async def identity():
+        reads.append(len(reads))
+        return "/out/run-1"
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_loaded_identity", identity)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    try:
+        asyncio.run(benchmark.benchmark(ctx))
+    except Exception:
+        pass
+    # Read once, right after the load, before the rows are read.
+    assert sent[0]["expected_model"] == "/out/run-1" and reads == [0]

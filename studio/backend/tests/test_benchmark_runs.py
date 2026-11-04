@@ -353,3 +353,39 @@ def test_an_eval_cannot_start_under_a_running_sweep(monkeypatch):
     assert client.post("/api/inference/load", headers = own).status_code == 200
     assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200
     assert not benchmarks_routes.scoring_active()
+
+
+def test_a_scoring_fails_when_another_model_was_loaded_before_it_held_the_model(monkeypatch):
+    import pytest
+
+    loaded = {"now": "org/ckpt-a"}
+    monkeypatch.setattr(benchmarks_routes, "loaded_identity", lambda: loaded["now"])
+    benchmarks_routes.check_resident("org/ckpt-a")
+    benchmarks_routes.check_resident(None)  # a caller that loaded nothing checks nothing
+    loaded["now"] = "org/ckpt-b"
+    with pytest.raises(RuntimeError, match = "changed after it was loaded"):
+        benchmarks_routes.check_resident("org/ckpt-a")
+
+
+def test_the_scoring_workers_check_the_model_they_were_given(monkeypatch):
+    import pytest
+
+    from core.benchmark import orchestrator
+    from routes import benchmark_recipe
+
+    monkeypatch.setattr(benchmarks_routes, "loaded_identity", lambda: "org/ckpt-b")
+    monkeypatch.setattr(orchestrator, "_run_benchmark_task", lambda params: pytest.fail("scored"))
+    monkeypatch.setattr(benchmark_recipe, "run_benchmark", lambda *a, **k: pytest.fail("scored"))
+    monkeypatch.setattr(benchmark_recipe, "_restore_adapter", lambda *a: None)
+    with pytest.raises(RuntimeError):
+        orchestrator._held_benchmark_task({"_expected_model": "org/ckpt-a"})
+    with pytest.raises(RuntimeError):
+        benchmark_recipe._recipe_task(
+            {
+                "targets": {},
+                "spec": {},
+                "is_cancelled": lambda: False,
+                "expected_model": "org/ckpt-a",
+            }
+        )
+    assert not benchmarks_routes.scoring_active()
