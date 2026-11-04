@@ -2,7 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { InputRule } from "../../../vendor/prosemirror-inputrules/index.js";
-import type { MarkType } from "../../../vendor/prosemirror-model/index.js";
+import type {
+  Mark,
+  MarkType,
+} from "../../../vendor/prosemirror-model/index.js";
+import { sliceToMarkdown } from "./markdown.ts";
 
 const escapeMarker = (text: string) => text.replace(/[*~`]/g, "\\$&");
 
@@ -19,11 +23,26 @@ export function markerRule(marker: string, type: MarkType): InputRule {
     (state, [, lead = "", text = ""], start, end) => {
       const from = start + lead.length;
       // The closing marker's last character is still being typed, not yet in the document.
-      return state.tr
+      const tr = state.tr
         .delete(from + marker.length + text.length, end)
-        .delete(from, from + marker.length)
-        .addMark(from, from + text.length, type.create())
-        .removeStoredMark(type);
+        .delete(from, from + marker.length);
+      const to = from + text.length;
+      if (type.spec.code) {
+        // Marks applied earlier inside the span were typed as literal markers: restore them.
+        const runs: (readonly Mark[])[] = [];
+        tr.doc.nodesBetween(from, to, (node) => {
+          if (node.isText) runs.push(node.marks);
+        });
+        const keep = runs[0].filter((m) => runs.every((r) => m.isInSet(r)));
+        if (runs.some((r) => r.length > keep.length)) {
+          for (const mark of keep) tr.removeMark(from, to, mark);
+          const literal = sliceToMarkdown(tr.doc.slice(from, to));
+          const marks = type.create().addToSet(keep as Mark[]);
+          tr.replaceWith(from, to, type.schema.text(literal, marks));
+          return tr.removeStoredMark(type);
+        }
+      }
+      return tr.addMark(from, to, type.create()).removeStoredMark(type);
     },
     { inCodeMark: false },
   );

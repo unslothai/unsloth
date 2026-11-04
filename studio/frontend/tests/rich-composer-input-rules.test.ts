@@ -112,3 +112,45 @@ test("markers typed inside inline code stay literal", () => {
     "`a **b** c`",
   );
 });
+
+test("closing inline code restores markers already styled inside it", () => {
+  const plugin = inputRules({
+    rules: [
+      markerRule("**", bold),
+      markerRule("*", italic),
+      markerRule("`", code),
+    ],
+  });
+  const replay = (keys: string) => {
+    let state = EditorState.create({
+      doc: parseMarkdown(""),
+      plugins: [plugin],
+    });
+    for (const char of keys) {
+      const { from, to } = state.selection;
+      const current = state;
+      const view = {
+        composing: false,
+        state: current,
+        dispatch: (tr: typeof current.tr) => {
+          state = current.apply(tr);
+        },
+      };
+      const handled = plugin.props.handleTextInput?.call(
+        plugin,
+        view as never,
+        from,
+        to,
+        char,
+        () => current.tr.insertText(char, from, to),
+      );
+      if (!handled)
+        state = current.apply(current.tr.insertText(char, from, to));
+    }
+    return serializeMarkdown(state.doc);
+  };
+  assert.equal(replay("`a *b*`"), "`a *b*`");
+  assert.equal(replay("`a **b** c` d"), "`a **b** c` d");
+  assert.equal(replay("**x `a *b*` y** "), "**x `a *b*` y** ");
+  assert.equal(replay("*a `b` c*"), "*a `b` c*");
+});
