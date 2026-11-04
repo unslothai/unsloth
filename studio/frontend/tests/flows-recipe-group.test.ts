@@ -1267,3 +1267,33 @@ test("a rename leaves an attribute of the same name alone, even after a spaced d
   );
   assert.equal(renameRoot("user .\n first_name == first_name", "first_name", "x"), "user .\n first_name == x");
 });
+
+test("columns reading each other are a loop even when a wired seed defers the server's check", async () => {
+  const { columnLoop } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  assert.deepEqual(
+    columnLoop([
+      { name: "left", column_type: "expression", expr: "{{ right }}" },
+      { name: "right", column_type: "expression", expr: "{{ left }}" },
+    ]),
+    ["left", "right", "left"],
+  );
+  assert.equal(
+    columnLoop([
+      { name: "a", column_type: "expression", expr: "x" },
+      { name: "b", column_type: "expression", expr: "{{ a }}" },
+    ]),
+    null,
+  );
+  const actions = readFileSync(
+    new URL("../src/features/flows/recipe/recipe-group-actions.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(actions, /if \(wired\) \{[\s\S]*columnLoop\(columns\.map\(columnOf\)\)/);
+  const seed = readFileSync(
+    new URL("../src/features/recipe-studio/dialogs/seed/seed-dialog.tsx", import.meta.url),
+    "utf8",
+  );
+  // An inline seed form re-reads its documents when one is removed (Flows never closes it).
+  assert.match(seed, /const removed = before\.some\(\(id\) => !now\.includes\(id\)\);/);
+  assert.match(seed, /onUpdate\(\{ hf_path: "", resolved_paths: \[\], seed_preview_rows: \[\] \}\)/);
+});

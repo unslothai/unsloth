@@ -184,6 +184,35 @@ export function recipeSignature(graph: DocGraph, groupId: string): string {
     : "";
 }
 
+/** The first loop of columns reading each other (`a -> b -> a`), else null; mirrors recipe_compile's check. */
+export function columnLoop(columns: RecipeColumn[]): string[] | null {
+  const names = new Set(
+    columns.flatMap((c) => (typeof c.name === "string" ? [c.name] : [])),
+  );
+  const reads = new Map(
+    columns.flatMap((c) =>
+      typeof c.name === "string" ? [[c.name, columnReferences(c, names)] as const] : [],
+    ),
+  );
+  const state = new Map<string, 1 | 2>();
+  const visit = (name: string, path: string[]): string[] | null => {
+    if (state.get(name) === 2) return null;
+    if (state.get(name) === 1) return [...path.slice(path.indexOf(name)), name];
+    state.set(name, 1);
+    for (const ref of reads.get(name) ?? []) {
+      const loop = visit(ref, [...path, name]);
+      if (loop) return loop;
+    }
+    state.set(name, 2);
+    return null;
+  };
+  for (const name of reads.keys()) {
+    const loop = visit(name, []);
+    if (loop) return loop;
+  }
+  return null;
+}
+
 /** The column reading `{{ ref }}` too; null when it picks its inputs another way (samplers). */
 export function withReference(
   column: RecipeColumn,

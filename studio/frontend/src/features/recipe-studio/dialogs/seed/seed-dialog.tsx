@@ -924,6 +924,26 @@ export function SeedDialog({
     }
   }, [mode, unstructuredFiles, loadSeedMetadata]);
 
+  // A removed document leaves the paths it was read from: read the rest again (or clear them all)
+  // now, since an inline host (Flows) never closes the dialog to trigger the refresh above.
+  const okIdsRef = useRef<string[] | null>(null);
+  useEffect(() => {
+    if (mode !== "unstructured") return;
+    if (unstructuredFiles.some((f) => f.status === "uploading")) return;
+    const now = unstructuredFiles.filter((f) => f.status === "ok").map((f) => f.id);
+    const before = okIdsRef.current;
+    okIdsRef.current = now;
+    if (!before) return;
+    const removed = before.some((id) => !now.includes(id));
+    const added = now.some((id) => !before.includes(id));
+    if (!removed || added) return;
+    if (now.length === 0) {
+      onUpdate({ hf_path: "", resolved_paths: [], seed_preview_rows: [] });
+      return;
+    }
+    void loadSeedMetadata({ silent: true });
+  }, [mode, unstructuredFiles, loadSeedMetadata, onUpdate]);
+
   const previewColumns = useMemo(() => {
     const loadedColumns = config.seed_columns ?? [];
     if (loadedColumns.length > 0) return loadedColumns;
