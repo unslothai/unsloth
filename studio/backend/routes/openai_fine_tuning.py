@@ -16,7 +16,7 @@ from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from itertools import chain
+from itertools import chain, groupby
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1124,20 +1124,23 @@ def _iter_runs() -> Iterator[dict[str, Any]]:
         offset += len(batch)
 
 
+def _run_created(run: dict[str, Any]) -> int:
+    return _ALIAS_CREATED.get(_RUN_ALIAS.get(run["id"])) or _unix(run.get("started_at")) or 0
+
+
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
     # Queue entries merge into the runs by creation time, ties first: a started job keeps its
     # queue creation time, so starting it between pages cannot move another entry across a cursor.
     remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
+    # Batch members share started_at: order them by creation time, as the live batch lists them.
+    runs = groupby(_iter_runs(), key = lambda run: run.get("started_at"))
+    runs = chain.from_iterable(sorted(g, key = _run_created, reverse = True) for _, g in runs)
     # A live run can acquire its history row between the status and history reads.
-    history = ((run, True) for run in _iter_runs() if run["id"] not in live)
+    history = ((run, True) for run in runs if run["id"] not in live)
     for row, is_run in chain(((job, False) for job in live.values()), history):
-        created_at = (
-            _ALIAS_CREATED.get(_RUN_ALIAS.get(row["id"])) or _unix(row.get("started_at")) or 0
-            if is_run
-            else row["created_at"]
-        )
+        created_at = _run_created(row) if is_run else row["created_at"]
         while remaining and remaining[0]["created_at"] >= created_at:
             yield remaining.popleft(), False
         yield row, is_run

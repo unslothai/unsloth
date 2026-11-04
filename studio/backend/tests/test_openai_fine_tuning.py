@@ -1864,3 +1864,26 @@ def test_a_newer_cancelled_job_is_not_skipped_when_an_older_one_starts_between_p
 
     older, newer, walked = _run(flow())
     assert sorted(walked) == sorted([older.id, newer.id])
+
+
+def test_a_batch_lists_in_the_same_order_before_and_after_its_history_rows_exist(monkeypatch):
+    started = "2026-11-04T00:00:00+00:00"
+    monkeypatch.setattr(
+        openai_fine_tuning, "_RUN_ALIAS", {"run_a": "ftjob_qa", "run_c": "ftjob_qc"}
+    )
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {"ftjob_qa": 100, "ftjob_qc": 300})
+    waiting = [{"id": "ftjob_qb", "created_at": 200}]
+    live = {
+        "run_c": {"id": "ftjob_qc", "created_at": 300},
+        "run_a": {"id": "ftjob_qa", "created_at": 100},
+    }
+
+    def order(rows, live_rows):
+        monkeypatch.setattr(openai_fine_tuning, "_iter_runs", lambda: iter(rows))
+        return [
+            openai_fine_tuning._RUN_ALIAS.get(row["id"], row["id"]) if is_run else row["id"]
+            for row, is_run in openai_fine_tuning._ordered_jobs(waiting, live_rows)
+        ]
+
+    persisted = [{"id": "run_a", "started_at": started}, {"id": "run_c", "started_at": started}]
+    assert order([], live) == order(persisted, {}) == ["ftjob_qc", "ftjob_qb", "ftjob_qa"]
