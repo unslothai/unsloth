@@ -279,7 +279,8 @@ _MODEL_OPTION = typer.Option(
     "-m",
     rich_help_panel = _PANEL_MODEL,
     help = "Model for the agent, or a bare `org/name(:variant)` positional. "
-    "Defaults to the one loaded in Unsloth.",
+    "Defaults to the one loaded in Unsloth; with none loaded, a terminal run lists the "
+    "models on this device to pick from.",
 )
 _GGUF_VARIANT_OPTION = typer.Option(
     None,
@@ -4988,6 +4989,63 @@ def _connection_entry(base: str, key: str, model: Optional[str]) -> Optional[dic
     return {"id": ids[0], "connection": usable[0].get("display_name") or usable[0]["id"]}
 
 
+def _can_ask_for_model() -> bool:
+    # Both ends must be a terminal: a piped stdin cannot answer, and a captured stdout hides the list.
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _ask_for_local_model(gguf_only: bool, reason: str) -> str:
+    """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
+    from rich.console import Console
+
+    ensure_studio_backend_path()
+    from unsloth_cli._model_picker import pick_gguf_model, pick_local_model, quiet_inventory_logs
+
+    quiet_inventory_logs()
+
+    kind = "GGUF models" if gguf_only else "models"
+    hint = (
+        f"No {kind} found on this device. Pass one with --model <hf-id-or-path>, or "
+        "download one in Unsloth Studio."
+    )
+    typer.echo(reason)
+    picker = pick_gguf_model if gguf_only else pick_local_model
+    return picker(Console(), prompt = "Load", empty_hint = hint)
+
+
+def _pick_model_to_auto_start(serve: bool, launch: bool, gguf_only: bool) -> Optional[str]:
+    """With no server running, the pick replaces --model so the auto-start path serves it."""
+    if not (serve and launch and _can_ask_for_model()):
+        return None
+    # Same gate as _require_studio's auto-start: anywhere else there is no server to load into.
+    expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    if not is_loopback_url(expected) or urlparse(expected).scheme != "http":
+        return None
+    if find_studio_server() is not None:
+        return None
+    return _ask_for_local_model(
+        gguf_only, "No Unsloth server is running. Pick a model on this device to start one with:"
+    )
+
+
+def _pick_model_for_idle_server(base: str, key: str, gguf_only: bool) -> Optional[str]:
+    """With a local server serving no chat model, the pick replaces --model and is loaded into it."""
+    if not _can_ask_for_model():
+        return None
+    # The picker lists THIS machine's files, which only a local Studio of ours can open.
+    if not is_loopback_url(base) or not verify_studio_identity(base):
+        return None
+    models = _loaded_models(base, key)
+    if any(m.get("loaded") is not False and m.get("task") is None for m in models):
+        return None
+    # Another account's resident is not listed to this key; a pick would evict it unasked, so keep the error that says so.
+    if _inference_status(base, key).get("yours") is False:
+        return None
+    return _ask_for_local_model(
+        gguf_only, "No model is loaded in Unsloth. Pick one on this device to load:"
+    )
+
+
 def _connect(
     api_key: Optional[str],
     model: Optional[str],
@@ -4998,8 +5056,11 @@ def _connect(
     server_options: ServerOptions = ServerOptions(),
     preload_check = None,
     connections: bool = False,
+    gguf_only: bool = False,
 ) -> tuple:
     _refuse_npu_model(model)
+    if model is None:
+        model = _pick_model_to_auto_start(serve, launch, gguf_only)
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
@@ -5028,6 +5089,10 @@ def _connect(
             model = os.path.abspath(os.path.expanduser(model))
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
+        if model is None and server is None:
+            picked = _pick_model_for_idle_server(base, key, gguf_only)
+            if picked is not None:
+                model = requested = picked
         connection = None if server is not None else _connection_entry(base, key, requested)
         if connection is not None:
             if not connections:
@@ -7405,6 +7470,7 @@ def claude(
         ),
         server_options = server_options,
         connections = True,
+        gguf_only = True,
     )
     # Before the launch owns the server, so a rejection tears it down, not atexit.
     try:
@@ -7570,6 +7636,7 @@ def codex(
         preload_check = functools.partial(_attach_gguf_check, _CODEX_GGUF_AGENT),
         server_options = server_options,
         connections = True,
+        gguf_only = True,
     )
     # This preflight runs after _connect may have auto-started a server but before _run takes over its lifecycle, so tear the server down here if it rejects the model (a transformers-backend model) rather than leaving it on the atexit backstop.
     try:
