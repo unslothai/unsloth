@@ -2413,7 +2413,8 @@ def backfill_fp8_modules_to_convert(
     skip = set(quant.get("modules_to_not_convert") or [])
     modules = {k[: -len(".weight_scale")] for k in weight_map or {} if k.endswith(".weight_scale")}
     # Linear blocks carry weight_scale_inv; only embeddings match, and the quantizer converts nn.Embedding only.
-    found = sorted({re.sub(r"^.*\.layers\.\d+\.", "", m) for m in modules - skip})
+    # Keep the layer index: the quantizer matches by suffix, so a bare name would also convert another layer's dense table.
+    found = sorted({re.sub(r"^.*\.(?=layers\.\d+\.)", "", m) for m in modules - skip})
     if found:
         quant["modules_to_convert"] = found
         print(

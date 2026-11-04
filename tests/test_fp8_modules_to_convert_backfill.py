@@ -37,11 +37,22 @@ def _config(**quant):
 
 def test_adds_the_table_the_unsloth_repo_left_out():
     config = _config(modules_to_not_convert = ["lm_head"])
-    assert _backfill(WEIGHT_MAP)(config, "unsloth/Qwen3.8-Flash-Next-FP8") == [
-        "ple.ple_embedding.ngram_embedding"
-    ]
-    # The same pattern Qwen's own FP8 config ships, which the quantizer matches by suffix.
-    assert config.quantization_config["modules_to_convert"] == ["ple.ple_embedding.ngram_embedding"]
+    found = ["layers.1.ple.ple_embedding.ngram_embedding"]
+    assert _backfill(WEIGHT_MAP)(config, "unsloth/Qwen3.8-Flash-Next-FP8") == found
+    assert config.quantization_config["modules_to_convert"] == found
+    # The quantizer matches by suffix: the runtime name must match, another layer's table must not.
+    assert "model.language_model.layers.1.ple.ple_embedding.ngram_embedding".endswith(found[0])
+    assert not "model.language_model.layers.11.ple.ple_embedding.ngram_embedding".endswith(found[0])
+
+
+def test_mixed_precision_tables_keep_their_layer():
+    weight_map = {
+        "model.layers.0.table.weight": "a",
+        "model.layers.0.table.weight_scale": "a",
+        "model.layers.1.table.weight": "a",
+        "model.embed_fp8.weight_scale": "a",
+    }
+    assert _backfill(weight_map)(_config(), "x") == ["layers.0.table", "model.embed_fp8"]
 
 
 def test_leaves_configs_that_already_list_it_or_are_not_fp8_alone():
