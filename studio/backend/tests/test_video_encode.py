@@ -15,7 +15,6 @@ eu = pytest.importorskip("diffusers.utils.export_utils")
 
 from core.inference import video_encode as ve  # noqa: E402
 
-# x264 options that only describe threading; every other field must match diffusers' encode_video.
 _THREADING = {"threads", "lookahead_threads", "sliced_threads", "slices", "sync_lookahead"}
 
 
@@ -113,7 +112,6 @@ def test_kill_switch(tmp_path, monkeypatch, value):
 
 def test_unsure_input_and_failures_hand_back(tmp_path, monkeypatch):
     path = str(tmp_path / "x.mp4")
-    # Out of range float: encode_video's own warn-and-use-as-is branch decides.
     assert ve.encode_x264(np.full((2, 16, 16, 3), 2.0, dtype = np.float32), 24, path) is False
     assert ve.encode_x264(np.zeros((2, 16, 16, 4), dtype = np.uint8), 24, path) is False
     assert (

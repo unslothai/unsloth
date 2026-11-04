@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The desktop update stops the backend while chat stays mounted under the update screen, so its
-// focus refresh and the documents poll raised "Failed to refresh models" over a healthy update.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -16,6 +13,8 @@ import { readSrc } from "./helpers/kit.ts";
 
 const RUNTIME = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
 const RAG = readSrc("features/rag/components/use-rag-documents.ts");
+const PIN_HOOK = readSrc("features/chat/hooks/use-pinned-chats-sync.ts");
+const PIN_SYNC = readSrc("features/chat/sync-pinned-chats.ts");
 
 function region(source: string, from: string, to: string): string {
   const start = source.indexOf(from);
@@ -58,7 +57,6 @@ test("a read issued under the update screen stays silent after the flag drops", 
   assert.equal(isSilencedDesktopUpdateFailure(transport(), downWhenIssued), true);
 });
 
-// start_server returns once the backend is spawned, before it answers.
 test("leaving the update screen holds the flag until the resync settles", async () => {
   followDesktopUpdateScreen(true, false, noResync)();
   const resync = deferred();
@@ -122,6 +120,18 @@ test("the documents refresh latches the flag at issue and checks it before repor
   );
   assert.ok(latch !== -1 && latch < refresh.indexOf("} catch (err) {"));
   assert.ok(guard !== -1 && guard < refresh.indexOf("toast.error"));
+});
+
+test("the pin sync poll stands down under the update screen", () => {
+  const refresh = region(PIN_HOOK, "const refresh = () => {", "const reconcileSession");
+  const gate = refresh.indexOf("if (isBackendDownForDesktopUpdate()) return;");
+  assert.ok(gate !== -1 && gate < refresh.indexOf("loadRuntime()"));
+});
+
+test("the pin sync error toast checks for an update failure first", () => {
+  const onError = region(PIN_SYNC, "onError: (error) => {", "// Every delete path");
+  const guard = onError.indexOf("if (isPinFailureUnderDesktopUpdate(error)) return;");
+  assert.ok(guard !== -1 && guard < onError.indexOf("toast.error"));
 });
 
 test("the update layer drives the flag and resyncs chat when the screen drops", () => {

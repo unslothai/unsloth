@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// `currentStep` was persisted, so deleting the wizard without a migration leaves
-// it in every existing install and partializeTrainingConfig keeps writing it back.
-// These pin the retirement: the orphan goes, everything else survives, and a blob
-// from a newer build still hydrates.
+// `currentStep` was persisted, so retiring the wizard needs a migration to drop it.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,7 +19,6 @@ const {
   "../src/features/training/stores/training-config-persistence.ts"
 );
 
-/** A v20 blob as an install that ran the onboarding wizard actually stored it. */
 function wizardEraBlob(): Record<string, unknown> {
   return {
     currentStep: 2,

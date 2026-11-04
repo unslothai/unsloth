@@ -124,7 +124,14 @@ def v1(monkeypatch):
         inf.auth_storage,
         "validate_api_key_account",
         lambda raw, touch = True: {
-            USER_KEY: ({"role": "owner", "key_name": "Coding agents (unsloth start)"}, "s"),
+            USER_KEY: (
+                {
+                    "role": "owner",
+                    "key_name": "Coding agents (unsloth start)",
+                    "key_purpose": "unsloth_start",
+                },
+                "s",
+            ),
             SCRIPT_KEY: ({"role": "owner", "key_name": "my script"}, "s"),
         }.get(raw),
     )
@@ -530,6 +537,44 @@ def test_a_signature_is_only_replayed_for_its_own_account(v1):
     inf._restore_connection_tool_extras("owner", messages)
 
     assert "extra_content" not in messages[0]["tool_calls"][0]
+
+
+def test_one_accounts_signatures_cannot_evict_anothers(v1, monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_CONNECTION_TOOL_EXTRAS_MAX", 8)
+    inf._remember_connection_extra("alice", "call", "call_1", SIGNED["extra_content"])
+    for i in range(20):
+        inf._remember_connection_extra("bob", "call", f"call_{i}", {"n": i})
+
+    assert inf._connection_extra("alice", "call", "call_1") == SIGNED["extra_content"]
+    assert inf._connection_extra("bob", "call", "call_0") is None
+    assert inf._connection_extra("bob", "call", "call_19") == {"n": 19}
+
+
+def test_signature_cache_bounds_the_number_of_accounts(v1, monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX", 3)
+    for i in range(5):
+        inf._remember_connection_extra(f"user{i}", "call", "call_1", {"n": i})
+
+    assert len(inf._CONNECTION_TOOL_EXTRAS) == 3
+    assert inf._connection_extra("user0", "call", "call_1") is None
+    assert inf._connection_extra("user4", "call", "call_1") == {"n": 4}
+
+
+def test_signature_cache_replay_keeps_an_account_recent(v1, monkeypatch):
+    import routes.inference as inf
+
+    monkeypatch.setattr(inf, "_CONNECTION_TOOL_EXTRAS_SUBJECTS_MAX", 3)
+    for i in range(3):
+        inf._remember_connection_extra(f"user{i}", "call", "call_1", {"n": i})
+    assert inf._connection_extra("user0", "call", "call_1") == {"n": 0}
+    inf._remember_connection_extra("user3", "call", "call_1", {"n": 3})
+
+    assert inf._connection_extra("user0", "call", "call_1") == {"n": 0}
+    assert inf._connection_extra("user1", "call", "call_1") is None
 
 
 def test_chat_completions_without_stream_returns_one_completion_object(v1):
@@ -1112,3 +1157,16 @@ def test_messages_carry_preserve_thinking_to_a_vllm_connection(v1, monkeypatch):
         m for m in FakeExternalClient.calls[-1]["stream"]["messages"] if m["role"] == "assistant"
     )
     assert assistant["reasoning_content"] == "earlier thought"
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("top_k", 250), ("temperature", 3.0), ("top_p", 1.5), ("max_tokens", 0)],
+)
+def test_messages_rejects_a_sampling_value_chat_refuses_with_a_400(v1, field, value):
+    resp = v1.post("/v1/messages", json = _messages_body(**{field: value}))
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["type"] == "error"
+    assert field in resp.json()["error"]["message"]
+    assert FakeExternalClient.calls == []

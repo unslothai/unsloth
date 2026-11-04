@@ -42,7 +42,6 @@ _ALWAYS_PINNED = (
     "DATA_DESIGNER_MANAGED_ASSETS_PATH",
 )
 
-# Shared user data / large re-downloads: portable mode only.
 _PORTABLE_ONLY = ("HF_DATASETS_CACHE", "HF_ASSETS_CACHE", "TORCH_HOME")
 
 _HF_ENV = ("HF_HOME", "HF_HUB_CACHE", "HF_XET_CACHE", "HUGGINGFACE_HUB_CACHE")
@@ -54,14 +53,11 @@ def _clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising = False)
     for key in ("UNSLOTH_HOME", "UNSLOTH_PORTABLE", "STUDIO_HOME"):
         monkeypatch.delenv(key, raising = False)
-    # Not pinned, but both change what Triton resolves under the test home.
     for key in ("TRITON_HOME", "TRITON_OVERRIDE_DIR"):
         monkeypatch.delenv(key, raising = False)
     # _default_cache_home reads this before ~/.cache, and CI runners set it.
     monkeypatch.delenv("XDG_CACHE_HOME", raising = False)
-    # Same for matplotlib's config dir, whose contents decide whether MPLCONFIGDIR is ours.
     monkeypatch.delenv("XDG_CONFIG_HOME", raising = False)
-    # Empty home: a real ~/.data-designer would change what the resolver pins.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "studio"))
@@ -110,9 +106,8 @@ def test_regenerable_caches_are_pinned_under_the_studio_root(tmp_path):
         assert value.startswith(root), f"{key} escaped the studio root: {value}"
 
 
-# Pinned to a path a compiler is handed on a command line: cpp_builder.py joins with spaces,
-# interpolates unquoted and reparses with shlex.split, so a root containing a space splits
-# mid-path and the C++ build fails outright.
+# Paths handed to a compiler command line: cpp_builder.py re-splits it with shlex.split,
+# so a root containing a space breaks the build.
 _TOOLCHAIN_PINNED = (
     "TORCHINDUCTOR_CACHE_DIR",
     "TORCH_EXTENSIONS_DIR",
@@ -123,15 +118,7 @@ _TOOLCHAIN_PINNED = (
 
 
 def _a_temp_root_the_policy_accepts(monkeypatch, tmp_path):
-    """A temporary root the fallback will actually publish into, on either platform.
-
-    _holding_dir_is_safe asks POSIX mode bits on Linux and macOS, which any directory under
-    tmp_path satisfies, but on Windows there is no ownership to read and it accepts exactly one
-    root: %LOCALAPPDATA%\\Temp. A test that simply pointed gettempdir at tmp_path therefore
-    measured the refusal instead of the fallback, and two of them asserted the fallback was
-    published and failed on windows-latest while passing here. So move LOCALAPPDATA as well,
-    which keeps everything inside tmp_path and exercises the real rule rather than skipping it.
-    """
+    """A temp root the holding policy accepts on each platform; on Windows, LOCALAPPDATA is moved too."""
     root = tmp_path / "Temp"
     root.mkdir()
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
@@ -140,24 +127,12 @@ def _a_temp_root_the_policy_accepts(monkeypatch, tmp_path):
 
 
 def _as_the_compiler_sees_it(path):
-    """The path as cpp_builder puts it on the command line.
-
-    normalize_path_separator rewrites os.sep to "/" on Windows before the command is built, so a
-    Windows tmp_path measured raw would report every character as mangled: the separators alone
-    are enough for shlex to eat. Measuring the raw path made the whole sweep fail on
-    windows-latest while passing on Linux, which is the harness being wrong, not the guard.
-    """
+    """The path as cpp_builder passes it: os.sep becomes / on Windows, so measure it that way, not raw."""
     return str(path).replace(os.sep, "/") if os.name == "nt" else str(path)
 
 
 def _assert_no_unparseable_pin(sr, refused_root):
-    """Whatever the resolver published for the toolchain keys, a compiler must be able to read
-    it, and it must not sit inside the root we just refused.
-
-    The rule is not "unset". torch's own fallback is <gettempdir>/torchinductor_<login> and it
-    sanitises only [\\/:*?"<>|], so an o'brien or First Last login lands back on the character
-    that caused the refusal. Unset is only acceptable when the temporary directory is no better.
-    """
+    """Unset is not automatically safe: torch's own fallback can reintroduce the refused character."""
     for key in _TOOLCHAIN_PINNED:
         value = os.environ.get(key)
         if value is None:
@@ -168,12 +143,7 @@ def _assert_no_unparseable_pin(sr, refused_root):
 
 
 def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypatch, tmp_path):
-    """ "C:\\Users\\First Last" is an ordinary Windows account name, so the DEFAULT Studio root
-    contains a space for a large share of installs. Before this file pinned these, Inductor used
-    its own temporary directory and the build worked; pinning it into a spaced root broke
-    torch.compile outright. The refusal now publishes a parseable directory rather than hoping
-    torch's own default is one, since for a First Last login it is not. The rest of the caches,
-    which nobody pastes into a command line, still move."""
+    """Pinning a spaced path into the compiler broke torch.compile, so a parseable fallback is published."""
     spaced = tmp_path / "my home" / "studio"
     spaced.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(spaced))
@@ -182,7 +152,6 @@ def test_a_spaced_root_leaves_the_compiler_caches_to_their_own_defaults(monkeypa
     sr._setup_cache_env()
 
     _assert_no_unparseable_pin(sr, spaced)
-    # Non-vacuity, and the point of the guard being narrow: everything else is still contained.
     for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "MPLCONFIGDIR", "UNSLOTH_COMPILE_LOCATION"):
         assert os.environ[key].startswith(str(spaced.parent)), key
 
@@ -218,10 +187,7 @@ def test_a_root_without_spaces_still_pins_the_compiler_caches(monkeypatch, tmp_p
 def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
     name, monkeypatch, tmp_path
 ):
-    """Whitespace was the only character the guard knew, and a quote is worse than a space: in
-    POSIX mode shlex swallows the rest of the command into one argument and deletes the quote,
-    so the build fails somewhere less obvious than a split path. "/home/o'brien" is an ordinary
-    account name."""
+    """A quote is worse than a space: POSIX shlex swallows the rest of the command."""
     quoted = tmp_path / name / "studio"
     quoted.mkdir(parents = True)
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(quoted))
@@ -230,7 +196,6 @@ def test_a_quoted_root_leaves_the_compiler_caches_to_their_own_defaults(
     sr._setup_cache_env()
 
     _assert_no_unparseable_pin(sr, quoted)
-    # Non-vacuity: the caches nobody pastes into a command line still move.
     for key in ("UV_CACHE_DIR", "NUMBA_CACHE_DIR", "UNSLOTH_COMPILE_LOCATION"):
         assert os.environ[key].startswith(str(quoted.parent)), key
 
@@ -268,10 +233,7 @@ def test_a_backslash_in_a_posix_root_leaves_the_compiler_caches_alone(monkeypatc
     ],
 )
 def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp_path):
-    """The test that keeps the character list honest. Rather than restating the predicate, this
-    builds the command shape cpp_builder builds and asks shlex.split whether the path comes back
-    whole, then requires the predicate to have said so. A character added to one and not the
-    other fails here."""
+    """Asks shlex.split whether a built command keeps the path whole, so the guard cannot drift from it."""
     path = _as_the_compiler_sees_it(tmp_path / name / "cache" / "torchinductor")
     command = f"g++ {path}/main.cpp -o {path}/main.so"
     sr = _load_storage_roots()
@@ -279,7 +241,7 @@ def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp
     try:
         survives = shlex.split(command) == ["g++", f"{path}/main.cpp", "-o", f"{path}/main.so"]
     except ValueError:
-        survives = False  # an odd number of quotes raises rather than mangling
+        survives = False
 
     assert sr.toolchain_path_unparseable(path) is not survives, (
         f"{name!r}: predicate says {sr.toolchain_path_unparseable(path)}, "
@@ -288,20 +250,11 @@ def test_the_guard_agrees_with_what_shlex_actually_does_to_the_command(name, tmp
 
 
 def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
-    """The invariant that actually protects a user, swept over every printable ASCII character
-    plus the whitespace Python recognises and shlex does not.
-
-    The test above pins six characters both ways. This one allows the predicate to be too
-    careful and forbids it being not careful enough, which is the only direction that breaks a
-    build. It is deliberately one-sided: str.isspace() is true for a no-break space and the
-    other Unicode spaces, while shlex splits on ASCII whitespace only, so the predicate refuses
-    seven paths a compiler would in fact have accepted. That costs containment for those roots
-    and nothing else, it predates this file, and closing it would mean re-deriving shlex's own
-    whitespace set here."""
+    """The guard may over-refuse Unicode spaces but must never let a mangled path through."""
     sr = _load_storage_roots()
     specials = list(string.printable) + [" ", " ", " ", "　", " ", "é"]
     if os.name == "nt":
-        specials.remove("\\")  # the separator, rewritten to "/" before the command is built
+        specials.remove("\\")
 
     leaked = []
     for char in specials:
@@ -321,14 +274,7 @@ def test_no_character_at_all_lets_a_mangled_path_through(tmp_path):
 
 
 def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatch, tmp_path):
-    """Leaving the variable unset is not automatically safe, which is the whole reason this
-    branch publishes something.
-
-    torch's default is <gettempdir>/torchinductor_<login>, sanitised against [\\\\/:*?"<>|] only,
-    so an o'brien or a First Last login is handed back the character that caused the refusal
-    (torch/_inductor/runtime/cache_dir_utils.py::default_cache_dir). The replacement is named
-    from a hex digest, so it cannot carry one itself, and it is keyed on the path we wanted, so
-    the same install returns to the same cache every launch."""
+    """Unset is not safe: torch's default keeps the refused character, so a hex-named fallback is used."""
     refused = tmp_path / "o'brien" / "studio"
     refused.mkdir(parents = True)
     temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
@@ -351,11 +297,7 @@ def test_a_refused_root_gets_a_parseable_cache_rather_than_torchs_own(monkeypatc
 
 
 def _fallback_path(sr, key, intended):
-    """The exact path the resolver will choose, asked OF the resolver.
-
-    Recomputing the digest here duplicated the naming rule, and the moment the account was
-    folded into it these fixtures silently stopped colliding with the real name: the planted
-    directory sat unused and the tests passed while proving nothing."""
+    """Asks the resolver for its fallback path; a recomputed digest would silently stop matching it."""
     return Path(sr._parseable_toolchain_fallback(key, intended))
 
 
@@ -374,12 +316,7 @@ def _fallback_path(sr, key, intended):
     ],
 )
 def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_path):
-    """The fallback gets the same probe as any other toolchain path.
-
-    torch treats the value as authoritative and never reconsiders, so publishing a name that is
-    a regular file, or a directory it cannot write into, fails every build rather than the one
-    case this branch exists to prevent. mkdir(exist_ok = True) cannot answer it: it raises
-    FileExistsError for the file and says nothing at all about writability."""
+    """mkdir(exist_ok) says nothing about writability, so the fallback gets the same probe too."""
     refused = tmp_path / "o'brien" / "studio"
     refused.mkdir(parents = True)
     temp_root = tmp_path / "tmp"
@@ -388,7 +325,6 @@ def test_an_unusable_fallback_is_not_published_either(occupy, monkeypatch, tmp_p
     sr = _load_storage_roots()
     monkeypatch.setattr(sr.tempfile, "gettempdir", lambda: str(temp_root))
 
-    # Occupy the exact name the fallback will choose, derived the way the resolver derives it.
     intended = str(sr.cache_root() / "torchinductor")
     squatter = _fallback_path(sr, "TORCHINDUCTOR_CACHE_DIR", intended)
     if occupy == "file":
@@ -599,7 +535,6 @@ def test_a_private_temp_root_inside_a_shared_parent_is_refused(monkeypatch, tmp_
     shared.chmod(0o777)
     try:
         assert sr._holding_dir_is_safe(private_root) is False
-        # The leaf alone still looks fine, which is exactly why the walk is needed.
         assert sr._dir_is_not_swappable(private_root) is True
         shared.chmod(0o755)
         assert sr._holding_dir_is_safe(private_root) is True
@@ -650,12 +585,7 @@ def test_a_sticky_parent_owned_by_somebody_else_is_still_refused(monkeypatch, tm
 
 
 def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeypatch, tmp_path):
-    """os.stat reports no ownership on Windows and the 0o700 handed to os.mkdir buys nothing
-    there, so a redirected %TEMP% on a shared directory cannot be told from a private one
-    without reading ACLs. The default root under %LOCALAPPDATA%\\Temp already is per-account,
-    so that is the one accepted and a redirected root gets no fallback rather than an unverified
-    one. The predicate itself is platform independent, so it is exercised here rather than only
-    on a Windows runner."""
+    """On Windows only the default per-account temp root is accepted; mode bits prove nothing there."""
     local = tmp_path / "AppData" / "Local"
     default_temp = local / "Temp"
     default_temp.mkdir(parents = True)
@@ -670,12 +600,7 @@ def test_the_windows_holding_rule_accepts_only_the_per_account_temp_root(monkeyp
     monkeypatch.delenv("LOCALAPPDATA", raising = False)
     assert sr._windows_temp_root_is_private(default_temp) is False
 
-    # And it is actually WIRED IN. Exercising the predicate alone left the call site untested:
-    # reverting the Windows branch to an unconditional True kept every assertion above green.
-    # Asserted on the source rather than by behaviour, because forcing os.name to "nt" makes
-    # pathlib instantiate a WindowsPath and raise before the branch is ever reached. A source
-    # check is weaker than a run, and it does fail when the call is removed, which is the one
-    # thing this is guarding.
+    # Source check: forcing os.name to "nt" makes pathlib raise before the branch is reached.
     import inspect
 
     windows_branch = inspect.getsource(sr._holding_dir_is_safe).split('if os.name == "nt":')[1]
@@ -698,7 +623,6 @@ def test_two_accounts_under_one_temp_root_do_not_collide(monkeypatch, tmp_path):
     theirs = sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended)
 
     assert mine and theirs and mine != theirs
-    # Still parseable, and still stable for one account across calls.
     assert not sr.toolchain_path_unparseable(mine)
     assert sr._parseable_toolchain_fallback("TORCH_EXTENSIONS_DIR", intended) == theirs
 
@@ -732,15 +656,8 @@ def test_an_explicit_compiler_cache_is_left_alone_when_the_builders_can_read_it(
 
 
 def test_an_inherited_unreadable_compiler_cache_is_refused(monkeypatch, tmp_path):
-    """The one thing an explicit value cannot buy: a path the builders cannot paste in.
-
-    Honouring it guarantees a failed compile rather than carrying out a preference, and it
-    arrives by routes nobody chose. Windows persists the variable to the account, so an upgrade
-    inherits what the OLD setup wrote, through any shell already open and through the desktop
-    relaunch; clearing a stored copy cannot reach a process that already read it. Refusing
-    destroys nothing, the pin being process-local and the cache regenerable, which is why
-    setup.ps1 still establishes provenance before it deletes a stored value.
-    """
+    """An inherited unpasteable cache path is refused; the pin is process-local and the cache
+    regenerable."""
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(tmp_path / "their choice"))
     temp_root = _a_temp_root_the_policy_accepts(monkeypatch, tmp_path)
     sr = _load_storage_roots()
@@ -828,14 +745,11 @@ def test_unsloth_portable_off_values_do_not_enable_portable_mode(monkeypatch, va
     assert sr.portable_mode() is False
 
 
-# Every spelling the installers refuse: an intent the shell never acted on, and a typo.
 _UNRECOGNIZED_PORTABLE = ("enabled", "flase", "2", "bogus", "y", "n", "disabled", "-1")
 
 
 @pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE)
 def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(monkeypatch, tmp_path, value):
-    # A rejected value must not turn portable mode on: the caches would move for this launch
-    # and move back on the next one.
     monkeypatch.setenv("UNSLOTH_PORTABLE", value)
     sr = _load_storage_roots()
 
@@ -850,7 +764,6 @@ def test_unrecognized_unsloth_portable_does_not_enable_portable_mode(monkeypatch
 def test_a_portable_root_stays_portable_whatever_unsloth_portable_says(
     monkeypatch, tmp_path, value
 ):
-    # The root is what makes an install portable; no UNSLOTH_PORTABLE value may veto it.
     monkeypatch.delenv("UNSLOTH_STUDIO_HOME", raising = False)
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
@@ -867,8 +780,6 @@ def test_a_portable_root_stays_portable_whatever_unsloth_portable_says(
 
 @pytest.mark.parametrize("value", _UNRECOGNIZED_PORTABLE)
 def test_an_on_disk_portable_root_outranks_an_unrecognized_value(monkeypatch, value):
-    # unsloth_home() also resolves from install.sh's root marker, which a venv-activated
-    # launch has instead of an environment.
     monkeypatch.setenv("UNSLOTH_PORTABLE", value)
     sr = _load_storage_roots()
     monkeypatch.setattr(sr, "unsloth_home", lambda: Path("/opt/unsloth-portable"))
@@ -897,7 +808,6 @@ def test_an_unrecognized_value_is_reported_once_not_once_per_call(monkeypatch):
     assert len(recorder.warnings) == 1
     warning = recorder.warnings[0]
     assert "enabled" in warning
-    # Naming only the rejection leaves the user guessing at the spelling.
     for accepted in ("1", "true", "yes", "on", "0", "false", "off", "no"):
         assert accepted in warning
 
@@ -915,8 +825,7 @@ def test_accepted_spellings_are_silent(monkeypatch, value):
 
 
 def test_conflicting_roots_are_reported_once_per_conflict(monkeypatch, tmp_path):
-    # studio_root() runs many times per request, so a per-call warning floods the log and
-    # adds synchronous log I/O for the life of the backend.
+    # studio_root() runs many times per request, so a per-call warning floods the log.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "elsewhere" / "studio"))
     monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "portable"))
     sr = _load_storage_roots()
@@ -930,7 +839,6 @@ def test_conflicting_roots_are_reported_once_per_conflict(monkeypatch, tmp_path)
     assert str(tmp_path / "elsewhere" / "studio") in recorder.warnings[0]
     assert str(tmp_path / "portable") in recorder.warnings[0]
 
-    # A different pair of roots is a different mistake and must still be heard.
     monkeypatch.setenv("UNSLOTH_HOME", str(tmp_path / "other-portable"))
     for _ in range(200):
         sr.studio_root()
@@ -941,7 +849,6 @@ def test_conflicting_roots_are_reported_once_per_conflict(monkeypatch, tmp_path)
 
 @pytest.mark.parametrize("layout", ("nested", "flat"))
 def test_a_self_contained_layout_never_warns(monkeypatch, tmp_path, layout):
-    # Both supported shapes; silencing the repeat must not silence the whole diagnostic.
     master = tmp_path / "portable"
     monkeypatch.setenv("UNSLOTH_HOME", str(master))
     monkeypatch.setenv(
@@ -995,7 +902,6 @@ def _use_data_designer(home: Path) -> None:
 
 
 def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_path):
-    # Deleting and recreating ~/.data-designer used to toggle which home a run read.
     managed = tmp_path / "studio" / "data-designer"
     _use_data_designer(managed)
     legacy = tmp_path / "home" / ".data-designer"
@@ -1016,12 +922,7 @@ def test_a_used_managed_home_does_not_flip_when_the_legacy_dir_is_deleted(tmp_pa
 
 
 def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
-    """Make every stat of *target* raise *error*, and leave every other path alone.
-
-    chmod covers EACCES; a failing mount answering EIO has no on-disk equivalent an unprivileged
-    user can set up. Both os.stat and os.lstat are patched so the predicates this replaced see
-    the same failure the fix does.
-    """
+    """Stat of the target raises the error, since chmod can only produce EACCES, not EIO."""
 
     def denying(real):
         def deny(path, *args, **kwargs):
@@ -1036,12 +937,7 @@ def _fail_stat_on(monkeypatch, target: Path, error: OSError) -> None:
 
 
 def _assert_the_resolver_really_ran(tmp_path: Path) -> None:
-    """A decline only means something beside a pin that still happened.
-
-    "MPLCONFIGDIR is absent" is equally true when no pinning code exists at all, so on its own
-    every decline case passed against a reverted implementation. Naming a sibling that is pinned
-    unconditionally makes the whole family falsifiable without a control test per case.
-    """
+    """A decline proves nothing unless a sibling pin that always happens is asserted too."""
     assert os.environ["TORCHINDUCTOR_CACHE_DIR"].startswith(str(tmp_path / "studio"))
     assert os.environ["NUMBA_CACHE_DIR"].startswith(str(tmp_path / "studio"))
 
@@ -1112,8 +1008,7 @@ def _mpl_denied_styles(tmp_path, monkeypatch):
     @contextlib.contextmanager
     def guard():
         with _denied(styles):
-            # Path.glob suppresses the scandir error, which is what read an unreadable stylelib
-            # as empty; without this the case could pass while chmod did nothing.
+            # Path.glob suppresses the scandir error, so verify chmod really took effect.
             assert list(styles.glob("*.mplstyle")) == []
             yield
 
@@ -1140,7 +1035,7 @@ def _mpl_linked_styles(tmp_path, monkeypatch):
     config = _matplotlib_config_dir(tmp_path / "home")
     config.mkdir(parents = True)
     elsewhere = tmp_path / "styles-volume"
-    elsewhere.mkdir()  # empty, which is the whole point
+    elsewhere.mkdir()
     (config / "stylelib").symlink_to(elsewhere, target_is_directory = True)
 
 
@@ -1157,10 +1052,7 @@ def _mpl_plain_empty_styles(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "prepare, pinned",
     [
-        # MPLCONFIGDIR moves the CONFIG directory as well as the cache, so a pin wins only when
-        # there is nothing of the user's at matplotlib's own directory to hide. Each "must still
-        # pin" row is the control for the row above it: matplotlib creates the config dir and
-        # stylelib on import, so existence alone must never count as configuration.
+        # MPLCONFIGDIR also moves the config dir; matplotlib creates it on import, so existence is not configuration.
         pytest.param(_mpl_user_rc, False, id = "a user matplotlibrc"),
         pytest.param(_mpl_user_styles, False, id = "a user style library"),
         pytest.param(_mpl_empty_config, True, id = "an empty config dir"),
@@ -1251,7 +1143,7 @@ def _dd_redirected_assets(tmp_path, monkeypatch):
     managed = _dd_managed(tmp_path)
     managed.mkdir(parents = True)
     elsewhere = tmp_path / "big-disk" / "assets"
-    elsewhere.mkdir(parents = True)  # empty, which is the whole point
+    elsewhere.mkdir(parents = True)
     (managed / "managed-assets").symlink_to(elsewhere, target_is_directory = True)
     _use_data_designer(_dd_legacy(tmp_path))
 
@@ -1278,10 +1170,7 @@ def _dd_legacy_symlink_loop(tmp_path, monkeypatch):
 @pytest.mark.parametrize(
     "prepare, pinned",
     [
-        # Data Designer's home is not a cache: repointing one that holds yaml configs and
-        # multi-GB parquet hides them behind a re-seeded default. Our own home wins once it has
-        # been USED, since the legacy probe re-runs every launch and a standalone run creating
-        # ~/.data-designer would otherwise take the work written under the Studio root.
+        # Data Designer's home holds user data, not cache; ours wins once it has been used.
         pytest.param(_dd_nothing, True, id = "no legacy home at all"),
         pytest.param(_dd_legacy_in_use, False, id = "a legacy home in use"),
         pytest.param(_dd_managed_in_use, True, id = "our home in use, legacy empty"),
@@ -1343,8 +1232,7 @@ def test_an_explicit_triton_home_keeps_its_own_cache_dir(monkeypatch, tmp_path):
 
 
 def test_triton_keeps_reading_the_default_override_dir(tmp_path):
-    # TRITON_HOME would move ~/.triton/override, which holds user files, along with the cache,
-    # so a TRITON_KERNEL_OVERRIDE=1 run would compile something else instead.
+    # TRITON_HOME would also move ~/.triton/override, which holds user files.
     pytest.importorskip("triton")
     override = tmp_path / "home" / ".triton" / "override" / "0123456789abcdef"
     override.mkdir(parents = True)
@@ -1384,8 +1272,7 @@ def test_the_macos_matplotlib_config_dir_matches_matplotlibs_own(monkeypatch, tm
 
     ours = sr._matplotlib_config_dir()
 
-    # sys.platform is read inside _get_config_or_cache_dir, so a fresh interpreter can be
-    # asked what it would do on a Mac.
+    # sys.platform is read inside _get_config_or_cache_dir, so a fresh interpreter can fake a Mac.
     probe = subprocess.run(
         [
             sys.executable,
@@ -1405,20 +1292,7 @@ def test_the_macos_matplotlib_config_dir_matches_matplotlibs_own(monkeypatch, tm
 
 
 def _matplotlib_config_dir(home: Path) -> Path:
-    """Where matplotlib on THIS platform would look for a user matplotlibrc.
-
-    _get_config_or_cache_dir: XDG on Linux and FreeBSD, a non-empty ~/.matplotlib ahead of
-    %LOCALAPPDATA% on Windows, ~/.matplotlib everywhere else. The Linux branch alone was hardcoded
-    here, so on a mac runner these tests wrote the rc into a directory matplotlib never reads: the
-    guard correctly found nothing to strand, pinned MPLCONFIGDIR, and nine tests failed for a
-    reason that was in them rather than in the code they cover. The two tests above hold this
-    derivation against real matplotlib on each spoofed platform, so it cannot quietly drift into
-    agreeing with storage_roots.py and nothing else.
-
-    Windows resolves to ~/.matplotlib rather than %LOCALAPPDATA%: the callers write a file into
-    whatever this returns, LOCALAPPDATA on a runner is outside tmp_path, and a non-empty
-    ~/.matplotlib is the branch matplotlib itself prefers.
-    """
+    """Matches matplotlib's own rc lookup: XDG on Linux, ~/.matplotlib on other platforms."""
     if sys.platform.startswith(("linux", "freebsd")):
         base = (os.environ.get("XDG_CONFIG_HOME") or "").strip()
         return (Path(base) if base else home / ".config") / "matplotlib"
@@ -1462,8 +1336,7 @@ def test_matplotlib_reads_the_config_the_pin_would_have_hidden(tmp_path):
     reason = "XDG config base is the Linux/FreeBSD branch",
 )
 def test_an_xdg_config_dir_is_read_without_a_resolvable_home(monkeypatch, tmp_path):
-    # _get_xdg_config_dir reads XDG_CONFIG_HOME before it needs a home, so bailing out on
-    # Path.home() pinned over a real matplotlibrc.
+    # _get_xdg_config_dir reads XDG_CONFIG_HOME before needing a home.
     config = tmp_path / "xdg" / "matplotlib"
     config.mkdir(parents = True)
     (config / "matplotlibrc").write_text("figure.dpi: 222\n", encoding = "utf-8")
@@ -1479,7 +1352,6 @@ def test_an_xdg_config_dir_is_read_without_a_resolvable_home(monkeypatch, tmp_pa
 
 
 def test_only_a_positive_absence_counts_as_nothing_at_a_path(tmp_path):
-    # The one rule every "pin only when there is nothing to strand" probe shares.
     sr = _load_storage_roots()
     present = tmp_path / "present"
     present.write_text("x", encoding = "utf-8")
@@ -1490,7 +1362,6 @@ def test_only_a_positive_absence_counts_as_nothing_at_a_path(tmp_path):
 
     assert sr._nothing_at(tmp_path / "absent") is True
     assert sr._nothing_at(present) is False
-    # Both of these answer False through Path.exists(), which is the bug.
     assert Path(loop).exists() is False and sr._nothing_at(loop) is False
     assert Path(dangling).exists() is False and sr._nothing_at(dangling) is False
 
@@ -1570,12 +1441,7 @@ def test_torch_extension_cache_keeps_an_abi_folder(tmp_path):
 
 
 def _interpreter_prefix() -> str:
-    """The interpreter-and-ABI part of the tag, spelled out here rather than imported.
-
-    Reusing storage_roots' own helper would make every assertion below agree with whatever
-    it happens to produce, so the exact-string tests would stop being able to catch a change
-    in the tag at all.
-    """
+    """Written out rather than imported from storage_roots, so exact-string tests can catch a tag change."""
     abi = getattr(sys, "abiflags", "")
     host = re.sub(r"[^A-Za-z0-9.]+", "-", f"{sys.platform}-{platform.machine() or 'unknown'}")
     return f"py{sys.version_info.major}{sys.version_info.minor}{abi}_{host}"
@@ -1591,12 +1457,10 @@ def test_torch_extension_cache_separates_incompatible_builds(tmp_path):
 
     assert tags[0] != tags[1], f"two torch builds shared one extension dir: {tags[0]}"
     assert "cu128" in tags[0] and "cu126" in tags[1]
-    # Path-safe: no '+' or other separators survive into the directory name.
     assert all(part.replace(".", "").replace("-", "").replace("_", "").isalnum() for part in tags)
 
 
 def test_torch_extension_tag_survives_a_missing_torch(tmp_path):
-    # First launch, before the venv has torch: still isolated by interpreter.
     sr = _load_storage_roots()
     empty = tmp_path / "empty"
     empty.mkdir()
@@ -1613,8 +1477,7 @@ def test_torch_extension_tag_survives_a_missing_torch(tmp_path):
 
 
 def test_torch_extension_cache_separates_builds_sharing_one_version_string(tmp_path):
-    # conda-forge's CPU and CUDA packages of one release share a __version__, differing only
-    # in a conda build string.
+    # conda-forge CPU and CUDA builds share a __version__, differing only in the build string.
     sr = _load_storage_roots()
 
     tags = []
@@ -1643,8 +1506,7 @@ def test_torch_extension_cache_separates_a_rocm_build_from_a_cpu_build(tmp_path)
 
 
 def test_torch_extension_cache_separates_two_host_architectures(tmp_path, monkeypatch):
-    # An arm64 python and a Rosetta x86_64 python on ONE Mac agree on every other field, so
-    # torch's py<ver>_<cu_str> folder gives them one directory and the .so fails to load.
+    # arm64 and Rosetta x86_64 pythons on one Mac would otherwise share torch's cache folder.
     sr = _load_storage_roots()
 
     tags = []
@@ -1684,8 +1546,7 @@ def test_torch_extension_cache_separates_a_debug_build(tmp_path):
 
 
 def test_torch_runtime_tag_never_imports_torch(tmp_path):
-    # Runs before torch exists in a fresh venv, and importing it on the startup path would cost
-    # seconds. The fake package raises on import, so a skip is a failure.
+    # Runs before torch exists and must not import it; the fake package raises on import.
     sr = _load_storage_roots()
     entry = _fake_torch_on_path(tmp_path, "guard", "2.9.1+cu128", cuda = "12.8")
 
@@ -1697,14 +1558,7 @@ def test_torch_runtime_tag_never_imports_torch(tmp_path):
 
 
 def test_a_managed_matplotlibrc_is_not_displaced_by_a_later_legacy_one(tmp_path):
-    """The legacy probe re-runs every launch, so on its own it hands a matplotlibrc written
-    HERE to a ~/.config/matplotlib created later by some other tool.
-
-    Measured across four launches before the fix: dpi 177 from the managed config, then 222 once
-    a legacy rc appeared, then 177 again when it was removed, with the managed rc present
-    throughout. A style that changes on a later launch and changes back is worse than either
-    choice made once. _data_designer_defaults already applies this rule to its own home.
-    """
+    """A later legacy matplotlibrc must not displace the managed one; the dpi would flip per launch."""
     managed = tmp_path / "studio" / "cache" / "matplotlib"
     managed.mkdir(parents = True)
     (managed / "matplotlibrc").write_text("figure.dpi: 177\n", encoding = "utf-8")
@@ -1719,12 +1573,7 @@ def test_a_managed_matplotlibrc_is_not_displaced_by_a_later_legacy_one(tmp_path)
 
 
 def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp_path):
-    """ "blank counts as unset" has to hold for a root we refuse to pin, too.
-
-    Inductor distinguishes an absent TORCHINDUCTOR_CACHE_DIR from a present one, so a leftover
-    "   " becomes a relative compiler path and is then split by the very unquoted command
-    construction the whitespace refusal exists to avoid.
-    """
+    """A blank toolchain override must count as unset on a refused root, or it becomes a relative path."""
     spaced = tmp_path / "My Studio"
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(spaced))
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", "   ")
@@ -1739,22 +1588,15 @@ def test_a_blank_toolchain_override_is_dropped_on_a_spaced_root(monkeypatch, tmp
 
 
 def test_an_unusable_managed_inductor_path_is_not_published(monkeypatch, tmp_path):
-    """torch treats the value as authoritative, so a path it cannot use fails every compile.
-
-    Unset, it would have used its own temporary cache instead. The placement error is swallowed
-    on purpose so startup survives, which is what let an unusable path stay published.
-    """
+    """Torch trusts TORCHINDUCTOR_CACHE_DIR as given, so an unusable path fails every compile."""
     cache = tmp_path / "studio" / "cache"
     cache.mkdir(parents = True)
-    # A regular file where the directory should go: mkdir raises FileExistsError, which the
-    # best-effort handler treats as "already there".
     (cache / "torchinductor").write_text("not a directory", encoding = "utf-8")
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
 
     assert "TORCHINDUCTOR_CACHE_DIR" not in os.environ
-    # The other pins are unaffected: only the one that could not be made is withheld.
     assert os.environ["CUDA_CACHE_PATH"] == str(cache / "cuda")
 
 
@@ -1844,8 +1686,7 @@ def test_a_genuinely_absent_note_is_still_cached(monkeypatch, tmp_path):
     sr = _load_storage_roots()
 
     assert sr.unsloth_home() is None
-    # Written after the miss was cached: a cached answer is the point, and
-    # forget_recorded_master_root() is the way back out for an installer that writes one later.
+    # Written after the miss was cached; forget_recorded_master_root() is the way out.
     (studio / "share" / ".unsloth-master-root").write_text(
         str(tmp_path / "root") + "\n",
         encoding = "utf-8",
@@ -1875,12 +1716,7 @@ def test_a_write_probe_that_cannot_close_its_handle_is_a_no_not_a_crash(monkeypa
 
 
 def _note_ancestor_of_a_legacy_tree(tmp_path, monkeypatch):
-    """A note naming $HOME, which passes containment because ~/.unsloth/studio is inside it.
-
-    process.rs scrubs UNSLOTH_HOME and UNSLOTH_PORTABLE from every managed spawn so Tauri uses
-    the legacy root whatever the environment says. A note is a FILE, which no env_remove reaches,
-    so this is how both variables came back and moved the packaged app's caches.
-    """
+    """A note file is out of env_remove's reach, so UNSLOTH_HOME and UNSLOTH_PORTABLE can come back."""
     home = tmp_path / "home"
     studio = home / ".unsloth" / "studio"
     _write_note(studio, home)
@@ -1943,11 +1779,7 @@ def _write_note(studio: Path, root: Path) -> None:
 def test_a_master_root_is_honoured_only_when_a_reader_should_honour_it(
     tmp_path, monkeypatch, prepare
 ):
-    """`prepare` returns the root that must be honoured, or None when it must be declined.
-
-    The hub cache is asserted either way, since declining is only meaningful if the shared cache
-    really stays shared, and honouring is only meaningful if the caches really move.
-    """
+    """Honour a master root only when a reader should; the hub cache stays shared when declined."""
     expected = prepare(tmp_path, monkeypatch)
     sr = _load_storage_roots()
 
@@ -1965,9 +1797,7 @@ def test_a_master_root_is_honoured_only_when_a_reader_should_honour_it(
         assert Path(os.environ["TORCH_HOME"]).is_relative_to(expected)
 
 
-# 25 of 113 cases stayed green with the production hunks reverted: each asserts a variable is
-# ABSENT, which is equally true when no pinning code exists, so they were assertions rather than
-# negative controls. Pairing a decline with the pins that must STILL happen makes them falsifiable.
+# Pair each decline with pins that must still happen, so the absence checks are falsifiable.
 _DECLINE_SIBLINGS = (
     "TORCHINDUCTOR_CACHE_DIR",
     "NUMBA_CACHE_DIR",
@@ -2005,7 +1835,7 @@ def test_an_uninspectable_probe_declines_and_still_pins_everything_else(tmp_path
     an unreadable matplotlib config must leave MPLCONFIGDIR alone AND leave the rest pinned."""
     config = _matplotlib_config_dir(tmp_path / "home")
     config.parent.mkdir(parents = True, exist_ok = True)
-    config.write_text("", encoding = "utf-8")  # a file where a directory belongs: ENOTDIR
+    config.write_text("", encoding = "utf-8")
     sr = _load_storage_roots()
 
     sr._setup_cache_env()
@@ -2016,14 +1846,7 @@ def test_an_uninspectable_probe_declines_and_still_pins_everything_else(tmp_path
 
 
 def test_a_file_where_the_config_dir_belongs_declines_the_pin_on_windows_too(monkeypatch, tmp_path):
-    """_nothing_at reads a FileNotFoundError as absence, and on Windows that error also means
-    "a parent component is a file" -- the case POSIX reports as NotADirectoryError and declines.
-    So with a file where ~/.matplotlib belongs, POSIX declined the pin and Windows took it,
-    hiding whatever the user had underneath. Caught by the windows-latest leg.
-
-    Reproduced by the error shape rather than the platform, since the Linux runners cannot raise
-    it; the POSIX arm of the same fixture is the test directly above.
-    """
+    """A file in the config path is FileNotFoundError on Windows, so the pin must decline there too."""
     sr = _load_storage_roots()
     config = _matplotlib_config_dir(tmp_path / "home")
     config.parent.mkdir(parents = True, exist_ok = True)
@@ -2042,10 +1865,8 @@ def test_a_file_where_the_config_dir_belongs_declines_the_pin_on_windows_too(mon
     assert (
         sr._nothing_at(config / "matplotlibrc") is False
     ), "a file where the config dir belongs read as 'nothing there'"
-    # A genuinely empty, genuinely present directory must still read as empty, or the fix above
-    # would decline every pin and the guard would stop guarding anything.
+    # A genuinely empty directory must still read as empty, or every pin would be declined.
     empty = tmp_path / "really-empty"
     empty.mkdir()
     assert sr._nothing_at(empty / "matplotlibrc") is True
-    # And a path with nothing along it at all is still absence, which is the default install.
     assert sr._nothing_at(tmp_path / "never" / "created" / "matplotlibrc") is True

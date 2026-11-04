@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// randomUUID is unavailable on insecure HTTP origins. Install it before the
-// module graph, which may call it during evaluation.
+// randomUUID is missing on insecure HTTP origins; install it before the module graph runs.
 if (globalThis.crypto && typeof globalThis.crypto.randomUUID !== "function") {
   const cryptoRef = globalThis.crypto;
   const randomByte = () =>

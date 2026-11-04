@@ -60,9 +60,9 @@ test("below 1.5x device scale the Windows thread scrolls on the compositor and k
   assert.match(provider, /<AppearanceCustomizationEffect \/>\s*<LowDeviceScaleEffect \/>/);
 });
 
-test("without requestIdleCallback, main-thread grammar work waits for the reader and the stream", () => {
+test("grammar work waits for a held pointer and the reader, and without requestIdleCallback for the stream", () => {
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
-  assert.match(defer, /const warmMustWait = \(\): boolean =>\s*typeof \(globalThis as Record<string, unknown>\)\.requestIdleCallback !== "function"\s*&& \(streamActive\(\) \|\| inputQuietIn\(\) > 0\);/);
+  assert.match(defer, /const warmMustWait = \(\): boolean =>\s*inputPointerHeld\(\) \|\| inputQuietIn\(\) > 0\s*\|\| \(typeof \(globalThis as Record<string, unknown>\)\.requestIdleCallback !== "function"\s*&& streamActive\(\)\);/);
   assert.ok(defer.indexOf("if (warmMustWait()) {") < defer.indexOf("grammarsWarmed.add(language);"), "a warm that has to wait does not mark its grammar warmed");
 });
 

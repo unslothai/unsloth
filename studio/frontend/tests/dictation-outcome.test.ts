@@ -30,7 +30,6 @@ test("a reported failure is visible after the session ends", () => {
   assert.equal(dictationFailed(), true);
 });
 
-// A partial transcript is both: text was published, and some was lost.
 test("a partial transcript reports both", () => {
   beginDictationSession();
   markDictationTranscript();
@@ -39,8 +38,6 @@ test("a partial transcript reports both", () => {
   assert.equal(dictationFailed(), true);
 });
 
-// The recording bar reads these once the session is gone, so they have to
-// survive until the next one starts rather than clearing on end.
 test("both survive until the next session starts", () => {
   beginDictationSession();
   markDictationTranscript();

@@ -519,8 +519,14 @@ def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
     before = _recorded(dest)
     assert len(before) == NOTEBOOKS
 
-    # The last 50 straddle the point where appends start failing.
-    victims = [f"nb{i:09d}.ipynb" for i in range(NOTEBOOKS - 49, NOTEBOOKS + 1)]
+    # The last 50 records straddle the point where appends start failing. Taken in the
+    # state's own order: the script records `find` order, which is directory order, so on
+    # ext4 the 50 highest names can all sit before the cap and every one gets restored.
+    order = [
+        line.partition("  ")[2]
+        for line in (dest / ".unsloth_sync_state").read_text(encoding = "utf-8").splitlines()
+    ]
+    victims = order[-50:]
     for name in victims:
         (dest / name).unlink()
 
@@ -540,6 +546,10 @@ def test_an_abandoned_restore_puts_the_tree_back(tmp_path: Path):
 
     restored = (
         int(run.stdout.split("restored ")[1].split(" ")[0]) if "restored " in run.stdout else 0
+    )
+    assert restored > 0, (
+        "no notebook was restored before an append failed, so the victims do not straddle "
+        "the cap and the per-iteration guard is not exercised\n" + run.stdout
     )
     assert restored < len(victims), (
         f"section 1b restored all {restored} notebooks after deciding the state could "

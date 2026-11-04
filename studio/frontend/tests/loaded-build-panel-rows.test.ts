@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Two rows of the Loaded-build panel, checked against the source that renders them.
- *
- * Both cases are the native sd.cpp engine, which is the DEFAULT image path on a host with no
- * usable GPU -- so a row that is only correct for diffusers is wrong for most first runs.
- */
+/** Native sd.cpp is the default image engine on GPU-less hosts. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -16,9 +11,7 @@ import { readSrc } from "./helpers/kit.ts";
 const source = readSrc("features/images/images-page.tsx");
 
 test("the Memory recipe row renders on an offload with no memory mode", () => {
-  // The native engine reports memory_mode null (it has no torchao path to choose one for) while
-  // still recording an active offload, so gating the row on memory_mode alone hid the offload
-  // policy on exactly the configuration the row was extended to expose.
+  // The native engine reports memory_mode null while still offloading.
   const guard = source.match(
     /\{image\.memory_mode \|\|\s*\n\s*\(image\.offload_policy && image\.offload_policy !== "none"\) \?/,
   );
@@ -26,8 +19,6 @@ test("the Memory recipe row renders on an offload with no memory mode", () => {
 });
 
 test("sd.cpp attention is not reported as Native SDPA", () => {
-  // Its attention is chosen by native flags, not by the diffusers/PyTorch dispatcher.
-  // The Recipe popover has its own Attention row; this one is the panel's BuildRow.
   const start = source.search(/<BuildRow\s+label="Attention"/);
   assert.ok(start >= 0, "the Loaded-build panel must keep its Attention row");
   const attention = source.slice(start, start + 700);

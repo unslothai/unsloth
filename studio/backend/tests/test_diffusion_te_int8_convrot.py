@@ -197,7 +197,7 @@ def test_family_default_is_hosted_int8_and_needs_no_torchao():
     fam = get_family("qwen-image-2.1")
     mode, auto = resolve_te_quant_request(None, fam.te_quant_auto)
     assert (mode, auto) == ("int8", True)
-    # No keep-bf16 schedule, so every pre-load gate sees the fp8 storage cast: no torchao, offload allowed.
+    # No keep-bf16 schedule, so pre-load gates see the fp8 storage cast: no torchao, offload allowed.
     assert effective_te_quant(mode, fam.name) == "fp8"
     assert not te_quant_needs_resident_weights(effective_te_quant(mode, fam.name))
 
@@ -212,14 +212,10 @@ def test_int8_source_prefers_the_convrot_file_then_the_fp8_one():
         FP8_NAME,
         "Qwen-Image-2.1-text_encoder-FP8.pt",
     )
-    # An explicit fp8 request never asks for the int8 file.
     fp8 = tpq.te_prequant_sources(fam, te_quant_mode = "fp8", target = CUDA_BF16)["text_encoder"]
     assert INT8_NAME not in tpq.te_candidate_filenames(fp8)
     # Families without a hosted int8 encoder resolve nothing for int8, as before.
-    assert (
-        tpq.te_prequant_sources(get_family("qwen-image"), te_quant_mode = "int8", target = CUDA_BF16)
-        == {}
-    )
+    assert tpq.te_prequant_sources(get_family("sdxl"), te_quant_mode = "int8", target = CUDA_BF16) == {}
 
 
 def test_keeping_the_lm_head_resolves_the_fp8_file(monkeypatch):
@@ -243,7 +239,6 @@ def test_int8_file_loads_as_convrot_linears_and_matches_its_dequantized_weights(
     assert sum(isinstance(m, cls) for m in layers.modules()) == 2 * 7
     assert not any(isinstance(m, torch.nn.Linear) for m in layers.modules())
     assert all(m.weight.dtype == torch.int8 for m in layers.modules() if isinstance(m, cls))
-    # Vision tower and embedding stay dense.
     assert any(isinstance(m, torch.nn.Linear) for m in encoder.model.visual.modules())
     # Plain tensors only, so Module.to() and group offloading move it like any module.
     assert all(
@@ -255,7 +250,6 @@ def test_int8_file_loads_as_convrot_linears_and_matches_its_dequantized_weights(
     got = _hidden(encoder, ids)
     for a, b in zip(expected, got):
         torch.testing.assert_close(b, a, rtol = 1e-4, atol = 1e-4)
-    # and it is close to the dense bf16 encoder it was quantized from
     dense = _hidden(reference, ids)[-1]
     cos = torch.nn.functional.cosine_similarity(dense.flatten(), got[-1].flatten(), dim = 0)
     assert cos > 0.99
@@ -312,7 +306,6 @@ def test_mirror_serves_the_int8_file_before_the_hub(tmp_path, monkeypatch):
     assert tpq.te_prequant_hub_files({"text_encoder": src}, NoApi()) == {
         "text_encoder": [(INT8_NAME, 7)]
     }
-    # An escaping name is never served.
     assert tpq.te_prequant_mirror_path(REPO, "../x") is None
 
 
@@ -407,7 +400,6 @@ def test_an_unreachable_hub_still_takes_the_cached_fp8_file(tmp_path, monkeypatc
     src = tpq.resolve_te_prequant_source(get_family("qwen-image-2.1"), "text_encoder", "int8")
     assert tpq._resolve_checkpoint_path(src, None, cache_dir = str(tmp_path)) == str(fp8)
     assert asked == [(INT8_NAME, False), (FP8_NAME, True)]
-    # Nothing cached at all: the outage itself surfaces.
     monkeypatch.setattr(
         huggingface_hub,
         "hf_hub_download",
@@ -470,7 +462,7 @@ def test_an_int8_file_that_will_not_build_falls_back_to_the_fp8_names(monkeypatc
             get_family("qwen-image-2.1"), BASE, te_quant_mode = "int8", target = CUDA_BF16, dtype = None
         )
         assert out.get("text_encoder") is expected
-        # Only a present-but-unbuildable int8 file earns a second (fp8) attempt; a 404 already fell through.
+        # Only a present-but-unbuildable int8 file earns an fp8 retry; a 404 already fell through.
         assert calls == (
             [(INT8_NAME, "int8"), (FP8_NAME, "fp8")] if held else [(INT8_NAME, "int8")]
         )
@@ -487,3 +479,83 @@ def test_keep_lm_head_reason_names_the_switch(monkeypatch):
         _pipe(torch.nn.Linear(2, 2)), CUDA_BF16, mode = "int8", family = "qwen-image-2.1"
     )
     assert out.mode == "fp8" and KEEP_LM_HEAD_ENV in out.reason
+
+
+def _te_gate_mps(monkeypatch, family, te_mode):
+    import core.inference.diffusion as d
+    from core.inference.diffusion_families import _FAMILIES
+
+    monkeypatch.delenv("UNSLOTH_TE_KEEP_LM_HEAD", raising = False)
+    fam = next(f for f in _FAMILIES if f.name == family)
+    d.DiffusionBackend._assert_precision_for_target(
+        None,
+        fam,
+        types.SimpleNamespace(device = "mps", dtype = torch.bfloat16),
+        model_kind = "pipeline",
+        pinned = None,
+        te_mode = te_mode,
+        memory_mode = None,
+        cpu_offload = False,
+    )
+
+
+@pytest.mark.parametrize("family", ["flux.3-klein", "flux.3-klein-base", "qwen-image-2.1"])
+def test_preflight_admits_the_hosted_int8_encoder_on_mps(monkeypatch, family):
+    # effective_te_quant rewrites int8 to fp8 on a family with no keep-bf16 schedule, and MPS has no fp8, but these
+    # families host a plain-tensor int8 ConvRot file that int8_convrot_te_runs_on enables there. The preflight
+    # confirms the file is published (the Hub listing, stubbed here) before it admits the load.
+    import types
+
+    import huggingface_hub
+
+    import core.inference.diffusion_te_prequant as tpq
+
+    names = [e[1] for comps in tpq.TE_INT8_CONVROT_FILES.values() for e in comps.values()]
+
+    class _Api:
+        def model_info(
+            self,
+            repo,
+            files_metadata = False,
+        ):
+            return types.SimpleNamespace(
+                siblings = [types.SimpleNamespace(rfilename = n, size = 1) for n in names]
+            )
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(tpq, "_held_locally", lambda *a, **k: False)
+    monkeypatch.setattr(tpq, "_hub_offline", lambda: False)
+    tpq._confirmed_cache.clear()
+    _te_gate_mps(monkeypatch, family, "int8")
+
+
+def test_preflight_still_refuses_int8_on_mps_without_a_hosted_file(monkeypatch):
+    import core.inference.diffusion_te_prequant as tpq
+
+    # Every family with a hosted encoder now has an int8 file too, so take one away.
+    monkeypatch.delitem(tpq.TE_INT8_CONVROT_FILES, "flux.2-klein")
+    with pytest.raises(RuntimeError, match = "text_encoder_quant"):
+        _te_gate_mps(monkeypatch, "flux.2-klein", "int8")
+    with pytest.raises(RuntimeError, match = "text_encoder_quant"):
+        _te_gate_mps(monkeypatch, "flux.3-klein", "fp8")
+
+
+def test_preflight_refuses_int8_on_mps_when_the_lm_head_is_kept(monkeypatch):
+    # UNSLOTH_TE_KEEP_LM_HEAD resolves int8 to the fp8 file, which MPS cannot run.
+    import core.inference.diffusion as d
+    from core.inference.diffusion_families import _FAMILIES
+    from core.inference.diffusion_text_encoder_trim import KEEP_LM_HEAD_ENV
+
+    monkeypatch.setenv(KEEP_LM_HEAD_ENV, "1")
+    fam = next(f for f in _FAMILIES if f.name == "flux.3-klein")
+    with pytest.raises(RuntimeError, match = "text_encoder_quant"):
+        d.DiffusionBackend._assert_precision_for_target(
+            None,
+            fam,
+            types.SimpleNamespace(device = "mps", dtype = torch.bfloat16),
+            model_kind = "pipeline",
+            pinned = None,
+            te_mode = "int8",
+            memory_mode = None,
+            cpu_offload = False,
+        )

@@ -1,16 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Rebuild a republished image / video GGUF from the cached older copy when only its header changed.
-
-A metadata fix (an architecture label, a new KV) rewrites the GGUF header and leaves every tensor byte alone, but the
-file's sha256 changes, so huggingface_hub downloads the whole file again. Here the new header is fetched with a Range
-request, its tensor table is checked against the cached copy's, and the new file is written as the new header plus the
-cached copy's tensor data, hashed in the same pass. It is kept only when its sha256 equals the Hub's.
-
-Opt-in (Images / Video loads, and image / video GGUFs in the download manager). No network unless the file for the
-target commit is missing AND an older snapshot holds the same path; anything unproven falls back to the normal
-download, and nothing here raises."""
+"""Rebuilds header-only GGUF changes from the cached copy; opt-in; no network unless the target-
+commit file is missing and an older snapshot has it; falls back to normal download, never raises;
+keeps only if sha256 matches Hub."""
 
 from __future__ import annotations
 
@@ -44,7 +37,6 @@ _MAX_HEADER_BYTES = 256 << 20
 _COPY_CHUNK = 16 << 20
 _DISK_MARGIN = 256 << 20
 _METADATA_TIMEOUT = 10.0
-_RANGE_TIMEOUT = 60.0
 # "image-diffusion-unsupported" is an image / video family this install cannot run yet; still rebuilt.
 _MEDIA_TASKS = frozenset({"text-to-image", "text-to-video", "image-diffusion-unsupported"})
 
@@ -492,6 +484,10 @@ def hub_range_fetcher(
         with _ranged_stream(get_session(), url, headers) as resp:
             if resp.status_code != 206:
                 raise ValueError(f"range request answered {resp.status_code}")
+            headers = getattr(resp, "headers", None) or {}
+            total = str(headers.get("Content-Range") or "").rpartition("/")[2]
+            if total.isdigit():
+                fetch.file_size = int(total)
             return b"".join(_iter_body(resp, 1 << 20))
 
     return fetch
@@ -509,12 +505,7 @@ def prepare_media_gguf(
     metadata_fn: Optional[Callable] = None,
     fetcher_fn: Optional[Callable] = None,
 ) -> DeltaResult:
-    """Single-file entry for the Images / Video load paths, run before ``hf_hub_download``.
-
-    Local checks first, no network: the file for the locally known target commit (``refs/<revision>``, or the commit
-    itself) must be missing and an older snapshot must hold the same path. That is the only case where a download
-    follows anyway. Then one HEAD for the current commit, size and sha256, and the rebuild. On success ``refs/<revision>``
-    names the new commit, so the caller's cache probe finds the rebuilt file."""
+    """Tries to rebuild the GGUF from an older snapshot before hf_hub_download; local checks come first."""
     t0 = time.perf_counter()
     try:
         if not delta_enabled() or not str(filename).lower().endswith(".gguf"):

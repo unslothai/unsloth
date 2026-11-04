@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Regression: a Landlock confinement offered to a managed account must scope signals.
-
-Drop in as studio/backend/tests/test_account_tool_confinement_signal_abi.py.
-"""
+"""Regression: a Landlock confinement offered to a managed account must scope signals."""
 
 import subprocess
 import sys
@@ -63,7 +60,7 @@ def test_a_confined_managed_child_cannot_kill_a_foreign_process_on_a_pre_scope_a
         try:
             run_as(BOB, tools._account_confinement)
         except tool_confinement.ToolConfinementUnavailable:
-            return  # refused: the gap cannot be reached
+            return
         out = run_as(
             BOB,
             tools._python_exec,

@@ -156,10 +156,7 @@ test("superseded provider backfills are not launched", async () => {
 
 
 test("provider backfills are finished, not merely started, when the batch resolves", async () => {
-  // The credential bootstrap gate releases app content on this promise, so a batch that is
-  // only started leaves the writes racing an immediate close. Timer-backed tasks are the
-  // only way to tell "awaited" from "fired and forgotten": a task that counts synchronously
-  // is already done by the time the helper returns either way.
+  // Timer-backed tasks are the only way to tell an awaited batch from a fire-and-forget one.
   const finished: string[] = [];
   const delayed = (name: string, ms: number) => () =>
     new Promise((resolve) => {
@@ -169,8 +166,6 @@ test("provider backfills are finished, not merely started, when the batch resolv
       }, ms);
     });
 
-  // The rejection in the middle must not sink the two around it, which is why the batch
-  // settles rather than rejecting on the first failure.
   await settleTasksIfCurrent(
     [delayed("first", 20), () => Promise.reject(new Error("backfill failed")), delayed("last", 40)],
     () => true,
@@ -431,14 +426,7 @@ test("HF store hydrates from the API without recreating plaintext storage", asyn
 });
 
 
-/**
- * Wait for the store's write to finish, on a deadline rather than a tick budget.
- *
- * A fixed number of setImmediate turns is a bet on how many the runtime needs, and a
- * two-core runner running the suite in parallel loses that bet: the write is a real
- * promise chain, so under load it settles a few turns later and the assertion below
- * reads a store that is still persisting.
- */
+/** Waits on a deadline, not a tick budget, so loaded parallel runners do not flake. */
 async function settled(
   hfStore: { useHfTokenStore: { getState: () => { isPersisting: boolean } } },
 ): Promise<void> {
@@ -566,7 +554,6 @@ test("a delayed HF write response reconciles a newer cross-tab commit", async ()
     hfStore.useHfTokenStore.getState().setToken("hf_delayed_tab");
     await startedWrite;
 
-    // Another tab commits while this write's response is still delayed.
     await hfStore.refreshHfTokenFromBackend();
     resolveWrite(new Response(JSON.stringify({ token: "hf_delayed_tab", has_token: true }), {
       status: 200,
@@ -728,19 +715,14 @@ test("credential gate follows authentication session transitions", () => {
 });
 
 
-// ── API key transport envelope ──────────────────────────────────────
-//
-// encryptProviderApiKey wraps a per-request AES key under RSA rather than encrypting the API
-// key itself, so key length stops being bounded by the modulus: RSA-2048/OAEP-SHA256 caps a
-// directly encrypted key at 190 bytes, and providers issue longer ones.
+// The API key is wrapped with a per-request AES key because RSA-OAEP-SHA256 caps keys at 190 bytes.
 
 type EncryptionModule = {
   encryptProviderApiKey: (plaintextApiKey: string, forceRefresh?: boolean) => Promise<string>;
   clearProviderPublicKeyCache: () => void;
 };
 
-// Spelled out rather than imported: this is the contract decrypt_api_key reads, so taking it
-// from the module under test would let both sides drift together.
+// Spelled out, not imported, so the frontend and decrypt_api_key cannot drift together.
 const ENVELOPE_AAD = "unsloth-studio-provider-key-v1";
 const TAG_BYTES = 16;
 // The backend decodes with validate=True, which forge's decode64 does not model.
@@ -755,7 +737,7 @@ function encryptionHarness() {
   const module = loadWithStubs<EncryptionModule>(
     new URL("../src/features/chat/api/providers-api.ts", import.meta.url),
     {
-      // transpileModule runs without esModuleInterop, so a default import reads .default
+      // transpileModule runs without esModuleInterop, so a default import reads .default.
       "node-forge": { default: forge },
       "@/features/auth/api": {
         authFetch: async () => {
@@ -769,7 +751,6 @@ function encryptionHarness() {
   return { module, publicKeyFetches: () => fetches };
 }
 
-/** The backend half of the envelope, so a round-trip proves the wire format and not itself. */
 function openEnvelope(envelope: string): { apiKey: string; aesKey: string } {
   const parts = envelope.split(".");
   assert.equal(parts.length, 4);
@@ -796,7 +777,7 @@ function openEnvelope(envelope: string): { apiKey: string; aesKey: string } {
 
 test("api keys round-trip at every length, including past the old RSA ceiling", async () => {
   const { module } = encryptionHarness();
-  // 190 is the last length RSA-OAEP-SHA256 could carry directly; 238 is the reported OVH key.
+  // 190 is the direct RSA-OAEP-SHA256 ceiling; 238 is the reported OVH key length.
   for (const length of [1, 189, 190, 191, 238, 4096]) {
     const apiKey = `k${"x".repeat(length - 1)}`;
     assert.equal(openEnvelope(await module.encryptProviderApiKey(apiKey)).apiKey, apiKey);
@@ -816,7 +797,6 @@ test("each envelope carries fresh key material", async () => {
     module.encryptProviderApiKey("sk-same"),
   ]);
   assert.notEqual(first.split(".")[2], second.split(".")[2], "nonce was reused");
-  // RSA-OAEP is randomized, so the wrapped-key part differs even for one constant AES key.
   const opened = [openEnvelope(first), openEnvelope(second)];
   assert.notEqual(opened[0].aesKey, opened[1].aesKey, "AES content key was reused");
   for (const { apiKey } of opened) {

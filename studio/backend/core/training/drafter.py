@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Speculative-decoding drafter trained after the fine-tune.
-
-Models with a native MTP head retrain it (llama.cpp `draft-mtp`, vLLM `method="mtp"`); models without one get
-an EAGLE-3 drafter in the speculators layout (llama.cpp `draft-eagle3`, vLLM `method="eagle3"`). A fresh MTP
-head on an architecture without an MTP graph would run in neither engine, so it is never offered.
-"""
+"""Speculative drafter after fine-tune: retrain native MTP, else EAGLE-3; never a fresh MTP head."""
 
 from __future__ import annotations
 
@@ -212,11 +207,10 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
     import sys
 
     from hub.utils.hf_tokens import apply_token_to_child_env
+    from utils.child_stdio import utf8_child_env
 
     env = dict(os.environ)
     env[_TOKEN_ENV] = "0" if hf_token is False else (hf_token or "")
-    # The parent decodes as UTF-8 below, so the child has to write it on every locale.
-    env["PYTHONIOENCODING"] = "utf-8"
     # Every Hub read in the child (config, tensor index) then runs as exactly this caller.
     apply_token_to_child_env(env, hf_token)
     result = None
@@ -224,7 +218,8 @@ def _probe_capability(model_name: str, hf_token, key) -> dict:
         proc = subprocess.run(
             [sys.executable, "-c", _PROBE.format(env = _TOKEN_ENV), model_name],
             cwd = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            env = env,
+            # Decoded as UTF-8 below, so the child has to write it on every locale.
+            env = utf8_child_env(env),
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -336,10 +331,16 @@ def _row_examples(row: dict, max_len: int) -> list[tuple[list[int], list[int]]]:
         labels = [t if m else -100 for t, m in zip(ids, row["assistant_masks"])]
     else:
         labels = list(ids)
-    # Packed rows restart position_ids at every example; split there so no draft crosses a boundary.
-    positions = row.get("position_ids")
+    # Split packed rows so no draft crosses an example: TRL's packed dataset records `seq_lengths`
+    # (its collator builds position_ids later); older layouts restart `position_ids` at 0.
     cuts = [0]
-    if positions is not None:
+    lengths = row.get("seq_lengths")
+    positions = row.get("position_ids")
+    if lengths is not None and len(lengths) and sum(int(n) for n in lengths) == len(ids):
+        for n in lengths:
+            cuts.append(cuts[-1] + int(n))
+        cuts.pop()
+    elif positions is not None:
         cuts = [i for i, p in enumerate(positions) if p == 0] or [0]
     cuts.append(len(ids))
     out = []

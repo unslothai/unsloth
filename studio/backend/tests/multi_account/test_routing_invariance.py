@@ -1,26 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Per-request I/O never depends on how many accounts exist, and the owner's routing is fixed.
-
-The counters below are read from a WARM request, because the interesting claim is about
-steady state: a first request legitimately builds caches and opens the databases it will
-reuse, and counting that would only ever measure start-up. Two unmeasured requests warm
-it, and the third is the one read.
-
-Two turned out not to be enough. Run 35530114495 read /api/chat/threads at 3 mkdir, 3
-connections and 86 statements where the same request in the same test had just measured
-2, 2 and 8, on a commit whose only shared-path change was error-message wording, and the
-identical job passed on re-run. Warm-up cannot bound lazy work that is triggered by a
-clock rather than by a request count: anything with a TTL can expire between the warm-up
-and the measurement and be rebuilt inside it.
-
-What that noise can do is add work, never remove it. So the measurement is repeated and
-each counter is taken at its MINIMUM, which is the steady-state cost; a rebuild that
-fires in one repeat is not in the others. A cost that is genuinely higher with more
-accounts is higher in every repeat and still fails, which is what _steady_cost_keeps_a_
-persistent_increase checks directly rather than by assertion.
-"""
+"""Per-request I/O must not grow with account count; read warm counters repeatedly and take minimums."""
 
 import os
 import secrets
@@ -45,23 +26,15 @@ def _create(names):
     policy.invalidate_account_cache()
 
 
-# Three readings, not two: two cannot tell which of a disagreeing pair is the steady state.
+# Three readings: two cannot tell which of a disagreeing pair is steady.
 _REPEATS = 3
 
 
 def _steady(readings: list) -> dict:
-    """The per-counter minimum across readings of the same request.
-
-    Lazily rebuilt state adds work to whichever reading it lands in and takes none away,
-    so the smallest reading of each counter is the cost with nothing rebuilding. A cost
-    that really did grow grew in all of them, and the minimum grows with it.
-    """
+    """Lazy rebuilds only add work, so each counter's minimum across repeats is the steady cost."""
     keys = set().union(*readings) if readings else set()
     steady = {key: min(reading.get(key, 0) for reading in readings) for key in keys}
-    # A counter only present in the noisy reading has a minimum of zero, and a zero is the
-    # same statement as the key being absent: Counter never records one. Keeping it would
-    # turn the noise back into a difference under the `==` below, which is the whole thing
-    # this is trying to stop.
+    # Counter never records zero, so drop zeros or noise becomes a difference.
     return {key: value for key, value in steady.items() if value}
 
 
@@ -140,7 +113,6 @@ def test_owner_routing_facts_and_shared_queue(isolated_auth, account_client):
     assert run_as(OWNER, access.account_scope) == "owner"
     assert run_as(managed, access.account_scope) == alice.account_id
     assert run_as(OWNER, access.resident_hidden, "chat") is False
-    # Admission queues are keyed by the resident server, never by the calling account.
     key = "http://127.0.0.1:1"
     assert run_as(OWNER, get_llama_admission_queue, key) is run_as(
         managed, get_llama_admission_queue, key
@@ -148,11 +120,7 @@ def test_owner_routing_facts_and_shared_queue(isolated_auth, account_client):
 
 
 def test_steady_cost_keeps_a_persistent_increase_and_drops_a_one_off():
-    """The minimum above must not be able to hide a cost that is really there.
-
-    Read directly rather than through a request, because the two cases it has to tell
-    apart are exactly the ones a live request cannot be made to produce on demand.
-    """
+    """The minimum must still expose a persistent increase while dropping a one-off rebuild spike."""
     baseline = [{"connections": 2, "statements": 8}] * _REPEATS
 
     one_off = [{"connections": 2, "statements": 8}] * _REPEATS
@@ -168,10 +136,6 @@ def test_steady_cost_keeps_a_persistent_increase_and_drops_a_one_off():
         "swallowed it this guard would pass a per-account regression"
     )
 
-    # A counter that appears in only one reading is absent from the others, so its minimum
-    # is zero, and a zero has to be dropped rather than reported. Counter never records a
-    # zero, so a reading that never saw the mkdir has no `mkdir` key at all, and keeping
-    # `{"mkdir": 0}` would fail the `==` against it just as surely as `{"mkdir": 1}` would.
     appears_once = [{"connections": 2}, {"connections": 2, "mkdir": 1}, {"connections": 2}]
     never_appears = [{"connections": 2}] * _REPEATS
     assert _steady(appears_once) == {"connections": 2}

@@ -61,7 +61,7 @@ class LayaWorker:
         )
 
         if is_process_shutting_down():
-            raise LayaWorkerError("Studio is shutting down; the Laya worker was not started.")
+            raise LayaWorkerError("Unsloth is shutting down; the Laya worker was not started.")
         self._conn, child = _CTX.Pipe()
         with native_path_secret_removed_for_child_start():
             self._process = _CTX.Process(

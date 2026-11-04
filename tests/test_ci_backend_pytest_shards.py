@@ -150,10 +150,11 @@ class TestEveryTestFileLandsInExactlyOneShard:
     @pytest.mark.parametrize(
         "path, expected",
         [
-            ("tests/test_apple.py", "a-k"),
-            ("tests/test_kiwi.py", "a-k"),
-            ("tests/test_lemon.py", "l-r"),
-            ("tests/test_raisin.py", "l-r"),
+            ("tests/test_apple.py", "a-f"),
+            ("tests/test_fig.py", "a-f"),
+            ("tests/test_grape.py", "g-r"),
+            ("tests/test_kiwi.py", "g-r"),
+            ("tests/test_raisin.py", "g-r"),
             ("tests/test_squash.py", _CATCH_ALL),
             ("tests/test_yam.py", _CATCH_ALL),
         ],
@@ -293,12 +294,22 @@ class TestTheSplitKeepsTheSelectionItInherited:
             return
         raise AssertionError(f"the {_SERIAL_STEP!r} step is gone")
 
-    def test_the_serial_step_runs_the_thirteen_isolated_files(self):
-        """The serial selection includes the timing-sensitive R1 parser regressions."""
+    def test_the_serial_step_runs_exactly_the_files_the_parallel_run_ignores(self):
+        """The serial selection includes the timing-sensitive R1 parser regressions. Compared
+        against the parallel step's own ignores, not a count, so isolating a file means
+        editing the two lists together and nothing else."""
         paths = _serial_paths()
-        assert len(paths) == 13, f"the serial step runs {len(paths)} files, not 13: {paths}"
-        assert len(set(paths)) == 13, f"the serial step names a file twice: {paths}"
+        assert len(set(paths)) == len(paths), f"the serial step names a file twice: {paths}"
         assert "tests/test_pr5624_regressions.py" in paths
+        ignored = {
+            token[len("--ignore=") :]
+            for token in str(_shared_pytest_step()["run"]).split()
+            if token.startswith("--ignore=tests/")
+        } - set(_NOT_IN_ANY_SHARD)
+        assert set(paths) == ignored, (
+            f"ignored by the parallel run but never rerun: {sorted(ignored - set(paths))}; "
+            f"rerun but not ignored: {sorted(set(paths) - ignored)}"
+        )
         missing = [path for path in paths if not (_BACKEND_TESTS.parent / path).is_file()]
         assert not missing, f"the serial step names files that do not exist: {missing}"
 

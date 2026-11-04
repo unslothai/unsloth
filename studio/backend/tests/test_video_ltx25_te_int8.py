@@ -215,7 +215,11 @@ def test_te_quant_tristate(monkeypatch):
             v25.ltx25_te_quant_scheme(scheme)
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     assert v25.ltx25_te_quant_scheme(None) == "int8"
+    assert v25.ltx25_te_quant_scheme("auto") == "int8"
     assert v25.ltx25_te_quant_scheme("off") is None
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
+    assert v25.ltx25_te_quant_scheme(None) is None
+    assert v25.ltx25_te_quant_scheme("int8") == "int8"
 
 
 def test_budget_prices_the_int8_encoder(monkeypatch):
@@ -233,6 +237,8 @@ def test_budget_prices_the_int8_encoder(monkeypatch):
     assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == 1.0
     monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "1")
     assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == scale
+    monkeypatch.setenv(v25.LTX25_TE_QUANT_ENV, "0")
+    assert te_prequant_budget_scale(fam, te_quant_mode = None, **kw) == 1.0
 
 
 def test_client_carries_the_scheme_and_status_reports_it():

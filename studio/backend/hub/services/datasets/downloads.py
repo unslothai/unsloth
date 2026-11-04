@@ -55,8 +55,7 @@ _account_registries = {}
 _account_registry_lock = threading.Lock()
 # The HF cache is shared across per-account registries, so a reservation must reach all of them.
 _deleting: set[str] = set()
-# Whole-cache purges in flight. Counted, like DownloadRegistry._purging, and kept here
-# so a registry created for an account DURING a purge starts out reserved too.
+# Counted here so a registry created during a purge starts reserved.
 _purging = 0
 
 
@@ -70,9 +69,7 @@ def _account_registry():
             registry = download_registry.DownloadRegistry()
             for reserved in _deleting:
                 registry.begin_delete(reserved)
-            # Same reason as the line above: a purge holding every OTHER registry would not
-            # hold this one, and the account whose first download creates it would write into
-            # a tree being removed.
+            # Purge must hold every other registry too, or a first download writes into the tree being removed.
             for _ in range(_purging):
                 registry.begin_cache_purge()
             _account_registries[account_id] = registry
@@ -103,14 +100,7 @@ def end_delete(repo_id: str) -> None:
 
 
 def begin_cache_purge() -> bool:
-    """Reserve EVERY dataset registry for a whole-cache purge, or none of them.
-
-    A managed-account install does not have one dataset registry, it has one per account
-    (:func:`_account_registry`). Reserving only the singleton left every other account's
-    download invisible to the purge, which would then remove files under its worker. Same
-    all-or-nothing shape as :func:`begin_delete`, and the count is recorded so a registry
-    created after this returns is born reserved rather than free to claim work.
-    """
+    """Reserves every account's registry, or none, so a purge cannot miss a managed account's download."""
     global _purging
     with _account_registry_lock:
         reserved = []
@@ -152,11 +142,7 @@ def _claim_dataset_download(registry, key: str, transport: str, **kwargs) -> tup
 def get_dataset_snapshot_metadata_cached(
     repo_id: str, hf_token: Optional[str] = None
 ) -> tuple[int, frozenset[str]]:
-    """Raw snapshot size + expected blob hashes for a dataset repo.
-
-    The dataset worker downloads every sibling, so the denominator is the full
-    sibling-size sum and the hashes cover every file. Consumed by the shared
-    ``snapshot_progress`` accounting."""
+    """Size and blob hashes cover every sibling, since the dataset worker downloads them all."""
     hf_token = account_hf_token(hf_token)
     token_fp = hf_cache_scan.token_fingerprint(hf_token)
     cache_key = (repo_id, token_fp)
@@ -166,8 +152,7 @@ def get_dataset_snapshot_metadata_cached(
             size, hashes, restricted, cached_fp, ts = cached
             if (time.monotonic() - ts) >= _DATASET_SIZE_POS_TTL:
                 del _dataset_size_cache[repo_id]
-            # A gated or private repo's metadata is only served back to the token that fetched it;
-            # another token may have no access at all.
+            # Gated/private metadata is only served back to the token that fetched it.
             elif not restricted or cached_fp == token_fp:
                 _dataset_size_cache.move_to_end(repo_id)
                 return size, hashes
@@ -212,11 +197,7 @@ async def get_dataset_download_progress_response(
     expected_bytes: int = 0,
     hf_token: Optional[str] = None,
 ) -> dict:
-    """Return download progress for a HuggingFace dataset repo.
-
-    Scans the ``datasets--owner--name`` cache dir and shares the blob accounting
-    with the model path via ``snapshot_progress``. Returns ``cache_path`` for the
-    UI."""
+    """Dataset progress from the datasets--owner--name cache dir, sharing snapshot_progress with models."""
     hf_token = account_hf_token(hf_token)
     registry = _account_registry()
     if managed_account():
@@ -258,11 +239,7 @@ async def download_dataset_response(
     *,
     allow_ambient_token: bool = True,
 ) -> dict:
-    """Start a background download for a HuggingFace dataset.
-
-    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent no token, for
-    repos named over the API rather than chosen here.
-    """
+    """allow_ambient_token=False: anonymous when the caller sent no token, for repos named over the API."""
     if account_is_retired():
         raise HTTPException(status_code = 403, detail = "Account is retired")
     hf_token = account_hf_token(hf_token)
@@ -302,8 +279,7 @@ async def download_dataset_response(
     cache_env = cache_paths.child_env({})
 
     def claim_and_launch():
-        # Claim and launch as one operation, off the loop: a cancel while queued must not
-        # leave a claimed job with no worker, and token resolution can do network I/O.
+        # Claim and launch atomically off the loop: a queued cancel must not leave a job with no worker.
         registry = _account_registry()
         claimed, claim_state = _claim_dataset_download(
             registry,
@@ -316,8 +292,7 @@ async def download_dataset_response(
         )
         generation = registry.current_generation(key)
         if not claimed:
-            # Both come from adoptable: an in-progress delete leaves no job, and only an in-flight job of this
-            # repo attached to anything.
+            # Both come from adoptable: a delete has no job, and only in-flight jobs of this repo attach.
             adoptable = registry.adoptable(key)
             return {
                 "repo_id": repo_id,
@@ -325,15 +300,12 @@ async def download_dataset_response(
                 "accepted": adoptable,
                 "attached": adoptable,
                 "generation": generation,
-                # An adopted job keeps the transport it started on, so report it rather than let the caller assume
-                # the one it asked for.
+                # Adopted jobs keep their original transport, so report it rather than assume the requested one.
                 "transport": registry.job_transport(key),
-                # And its cancel marker: a run that fell back from Xet to HTTP still cancels into a restart-only
-                # partial.
+                # cancel_transport: a run that fell back from Xet to HTTP still cancels into a restart-only partial.
                 "cancel_transport": registry.job_cancel_transport(key),
             }
-        # Record ownership with the claim, not at launch: retirement scans this registry, and an
-        # unattributed job makes its cancel raise "Download not found" and abort the deletion.
+        # Record ownership at claim, else cancel raises "Download not found" during deletion.
         download_lifecycle.record_download_account(registry, key)
         download_manifest.clear_cancel_marker(
             "dataset",

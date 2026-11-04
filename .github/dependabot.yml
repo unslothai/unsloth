@@ -2,31 +2,28 @@
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" only scans .github/workflows. The composite actions under
+    # .github/actions pin the same actions (setup-node, cache) and must
+    # move in the same PR, or two SHAs of one action end up in the tree.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
     cooldown:
-      # github-actions refs are git tags / SHAs, not semver -- the
-      # `semver-minor-days` / `semver-patch-days` knobs are rejected
-      # by Dependabot's validator for this ecosystem. Only the
-      # `default-days` floor applies.
+      # Semver cooldown knobs are rejected for github-actions; only default-days applies.
       default-days: 7
     groups:
       actions:
         patterns: ["*"]
+        # One PR per action across both directories; tests/studio/
+        # test_actions_are_pinned_to_commits.py wants one SHA per action.
+        group-by: dependency-name
       actions-security:
         applies-to: security-updates
         patterns: ["*"]
 
-  # Removed a stray `package-ecosystem: "bun"` entry for
-  # /studio/frontend: that path has no bun.lock / bun.lockb, so
-  # Dependabot's bun ecosystem silently no-ops on it. The actual
-  # lockfile committed at /studio/frontend is package-lock.json
-  # (npm), and the npm entry further below already catches
-  # npm_and_yarn security advisories for that directory. Version
-  # updates for /studio/frontend stay suppressed (open-pull-
-  # requests-limit: 0 in that entry) -- security PRs flow through
-  # regardless. Add a real bun entry IF and WHEN bun.lock lands.
+  # No bun entry: /studio/frontend has no bun.lock, so it would silently no-op.
 
   - package-ecosystem: "npm"
     directory: "/studio/backend/core/data_recipe/oxc-validator"
@@ -43,15 +40,37 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # pip + cargo grouped weekly; the *-security siblings batch
-  # advisories that would otherwise each open their own PR.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    # pyproject.toml is a hand-kept matrix: many packages are split by Python version or
+    # accelerator (typer / fastapi / uvicorn / gguf for 3.9, triton / flash-attn wheel URLs),
+    # and a version update rewrites every copy of a requirement at once. Version-update PRs
+    # stay off, as for /studio/frontend; security PRs have their own limit and still open.
+    open-pull-requests-limit: 0
     cooldown:
       default-days: 7
+    # pyproject.toml pins these by hand: torch / torchvision per CUDA extra (with the
+    # matching +cuXXX tag and xformers wheel), and transformers / datasets / bitsandbytes
+    # to tested windows with `!=` exclusions. Dependabot rewrites each whole specifier
+    # (#13833, #14469 collapsed every cuXXX-torchYYY extra to plain torch==2.14.1), so
+    # these move with the version matrix by hand. Advisories still show as alerts.
+    ignore:
+      - dependency-name: "torch"
+      - dependency-name: "torchvision"
+      - dependency-name: "torchaudio"
+      - dependency-name: "xformers"
+      - dependency-name: "bitsandbytes"
+      - dependency-name: "transformers"
+      - dependency-name: "datasets"
+      # Also hand-kept: torchcodec per audio-torch extra (matched to each torch line), and
+      # huggingface-hub split by Python version (1.x needs 3.10+, 3.9 stays on 0.36.2).
+      - dependency-name: "torchcodec"
+      - dependency-name: "huggingface-hub"
+      # A major bump (huggingface-hub 2.x, pymupdf4llm 0.3 -> 1.x) needs its own review.
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       python:
         patterns: ["*"]
@@ -67,18 +86,34 @@ updates:
       default-days: 7
       semver-minor-days: 3
       semver-patch-days: 3
-    # Tauri renders Unsloth on Linux through GTK3 and the gtk-rs GTK3
-    # bindings are archived at 0.18.2, so `gtk`/`gdk` will never ship
-    # 0.19+. Moving `glib`/`gdk-pixbuf` past 0.18 puts two
-    # incompatible copies in the tree and native_clipboard.rs stops
-    # compiling: `gtk::Clipboard::wait_for_image` returns a 0.18
-    # `Pixbuf` our `gdk_pixbuf` no longer accepts. This also
-    # suppresses security PRs above 0.18, leaving alerts only.
+    # gtk-rs GTK3 bindings are frozen at 0.18; newer glib/gdk-pixbuf break native_clipboard.rs.
+    # This also suppresses security PRs above 0.18, leaving alerts only.
     ignore:
       - dependency-name: "glib"
         versions: [">= 0.19"]
       - dependency-name: "gdk-pixbuf"
         versions: [">= 0.19"]
+      # Same GTK3 family: the direct cairo-rs dep exists only to turn on the
+      # `png` feature of gtk's own cairo-rs 0.18. A second cairo-rs (0.22)
+      # leaves gtk's copy without `png` and browser_capture.rs stops
+      # compiling (`write_to_png` not found), as in #13837.
+      - dependency-name: "cairo-rs"
+        versions: [">= 0.19"]
+      # gio is only used for the proxy resolver gtk already builds; 0.19+
+      # adds a second glib next to gtk's 0.18.
+      - dependency-name: "gio"
+        versions: [">= 0.19"]
+      # tauri-plugin-deep-link 2.6.2 builds rust-ini's ParseOption as a
+      # struct literal, and 0.21.3 added fields to it, so Linux stops
+      # compiling (E0063). Lift once deep-link builds against 0.21.3.
+      - dependency-name: "rust-ini"
+        versions: [">= 0.21.2"]
+      # windows-core must match the copy webview2-com and tauri build on
+      # (Cargo.toml: "Keep these versions aligned with Tauri's WebView2
+      # controller bindings"); a lone windows-core bump puts a second copy
+      # next to webview2-com's 0.62. Move it by hand with webview2-com.
+      - dependency-name: "windows-core"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       cargo-tauri:
         patterns: ["*"]
@@ -86,16 +121,7 @@ updates:
         applies-to: security-updates
         patterns: ["*"]
 
-  # /studio/frontend npm dependencies. Version-update PRs are
-  # deliberately suppressed (open-pull-requests-limit: 0) -- the
-  # frontend dep tree is large, the lockfile is the authoritative
-  # pin, and `min-release-age=7` in studio/frontend/.npmrc already
-  # blocks fresh tarballs at install time. Security advisories
-  # arrive via GitHub's npm_and_yarn channel and are NOT capped by
-  # `open-pull-requests-limit` per Dependabot's documented
-  # behaviour; they flow through this entry, group together, and
-  # still respect the cooldown below so we never ingest a tarball
-  # that was hot-published less than 3 days ago.
+  # Version updates suppressed (limit 0); security PRs still flow and are not capped by the limit.
   - package-ecosystem: "npm"
     directory: "/studio/frontend"
     schedule:

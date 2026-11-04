@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Owns the token preview subprocess (core.training.token_preview_worker).
-
-One worker at a time, kept for the model it was started for so typing in the preview answers in
-milliseconds; a request for another model, a training start or an idle timeout ends it.
-"""
+"""Token preview subprocess: one worker, kept for its model; a switch, training or idle ends it."""
 
 from __future__ import annotations
 
@@ -27,9 +23,11 @@ FIRST_REQUEST_TIMEOUT_S = 300.0
 REQUEST_TIMEOUT_S = 60.0
 # Applied in the child before anything imports torch: a CUDA context alone costs hundreds of MB of
 # VRAM, and the preview only tokenizes. UNSLOTH_ALLOW_CPU lets Unsloth's chat templates import there.
+# torch-xpu: an empty ZE_AFFINITY_MASK means every device, so hide Level Zero via the SYCL selector.
 _NO_ACCELERATOR_ENV = {
     "CUDA_VISIBLE_DEVICES": "",
     "HIP_VISIBLE_DEVICES": "",
+    "ONEAPI_DEVICE_SELECTOR": "opencl:cpu",
     "UNSLOTH_ALLOW_CPU": "1",
 }
 
@@ -111,7 +109,7 @@ class _TokenPreviewService:
             native_path_secret_removed_for_child_start,
             run_without_native_path_secret,
         )
-        from utils.process_lifetime import adopt_pid
+        from utils.process_lifetime import adopt_pid, is_process_shutting_down
 
         cache_env = get_hf_cache_paths().child_env({})
         with (
@@ -139,6 +137,11 @@ class _TokenPreviewService:
             proc.start()
         adopt_pid(proc.pid)
         self._proc, self._key, self._served = proc, key, False
+        # _start_locked checked the latch before the spawn, but a quit can land in between: the
+        # shutdown sweep may already have taken its snapshot, so reap this worker here.
+        if is_process_shutting_down():
+            self._stop_locked()
+            raise TokenPreviewError("Unsloth is shutting down.")
         logger.info("Token preview worker started (pid=%s)", proc.pid)
 
     def preview(

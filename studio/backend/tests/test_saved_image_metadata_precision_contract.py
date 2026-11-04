@@ -1,30 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Contract: a saved image's recipe records the build that ENGAGED, not the one requested.
-
-``transformer_quant`` is a *request*: the loader may decline it (no dense source, not
-enough VRAM, torchao missing) and run the GGUF as-is, or resolve "auto" to a concrete
-scheme. Only ``_LoadState`` knows what actually ran, so the whole chain reads from it:
-
-    load_pipeline(transformer_quant=...)  ->  _LoadState.transformer_quant  (ENGAGED)
-                                                  |
-                       diffusion.generate() returns state.kind / .gguf_filename / .transformer_quant
-                                                  |
-                        routes/inference.py persists result[...] into the PNG recipe
-                                                  |
-                                     images-page.tsx RecipePopover "Quant" row
-
-If any hop starts echoing the request instead, a Recipe popover claims an image was made
-with a quant that never loaded. These tests pin the divergent case at both ends.
-
-They also pin ``image_gallery._REQUIRED_META``: the build keys are additive, so a PNG
-written before they existed must still list rather than be dropped as foreign.
-
-Hermetic: torch / diffusers are stubbed via ``sys.modules`` (same approach as
-``test_diffusion_backend.py``, stubbed as packages so the loader's submodule imports resolve
-without a real install), and the route half runs against a fake backend.
-"""
+"""Recipe records the quant that ENGAGED, read from _LoadState, not the request's transformer_quant."""
 
 from __future__ import annotations
 
@@ -50,11 +27,7 @@ from routes.inference import router as openai_router, studio_router
 
 _FRONTEND = Path(__file__).resolve().parents[2] / "frontend" / "src"
 
-# The build fields the recipe carries beyond the plain generation settings. All sourced from
-# the committed load state, all optional on an older PNG.
-# Load-time build identity the route persists and GalleryImage defaults for older records.
-# baked_loras belongs here for the same reason the other three do: promoting any of them into
-# image_gallery._REQUIRED_META would stop every PNG written before it existed from listing.
+# Additive, never in image_gallery._REQUIRED_META: older PNGs lack them and would stop listing.
 _BUILD_KEYS = ("model_kind", "gguf_filename", "transformer_quant", "baked_loras")
 # Generation-time build knobs; additive like _BUILD_KEYS.
 _RUNTIME_BUILD_KEYS = (
@@ -63,9 +36,6 @@ _RUNTIME_BUILD_KEYS = (
     "transformer_cache",
     "cpu_offload",
 )
-
-
-# ── stub runtime (pared-down twin of test_diffusion_backend's) ────────────────
 
 
 class _FakeDtype:
@@ -144,31 +114,16 @@ class _FakeTransformer:
 
 
 def _stub_package(name: str) -> types.ModuleType:
-    """A stub module the import machinery will treat as a PACKAGE.
-
-    ``types.ModuleType`` alone has no ``__path__``, so ``import torch.nn.functional`` cannot
-    resolve a submodule through it -- see ``stub_runtime`` for why that matters.
-    """
+    """A stub module needs a __path__, or submodule imports like torch.nn.functional fail to resolve."""
     module = types.ModuleType(name)
-    module.__path__ = []  # empty: submodules are registered by hand, never found on disk
+    module.__path__ = []
     module.__spec__ = importlib.machinery.ModuleSpec(name, loader = None, is_package = True)
     return module
 
 
 @pytest.fixture
 def stub_runtime(monkeypatch):
-    """Enough torch / diffusers for a z-image GGUF load + one txt2img generate.
-
-    ``load_pipeline`` lazily imports ``diffusion_eager_patches``, whose module body runs
-    ``import torch.nn.functional as F``, and the GGUF prefix-strip shim imports
-    ``diffusers.loaders.single_file_model``. Neither resolves through a bare ``ModuleType``.
-    A dev box hides that -- something (``tests/conftest.py`` -> ``unsloth_zoo`` -> ``import
-    torch``) has usually already seeded ``sys.modules["torch.nn.functional"]``, so the import
-    short-circuits on the cached entry and never looks at the stub's missing ``__path__``. On a
-    clean CPU-only CI interpreter nothing seeds it and the load dies with "'torch' is not a
-    package". So register the submodules explicitly and make the stubs real packages: same
-    hermetic runtime in both environments, whatever ran before.
-    """
+    """Stub torch and diffusers as real packages, so the load does not depend on prior imports."""
     torch = _stub_package("torch")
     torch.bfloat16 = _FakeDtype("bfloat16")
     torch.float16 = _FakeDtype("float16")
@@ -177,8 +132,6 @@ def stub_runtime(monkeypatch):
     torch.cuda = types.SimpleNamespace(is_available = lambda: False)
     torch.backends = types.SimpleNamespace(mps = None)
     torch.inference_mode = lambda: contextlib.nullcontext()
-    # torch.nn.functional: imported by diffusion_eager_patches. Empty -- the patch installers
-    # only probe it (hasattr F, "rms_norm") and no patched forward runs under the fake pipe.
     torch_nn = _stub_package("torch.nn")
     torch_nn_functional = types.ModuleType("torch.nn.functional")
     torch_nn.functional = torch_nn_functional
@@ -188,9 +141,7 @@ def stub_runtime(monkeypatch):
     diffusers.GGUFQuantizationConfig = lambda compute_dtype = None: ("quant", compute_dtype)
     diffusers.ZImagePipeline = _FakePipeline
     diffusers.ZImageTransformer2DModel = _FakeTransformer
-    # diffusers.loaders.single_file_model: the GGUF prefix-strip shim looks the transformer class
-    # up in this registry. Empty -> the shim finds no entry and returns, the same no-op it
-    # performs against a real diffusers that has no converter for the class.
+    # Empty registry: the GGUF prefix-strip shim finds no entry and no-ops.
     diffusers_loaders = _stub_package("diffusers.loaders")
     single_file_model = types.ModuleType("diffusers.loaders.single_file_model")
     single_file_model.SINGLE_FILE_LOADABLE_CLASSES = {}
@@ -205,18 +156,12 @@ def stub_runtime(monkeypatch):
         ("diffusers.loaders", diffusers_loaders),
         ("diffusers.loaders.single_file_model", single_file_model),
     ):
-        # setitem restores the previous entry (or deletes it, if there was none) on teardown,
-        # so a real torch/diffusers imported by another test is left untouched.
+        # setitem restores the previous entry on teardown, leaving a real torch/diffusers untouched.
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr("core.inference.diffusion.clear_gpu_cache", lambda: None)
     _FakeTransformer.last = {}
     yield torch
-    # A load that COMMITS deliberately keeps its process-wide eager/arch patches installed --
-    # only unload() reverts them (diffusion.py's finally covers the pre-commit failure path
-    # alone), and the GGUF default speed profile is "default", not "off", so the install runs.
-    # Today nothing survives here because diffusers 0.39's bodies do not match the drift guards,
-    # but that is a version accident, so revert unconditionally rather than rely on it. Both
-    # calls are idempotent, and this runs before monkeypatch restores the stub modules.
+    # A committed load keeps its eager/arch patches until unload(); revert unconditionally.
     try:
         from core.inference.diffusion_arch_patches import uninstall_arch_patches
         from core.inference.diffusion_eager_patches import uninstall_patches
@@ -225,12 +170,7 @@ def stub_runtime(monkeypatch):
         uninstall_arch_patches()
     except Exception:  # noqa: BLE001 - teardown must not mask the test's own failure
         pass
-    # ...and evict the patch modules themselves. They were imported (lazily, by load_pipeline)
-    # WHILE the fakes were installed, so their module-level `torch`, `F` and diffusers class
-    # globals are bound to the stubs. monkeypatch puts sys.modules["torch"] back but not these,
-    # so every later test in the process -- and any real load -- would go on running against
-    # module bodies that closed over the fakes. Dropping the cache entries makes the next import
-    # rebind them under whatever runtime is installed then.
+    # Evict patch modules imported under the fakes, or their globals stay bound to the stubs.
     for cached in (
         "core.inference.diffusion_eager_patches",
         "core.inference.diffusion_arch_patches",
@@ -254,7 +194,6 @@ def backend(stub_runtime):
 
 def _load(backend, tmp_path, monkeypatch, torch, **kwargs):
     (tmp_path / "m.gguf").write_bytes(b"x")
-    # Drive the loader down the CUDA (dense-quant capable) path under the stub.
     monkeypatch.setattr(backend, "_pick_device_and_dtype", lambda: ("cuda", torch.bfloat16))
     return backend.load_pipeline(
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", **kwargs
@@ -265,29 +204,20 @@ def _generate(backend):
     return backend.generate(prompt = "a sloth", width = 512, height = 512, steps = 2, guidance = 1.0, seed = 7)
 
 
-# ── backend: generate() reports the committed load state ──────────────────────
-
-
 def test_a_declined_quant_request_is_not_reported_as_engaged(
     backend, stub_runtime, tmp_path, monkeypatch
 ):
     """The user asked for fp8; the host has no dense source, so the GGUF loaded as-is.
     The recipe must say "GGUF, no quant", not "fp8"."""
-    # A declined explicit precision now refuses the load outright unless the fallback is opted
-    # into. This contract is about what the recipe records for a build that DID fall back, so it
-    # has to ask for that build, the same way the routes and backend suites do.
+    # A declined explicit precision refuses the load unless the fallback is opted into.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ALLOW_PRECISION_FALLBACK", "1")
     monkeypatch.setattr(diffusion_module, "dense_transformer_supported", lambda target: False)
     status = _load(backend, tmp_path, monkeypatch, stub_runtime, transformer_quant = "fp8")
 
     assert status["transformer_quant"] is None
     assert backend._state.transformer_quant is None
-    # The provenance record keeps BOTH sides, so the UI can explain the difference: the
-    # request was explicit, the engaged value is "off".
     resolved = status["resolved"]["transformer_quant"]
     assert resolved["value"] == "off" and resolved["source"] == "explicit"
-    # The reason now names why the request was declined rather than what loaded in its place,
-    # which is the half a user can act on. The substantive contract is the pair above.
     assert "dense torchao quant" in resolved["reason"]
 
     result = _generate(backend)
@@ -333,11 +263,7 @@ def test_generate_reports_the_engaged_scheme_when_it_differs_from_the_request(
         f"{engaged!r} and the request was {requested!r}"
     )
     assert result["transformer_quant"] != requested
-    # The dense build is no longer a GGUF transformer, and that is part of the build identity too.
     assert result["model_kind"] == "gguf" and result["gguf_filename"] == "m.gguf"
-
-
-# ── route: the persisted recipe carries what generate() reported ──────────────
 
 
 class _EngagedBackend:
@@ -367,8 +293,6 @@ class _EngagedBackend:
         return None
 
     def assert_precision_available(self, fam, **kwargs) -> None:
-        # The route's pre-eviction refusal for a precision this host can never honor. This
-        # backend exists to ENGAGE one, so it has nothing to refuse.
         return None
 
     def begin_load(self, model_path, **kwargs):
@@ -385,7 +309,6 @@ class _EngagedBackend:
             "offload_policy": "none",
             "vae_tiling": False,
             "memory_mode": "auto",
-            # The loader declined fp8 and engaged int8 instead.
             "transformer_quant": self.engaged,
         }
 
@@ -413,7 +336,6 @@ class _EngagedBackend:
             "images": [object() for _ in range(batch_size)],
             "seed": seed if seed is not None else 4242,
             "repo_id": "x/z-image",
-            # Straight off the committed load state, as the real backend does.
             "model_kind": "gguf",
             "gguf_filename": "z-image-Q4_K_M.gguf",
             "transformer_quant": self.engaged,
@@ -446,7 +368,6 @@ def engaged_client(monkeypatch, tmp_path):
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: None)
     monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
 
-    # Record exactly the metadata dict the route hands the gallery.
     saved: list[dict] = []
 
     def _save(image, meta):
@@ -459,8 +380,6 @@ def engaged_client(monkeypatch, tmp_path):
 
     app = FastAPI()
     app.include_router(studio_router, prefix = "/api/inference")
-    # The OpenAI-compatible images route lives on the other router, mounted at /v1 in
-    # production. Both persistence paths reach the same gallery, so both are exercised here.
     app.include_router(openai_router, prefix = "/v1")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     app.dependency_overrides[authenticated_via_api_key] = lambda: False
@@ -478,7 +397,6 @@ def test_the_persisted_recipe_records_the_engaged_build_not_the_load_request(eng
         },
     )
     assert load.status_code == 200, load.text
-    # The request really did ask for the other scheme.
     assert backend.last_load_kwargs["transformer_quant"] == _EngagedBackend.requested
 
     gen = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
@@ -561,13 +479,9 @@ def test_the_openai_route_persists_the_same_build(engaged_client):
 
 
 def test_the_stub_runtime_does_not_outlive_its_own_test(stub_runtime):
-    """The patch modules are imported lazily by load_pipeline, i.e. WHILE the fakes are
-    installed, so their module globals close over them. monkeypatch restores sys.modules["torch"]
-    but not those, and every later test in the process would then run against module bodies
-    bound to a fake torch. The fixture has to evict them."""
+    """Patch modules imported under the stubs must be evicted, or later tests run against a fake torch."""
     import core.inference.diffusion_eager_patches  # noqa: F401 — imported under the stubs
     assert sys.modules["torch"] is stub_runtime
-    # The eviction itself is asserted by the sibling test below, which runs after teardown.
 
 
 def test_the_patch_modules_are_not_left_cached_against_the_fakes():
@@ -579,14 +493,10 @@ def test_the_patch_modules_are_not_left_cached_against_the_fakes():
         module = sys.modules.get(cached)
         if module is None:
             continue
-        # Present only because something imported it under the REAL runtime.
         torch_global = getattr(module, "torch", None)
         assert torch_global is None or torch_global is sys.modules.get(
             "torch"
         ), f"{cached} is cached with a torch that is not the live one"
-
-
-# ── gallery: the build keys stay additive ─────────────────────────────────────
 
 
 @pytest.fixture
@@ -632,7 +542,6 @@ def test_a_png_without_the_build_keys_still_lists(tmp_gallery):
     listed = gallery.list_images()
     assert [r["id"] for r in listed] == [record["id"]]
     assert listed[0]["prompt"] == "a sloth"
-    # Absent, not null-filled: the popover keys off truthiness and hides the rows.
     for key in _BUILD_KEYS:
         assert key not in listed[0]
     assert gallery.owned_image_path(record["id"]) is not None
@@ -652,9 +561,7 @@ def test_a_png_with_the_build_keys_round_trips_them(tmp_gallery):
     listed = gallery.list_images()
     assert listed[0]["transformer_quant"] == "int8"
 
-    # Through the listing's response model too. Pydantic drops anything the model does not
-    # declare, so a GalleryImage that stops carrying a build key leaves the raw assertion above
-    # green and the wire silently short -- which is the popover going blank.
+    # Pydantic drops undeclared fields, so check the response model too.
     from models.inference import GalleryListResponse
 
     wire = GalleryListResponse(images = listed).model_dump()["images"][0]
@@ -664,15 +571,11 @@ def test_a_png_with_the_build_keys_round_trips_them(tmp_gallery):
             f"has {wire.get(key)!r}"
         )
 
-    # The PNG itself carries the recipe, so a downloaded file keeps the build identity.
     raw = (gallery.gallery_dir() / f"{record['id']}.png").read_bytes()
     with Image.open(io.BytesIO(raw)) as im:
         embedded = json.loads(im.text["unsloth"])
     assert embedded["transformer_quant"] == "int8"
     assert embedded["gguf_filename"] == "z-image-Q4_K_M.gguf"
-
-
-# ── frontend: the recipe popover still shows the engaged build ────────────────
 
 
 def test_the_recipe_popover_renders_the_build_fields():
@@ -685,7 +588,6 @@ def test_the_recipe_popover_renders_the_build_fields():
     assert "image.speed_mode" in popover
     assert "image.attention_backend" in popover
     assert "image.transformer_cache" in popover
-    # Rendered conditionally, so an older PNG without them shows the rest of the recipe.
     for key in ("transformer_quant", "gguf_filename"):
         assert f"image.{key} ?" in popover
 

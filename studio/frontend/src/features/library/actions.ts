@@ -18,9 +18,11 @@ import {
   requestModelConfigHandoff,
 } from "@/features/model-picker";
 import { translate } from "@/i18n";
+import { useImageEditHandoffStore } from "@/stores/image-edit-handoff";
 import { MAX_AUDIO_SIZE } from "@/lib/audio-utils";
 import { isTauri } from "@/lib/api-base";
-import { downloadFile, downloadUrlStreaming, isDownloadCancelled } from "@/lib/native-files";
+import { MAX_UPLOAD_IMAGE_SIDE, blobToDataUrl, fitImageDataUrl } from "@/lib/image-fit";
+import { downloadFile, downloadUrlStreaming, downloadUrlInDirectory, pickNativeDownloadDirectory, releaseNativeDownloadDirectory, isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { MAX_VIDEO_SIZE } from "@/lib/video-utils";
 import {
@@ -57,23 +59,27 @@ function fitsInChat(item: LibraryItem): boolean {
 export async function downloadLibraryItem(
   item: LibraryItem,
   epoch = getAuthSessionEpoch(),
-): Promise<void> {
-  if (getAuthSessionEpoch() !== epoch) return;
+  directory?: { token: string; fileName: string },
+): Promise<boolean> {
+  if (getAuthSessionEpoch() !== epoch) return false;
   try {
     if (isTauri && !item.textOnly && hasOwnFile(item.id)) {
       const url = await libraryDownloadUrl(item);
-      if (getAuthSessionEpoch() !== epoch) return;
-      await downloadUrlStreaming(url, libraryFileName(item));
-      return;
+      if (getAuthSessionEpoch() !== epoch) return false;
+      if (directory) await downloadUrlInDirectory(directory.token, url, directory.fileName);
+      else await downloadUrlStreaming(url, libraryFileName(item));
+      return true;
     }
     const file = await libraryItemFile(item);
-    if (getAuthSessionEpoch() !== epoch) return;
+    if (getAuthSessionEpoch() !== epoch) return false;
     await downloadFile(file, file.name, file.type);
+    return true;
   } catch (error) {
-    if (isDownloadCancelled(error)) return;
+    if (isDownloadCancelled(error)) return false;
     toast.error(translate("library.toast.downloadFailed", { name: item.name }), {
       description: errorMessage(error),
     });
+    return true;
   }
 }
 
@@ -81,17 +87,39 @@ const MAX_ZIP_BYTES = 256 * 1024 * 1024;
 
 export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> {
   const epoch = getAuthSessionEpoch();
-  if (items.length <= 1 || isTauri) {
-    for (const item of items) await downloadLibraryItem(item, epoch);
+  if (isTauri && items.length > 1 && items.every((item) => !item.textOnly && hasOwnFile(item.id))) {
+    try {
+      const token = await pickNativeDownloadDirectory();
+      try {
+        const width = String(items.length).length;
+        for (const [index, item] of items.entries()) {
+          const fileName = `${String(index + 1).padStart(width, "0")}-${libraryFileName(item)}`;
+          if (!(await downloadLibraryItem(item, epoch, { token, fileName }))) break;
+        }
+      } finally {
+        await releaseNativeDownloadDirectory(token);
+      }
+    } catch (error) {
+      if (isDownloadCancelled(error)) return;
+      toast.error(translate("library.toast.downloadManyFailed"), { description: errorMessage(error) });
+    }
     return;
   }
-  // A file of unknown size could be any size, so it never goes into a zip held in memory.
+  if (items.length <= 1 || isTauri) {
+    for (const item of items) {
+      if (!(await downloadLibraryItem(item, epoch))) break;
+    }
+    return;
+  }
+  // Unknown size counts as Infinity so it never goes into an in-memory zip.
   const bytes = items.reduce((sum, item) => sum + (item.sizeBytes ?? Infinity), 0);
   if (bytes > MAX_ZIP_BYTES) {
     toast(translate("library.toast.downloadingMany", { count: items.length }), {
       description: translate("library.toast.downloadingManyDescription"),
     });
-    for (const item of items) await downloadLibraryItem(item, epoch);
+    for (const item of items) {
+      if (!(await downloadLibraryItem(item, epoch))) break;
+    }
     return;
   }
   const progress = toast.loading(translate("library.toast.preparingMany", { count: items.length }));
@@ -104,9 +132,10 @@ export async function downloadLibraryItems(items: LibraryItem[]): Promise<void> 
         file = await libraryItemFile(item, budget);
       } catch (error) {
         if (!(error instanceof LibraryFileTooLarge)) throw error;
-        // Grown past what the listing said: one download at a time instead of one zip in memory.
         toast.dismiss(progress);
-        for (const each of items) await downloadLibraryItem(each, epoch);
+        for (const each of items) {
+          if (!(await downloadLibraryItem(each, epoch))) break;
+        }
         return;
       }
       budget -= file.size;
@@ -154,9 +183,8 @@ export async function chatAboutItems(
   const chosen = fitting.slice(0, MAX_CHAT_FILES);
   const epoch = getAuthSessionEpoch();
   try {
-    // One at a time, so a folder never holds ten downloads in flight at once.
     const files: File[] = [];
-    // Bounded as it reads: a size the listing did not know, or a file grown since, is only found here.
+    // Size is bounded while reading: unknown or grown files are only caught here.
     for (const item of chosen) {
       try {
         files.push(await libraryItemFile(item, chatSizeLimit(item)));
@@ -191,6 +219,26 @@ export async function chatAboutItems(
     startLibraryChat(navigate, { files });
   } catch (error) {
     toast.error(translate("library.toast.openFilesFailed"), { description: errorMessage(error) });
+  }
+}
+
+// Read whole before it is fitted to the 4096 px upload limit, so a large original still opens.
+const MAX_EDIT_SOURCE_BYTES = 64 * 1024 * 1024;
+
+let editRequest = 0;
+
+export async function editLibraryImage(navigate: Navigate, item: LibraryItem): Promise<void> {
+  const epoch = getAuthSessionEpoch();
+  const claimed = ++editRequest;
+  try {
+    const file = await libraryItemFile(item, MAX_EDIT_SOURCE_BYTES);
+    const dataUrl = await fitImageDataUrl(await blobToDataUrl(file), MAX_UPLOAD_IMAGE_SIDE);
+    if (getAuthSessionEpoch() !== epoch || claimed !== editRequest) return;
+    useImageEditHandoffStore.getState().offer(dataUrl);
+    void navigate({ to: "/images" });
+  } catch (error) {
+    if (claimed !== editRequest) return;
+    toast.error(translate("library.toast.editImageFailed"), { description: errorMessage(error) });
   }
 }
 

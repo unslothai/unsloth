@@ -851,3 +851,56 @@ def test_train_mode_no_grad_forward_skips_the_fused_kernel_cache():
     assert qs._fast is not None
     lin.train()
     assert qs._fast is None
+
+
+def _plain_linear(group = 128, symmetric = False):
+    from unsloth.models.compressed_tensors_int4 import Int4PackedLinear
+
+    torch.manual_seed(0)
+    packed, ref, gs = _packed_layer(256, 1024, 4, group, symmetric, False, torch.bfloat16)
+    lin = Int4PackedLinear.__new__(Int4PackedLinear)
+    torch.nn.Module.__init__(lin)
+    lin.in_features, lin.out_features = 1024, 256
+    for name, tensor in packed.items():
+        lin.register_parameter(name, torch.nn.Parameter(tensor.clone(), requires_grad = False))
+    lin.register_parameter("bias", None)
+    lin._int4_bits, lin._int4_group_size = 4, gs
+    return lin
+
+
+@needs_gpu
+@needs_ct
+@pytest.mark.parametrize("layout", ["checkpoint", "repacked"])
+def test_training_linear_traces_inside_torch_compile(layout):
+    import torch._dynamo.utils as dynamo_utils
+
+    if layout == "repacked":
+        if not has_real_cuda() or torch.cuda.get_device_capability() < (8, 0):
+            pytest.skip("tensor-core layouts need sm_80+")
+        lin = _repacked_linear()[0]
+    else:
+        lin = _plain_linear()
+        assert lin.quant_state.layout is None
+    lin.train()
+
+    def step(x):
+        return lin(x * 1)
+
+    torch._dynamo.reset()
+    dynamo_utils.counters.clear()
+    compiled = torch.compile(step, fullgraph = True)
+    try:
+        for rows in (37, 64, 129, 500):
+            g = torch.Generator(device = "cuda").manual_seed(rows)
+            x = torch.randn(2, rows, 1024, device = "cuda", dtype = torch.bfloat16, generator = g)
+            dy = torch.randn(2, rows, 256, device = "cuda", dtype = torch.bfloat16, generator = g)
+            xe = x.clone().requires_grad_(True)
+            ye = step(xe)
+            ye.backward(dy)
+            xc = x.clone().requires_grad_(True)
+            yc = compiled(xc)
+            yc.backward(dy)
+            assert torch.equal(yc, ye) and torch.equal(xc.grad, xe.grad), rows
+        assert sum(dynamo_utils.counters["graph_break"].values()) == 0
+    finally:
+        torch._dynamo.reset()

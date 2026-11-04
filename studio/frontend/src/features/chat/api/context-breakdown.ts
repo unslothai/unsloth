@@ -28,7 +28,6 @@ export async function countContext(
     ...buildLocalTokenCountReasoning(),
     ...extras,
     breakdown: true,
-    ...(start.params.maxTokens ? { max_tokens: start.params.maxTokens } : {}),
   });
   if (counted.model != null && counted.model !== checkpoint) return null;
   // The header ring shows the same number, so the two never disagree on screen. The recount's

@@ -11,8 +11,7 @@ import {
 const QWEN21 = "Qwen/Qwen-Image-2.1";
 
 test("a quantised Qwen-Image-2.1 pipeline defaults to 512", () => {
-  // Measured: about 26 GB at 1024 against about 19 GB at 512. Quantising the denoiser leaves the
-  // activations alone, so on this family the canvas is what decides whether the load fits.
+  // Measured ~26 GB at 1024 vs ~19 GB at 512: quantising leaves activations, so canvas decides fit.
   for (const scheme of ["fp8", "int8", "fp8_dynamic", "nvfp4"]) {
     const size = resolutionFor(QWEN21, {
       modelKind: "pipeline",
@@ -34,8 +33,7 @@ test("the single-file FP8 route gets it too", () => {
 });
 
 test("a Qwen-Image-2.1 GGUF keeps 1024", () => {
-  // The GGUF route streams the denoiser off disk, so its footprint does not turn on the canvas.
-  // base_repo still carries the family substring, so the KIND is what has to exclude it.
+  // base_repo still carries the family substring, so the KIND is what has to exclude GGUF.
   assert.deepEqual(
     resolutionFor(QWEN21, { modelKind: "gguf", transformerQuant: "int8" }),
     DEFAULT_RESOLUTION,
@@ -43,8 +41,7 @@ test("a Qwen-Image-2.1 GGUF keeps 1024", () => {
 });
 
 test("a dense Qwen-Image-2.1 keeps 1024", () => {
-  // Nobody running bf16 is short of VRAM, and shrinking its canvas would cost quality for nothing.
-  // "off" is how the engaged record spells no quant; null is an older backend that never said.
+  // "off" is how the engaged record spells no quant; null is an older backend.
   for (const scheme of ["off", "none", "", null, undefined]) {
     assert.deepEqual(
       resolutionFor(QWEN21, {
@@ -58,8 +55,7 @@ test("a dense Qwen-Image-2.1 keeps 1024", () => {
 });
 
 test("other families keep 1024 even when quantised", () => {
-  // The control. This is a per-family measurement, not a rule about quantisation, so a quantised
-  // FLUX or Qwen-Image (2.0) must be untouched.
+  // Per-family measurement, so a quantised FLUX or Qwen-Image must be untouched.
   for (const repo of [
     "black-forest-labs/FLUX.1-dev",
     "Qwen/Qwen-Image",
@@ -78,4 +74,38 @@ test("an unloaded or unknown model keeps 1024", () => {
     resolutionFor("", { modelKind: null, transformerQuant: null }),
     DEFAULT_RESOLUTION,
   );
+});
+
+test("SDXL-Turbo defaults to its native 512 on every build", () => {
+  for (const repo of [
+    "stabilityai/sdxl-turbo",
+    "unsloth/sdxl-turbo",
+    "local/SDXL_Turbo",
+  ]) {
+    for (const build of [
+      { modelKind: "pipeline", transformerQuant: null },
+      { modelKind: "pipeline", transformerQuant: "int8" },
+      { modelKind: "single_file", transformerQuant: "fp8" },
+      { modelKind: "gguf", transformerQuant: null },
+    ]) {
+      assert.deepEqual(
+        resolutionFor(repo, build),
+        { width: 512, height: 512 },
+        `${repo} ${build.modelKind}`,
+      );
+    }
+  }
+});
+
+test("SDXL base keeps 1024", () => {
+  for (const repo of [
+    "stabilityai/stable-diffusion-xl-base-1.0",
+    "unsloth/sdxl-base",
+  ]) {
+    assert.deepEqual(
+      resolutionFor(repo, { modelKind: "pipeline", transformerQuant: null }),
+      DEFAULT_RESOLUTION,
+      repo,
+    );
+  }
 });
