@@ -27,7 +27,9 @@ __all__ = [
 ]
 
 
-@triton.jit
+# M (decode rows, the batch) only picks a tile's X / OUT row: unspecialized, so batch 1 and the
+# gemv_nf4_rows batches share one variant. K and OUT_STRIDE keep their % 16 hint (vector loads).
+@triton.jit(do_not_specialize = ("M",))
 def _gemv_nf4_kernel(
     X,
     W,
@@ -39,16 +41,16 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # runtime, not specialized: decode rows per call
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    EVEN_K: tl.constexpr,
-    LUT_MODE: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, from N
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
+    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, per weight
+    LUT_MODE: tl.constexpr,  # codebook lookup, from BLOCK_K
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
@@ -96,7 +98,7 @@ def _gemv_nf4_kernel(
     tl.store(OUT + rows, acc.to(OUT.dtype.element_ty), mask = rmask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("M",))
 def _gemv_nf4_words_kernel(
     X,
     W,
@@ -108,14 +110,14 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # runtime, not specialized: decode rows per call
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, 1 here
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))
