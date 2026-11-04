@@ -366,8 +366,12 @@ async def _connection_decide(
     except ValueError as exc:
         raise _error(503, "api_usage_error", str(exc)) from None
     api_key = await arun_as(OWNER, _connection_key(provider_id, config))
+    headers = config.get("extra_headers")
     client = ExternalProviderClient(
-        config["provider_type"], base_url, api_key, extra_headers = config.get("extra_headers")
+        config["provider_type"],
+        base_url,
+        api_key,
+        **({"extra_headers": headers} if headers else {}),
     )
     try:
         result = await client.create_decision(connection.model, state, questions)
@@ -425,7 +429,7 @@ async def refresh_listed_decision_models() -> None:
                 row["base_url"],
                 api_key,
                 10.0,
-                extra_headers = row.get("extra_headers"),
+                **({"extra_headers": row["extra_headers"]} if row.get("extra_headers") else {}),
             )
             models = await arun_as(OWNER, client.list_decision_models())
         except Exception:
