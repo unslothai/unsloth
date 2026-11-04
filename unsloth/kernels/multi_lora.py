@@ -184,7 +184,7 @@ if HAS_TRITON:
                 mask = mask_k[:, None] & mask_n[None, :],
                 other = 0.0,
             )
-            if UPCAST:  # an fp32 operand (dH) with a 16-bit one: the dot runs in fp32
+            if UPCAST:
                 a, b = a.to(tl.float32), b.to(tl.float32)
             if IEEE:
                 acc += tl.dot(a, b, input_precision = "ieee")
@@ -515,9 +515,7 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
-        # dH = scale_u * dY @ B_u is kept in fp32 (tokens x R, small): stored in fp16 / bf16, a large dY
-        # times any scale, or dY @ B_u alone, can overflow to inf. The scale is applied once, here, so
-        # dA and dX read it already scaled; their kernels upcast X / A to fp32 to read it.
+        # dH is fp32 so it cannot overflow in either scale direction; the scale is applied once, here.
         dH = torch.empty(X.shape[0], R, dtype = torch.float32, device = X.device)
         _seg_mm(
             dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False

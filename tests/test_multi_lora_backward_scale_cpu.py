@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""MultiLoRA_W backward: dH = scale * dY @ B is kept in fp32, so it cannot overflow for any scale, and
-the scale reaches dA, dB and dX exactly once.
-
-Runs the real Triton kernels on CPU through TRITON_INTERPRET=1 in a subprocess, with only the dense
-helpers (dequantize, base matmul) stubbed, as test_multi_lora.py does."""
+"""MultiLoRA_W backward: fp32 dH cannot overflow, and the scale reaches dA, dB and dX exactly once."""
 
 from __future__ import annotations
 
