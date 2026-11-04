@@ -1005,3 +1005,26 @@ def test_the_load_starts_the_marker_read_before_the_weights():
     ]
     assert len(starts) == 1 and any(starts[0] < line < starts[0] + 20 for line in loads)
     assert "marks_future" in {k.arg for k in applies[0].keywords}
+
+
+def test_the_marker_read_overlaps_only_a_staged_snapshot():
+    # A Hub id resolves its revision inside from_pretrained: an early read could take refs/main's older commit while
+    # the load downloads a newer one, so the overlap is gated on the staged, commit-pinned snapshot dir.
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "inference" / "diffusion.py"
+    ).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.IfExp)
+        and isinstance(node.body, ast.Call)
+        and getattr(node.body.func, "id", None) == "start_root_single_marks"
+    ]
+    assert len(calls) == 1
+    gate = ast.unparse(calls[0].test)
+    assert "_base_local_dir" in gate
+    first = calls[0].body.args[0]
+    assert ast.unparse(first) == "_base_local_dir"

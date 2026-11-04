@@ -9498,14 +9498,16 @@ class DiffusionBackend:
                                         )
                                     # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1
                                     # otherwise)
+                                    # Overlapped only on a staged snapshot: its commit is the one from_pretrained
+                                    # loads. A Hub id resolves its revision inside from_pretrained, so it reads after.
                                     _marks_future = (
                                         start_root_single_marks(
-                                            _base_local_dir or fetch_base,
+                                            _base_local_dir,
                                             fetch_base,
                                             hub_token,
                                             not local_files_only,
                                         )
-                                        if fam.single_file_is_pipeline
+                                        if fam.single_file_is_pipeline and _base_local_dir
                                         else None
                                     )
                                     try:
