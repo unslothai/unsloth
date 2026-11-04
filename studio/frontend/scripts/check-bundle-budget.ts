@@ -459,11 +459,14 @@ export const BUDGET = {
   // Merged onto Flows (flows-base-rl): Flows' budget plus the #12601 growth measured against d4f1ceb19.
   // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
   // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
-  // #12521 + Flows + the Studio theme stacked measure 2,110,771 B transfer at this merge (Node 26). Raised to that.
-  // Recipe groups (with theme, look, runs, seeds), Fine-tune, Benchmark and the Loop stacked measure
-  // 2063.6 KB transfer at this merge (Node 26, 134 chunks). Raised to that.
-  transferBytes: 2_113_700,
-  rawBytes: 6_999_346,
+  // Recipes in Flows add 3,077 B raw / 2,230 B transfer over 27b8977e27 (6,960,305 -> 6,963,382 B raw,
+  // 2,103,853 -> 2,106,083 B transfer, Node 26, 127 -> 132 chunks) with no recipe code eager: the lazy dataset
+  // viewer and run views share dropdown-menu, progress, use-mobile and a dist helper with startup, so those split
+  // into their own startup chunks (2,173 B raw / 2,046 B transfer), and the lazy recipe forms split index.min the
+  // same way (904 B raw / 184 B transfer). Raised by that growth.
+  // Merged onto #15604 (4cc2a30280): this PR's budget plus that growth.
+  transferBytes: 2_115_130,
+  rawBytes: 7_002_423,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

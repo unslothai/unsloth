@@ -14,6 +14,7 @@ import {
   GENERATE_TYPE,
   groupGenerate,
 } from "../recipe/recipe-columns";
+import { useUiStore } from "../stores/ui-store";
 import type { EdgeKind, FlowEdge, FlowNode, PortSpec } from "../types";
 import {
   FLOW_IN_HANDLE,
@@ -25,6 +26,14 @@ import {
   outHandle,
   wouldCreateCycle,
 } from "./connection-rules";
+import {
+  REROUTE_IN_HANDLE,
+  REROUTE_OUT_HANDLE,
+  REROUTE_TYPE,
+  addReroute,
+  connectThroughReroute,
+  touchesReroute,
+} from "./reroutes";
 
 export const NODE_DRAG_MIME = "application/x-unsloth-flow-node";
 
@@ -46,6 +55,7 @@ export interface ConnectRequest {
 
 export function tryConnect(req: ConnectRequest): string | null {
   const doc = useDocStore.getState();
+  if (touchesReroute(doc.graph, req)) return connectThroughReroute(req);
   const sourceNode = doc.graph.nodes[req.source];
   const targetNode = doc.graph.nodes[req.target];
   if (!sourceNode || !targetNode) return "Missing node";
@@ -102,6 +112,28 @@ export function addNodeConnected(
   },
   port?: string,
 ): FlowNode | null {
+  if (type === REROUTE_TYPE) {
+    const id = addReroute({ x: pos[0] + 130, y: pos[1] + 20 });
+    if (from?.kind === "data") {
+      tryConnect(
+        from.side === "out"
+          ? {
+              source: from.nodeId,
+              sourceHandle: from.handleId,
+              target: id,
+              targetHandle: REROUTE_IN_HANDLE,
+            }
+          : {
+              source: id,
+              sourceHandle: REROUTE_OUT_HANDLE,
+              target: from.nodeId,
+              targetHandle: from.handleId,
+            },
+      );
+    }
+    useUiStore.getState().setSelection([id], []);
+    return null;
+  }
   if (type === COLUMN_TYPE) return null;
   const node = createNode(type, pos);
   if (!node) return null;

@@ -70,7 +70,8 @@ export function applyRenameToConfig(
     // A sampler rule's condition (`topic == 'science'`) names columns too; its params stay.
     const rules = Object.entries(config.conditional_params);
     const renamed = rules.map(
-      ([condition, params]) => [renameRoot(condition, from, to), params] as const,
+      ([condition, params]) =>
+        [renameRoot(condition, from, to), params] as const,
     );
     if (renamed.some(([condition], i) => condition !== rules[i][0])) {
       const base = next as SamplerConfig;
@@ -104,6 +105,14 @@ export function applyRenameToConfig(
   if (config.kind === "llm" && config.tool_alias === from) {
     const base = next as LlmConfig;
     next = { ...base, tool_alias: to };
+  }
+  if (config.kind === "llm" && config.image_context?.column_name === from) {
+    const base = next as LlmConfig;
+    // biome-ignore lint/style/useNamingConvention: api schema
+    next = {
+      ...base,
+      image_context: { ...config.image_context, column_name: to },
+    };
   }
   if (config.kind === "validator") {
     const targets = config.target_columns ?? [];

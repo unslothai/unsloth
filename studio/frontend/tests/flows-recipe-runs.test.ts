@@ -101,6 +101,35 @@ test("an older run pages from its saved parquet once its recipe job is gone", ()
   });
   assert.equal(savedRunDataset({ artifact_path: "C:\\x\\recipes\\run-8\\" })?.ref, "recipes/run-8/parquet-files");
   assert.equal(savedRunDataset({ artifact_path: null }), null);
+  // A schema transform's run pages its own output, never the job's untransformed rows.
+  const transformed = toRunRecords([
+    { ...backend("t", 1, "completed"), artifact_path: "/x/recipes/run-9", output_ref: "recipes/run-9/processors-files/chat" },
+  ])[0];
+  assert.equal(savedRunDataset(transformed)?.ref, "recipes/run-9/processors-files/chat");
+  assert.match(
+    readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"),
+    /record\.output_ref\s*\?\s*Promise\.reject/,
+  );
   assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /datasetRows\(saved, offset, size\)/);
   assert.match(readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8"), /Math\.min\(read\.total, read\.view_rows\)/);
+});
+
+test("a schema transform's run downloads its own rows and is never published as the job's", () => {
+  const runs = readFileSync(new URL("../src/features/flows/recipe/recipe-runs.tsx", import.meta.url), "utf8");
+  assert.match(runs, /downloadDataset=\{downloadRun\}/);
+  assert.match(runs, /if \(!record\.output_ref\) return downloadExecutionDataset\(record\);/);
+  assert.match(runs, /datasetExport\(saved\)/);
+  const view = readFileSync(
+    new URL("../src/features/recipe-studio/components/executions/executions-view.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(view, /downloadDataset\(selectedExecution\)/);
+  assert.match(view, /!selectedExecution\.output_ref/);
+});
+
+test("Bring in my Data Recipes first moves recipes still saved in this browser", () => {
+  const gallery = readFileSync(new URL("../src/features/flows/gallery/flows-gallery-page.tsx", import.meta.url), "utf8");
+  const bring = gallery.slice(gallery.indexOf("const bringRecipes"));
+  assert.ok(bring.indexOf("await importLegacyRecipes()") > 0);
+  assert.ok(bring.indexOf("await importLegacyRecipes()") < bring.indexOf("await importAllRecipes()"));
 });

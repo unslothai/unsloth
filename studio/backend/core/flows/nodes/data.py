@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 import uuid
@@ -189,15 +190,17 @@ async def recipe_group(ctx: NodeContext) -> dict:
 
     if not isinstance(ctx.inputs.get("seed"), dict) and (seed := missing_seed(body)):
         raise FlowNodeError(seed)
+    if not isinstance(ctx.inputs.get("seed"), dict):  # a wired seed replaces it anyway
+        await resolve_hub_seed(ctx, body)
     for host in recipe_hosts(body):
         if refused := ctx.capability_refusal("http", host):
             raise FlowNodeError(refused)
     local = local_model(body)
     if local:
-        # Something earlier in the run (a Benchmark, a Loop round) may have swapped the Chat model.
-        await ctx.ensure_model("chat", local)
-    if not isinstance(ctx.inputs.get("seed"), dict):  # a wired seed replaces it anyway
-        await resolve_hub_seed(ctx, body)
+        # The preset names a model: it is loaded here, under the GPU lease, as Recipe Studio's Run does
+        # (something earlier in the run, a Benchmark or a Loop round, may have swapped the Chat model).
+        # The main slot: the job's local provider reaches only Chat's main model.
+        await ctx.ensure_model("chat", local, primary = True)
     # Validate against the seed it will run on: its columns are what the prompts read.
     await apply_seed(ctx, body)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
@@ -327,9 +330,16 @@ class RunHistory:
         await self.update(**fields)
 
     async def finish(
-        self, ctx: NodeContext, job_id: str, preview: list, total: Any, kept: Optional[list]
+        self,
+        ctx: NodeContext,
+        job_id: str,
+        preview: list,
+        total: Any,
+        kept: Optional[list],
+        output: Optional[str] = None,
     ) -> None:
-        """``kept`` is every row when the step already read them all (a run with no saved artifact)."""
+        """``kept`` is every row when the step already read them all (a run with no saved artifact);
+        ``output`` is the dataset the run's pages read when it is not the job's own (a schema transform's)."""
         if not self.enabled:
             return
         rows, analysis = preview, None
@@ -350,6 +360,7 @@ class RunHistory:
             dataset = rows,
             datasetTotal = total if isinstance(total, int) else len(rows),
             analysis = analysis if isinstance(analysis, dict) else None,
+            **({"output_ref": output} if output else {}),
         )
 
 
@@ -437,54 +448,107 @@ async def run_recipe(
     preview: list = []
     total = None
     try:
-        page = await ctx.call(
-            "GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset", params = {"limit": 20}
-        )
-        if isinstance(page, dict):
-            preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
-            total = page.get("total")
-    except FlowNodeError:
-        pass
-    # The job's own row count is the last batch's on a batched run; the dataset page counts them all.
-    rows = (
-        total
-        if isinstance(total, int)
-        else (status.get("rows") if isinstance(status, dict) else None)
-    )
-    artifact = status.get("artifact_path") if isinstance(status, dict) else None
-    saved = isinstance(artifact, str) and artifact.strip()
-    try:
-        kept = None if saved else await recipe_rows(ctx, job_id)
-    except BaseException as exc:
-        # finish() never runs, so the record would stay running and the Runs pane keep polling.
-        failed = isinstance(exc, FlowNodeError)
-        await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
-        raise
-    await history.finish(ctx, job_id, preview, total, kept)
-    if saved:
-        ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
-        dataset = {
-            "kind": "dataset",
-            "source": "recipe",
-            "ref": ref,
-            "job_id": job_id,
-            "rows": rows,
-        }
-        if preview:
-            dataset["columns"] = lead_columns(
-                {k for r in preview for k in r}, generated_columns(body)
+        try:
+            page = await ctx.call(
+                "GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset", params = {"limit": 20}
             )
-    else:
-        if not kept:
-            raise FlowNodeError("The Data Recipe produced no rows")
-        dataset = await upload_rows(
-            ctx,
-            kept,
-            f"recipe-{job_id}",
-            made_by = "preview" if run.get("execution_type") == "preview" else "recipe",
-            first = generated_columns(body),
+            if isinstance(page, dict):
+                preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
+                total = page.get("total")
+        except FlowNodeError:
+            pass
+        # The job's own row count is the last batch's on a batched run; the dataset page counts them all.
+        rows = (
+            total
+            if isinstance(total, int)
+            else (status.get("rows") if isinstance(status, dict) else None)
         )
+        artifact = status.get("artifact_path") if isinstance(status, dict) else None
+        saved = isinstance(artifact, str) and artifact.strip()
+        transform = schema_transform(body)
+        # A schema transform's rows are the recipe's output; Data Designer keeps them beside the dataset.
+        reshaped = None
+        if transform and saved:
+            folder = Path(artifact.strip()) / "processors-files" / transform[0]
+            if folder.is_dir():
+                reshaped = f"processors-files/{transform[0]}"
+                preview = await asyncio.to_thread(parquet_head, folder, 20)
+        elif transform and isinstance(status, dict):
+            made = (status.get("processor_artifacts") or {}).get(transform[0])
+            if isinstance(made, list):
+                reshaped = [row for row in made if isinstance(row, dict)]
+                preview = reshaped[:20]
+        # Every row the job made, up to the most a Recipe Dataset step can ask for.
+        kept = (
+            None
+            if saved
+            else reshaped
+            if isinstance(reshaped, list)
+            else await recipe_rows(ctx, job_id, limit = max(MAX_RECIPE_ROWS, rows or 0))
+        )
+        made_columns = transform[1] if reshaped is not None else generated_columns(body)
+        if saved:
+            ref = f"recipes/{Path(artifact.strip()).name}/{reshaped or 'parquet-files'}"
+            dataset = {
+                "kind": "dataset",
+                "source": "recipe",
+                "ref": ref,
+                "job_id": job_id,
+                "rows": rows,
+            }
+            if preview:
+                dataset["columns"] = lead_columns({k for r in preview for k in r}, made_columns)
+        else:
+            if not kept:
+                raise FlowNodeError("The Data Recipe produced no rows")
+            dataset = await upload_rows(
+                ctx,
+                kept,
+                f"recipe-{job_id}",
+                made_by = "preview" if run.get("execution_type") == "preview" else "recipe",
+                first = made_columns,
+            )
+        # Completed only once its dataset is in hand: an empty job or a refused upload is a failed run.
+        await history.finish(
+            ctx,
+            job_id,
+            preview,
+            total,
+            kept,
+            output = dataset.get("ref") if reshaped is not None else None,
+        )
+    except BaseException as exc:
+        # A Stop or failure anywhere before the record is finished would leave it running, and the
+        # Runs pane polling it.
+        if history.record.get("status") not in ("completed", "error", "cancelled"):
+            failed = isinstance(exc, FlowNodeError)
+            await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
+        raise
     return {"dataset": dataset, "preview": preview}
+
+
+def schema_transform(recipe: Any) -> Optional[tuple[str, list[str]]]:
+    """The recipe's schema transform (the one a recipe group edits): its name and output columns."""
+    for processor in recipe.get("processors") or [] if isinstance(recipe, dict) else []:
+        if not isinstance(processor, dict) or processor.get("processor_type") != "schema_transform":
+            continue
+        name, template = processor.get("name"), processor.get("template")
+        if (
+            isinstance(name, str)
+            and name.strip()
+            and Path(name).name == name
+            and name not in (".", "..")
+        ):
+            return name, list(template) if isinstance(template, dict) else []
+    return None
+
+
+def parquet_head(folder: Path, limit: int) -> list[dict]:
+    try:
+        import pyarrow.dataset as ds
+        return ds.dataset(str(folder), format = "parquet").head(limit).to_pylist()
+    except Exception:
+        return []
 
 
 def generated_columns(recipe: Any) -> list[str]:
@@ -534,6 +598,47 @@ async def seed_config(ctx: NodeContext, dataset: dict, current: Any) -> dict:
     raise FlowNodeError("A recipe seed takes a Hub dataset, a Data Recipe or Rows to Dataset")
 
 
+def seed_files(recipe: Any, wired: Any) -> Optional[str]:
+    """A digest of the files a recipe's local seed reads (names, sizes, times), or None when it has none."""
+    import glob
+    import hashlib
+
+    patterns: list[str] = []
+    if isinstance(wired, dict) and wired.get("source") in ("local", "recipe"):
+        try:
+            patterns.append(local_seed_path(wired.get("ref")))
+        except FlowNodeError:
+            return None
+    elif isinstance(wired, dict):
+        return None
+    else:
+        source = (
+            (recipe.get("seed_config") or {}).get("source") if isinstance(recipe, dict) else None
+        )
+        if isinstance(source, dict) and source.get("seed_type") == "local":
+            patterns.append(source.get("path"))
+        elif isinstance(source, dict) and source.get("seed_type") == "unstructured":
+            # The seed plugin still takes the older single `path`.
+            patterns.extend(source.get("paths") or [source.get("path")])
+    files = set()
+    for pattern in patterns:
+        if not isinstance(pattern, str) or not pattern.strip():
+            continue
+        # A relative seed (./seed.jsonl) is read from where Studio runs, as Data Designer reads it.
+        pattern = os.path.abspath(os.path.expanduser(pattern))
+        for path in glob.glob(pattern, recursive = True):
+            walked = os.walk(path) if os.path.isdir(path) else [("", [], [path])]
+            files.update(os.path.join(root, name) for root, _, names in walked for name in names)
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        digest.update(f"{path}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    return digest.hexdigest() if files else None
+
+
 def local_seed_path(ref: Any) -> str:
     from hub.utils.host_paths import resolve_host_path_reference
     from utils.paths import resolve_dataset_path
@@ -566,6 +671,19 @@ async def rows_to_dataset(ctx: NodeContext) -> dict:
     return {"dataset": await upload_rows(ctx, rows, name, made_by = "rows")}
 
 
+def upload_ref(stored: str) -> str:
+    """How a saved upload is named in a dataset value. The value is cached and saved with the flow, so
+    it names the upload by its place in the account's uploads folder: a `ref:` lives only in this
+    process's table and is gone after a restart."""
+    from hub.utils.host_paths import cache_reference
+    from utils.paths.storage_roots import dataset_uploads_root
+
+    try:
+        return f"uploads/{Path(stored).relative_to(dataset_uploads_root()).as_posix()}"
+    except ValueError:
+        return cache_reference(stored)
+
+
 async def upload_rows(
     ctx: NodeContext,
     rows: list[dict],
@@ -584,20 +702,10 @@ async def upload_rows(
     stored = saved.get("stored_path") if isinstance(saved, dict) else None
     if not isinstance(stored, str) or not stored:
         raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    from hub.utils.host_paths import cache_reference
-    from utils.paths.storage_roots import dataset_uploads_root
-
-    # The value is cached and saved with the flow, so it names the upload by its place in the account's
-    # uploads folder: a `ref:` lives only in this process's table and is gone after a restart.
-    path = Path(stored)
-    try:
-        ref = f"uploads/{path.relative_to(dataset_uploads_root()).as_posix()}"
-    except ValueError:
-        ref = cache_reference(stored)
     value = {
         "kind": "dataset",
         "source": "local",
-        "ref": ref,
+        "ref": upload_ref(stored),
         "rows": len(rows),
         "columns": lead_columns({k for r in rows for k in r}, first),
     }
@@ -611,6 +719,10 @@ def lead_columns(names: Iterable[str], first: Sequence[str]) -> list[str]:
     names = set(names)
     lead = [n for n in dict.fromkeys(first) if n in names]
     return lead + sorted(names - set(lead))
+
+
+# The Recipe Dataset step's rows cap (specs.py), the Run dialog's.
+MAX_RECIPE_ROWS = 200_000
 
 
 async def recipe_rows(

@@ -165,7 +165,8 @@ def import_recipe(payload: Any, *, group_id: str = "recipe") -> dict:
     )
     notes = [
         {
-            "id": f"{group_id}_{n['id']}"[:64],
+            # A Recipe Studio note is named freely ("My notes"); a flow note id is a slug.
+            "id": f"{group_id[:48]}_note{k}",
             "text": str(n.get("markdown") or "")[:20_000],
             "rect": [float(k * 340), float(height + 40), 320.0, 200.0],
             "color": n.get("note_color") if _HEX.match(str(n.get("note_color") or "")) else None,

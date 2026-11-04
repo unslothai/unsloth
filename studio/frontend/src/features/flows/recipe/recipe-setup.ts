@@ -166,7 +166,13 @@ export function recipeSetup(
     const fields = [
       {
         label: "Model",
-        value: name || (provider?.local ? "The loaded chat model" : "not set"),
+        // "local" (as the starter has it) is the backend's word for Chat's loaded model too.
+        value:
+          name && !(provider?.local && name.toLowerCase() === "local")
+            ? name
+            : provider?.local
+              ? "The loaded chat model"
+              : "not set",
       },
     ];
     if (inference.temperature !== undefined)

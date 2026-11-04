@@ -57,16 +57,58 @@ def _local_url(url: Any) -> bool:
     return isinstance(url, str) and url.startswith("/api/") and "//" not in url and "\\" not in url
 
 
-def scrub(value: Any) -> Any:
-    """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively."""
+# Keys that are names someone chose, not settings: an object schema's properties (a structured
+# output's `token` field), and every key of a schema transform's template (its output columns).
+_NAMES = ("properties", "patternProperties", "$defs", "definitions")
+
+
+_SUBSCHEMAS = (
+    "items",
+    "additionalProperties",
+    "anyOf",
+    "oneOf",
+    "allOf",
+    "not",
+    "prefixItems",
+    "if",
+    "then",
+    "else",
+    "contains",
+    "propertyNames",
+)
+
+
+def _object_schema(value: dict) -> bool:
+    kind = value.get("type")
+    return kind == "object" or (isinstance(kind, list) and "object" in kind) or "$schema" in value
+
+
+def _names_below(parent: dict, key: Any, names: str) -> str:
+    """How scrub reads ``parent[key]``: "all" (a transform template), "one" (a schema's property
+    names), "schema" (a schema, whose keys are keywords) or "" (settings)."""
+    if names == "all" or (key == "template" and parent.get("processor_type") == "schema_transform"):
+        return "all"
+    if names == "one" or key == "output_format":
+        # A property's schema, or a structured-output column's whole schema.
+        return "schema"
+    if key in _NAMES and (names == "schema" or _object_schema(parent)):
+        return "one"
+    if names == "schema" and key in _SUBSCHEMAS:
+        return "schema"
+    return ""
+
+
+def scrub(value: Any, names: str = "") -> Any:
+    """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively.
+    ``names`` says whose keys these are (``_names_below``): a schema's or a template's keep them all."""
     if isinstance(value, dict):
         found = {
-            k: scrub(v)
+            k: scrub(v, _names_below(value, k, names))
             for k, v in value.items()
-            if not (isinstance(k, str) and _SECRET_KEY.search(k))
+            if names or not (isinstance(k, str) and _SECRET_KEY.search(k))
         }
         # Request headers carry credentials under any name (Cookie, X-Custom-Auth): keep the names, drop the values.
-        if isinstance(found.get("headers"), dict):
+        if not names and isinstance(found.get("headers"), dict):
             found["headers"] = {
                 k: v if str(k).lower() in _PLAIN_HEADERS else ""
                 for k, v in found["headers"].items()
@@ -76,7 +118,7 @@ def scrub(value: Any) -> Any:
             found.pop("url")
         return found
     if isinstance(value, list):
-        return [scrub(v) for v in value]
+        return [scrub(v, names if names in ("all", "schema") else "") for v in value]
     if isinstance(value, str):
         if _SECRET_VALUE.search(value):
             value = _SECRET_VALUE.sub("", value)

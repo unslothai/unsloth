@@ -33,10 +33,14 @@ import {
   PlayIcon,
 } from "./icon-data";
 import { nodeIcon } from "./icons";
+import { LLM_SETTINGS_NODES, withoutPanelParams } from "./llm-settings";
+import { LlmSettingsPanel } from "./llm-settings-panel";
 import { NodeIconTile } from "./node-card";
 import { NODE_LOOKS } from "./node-looks";
 import { NodeHistory } from "./node-history";
 import { rerollNode, runToNode } from "./node-actions";
+import { CopyTextButton } from "./copy-text";
+import { FlowHfDatasetFields, HF_DATASET_NODE } from "./dataset-picker-field";
 import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
 import { paramVisible } from "./param-visible";
@@ -64,9 +68,10 @@ function NodeOutputs({ nodeId, spec }: { nodeId: string; spec: NodeSpec }) {
     <section className="flex flex-col gap-2 border-border/60 border-t px-4 py-3">
       <InspectorHeading>Output</InspectorHeading>
       {runtime.error && (
-        <p className="rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
-          {runtime.error}
-        </p>
+        <div className="flex items-start gap-1 rounded-lg border border-destructive/40 bg-destructive/5 py-2 pr-1.5 pl-3">
+          <p className="min-w-0 flex-1 text-xs text-destructive">{runtime.error}</p>
+          <CopyTextButton text={runtime.error} label="Copy error" className="-my-1 text-destructive/70" />
+        </div>
       )}
       {!hasOutputs && runtime.text && <OutputValue value={runtime.text} />}
       {hasOutputs &&
@@ -92,11 +97,13 @@ function ParamRow({
   bound,
   value,
   onChange,
+  onPatch,
 }: {
   param: ParamSpec;
   bound: boolean;
   value: unknown;
   onChange: (value: unknown) => void;
+  onPatch?: (patch: Record<string, unknown>) => void;
 }) {
   return (
     <div className="grid gap-1.5">
@@ -106,7 +113,7 @@ function ParamRow({
           Set by its connected input
         </p>
       ) : (
-        <ParamField spec={param} value={value} onChange={onChange} />
+        <ParamField spec={param} value={value} onChange={onChange} onPatch={onPatch} />
       )}
     </div>
   );
@@ -118,7 +125,10 @@ function InspectorImpl() {
   const inLoop = useDocStore(
     (s) => !!nodeId && loopMembers(Object.values(s.graph.nodes)).has(nodeId),
   );
-  const spec = useCatalogStore((s) => (node ? s.specs[node.type] : undefined));
+  const fullSpec = useCatalogStore((s) =>
+    node ? s.specs[node.type] : undefined,
+  );
+  const spec = withoutPanelParams(fullSpec);
   const [viewed, setViewed] = useState<Record<string, unknown> | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const color =
@@ -145,6 +155,16 @@ function InspectorImpl() {
           { [paramId]: value },
           `param:${nodeId}:${paramId}`,
         );
+    },
+    [nodeId],
+  );
+
+  const setParams = useCallback(
+    (patch: Record<string, unknown>) => {
+      if (!nodeId) return;
+      useDocStore
+        .getState()
+        .updateParams(nodeId, patch, `param:${nodeId}:dataset`);
     },
     [nodeId],
   );
@@ -294,7 +314,10 @@ function InspectorImpl() {
                 This node has no settings.
               </p>
             )}
-            {spec.params
+            {spec.type === HF_DATASET_NODE ? (
+              <FlowHfDatasetFields params={node.params} onChange={setParams} />
+            ) : (
+              spec.params
               .filter(
                 (param) =>
                   !param.advanced &&
@@ -307,48 +330,54 @@ function InspectorImpl() {
                   bound={param.bindable === true && boundParams.has(param.id)}
                   value={node.params[param.id]}
                   onChange={(value) => setParam(param.id, value)}
+                  onPatch={setParams}
                 />
-              ))}
-            {spec.params.some((param) => param.advanced) && (
-              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
-                <CollapsibleTrigger asChild={true}>
-                  <CollapsibleSectionTriggerButton
-                    label="Advanced"
-                    open={advancedOpen}
-                  />
-                </CollapsibleTrigger>
-                <CollapsibleContent className="mt-3 flex flex-col gap-4">
-                  {spec.params
-                    .filter(
-                      (param) =>
-                        param.advanced &&
-                        paramVisible(param, node.params, spec.params),
-                    )
-                    .map((param, i, shown) => (
-                      <Fragment key={param.id}>
-                        {param.group && param.group !== shown[i - 1]?.group && (
-                          <p className="border-border/60 border-t pt-3 text-xs font-medium text-foreground first:border-t-0 first:pt-0">
-                            {param.group}
-                          </p>
-                        )}
-                        <ParamRow
-                          param={param}
-                          bound={param.bindable === true && boundParams.has(param.id)}
-                          value={node.params[param.id]}
-                          onChange={(value) => setParam(param.id, value)}
-                        />
-                      </Fragment>
-                    ))}
-                </CollapsibleContent>
-              </Collapsible>
-            )}
-          </section>
+              ))
+          )}
+          {spec.params.some((param) => param.advanced) && (
+            <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+              <CollapsibleTrigger asChild={true}>
+                <CollapsibleSectionTriggerButton
+                  label="Advanced"
+                  open={advancedOpen}
+                />
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-3 flex flex-col gap-4">
+                {spec.params
+                  .filter(
+                    (param) =>
+                      param.advanced &&
+                      paramVisible(param, node.params, spec.params),
+                  )
+                  .map((param, i, shown) => (
+                    <Fragment key={param.id}>
+                      {param.group && param.group !== shown[i - 1]?.group && (
+                        <p className="border-border/60 border-t pt-3 text-xs font-medium text-foreground first:border-t-0 first:pt-0">
+                          {param.group}
+                        </p>
+                      )}
+                      <ParamRow
+                        param={param}
+                        bound={param.bindable === true && boundParams.has(param.id)}
+                        value={node.params[param.id]}
+                        onChange={(value) => setParam(param.id, value)}
+                        onPatch={setParams}
+                      />
+                    </Fragment>
+                  ))}
+              </CollapsibleContent>
+            </Collapsible>
+          )}
+        </section>
         )}
         {node.type === GENERATE_TYPE && <RecipePanel node={node} />}
         {spec.type === "train.finetune" &&
           node.params.objective === "grpo" && <RewardTryPanel node={node} />}
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
+        )}
+        {fullSpec && LLM_SETTINGS_NODES.has(spec.type) && (
+          <LlmSettingsPanel node={node} spec={fullSpec} />
         )}
         <NodeOutputs nodeId={node.id} spec={spec} />
         {viewed && (

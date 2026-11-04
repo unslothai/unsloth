@@ -17,6 +17,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Handle, Position } from "@xyflow/react";
 import { type ComponentProps, type ReactNode, useState } from "react";
 import type { NodeRuntime } from "../stores/runtime-store";
+import { CopyTextButton } from "./copy-text";
 import { accentTone } from "./node-tones";
 import { portInk } from "./theme-colors";
 
@@ -26,17 +27,19 @@ import { portInk } from "./theme-colors";
 /** Centre of the two-line header: where flow-in and collapsed ports sit. */
 export const HEADER_MID = 22;
 
+// Done and cached cards keep the plain border; their badge says so. Green means hover or selection.
 const STATUS_BORDER: Record<string, string> = {
   queued: "border-ring",
-  waiting: "border-dashed border-amber-400/70",
-  loading_model: "border-ring-strong shadow-md",
-  running: "border-ring-strong shadow-md",
-  done: "border-emerald-500/60 ring-1 ring-emerald-500/20",
-  cached: "border-emerald-500/40",
-  failed: "border-destructive/60 ring-1 ring-destructive/20",
+  waiting: "border-dashed border-amber-400/70 hover:border-amber-400/70",
+  loading_model: "border-ring-strong hover:border-ring-strong shadow-md",
+  running: "border-ring-strong hover:border-ring-strong shadow-md",
+  failed:
+    "border-destructive/60 hover:border-destructive/60 ring-1 ring-destructive/20",
   cancelled: "opacity-80",
   skipped: "opacity-60",
 };
+// Statuses whose own border colour wins over hover and selection.
+const LOUD_STATUS = new Set(["waiting", "loading_model", "running", "failed"]);
 
 const STATUS_LABEL: Record<string, string> = {
   queued: "Queued",
@@ -79,6 +82,7 @@ export function NodeCard({
   runtime,
   disabled,
   lowDetail,
+  sized,
   className,
   children,
   ...props
@@ -86,19 +90,28 @@ export function NodeCard({
   runtime: NodeRuntime;
   disabled?: boolean;
   lowDetail?: boolean;
+  /** Resized by hand: fill the stored box instead of the default width. */
+  sized?: boolean;
   className?: string;
   children: ReactNode;
 } & Omit<ComponentProps<"div">, "children">) {
   return (
     <BaseNode
       className={cn(
-        "corner-squircle group/node w-65 min-w-0 overflow-visible border-border/60 shadow-sm",
+        "corner-squircle group/node min-w-0 overflow-visible border-border/60 shadow-sm",
+        sized ? "flex h-full w-full flex-col" : "w-65",
+        !LOUD_STATUS.has(runtime.status) &&
+          "hover:border-emerald-500/60 in-[.selected]:border-emerald-500/80",
+        // React Flow marks the wrapper .selected; BaseNode's escaped [.react-flow\_\_node.selected_&] form never matched.
+        "in-[.selected]:ring-2 in-[.selected]:ring-emerald-500/25",
         STATUS_BORDER[runtime.status],
         disabled && "opacity-45",
-        lowDetail && "[&_.flow-detail]:invisible",
+        // Media stays: a shrunk image still reads where shrunk text does not.
+        lowDetail && "[&_.flow-detail]:invisible [&_.flow-media]:visible",
         className,
       )}
       data-status={runtime.status}
+      data-sized={sized || undefined}
       {...props}
     >
       {children}
@@ -324,7 +337,7 @@ export function NodeFieldRows({ rows }: { rows: FieldRow[] }) {
   );
 }
 
-/** Recipe Studio's "Show inputs" disclosure for long text kept off the card. */
+/** Long text (a system prompt, a template) clamped on the card, with Recipe Studio's "Show inputs" for the rest. */
 export function NodeDisclosure({
   sections,
 }: { sections: { label: string; text: string }[] }) {
@@ -332,6 +345,16 @@ export function NodeDisclosure({
   if (!sections.length) return null;
   return (
     <div className="flow-detail flex flex-col gap-1.5 px-3">
+      {!open &&
+        sections.map((section) => (
+          <p
+            key={section.label}
+            data-testid="flow-node-long-text"
+            className="line-clamp-2 whitespace-pre-wrap text-ui-11 leading-snug text-muted-foreground"
+          >
+            {section.text}
+          </p>
+        ))}
       <Button
         type="button"
         size="xs"
@@ -350,9 +373,16 @@ export function NodeDisclosure({
             key={section.label}
             className="nowheel max-h-40 overflow-auto rounded-md border border-border/60 bg-muted/40 px-2 py-1.5"
           >
-            <p className="text-ui-10 font-semibold uppercase tracking-wide text-muted-foreground">
-              {section.label}
-            </p>
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-ui-10 font-semibold uppercase tracking-wide text-muted-foreground">
+                {section.label}
+              </p>
+              <CopyTextButton
+                text={section.text}
+                label={`Copy ${section.label.toLowerCase()}`}
+                className="-my-1 -mr-1 size-5"
+              />
+            </div>
             <p className="whitespace-pre-wrap text-ui-11 leading-snug text-foreground">
               {section.text}
             </p>
@@ -364,8 +394,12 @@ export function NodeDisclosure({
 
 export function NodeError({ message }: { message: string }) {
   return (
-    <p className="mx-3 line-clamp-3 rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1 text-ui-11 text-destructive">
-      {message}
-    </p>
+    <div className="mx-3 flex items-start gap-1 rounded-md border border-destructive/40 bg-destructive/5 py-1 pr-1 pl-2">
+      {/* The clamp sits on the text, not the padded box, so a fourth line can't show in the padding. */}
+      <p className="line-clamp-3 min-w-0 flex-1 text-ui-11 text-destructive">
+        {message}
+      </p>
+      <CopyTextButton text={message} label="Copy error" className="size-5 text-destructive/70" />
+    </div>
   );
 }

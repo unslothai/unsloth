@@ -748,6 +748,16 @@ def model_needs(plan: Plan, among: Optional[Iterable[str]] = None) -> list[dict]
     pool = plan.order if among is None else [n for n in plan.order if n in set(among)]
     for nid in pool:
         spec = plan.specs[nid]
+        compiled = (plan.nodes[nid].get("params") or {}).get(RECIPE_PARAM)
+        if isinstance(compiled, dict) and isinstance(compiled.get("recipe"), dict):
+            # A Recipe Dataset step loads the model its recipe's local preset names.
+            from core.flows.nodes.data import local_model
+            named = local_model(compiled["recipe"])
+            if named:
+                key = ("chat", named["repo"].lower(), (named.get("variant") or "").lower())
+                seen.setdefault(
+                    key, {"kind": "chat", "repo": named["repo"], "variant": named.get("variant")}
+                )
         if not spec.get("model_kind"):
             continue
         choice = (plan.nodes[nid].get("params") or {}).get("model")

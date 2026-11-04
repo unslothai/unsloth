@@ -279,6 +279,25 @@ def _recipe_flow(payload: Any, name: str, source: Optional[dict]) -> tuple[dict,
 _UPLOAD_ID = re.compile(r"[A-Za-z0-9_-]+")
 
 
+def _upload_dir_of(source: Any, root: Path) -> Optional[str]:
+    """The one upload folder directly under ``root`` that a seed's document paths are in, else None."""
+    if not isinstance(source, dict):
+        return None
+    paths = [source.get("path")] + list(source.get("paths") or [])
+    dirs = set()
+    for path in paths:
+        if not isinstance(path, str) or not path:
+            continue
+        parent = Path(path).parent
+        try:
+            if parent.parent.resolve() != root.resolve():
+                return None
+        except OSError:
+            return None
+        dirs.add(parent.name)
+    return dirs.pop() if len(dirs) == 1 else None
+
+
 def _own_uploads(doc: dict) -> None:
     """Copy a recipe's uploaded documents under a new upload id: removing one in the flow deletes the
     file, which must not break the recipe it came from."""
@@ -288,15 +307,23 @@ def _own_uploads(doc: dict) -> None:
 
     root = unstructured_uploads_root()
     for group in doc.get("groups") or []:
-        ui = group.get("ui") if isinstance(group, dict) else None
+        if not isinstance(group, dict):
+            continue
+        seed = (group.get("config") or {}).get("seed_config")
+        source = seed.get("source") if isinstance(seed, dict) else None
+        ui = group.get("ui")
         uid = ui.get("unstructured_upload_uid") if isinstance(ui, dict) else None
+        if not isinstance(uid, str) or not uid:
+            # Older document recipes keep no upload id; their files sit in a folder named by the
+            # upload block (`n1`), which the paths themselves name.
+            uid = _upload_dir_of(source, root)
         if not isinstance(uid, str) or not _UPLOAD_ID.fullmatch(uid) or not (root / uid).is_dir():
             continue
         new = uuid.uuid4().hex
         shutil.copytree(root / uid, root / new)
+        if not isinstance(ui, dict):
+            ui = group["ui"] = {}
         ui["unstructured_upload_uid"] = new
-        seed = (group.get("config") or {}).get("seed_config")
-        source = seed.get("source") if isinstance(seed, dict) else None
         if not isinstance(source, dict):
             continue
 
@@ -370,9 +397,35 @@ def import_recipe(
     return {"flow": flow, "report": {"notices": notices}}
 
 
-def _recipe_notes(doc: dict, group: dict) -> list[dict]:
+def _block_names(recipe: dict) -> set[str]:
+    """Every name a Recipe Studio block of ``recipe`` takes: they share one namespace with its notes."""
+    picks = (
+        ("columns", "name"),
+        ("model_providers", "name"),
+        ("mcp_providers", "name"),
+        ("model_configs", "alias"),
+        ("tool_configs", "tool_alias"),
+    )
+    names = {
+        item.get(field)
+        for key, field in picks
+        for item in recipe.get(key) or []
+        if isinstance(item, dict)
+    }
+    if recipe.get("seed_config"):
+        names.add("seed")
+    return {n for n in names if isinstance(n, str)}
+
+
+def _recipe_notes(
+    doc: dict,
+    group: dict,
+    taken: Optional[set] = None,
+) -> list[dict]:
     """The flow notes that belong to a recipe group, as Recipe Studio markdown notes: the ones its
-    import made (id ``<group>_...``) and any note sitting on its frame."""
+    import made (id ``<group>_...``) and any note sitting on its frame, each named apart from
+    ``taken`` (the recipe's block names) and the others."""
+    taken = set(taken or ())
     gid = str(group.get("id"))
     gx, gy, gw, gh = (list(group.get("rect") or []) + [0, 0, 0, 0])[:4]
     out = []
@@ -383,6 +436,10 @@ def _recipe_notes(doc: dict, group: dict) -> list[dict]:
         if not (nid.startswith(f"{gid}_") or on_frame):
             continue
         name = nid[len(gid) + 1 :] if nid.startswith(f"{gid}_") else nid
+        base, n = name, 2
+        while name in taken:
+            name, n = f"{base}_{n}", n + 1
+        taken.add(name)
         item = {
             "id": name,
             "name": name,
@@ -420,7 +477,7 @@ def export_recipe(body: RecipeExportBody) -> dict:
     except RecipeCompileError as exc:
         raise HTTPException(status_code = 400, detail = str(exc))
     recipe, ui = share_recipe(compiled["recipe"], graph["group"].get("ui"))
-    notes = _recipe_notes(body.doc, graph["group"])
+    notes = _recipe_notes(body.doc, graph["group"], _block_names(recipe))
     if notes:
         ui["nodes"] = [*(ui.get("nodes") or []), *notes]
     run = compiled["run"]
@@ -944,6 +1001,45 @@ def dataset_rows(request: Request, body: DatasetRowsBody) -> dict:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
+
+
+class DatasetExportBody(BaseModel):
+    value: dict[str, Any]
+
+
+@router.post("/dataset-export")
+def dataset_export(body: DatasetExportBody) -> StreamingResponse:
+    """Every row of a saved Data Recipe output (a schema transform's parquet) as JSONL: the job's
+    own export reads the untransformed dataset beside it."""
+    from core.flows.dataset_rows import DatasetRowsError, dataset_source
+    from core.flows.nodes.data import recipe_artifact
+    from core.training.account_jobs import account_path
+
+    value = body.value
+    if value.get("source") != "recipe" or not recipe_artifact(value.get("ref")):
+        raise HTTPException(status_code = 400, detail = "Only a saved Data Recipe output exports here")
+    try:
+        folder = Path(dataset_source(value)["dataset_name"])
+        account_path(str(folder), reference = True)
+    except (DatasetRowsError, ValueError) as exc:
+        raise HTTPException(status_code = 400, detail = str(exc)) from exc
+    from utils.paths.path_utils import drop_appledouble_metadata
+
+    # Without the ._batch.parquet companions a macOS volume leaves, which no reader can parse.
+    files = drop_appledouble_metadata(sorted(folder.glob("*.parquet"))) if folder.is_dir() else []
+    if not files:
+        raise HTTPException(status_code = 404, detail = "This dataset is no longer available")
+
+    def lines():
+        import pyarrow.parquet as pq
+
+        from core.data_recipe.export import _json_dumps_row
+        for file in files:
+            for batch in pq.ParquetFile(file).iter_batches(batch_size = 4096):
+                for row in batch.to_pylist():
+                    yield _json_dumps_row(row) + "\n"
+
+    return StreamingResponse(lines(), media_type = "application/x-ndjson")
 
 
 @router.get("/{flow_id}/latest-outputs")

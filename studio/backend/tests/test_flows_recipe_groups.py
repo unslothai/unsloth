@@ -332,6 +332,85 @@ def test_the_dataset_counts_every_batch_not_the_last_one():
     assert out["dataset"]["rows"] == 6
 
 
+def test_a_schema_transform_is_the_recipe_output(tmp_path, monkeypatch):
+    pd = pytest.importorskip("pandas")
+    pytest.importorskip("pyarrow")
+    payload = copy.deepcopy(SQL)
+    template = {"prompt": "{{ sql_prompt }}", "answer": "{{ sql }}"}
+    payload["recipe"]["processors"] = [
+        {"processor_type": "schema_transform", "name": "chat", "template": template}
+    ]
+    run = tmp_path / "recipe_sql"
+    (run / "processors-files" / "chat").mkdir(parents = True)
+    pd.DataFrame([{"prompt": "Find", "answer": "SELECT 1"}]).to_parquet(
+        run / "processors-files" / "chat" / "batch_00000.parquet", index = False
+    )
+    artifacts = {"chat": [{"prompt": "Find", "answer": "SELECT 1"}]}
+
+    def routes(path, status):
+        def answer(method, url, params, body):
+            if url == "/api/data-recipe/validate":
+                return {"valid": True}
+            if url == "/api/data-recipe/jobs":
+                return {"job_id": "job7"}
+            if url.endswith("/status"):
+                return status
+            if url.endswith("/dataset"):
+                return {"dataset": [{"sql_prompt": "Find", "sql": "SELECT 1"}], "total": 1}
+            if url.endswith("/analysis"):
+                return {}
+            raise AssertionError(url)
+
+        return answer
+
+    from storage import flows_db
+
+    saved = []
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda f, n, record: saved.append(record))
+    full = {"status": "completed", "rows": 1, "artifact_path": str(run)}
+    ctx = _FlowCtx(
+        routes(run, full),
+        params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "full"},
+    )
+    out = asyncio.run(data.recipe_group(ctx))
+    assert out["dataset"]["ref"] == "recipes/recipe_sql/processors-files/chat"
+    # The Runs view pages that output, not the job's untransformed rows.
+    assert saved[-1]["output_ref"] == out["dataset"]["ref"]
+    assert out["dataset"]["columns"] == ["prompt", "answer"]
+    assert out["preview"] == [{"prompt": "Find", "answer": "SELECT 1"}]
+
+    uploads = []
+
+    async def upload(
+        ctx,
+        rows,
+        name,
+        made_by = None,
+        first = (),
+    ):
+        uploads.append((rows, list(first)))
+        return {"kind": "dataset", "source": "local", "ref": "uploads/x"}
+
+    preview = {
+        "status": "completed",
+        "rows": 1,
+        "artifact_path": None,
+        "processor_artifacts": artifacts,
+    }
+    ctx = _Ctx(
+        routes(run, preview),
+        params = {RECIPE_PARAM: _compiled(_flow(payload)), "rows": 1, "mode": "preview"},
+    )
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(data, "upload_rows", upload)
+        out = asyncio.run(data.recipe_group(ctx))
+    assert uploads == [([{"prompt": "Find", "answer": "SELECT 1"}], ["prompt", "answer"])]
+    assert out["preview"] == [{"prompt": "Find", "answer": "SELECT 1"}]
+    # A name that is a path never reaches the artifact folder.
+    payload["recipe"]["processors"][0]["name"] = "../x"
+    assert data.schema_transform(payload["recipe"]) is None
+
+
 def test_a_bare_hub_seed_is_resolved_before_validate_like_recipe_studios_load():
     payload = json.loads((LEARNING / "instruction-from-answer.json").read_text(encoding = "utf-8"))
     assert payload["recipe"]["seed_config"]["source"]["path"] == "unsloth/alpaca-cleaned"
@@ -728,6 +807,36 @@ def test_a_migrated_recipe_gets_its_own_copy_of_uploaded_documents(tmp_path, mon
     assert (tmp_path / "up1" / "u1.extracted.txt").read_text() == "page"
 
 
+def test_a_migrated_legacy_document_recipe_with_no_upload_id_gets_its_own_copy(
+    tmp_path, monkeypatch
+):
+    import utils.paths.storage_roots as roots
+
+    monkeypatch.setattr(roots, "unstructured_uploads_root", lambda: tmp_path)
+    (tmp_path / "n1").mkdir()
+    (tmp_path / "n1" / "u1.extracted.txt").write_text("page")
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["seed_config"] = {
+        "source": {
+            "seed_type": "unstructured",
+            "paths": [str(tmp_path / "n1" / "u1.extracted.txt")],
+        }
+    }
+    # Recipes saved before upload ids keep only the file ids; the folder is the upload block's.
+    payload["ui"] = {"unstructured_file_ids": ["u1"]}
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    flows_routes._own_uploads(doc)
+    group = doc["groups"][0]
+    new = group["ui"]["unstructured_upload_uid"]
+    assert new and new != "n1"
+    assert group["config"]["seed_config"]["source"]["paths"] == [
+        str(tmp_path / new / "u1.extracted.txt")
+    ]
+    for f in (tmp_path / new).iterdir():
+        f.unlink()
+    assert (tmp_path / "n1" / "u1.extracted.txt").read_text() == "page"
+
+
 def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeypatch, tmp_path):
     from core.flows import engine as engine_mod
     from studio_mcp import loading
@@ -735,7 +844,8 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeyp
     loaded = {"name": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
 
     async def resident(caller):
-        return {"llm": [loaded["name"]]}, {"gguf_variant": loaded["variant"]}
+        status = {"gguf_variant": loaded["variant"], "model_identifier": loaded["name"]}
+        return {"llm": [loaded["name"]]}, status
 
     monkeypatch.setattr(loading, "_resident", resident)
 
@@ -779,6 +889,454 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeyp
     assert key() is None
 
 
+def test_recipe_dataset_takes_every_row_count_the_run_dialog_accepts():
+    from core.flows.engine import param_values
+    from core.flows.specs import SPECS_BY_TYPE
+
+    spec = SPECS_BY_TYPE["recipe.generate"]
+    assert param_values(spec, {"params": {"rows": 150000}})["rows"] == 150000
+    assert param_values(spec, {"params": {"rows": 200000}})["rows"] == 200000
+
+
+def test_a_recipe_on_chats_model_is_cached_under_the_model_it_ran_on(monkeypatch):
+    from core.flows.engine import FlowEngine
+    from studio_mcp import loading
+
+    loaded = {"name": "org/model-a"}
+
+    async def resident(caller):
+        return {"llm": [loaded["name"]]}, {"model_identifier": loaded["name"]}
+
+    monkeypatch.setattr(loading, "_resident", resident)
+    payload = copy.deepcopy(SQL)
+    for provider in payload["recipe"]["model_providers"]:
+        provider["is_local"] = True
+    doc = _flow(payload)
+    ran = []
+
+    async def generate(ctx):
+        # Another GPU step switched Chat's model while this one waited for the GPU.
+        if not ran:
+            loaded["name"] = "org/model-b"
+        ran.append(loaded["name"])
+        return {
+            "dataset": {"kind": "dataset", "source": "local", "ref": loaded["name"]},
+            "preview": [],
+        }
+
+    eng = FlowEngine()
+    from core.flows.registry import load_handlers
+
+    eng.handlers = {**load_handlers(), GENERATE_TYPE: generate}
+    eng.mint_key = lambda account: ("sk-unsloth-test", None)
+    eng.revoke_key = lambda key_id: None
+
+    async def run():
+        rs = await eng.start_run(app = None, flow_id = doc["id"], doc = doc, options = {})
+        await asyncio.wait_for(rs.task, timeout = 20)
+        assert rs.status == "completed", {n: s.error for n, s in rs.nodes.items() if s.error}
+        return rs
+
+    asyncio.run(run())
+    assert ran == ["org/model-b"]
+    # Model A is back: its rows were never made, so it runs rather than handing back B's.
+    loaded["name"] = "org/model-a"
+    asyncio.run(run())
+    assert ran == ["org/model-b", "org/model-a"]
+
+
+def test_a_preview_over_100k_rows_keeps_every_row_it_made(monkeypatch):
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: None)
+    monkeypatch.setattr(data, "POLL_S", 0)
+    asked = []
+    real = data.recipe_rows
+
+    async def recording(
+        ctx,
+        job_id,
+        limit = 100_000,
+    ):
+        asked.append(limit)
+        return await real(ctx, job_id, limit = 2)
+
+    monkeypatch.setattr(data, "recipe_rows", recording)
+    doc = _flow()
+    routes = _job_routes("completed", preview_rows = 150_000)
+
+    def no_artifact(method, path, params, body):
+        if path == "/api/hub/datasets/upload":
+            return {"stored_path": "/x/uploaded.jsonl"}
+        found = routes(method, path, params, body)
+        if path.endswith("/status"):
+            found["artifact_path"] = None
+        return found
+
+    ctx = _Ctx(
+        no_artifact, params = {RECIPE_PARAM: _compiled(doc), "rows": 150_000, "mode": "preview"}
+    )
+    ctx.doc = doc
+    asyncio.run(data.recipe_group(ctx))
+    assert asked and asked[0] >= 150_000
+
+
+def test_a_stop_while_a_finished_recipe_is_read_back_still_closes_its_run_record(monkeypatch):
+    from core.flows.registry import FlowCancelled
+    from storage import flows_db
+
+    saved = []
+    monkeypatch.setattr(
+        flows_db, "save_recipe_run", lambda flow, node, record: saved.append(dict(record))
+    )
+    monkeypatch.setattr(data, "POLL_S", 0)
+    doc = _flow()
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    routes = _job_routes("completed")
+
+    def stopped(method, path, params, body):
+        if path.endswith("/dataset"):
+            raise FlowCancelled()
+        return routes(method, path, params, body)
+
+    class Ctx(_FlowCtx):
+        node_id = step["id"]
+
+    ctx = Ctx(stopped, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"})
+    ctx.doc = doc
+    with pytest.raises(FlowCancelled):
+        asyncio.run(data.recipe_group(ctx))
+    assert saved and saved[-1]["status"] == "cancelled" and saved[-1]["finishedAt"]
+
+
+def test_a_cached_dataset_whose_files_are_gone_is_not_handed_back(monkeypatch, tmp_path):
+    from core.flows.nodes import _common
+    from core.flows.registry import FlowNodeError
+
+    kept = tmp_path / "rows.jsonl"
+    kept.write_text("{}\\n")
+
+    def resolve(ref):
+        if not (tmp_path / ref).exists():
+            raise FlowNodeError("gone")
+        return str(tmp_path / ref)
+
+    monkeypatch.setattr(data, "local_seed_path", resolve)
+    value = {"dataset": {"kind": "dataset", "source": "local", "ref": "rows.jsonl"}, "preview": []}
+    assert _common.gallery_media_present(value)
+    kept.unlink()
+    assert not _common.gallery_media_present(value)
+    # A Hub dataset is never checked on disk.
+    assert _common.gallery_media_present({"kind": "dataset", "source": "hf", "ref": "org/data"})
+
+
+def test_a_refused_preview_upload_leaves_the_run_record_failed_not_completed(monkeypatch):
+    from storage import flows_db
+
+    saved = []
+    monkeypatch.setattr(
+        flows_db, "save_recipe_run", lambda flow, node, record: saved.append(dict(record))
+    )
+    monkeypatch.setattr(data, "POLL_S", 0)
+    doc = _flow()
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    routes = _job_routes("completed")
+
+    def refused(method, path, params, body):
+        if path == "/api/hub/datasets/upload":
+            raise FlowNodeError("The dataset is larger than the upload limit")
+        found = routes(method, path, params, body)
+        if path.endswith("/status"):
+            found["artifact_path"] = None
+        return found
+
+    class Ctx(_FlowCtx):
+        node_id = step["id"]
+
+    ctx = Ctx(refused, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "preview"})
+    ctx.doc = doc
+    with pytest.raises(FlowNodeError, match = "upload limit"):
+        asyncio.run(data.recipe_group(ctx))
+    assert saved[-1]["status"] == "error" and "upload limit" in saved[-1]["error"]
+
+
+def test_the_dataset_viewer_reads_a_bare_hub_name_the_dataset_node_accepts():
+    from core.flows.dataset_rows import dataset_source
+    found = dataset_source({"kind": "dataset", "source": "hf", "ref": "imdb", "split": "train"})
+    assert found["dataset_name"] == "imdb"
+
+
+def test_a_recipe_naming_a_local_model_loads_it_before_its_job(monkeypatch):
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: None)
+    monkeypatch.setattr(data, "POLL_S", 0)
+    payload = copy.deepcopy(SQL)
+    for provider in payload["recipe"]["model_providers"]:
+        provider["is_local"] = True
+    for preset in payload["recipe"]["model_configs"]:
+        preset["model"] = "unsloth/Qwen3-1.7B-GGUF"
+        preset["gguf_variant"] = "Q4_K_M"
+    doc = _flow(payload)
+    order = []
+    routes = _job_routes("completed")
+
+    def recording(method, path, params, body):
+        order.append(path)
+        return routes(method, path, params, body)
+
+    class Ctx(_FlowCtx):
+        async def ensure_model(
+            self,
+            kind,
+            choice,
+            options = None,
+            primary = False,
+        ):
+            order.append(("load", kind, choice["repo"], choice["variant"], primary))
+
+    ctx = Ctx(recording, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"})
+    ctx.doc = doc
+    asyncio.run(data.recipe_group(ctx))
+    # Into Chat's main slot: the job's local provider reaches only that one.
+    assert order[0] == ("load", "chat", "unsloth/Qwen3-1.7B-GGUF", "Q4_K_M", True)
+    assert order.index("/api/data-recipe/jobs") > 0
+    assert data.local_model({"model_providers": [], "columns": []}) is None
+
+
+def test_a_named_recipe_model_without_a_quant_is_keyed_on_the_quant_chat_holds(monkeypatch):
+    from core.flows import engine as engine_mod
+    from studio_mcp import loading
+
+    held = {"name": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
+
+    async def resident(caller):
+        return {"llm": [held["name"]]}, {
+            "gguf_variant": held["variant"],
+            "model_identifier": held["name"],
+        }
+
+    monkeypatch.setattr(loading, "_resident", resident)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [{"alias": "m", "provider": "local", "model": "unsloth/Qwen3-4B-GGUF"}],
+        "columns": [{"name": "c", "column_type": "llm-text", "model_alias": "m"}],
+    }
+    eng = engine_mod.FlowEngine()
+    key = lambda: asyncio.run(  # noqa: E731
+        eng._model_key(
+            Ctx(), {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}}
+        )
+    )
+    first = key()
+    held["variant"] = "Q8_0"
+    assert key() != first
+    # Another model in Chat: the named one loads at its default quant, whatever Chat held.
+    held["name"] = "unsloth/gemma-3-4b-it-GGUF"
+    assert key()["variant"] is None
+
+
+def test_a_primary_load_never_goes_alongside_the_main_model(monkeypatch):
+    from core.flows.nodes import _common
+
+    went = []
+
+    async def alongside(
+        ctx,
+        repo,
+        variant,
+        options = None,
+    ):
+        went.append(repo)
+        return {"repo": repo, "variant": variant}
+
+    async def resident_name(ctx, kind):
+        return "org/model-a"
+
+    monkeypatch.setattr(_common, "_alongside", alongside)
+    monkeypatch.setattr(_common, "resident_name", resident_name)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+        chat_model = None
+
+    found = asyncio.run(_common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None))
+    assert went == ["org/model-b"] and found == {"repo": "org/model-b", "variant": None}
+    went.clear()
+    with pytest.raises(Exception):
+        # Past the alongside branch it tries the main slot (no real Studio here).
+        asyncio.run(
+            _common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None, primary = True)
+        )
+    assert went == []
+
+
+def test_a_seed_file_edited_in_place_is_a_new_dataset(tmp_path, monkeypatch):
+    import os
+
+    from core.flows import engine as engine_mod
+
+    seed = tmp_path / "seed.jsonl"
+    seed.write_text('{"word": "RED"}\n')
+    recipe = {"seed_config": {"source": {"seed_type": "local", "path": str(seed)}}}
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+        inputs: dict = {}
+
+    eng = engine_mod.FlowEngine()
+    key = lambda ctx = Ctx(): asyncio.run(  # noqa: E731
+        eng._model_key(ctx, {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}})
+    )
+    first = key()
+    assert first and first["seed_files"]
+    seed.write_text('{"word": "BLUE"}\n')
+    os.utime(seed, ns = (1, 1))
+    assert key() != first
+    # A wired seed replaces the recipe's own, and is keyed on what it reads.
+    folder = tmp_path / "upload"
+    folder.mkdir()
+    (folder / "a.parquet").write_bytes(b"x")
+    wired = Ctx()
+    wired.inputs = {"seed": {"kind": "dataset", "source": "local", "ref": str(folder)}}
+    monkeypatch.setattr(data, "local_seed_path", lambda ref: f"{ref}/*.parquet")
+    before = key(wired)
+    (folder / "a.parquet").write_bytes(b"xy")
+    assert key(wired) != before
+    # A document seed in the plugin's older single-path form is keyed on its file too.
+    doc = tmp_path / "doc.extracted.txt"
+    doc.write_text("one")
+    recipe["seed_config"] = {"source": {"seed_type": "unstructured", "path": str(doc)}}
+    before = key()
+    doc.write_text("two!")
+    assert before and before["seed_files"] and key() != before
+    # No local seed: the key is what it was.
+    assert key(Ctx()) is not None and data.seed_files({}, None) is None
+
+
+def test_a_primary_load_of_a_model_kept_alongside_unloads_it_there_first(monkeypatch):
+    from core.flows.nodes import _common
+    from studio_mcp import loading
+
+    state = {"main": "org/model-a", "llm": ["org/model-a", "org/model-b"]}
+    calls = []
+
+    async def resident(caller):
+        return {"llm": list(state["llm"])}, {"model_identifier": state["main"]}
+
+    async def load_llm(*a, model, **k):
+        calls.append(("load", model))
+        state["main"] = model
+
+    monkeypatch.setattr(loading, "_resident", resident)
+    monkeypatch.setattr(loading, "load_llm", load_llm)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+        chat_model = None
+        gpu_shared = False
+
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **k,
+        ):
+            calls.append((path, json))
+            state["llm"] = [n for n in state["llm"] if n != json["model_path"]]
+
+        def set_status(self, *a, **k):
+            pass
+
+    found = asyncio.run(
+        _common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None, primary = True)
+    )
+    assert found == {"repo": "org/model-b", "variant": None}
+    assert calls == [
+        ("/api/inference/unload", {"model_path": "org/model-b"}),
+        ("load", "org/model-b"),
+    ]
+
+    # A load that lands somewhere else is a failure, not a model the recipe job will refuse.
+    async def stays(*a, model, **k):
+        calls.append(("load", model))
+
+    state.update(main = "org/model-a", llm = ["org/model-a"])
+    monkeypatch.setattr(loading, "load_llm", stays)
+    with pytest.raises(FlowNodeError, match = "main slot"):
+        asyncio.run(
+            _common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None, primary = True)
+        )
+
+
+def test_a_recipes_named_local_model_is_in_the_flows_download_plan():
+    from core.flows.compiler import compile_flow, model_needs
+
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["model_providers"] = [{"name": "local", "is_local": True}]
+    for mc in payload["recipe"]["model_configs"]:
+        mc.update(provider = "local", model = "unsloth/gemma-4-E2B-it-GGUF", gguf_variant = "Q4_K_M")
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    needs = model_needs(compile_flow(doc))
+    assert {"kind": "chat", "repo": "unsloth/gemma-4-E2B-it-GGUF", "variant": "Q4_K_M"} in needs
+
+
+def test_chats_checkpoint_is_read_through_its_handle_not_its_public_name(monkeypatch, tmp_path):
+    from core.flows import engine as engine_mod
+    from hub.utils import host_paths
+    from studio_mcp import loading
+
+    first, second = tmp_path / "a" / "model.gguf", tmp_path / "b" / "model.gguf"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_bytes(b"w" * len(str(path)))
+    loaded = {"path": first}
+
+    async def resident(caller):
+        # An API-key caller sees the bare file stem and a ref: handle, never the path.
+        handle = host_paths.cache_reference(str(loaded["path"]))
+        return {"llm": ["model"]}, {"model_identifier": handle, "gguf_variant": "Q4_K_M"}
+
+    monkeypatch.setattr(loading, "_resident", resident)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [{"alias": "m", "provider": "local", "model": "local"}],
+    }
+    eng = engine_mod.FlowEngine()
+    key = lambda: asyncio.run(  # noqa: E731
+        eng._model_key(
+            Ctx(), {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}}
+        )
+    )
+    one = key()
+    assert one["local"] == str(first) and one["files"]
+    loaded["path"] = second
+    assert key() != one
+
+
+def test_a_relative_seed_file_is_fingerprinted_where_studio_runs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "seed.jsonl").write_text('{"w": "before"}\n')
+    recipe = {"seed_config": {"source": {"seed_type": "local", "path": "./seed.jsonl"}}}
+    first = data.seed_files(recipe, None)
+    assert first
+    (tmp_path / "seed.jsonl").write_text('{"w": "changed seed contents"}\n')
+    assert data.seed_files(recipe, None) != first
+
 def test_a_recipe_naming_its_generator_is_keyed_by_that_pick_not_by_what_chat_holds(monkeypatch):
     from core.flows import engine as engine_mod
     from studio_mcp import loading
@@ -819,37 +1377,3 @@ def test_a_recipe_naming_its_generator_is_keyed_by_that_pick_not_by_what_chat_ho
     assert key() == first
     recipe["model_configs"][0]["gguf_variant"] = "Q8_0"
     assert key() != first
-
-
-def test_a_named_recipe_model_without_a_quant_is_keyed_on_the_quant_chat_holds(monkeypatch):
-    from core.flows import engine as engine_mod
-    from studio_mcp import loading
-
-    held = {"name": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
-
-    async def resident(caller):
-        return {"llm": [held["name"]]}, {"gguf_variant": held["variant"]}
-
-    monkeypatch.setattr(loading, "_resident", resident)
-
-    class Ctx:
-        caller = None
-        resident: dict = {}
-
-    recipe = {
-        "model_providers": [{"name": "local", "is_local": True}],
-        "model_configs": [{"alias": "m", "provider": "local", "model": "unsloth/Qwen3-4B-GGUF"}],
-        "columns": [{"name": "c", "column_type": "llm-text", "model_alias": "m"}],
-    }
-    eng = engine_mod.FlowEngine()
-    key = lambda: asyncio.run(  # noqa: E731
-        eng._model_key(
-            Ctx(), {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}}
-        )
-    )
-    first = key()
-    held["variant"] = "Q8_0"
-    assert key() != first
-    # Another model in Chat: the named one loads at its default quant, whatever Chat held.
-    held["name"] = "unsloth/gemma-3-4b-it-GGUF"
-    assert key()["variant"] is None

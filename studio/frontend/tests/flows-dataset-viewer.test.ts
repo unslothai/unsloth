@@ -135,3 +135,9 @@ test("the viewer starts a newly shown dataset on its first page, with every colu
   const pages = src.slice(src.indexOf("function DatasetPages"));
   assert.match(pages, /useState\(0\)/);
 });
+
+test("the viewer reads each column by its literal name, so a dotted name is not a nested path", () => {
+  const src = readFileSync(new URL("../src/features/flows/dataset/dataset-viewer.tsx", import.meta.url), "utf8");
+  assert.doesNotMatch(src, /accessorKey: name/);
+  assert.match(src, /id: name,\s*\n\s*accessorFn: \(row: Record<string, unknown>\) => row\[name\]/);
+});

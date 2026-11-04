@@ -9,6 +9,7 @@ import {
   getBlockDefinition,
 } from "@/features/recipe-studio/blocks/definitions";
 import type { NodeConfig } from "@/features/recipe-studio/types";
+import { toast } from "sonner";
 import { newId, useDocStore } from "../stores/doc-store";
 import { type RecipeSetupTarget, useUiStore } from "../stores/ui-store";
 import { commitRecipe, nextColumnSlot } from "./recipe-actions";
@@ -17,6 +18,7 @@ import {
   columnNode,
   commitStudioEdit,
   isColumnConfig,
+  savedView,
   studioView,
 } from "./recipe-adapter";
 import { groupColumns } from "./recipe-columns";
@@ -27,14 +29,15 @@ export function viewOf(groupId: string): StudioView | null {
   return group ? studioView(group, groupColumns(graph, groupId)) : null;
 }
 
+/** Saves `configs` as an edit of `before`; returns the view the next edit compares against. */
 export function commitConfigs(
   groupId: string,
   before: StudioView,
   configs: Record<string, NodeConfig>,
-): void {
+): StudioView {
   const graph = useDocStore.getState().graph;
   const group = graph.groups[groupId];
-  if (!group) return;
+  if (!group) return before;
   const edit = commitStudioEdit(
     group,
     groupColumns(graph, groupId),
@@ -42,6 +45,7 @@ export function commitConfigs(
     configs,
   );
   commitRecipe(groupId, edit.nodes, edit.group, `recipe:${groupId}`);
+  return savedView(before, configs);
 }
 
 export function setupConfig(view: StudioView, target: RecipeSetupTarget) {
@@ -49,7 +53,8 @@ export function setupConfig(view: StudioView, target: RecipeSetupTarget) {
     target.kind === "seed"
       ? config.kind === "seed"
       : // Cards go by the trimmed name, so a name mid-typing ("My ") is still its card.
-        config.kind === target.kind && config.name.trim() === target.name.trim(),
+        config.kind === target.kind &&
+        config.name.trim() === target.name.trim(),
   );
 }
 
@@ -74,6 +79,19 @@ export function addRecipeBlock(
   if (!definition || !view) return;
   const id = `flows-${newId("c")}`;
   const config = definition.createConfig(id, Object.values(view.configs));
+  // A recipe's seed is saved without a name and opens again as `seed`, a name every block shares.
+  if (
+    config.kind === "seed" &&
+    Object.values(view.configs).some(
+      (c) => c.kind !== "seed" && c.name.trim() === "seed",
+    )
+  ) {
+    toast.error("Rename the block called seed first", {
+      description:
+        "A recipe's seed takes the name seed, and block names are unique.",
+    });
+    return;
+  }
   const configs = { ...view.configs, [id]: config };
   const ui = useUiStore.getState();
   if (isColumnConfig(config)) {
@@ -100,4 +118,3 @@ export function addRecipeBlock(
     name: config.kind === "seed" ? "seed" : config.name,
   });
 }
-

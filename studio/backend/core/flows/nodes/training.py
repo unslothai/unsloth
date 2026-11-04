@@ -75,6 +75,19 @@ async def checkpoint_source(ctx: NodeContext, checkpoint: dict) -> tuple[str, bo
     return found.path, found.peft_type is not None
 
 
+def _picked_cache(cache: Any) -> dict:
+    """The On device copy the base model was picked from: train on those weights, as the Train page
+    does. A path missing here (a flow from another machine) falls back to the plain repo."""
+    if not isinstance(cache, dict) or cache.get("known_cached") is not True:
+        return {}
+    path = cache.get("local_path")
+    if isinstance(path, str) and path:
+        return (
+            {"model_known_cached": True, "model_local_path": path} if os.path.exists(path) else {}
+        )
+    return {"model_known_cached": True}
+
+
 @handler("train.finetune")
 async def finetune(ctx: NodeContext) -> dict:
     from studio_mcp.tools.jobs import TRAINING_STATUS, _run_folder
@@ -95,12 +108,16 @@ async def finetune(ctx: NodeContext) -> dict:
     }
     if not config["model_name"]:
         raise FlowNodeError("Name the base model to fine-tune")
+    config.update(_picked_cache(params.get("base_model_cache")))
     base_model = config["model_name"]
     start = ctx.inputs.get("start")
     if isinstance(start, dict) and start.get("kind") == "checkpoint":
         # Keep training that LoRA instead of stacking a new one on the base model.
         path, adapter = await checkpoint_source(ctx, start)
         config["model_name"] = path
+        # Its own weights: an On device pick of the base model's copy does not apply.
+        config.pop("model_known_cached", None)
+        config.pop("model_local_path", None)
         if adapter:
             config["model_format"] = "adapter"
         base_model = str(start.get("base_model") or base_model)
@@ -281,7 +298,15 @@ async def finetune(ctx: NodeContext) -> dict:
         metrics["train_rows"] = dataset.get("rows")
         metrics["holdout_rows"] = holdout["rows"]
     checkpoint = {"kind": "checkpoint", "name": run, "base_model": base_model}
-    system = trained_system_prompt(config)
+    row = None
+    if objective == "grpo":
+        from core.training.account_jobs import account_hf_token
+
+        # Whether a prompt carried its own system message is in the rows: read the first, as the
+        # formatter saw it (an Arrow column holds one type, so one row tells text from conversation).
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        row = await asyncio.to_thread(_first_row, dataset, token)
+    system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
     mapping = config.get("custom_format_mapping")
@@ -406,12 +431,27 @@ def drafter_request(params: dict) -> dict:
     }
 
 
-def trained_system_prompt(config: dict) -> str:
-    """The one system message every training row got, when the run set one: the GRPO prompt, or
-    the SFT mapping's system prompt. A per-row system column has no single value to reuse."""
-    if config.get("objective") == "grpo" and config.get("rl_system_prompt"):
-        return str(config["rl_system_prompt"])
+def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:
+    """The system message a new prompt would have got in training: the SFT mapping's system prompt,
+    or GRPO's, which fills in for every prompt with no system message of its own. GRPO claims it
+    only when ``row`` (the dataset's first) shows every prompt got it: plain-text prompts and no
+    system column. A conversation can carry its own system message, and rows it cannot read
+    claim nothing."""
     mapping = config.get("custom_format_mapping")
+    if config.get("objective") == "grpo":
+        from core.training.rl import resolve_role_columns
+
+        if not isinstance(row, dict):
+            return ""
+        try:
+            roles = resolve_role_columns(
+                list(row), "grpo", mapping if isinstance(mapping, dict) else None
+            )
+        except ValueError:
+            return ""
+        if "system" in roles or not isinstance(row.get(roles["prompt"]), str):
+            return ""
+        return str(config.get("rl_system_prompt") or "").strip()
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
         return mapping["__system_prompt"].strip()
     return ""
@@ -427,13 +467,66 @@ def _hub_model_revision(repo: str, token: Any) -> Optional[str]:
     return HfApi().model_info(repo, token = token).sha
 
 
-def _content_hash(path: str) -> str:
+# A cell naming an image, clip or sound file: training reads that file, which the rows' hash never sees.
+_MEDIA_PATH = re.compile(
+    rb"\.(?:png|jpe?g|webp|gif|bmp|tiff?|wav|mp3|flac|ogg|m4a|mp4|webm|mov)(?=[\"',\s\]})]|$)",
+    re.IGNORECASE,
+)
+
+
+def _names_media_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_MEDIA_PATH.search(value.encode()))
+    if isinstance(value, dict):
+        return any(_names_media_value(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return any(_names_media_value(v) for v in value)
+    return False
+
+
+def _names_media(file: str) -> bool:
+    if file.lower().endswith(".parquet"):
+        # Compressed pages hide the text: read the string columns.
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        try:
+            table = pq.read_table(file)
+        except Exception:
+            table = None
+        if table is not None:
+            # An Image or Audio column keeps its file under a struct ({"bytes", "path"}), or a list of them.
+            return any(
+                _names_media_value(v)
+                for column in table.columns
+                if not pa.types.is_binary(column.type)
+                for v in column.to_pylist()
+            )
+    with open(file, "rb") as fh:
+        # The overlap keeps a name split across two reads.
+        tail = b""
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            if _MEDIA_PATH.search(tail + chunk):
+                return True
+            tail = chunk[-16:]
+    return False
+
+
+def _content_hash(path: str) -> Optional[str]:
+    """The dataset files' digest; None when the rows name media files, whose content it cannot see."""
     import glob
     import hashlib
     import os
 
     digest = hashlib.sha256()
-    for file in sorted(glob.glob(path)) if "*" in path else [path]:
+    files = sorted(glob.glob(path)) if "*" in path else [path]
+    if not files:
+        # A folder of Arrow, CSV or JSON files (a saved dataset) matches no `*.parquet`: the digest
+        # would be of nothing and never change, so train again rather than reuse.
+        return None
+    for file in files:
+        if _names_media(file):
+            return None
         digest.update(os.path.basename(file).encode() + b"\0")
         with open(file, "rb") as fh:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -441,34 +534,156 @@ def _content_hash(path: str) -> str:
     return digest.hexdigest()
 
 
-async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
-    """What the params can't show: the dataset's content and, for GRPO, the reward rules.
-    None (an unreachable Hub, a missing file) means train again rather than guess."""
-    found = await dataset_material(ctx)
-    if found is None:
+def _adapter_base(path: str) -> Optional[str]:
+    """The base a saved LoRA folder trains on top of (its adapter_config.json), else None."""
+    import json
+
+    try:
+        with open(os.path.join(path, "adapter_config.json"), encoding = "utf-8") as fh:
+            named = json.load(fh).get("base_model_name_or_path")
+    except (OSError, ValueError, AttributeError):
         return None
-    base = str(ctx.params.get("base_model") or "").strip()
-    if base and os.path.isabs(base):
+    return named.strip() if isinstance(named, str) and named.strip() else None
+
+
+async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
+    """What identifies the weights a run starts from: a local folder's files, a Hub repo's revision,
+    and for a saved LoRA folder the same for the base it loads under it. None = cannot tell."""
+    found: dict = {}
+    if base.startswith("ref:"):
+        # A model picked from Studio's inventory names its folder by a handle, as training resolves it.
+        from hub.utils.host_paths import resolve_host_path_reference
+        base = resolve_host_path_reference(base) or ""
+        if not os.path.isabs(base):
+            return None
+    from core.flows.nodes.data import _REPO
+
+    if not os.path.isabs(base) and (os.path.exists(base) or not _REPO.match(base)):
+        # A relative local folder (./my-model, or owner/model on disk) loads from where Studio runs,
+        # ahead of a Hub repo of that name, so it is fingerprinted there.
+        if not os.path.exists(base):
+            return None
+        base = os.path.abspath(base)
+    if os.path.isabs(base):
         from core.flows.engine import _local_fingerprint
 
         # Weights replaced at the same path must train again, as a local model's cache key does.
         found["base_model_files"] = await asyncio.to_thread(_local_fingerprint, base)
         if found["base_model_files"] is None:
             return None
-    elif base:
-        from core.flows.nodes.data import _REPO
-        from core.training.account_jobs import account_hf_token
-        if _REPO.match(base):
-            # New weights pushed to the same Hub repo must train again too.
-            token = account_hf_token(getattr(ctx.caller, "hf_token", None))
-            try:
-                found["base_model_revision"] = await asyncio.to_thread(
-                    _hub_model_revision, base, token
-                )
-            except Exception:
+        under = await asyncio.to_thread(_adapter_base, base)
+        if under and under != base:
+            # Continuing an adapter also loads its base: a changed base must train again too.
+            inner = await _model_material(ctx, under)
+            if inner is None:
                 return None
+            found["adapter_base"] = inner
+        return found
+    from core.training.account_jobs import account_hf_token
+
+    if _REPO.match(base):
+        # New weights pushed to the same Hub repo must train again too.
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        try:
+            found["base_model_revision"] = await asyncio.to_thread(_hub_model_revision, base, token)
+            loaded = {}
+            for repo in _loader_repos(base, _loads_4bit(ctx.params, base)):
+                # The loader may fetch a 4-bit or 16-bit mirror instead: its changes count too.
+                loaded[repo] = await asyncio.to_thread(_hub_model_revision, repo, token)
+                if not loaded[repo]:
+                    return None
+            if loaded:
+                found["loader_revisions"] = loaded
             if not found["base_model_revision"]:
                 return None
+            under = await asyncio.to_thread(
+                _hub_adapter_base, base, found["base_model_revision"], token
+            )
+        except Exception:
+            return None
+        if under and under != base:
+            # A Hub LoRA loads its base too, unpinned: a changed base must train again.
+            inner = await _model_material(ctx, under)
+            if inner is None:
+                return None
+            found["adapter_base"] = inner
+    return found
+
+
+def _hub_adapter_base(repo: str, revision: str, token: Any) -> Optional[str]:
+    """The base a Hub LoRA repo names in its adapter_config.json at ``revision``; None when the repo is
+    not an adapter. Any other failure raises, so the caller trains again rather than guess."""
+    import json
+
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+    try:
+        path = hf_hub_download(repo, "adapter_config.json", revision = revision, token = token)
+    except LocalEntryNotFoundError:
+        raise  # offline and not cached: cannot tell
+    except EntryNotFoundError:
+        return None
+    with open(path, encoding = "utf-8") as fh:
+        named = json.load(fh).get("base_model_name_or_path")
+    return named.strip() if isinstance(named, str) and named.strip() else None
+
+
+def _loads_4bit(params: dict, base: str) -> bool:
+    """Whether the run asks for a 4-bit load, as method_fields sets it."""
+    method = str(params.get("training_type") or "lora")
+    if method == "lora":
+        return params.get("load_in_4bit") is not False
+    return method == "cpt" and "4bit" in base.lower()
+
+
+def _loader_repos(base: str, load_in_4bit: bool) -> list[str]:
+    """The repos Unsloth's loader can fetch in place of ``base``: its mirror for each load mode the run
+    can end in (a 4-bit request falls back to 16-bit, never the reverse) and that mirror without its
+    4-bit suffix (what a GPU without pre-quantized support downloads). The worker scans the same set."""
+    from utils.models.unsloth_mirror import unsloth_public_mirror
+
+    repos: list[str] = []
+    for mode in (True, False) if load_in_4bit else (False,):
+        mirrored = unsloth_public_mirror(base, mode)
+        if not mirrored or mirrored == base:
+            continue
+        repos.append(mirrored)
+        suffix = next((x for x in ("-unsloth-bnb-4bit", "-bnb-4bit") if mirrored.endswith(x)), "")
+        if suffix and mirrored[: -len(suffix)] != base:
+            repos.append(mirrored[: -len(suffix)])
+    return list(dict.fromkeys(repos))
+
+
+async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
+    """What the params can't show: the dataset's content and, for GRPO, the reward rules.
+    None (an unreachable Hub, a missing file) means train again rather than guess."""
+    dataset = ctx.inputs.get("dataset")
+    if str(ctx.params.get("task") or "text") in ("vision", "audio") and not (
+        isinstance(dataset, dict) and dataset.get("source") == "hf"
+    ):
+        # A local vision or audio set names image and sound files training reads (scan.jfif, a path
+        # with no extension): their content is not in the rows' hash, so train again.
+        return None
+    found = await dataset_material(ctx)
+    if found is None:
+        return None
+    base = str(ctx.params.get("base_model") or "").strip()
+    if base:
+        model = await _model_material(ctx, base)
+        if model is None:
+            return None
+        found.update(model)
+        picked = _picked_cache(ctx.params.get("base_model_cache"))
+        if picked:
+            from core.training.training import resolve_training_model_load_target
+
+            # Trained from an On device copy: the snapshot it resolves to (its commit) is the weights, and
+            # a copy gone from disk falls back to the Hub, which must train again too.
+            target = await asyncio.to_thread(
+                resolve_training_model_load_target, {"model_name": base, **picked}
+            )
+            found["base_model_snapshot"] = os.path.basename(target) if target != base else None
     if str(ctx.params.get("objective") or "sft") == "grpo":
         # A reward can be saved again under the same name, so the key holds what each rule checks.
         found["rewards"] = reward_rules(ctx.params.get("rewards"))
@@ -503,7 +718,8 @@ async def dataset_material(ctx: NodeContext) -> Optional[dict]:
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset["ref"]):
         # A recipe job id names one run's rows and is never reused.
         return {"job": str(dataset["ref"])}
-    return {"sha256": await asyncio.to_thread(_content_hash, local_seed_path(dataset["ref"]))}
+    found = await asyncio.to_thread(_content_hash, local_seed_path(dataset["ref"]))
+    return {"sha256": found} if found else None
 
 
 async def finetune_cache_valid(ctx: NodeContext, outputs: dict) -> bool:
@@ -525,7 +741,13 @@ async def finetune_cache_valid(ctx: NodeContext, outputs: dict) -> bool:
     return True
 
 
-cache_hook("train.finetune", material = finetune_cache_material, valid = finetune_cache_valid)
+# Fine-tune never reads the flow's parameters (a question asked downstream must not retrain it).
+cache_hook(
+    "train.finetune",
+    material = finetune_cache_material,
+    valid = finetune_cache_valid,
+    flow_params = False,
+)
 
 
 def rl_roles(params: dict, objective: str) -> dict:
@@ -685,9 +907,10 @@ def _stream_rows(streamed: Any, start: int, end: Optional[int]) -> Any:
     """Rows start..end of a streamed dataset, reading no further than the slice end or the cap plus one."""
     from datasets import Dataset
 
-    if end is not None and end + 1 - start > HOLDOUT_MAX_ROWS:
-        raise _too_many(end + 1 - start)
-    count = HOLDOUT_MAX_ROWS + 1 if end is None else max(end + 1 - start, 0)
+    # The end may be past the last row (the trainer clamps it): only rows actually read count.
+    count = (
+        HOLDOUT_MAX_ROWS + 1 if end is None else min(max(end + 1 - start, 0), HOLDOUT_MAX_ROWS + 1)
+    )
     rows = list((streamed.skip(start) if start else streamed).take(count))
     if len(rows) > HOLDOUT_MAX_ROWS:
         raise _too_many(f"More than {HOLDOUT_MAX_ROWS}")
@@ -752,6 +975,42 @@ def _compound_rows(
     return Dataset.from_list(rows)
 
 
+def _first_row(dataset: dict, token: Any) -> Optional[dict]:
+    """The dataset's first row as training reads it, or None when it cannot be read here."""
+    from datasets import load_dataset
+
+    from core.flows.nodes.data import local_seed_path
+
+    try:
+        if dataset.get("source") == "hf":
+            split = re.split(r"[\[+]", str(dataset.get("split") or "train").replace(" ", ""))[0]
+            streamed = load_dataset(
+                str(dataset["ref"]),
+                dataset.get("subset") or None,
+                split = split,
+                token = token,
+                streaming = True,
+            )
+        else:
+            path = local_seed_path(dataset.get("ref"))
+            builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
+            if builder is None:
+                return None
+            from utils.datasets.cells import csv_as_text_kwargs
+
+            # CSV cells stay text as training reads them: "00123" is a string prompt, not 123.
+            streamed = load_dataset(
+                builder,
+                data_files = path,
+                split = "train",
+                streaming = True,
+                **csv_as_text_kwargs([path]),
+            )
+        return next(iter(streamed), None)
+    except Exception:
+        return None
+
+
 def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     """A Hub split, without downloading more than the hold-out can use: a slice streams just its
     rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
@@ -787,7 +1046,8 @@ def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
         return stream()
     if known > HOLDOUT_MAX_ROWS:
         raise _too_many(known)
-    return load_dataset(ref, subset, split = split, token = token)
+    # Streamed even when small: a whole-split load prepares every split of the dataset first.
+    return stream()
 
 
 def _load_rows(
@@ -797,6 +1057,16 @@ def _load_rows(
     start: int = 0,
 ) -> list[dict]:
     """Rows start..end (inclusive) of the dataset, already sliced."""
+    return _jsonable(_load_table(dataset, token, end, start).to_list())
+
+
+def _load_table(
+    dataset: dict,
+    token: Any,
+    end: Optional[int],
+    start: int = 0,
+):
+    """The same rows as a ``datasets.Dataset``, keeping the source's column types."""
     from datasets import load_dataset
 
     from core.flows.nodes.data import local_seed_path
@@ -824,7 +1094,7 @@ def _load_rows(
         loaded = _stream_rows(streamed, start, end)
     if len(loaded) > HOLDOUT_MAX_ROWS:
         raise _too_many(len(loaded))
-    return _jsonable(loaded.to_list())
+    return loaded
 
 
 def _jsonable(rows: list[dict]) -> list[dict]:
@@ -866,6 +1136,7 @@ async def holdout_split(
     end = None if end in (None, "") else int(end)
     start = ctx.params.get("dataset_slice_start")
     start = 0 if start in (None, "") else int(start)
+    table = None
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
         rows = await recipe_rows(ctx, str(dataset["ref"]))
         rows = rows[start : None if end is None else end + 1]
@@ -873,35 +1144,111 @@ async def holdout_split(
         # The request's own Hub token, as /api/train/start gets it; managed accounts never borrow the server's.
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            rows = await _off_thread(ctx, _load_rows, dataset, token, end, start)
+            table = await _off_thread(ctx, _load_table, dataset, token, end, start)
         except (FlowNodeError, FlowCancelled):
             raise
         except Exception as exc:
             raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
-    held_ids = holdout_row_ids(len(rows), percent, seed)
+    count = len(rows) if table is None else len(table)
+    held_ids = holdout_row_ids(count, percent, seed)
     if not held_ids:
-        raise FlowNodeError(f"{len(rows)} row(s) is too few to hold any out; set Hold out % to 0")
+        raise FlowNodeError(f"{count} row(s) is too few to hold any out; set Hold out % to 0")
     held = set(held_ids)
+    kept = [i for i in range(count) if i not in held]
     name = str(dataset.get("ref") or "dataset").replace("/", "-")
     tag = f"{name}-holdout{percent}-seed{seed}"
-    kept = [r for i, r in enumerate(rows) if i not in held]
     exclude = ctx.inputs.get(EXCLUDE_INPUT)
     if exclude:
         # In a Loop's later rounds: a question frozen into its test split never trains, at any position.
         from core.flows import loop as loop_rounds
 
+        row = (lambda i: rows[i]) if table is None else (lambda i: table[i])
         before = len(kept)
-        kept = loop_rounds.without_questions(kept, exclude)
+        kept = [i for i in kept if loop_rounds.without_questions([row(i)], exclude)]
         if before > len(kept):
             ctx.log(
                 f"Left {before - len(kept)} test question(s) of the Loop out of training", "info"
             )
         if not kept:
             raise FlowNodeError("Every training row asks one of the Loop's test questions")
-    train = await upload_rows(ctx, kept, f"{tag}-train")
-    holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
-    holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": len(rows)})
+    if table is None:
+        train = await upload_rows(ctx, [rows[i] for i in kept], f"{tag}-train")
+        holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
+    elif dataset.get("source") != "hf" and _is_csv(dataset):
+        # Saved as CSV again, so training reads it as it reads the source: a numeric id column stays
+        # out of a raw-text run's text, which the JSONL's all-string rows would lose.
+        rows = _jsonable(table.to_list())
+        train = await _upload_csv(ctx, [rows[i] for i in kept], f"{tag}-train")
+        holdout = await _upload_csv(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
+    else:
+        # Saved as Parquet with the source's column types: a decimal or date column stringified into
+        # JSONL would become the text column a raw-text run picks.
+        train = await _upload_parquet(ctx, table.select(kept), f"{tag}-train")
+        holdout = await _upload_parquet(ctx, table.select(held_ids), f"{tag}-holdout")
+    holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": count})
     return train, holdout
+
+
+def _is_csv(dataset: dict) -> bool:
+    from core.flows.nodes.data import local_seed_path
+    try:
+        return local_seed_path(dataset.get("ref")).lower().endswith(".csv")
+    except FlowNodeError:
+        return False
+
+
+async def _upload_parquet(ctx: NodeContext, table: Any, name: str) -> dict:
+    import io
+
+    from core.flows.nodes.data import upload_ref
+
+    out = io.BytesIO()
+    table.to_parquet(out)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
+    saved = await ctx.call(
+        "POST",
+        "/api/hub/datasets/upload",
+        files = {"file": (f"{name}.parquet", out.getvalue(), "application/octet-stream")},
+    )
+    stored = saved.get("stored_path") if isinstance(saved, dict) else None
+    if not isinstance(stored, str) or not stored:
+        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
+    return {
+        "kind": "dataset",
+        "source": "local",
+        "ref": upload_ref(stored),
+        "rows": len(table),
+        "columns": sorted(table.column_names),
+    }
+
+
+async def _upload_csv(ctx: NodeContext, rows: list[dict], name: str) -> dict:
+    import csv
+    import io
+
+    from core.flows.nodes.data import upload_ref
+
+    columns = list(dict.fromkeys(k for r in rows for k in r))
+    out = io.StringIO()
+    writer = csv.DictWriter(out, fieldnames = columns)
+    writer.writeheader()
+    writer.writerows({k: "" if v is None else v for k, v in r.items()} for r in rows)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
+    saved = await ctx.call(
+        "POST",
+        "/api/hub/datasets/upload",
+        files = {"file": (f"{name}.csv", out.getvalue().encode(), "application/octet-stream")},
+    )
+    stored = saved.get("stored_path") if isinstance(saved, dict) else None
+    if not isinstance(stored, str) or not stored:
+        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
+    return {
+        "kind": "dataset",
+        "source": "local",
+        "ref": upload_ref(stored),
+        "rows": len(rows),
+        "columns": sorted(columns),
+    }
 
 
 def _eval_rows(dataset: dict, token: Any, split: str) -> list[dict]:
@@ -1090,7 +1437,44 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
     model = status.get("model_identifier") if isinstance(status, dict) else None
     if not isinstance(model, str) or not model.strip():
         return None
-    return {"repo": model, "variant": status.get("gguf_variant") or None}
+    found = {"repo": model, "variant": status.get("gguf_variant") or None}
+    # How it was loaded, so putting it back keeps its context and precision.
+    context = status.get("requested_context_length")
+    # 0 is a request too: automatic sizing.
+    if isinstance(context, int) and not isinstance(context, bool) and context >= 0:
+        found["max_seq_length"] = context
+    if isinstance(status.get("load_in_4bit"), bool):
+        found["load_in_4bit"] = status["load_in_4bit"]
+    extra = {}
+    # A model served by vLLM or SGLang goes back on that engine, with its launch settings.
+    if status.get("engine") in ("vllm", "sglang"):
+        extra.update({k: status[k] for k in ENGINE_FIELDS if status.get(k) is not None})
+    # A GGUF placed by hand (all in RAM at gpu_layers 0, say) goes back where it was.
+    if status.get("gpu_memory_mode") == "manual":
+        extra.update({k: status[k] for k in PLACEMENT_FIELDS if status.get(k) is not None})
+    # The GPUs it was asked to use (tensor parallel over two, or pinned to another card); a status
+    # from before requested_gpu_ids reports only the effective ones. None means automatic.
+    gpus = status.get("requested_gpu_ids", status.get("gpu_ids"))
+    if isinstance(gpus, list) and gpus:
+        extra["gpu_ids"] = gpus
+    template = status.get("chat_template_override")
+    if isinstance(template, str) and template.strip():
+        # A template the user set to fix the model's prompt format goes back with it.
+        extra["chat_template_override"] = template
+    if extra:
+        found["extra"] = extra
+    return found
+
+
+ENGINE_FIELDS = (
+    "engine",
+    "engine_parallelism",
+    "engine_precision",
+    "engine_kv_cache_dtype",
+    "engine_seed",
+    "engine_gpu_memory_utilization",
+)
+PLACEMENT_FIELDS = ("gpu_memory_mode", "gpu_layers", "n_cpu_moe")
 
 
 async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
@@ -1110,11 +1494,12 @@ async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replace
             None,
             model = previous["repo"],
             variant = previous["variant"],
-            max_seq_length = FLOW_CHAT_CONTEXT,
-            load_in_4bit = True,
+            max_seq_length = previous.get("max_seq_length", FLOW_CHAT_CONTEXT),
+            load_in_4bit = previous.get("load_in_4bit", True),
             hf_token = None,
             kind = "llm",
             deadline = time.monotonic() + 1800,
+            extra_body = previous.get("extra") or None,
         )
         note_loaded(ctx, "llm", previous["repo"])
         ctx.resident.clear()

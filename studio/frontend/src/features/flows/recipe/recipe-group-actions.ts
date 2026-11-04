@@ -6,7 +6,13 @@ import { useDocStore } from "../stores/doc-store";
 import { useUiStore } from "../stores/ui-store";
 import type { DocGraph } from "../stores/doc-store";
 import type { FlowGroup, FlowNode } from "../types";
-import { groupColumns, groupGenerate, groupPayload } from "./recipe-columns";
+import {
+  columnLoop,
+  columnOf,
+  groupColumns,
+  groupGenerate,
+  groupPayload,
+} from "./recipe-columns";
 
 /** Why the recipe cannot run yet when its file seed came without the file; mirrors `recipe_share.missing_seed`. */
 export function missingSeed(group: FlowGroup | undefined): string | null {
@@ -75,7 +81,18 @@ export async function checkRecipeGroupDetail(groupId: string): Promise<RecipeChe
       columns,
     );
     if (local.length) return { valid: false, errors: local, rawDetail: null };
-    if (wired) return { valid: true, errors: [], rawDetail: null };
+    if (wired) {
+      // The server's validate needs the seed's columns, which a wired seed only has at run time; what
+      // the columns alone decide is still checked, as the run's compile does.
+      const loop = columnLoop(columns.map(columnOf));
+      return loop
+        ? {
+            valid: false,
+            errors: [`Columns read each other in a loop: ${loop.join(" -> ")}`],
+            rawDetail: null,
+          }
+        : { valid: true, errors: [], rawDetail: null };
+    }
     const { inspectSeedDataset, validateRecipe } = await import(
       "@/features/recipe-studio/api"
     );

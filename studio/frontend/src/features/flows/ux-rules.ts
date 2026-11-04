@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import type { PlanModel } from "./api";
 
 export type GalleryCategory =
@@ -132,7 +131,8 @@ export function planCheck(
   askedFor: { flowId: string; models: string },
   current: { flowId: string | null | undefined; models: string },
 ): "stale" | "download" | "clear" | "unchecked" {
-  if (current.flowId !== askedFor.flowId || current.models !== askedFor.models) return "stale";
+  if (current.flowId !== askedFor.flowId || current.models !== askedFor.models)
+    return "stale";
   if (modelsToDownload(plan.models).length > 0) return "download";
   return plan.errors && plan.errors.length > 0 ? "unchecked" : "clear";
 }
@@ -149,10 +149,46 @@ export function downloadBytes(models: PlanModel[]): number | null {
 export function modelSignature(
   nodes: Record<
     string,
-    { params?: Record<string, unknown> | null; disabled?: boolean } | undefined
+    | {
+        params?: Record<string, unknown> | null;
+        disabled?: boolean;
+        type?: string;
+        group?: string | null;
+      }
+    | undefined
   >,
+  groups: Record<
+    string,
+    { config?: Record<string, unknown> | null } | undefined
+  > = {},
 ): string {
   const picks: string[] = [];
+  // A recipe whose Recipe Dataset step runs loads the presets its enabled AI columns use: enabling
+  // the step or pointing a column at another preset is a new model to check.
+  for (const [id, group] of Object.entries(groups)) {
+    const members = Object.values(nodes).filter(
+      (n) => n?.group === id && !n.disabled,
+    );
+    if (!members.some((n) => n?.type === "recipe.generate")) continue;
+    const aliases = new Set(
+      members.map(
+        (n) =>
+          ((n?.params?.column ?? {}) as { model_alias?: unknown }).model_alias,
+      ),
+    );
+    const presets = group?.config?.model_configs;
+    for (const preset of Array.isArray(presets) ? presets : []) {
+      const p = preset as {
+        model?: unknown;
+        gguf_variant?: unknown;
+        alias?: unknown;
+      };
+      if (typeof p?.model === "string" && p.model && aliases.has(p.alias))
+        picks.push(
+          `${p.model.toLowerCase()}:${String(p.gguf_variant ?? "").toLowerCase()}`,
+        );
+    }
+  }
   for (const node of Object.values(nodes)) {
     if (node?.disabled) continue;
     for (const value of Object.values(node?.params ?? {})) {

@@ -14,7 +14,7 @@ import { useDocStore } from "../stores/doc-store";
 import { useRuntimeStore } from "../stores/runtime-store";
 import { type RecipeEditorTarget, useUiStore } from "../stores/ui-store";
 import { commitRecipe } from "./recipe-actions";
-import { applyConfigPatch, commitStudioEdit, studioView } from "./recipe-adapter";
+import { applyConfigPatch, commitStudioEdit, savedView, studioView } from "./recipe-adapter";
 import { groupColumns, groupGenerate } from "./recipe-columns";
 import { type RecipeCheck, checkRecipeGroupDetail } from "./recipe-group-actions";
 import { fullRunName, runWithSettings, settingsFromRun } from "./recipe-run-settings";
@@ -92,6 +92,8 @@ function RecipeEasyView({ target }: { target: RecipeEditorTarget }) {
   });
   const [configs, setConfigs] = useState(view.configs);
   const latest = useRef(configs);
+  // What the dialog last saved, so each edit is compared with it rather than the opening view.
+  const baseline = useRef(view);
   const generate = useDocStore((s) => groupGenerate(s.graph, target.groupId));
   const running = useRuntimeStore((s) => s.runStatus === "running");
   const [errors, setErrors] = useState<string[]>([]);
@@ -115,9 +117,10 @@ function RecipeEasyView({ target }: { target: RecipeEditorTarget }) {
             const edit = commitStudioEdit(
               group,
               groupColumns(graph, target.groupId),
-              view,
+              baseline.current,
               next,
             );
+            baseline.current = savedView(baseline.current, next);
             commitRecipe(
               target.groupId,
               edit.nodes,

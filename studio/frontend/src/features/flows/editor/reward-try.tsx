@@ -4,15 +4,14 @@
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { useEffect, useState } from "react";
 import { useDocStore } from "../stores/doc-store";
 import type { FlowNode } from "../types";
-import { roleColumn } from "./reward-roles";
+import { ANSWER_NAMES, PROMPT_NAMES, pick, roleColumn } from "./reward-roles";
 import { rewardMax } from "./train-status";
-
-const PROMPT_NAMES = ["prompt", "question", "instruction", "problem", "query", "input"];
-const ANSWER_NAMES = ["answer", "solution", "final_answer", "target", "label"];
 
 interface Picked {
   name: string;
@@ -22,13 +21,6 @@ interface Score {
   name: string;
   score: number;
   weighted: number;
-}
-
-function pick(row: Record<string, unknown>, named: unknown, names: string[]) {
-  const key =
-    String(named ?? "").trim() ||
-    Object.keys(row).find((k) => names.includes(k.toLowerCase()));
-  return key && row[key] !== undefined ? String(row[key]) : "";
 }
 
 function sampleCompletion(reference: string): string {
@@ -58,7 +50,11 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
   const [prompt, setPrompt] = useState("");
   const [reference, setReference] = useState("");
   const [completion, setCompletion] = useState("");
-  const [scores, setScores] = useState<{ rows: Score[]; total: number; max: number | null } | null>(null);
+  const [scores, setScores] = useState<{
+    rows: Score[];
+    total: number;
+    max: number | null;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const saved = node.params.rewards ?? [
@@ -74,8 +70,16 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
     let alive = true;
     void authFetch("/api/hub/datasets/check-format", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ dataset_name: repo, subset: subset || undefined, train_split: split }),
+      // A private or gated dataset reads with the picked Hub token, as the run does.
+      headers: {
+        "Content-Type": "application/json",
+        ...hubTokenHeader(useHfTokenStore.getState().token),
+      },
+      body: JSON.stringify({
+        dataset_name: repo,
+        subset: subset || undefined,
+        train_split: split,
+      }),
     })
       .then((res) => json<{ preview_samples?: Record<string, unknown>[] }>(res))
       .then((found) => {
@@ -116,13 +120,19 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
         rewards.map((reward) => {
           const column = rules[reward.name]?.compare_to;
           const own =
-            typeof column === "string" && column !== "answer" && row?.[column] !== undefined
+            typeof column === "string" &&
+            column !== "answer" &&
+            row?.[column] !== undefined
               ? String(row[column])
               : reference;
           return authFetch("/api/rewards/preview", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rewards: [reward], completion, reference: own }),
+            body: JSON.stringify({
+              rewards: [reward],
+              completion,
+              reference: own,
+            }),
           })
             .then((res) => json<{ scores: Score[] }>(res))
             .then((res) => res.scores[0]);
@@ -138,7 +148,10 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
   };
 
   return (
-    <section className="flex flex-col gap-2 border-border/60 border-t px-4 py-3" data-reward-try="">
+    <section
+      className="flex flex-col gap-2 border-border/60 border-t px-4 py-3"
+      data-reward-try=""
+    >
       <h3 className="text-ui-11 font-semibold uppercase tracking-wide text-muted-foreground">
         Try the rewards
       </h3>
@@ -184,7 +197,9 @@ export function RewardTryPanel({ node }: { node: FlowNode }) {
           {scores.rows.map((row) => (
             <div key={row.name} className="flex justify-between gap-2">
               <span className="text-muted-foreground">{row.name}</span>
-              <span className="tabular-nums text-foreground">{row.weighted.toFixed(2)}</span>
+              <span className="tabular-nums text-foreground">
+                {row.weighted.toFixed(2)}
+              </span>
             </div>
           ))}
           <div className="flex justify-between gap-2 border-border/60 border-t pt-0.5 font-medium">

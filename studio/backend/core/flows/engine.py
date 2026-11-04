@@ -30,6 +30,7 @@ from typing import Any, Awaitable, Callable, Optional, Union
 
 from core.flows import assets as asset_store
 from core.flows import capabilities
+from core.flows import model_settings
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows import loop as loop_rounds
@@ -214,6 +215,7 @@ class RunState:
     app: Any = None
     resident: dict[str, Optional[str]] = field(default_factory = dict)
     initial_resident: dict[str, list[str]] = field(default_factory = dict)
+    resident_variant: dict[str, Optional[str]] = field(default_factory = dict)
     fresh: set[str] = field(default_factory = set)
     prefetch_task: Optional[asyncio.Task] = field(default = None, repr = False)
     prefetched: int = 0
@@ -462,8 +464,11 @@ class NodeContextImpl:
         model_kind: str,
         choice: Optional[dict],
         options: Optional[dict] = None,
+        primary: bool = False,
     ) -> Optional[dict]:
         from core.flows.nodes import _common
+        if primary:
+            return await _common.ensure_model(self, model_kind, choice, options, primary = True)
         return await _common.ensure_model(self, model_kind, choice, options)
 
     async def llm_text(self, **kwargs: Any) -> str:
@@ -1384,6 +1389,7 @@ class FlowEngine:
             if gpu_running == 0:
                 gpu_ready = [n for n in ready if plan.specs[n]["lane"] == "gpu"]
                 if gpu_ready:
+                    await self._probe_resident_variant(rs, gpu_ready)
                     launch.append(self._pick_gpu(rs, gpu_ready))
             for nid in launch:
                 pending.remove(nid)
@@ -1566,7 +1572,14 @@ class FlowEngine:
                     },
                 )
                 rs.prefetch_load = (slot, params["model"]["repo"])
-                await _common.ensure_model(ctx, spec["model_kind"], params.get("model"))
+                # The load the step itself will ask for, so a kept-alongside model is not loaded with other settings.
+                options = await asyncio.to_thread(model_settings.card_load_kwargs, params)
+                if options:
+                    await _common.ensure_model(
+                        ctx, spec["model_kind"], params.get("model"), options
+                    )
+                else:
+                    await _common.ensure_model(ctx, spec["model_kind"], params.get("model"))
                 rs.prefetch_load = None
                 rs.prefetched += 1
         except asyncio.CancelledError:
@@ -1662,21 +1675,81 @@ class FlowEngine:
         repo = choice.get("repo", "") if isinstance(choice, dict) else ""
         return MODEL_SLOT.get(kind, kind), str(repo or "").lower()
 
+    async def _probe_resident_variant(self, rs: RunState, ready: list[str]) -> None:
+        """The loaded chat model's quant, for Model-unset cards that follow saved settings: their saved load can
+        be quant-specific. Read only when one is ready; nothing else is on the GPU at this point."""
+        from studio_mcp import loading
+
+        if not any(
+            self._model_of(rs.plan, nid) == ("llm", "")
+            and (rs.plan.nodes[nid].get("params") or {}).get(model_settings.USE_SAVED)
+            for nid in ready
+        ):
+            return
+        try:
+            _slots, status = await asyncio.wait_for(loading._resident(rs.caller), RESIDENT_PROBE_S)
+            variant = status.get("gguf_variant")
+        except Exception:
+            variant = None
+        rs.resident_variant["llm"] = variant if isinstance(variant, str) and variant else None
+
     def _pick_gpu(self, rs: RunState, ready: list[str]) -> str:
         plan = rs.plan
 
         def model_of(nid: str) -> tuple[str, str]:
             return self._model_of(plan, nid)
 
+        from core.flows.nodes._common import loaded_options, options_hash
+
+        variants = getattr(rs, "resident_variant", None) or {}
+
+        # Cards with their own load settings group by them too, so same-settings cards run back to back.
+        loads: dict[str, Optional[str]] = {}
+
+        def load_of(nid: str) -> Optional[str]:
+            if nid not in loads:
+                params = plan.nodes[nid].get("params") or {}
+                slot, repo = model_of(nid)
+                loads[nid] = (
+                    options_hash(
+                        model_settings.card_load_kwargs(
+                            params, None if repo else rs.resident.get(slot), variants.get(slot)
+                        )
+                    )
+                    if model_settings.LOAD in params or params.get(model_settings.USE_SAVED)
+                    else None
+                )
+            return loads[nid]
+
+        def loaded_with(slot: str, repo: str) -> Optional[str]:
+            found = loaded_options(slot)
+            return found[1] if found and found[0] == repo else None
+
         for nid in ready:
             slot, repo = model_of(nid)
-            if not repo or (rs.resident.get(slot) or "").lower() == repo:
+            resident = (rs.resident.get(slot) or "").lower()
+            if not repo:
+                # A card on the loaded model with its own load settings goes first only if they match the load.
+                if load_of(nid) is None or (
+                    resident and load_of(nid) == loaded_with(slot, resident)
+                ):
+                    return nid
+            elif resident == repo and load_of(nid) == loaded_with(slot, repo):
                 return nid
+        # A Model-unset card runs on whatever is loaded, so nothing that switches its slot to another repo goes first.
+        unset = {model_of(nid)[0] for nid in ready if not model_of(nid)[1]}
+
+        def switches(nid: str) -> bool:
+            slot, repo = model_of(nid)
+            return bool(slot in unset and repo and repo != (rs.resident.get(slot) or "").lower())
+
+        pool = [nid for nid in ready if not switches(nid)]
         counts: dict[tuple, int] = {}
-        for nid in ready:
-            counts[model_of(nid)] = counts.get(model_of(nid), 0) + 1
+        for nid in pool:
+            key = (*model_of(nid), load_of(nid))
+            counts[key] = counts.get(key, 0) + 1
         best = max(counts.values())
-        return next(n for n in ready if counts[model_of(n)] == best)
+        return next(n for n in pool if counts[(*model_of(n), load_of(n))] == best)
 
     def _gather_inputs(self, rs: RunState, nid: str, env: Env) -> tuple[dict, Optional[str]]:
         plan = rs.plan
@@ -1737,6 +1810,7 @@ class FlowEngine:
             rs.set_status(nid, "skipped", "Another trigger started this run")
             self._record(rs, nid, "skipped", None, None, iteration)
             return
+        bound = {p["param"] for p in spec["inputs"] if p.get("param") and p["id"] in inputs}
         params = param_values(spec, node)
         _bind_params(spec, params, inputs)
         seed = self._seed(rs, nid, params, inputs, iteration)
@@ -1800,6 +1874,8 @@ class FlowEngine:
                 rs.set_status(nid, "failed")
                 self._record(rs, nid, "failed", None, refused, iteration)
                 return
+        if params.get(model_settings.USE_SAVED) and spec.get("model_kind"):
+            await _apply_saved_settings(ctx, spec, params, bound)
         key = None
         choice = params.get("model")
         cacheable = spec["cacheable"] and not (
@@ -1823,7 +1899,7 @@ class FlowEngine:
                     inputs,
                     model = model_key,
                     seed = seed,
-                    flow_params = ctx.flow_params,
+                    flow_params = ctx.flow_params if hook is None or hook.flow_params else None,
                     extra = extra,
                 )
                 pending = rs.pending_cache(key)
@@ -1851,7 +1927,7 @@ class FlowEngine:
                 key = cache_key(
                     spec["type"], spec["v"], params, inputs,
                     model = await self._model_key(ctx, spec, params), seed = seed,
-                    flow_params = ctx.flow_params, extra = extra,
+                    flow_params = ctx.flow_params if hook is None or hook.flow_params else None, extra = extra,
                 )  # fmt: skip
             except Exception:
                 key = None
@@ -1863,6 +1939,24 @@ class FlowEngine:
             rs.set_status(nid, "failed")
             self._record(rs, nid, "failed", None, state.error, iteration)
             return
+        # A recipe on Chat's loaded model is keyed on the model it ran on, read while the GPU is still
+        # held: the one read above, before the wait, may have been swapped by another GPU step since.
+        relook = (
+            key is not None
+            and not spec.get("model_kind")
+            and _implicit_local_model(params.get(RECIPE_PARAM))
+        )
+
+        async def ran_on() -> Optional[str]:
+            try:
+                return cache_key(
+                    spec["type"], spec["v"], params, inputs,
+                    model = await self._model_key(ctx, spec, params), seed = seed,
+                    flow_params = ctx.flow_params,
+                )  # fmt: skip
+            except Exception:
+                return None
+
         try:
             if spec["lane"] == "gpu":
                 lock = self.gpu_lock()
@@ -1884,6 +1978,8 @@ class FlowEngine:
                             ctx.gpu_shared = True
                             rs.set_status(nid, "running")
                             outputs = await handler(ctx)
+                            if relook:
+                                key = await ran_on()
                     except NeedsExclusiveGpu:
                         shared = None
                     finally:
@@ -1899,6 +1995,8 @@ class FlowEngine:
                         else:
                             rs.set_status(nid, "running")
                             outputs = await handler(ctx)
+                        if relook:
+                            key = await ran_on()
             else:
                 rs.set_status(nid, "running")
                 outputs = await handler(ctx)
@@ -2015,42 +2113,63 @@ class FlowEngine:
         if not kind:
             compiled = params.get(RECIPE_PARAM)
             recipe = compiled.get("recipe") if isinstance(compiled, dict) else None
-            from core.flows.nodes.data import local_model
+            from core.flows.nodes.data import seed_files
 
-            named = local_model(recipe) if isinstance(recipe, dict) else None
-            if named:
-                # The step loads the generator the recipe names, so it is keyed like any picked model,
-                # not by whatever an earlier step (a Benchmark) left loaded.
-                key = dict(named)
-                if not named["variant"]:
-                    # No quant named: loading keeps the one Chat already holds of this repo.
-                    from core.flows.nodes._common import resident_identity
-                    from studio_mcp import loading
-
-                    held = await resident_identity(ctx, "chat")
-                    if isinstance(held.get("local"), str) and loading._same_id(
-                        held["local"], named["repo"]
-                    ):
-                        key["variant"] = held.get("variant")
-                if os.path.isabs(named["repo"]):
-                    key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
-                return key
-            if _implicit_local_model(compiled):
-                # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
-                from core.flows.nodes._common import resident_identity
-
-                key = await resident_identity(ctx, "chat")
-                name = key.get("local")
-                if isinstance(name, str) and os.path.isabs(name):
-                    key["files"] = await asyncio.to_thread(_local_fingerprint, name)
-                return key
-            return None
+            # A seed file edited in place is a different dataset under the same path.
+            seeds = (
+                await asyncio.to_thread(
+                    seed_files, recipe, (getattr(ctx, "inputs", None) or {}).get("seed")
+                )
+                if isinstance(recipe, dict)
+                else None
+            )
+            key = await self._recipe_model_key(ctx, compiled, recipe)
+            if seeds:
+                key = {**(key or {}), "seed_files": seeds}
+            return key
         choice = params.get("model") or {}
         key = {"repo": choice.get("repo"), "variant": choice.get("variant")}
         repo = choice.get("repo")
         if isinstance(repo, str) and os.path.isabs(repo):
             key["files"] = await asyncio.to_thread(_local_fingerprint, repo)
         return key
+
+    async def _recipe_model_key(
+        self, ctx: NodeContextImpl, compiled: Any, recipe: Optional[dict]
+    ) -> Optional[dict]:
+        from core.flows.nodes.data import local_model
+
+        named = local_model(recipe) if isinstance(recipe, dict) else None
+        if named:
+            # The step loads the generator the recipe names, so it is keyed like any picked model,
+            # not by whatever an earlier step left loaded.
+            key = dict(named)
+            if not named["variant"]:
+                # No quant named: loading keeps the one Chat already holds of this repo.
+                from core.flows.nodes._common import resident_identity
+                from studio_mcp import loading
+
+                held = await resident_identity(ctx, "chat")
+                if isinstance(held.get("local"), str) and loading._same_id(
+                    held["local"], named["repo"]
+                ):
+                    key["variant"] = held.get("variant")
+            if os.path.isabs(named["repo"]):
+                key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
+            return key
+        if _implicit_local_model(compiled):
+            # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
+            from core.flows.nodes._common import resident_identity
+
+            key = await resident_identity(ctx, "chat")
+            name = key.get("local")
+            if isinstance(name, str) and os.path.isabs(name):
+                key["files"] = await asyncio.to_thread(_local_fingerprint, name)
+            elif not name:
+                # Which checkpoint Chat holds cannot be told: never reuse a dataset made on another.
+                key["unknown"] = uuid.uuid4().hex
+            return key
+        return None
 
     async def _for_each(
         self,
@@ -2555,6 +2674,30 @@ class FlowEngine:
             self.runs.pop(rs.id, None)
 
 
+async def _apply_saved_settings(ctx: Any, spec: dict, params: dict, bound: set[str]) -> None:
+    """In place, before the cache key: a saved setting that changes must miss the cache."""
+    choice = params.get("model")
+    model_id = choice.get("repo") if isinstance(choice, dict) else None
+    variant = choice.get("variant") if isinstance(choice, dict) else None
+    if not model_id:
+        from core.flows.nodes._common import resident_gguf_variant, resident_name
+        model_id = await resident_name(ctx, spec["model_kind"])
+        variant = await resident_gguf_variant(ctx) if model_id else None
+    saved = await asyncio.to_thread(model_settings.read_saved, model_id)
+    taken = model_settings.overlay({}, saved, spec, bound)
+    params.update(taken)
+    load = None
+    if any(p["id"] == model_settings.LOAD for p in spec["params"]):
+        load = await asyncio.to_thread(model_settings.saved_load, model_id, variant)
+        if load:
+            params[model_settings.LOAD] = {**(params.get(model_settings.LOAD) or {}), **load}
+    # Bound whenever a saved value was used, even one equal to the card's own.
+    if model_id and not (isinstance(choice, dict) and choice.get("repo")) and (taken or load):
+        # These are the loaded model's settings: run on that model, even if another flow swaps it
+        # while this step waits for the GPU.
+        ctx.settings_model = {"repo": model_id, "variant": variant}
+
+
 def _bind_params(spec: dict, params: dict, inputs: dict) -> None:
     by_id = {p["id"]: p for p in spec["params"]}
     for port in spec["inputs"]:
@@ -2615,12 +2758,16 @@ def _adapters_restart() -> bool:
 def _local_fingerprint(path: str) -> Optional[list]:
     try:
         if os.path.isdir(path):
-            entries = sorted(os.scandir(path), key = lambda e: e.name)
+            # Every file under it by relative path: a model's modules can live in subfolders
+            # (a sentence-transformers `2_Dense`), and they load with it.
             digest = hashlib.sha256()
-            for e in entries:
-                if e.is_file():
-                    st = e.stat()
-                    digest.update(f"{e.name}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+            for root, dirs, files in os.walk(path):
+                dirs.sort()
+                for name in sorted(files):
+                    full = os.path.join(root, name)
+                    st = os.stat(full)
+                    rel = os.path.relpath(full, path).replace(os.sep, "/")
+                    digest.update(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
             return [[os.path.basename(path.rstrip(os.sep)), digest.hexdigest()]]
         st = os.stat(path)
         return [[os.path.basename(path), st.st_size, st.st_mtime_ns]]

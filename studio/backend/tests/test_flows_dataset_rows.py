@@ -52,7 +52,7 @@ def test_each_source_names_what_the_dataset_check_reads():
     assert recipe["dataset_name"] == str(recipe_datasets_root() / "run1" / "parquet-files")
     for bad in (
         {"kind": "table", "ref": "x"},
-        {"kind": "dataset", "source": "hf", "ref": "no-owner"},
+        {"kind": "dataset", "source": "hf", "ref": "../escape"},
         {"kind": "dataset", "source": "local", "ref": "ref:unknown"},
         {"kind": "dataset", "source": "s3", "ref": "x"},
         {"kind": "dataset", "source": "local", "ref": ""},
@@ -196,3 +196,41 @@ def test_an_upload_says_which_block_wrote_it_and_leads_with_the_recipe_columns(c
     ], "generated columns ahead of the seed's"
     assert asyncio.run(data.rows_to_dataset(Ctx()))["dataset"]["made_by"] == "rows"
     assert "made_by" not in asyncio.run(data.upload_rows(Ctx(), rows, "plain"))
+
+
+def test_a_schema_transforms_output_exports_whole(client):
+    folder = recipe_datasets_root() / "recipe_run9" / "processors-files" / "chat"
+    folder.mkdir(parents = True)
+    pq.write_table(pa.Table.from_pylist(ROWS[:5]), folder / "batch_00000.parquet")
+    pq.write_table(pa.Table.from_pylist(ROWS[5:7]), folder / "batch_00001.parquet")
+    value = {
+        "kind": "dataset",
+        "source": "recipe",
+        "ref": "recipes/recipe_run9/processors-files/chat",
+    }
+    out = client.post("/api/flows/dataset-export", json = {"value": value})
+    assert out.status_code == 200
+    assert [json.loads(line) for line in out.text.splitlines()] == ROWS[:7]
+    for bad in (
+        {**value, "source": "hf", "ref": "org/set"},
+        {**value, "ref": "recipes/../x"},
+        {**value, "ref": "recipes/missing/processors-files/chat"},
+    ):
+        assert client.post("/api/flows/dataset-export", json = {"value": bad}).status_code in (
+            400,
+            404,
+        )
+
+
+def test_a_transform_export_skips_macos_metadata_files(client):
+    folder = recipe_datasets_root() / "recipe_run10" / "processors-files" / "chat"
+    folder.mkdir(parents = True)
+    pq.write_table(pa.Table.from_pylist(ROWS[:3]), folder / "batch_00000.parquet")
+    (folder / "._batch_00000.parquet").write_bytes(b"\x00\x05\x16\x07 apple double")
+    value = {
+        "kind": "dataset",
+        "source": "recipe",
+        "ref": "recipes/recipe_run10/processors-files/chat",
+    }
+    out = client.post("/api/flows/dataset-export", json = {"value": value})
+    assert [json.loads(line) for line in out.text.splitlines()] == ROWS[:3]

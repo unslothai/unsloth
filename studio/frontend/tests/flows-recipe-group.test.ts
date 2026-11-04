@@ -162,6 +162,10 @@ test("reference wires follow the prompts, like the backend import", () => {
     groupOrder: [],
     notes: {},
     noteOrder: [],
+    reroutes: {},
+    rerouteOrder: [],
+    wires: {},
+    wireOrder: [],
   };
   const diff = referenceEdgeDiff(graph, nodes);
   assert.deepEqual(diff.remove, ["stale"]);
@@ -794,7 +798,7 @@ test("a column dropped in a recipe frame's setup-card space stays in the recipe"
   );
   // Membership is tested against the height the frame is drawn at, not only the saved one.
   assert.match(canvas, /const h = Math\.max\(g\.rect\[3\], heights\[groupId\] \?\? 0\);/);
-  assert.match(canvas, /groupMembership\(positions, sizesRef\.current, setupRef\.current\.heights\)/);
+  assert.match(canvas, /groupMembership\(\s*positions,\s*sizesRef\.current,\s*setupRef\.current\.heights,?\s*\)/);
 });
 
 test("a GitHub seed added before a repository is entered keeps a form to enter it", async () => {
@@ -822,7 +826,7 @@ test("clearing a block's name, column or setup card, keeps its form open until t
   // The blank shows in the form only; the recipe and the configs a rename starts from keep the
   // last name, so its links follow once the new one is typed.
   const blank = update.slice(0, update.indexOf("return;"));
-  assert.match(blank, /if \(typeof patch\.name === "string" && !patch\.name\.trim\(\)\)/);
+  assert.match(blank, /typeof patch\.name === "string" &&\s*\(!patch\.name\.trim\(\) \|\| nameTaken\(/);
   assert.match(blank, /setConfigs\(\{\s*\.\.\.latest\.current,/);
   assert.doesNotMatch(blank, /latest\.current =|commitConfigs|applyConfigPatch/);
 });
@@ -891,7 +895,7 @@ test("a pasted or duplicated second Recipe Dataset step comes into its recipe sw
   assert.equal(steps.length, 2);
   assert.deepEqual(steps.map((n) => !!n.disabled).sort(), [false, true]);
   const keys = readFileSync(new URL("../src/features/flows/editor/use-editor-shortcuts.ts", import.meta.url), "utf8");
-  assert.match(keys, /doc\.graph\.nodes\[id\]\.type !== GENERATE_TYPE/);
+  assert.match(keys, /doc\.graph\.nodes\[id\]\?\.type !== GENERATE_TYPE/);
 });
 
 test("an edit elsewhere keeps a processor the recipe forms do not show", () => {
@@ -1051,4 +1055,768 @@ test("a copied subcategory and validator follow the copied columns they name", a
   assert.equal(topic.name, "topic_2");
   assert.equal((topic.params as { category: string }).category, "domain_2");
   assert.deepEqual(check.target_columns, ["topic_2"]);
+});
+
+test("deleting a column takes its nested and filtered {{ references }} out, and a {% %} reader blocks it", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { disconnectColumns, removeNodes } = await import(
+    "../src/features/flows/recipe/recipe-actions.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const prompt = byName(nodes, "sql_prompt");
+  const sql = byName(nodes, "sql");
+  const column = sql.params.column as Record<string, unknown>;
+  const nested = {
+    ...sql,
+    params: {
+      column: {
+        ...column,
+        prompt: "Write SQL.\n{{ sql_prompt.first }} {{ sql_prompt | upper }}\nKeep {{ sql_context }}",
+      },
+    },
+  };
+  const withNested = nodes.map((n) => (n.id === sql.id ? nested : n));
+  useDocStore.getState().load({ ...doc(withNested, referenceEdges(withNested)), groups: [group] });
+  const graph = useDocStore.getState().graph;
+  const wire = graph.edgeOrder.find(
+    (e) => graph.edges[e].source === prompt.id && graph.edges[e].target === sql.id,
+  );
+  assert.ok(wire);
+  assert.deepEqual(disconnectColumns([wire]), [wire]);
+  const after = useDocStore.getState().graph.nodes[sql.id].params.column as { prompt: string };
+  assert.equal(after.prompt, "Write SQL.\nKeep {{ sql_context }}");
+
+  // A control tag cannot be rewritten safely: the column stays, and so does every template.
+  const control = {
+    ...sql,
+    params: { column: { ...column, prompt: "{% if sql_prompt %}Write SQL{% endif %}" } },
+  };
+  const withControl = nodes.map((n) => (n.id === sql.id ? control : n));
+  useDocStore.getState().load({ ...doc(withControl, referenceEdges(withControl)), groups: [group] });
+  removeNodes([prompt.id]);
+  const kept = useDocStore.getState().graph;
+  assert.ok(kept.nodes[prompt.id]);
+  assert.match(String((kept.nodes[sql.id].params.column as { prompt: string }).prompt), /if sql_prompt/);
+});
+
+test("an edit keeps what its form left alone: a preset's temperature distribution and a column's image list", () => {
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const uniform = { distribution_type: "uniform", params: { low: 0.7, high: 1 } };
+  const presets = (cfg.model_configs as Record<string, unknown>[]).map((m) => ({
+    ...m,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_parameters: { temperature: uniform, max_parallel_requests: 2 },
+  }));
+  const images = [
+    { modality: "image", column_name: "sql_prompt", data_type: "url" },
+    { modality: "image", column_name: "sql_context", data_type: "url" },
+  ];
+  const withImages = nodes.map((n) =>
+    columnName(n) === "sql"
+      ? { ...n, params: { column: { ...(n.params.column as object), multi_modal_context: images } } }
+      : n,
+  );
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const saved = { ...group, config: { ...cfg, model_configs: presets } };
+  const view = studioView(saved, withImages);
+  const preset = Object.values(view.configs).find((c) => c.kind === "model_config");
+  assert.ok(preset);
+  const renamed = commitStudioEdit(saved, withImages, view, applyConfigPatch(view.configs, preset.id, { name: "writer2" }));
+  const params = (renamed.group?.config as { model_configs: { inference_parameters: Record<string, unknown> }[] })
+    .model_configs[0].inference_parameters;
+  assert.deepEqual(params, { temperature: uniform, max_parallel_requests: 2 });
+
+  const sql = Object.values(view.configs).find((c) => c.name === "sql");
+  assert.ok(sql);
+  const dropped = commitStudioEdit(saved, withImages, view, applyConfigPatch(view.configs, sql.id, { drop: true } as never));
+  const column = dropped.nodes.find((n) => columnName(n) === "sql")?.params.column as Record<string, unknown>;
+  assert.equal(column.drop, true);
+  assert.deepEqual(column.multi_modal_context, images);
+});
+
+test("an open form compares each edit with what it last saved: a toggle back and two renames in a row", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { commitConfigs, viewOf } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const presets = (cfg.model_configs as Record<string, unknown>[]).map((m) => ({
+    ...m,
+    // biome-ignore lint/style/useNamingConvention: api schema
+    inference_parameters: { ...(m.inference_parameters as object), max_parallel_requests: 16 },
+  }));
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const saved = { ...group, config: { ...cfg, model_configs: presets } };
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [saved] });
+  const opened = viewOf("recipe");
+  assert.ok(opened);
+  const sql = Object.values(opened.configs).find((c) => c.name === "sql");
+  assert.ok(sql);
+  let base = opened;
+  let configs = opened.configs;
+  for (const drop of [true, false]) {
+    configs = applyConfigPatch(configs, sql.id, { drop } as never);
+    base = commitConfigs("recipe", base, configs);
+  }
+  const column = (id: string) => useDocStore.getState().graph.nodes[id].params.column as Record<string, unknown>;
+  assert.equal(column(byName(nodes, "sql").id).drop, false);
+
+  const preset = Object.values(opened.configs).find((c) => c.kind === "model_config");
+  assert.ok(preset);
+  for (const name of [`${preset.name}X`, `${preset.name}XY`]) {
+    configs = applyConfigPatch(configs, preset.id, { name });
+    base = commitConfigs("recipe", base, configs);
+  }
+  const models = useDocStore.getState().graph.groups.recipe.config?.model_configs as {
+    alias: string;
+    inference_parameters: Record<string, unknown>;
+  }[];
+  assert.equal(models[0].alias, `${preset.name}XY`);
+  assert.equal(models[0].inference_parameters.max_parallel_requests, 16);
+});
+
+test("pasted columns are renamed all at once, so one copy's new name is not renamed again", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const rect = [-100, -100, 4000, 1000] as [number, number, number, number];
+  const group = { id: "recipe", label: "R", rect, kind: "recipe" as const, config: {}, run: { rows: 5 } };
+  const col = (id: string, column: Record<string, unknown>, x: number): FlowNode => ({
+    id,
+    type: COLUMN_TYPE,
+    v: 1,
+    params: { column },
+    pos: [x, 0],
+    label: String(column.name),
+    group: "recipe",
+  });
+  const existing = col("have", { name: "topic", column_type: "sampler", sampler_type: "category", params: { values: ["a"] } }, 0);
+  useDocStore.getState().load({ ...doc([existing] as never), groups: [group] });
+  const sampler = col("p1", { name: "topic", column_type: "sampler", sampler_type: "category", params: { values: ["b"] } }, 400);
+  const expr = col("p2", { name: "topic_2", column_type: "expression", expr: "{{ topic }}" }, 800);
+  useDocStore.getState().insertFragment({ nodes: [sampler, expr], edges: [] });
+  const graph = useDocStore.getState().graph;
+  const pasted = graph.nodes.p1.params.column as { name: string };
+  const reader = graph.nodes.p2.params.column as { name: string; expr: string };
+  assert.equal(pasted.name, "topic_2");
+  assert.equal(reader.name, "topic_2_2");
+  assert.equal(reader.expr, "{{ topic_2 }}");
+});
+
+test("quoted text in a template reads no column, and deleting a {% %} reader itself is not blocked", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { removeElementsWithReferences } = await import(
+    "../src/features/flows/recipe/recipe-actions.ts"
+  );
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const names = new Set(["topic"]);
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  assert.deepEqual(columnReferences({ name: "f", column_type: "expression", expr: '{{ "topic" }}' }, names), []);
+  assert.deepEqual(columnReferences({ name: "f", column_type: "expression", expr: "{{ 'topic' ~ x }}" }, names), []);
+  assert.deepEqual(columnReferences({ name: "f", column_type: "expression", expr: "{{ topic }}" }, names), ["topic"]);
+
+  const { group, nodes } = sqlGroup();
+  const prompt = byName(nodes, "sql_prompt");
+  const sql = byName(nodes, "sql");
+  const control = {
+    ...sql,
+    params: {
+      column: {
+        ...(sql.params.column as object),
+        prompt: "{% if sql_prompt == 'x' %}yes{% else %}no{% endif %}",
+      },
+    },
+  };
+  const withControl = nodes.map((n) => (n.id === sql.id ? control : n));
+  useDocStore.getState().load({ ...doc(withControl, referenceEdges(withControl)), groups: [group] });
+  const graph = useDocStore.getState().graph;
+  // What the canvas hands over for a selected node: the node and every wire touching it.
+  const edges = graph.edgeOrder.filter((id) => graph.edges[id].target === sql.id || graph.edges[id].source === sql.id);
+  removeElementsWithReferences({ nodes: [sql.id], edges, groups: [], notes: [] });
+  assert.equal(useDocStore.getState().graph.nodes[sql.id], undefined);
+  assert.ok(useDocStore.getState().graph.nodes[prompt.id]);
+});
+
+test("an edit to another block keeps the seed exactly as saved, an HF seed's split and subset included", () => {
+  const { group, nodes } = sqlGroup();
+  const cfg = group.config as Record<string, unknown>;
+  const seed = {
+    source: { seed_type: "hf", path: "nyu-mll/glue", split: "validation", subset: "sst2" },
+    sampling_strategy: "ordered",
+  };
+  // biome-ignore lint/style/useNamingConvention: api schema
+  const saved = { ...group, config: { ...cfg, seed_config: seed } };
+  const view = studioView(saved, nodes);
+  const provider = Object.values(view.configs).find((c) => c.kind === "model_provider");
+  assert.ok(provider);
+  const edited = commitStudioEdit(
+    saved,
+    nodes,
+    view,
+    applyConfigPatch(view.configs, provider.id, { endpoint: "https://example.com/v1" } as never),
+  );
+  assert.deepEqual((edited.group?.config as Record<string, unknown>).seed_config, seed);
+});
+
+test("a rename leaves an attribute of the same name alone, even after a spaced dot", async () => {
+  const { replaceRef, renameRoot } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{{ first_name }} / {{ user . first_name }} / {{ user.first_name }}", "first_name", "given_name"),
+    "{{ given_name }} / {{ user . first_name }} / {{ user.first_name }}",
+  );
+  assert.equal(renameRoot("user .\n first_name == first_name", "first_name", "x"), "user .\n first_name == x");
+});
+
+test("columns reading each other are a loop even when a wired seed defers the server's check", async () => {
+  const { columnLoop } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  assert.deepEqual(
+    columnLoop([
+      { name: "left", column_type: "expression", expr: "{{ right }}" },
+      { name: "right", column_type: "expression", expr: "{{ left }}" },
+    ]),
+    ["left", "right", "left"],
+  );
+  assert.equal(
+    columnLoop([
+      { name: "a", column_type: "expression", expr: "x" },
+      { name: "b", column_type: "expression", expr: "{{ a }}" },
+    ]),
+    null,
+  );
+  const actions = readFileSync(
+    new URL("../src/features/flows/recipe/recipe-group-actions.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(actions, /if \(wired\) \{[\s\S]*columnLoop\(columns\.map\(columnOf\)\)/);
+  const seed = readFileSync(
+    new URL("../src/features/recipe-studio/dialogs/seed/seed-dialog.tsx", import.meta.url),
+    "utf8",
+  );
+  // An inline seed form re-reads its documents when one is removed (Flows never closes it).
+  assert.match(seed, /const removed = before\.some\(\(id\) => !now\.includes\(id\)\);/);
+  assert.match(seed, /onUpdate\(\{ hf_path: "", resolved_paths: \[\], seed_preview_rows: \[\] \}\)/);
+});
+
+test("the starter recipe passes Check as made, writing with Chat's loaded model", async () => {
+  const { starterRecipeGraph } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { group, nodes } = starterRecipeGraph([0, 0], {});
+  const columns = nodes.filter((n: FlowNode) => n.type === COLUMN_TYPE);
+  assert.deepEqual(clientErrors(group, columns), []);
+  // Its card still reads as Chat's model, not the word "local".
+  const setup = readFileSync(new URL("../src/features/flows/recipe/recipe-setup.ts", import.meta.url), "utf8");
+  assert.match(setup, /name\.toLowerCase\(\) === "local"/);
+});
+
+test("recipe blocks pasted outside a recipe frame are left out, and a shared tool server edit reaches every profile", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes } = sqlGroup();
+  const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
+  const store = useDocStore.getState();
+  const before = store.graph.nodeOrder.length;
+  // Far outside the frame.
+  store.insertFragment(cloneFragment(store.graph, [nodes[0].id], [9000, 9000]));
+  assert.equal(useDocStore.getState().graph.nodeOrder.length, before);
+
+  const server = { id: "s1", name: "docs", provider_type: "streamable_http", endpoint: "https://a.example/mcp" };
+  const configs = {
+    t1: { id: "t1", kind: "tool_config", name: "one", mcp_providers: [server] },
+    t2: { id: "t2", kind: "tool_config", name: "two", mcp_providers: [{ ...server, id: "s2" }] },
+  } as never;
+  const next = applyConfigPatch(configs, "t2", {
+    mcp_providers: [{ ...server, id: "s2", endpoint: "https://b.example/mcp" }],
+  } as never) as Record<string, { mcp_providers: { id: string; endpoint: string }[] }>;
+  assert.equal(next.t1.mcp_providers[0].endpoint, "https://b.example/mcp");
+  assert.equal(next.t1.mcp_providers[0].id, "s1");
+});
+
+test("a name another block already has stays a draft in the form, so the recipe keeps opening", () => {
+  const forms = readFileSync(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), "utf8");
+  assert.match(forms, /\(!patch\.name\.trim\(\) \|\| nameTaken\(latest\.current, id, patch\.name\)\)/);
+  // One namespace for every block, as the importer reads them.
+  assert.match(forms, /\(other\) => other\.id !== id && other\.name\.trim\(\) === wanted/);
+});
+
+test("moving a column wire to another column moves the reference, in one undo step", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { reconnectWire } = await import("../src/features/flows/editor/use-wire-reconnect.ts");
+  const { inHandle, outHandle } = await import("../src/features/flows/editor/connection-rules.ts");
+  const { catalog, doc } = await import("./flows-editor-fixtures.ts");
+  const { useCatalogStore } = await import("../src/features/flows/stores/catalog-store.ts");
+  useCatalogStore.getState().setCatalog(catalog);
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
+  const before = useDocStore.getState().graph;
+  const prompt = byName(nodes, "sql_prompt").id;
+  const sql = byName(nodes, "sql").id;
+  const validator = byName(nodes, "sql-validator").id;
+  const id = before.edgeOrder.find((e) => before.edges[e].source === prompt && before.edges[e].target === sql);
+  assert.ok(id);
+  const old = { id, source: prompt, target: sql, sourceHandle: outHandle("out"), targetHandle: inHandle("in") };
+  const error = reconnectWire(old as never, {
+    source: prompt,
+    sourceHandle: outHandle("out"),
+    target: validator,
+    targetHandle: inHandle("in"),
+  });
+  assert.equal(error, null);
+  const after = useDocStore.getState().graph;
+  const wires = Object.values(after.edges).filter((e) => e.source === prompt);
+  assert.ok(wires.some((e) => e.target === validator));
+  assert.ok(!wires.some((e) => e.target === sql), "the old wire is gone");
+  assert.doesNotMatch(JSON.stringify(after.nodes[sql].params.column), /sql_prompt/);
+  useDocStore.getState().undo();
+  assert.match(JSON.stringify(useDocStore.getState().graph.nodes[sql].params.column), /sql_prompt/);
+});
+
+test("renaming a column renames it in every image context an AI column keeps", () => {
+  const { group, nodes } = sqlGroup();
+  const images = [
+    { modality: "image", column_name: "sql_prompt", data_type: "url" },
+    { modality: "image", column_name: "domain", data_type: "url" },
+  ];
+  const withImages = nodes.map((n) =>
+    columnName(n) === "sql"
+      ? { ...n, params: { column: { ...(n.params.column as object), multi_modal_context: images } } }
+      : n,
+  );
+  const view = studioView(group, withImages);
+  const rename = (from: string, to: string) => {
+    const config = Object.values(view.configs).find((c) => c.name === from);
+    assert.ok(config);
+    const edit = commitStudioEdit(group, withImages, view, applyConfigPatch(view.configs, config.id, { name: to }));
+    const sql = edit.nodes.find((n) => n.id === byName(withImages, "sql").id);
+    assert.ok(sql, `${from} renamed in sql`);
+    return (sql.params.column as Record<string, unknown>).multi_modal_context;
+  };
+  assert.deepEqual(rename("sql_prompt", "question"), [
+    { modality: "image", column_name: "question", data_type: "url" },
+    images[1],
+  ]);
+  // The second image is not on the form: it is renamed in place.
+  assert.deepEqual(rename("domain", "field"), [
+    images[0],
+    { modality: "image", column_name: "field", data_type: "url" },
+  ]);
+});
+
+test("a recipe block dragged out of its frame stays in its recipe, and the frame grows to hold it", async () => {
+  const { ownRecipe, holdRecipeBlocks } = await import("../src/features/flows/editor/recipe-drag.ts");
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({
+    ...doc([...nodes, { id: "free", type: "input.text", v: 1, params: {}, pos: [0, 0] }], []),
+    groups: [group],
+  });
+  const graph = useDocStore.getState().graph;
+  assert.equal(ownRecipe(graph, nodes[0].id), "recipe");
+  assert.equal(ownRecipe(graph, "free"), null);
+  const grown = holdRecipeBlocks(group as never, { [nodes[0].id]: [2000, 2000] }, new Map());
+  assert.deepEqual(grown.rect, [0, 0, 2284, 2144]);
+  assert.equal(holdRecipeBlocks(grown, { [nodes[0].id]: [100, 100] }, new Map()), grown);
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /const recipe = ownRecipe\(graph, id\);\s*if \(recipe\) membership\[id\] = recipe;/);
+  assert.match(canvas, /holdRecipeBlocks\(group, moved, sizesRef\.current\)/);
+});
+
+test("a duplicated column skips names the recipe's setup blocks hold, and a copied reader sees its copied image", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes: base } = sqlGroup();
+  const presets = (small.config.model_configs as Record<string, unknown>[]).map((m, i) =>
+    i === 0 ? { ...m, alias: "domain_2" } : m,
+  );
+  const group = {
+    ...small,
+    rect: [-100, -100, 4000, 1000] as [number, number, number, number],
+    config: { ...small.config, model_configs: presets },
+  };
+  const images = [{ modality: "image", column_name: "domain", data_type: "url" }];
+  const nodes = base.map((n) =>
+    columnName(n) === "sql_prompt"
+      ? { ...n, params: { column: { ...(n.params.column as object), multi_modal_context: images } } }
+      : n,
+  );
+  useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
+  const store = useDocStore.getState();
+  const domain = byName(nodes, "domain");
+  const reader = byName(nodes, "sql_prompt");
+  const fragment = cloneFragment(store.graph, [domain.id, reader.id], [40, 40]);
+  store.insertFragment(fragment);
+  const graph = useDocStore.getState().graph;
+  const copied = graph.nodes[fragment.nodes[0].id];
+  // domain_2 is a model preset's alias: the copy takes domain_3.
+  assert.equal(columnName(copied), "domain_3");
+  const copy = graph.nodes[fragment.nodes[1].id].params.column as Record<string, unknown>;
+  assert.deepEqual(copy.multi_modal_context, [{ ...images[0], column_name: "domain_3" }]);
+  assert.equal(studioView(graph.groups.recipe, Object.values(graph.nodes).filter((n) => n.group === "recipe")).errors.length, 0);
+});
+
+test("a formula subtracting two columns reads both, as the backend's import does", async () => {
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const net = { name: "net", column_type: "expression", expr: "{{gross-discount}}" };
+  assert.deepEqual(columnReferences(net as never, new Set(["gross", "discount"])), ["gross", "discount"]);
+  // A column whose name has a hyphen is still read whole.
+  assert.deepEqual(columnReferences(net as never, new Set(["gross-discount"])), ["gross-discount"]);
+});
+
+test("a loop's own variable is not a column, inside its loop only", async () => {
+  const { columnReferences, templateStillReads } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const names = new Set(["topic", "topics"]);
+  const loop = { name: "f", column_type: "expression", expr: "{% for topic in ['math', 'science'] %}{{ topic }} {% endfor %}" };
+  assert.deepEqual(columnReferences(loop as never, names), []);
+  assert.equal(templateStillReads(loop as never, "topic"), false);
+  const outside = { ...loop, expr: "{{ topic }} {% for topic in topics %}{{ topic }}{% endfor %}" };
+  assert.deepEqual(columnReferences(outside as never, names), ["topic", "topics"]);
+  const set = { ...loop, expr: "{{ topic }}{% set topic = 'x' %}{{ topic }}" };
+  assert.deepEqual(columnReferences(set as never, names), ["topic"]);
+  // The right side of a `set` and a loop's iterable read the scope before the name is bound.
+  const reassigned = { ...loop, expr: "{% set topic = topic | upper %}{{ topic }}" };
+  assert.deepEqual(columnReferences(reassigned as never, names), ["topic"]);
+  assert.equal(templateStillReads(reassigned as never, "topic"), true);
+  const same = { ...loop, expr: "{% for topic in topic %}{{ topic }}{% endfor %}" };
+  assert.deepEqual(columnReferences(same as never, names), ["topic"]);
+  const local = { ...loop, expr: "{% set label = 'x' %}{{ label }}" };
+  assert.deepEqual(columnReferences(local as never, new Set(["label"])), []);
+});
+
+test("resizing a recipe frame or grouping its blocks never takes them out of their recipe", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({
+    ...doc([...nodes, { id: "free", type: "input.text", v: 1, params: {}, pos: [5000, 5000] }] as never, []),
+    groups: [{ ...group, rect: [-100, -100, 4000, 1000] }],
+  });
+  const store = useDocStore.getState();
+  store.resizeGroup({ ...useDocStore.getState().graph.groups.recipe, rect: [-100, -100, 400, 200] });
+  let graph = useDocStore.getState().graph;
+  assert.ok(nodes.every((n) => graph.nodes[n.id].group === "recipe"));
+  store.groupNodes({ id: "plain", label: "Group", rect: [0, 0, 10, 10] }, [nodes[0].id, "free"]);
+  graph = useDocStore.getState().graph;
+  assert.equal(graph.nodes[nodes[0].id].group, "recipe");
+  assert.equal(graph.nodes.free.group, "plain");
+});
+
+test("a rename or a delete leaves the template's own variable of that name alone", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  const { withoutReference } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  assert.equal(
+    replaceRef('{{ topic }} / {% set topic = "fixed" %}{{ topic | upper }}', "topic", "subject"),
+    '{{ subject }} / {% set topic = "fixed" %}{{ topic | upper }}',
+  );
+  assert.equal(
+    replaceRef("{% set topic = topic | upper %}{{ topic }}", "topic", "subject"),
+    "{% set topic = subject | upper %}{{ topic }}",
+  );
+  assert.equal(
+    replaceRef("{% for t in topic %}{{ t }}{% endfor %}{% if topic %}x{% endif %}", "topic", "subject"),
+    "{% for t in subject %}{{ t }}{% endfor %}{% if subject %}x{% endif %}",
+  );
+  const reader = {
+    name: "r",
+    column_type: "expression",
+    expr: "{{ topic }} / {% for topic in ['one', 'two'] %}{{ topic }}{% endfor %}",
+  };
+  assert.equal(
+    withoutReference(reader as never, "topic").expr,
+    " / {% for topic in ['one', 'two'] %}{{ topic }}{% endfor %}",
+  );
+});
+
+test("editing a sampler keeps the settings its form does not show, and a rename reaches a numeric sampler's conditions", () => {
+  const { group, nodes } = sqlGroup();
+  const extra: FlowNode[] = [
+    {
+      id: "tier",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [0, 400],
+      params: {
+        column: {
+          name: "tier",
+          column_type: "sampler",
+          sampler_type: "category",
+          params: { values: ["basic", "premium"] },
+        },
+      },
+    },
+    {
+      id: "price",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [320, 400],
+      params: {
+        column: {
+          name: "price",
+          column_type: "sampler",
+          sampler_type: "uniform",
+          params: { low: 0, high: 100, decimal_places: 2 },
+          conditional_params: { "tier == 'premium'": { sampler_type: "uniform", low: 100, high: 200 } },
+        },
+      },
+    },
+  ];
+  const all = [...nodes, ...extra];
+  const view = studioView(group, all);
+  assert.deepEqual(view.errors, []);
+  const price = Object.values(view.configs).find((c) => c.name === "price");
+  assert.ok(price);
+  const edited = commitStudioEdit(group, all, view, applyConfigPatch(view.configs, price.id, { high: "200" } as never));
+  const column = edited.nodes.find((n) => n.id === "price")?.params.column as Record<string, unknown>;
+  assert.deepEqual(column.params, { low: 0, high: 200, decimal_places: 2 });
+  const tier = Object.values(view.configs).find((c) => c.name === "tier");
+  assert.ok(tier);
+  const renamed = commitStudioEdit(group, all, view, applyConfigPatch(view.configs, tier.id, { name: "plan" }));
+  const after = renamed.nodes.find((n) => n.id === "price")?.params.column as Record<string, unknown>;
+  assert.deepEqual(Object.keys(after.conditional_params as object), ["plan == 'premium'"]);
+});
+
+test("a loop's filter reads its own variable: a rename or a reference never reaches it", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const expr = "{% for topic in [0, 1] if topic > 0 %}x{% endfor %}|{{ topic }}";
+  assert.equal(
+    replaceRef(expr, "topic", "subject"),
+    "{% for topic in [0, 1] if topic > 0 %}x{% endfor %}|{{ subject }}",
+  );
+  // A filter on another column is that column's read.
+  assert.equal(
+    replaceRef("{% for t in items if t > limit %}{% endfor %}", "limit", "cap"),
+    "{% for t in items if t > cap %}{% endfor %}",
+  );
+  const names = new Set(["topic", "limit", "items"]);
+  const col = (e: string) => ({ name: "f", column_type: "expression", expr: e }) as never;
+  assert.deepEqual(columnReferences(col("{% for topic in [0, 1] if topic > 0 %}x{% endfor %}"), names), []);
+  assert.deepEqual(columnReferences(col("{% for t in items if t > limit %}{% endfor %}"), names), ["items", "limit"]);
+});
+
+test("a set inside a loop ends with it, and a rename reaches an override's parent column", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef('{% for item in [1] %}{% set topic = "inside" %}{{ topic }}{% endfor %}{{ topic }}', "topic", "subject"),
+    '{% for item in [1] %}{% set topic = "inside" %}{{ topic }}{% endfor %}{{ subject }}',
+  );
+  const { group } = sqlGroup();
+  const nodes: FlowNode[] = [
+    {
+      id: "domain",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [0, 0],
+      params: { column: { name: "domain", column_type: "sampler", sampler_type: "category", params: { values: ["science", "art"] } } },
+    },
+    {
+      id: "sub",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [320, 0],
+      params: {
+        column: {
+          name: "sub",
+          column_type: "sampler",
+          sampler_type: "subcategory",
+          params: { category: "domain", values: { science: ["physics"], art: ["paint"] } },
+          conditional_params: {
+            "domain == 'science'": { sampler_type: "subcategory", category: "domain", values: { science: ["chem"], art: ["clay"] } },
+          },
+        },
+      },
+    },
+  ];
+  const view = studioView({ ...group, config: { ...group.config } }, nodes);
+  assert.deepEqual(view.errors, []);
+  const domain = Object.values(view.configs).find((c) => c.name === "domain");
+  assert.ok(domain);
+  const edit = commitStudioEdit(group, nodes, view, applyConfigPatch(view.configs, domain.id, { name: "area" }));
+  const sub = edit.nodes.find((n) => n.id === "sub")?.params.column as Record<string, unknown>;
+  assert.deepEqual(sub.conditional_params, {
+    "area == 'science'": { sampler_type: "subcategory", category: "area", values: { science: ["chem"], art: ["clay"] } },
+  });
+});
+
+test("a seed is not added while another block holds the name seed, which every seed opens as", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { addRecipeBlock } = await import("../src/features/flows/recipe/recipe-blocks.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  const renamed = nodes.map((n) =>
+    columnName(n) === "domain"
+      ? { ...n, params: { column: { ...(n.params.column as object), name: "seed" } } }
+      : n,
+  );
+  useDocStore.getState().load({ ...doc(renamed), groups: [group] });
+  addRecipeBlock("recipe", "seed", "seed_local");
+  const graph = useDocStore.getState().graph;
+  assert.equal(graph.groups.recipe.config?.seed_config, undefined);
+  const view = studioView(graph.groups.recipe, Object.values(graph.nodes).filter((n) => n.group === "recipe"));
+  assert.deepEqual(view.errors, []);
+});
+
+test("a rename reaches a transform's Jinja but not a quoted key, and a paste renames readers only after their own recipe's copies", async () => {
+  const { group, nodes } = sqlGroup();
+  const template = { text: "{{ domain }}", detail: '{{ record["domain"] }}' };
+  const withTransform = {
+    ...group,
+    config: { ...group.config, processors: [{ processor_type: "schema_transform", name: "t", template }] },
+  };
+  const view = studioView(withTransform, nodes);
+  const domain = Object.values(view.configs).find((c) => c.name === "domain");
+  assert.ok(domain);
+  const edit = commitStudioEdit(withTransform, nodes, view, applyConfigPatch(view.configs, domain.id, { name: "area" }));
+  const processors = (edit.group?.config as { processors: { template: unknown }[] }).processors;
+  assert.deepEqual(processors[0].template, { text: "{{ area }}", detail: '{{ record["domain"] }}' });
+
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const make = (g: string, value: string): FlowNode[] => [
+    { id: `${g}_t`, type: COLUMN_TYPE, v: 1, group: g, pos: [0, g === "a" ? 0 : 400], params: { column: { name: "topic", column_type: "sampler", sampler_type: "category", params: { values: [value] } } } },
+    { id: `${g}_q`, type: COLUMN_TYPE, v: 1, group: g, pos: [320, g === "a" ? 0 : 400], params: { column: { name: "question", column_type: "expression", expr: "{{ topic }}", dtype: "str" } } },
+  ];
+  const frame = (id: string, y: number) => ({ ...group, id, rect: [-100, y - 100, 900, 300] as [number, number, number, number] });
+  const dest = { ...frame("dest", 1600), rect: [-100, 1400, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc([...make("a", "science"), ...make("b", "history")]), groups: [frame("a", 0), frame("b", 400), dest] });
+  const store = useDocStore.getState();
+  const fragment = cloneFragment(store.graph, ["a_t", "a_q", "b_t", "b_q"], [0, 1600]);
+  store.insertFragment(fragment);
+  const graph = useDocStore.getState().graph;
+  const [, aq, , bq] = fragment.nodes.map((n) => graph.nodes[n.id].params.column as Record<string, unknown>);
+  assert.equal(aq.expr, "{{ topic }}");
+  assert.equal(bq.expr, "{{ topic_2 }}");
+});
+
+test("Jinja whitespace control still closes a loop, and a recipe's model presets are in the download check", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{% for topic in items -%}{{ topic | upper }}{%- endfor %}{{ topic }}", "topic", "subject"),
+    "{% for topic in items -%}{{ topic | upper }}{%- endfor %}{{ subject }}",
+  );
+  const { modelSignature } = await import("../src/features/flows/ux-rules.ts");
+  const groups = {
+    r: { config: { model_configs: [{ alias: "m", model: "unsloth/Gemma-GGUF", gguf_variant: "Q4_K_M" }] } },
+  };
+  const column = { type: "recipe.column", group: "r", params: { column: { model_alias: "m" } } };
+  const step = { type: "recipe.generate", group: "r", params: {} };
+  assert.equal(modelSignature({ c: column, s: step }, groups), "unsloth/gemma-gguf:q4_k_m");
+  // Off until its Recipe Dataset step runs, or while no enabled column uses the preset.
+  assert.equal(modelSignature({ c: column, s: { ...step, disabled: true } }, groups), "");
+  assert.equal(modelSignature({ c: { ...column, disabled: true }, s: step }, groups), "");
+  assert.equal(modelSignature({}), "");
+});
+
+test("setting a namespace's attribute binds no variable of that name", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{% set ns = namespace() %}{% set ns.topic = 'local' %}{{ topic }}", "topic", "subject"),
+    "{% set ns = namespace() %}{% set ns.topic = 'local' %}{{ subject }}",
+  );
+});
+
+test("a loop's else branch reads the enclosing scope, an if's else inside the loop does not", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{% for topic in [] %}{{ topic }}{%- else -%}{{ topic }}{% endfor %}", "topic", "subject"),
+    "{% for topic in [] %}{{ topic }}{%- else -%}{{ subject }}{% endfor %}",
+  );
+  assert.equal(
+    replaceRef("{% for topic in xs %}{% if x %}a{% else %}{{ topic }}{% endif %}{{ topic }}{% endfor %}{{ topic }}", "topic", "subject"),
+    "{% for topic in xs %}{% if x %}a{% else %}{{ topic }}{% endif %}{{ topic }}{% endfor %}{{ subject }}",
+  );
+});
+
+test("with, macro and call blocks bind their own names, so a rename or a reference scan skips them", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const rename = (t: string) => replaceRef(t, "topic", "area");
+  assert.equal(
+    rename("{% with topic = topic, n = f(a=1, b=2) %}{{ topic | upper }}{% endwith %}{{ topic }}"),
+    "{% with topic = area, n = f(a=1, b=2) %}{{ topic | upper }}{% endwith %}{{ area }}",
+  );
+  assert.equal(
+    rename("{% macro show(topic, n=1) %}{{ topic }}{% endmacro %}{{ show(topic=topic) }}"),
+    "{% macro show(topic, n=1) %}{{ topic }}{% endmacro %}{{ show(topic=area) }}",
+  );
+  assert.equal(
+    rename("{% call(topic) lister(topic) %}{{ topic }}{% endcall %}"),
+    "{% call(topic) lister(area) %}{{ topic }}{% endcall %}",
+  );
+  const col = (expr: string) => ({ name: "result", column_type: "expression", expr }) as never;
+  const names = new Set(["topic", "words"]);
+  assert.deepEqual(columnReferences(col("{% with topic = 'x' %}{{ topic }}{% endwith %}{{ words }}"), names), ["words"]);
+  assert.deepEqual(columnReferences(col("{% macro show(topic) %}{{ topic }}{% endmacro %}{{ show(words) }}"), names), ["words"]);
+  // A macro's own name is the template's from its declaration on, not a same-named column.
+  const macro = "{{ format }}{% macro format(value) %}{{ value | upper }}{% endmacro %}{{ format(topic) }}";
+  assert.equal(
+    replaceRef(macro, "format", "display_format"),
+    "{{ display_format }}{% macro format(value) %}{{ value | upper }}{% endmacro %}{{ format(topic) }}",
+  );
+  // A macro's parameter defaults read the column; its parameter names do not.
+  assert.equal(
+    rename("{% macro show(value=topic, n) %}{{ value }}{% endmacro %}{{ show() }}"),
+    "{% macro show(value=area, n) %}{{ value }}{% endmacro %}{{ show() }}",
+  );
+  assert.deepEqual(
+    columnReferences(col("{% macro show(value=topic) %}{{ value }}{% endmacro %}{{ show() }}"), names),
+    ["topic"],
+  );
+  // A `set` inside an `if` may not run: the read after it can be the column, so both are renamed.
+  assert.equal(
+    rename('{% if u %}{% set topic = "o" %}{{ topic }}{% endif %}{{ topic }}'),
+    '{% if u %}{% set area = "o" %}{{ area }}{% endif %}{{ area }}',
+  );
+  assert.deepEqual(
+    columnReferences(col('{% if u %}{% set topic = "o" %}{% endif %}{{ topic }}'), names),
+    ["topic"],
+  );
+  assert.equal(rename("{% set topic = topic %}{{ topic }}"), "{% set topic = area %}{{ topic }}");
+  // A raw block is literal text: no rename, no reference, no removal inside it.
+  const raw = "{%- raw -%}{{ topic | upper }}{% endraw %} {{ topic }}";
+  assert.equal(rename(raw), "{%- raw -%}{{ topic | upper }}{% endraw %} {{ area }}");
+  assert.deepEqual(columnReferences(col("{% raw %}{{ topic }}{% endraw %}{{ words }}"), names), ["words"]);
+  assert.equal(
+    withoutReference(col("{% raw %}{{ topic }}{% endraw %}\n{{ topic }}"), "topic").expr,
+    "{% raw %}{{ topic }}{% endraw %}",
+  );
+  const withFormat = new Set(["topic", "format"]);
+  assert.deepEqual(
+    columnReferences(col("{% macro format(value) %}{{ value }}{% endmacro %}{{ format(topic) }}"), withFormat),
+    ["topic"],
+  );
+});
+
+test("a duplicated reader gets the wire to the column it reads, and a Jinja test is not a column", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { removeNodes } = await import("../src/features/flows/recipe/recipe-actions.ts");
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes } = sqlGroup();
+  const group = { ...small, rect: [-100, -100, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc(nodes, referenceEdges(nodes)), groups: [group] });
+  const store = useDocStore.getState();
+  const reader = byName(nodes, "sql");
+  const source = byName(nodes, "sql_prompt");
+  const fragment = cloneFragment(store.graph, [reader.id], [40, 40]);
+  store.insertFragment(fragment);
+  const copy = fragment.nodes[0].id;
+  const graph = useDocStore.getState().graph;
+  assert.ok(Object.values(graph.edges).some((e) => e.source === source.id && e.target === copy));
+  removeNodes([source.id]);
+  const after = useDocStore.getState().graph;
+  assert.doesNotMatch(JSON.stringify(after.nodes[copy].params.column), /\{\{ sql_prompt \}\}/);
+
+  const col = (expr: string) => ({ name: "result", column_type: "expression", expr }) as never;
+  const names = new Set(["value", "string", "number"]);
+  assert.deepEqual(columnReferences(col("{{ value is string }}"), names), ["value"]);
+  assert.deepEqual(columnReferences(col("{{ value is not number }}"), names), ["value"]);
+  const kw = new Set(["words", "reverse"]);
+  assert.deepEqual(columnReferences(col("{{ words | sort(reverse=true) }}"), kw), ["words"]);
+  assert.deepEqual(columnReferences(col("{{ words | sort(attribute=reverse) }}"), kw), ["words", "reverse"]);
+  assert.deepEqual(columnReferences(col("{{ reverse == words }}"), kw), ["reverse", "words"]);
 });

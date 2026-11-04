@@ -61,6 +61,20 @@ function DropRow({
   );
 }
 
+/** Whether another block of the recipe (a column, seed, provider, preset or tool profile: they share one
+ * namespace) has this name. A recipe with two blocks of one name does not open again, so such a name
+ * stays a draft in the form. */
+function nameTaken(
+  configs: Record<string, NodeConfig>,
+  id: string,
+  name: string,
+): boolean {
+  const wanted = name.trim();
+  return Object.values(configs).some(
+    (other) => other.id !== id && other.name.trim() === wanted,
+  );
+}
+
 function BlockForm({
   groupId,
   find,
@@ -78,6 +92,8 @@ function BlockForm({
   const [opened, setOpened] = useState(open);
   const [configs, setConfigs] = useState(opened?.view.configs ?? {});
   const latest = useRef(configs);
+  // What the form last saved: each edit is compared with it, not with what the form opened on.
+  const baseline = useRef(opened?.view);
   const signature = useDocStore((s) => recipeSignature(s.graph, groupId));
   const ours = useRef(signature);
   useEffect(() => {
@@ -86,6 +102,7 @@ function BlockForm({
     ours.current = signature;
     const next = open();
     setOpened(next);
+    baseline.current = next?.view;
     latest.current = next?.view.configs ?? {};
     setConfigs(latest.current);
   });
@@ -102,10 +119,14 @@ function BlockForm({
     );
   }
   const update = (id: string, patch: Partial<NodeConfig>) => {
-    if (typeof patch.name === "string" && !patch.name.trim()) {
+    if (
+      typeof patch.name === "string" &&
+      (!patch.name.trim() || nameTaken(latest.current, id, patch.name))
+    ) {
       // A block with no name drops out of the recipe (a setup card and its inspector) or blanks
-      // every reference to it (a column), so a cleared name shows in the form only: the recipe and
-      // its links keep the last name until the new one is typed, and the rename carries them across.
+      // every reference to it (a column), and one named like another stops the recipe opening, so
+      // such a name shows in the form only: the recipe and its links keep the last name until a
+      // usable one is typed, and the rename carries them across.
       setConfigs({
         ...latest.current,
         [id]: { ...latest.current[id], name: patch.name } as NodeConfig,
@@ -115,7 +136,7 @@ function BlockForm({
     const next = applyConfigPatch(latest.current, id, patch);
     latest.current = next;
     setConfigs(next);
-    commitConfigs(groupId, opened.view, next);
+    baseline.current = commitConfigs(groupId, baseline.current ?? opened.view, next);
     ours.current = recipeSignature(useDocStore.getState().graph, groupId);
     if (onRename && typeof patch.name === "string") onRename(next[id].name);
   };

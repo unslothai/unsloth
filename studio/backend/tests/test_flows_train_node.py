@@ -65,8 +65,17 @@ def _recipe_routes(started):
 
 
 def _uploads(ctx):
+    import io
+
+    import pyarrow.parquet as pq
+
+    def rows(name, body):
+        if name.endswith(".parquet"):
+            return pq.read_table(io.BytesIO(body)).to_pylist()
+        return [json.loads(line) for line in body.decode().splitlines()]
+
     return {
-        c[4]["file"][0]: [json.loads(line) for line in c[4]["file"][1].decode().splitlines()]
+        c[4]["file"][0]: rows(*c[4]["file"][:2])
         for c in ctx.calls
         if c[1] == "/api/hub/datasets/upload"
     }
@@ -190,7 +199,7 @@ def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
         seen["token"] = token
         return ROWS
 
-    monkeypatch.setattr(training, "_load_rows", load_rows)
+    monkeypatch.setattr(training, "_load_table", _as_table(load_rows))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/gated"}}
@@ -668,7 +677,7 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
         splits.append(dataset.get("split"))
         return ROWS if dataset.get("split") == "train" else ROWS[:5]
 
-    monkeypatch.setattr(training, "_load_rows", load_rows)
+    monkeypatch.setattr(training, "_load_table", _as_table(load_rows))
     monkeypatch.setattr(
         training,
         "_eval_rows",
@@ -904,8 +913,26 @@ def test_chat_with_checkpoint_asks_with_the_trained_system_prompt(monkeypatch):
 
 
 def test_the_checkpoint_carries_the_one_system_prompt_training_used():
-    grpo = {"objective": "grpo", "rl_system_prompt": "Use <answer> tags."}
-    assert training.trained_system_prompt(grpo) == "Use <answer> tags."
+    grpo = {
+        "objective": "grpo",
+        "rl_system_prompt": "Use <answer> tags.",
+        "custom_format_mapping": {"q": "prompt", "a": "answer"},
+    }
+    # GRPO's prompt fills in for every prompt with no system message, as a new chat prompt is.
+    row = {"q": "What is 2 + 2?", "a": "4"}
+    assert training.trained_system_prompt(grpo, row) == "Use <answer> tags."
+    question = {"question": "What is 2 + 2?", "answer": "4"}
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, question) == (
+        "Use <answer> tags."
+    )
+    # Emptied in the node: training added none.
+    assert training.trained_system_prompt({**grpo, "rl_system_prompt": None}, row) == ""
+    # Rows unread (a Hub dataset that could not be read): a system column may have won.
+    assert training.trained_system_prompt(grpo) == ""
+    assert training._first_row({"source": "local", "ref": "/no/such/data.jsonl"}, None) is None
+    # A conversation prompt can carry its own system message, which training kept.
+    convo = {"prompt": [{"role": "system", "content": "Respond with JSON only."}], "answer": "4"}
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, convo) == ""
     sft = {
         "custom_format_mapping": {
             "q": "user",
@@ -963,7 +990,8 @@ def test_local_holdout_streams_only_the_slice_and_checks_the_cap_first(tmp_path,
         assert [r["q"] for r in training._load_rows(local, None, 9, 7)] == ["q7", "q8", "q9"]
         with pytest.raises(FlowNodeError, match = "More than 5"):
             training._load_rows(local, None, None)
-        with pytest.raises(FlowNodeError, match = "10 rows"):
+        # A slice past the cap is refused once more rows than the cap are read, never sooner.
+        with pytest.raises(FlowNodeError, match = "More than 5"):
             training._load_rows(local, None, 9)
         assert len(training._load_rows(local, None, None, 16)) == 4
 
@@ -978,7 +1006,7 @@ def test_stop_gives_up_on_a_blocked_holdout_read(monkeypatch):
         release.wait(30)
         return ROWS
 
-    monkeypatch.setattr(training, "_load_rows", stuck)
+    monkeypatch.setattr(training, "_load_table", _as_table(stuck))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/big"}}
@@ -1113,7 +1141,7 @@ def test_a_loops_frozen_test_questions_never_reach_a_later_rounds_training(monke
 
     rows = [{"prompt": f"question number {i}", "response": f"a{i}"} for i in range(10)]
     monkeypatch.setattr(
-        training, "_load_rows", lambda dataset, token, end, start = 0: list(reversed(rows))
+        training, "_load_table", _as_table(lambda dataset, token, end, start = 0: list(reversed(rows)))
     )
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
@@ -1124,7 +1152,7 @@ def test_a_loops_frozen_test_questions_never_reach_a_later_rounds_training(monke
     }
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
-    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.jsonl"))
+    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.parquet"))
     assert train and not {r["prompt"] for r in train} & set(frozen)
 
 
@@ -1132,7 +1160,9 @@ def test_frozen_test_questions_are_read_through_the_benchmarks_prompt_column(mon
     from core.flows import loop as loop_rounds
 
     rows = [{"ticket": f"my payment failed on day {i}", "queue": "billing"} for i in range(10)]
-    monkeypatch.setattr(training, "_load_rows", lambda dataset, token, end, start = 0: list(rows))
+    monkeypatch.setattr(
+        training, "_load_table", _as_table(lambda dataset, token, end, start = 0: list(rows))
+    )
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
     frozen = loop_rounds.questions(rows[:4], "ticket")
@@ -1143,5 +1173,272 @@ def test_frozen_test_questions_are_read_through_the_benchmarks_prompt_column(mon
     }
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
-    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.jsonl"))
+    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.parquet"))
     assert train and not {r["ticket"] for r in train} & set(frozen)
+
+
+def test_the_previous_chat_model_is_put_back_with_its_own_context_and_precision(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {
+        "model_identifier": "unsloth/Qwen3-4B",
+        "gguf_variant": None,
+        "requested_context_length": 65536,
+        "load_in_4bit": False,
+    }
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    previous = asyncio.run(training.active_chat_model(ctx))
+    asyncio.run(training.restore_chat_model(ctx, previous, "run-1"))
+    assert loads[0]["max_seq_length"] == 65536 and loads[0]["load_in_4bit"] is False
+    # A status without them keeps the old defaults.
+    loads.clear()
+    asyncio.run(
+        training.restore_chat_model(ctx, {"repo": "unsloth/Qwen3-4B", "variant": None}, "run-1")
+    )
+    assert (
+        loads[0]["max_seq_length"] == training.FLOW_CHAT_CONTEXT
+        and loads[0]["load_in_4bit"] is True
+    )
+
+
+def test_a_chat_model_on_vllm_is_put_back_on_vllm(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {
+        "model_identifier": "unsloth/Qwen3-4B-FP8",
+        "engine": "vllm",
+        "engine_precision": "fp8",
+        "engine_kv_cache_dtype": "fp8",
+        "engine_seed": None,
+    }
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {
+        "engine": "vllm",
+        "engine_precision": "fp8",
+        "engine_kv_cache_dtype": "fp8",
+    }
+    # Unsloth's own backend sends nothing extra, as before.
+    loads.clear()
+    status["engine"] = "auto"
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] is None
+
+
+def test_a_gguf_held_in_ram_is_put_back_in_ram(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {
+        "model_identifier": "unsloth/Qwen3-4B-GGUF",
+        "gguf_variant": "Q4_K_M",
+        "gpu_memory_mode": "manual",
+        "gpu_layers": 0,
+        "n_cpu_moe": None,
+    }
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"gpu_memory_mode": "manual", "gpu_layers": 0}
+    # A chat template set to fix its prompt format goes back with it.
+    loads.clear()
+    status.update({"gpu_memory_mode": "auto", "chat_template_override": "{{ messages }}"})
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"chat_template_override": "{{ messages }}"}
+    # The GPUs it was asked for go back too; an older status names only the ones in use.
+    loads.clear()
+    status.update({"chat_template_override": None, "requested_gpu_ids": [0, 1], "gpu_ids": [0]})
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"gpu_ids": [0, 1]}
+    loads.clear()
+    del status["requested_gpu_ids"]
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"gpu_ids": [0]}
+    # Automatic placement sends none.
+    loads.clear()
+    status.update({"requested_gpu_ids": None, "gpu_ids": [1]})
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] is None
+
+
+def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {"model_identifier": "unsloth/Qwen3-4B", "requested_context_length": 0}
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    previous = asyncio.run(training.active_chat_model(ctx))
+    asyncio.run(training.restore_chat_model(ctx, previous, "run-1"))
+    assert loads[0]["max_seq_length"] == 0
+
+
+def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
+    config = {
+        "objective": "grpo",
+        "rl_system_prompt": "Reason, then answer.",
+        "custom_format_mapping": {"question": "user", "rule": "system"},
+    }
+    assert training.trained_system_prompt(config) == ""
+    # A prompt/answer mapping still lets the formatter pick up a `system` column by name.
+    config["custom_format_mapping"] = {"q": "prompt", "gold": "answer"}
+    assert training.trained_system_prompt(config, {"q": "x", "gold": "1", "system": "s"}) == ""
+    # GSM8K: question and answer only, so every prompt got the fallback.
+    assert training.trained_system_prompt(config, {"q": "x", "gold": "1"}) == "Reason, then answer."
+    # A system column set to Ignore is not read.
+    config["custom_format_mapping"] = {"q": "prompt", "system": "ignore"}
+    assert training.trained_system_prompt(config, {"q": "x", "system": "s"}) == (
+        "Reason, then answer."
+    )
+
+
+def test_a_small_whole_split_is_streamed_too(monkeypatch):
+    # The world's loader refuses any non-streamed read.
+    asked = _compound_world(monkeypatch, {"train": 3, "test": 50})
+    rows = training._hub_rows({"ref": "a/b", "split": "train"}, None, 0, None)
+    assert [r["q"] for r in rows] == ["train0", "train1", "train2"] and asked == ["train"]
+
+
+def test_a_csv_hold_out_is_saved_as_csv_and_reads_back_like_the_source(tmp_path, monkeypatch):
+    from datasets import load_dataset
+
+    from utils.datasets.cells import csv_as_text_kwargs
+
+    source = tmp_path / "notes.csv"
+    lines = ["uid,body"] + [f"{123456789012345678 + i},hello {i}" for i in range(20)]
+    source.write_text("\n".join(lines) + "\n")
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: str(source))
+    started = []
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10, dataset_slice_end = 200000)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "local", "ref": str(source)}}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    files = {
+        c[4]["file"][0]: c[4]["file"][1] for c in ctx.calls if c[1] == "/api/hub/datasets/upload"
+    }
+    train = next(body for name, body in files.items() if name.endswith("-train.csv"))
+    path = tmp_path / "train.csv"
+    path.write_bytes(train)
+    # The same feature tags as the source: the id column is still typed, the text still text.
+    assert (
+        csv_as_text_kwargs([str(path)])["features"] == csv_as_text_kwargs([str(source)])["features"]
+    )
+    assert len(load_dataset("csv", data_files = str(path), split = "train")) == 18
+
+
+def test_a_slice_end_past_the_last_row_reads_only_the_rows_there(monkeypatch):
+    from datasets import Dataset
+    streamed = Dataset.from_list([{"q": i} for i in range(20)]).to_iterable_dataset()
+    assert len(training._stream_rows(streamed, 0, 200000)) == 20
+
+
+def _as_table(load):
+    """A row loader stub as the typed table the hold-out reads."""
+    from datasets import Dataset
+    return lambda *a, **k: Dataset.from_list(load(*a, **k))
+
+
+def test_a_csv_hold_out_names_its_upload_by_a_path_that_survives_a_restart(tmp_path, monkeypatch):
+    root = tmp_path / "uploads"
+    monkeypatch.setattr("utils.paths.storage_roots.dataset_uploads_root", lambda: root)
+    monkeypatch.setattr(
+        "hub.utils.host_paths.cache_reference", lambda p: pytest.fail("a process-only ref")
+    )
+
+    class Ctx:
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            **kw,
+        ):
+            return {"stored_path": str(root / "acct" / files["file"][0])}
+
+    value = asyncio.run(training._upload_csv(Ctx(), [{"q": "a"}], "notes-train"))
+    assert value["ref"] == "uploads/acct/notes-train.csv"
+
+
+def test_a_hold_out_keeps_the_source_column_types(monkeypatch):
+    import decimal
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from datasets import Dataset
+
+    table = pa.table(
+        {
+            "price": pa.array([decimal.Decimal(f"{i}.25") for i in range(20)], pa.decimal128(6, 2)),
+            "body": [f"hello {i}" for i in range(20)],
+        }
+    )
+    monkeypatch.setattr(training, "_load_table", lambda *a, **k: Dataset(table))
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/prices"}}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    files = {
+        c[4]["file"][0]: c[4]["file"][1] for c in ctx.calls if c[1] == "/api/hub/datasets/upload"
+    }
+    train = pq.read_table(io.BytesIO(next(b for n, b in files.items() if "-train." in n)))
+    # The decimal stays a decimal, so a raw-text run still picks `body` as its text.
+    assert pa.types.is_decimal(train.schema.field("price").type)
+    assert train.num_rows == 18
+
+
+def test_a_saved_dataset_folder_with_no_parquet_trains_again(tmp_path):
+    # save_to_disk() writes Arrow files: the `*.parquet` the cache hashes matches none of them.
+    (tmp_path / "data-00000-of-00001.arrow").write_bytes(b"rows")
+    assert training._content_hash(f"{tmp_path}/*.parquet") is None
+
+
+def test_a_csv_grpo_set_reads_its_first_row_as_training_does(tmp_path, monkeypatch):
+    source = tmp_path / "q.csv"
+    source.write_text("question,answer\n00123,123\n00456,456\n")
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: str(source))
+    row = training._first_row({"source": "local", "ref": "uploads/q.csv"}, None)
+    assert row["question"] == "00123"
+    config = {"objective": "grpo", "rl_system_prompt": "Reason, then answer."}
+    assert training.trained_system_prompt(config, row) == "Reason, then answer."

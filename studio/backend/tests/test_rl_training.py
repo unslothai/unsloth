@@ -55,6 +55,43 @@ def test_preference_rows_strip_the_user_turn_from_full_conversations():
     assert out[0]["prompt"] == [{"role": "user", "content": "q"}]
 
 
+@pytest.mark.parametrize("objective", ["dpo", "orpo"])
+def test_preference_rows_without_a_prompt_column_use_the_shared_turns(objective):
+    # trl-lib/ultrafeedback_binarized: only chosen and rejected, each the whole conversation.
+    convo = lambda reply: [
+        {"role": "user", "content": "What is 2 + 2?"},
+        {"role": "assistant", "content": reply},
+    ]
+    ds = Dataset.from_list([{"chosen": convo("4"), "rejected": convo("5")}])
+    out, roles = format_rl_dataset(ds, objective)
+    assert "prompt" not in roles
+    assert out[0]["prompt"] == [{"role": "user", "content": "What is 2 + 2?"}]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
+    # A conversation opening on an assistant greeting still shares its context (TRL's extract_prompt).
+    greeted = lambda reply: [
+        {"role": "assistant", "content": "Welcome!"},
+        {"role": "user", "content": "What is 2 + 2?"},
+        {"role": "assistant", "content": reply},
+    ]
+    out, _ = format_rl_dataset(
+        Dataset.from_list([{"chosen": greeted("4"), "rejected": greeted("5")}]), objective
+    )
+    assert [m["content"] for m in out[0]["prompt"]] == ["Welcome!", "What is 2 + 2?"]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+    # Text pairs (hh-rlhf's transcripts): the shared start is the prompt, as TRL's extract_prompt.
+    out, _ = format_rl_dataset(
+        Dataset.from_list([{"chosen": "The sky is blue.", "rejected": "The sky is green."}]),
+        objective,
+    )
+    assert out[0]["prompt"] == [{"role": "user", "content": "The sky is"}]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": " blue."}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": " green."}]
+    # Plain answers with no prompt anywhere are still refused.
+    with pytest.raises(ValueError, match = "needs a prompt"):
+        format_rl_dataset(Dataset.from_list([{"chosen": "4", "rejected": "5"}]), objective)
+
+
 def test_missing_roles_name_the_columns_found():
     with pytest.raises(ValueError, match = "chosen, rejected"):
         resolve_role_columns(["prompt", "text"], "orpo")

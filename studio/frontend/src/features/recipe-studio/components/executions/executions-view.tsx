@@ -50,6 +50,8 @@ type ExecutionsViewProps = {
   onSelectExecution: (id: string) => void;
   onCancelExecution: (id: string) => void;
   onLoadDatasetPage: (id: string, page: number) => void;
+  /** Flows: a run whose output is not the job's own dataset downloads it another way. */
+  downloadDataset?: (execution: RecipeExecutionRecord) => Promise<DownloadOutcome>;
 };
 
 function downloadOutcomeMessage(outcome: DownloadOutcome): string {
@@ -66,6 +68,7 @@ export function ExecutionsView({
   onSelectExecution,
   onCancelExecution,
   onLoadDatasetPage,
+  downloadDataset = downloadExecutionDataset,
 }: ExecutionsViewProps): ReactElement {
   const formatEta = (value: number | null | undefined): string =>
     typeof value === "number" && Number.isFinite(value)
@@ -213,7 +216,9 @@ export function ExecutionsView({
       selectedExecution.kind === "full" &&
       selectedExecution.status === "completed" &&
       selectedExecution.jobId &&
-      selectedExecution.artifact_path,
+      selectedExecution.artifact_path &&
+      // Publishing sends the job's own dataset, which a Flows schema transform replaced.
+      !selectedExecution.output_ref,
   );
   const canDownload = Boolean(
     selectedExecution &&
@@ -495,7 +500,7 @@ export function ExecutionsView({
                           return;
                         }
                         setDownloadingDataset(true);
-                        downloadExecutionDataset(selectedExecution)
+                        downloadDataset(selectedExecution)
                           .then((outcome) => {
                             toastSuccess(downloadOutcomeMessage(outcome));
                           })

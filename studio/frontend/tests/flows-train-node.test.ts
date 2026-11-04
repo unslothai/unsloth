@@ -10,7 +10,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { trainView, sparklinePath, rewardMax, rewardText, adapterPathFor } =
+const { trainView, sparklinePath, rewardMax, rewardText, adapterPathFor, chatHandoffFor } =
   await import(
   "../src/features/flows/editor/train-status.ts"
 );
@@ -173,6 +173,18 @@ test("Chat with it finds the adapter by the run folder's name", () => {
   assert.equal(adapterPathFor(loras, "run-3"), null);
 });
 
+test("Chat with it hands over nothing when the run cannot be found, so Chat never picks another adapter", () => {
+  const checkpoint = { base_model: "unsloth/Qwen3-0.6B", name: "run-1" };
+  assert.deepEqual(chatHandoffFor({ loras: [{ adapter_path: "/out/run-1" }] }, checkpoint), {
+    baseModel: "unsloth/Qwen3-0.6B",
+    outputDir: "/out/run-1",
+  });
+  // The adapter scan failed, or does not list the run: no handoff with a null folder.
+  assert.equal(chatHandoffFor(null, checkpoint), null);
+  assert.equal(chatHandoffFor({ loras: [{ adapter_path: "/out/run-2" }] }, checkpoint), null);
+  assert.equal(chatHandoffFor({ loras: [] }, undefined), null);
+});
+
 test("Advanced holds every Train page setting, grouped in the Train page's order", () => {
   const groups: string[] = [];
   for (const p of finetune.params as ParamSpec[]) {
@@ -240,6 +252,8 @@ test("Try the rewards reads the reward training uses, not one a user reward shad
     new URL("../src/features/flows/editor/reward-try.tsx", import.meta.url),
     "utf8",
   );
+  // A private or gated dataset's preview row reads with the picked Hub token.
+  assert.match(src, /\.\.\.hubTokenHeader\(useHfTokenStore\.getState\(\)\.token\)/);
   assert.match(src, /library\.filter\(\(r\) => !r\.shadowed\)\.map\(\(r\) => \[r\.name, r\.rule\]\)/);
 });
 
@@ -250,4 +264,10 @@ test("Try the rewards reads the columns training reads: the Advanced mapping win
   assert.equal(roleColumn(params, "prompt"), "q");
   assert.equal(roleColumn({ answer_column: "draft" }, "answer"), "draft");
   assert.equal(roleColumn({ answer_column: "draft", custom_format_mapping: {} }, "answer"), "draft");
+  // With no column named, aliases go in training's order, not the row's: `answer` before `solution`.
+  const { pick, ANSWER_NAMES } = await import("../src/features/flows/editor/reward-roles.ts");
+  const row = { problem: "2+2", solution: "Adding two and two gives four.", answer: "4" };
+  assert.equal(pick(row, undefined, ANSWER_NAMES), "4");
+  assert.equal(pick(row, "solution", ANSWER_NAMES), "Adding two and two gives four.");
+  assert.equal(pick({ Solution: "x" }, "", ANSWER_NAMES), "x");
 });

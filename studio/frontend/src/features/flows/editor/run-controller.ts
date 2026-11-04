@@ -16,6 +16,7 @@ import { pinsForRun } from "../stores/pins-store";
 import { createEventBatcher, useRuntimeStore } from "../stores/runtime-store";
 import { useUiStore } from "../stores/ui-store";
 import { failedSteps, modelSignature, planCheck } from "../ux-rules";
+import { syncResidentModel } from "./resident-sync";
 
 let follower: AbortController | null = null;
 const checkedModels = new Map<string, string>();
@@ -39,10 +40,10 @@ export function attachRun(runId: string, afterSeq = 0): void {
       batcher.flush();
       batcher.dispose();
       if (follower === controller) follower = null;
-      const { runStatus } = useRuntimeStore.getState();
-      if (!controller.signal.aborted && runStatus === "failed") {
-        reportFailure();
-      }
+      if (controller.signal.aborted) return;
+      // A run can load a different model on the server.
+      syncResidentModel();
+      if (useRuntimeStore.getState().runStatus === "failed") reportFailure();
     });
 }
 
@@ -97,7 +98,7 @@ async function heldForDownloads(
 ): Promise<boolean> {
   if (options.downloadsConfirmed) return false;
   const docState = useDocStore.getState();
-  const signature = modelSignature(docState.graph.nodes);
+  const signature = modelSignature(docState.graph.nodes, docState.graph.groups);
   if (checkedModels.get(flowId) === signature) return false;
   const session = editorSession;
   const plan = await Promise.race([
@@ -110,13 +111,18 @@ async function heldForDownloads(
   const verdict = planCheck(
     plan ?? { models: [], errors: [{ message: "no plan" }] },
     { flowId, models: signature },
-    { flowId: now.flowId, models: modelSignature(now.graph.nodes) },
+    {
+      flowId: now.flowId,
+      models: modelSignature(now.graph.nodes, now.graph.groups),
+    },
   );
   if (verdict === "stale" || session !== editorSession) return true;
   if (!plan) return false;
   if (verdict === "clear") checkedModels.set(flowId, signature);
   if (verdict !== "download") return false;
-  useUiStore.getState().setPendingRun({ options: { ...options }, plan, models: signature });
+  useUiStore
+    .getState()
+    .setPendingRun({ options: { ...options }, plan, models: signature });
   return true;
 }
 
@@ -148,7 +154,6 @@ export async function runFlow(options: RunOptions = {}): Promise<void> {
       pinned: pinsForRun(docState.graph.nodeOrder),
     });
     useRuntimeStore.getState().startRun(run_id);
-    useUiStore.getState().setDrawer(true, "run");
     attachRun(run_id, 0);
   } catch (error) {
     toast.error(
@@ -211,6 +216,5 @@ export async function hydrateRuntime(flowId: string): Promise<void> {
       useRuntimeStore.getState().startRun(active.id);
       attachRun(active.id, 0);
     }
-  } catch {
-  }
+  } catch {}
 }

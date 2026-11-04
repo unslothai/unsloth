@@ -482,3 +482,45 @@ def test_a_recipe_step_validates_against_the_seed_it_runs_on(monkeypatch, tmp_pa
         "seed_type": "local",
         "path": str(seed),
     }
+
+
+def test_a_removed_seeds_preview_rows_are_never_shared():
+    from core.flows.recipe_share import share_recipe
+
+    ui = {"seed_preview_rows": [{"secret": "PRIVATE-ROW"}], "seed_total_rows": 9}
+    recipe, shared = share_recipe({"columns": []}, ui)
+    assert "PRIVATE-ROW" not in json.dumps(shared) and "seed_total_rows" not in shared
+
+
+def test_a_freely_named_recipe_note_imports_as_a_valid_flow_note():
+    payload = copy.deepcopy(SQL)
+    payload["ui"] = {
+        "nodes": [
+            {"id": "My notes", "node_type": "markdown_note", "markdown": "one"},
+            {"id": "My notes!", "node_type": "markdown_note", "markdown": "two"},
+        ]
+    }
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    from core.flows.schema import FlowDocument
+
+    parsed = FlowDocument.model_validate(doc)
+    assert [n.text for n in parsed.notes] == ["one", "two"]
+    assert len({n.id for n in parsed.notes}) == 2
+
+
+def test_an_exported_note_is_named_apart_from_the_recipes_columns(client):
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["columns"].append(
+        {"name": "note0", "column_type": "expression", "expr": "{{ sql }}", "dtype": "str"}
+    )
+    payload["ui"] = {
+        "nodes": [{"id": "instructions", "node_type": "markdown_note", "markdown": "read me"}]
+    }
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    exported = client.post(
+        "/api/flows/export/recipe", json = {"doc": doc, "group_id": "recipe"}
+    ).json()
+    notes = [n for n in exported["ui"]["nodes"] if n.get("node_type") == "markdown_note"]
+    columns = {c["name"] for c in exported["recipe"]["columns"]}
+    assert [n["markdown"] for n in notes] == ["read me"]
+    assert not {n["name"] for n in notes} & columns
