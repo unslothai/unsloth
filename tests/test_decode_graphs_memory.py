@@ -642,3 +642,13 @@ def test_an_eager_short_call_gets_no_credit_for_a_kept_graph_cache(G):
     G._free_bytes = lambda device: int(0.5 * G.CALIB_WORK * (kv + work))
     assert G.plan_call(model, _ids(16, 64), torch.float16, 512, 66, eager = True) == ("eager", None)
     assert model.held() == 0 and G.emptied == 1 and G.EAGER_UNFIT == 0
+
+
+def test_an_oversized_kept_cache_is_credited_only_up_to_this_call_kv(G):
+    model = _Model()
+    model.keep(4, 8192)
+    rows, kv, work = G._call_bytes(model.config, 4, 128, torch.float16, 512, 160)
+    G._kept_buffers = lambda model, key, rows: (True, int(20 * (kv + work)))
+    G._free_bytes = lambda device: 0
+    assert G.plan_call(model, _ids(4, 128), torch.float16, 512, 160) == ("eager", None)
+    assert model.held() == 0 and G.emptied == 1 and G.EAGER_UNFIT == 1

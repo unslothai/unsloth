@@ -316,6 +316,8 @@ def plan_call(
     if eager:
         # Eager decode allocates fresh buffers: no graph extra and no credit for a kept graph cache.
         full, reused = CALIB_WORK * (kv + work), 0
+    # Credit at most the KV the estimate counts: a larger kept cache cannot also cover the prefill work.
+    reused = min(reused, kv)
     need = full - reused
     free = _free_bytes(device)
     if free < need and (kept or any(state.graphs for state in _states(model))):
