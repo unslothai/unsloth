@@ -4210,12 +4210,15 @@ fn stop_adopted_backend(
     )
 }
 
+// An accepted shutdown first lets a training run save, within the backend's 120 s default budget.
+const ATTACHED_SHUTDOWN_WAIT: Duration = Duration::from_secs(130);
+
 pub fn stop_attached_backend(port: u16) -> Result<(), String> {
     if !crate::desktop_backend_owner::port_is_listening_blocking(port, Duration::from_millis(150)) {
         return Ok(());
     }
     if try_exact_port_http_shutdown(port, "Attached backend")
-        && wait_for_port_disconnect(port, Duration::from_secs(5))
+        && wait_for_port_disconnect(port, ATTACHED_SHUTDOWN_WAIT)
     {
         return Ok(());
     }
