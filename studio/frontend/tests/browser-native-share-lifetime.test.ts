@@ -146,7 +146,7 @@ test("run end retains a shared page; switch, revoke and tab close release it", a
   assert.equal(count("browser_view_close", first), beforeClose + 1);
 });
 
-test("an agent-owned page still closes when its run ends", async () => {
+test("an agent-owned page survives its run and closes when the tab is closed", async () => {
   const store = useBrowserStore.getState(); const chat = store.chat;
   const tab = store.openTabIn(chat, "https://example.com/agent-owned")!;
   store.activateTab(tab);
@@ -154,5 +154,7 @@ test("an agent-owned page still closes when its run ends", async () => {
   keepInBackground(tab); await settle();
   const closed = count("browser_view_close", tab);
   agent.endBrowserAgentRun("native-owned-run"); await settle();
+  assert.equal(count("browser_view_close", tab), closed);
+  store.closeTab(tab); await settle();
   assert.equal(count("browser_view_close", tab), closed + 1);
 });
