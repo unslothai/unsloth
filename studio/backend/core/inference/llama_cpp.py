@@ -3085,6 +3085,27 @@ def _clamp_reasoning_effort_to_levels(effort: Optional[str], levels) -> Optional
     return below[-1] if below else offered[0]
 
 
+def _fit_reasoning_effort_to_template(
+    chat_template: Optional[str],
+    effort,
+    thinking_off: bool = False,
+):
+    """A level the template's raising allowlist rejects becomes one it accepts, so the render cannot fail."""
+    allowed = _reasoning_effort_allowlist(chat_template or "")
+    if not allowed or effort in allowed:
+        return effort
+    if thinking_off and "none" in allowed:
+        return "none"
+    return _clamp_reasoning_effort_to_levels(effort, allowed) or effort
+
+
+def _rendered_chat_template(backend) -> Optional[str]:
+    # getattr: test doubles skip __init__ and borrow backend methods unbound.
+    return getattr(backend, "_chat_template_override", None) or getattr(
+        backend, "_chat_template", None
+    )
+
+
 # Keyed on identity, not name, so a rebuilt GGUF at the same path is logged again.
 _GGUF_METADATA_LOGGED: "dict[tuple, bool]" = {}
 _GGUF_METADATA_LOGGED_MAX = 32
@@ -9098,9 +9119,13 @@ class LlamaCppBackend:
             # GLM-5.2 style: enable_thinking is the on/off gate; when on, keep the template's default effort.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
+            effort = _fit_reasoning_effort_to_template(
+                _rendered_chat_template(self),
+                effort or ("high" if enable_thinking else "low"),
+                thinking_off = not effort and not enable_thinking,
+            )
             return _coerce_reasoning_effort(
-                getattr(self, "_architecture", None),
-                {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
+                getattr(self, "_architecture", None), {"reasoning_effort": effort}
             )
         return {"enable_thinking": enable_thinking}
 
@@ -9248,6 +9273,8 @@ class LlamaCppBackend:
                     kwargs["reasoning_effort"] = effort
             elif self._reasoning_style == "reasoning_effort":
                 _levels = getattr(self, "_reasoning_effort_levels", None) or ()
+                _template = _rendered_chat_template(self)
+                reasoning_effort = _fit_reasoning_effort_to_template(_template, reasoning_effort)
                 if reasoning_effort in ("none", "low", "medium", "high") or (
                     reasoning_effort in _levels
                 ):
@@ -9255,7 +9282,11 @@ class LlamaCppBackend:
                 elif reasoning_effort == "minimal":
                     kwargs["reasoning_effort"] = "low"
                 elif enable_thinking is not None:
-                    kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
+                    kwargs["reasoning_effort"] = _fit_reasoning_effort_to_template(
+                        _template,
+                        "high" if enable_thinking else "low",
+                        thinking_off = not enable_thinking,
+                    )
             else:
                 if enable_thinking is not None:
                     kwargs["enable_thinking"] = enable_thinking
@@ -38060,12 +38091,25 @@ class LlamaCppBackend:
             if logit_bias:
                 payload["logit_bias"] = logit_bias
             # An empty list would still advertise tool use.
-            if safe_tools:
-                payload["tools"] = llama_grammar_tools(safe_tools)
-                payload["tool_choice"] = requested_choice
-                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            if safe_tools:
+                grammar_tools = safe_tools
+                if not forced_name and requested_choice != "none":
+                    grammar_tools = neutralize_tool_descriptions(
+                        tool_controller.active_tools(include_deferred = True),
+                        _markup_cache,
+                        self.markup_profile,
+                    )
+                payload["tools"] = llama_grammar_tools(grammar_tools)
+                payload["tool_choice"] = requested_choice
+                if grammar_tools != safe_tools:
+                    # The parser needs discovered names; the template keeps its cached declaration.
+                    payload["chat_template_kwargs"] = {
+                        **(_reasoning_kw or {}),
+                        "tools": llama_grammar_tools(safe_tools),
+                    }
+                _last_sent_tools = safe_tools
             if thinking_budget_tokens is not None:
                 payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is

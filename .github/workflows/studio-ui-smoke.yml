@@ -555,6 +555,13 @@ jobs:
           BASE_URL: http://127.0.0.1:18894
         run: python tests/studio/playwright_chat_layout_direction.py
 
+      - name: Image generation time regression (Playwright)
+        if: matrix.shard == 'extra'
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_PW: ${{ env.STUDIO_EXTRA_NEW_PW }}
+        run: python tests/studio/playwright_images_generation_time.py
+
       - name: Image staged-download cancel/retry regression (Playwright)
         if: matrix.shard == 'extra'
         env:

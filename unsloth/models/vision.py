@@ -283,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
@@ -5114,6 +5115,9 @@ class FastBaseModel:
                     revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
+                from ..tokenizer_utils import _sync_pad_token_id
+
+                model = _sync_pad_token_id(model, _fallback_tok)
                 # Re-attach as a processor wrapper if the original was a processor (audio ones included).
                 if any(
                     hasattr(tokenizer, k)
@@ -5754,8 +5758,16 @@ class FastBaseModel:
             _LoraModel._create_and_replace = _patched_car
 
         from .lora_init import fast_lora_init, record_fast_pissa
+        from ._utils import block_swap_shaped
 
-        with fast_lora_init() as fast:
+        with (
+            fast_lora_init() as fast,
+            block_swap_shaped(
+                model,
+                init_lora_weights,
+                lora_config = lora_config,
+            ),
+        ):
             model = _get_peft_model(model, lora_config)
         if fast["pissa"]:
             record_fast_pissa(model)
@@ -5807,6 +5819,7 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -6002,6 +6015,7 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
         _tensor_parallel_for_inference(model)
+        restore_fp8_lora_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -6080,6 +6094,7 @@ class FastBaseModel:
             m = m.model
         _for_training(m)
         apply_training_mode()
+        enable_fp8_lora(model)
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)
