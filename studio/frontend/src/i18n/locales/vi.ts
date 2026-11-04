@@ -2047,6 +2047,26 @@ export const vi = {
       chatDefaults: "Mặc định cho trò chuyện",
       autoTitleNewChats: "Tự động đặt tiêu đề cho cuộc trò chuyện mới",
       autoTitleNewChatsDescription: "Tạo tiêu đề từ tin nhắn đầu tiên.",
+      mlWarmup: {
+        sectionTitle: "Hiệu suất khởi động",
+        description: "Chuẩn bị trước các tính năng đã chọn để sử dụng lần đầu nhanh hơn. Mặc định tất cả đều tắt. Khi bật, các tùy chọn có thể tải các thư viện phụ thuộc dùng chung và tăng mức sử dụng RAM khi không hoạt động.",
+        restartRequired: "Thay đổi có hiệu lực sau khi khởi động lại Unsloth.",
+        hardwareLabel: "Phát hiện phần cứng",
+        hardwareDescription: "Phát hiện GPU và chuẩn bị PyTorch.",
+        textLabel: "Mô hình văn bản",
+        textDescription: "Chuẩn bị khả năng hỗ trợ mô hình văn bản của Transformers.",
+        datasetsLabel: "Chuẩn bị tập dữ liệu",
+        datasetsDescription: "Chuẩn bị Datasets và các thư viện phụ thuộc để xem trước và xử lý dữ liệu.",
+        mediaLabel: "Mô hình hình ảnh và video",
+        mediaDescription: "Chuẩn bị Diffusers và các thư viện phụ thuộc dùng chung của mô hình.",
+        advanced: "Nâng cao",
+        quantizationLabel: "Kiểm tra trước lượng tử hóa hình ảnh",
+        quantizationDescription: "Kiểm tra khả năng hỗ trợ trước lần đầu tải mô hình hình ảnh đã lượng tử hóa. Có thể tạm thời làm tăng mức sử dụng RAM.",
+        requiredBySelections: "Bắt buộc đối với các tùy chọn bạn đã chọn.",
+        disabledByEnv: "Bị tắt bởi UNSLOTH_STUDIO_DISABLE_TORCH_WARM trong môi trường backend.",
+        loadError: "Không thể tải cài đặt chuẩn bị sẵn khi khởi động.",
+        saveError: "Không thể lưu cài đặt chuẩn bị sẵn khi khởi động.",
+      },
       helperLlm: {
         sectionTitle: "LLM trợ giúp",
         preloadOnStartup: "Lưu sẵn LLM trợ giúp vào bộ nhớ đệm khi khởi động",
@@ -3783,6 +3803,9 @@ export const vi = {
         docsLabel: "Mở tài liệu API quyết định",
         description:
           "Trả lời các câu hỏi có/không, trắc nghiệm và chấm điểm về văn bản bằng một mô hình trên máy này hoặc một mô hình quyết định từ Kết nối. Hoạt động với TypeSafe SDK.",
+        codeTitle: "Gọi từ mã",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Các ứng dụng MCP khác kết nối tại đây bằng cùng một token.",
         enable: "Phục vụ yêu cầu",
         enableDescription:
           "Phục vụ /v1/systemone. Khi bật, mô hình sẽ được tải xuống.",
@@ -3945,7 +3968,7 @@ export const vi = {
         desktopAvailableDescription:
           "Cập nhật ngay, ứng dụng máy tính sẽ khởi động lại khi hoàn tất.",
         desktopExternalServer:
-          "Ứng dụng đã kết nối với một máy chủ Unsloth đang chạy sẵn và không thể cập nhật máy chủ đó. Hãy dừng máy chủ đó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
+          "Đang kết nối với một máy chủ Unsloth trên cổng {port} mà ứng dụng này không khởi động, ví dụ `unsloth studio` trong terminal. Hãy dừng máy chủ tại nơi đã khởi động nó, rồi thoát và mở lại ứng dụng để cập nhật.",
         desktopManualInstall:
           "Mở trang phát hành để cài đặt gói Linux mới nhất.",
         desktopCheckFailed: "Không thể kiểm tra bản cập nhật",
@@ -5520,6 +5543,8 @@ export const vi = {
     removeLevel: "Xóa mức {n}",
     addLevel: "Thêm mức",
     jsonHelp: "Nội dung yêu cầu. Nút Chạy sẽ gửi đúng như những gì đã viết.",
+    copyBody: "Sao chép nội dung",
+    copyCurl: "Sao chép dưới dạng cURL",
     examples: "Ví dụ",
     presetToolApproval: "Phê duyệt lệnh gọi công cụ của tác tử",
     presetPromptInjection: "Phát hiện tấn công chèn lời nhắc",
@@ -5921,6 +5946,7 @@ export const vi = {
   generationStats: {
     working: "Đang xử lý...",
     processingPrompt: "Đang xử lý lời nhắc {percent}%",
+    compactingContext: "Đang thu gọn ngữ cảnh...",
     timeLeft: "còn {eta}",
     tokensOne: "{count} token",
     tokens: "{count} token",

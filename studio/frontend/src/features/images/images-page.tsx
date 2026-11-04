@@ -1293,16 +1293,19 @@ function RecipeRow({
   value,
   wrap,
   mono,
+  title,
 }: {
   label: string;
   value: string;
   wrap?: boolean;
   mono?: boolean;
+  title?: string;
 }) {
   return (
     <div className={cn("grid grid-cols-[72px_1fr] gap-2", wrap ? "items-start" : "items-center")}>
       <span className="text-muted-foreground">{label}</span>
       <span
+        title={title}
         className={cn(
           "min-w-0 text-foreground",
           wrap ? "whitespace-pre-wrap break-words" : "truncate",
@@ -1427,6 +1430,13 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
+          {image.generation_seconds != null ? (
+            <RecipeRow
+              label="Time"
+              value={`${image.generation_seconds.toFixed(image.generation_seconds < 1 ? 2 : 1)} s${(image.generation_count ?? 1) > 1 ? ` (batch of ${image.generation_count})` : ""}`}
+              title="Elapsed time until images are ready to save; may include waiting and processing"
+            />
+          ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
@@ -6744,7 +6754,7 @@ export function ImagesPage({
             {loraCapable && (
               <Field
                 label="LoRAs"
-                hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id (or pick a suggestion) and set the strength (1.0 = full effect, 0 disables). Stack several."
+                hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id, pick a suggestion, or add a folder of LoRA files, then set the strength (1.0 = full effect, 0 disables). Stack several."
               >
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
@@ -6826,7 +6836,7 @@ export function ImagesPage({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      title="Add a custom models folder. Image LoRAs exported from Unsloth in it show up here."
+                      title="Add a custom models folder. Image LoRA .safetensors files in it show up here."
                       onClick={() => setLoraFoldersOpen(true)}
                     >
                       <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />

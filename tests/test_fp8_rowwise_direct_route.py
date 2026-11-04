@@ -123,6 +123,7 @@ def test_direct_path_is_bitwise_equal_to_the_compiled_path(dtype):
                                 if 2 * rows > F8._fp8_dequant_max_rows(X.device, N * K)
                                 and N % 16 == 0
                                 and K % 16 == 0
+                                and not F8._scaled_mm_fp16_dequant_only(X.dtype)
                                 else "dequant"
                             )
                             ref = F8._fbgemm_fp8_linear_compiled(X, w, s, b)
