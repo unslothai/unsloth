@@ -272,3 +272,31 @@ def test_a_sweep_refuses_other_loads_until_it_lets_go(monkeypatch):
     # Only sweeps fence loads: llama-bench and Evals manage the server themselves.
     client.post("/api/benchmarks/lease", json = {"holder": "tab-bbbbbbbb", "kind": "llama-bench"})
     assert client.post("/api/inference/load").status_code == 200
+
+
+def test_a_held_out_scoring_refuses_loads_until_it_ends(monkeypatch):
+    # It scores whatever model is loaded, so a swap mid-run would answer later rows with another one.
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.post("/api/inference/load")(lambda: {"ok": True})
+    app.post("/api/inference/unload")(lambda: {"ok": True})
+    app.add_middleware(benchmarks_routes.BenchmarkTrafficMiddleware)
+    client = TestClient(app, headers = {"Authorization": "Bearer t"})
+    with benchmarks_routes.scoring_hold():
+        assert client.post("/api/inference/load").status_code == 409
+        assert client.post("/api/inference/unload").status_code == 409
+    assert client.post("/api/inference/load").status_code == 200
+
+
+def test_the_recipe_scoring_worker_holds_the_model_while_it_runs(monkeypatch):
+    from routes import benchmark_recipe
+
+    seen = []
+    monkeypatch.setattr(
+        benchmark_recipe,
+        "run_benchmark",
+        lambda *a, **k: seen.append(benchmarks_routes.load_refused(None)) or {"ok": True},
+    )
+    monkeypatch.setattr(benchmark_recipe, "_restore_adapter", lambda *a: None)
+    benchmark_recipe._recipe_task({"targets": {}, "spec": {}, "is_cancelled": lambda: False})
+    assert seen == [True] and not benchmarks_routes.load_refused(None)

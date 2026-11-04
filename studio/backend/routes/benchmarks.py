@@ -4,6 +4,7 @@
 """Benchmark run storage, backed by studio.db. The frontend runs the sweep and posts
 the run here as it goes, so a run survives a reload and shows up on every device."""
 
+import contextlib
 import threading
 import time
 from typing import Any, Literal, Optional
@@ -181,10 +182,28 @@ def _sweep_holds_against(holder: Optional[str]) -> bool:
     )
 
 
+# Held-out scorings in progress. They score whatever model is loaded ("local"), so a load or unload
+# by anyone while one runs would answer the later rows with another model under the first one's name.
+_scorings = 0
+
+
+@contextlib.contextmanager
+def scoring_hold():
+    """Refuse model loads and unloads while a held-out scoring runs; the scoring itself never loads."""
+    global _scorings
+    with _lease_lock:
+        _scorings += 1
+    try:
+        yield
+    finally:
+        with _lease_lock:
+            _scorings -= 1
+
+
 def load_refused(holder: Optional[str]) -> bool:
     """A load reloads the one llama-server, so mid-sweep it would run the next rows under other settings."""
     with _lease_lock:
-        return _sweep_holds_against(holder)
+        return _scorings > 0 or _sweep_holds_against(holder)
 
 
 def note_inference_request(holder: Optional[str]) -> None:
@@ -202,7 +221,11 @@ class BenchmarkTrafficMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if _lease is not None and scope.get("type") == "http" and scope.get("method") == "POST":
+        if (
+            (_lease is not None or _scorings)
+            and scope.get("type") == "http"
+            and scope.get("method") == "POST"
+        ):
             from core.inference.llama_keepwarm import (
                 _carries_bearer_credentials,
                 _is_inference_path,
@@ -226,8 +249,8 @@ class BenchmarkTrafficMiddleware:
                 from starlette.responses import JSONResponse
                 await JSONResponse(
                     {
-                        "detail": "A benchmark is running on this model. Stop it on the Benchmarks "
-                        "page or let it finish, then try again."
+                        "detail": "A benchmark is running on this model. Stop it (on the Benchmarks "
+                        "page, or the flow scoring it) or let it finish, then try again."
                     },
                     status_code = 409,
                 )(scope, receive, send)

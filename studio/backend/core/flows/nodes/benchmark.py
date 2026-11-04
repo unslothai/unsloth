@@ -395,9 +395,12 @@ async def _recipe_heldout(
     )
     if not prompt_col:
         raise FlowNodeError("Set the prompt column under Advanced: no column looks like a prompt")
+    # Read against every column first: training may have mapped `input` as the system message.
+    system_col = _system_column(ctx, columns)
     if (
         prompt_col == "instruction"
         and "input" in columns
+        and system_col != "input"
         and not str(ctx.params.get("prompt_column") or "").strip()
     ):
         # An Alpaca row's question is its instruction plus its input, as training formats it.
@@ -425,7 +428,7 @@ async def _recipe_heldout(
         "prompt_column": prompt_col,
         "reference_column": reference_col,
         "system_prompt": _system_prompt(ctx),
-        "system_column": _system_column(ctx, columns),
+        "system_column": system_col,
         "scorer": scorer,
         "rubric": str(ctx.params.get("rubric") or ""),
         "model_alias": "candidate",

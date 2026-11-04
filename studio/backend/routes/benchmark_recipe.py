@@ -45,8 +45,10 @@ def _recipe_task(params: dict) -> dict:
     targets = params["targets"]
     # The worker can outlive a Stop, so it revokes the run's key itself once the adapter is back on.
     params["key_claimed"] = True
+    from routes.benchmarks import scoring_hold
+
     try:
-        with httpx.Client() as client:
+        with httpx.Client() as client, scoring_hold():
             try:
                 return run_benchmark(
                     params["spec"],

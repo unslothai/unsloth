@@ -466,6 +466,30 @@ def test_alpaca_rows_are_asked_with_their_input_and_the_trained_system_prompt(mo
     assert spec["system_prompt"] == "Be terse."
 
 
+def test_an_input_column_trained_as_the_system_message_stays_the_system_message(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [
+            {"instruction": "Which word?", "input": "Always reply with GREEN.", "output": "GREEN"}
+        ]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    # Fine-tune mapped {"instruction": "user", "input": "system", "output": "assistant"}.
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", "system_column": "input"}
+    try:
+        asyncio.run(benchmark.benchmark(ctx))
+    except Exception:
+        pass
+    spec = sent[0]["recipe"]
+    assert spec["prompt_column"] == "instruction" and spec["system_column"] == "input"
+    assert [r["instruction"] for r in spec["rows"]] == ["Which word?"]
+
+
 def test_a_local_csv_is_scored_on_its_cell_text(tmp_path, monkeypatch):
     csv = tmp_path / "rows.csv"
     csv.write_text("question,answer\nzip,00501\nnone,NA\n")
