@@ -1805,6 +1805,41 @@ def test_vlm_load_streams_each_spm_token_as_it_arrives(monkeypatch):
     assert "".join(eager) == "".join(late) == " # A heading✓"
 
 
+def test_vlm_load_trims_only_the_reply_s_first_space(monkeypatch):
+    detokenizers = pytest.importorskip("mlx_vlm.tokenizer_utils")
+    pytest.importorskip("mlx_lm.tokenizer_utils")
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    pieces = ["▁", "<0x20>", "▁world"]
+
+    class _SpmTokenizer(_DummyTokenizer):
+        vocab = {piece: index for index, piece in enumerate(pieces)}
+
+        def __len__(self):
+            return len(pieces)
+
+        def convert_ids_to_tokens(self, ids):
+            return [pieces[index] for index in ids]
+
+    tokenizer = _SpmTokenizer()
+    held = detokenizers.SPMStreamingDetokenizer(tokenizer, trim_space = True)
+    monkeypatch.setattr(_DummyProcessor, "tokenizer", tokenizer)
+    monkeypatch.setattr(_DummyProcessor, "detokenizer", held, raising = False)
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    backend = MLXInferenceBackend()
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(config)
+
+    eager = backend._processor.detokenizer
+    for _ in range(2):
+        eager.reset()
+        for token in range(len(pieces)):
+            eager.add_token(token)
+        eager.finalize()
+        assert eager.text == "  world"
+
+
 @pytest.mark.parametrize("accepts_backend", (True, False))
 def test_mlx_distributed_init_selects_jaccl_backend(monkeypatch, accepts_backend):
     _install_fake_mlx(monkeypatch)

@@ -2269,6 +2269,21 @@ def _mlx_stream_detokenizer(source):
 def _eager_spm_detokenizer_class():
     from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
     class EagerSPMStreamingDetokenizer(SPMStreamingDetokenizer):
+        def __init__(self, tokenizer, trim_space = True):
+            self._trims_first_space = trim_space
+            super().__init__(tokenizer, trim_space = trim_space)
+
+        def reset(self):
+            super().reset()
+            self.trim_space = self._trims_first_space
+
+        # mlx-lm trims every flush while the text is still empty; only the first may be trimmed.
+        def _try_flush(self, force = False):
+            pending = self._unflushed
+            super()._try_flush(force)
+            if pending and not self._unflushed:
+                self.trim_space = False
+
         # mlx-vlm's stream loop passes skip_special_token_ids; mlx-lm's add_token takes none.
         def add_token(
             self,
