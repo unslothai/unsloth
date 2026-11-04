@@ -30,7 +30,7 @@ def _replacement(
     blocksize = None,
     quant_type = "fp4",
 ):
-    if not _enabled() or not _UTILS._USE_NF4_KERNELS:
+    if not torch.compiler.is_compiling() or not _enabled() or not _UTILS._USE_NF4_KERNELS:
         return _ORIGINAL(A, quant_state, absmax, out, blocksize, quant_type)
     s = quant_state
     valid = (
@@ -115,7 +115,7 @@ def install_bnb_nf4_dequant():
         if not utils._USE_NF4_KERNELS:
             return False
         import bitsandbytes.functional as functional
-        from .bnb_nf4_ops import dequantize_nf4
+        from .nf4 import dequantize_nf4
 
         state_type = getattr(functional, "QuantState", None)
         if not isinstance(state_type, type):

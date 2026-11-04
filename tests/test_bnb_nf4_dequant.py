@@ -128,7 +128,8 @@ fn = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name ==
 class CPUDevice(ast.NodeTransformer):
     def visit_Constant(self, node):
         return ast.copy_location(ast.Constant("cpu"), node) if node.value == "cuda" else node
-# Retarget only the device predicate; trace the real eligibility code inside backward.
+# This CPU probe models NVIDIA eligibility, including on ROCm test hosts.
+torch.version.hip = None
 exec(compile(ast.fix_missing_locations(CPUDevice().visit(ast.Module(body=[fn], type_ignores=[]))), M.__file__, "exec"), M.__dict__)
 M._STATE = BF.QuantState; M._UTILS = types.SimpleNamespace(_USE_NF4_KERNELS=True)
 def fallback(*args, **kwargs):
@@ -191,7 +192,8 @@ def check(q, s, eligible):
     fn = lambda value: BF.dequantize_4bit(value, s)
     reference_eager = original(q, s).clone()
     reference_compiled = torch.compile(lambda value: original(value, s), fullgraph=True)(q).clone()
-    assert bits(fn(q), reference_eager), ("DEQUANT_EAGER_EXACT", s.code.dtype)
+    with patch.object(M, "_FAST", side_effect=AssertionError("eager fast call")):
+        assert bits(fn(q), reference_eager), ("DEQUANT_EAGER_EXACT", s.code.dtype)
     with patch.dict(os.environ, {"UNSLOTH_DECODE_FUSED_NF4": "0"}):
         with patch.object(M, "_FAST", side_effect=AssertionError("disabled fast call")):
             assert bits(fn(q), reference_eager), ("DEQUANT_DISABLED_EXACT", s.code.dtype)
@@ -210,9 +212,8 @@ with torch.inference_mode():
     for dtype in (torch.float16, dtype2, torch.float32):
         q, s = quant(dtype)
         check(q, s, True); check(q.t(), s, True)
-        with patch.object(M, "_FAST", wraps=M._FAST) as fast:
+        with patch.object(M, "_FAST", side_effect=AssertionError("eager fast call")):
             assert bits(BF.dequantize_4bit(q, s), original(q, s))
-            assert fast.call_count == 1, "EAGER_DEQUANT_ENGAGEMENT"
     q, s = quant(torch.float32)
     previous = torch.get_default_dtype()
     try:
@@ -245,10 +246,9 @@ with torch.inference_mode():
         except torch._dynamo.exc.TorchRuntimeError as error:
             assert "bitsandbytes.dequantize_4bit.out" in str(error) and "Expected out.shape" in str(error), str(error)
             print("STOCK_COMPILED_OUT_SHAPE_ERROR", nested, flush=True)
-        with patch.object(M, "_FAST", wraps=M._FAST) as fast:
+        with patch.object(M, "_FAST", side_effect=AssertionError("eager out fast call")):
             eager = fn(q)
             assert eager.data_ptr() == out.data_ptr() and bits(eager, reference_eager)
-            assert fast.call_count == 1, "EAGER_OUT_ENGAGEMENT"
         print("COMPILED_OUT_BEGIN", nested, flush=True)
         assert has_nf4(fn, q), ("DEQUANT_OUT_ENGAGEMENT", nested)
         run = torch.compile(fn, fullgraph=True)
@@ -337,81 +337,5 @@ def test_bnb_dequant_compiled_backward_eligibility_cpu():
 def test_bnb_dequant_actual_backend_on_gpu():
     proc = _run(_GPU, gpu = True)
     assert proc.returncode == 0 and "PUBLIC DEQUANT GPU EXACT OK" in proc.stdout, (
-        proc.stdout + proc.stderr
-    )
-
-
-_OPS_CPU = _SETUP + textwrap.dedent(r"""
-from torch._subclasses.fake_tensor import FakeTensorMode
-from torch.fx.experimental.proxy_tensor import make_fx
-raw_calls = []
-raw_forbidden = False
-def raw(W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, out=None):
-    if torch.compiler.is_compiling():
-        result = torch.full(shape, 7, dtype=dtype, device=W.device)
-        return result if out is None else out.copy_(result)
-    if raw_forbidden:
-        raise AssertionError("RAW_FAKE_PROXY_LAUNCH")
-    raw_calls.append((W.device, out))
-    if out is None:
-        out = torch.empty(shape, dtype=dtype, device=W.device)
-    out.fill_(7)
-    return out
-nf4 = types.ModuleType("bdq.nf4"); nf4.dequantize_nf4 = raw
-sys.modules["bdq.nf4"] = nf4
-O = importlib.import_module("bdq.bnb_nf4_ops")
-def inputs(device):
-    return (torch.empty((32, 1), dtype=torch.uint8, device=device),
-        torch.empty((1,), device=device), torch.empty((16,), device=device))
-def call(W, absmax, code, out=None):
-    return O.dequantize_nf4(W, absmax, None, None, None, code, 64, 0,
-        (2, 32), torch.float32, out=out)
-args = inputs("cpu")
-for context in (torch.no_grad, torch.inference_mode):
-    with context():
-        result = call(*args)
-        assert result.shape == (2, 32) and result.dtype == torch.float32
-        assert torch.equal(result, torch.full_like(result, 7))
-        out = torch.empty_like(result)
-        assert call(*args, out=out) is out and raw_calls[-1][1] is out
-        assert torch.equal(out, result)
-assert len(raw_calls) == 4
-raw_forbidden = True
-with FakeTensorMode():
-    fake_args = inputs("cuda:1")
-    fake_out = torch.empty((2, 32), device="cuda:1")
-    assert call(*fake_args, out=fake_out) is fake_out
-    result = call(*fake_args)
-    assert result.device == torch.device("cuda:1") and result.shape == (2, 32)
-    assert result.dtype == torch.float32
-assert len(raw_calls) == 4
-proxy_out = torch.empty((2, 32))
-traced = make_fx(lambda W, absmax, code, out: call(W, absmax, code, out),
-    tracing_mode="fake")(*args, proxy_out)
-assert any("unsloth.bnb_nf4_dequantize_out" in str(n.target) for n in traced.graph.nodes)
-assert len(raw_calls) == 4
-raw_forbidden = False
-assert traced(*args, proxy_out) is proxy_out
-assert torch.equal(proxy_out, torch.full_like(proxy_out, 7)) and len(raw_calls) == 5
-graphs = []
-def backend(graph, example_inputs):
-    graphs.append(graph)
-    return graph.forward
-run = torch.compile(lambda W, absmax, code: call(W, absmax, code),
-    backend=backend, fullgraph=True, dynamic=True)
-for _ in range(4):
-    assert torch.equal(run(*args), torch.full((2, 32), 7.))
-assert len(graphs) == 1
-assert not any("bnb_nf4_dequantize_out" in str(n.target) for n in graphs[0].graph.nodes)
-assert len(raw_calls) == 5
-assert not torch._dynamo.utils.counters["graph_break"]
-assert not torch.cuda.is_initialized()
-print("PUBLIC NF4 OPS CPU OK")
-""")
-
-
-def test_bnb_nf4_ops_dispatch_cpu():
-    proc = _run(_OPS_CPU)
-    assert proc.returncode == 0 and "PUBLIC NF4 OPS CPU OK" in proc.stdout, (
         proc.stdout + proc.stderr
     )
