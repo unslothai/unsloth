@@ -1775,6 +1775,14 @@ if _IS_MLX:
         "wandb_log_unique_prompts": False,
     }
 
+    class _MLXImplicitStr(str):
+        pass
+
+    class _MLXImplicitInt(int):
+        pass
+
+    _MLX_IMPLICIT_TYPES = (_MLXImplicitStr, _MLXImplicitInt)
+
     class _MLXTRLConfig(_MLXSFTConfig):
         _unsloth_mlx_trl_arguments = (*_MLX_TRL_INERT_CONFIG_VALUES, "f_alpha_divergence_coef")
 
@@ -1784,14 +1792,12 @@ if _IS_MLX:
                 args = ()
             fields = _dataclasses.fields(type(self))
             config_fields = {field.name for field in fields}
-            # HfArgumentParser and dataclasses.replace pass every field: an untouched default is not
-            # the caller's choice, nor zoo's value that __init__ below fills in for a None default.
+            # HfArgumentParser and dataclasses.replace pass every field: neither an untouched default
+            # nor a value filled in below is the caller's choice.
             if not kwargs.pop("_unsloth_mlx_config_copy", False) and config_fields <= set(kwargs):
                 for field in fields:
-                    if kwargs[field.name] == field.default or (
-                        field.name in ("dataset_order", "max_seq_length")
-                        and kwargs[field.name] == getattr(MLXTrainingConfig, field.name)
-                    ):
+                    value = kwargs[field.name]
+                    if value == field.default or isinstance(value, _MLX_IMPLICIT_TYPES):
                         del kwargs[field.name]
             # A value set on either other knob decides the clip, so TRL's default norm must stay out of it.
             if (
@@ -1809,10 +1815,14 @@ if _IS_MLX:
                     if getattr(kwargs[key], "value", kwargs[key]) in (value, None):
                         del kwargs[key]
             super().__init__(*args, **kwargs)
-            # None on the field shows HfArgumentParser's caller left these unset; zoo's default stands.
-            for key in ("dataset_order", "max_seq_length"):
+            # None on the field shows HfArgumentParser's caller left these unset; zoo's default stands,
+            # typed so a dataclasses.replace clone can tell it from an explicit equal value.
+            for key, implicit in (
+                ("dataset_order", _MLXImplicitStr),
+                ("max_seq_length", _MLXImplicitInt),
+            ):
                 if getattr(self, key) is None:
-                    setattr(self, key, getattr(MLXTrainingConfig, key))
+                    setattr(self, key, implicit(getattr(MLXTrainingConfig, key)))
             self._unsloth_mlx_initial_max_seq_length = self.max_seq_length
 
     def _resolve_mlx_trl_grad_clip(args):
