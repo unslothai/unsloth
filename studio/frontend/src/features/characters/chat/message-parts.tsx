@@ -2,7 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { useT } from "@/i18n";
+import { useLocale, useT } from "@/i18n";
+import { withTimeFormat } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { createContext, useContext, type ReactNode } from "react";
@@ -11,6 +12,7 @@ import { Portrait } from "../components/portrait";
 import { RoleplayText } from "../components/roleplay-text";
 import { showOnStage } from "../stage-focus";
 import { roleplayMetaOf } from "../meta";
+import { messageTime } from "../time";
 import { useCharactersStore } from "../store";
 import { useThreadScene } from "./use-thread-scene";
 
@@ -19,6 +21,28 @@ export const RoleplaySpeakerNameContext = createContext<string | null>(null);
 
 export function useRoleplaySpeakerName(): string | null {
   return useContext(RoleplaySpeakerNameContext);
+}
+
+/** When this message was written, with the full date on hover. */
+function MessageTime({ className }: { className?: string }) {
+  const locale = useLocale();
+  // A number, not the Date: a selector must return a stable value.
+  const at = useAuiState(({ message }) => (message.createdAt instanceof Date ? message.createdAt.getTime() : 0));
+  if (!at) return null;
+  const full = new Date(at).toLocaleString(
+    locale,
+    withTimeFormat({ weekday: "long", year: "numeric", month: "long", day: "numeric", hour: "numeric", minute: "2-digit" }, locale),
+  );
+  return (
+    <time
+      dateTime={new Date(at).toISOString()}
+      title={full}
+      className={cn("shrink-0 text-ui-12 font-normal tabular-nums text-muted-foreground", className)}
+      data-testid="roleplay-message-time"
+    >
+      {messageTime(locale, at)}
+    </time>
+  );
 }
 
 /** Who said this reply: its stamped speaker, else the chat's only character. */
@@ -86,6 +110,7 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
           >
             {character ? speaker.name : `${speaker.name} · ${t("characters.chat.deleted")}`}
           </span>
+          <MessageTime />
         </div>
         {children}
       </div>
@@ -99,8 +124,9 @@ export function RoleplayPersonaTag() {
   const thread = useThreadScene(threadId);
   if (!thread) return null;
   return (
-    <span className="-mb-1 mr-1 text-ui-12 font-medium text-muted-foreground" data-testid="persona-tag">
-      {thread.persona.name}
+    <span className="-mb-1 mr-1 flex items-baseline gap-2 text-ui-12 font-medium text-muted-foreground">
+      <span data-testid="persona-tag">{thread.persona.name}</span>
+      <MessageTime />
     </span>
   );
 }
