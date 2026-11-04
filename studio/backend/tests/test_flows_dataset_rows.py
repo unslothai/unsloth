@@ -220,3 +220,17 @@ def test_a_schema_transforms_output_exports_whole(client):
             400,
             404,
         )
+
+
+def test_a_transform_export_skips_macos_metadata_files(client):
+    folder = recipe_datasets_root() / "recipe_run10" / "processors-files" / "chat"
+    folder.mkdir(parents = True)
+    pq.write_table(pa.Table.from_pylist(ROWS[:3]), folder / "batch_00000.parquet")
+    (folder / "._batch_00000.parquet").write_bytes(b"\x00\x05\x16\x07 apple double")
+    value = {
+        "kind": "dataset",
+        "source": "recipe",
+        "ref": "recipes/recipe_run10/processors-files/chat",
+    }
+    out = client.post("/api/flows/dataset-export", json = {"value": value})
+    assert [json.loads(line) for line in out.text.splitlines()] == ROWS[:3]

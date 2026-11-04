@@ -621,8 +621,10 @@ def seed_files(recipe: Any, wired: Any) -> Optional[str]:
             patterns.extend(source.get("paths") or [source.get("path")])
     files = set()
     for pattern in patterns:
-        if not isinstance(pattern, str) or not os.path.isabs(pattern):
+        if not isinstance(pattern, str) or not pattern.strip():
             continue
+        # A relative seed (./seed.jsonl) is read from where Studio runs, as Data Designer reads it.
+        pattern = os.path.abspath(os.path.expanduser(pattern))
         for path in glob.glob(pattern, recursive = True):
             walked = os.walk(path) if os.path.isdir(path) else [("", [], [path])]
             files.update(os.path.join(root, name) for root, _, names in walked for name in names)

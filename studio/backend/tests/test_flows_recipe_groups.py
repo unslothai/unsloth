@@ -1326,3 +1326,13 @@ def test_chats_checkpoint_is_read_through_its_handle_not_its_public_name(monkeyp
     assert one["local"] == str(first) and one["files"]
     loaded["path"] = second
     assert key() != one
+
+
+def test_a_relative_seed_file_is_fingerprinted_where_studio_runs(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "seed.jsonl").write_text('{"w": "before"}\n')
+    recipe = {"seed_config": {"source": {"seed_type": "local", "path": "./seed.jsonl"}}}
+    first = data.seed_files(recipe, None)
+    assert first
+    (tmp_path / "seed.jsonl").write_text('{"w": "changed seed contents"}\n')
+    assert data.seed_files(recipe, None) != first

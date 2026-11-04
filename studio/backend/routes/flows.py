@@ -1023,7 +1023,10 @@ def dataset_export(body: DatasetExportBody) -> StreamingResponse:
         account_path(str(folder), reference = True)
     except (DatasetRowsError, ValueError) as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from exc
-    files = sorted(folder.glob("*.parquet")) if folder.is_dir() else []
+    from utils.paths.path_utils import drop_appledouble_metadata
+
+    # Without the ._batch.parquet companions a macOS volume leaves, which no reader can parse.
+    files = drop_appledouble_metadata(sorted(folder.glob("*.parquet"))) if folder.is_dir() else []
     if not files:
         raise HTTPException(status_code = 404, detail = "This dataset is no longer available")
 
