@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Multi-LoRA refuses an 8-bit bitsandbytes base instead of reading its int8 bytes as a dense weight."""
-
 from __future__ import annotations
 
 import pytest
