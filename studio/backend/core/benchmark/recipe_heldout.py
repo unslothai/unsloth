@@ -115,10 +115,13 @@ def parse_judge_verdict(text: str) -> Optional[bool]:
 
 
 def _cell(row: dict[str, Any], column: str | None) -> str:
+    """A cell's text as training reads it: a SQuAD answer's text, a number without its ".0", a
+    dict or list as JSON, a blank as ""."""
     if not column:
         return ""
-    value = row.get(column)
-    return "" if value is None else str(value)
+    from utils.datasets.cells import cell_text
+
+    return cell_text(row.get(column))
 
 
 def _score_answer(

@@ -434,3 +434,36 @@ def test_the_route_asks_each_row_with_its_own_system_message(harness, monkeypatc
     rows = [{**r, "rule": f"Rule {i}"} for i, r in enumerate(ROWS)]
     _run(_request(rows = rows, scorer = "reference", baseline = {"mode": "none"}, system_column = "rule"))
     assert asked == ["Rule 0", "Rule 1", "Rule 2"]
+
+
+def test_a_structured_reference_is_scored_on_the_answer_training_used():
+    # SQuAD-style answers train as their text, so "Paris" matches, not the dict's repr.
+    rows = [{"question": "Capital of France?", "answer": {"text": ["Paris"], "answer_start": [0]}}]
+    result = run_benchmark(
+        {
+            "rows": rows,
+            "prompt_column": "question",
+            "reference_column": "answer",
+            "scorer": "reference",
+        },
+        chat = lambda target, messages: "Paris",
+    )
+    assert result["candidate"]["score"] == pytest.approx(1.0)
+
+
+def test_a_scoring_holds_the_gpu_lease_so_training_cannot_evict_its_model(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    refusals = []
+
+    def scoring(*a, **k):
+        # Another caller (a training start, a video load) asks while the rows are scored.
+        import contextvars
+        refusals.append(contextvars.Context().run(gpu_arbiter.lease_refusal))
+        return {"ok": True}
+
+    monkeypatch.setattr(route, "run_benchmark", scoring)
+    monkeypatch.setattr(route, "_restore_adapter", lambda *a: None)
+    route._recipe_task({"targets": {}, "spec": {}, "is_cancelled": lambda: False})
+    assert isinstance(refusals[0], gpu_arbiter.GpuLeaseHeldError)
+    assert not gpu_arbiter.lease_held()
