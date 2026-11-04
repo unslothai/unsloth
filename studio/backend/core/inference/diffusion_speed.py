@@ -1008,6 +1008,8 @@ def fused_qkv_added_bytes(pipe: Any) -> int:
 
         if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
             return 0
+        if unfused_projections_will_drop(unet):
+            return 0  # the fused weights replace the projections they were built from
         total = 0
         for module in unet.modules():
             if not callable(getattr(module, "fuse_projections", None)) or getattr(
@@ -2095,29 +2097,80 @@ def _fused_attention_drops(module: Any) -> tuple:
     return ("to_q", "to_k", "to_v") if getattr(module, "to_qkv", None) is not None else ()
 
 
+def _drop_unfused_enabled() -> bool:
+    return (os.environ.get(DROP_UNFUSED_QKV_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _droppable_projection(module: Any, name: str) -> bool:
+    """A projection the drop may delete: a plain Linear without hooks (quantised / wrapped ones are left alone)."""
+    from torch import nn
+
+    p = getattr(module, name, None)
+    return type(p) is nn.Linear and not (
+        p._forward_pre_hooks or p._forward_hooks or hasattr(p, "_hf_hook")
+    )
+
+
+def _drop_plan(unet: Any) -> list:
+    """``(module, names)`` the drop would delete on a fused ``unet``; empty when it is off, a PEFT adapter is attached
+    (it targets to_q / to_k / to_v) or any projection is not a plain hook-free Linear (all or nothing)."""
+    if unet is None or not _drop_unfused_enabled():
+        return []
+    if any(hasattr(m, "lora_A") for m in unet.modules()):
+        return []
+    plan = []
+    for module in unet.modules():
+        names = _fused_attention_drops(module)
+        if not names:
+            continue
+        if not all(_droppable_projection(module, n) for n in names):
+            return []
+        plan.append((module, names))
+    return plan
+
+
+def unfused_projections_will_drop(unet: Any) -> bool:
+    """Whether the fuse's unfused copies will be dropped on this (not yet fused) U-Net: drop on, no PEFT adapter, and
+    every projection the fused processor stops calling is a plain hook-free Linear."""
+    if unet is None or not _drop_unfused_enabled():
+        return False
+    try:
+        if any(hasattr(m, "lora_A") for m in unet.modules()):
+            return False
+        seen = False
+        for module in unet.modules():
+            if not callable(getattr(module, "fuse_projections", None)) or getattr(
+                module, "fused_projections", False
+            ):
+                continue
+            if getattr(module, "add_q_proj", None) is not None:
+                return False  # the added projections are fused too and never dropped
+            names = (
+                ("to_k", "to_v")
+                if getattr(module, "is_cross_attention", False)
+                else ("to_q", "to_k", "to_v")
+            )
+            if not all(_droppable_projection(module, n) for n in names):
+                return False
+            seen = True
+        return seen
+    except Exception:  # noqa: BLE001 - unreadable: count the copies
+        return False
+
+
 def drop_unfused_projections(unet: Any, logger: Any = None) -> int:
     """Delete the unfused projections a U-Net QKV fuse left beside ``to_qkv`` / ``to_kv`` (SDXL: 1235 MiB). Kept when
     a PEFT adapter is attached (it targets them) or the modules carry hooks; ``restore_unfused_projections`` rebuilds
     them bit-exactly from the fused weights. UNSLOTH_DIFFUSION_DROP_UNFUSED_QKV=0 keeps them."""
-    if unet is None or (os.environ.get(DROP_UNFUSED_QKV_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
-        return 0
     try:
         import torch
-        from torch import nn
 
-        if any(hasattr(m, "lora_A") for m in unet.modules()):
-            return 0  # PEFT adapters wrap to_q / to_k / to_v
-        plan = []
-        for module in unet.modules():
-            names = _fused_attention_drops(module)
-            if not names:
-                continue
-            parts = [getattr(module, n, None) for n in names]
-            if not all(type(p) is nn.Linear for p in parts):
-                return 0  # quantised / wrapped projections: leave the whole U-Net as it is
-            if any(p._forward_pre_hooks or p._forward_hooks or hasattr(p, "_hf_hook") for p in parts):
-                return 0
-            plan.append((module, names))
+        plan = _drop_plan(unet)
         freed = 0
         for module, names in plan:
             shapes = []
@@ -2161,9 +2214,13 @@ def restore_unfused_projections(unet: Any) -> int:
             lin = nn.Linear(fin, fout, bias = has_bias, device = "meta")
             with torch.no_grad():
                 grad = bool(fused.weight.requires_grad)
-                lin.weight = nn.Parameter(fused.weight[rows : rows + fout].clone(), requires_grad = grad)
+                lin.weight = nn.Parameter(
+                    fused.weight[rows : rows + fout].clone(), requires_grad = grad
+                )
                 if has_bias:
-                    lin.bias = nn.Parameter(fused.bias[rows : rows + fout].clone(), requires_grad = grad)
+                    lin.bias = nn.Parameter(
+                        fused.bias[rows : rows + fout].clone(), requires_grad = grad
+                    )
             setattr(module, name, lin)
             rows += fout
         delattr(module, _DROPPED_ATTR)

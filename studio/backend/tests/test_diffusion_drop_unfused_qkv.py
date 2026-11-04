@@ -19,7 +19,6 @@ ENV = "UNSLOTH_DIFFUSION_DROP_UNFUSED_QKV"
 
 def _unet():
     from diffusers import UNet2DConditionModel
-
     torch.manual_seed(0)
     return UNet2DConditionModel(
         sample_size = 8,
@@ -37,7 +36,11 @@ def _unet():
 
 def _inputs():
     g = torch.Generator().manual_seed(1)
-    return torch.randn(1, 4, 8, 8, generator = g), torch.tensor([10]), torch.randn(1, 3, 24, generator = g)
+    return (
+        torch.randn(1, 4, 8, 8, generator = g),
+        torch.tensor([10]),
+        torch.randn(1, 3, 24, generator = g),
+    )
 
 
 def _bytes(m) -> int:
@@ -45,12 +48,13 @@ def _bytes(m) -> int:
 
 
 def _pipe(unet):
-    return types.SimpleNamespace(unet = unet, vae = None, fuse_qkv_projections = unet.fuse_qkv_projections)
+    return types.SimpleNamespace(
+        unet = unet, vae = None, fuse_qkv_projections = unet.fuse_qkv_projections
+    )
 
 
 def _attn(unet):
     from diffusers.models.attention_processor import Attention
-
     return [m for m in unet.modules() if isinstance(m, Attention)]
 
 
@@ -111,7 +115,9 @@ def test_a_peft_adapter_keeps_them():
     from peft import LoraConfig
 
     unet = _unet()
-    unet.add_adapter(LoraConfig(r = 2, lora_alpha = 2, target_modules = ["to_q", "to_k", "to_v"]), adapter_name = "a")
+    unet.add_adapter(
+        LoraConfig(r = 2, lora_alpha = 2, target_modules = ["to_q", "to_k", "to_v"]), adapter_name = "a"
+    )
     unet.fuse_qkv_projections()
     assert dspeed.drop_unfused_projections(unet) == 0
     assert all(hasattr(m, "to_k") for m in _attn(unet))

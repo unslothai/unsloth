@@ -40,7 +40,12 @@ def _bytes(module) -> int:
     return sum(p.numel() * p.element_size() for p in module.parameters())
 
 
-def test_added_bytes_equal_what_diffusers_fuse_adds():
+def _keep_copies(monkeypatch):
+    monkeypatch.setenv(dspeed.DROP_UNFUSED_QKV_ENV, "0")
+
+
+def test_added_bytes_equal_what_diffusers_fuse_adds(monkeypatch):
+    _keep_copies(monkeypatch)
     unet = _tiny_unet()
     pipe = types.SimpleNamespace(unet = unet)
     added = dspeed.fused_qkv_added_bytes(pipe)
@@ -67,6 +72,8 @@ def card(monkeypatch):
     )
     monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev = None: reading["reserved"] * MIB)
     monkeypatch.delenv(HEADROOM_ENV, raising = False)
+    # the fused copies stay beside the originals (the case the gate guards); test_drop_* cover the dropped case
+    monkeypatch.setenv(dspeed.DROP_UNFUSED_QKV_ENV, "0")
     return reading
 
 
@@ -190,3 +197,32 @@ def test_hires_refinement_peaks_are_noted_too():
     else:
         pytest.fail("generation_count branch not found")
     assert "_note_deferred_eager_peak(state)" in inspect.getsource(dmod)
+
+
+def test_drop_makes_the_fuse_add_nothing(monkeypatch):
+    # with the unfused copies dropped after the fuse, the fused weights replace the originals
+    monkeypatch.delenv(dspeed.DROP_UNFUSED_QKV_ENV, raising = False)
+    pipe = types.SimpleNamespace(unet = _tiny_unet())
+    assert dspeed.unfused_projections_will_drop(pipe.unet)
+    assert dspeed.fused_qkv_added_bytes(pipe) == 0
+
+
+def test_a_lora_keeps_the_copies_so_they_count(monkeypatch):
+    monkeypatch.delenv(dspeed.DROP_UNFUSED_QKV_ENV, raising = False)
+    unet = _tiny_unet()
+    attn = next(m for m in unet.modules() if callable(getattr(m, "fuse_projections", None)))
+    attn.to_q.lora_A = (
+        torch.nn.ModuleDict()
+    )  # a PEFT adapter on the projections: the drop is skipped
+    pipe = types.SimpleNamespace(unet = unet)
+    assert not dspeed.unfused_projections_will_drop(unet)
+    assert dspeed.fused_qkv_added_bytes(pipe) > 0
+
+
+def test_drop_lets_the_profile_engage_where_the_copies_would_not_fit(card, engage, monkeypatch):
+    # the reading test_profile_declined_when_the_render_would_not_fit declines with the copies kept engages once
+    # they are dropped: the fuse then adds nothing to the card
+    monkeypatch.delenv(dspeed.DROP_UNFUSED_QKV_ENV, raising = False)
+    card.update(peak = 7778 - 300, free = 544, reserved = 7234)
+    _state, engaged = engage()
+    assert engaged
