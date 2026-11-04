@@ -12,8 +12,11 @@ import os
 import re
 import secrets
 import weakref
+from collections import deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1111,19 +1114,56 @@ def _paged(rows: list[dict[str, Any]], after: Optional[str], limit: int) -> dict
     return {"object": "list", "data": rows[:limit], "has_more": len(rows) > limit}
 
 
-def _runs_after(after: Optional[str], count: int) -> list[dict[str, Any]]:
-    runs: list[dict[str, Any]] = []
-    found, offset = after is None, 0
-    while len(runs) < count:
+def _iter_runs() -> Iterator[dict[str, Any]]:
+    offset = 0
+    while True:
         batch = list_runs(200, offset)["runs"]
         if not batch:
-            break
-        for run in batch:
-            if found:
-                runs.append(run)
-            found = found or run["id"] == after
+            return
+        yield from batch
         offset += len(batch)
-    return runs[:count]
+
+
+def _ordered_jobs(
+    queued: list[dict[str, Any]], terminal: list[dict[str, Any]], live: dict[str, dict[str, Any]]
+) -> Iterator[tuple[dict[str, Any], bool]]:
+    # Keep waiting jobs ahead of runs and preserve the existing live/history order.
+    # Retained terminal jobs go before the first older run, with runs winning ties.
+    yield from ((job, False) for job in queued)
+    remaining = deque(sorted(terminal, key = lambda job: job["created_at"], reverse = True))
+    # A live run can acquire its history row between the status and history reads.
+    history = ((run, True) for run in _iter_runs() if run["id"] not in live)
+    for row, is_run in chain(((job, False) for job in live.values()), history):
+        created_at = (
+            _ALIAS_CREATED.get(_RUN_ALIAS.get(row["id"])) or _unix(row.get("started_at")) or 0
+            if is_run
+            else row["created_at"]
+        )
+        while remaining and remaining[0]["created_at"] > created_at:
+            yield remaining.popleft(), False
+        yield row, is_run
+    yield from ((job, False) for job in remaining)
+
+
+def _list_job_page(
+    queued: list[dict[str, Any]],
+    terminal: list[dict[str, Any]],
+    live: dict[str, dict[str, Any]],
+    after: Optional[str],
+    after_run: Optional[str],
+    limit: int,
+    via_api_key: bool,
+) -> dict[str, Any]:
+    jobs = []
+    for row, is_run in _ordered_jobs(queued, terminal, live):
+        if after:
+            if row["id"] == (after_run if is_run else after):
+                after = None
+            continue
+        if len(jobs) == limit:
+            return {"object": "list", "data": jobs, "has_more": True}
+        jobs.append(_for_caller(_job_from_run(row), via_api_key) if is_run else row)
+    return {"object": "list", "data": jobs, "has_more": False}
 
 
 @router.get("/fine_tuning/jobs")
@@ -1134,41 +1174,27 @@ async def list_fine_tuning_jobs(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     await asyncio.to_thread(_load_aliases)
-    own = [e for e in _ALIASES.values() if _own_alias(e.alias)]
-    # Newest first, as the history lists runs; insertion order breaks same-second ties.
-    pending = [(e, _for_caller(_queued_job(e), via_api_key)) for e in reversed(own)]
-    pending_ids = [job["id"] for _, job in pending]
-    if after in pending_ids:
-        pending, after = pending[pending_ids.index(after) + 1 :], None
-    elif after:
-        pending = []
+    queued, terminal = [], []
+    for entry in reversed(_ALIASES.values()):
+        if _own_alias(entry.alias) is not None:
+            group = queued if entry.status in ("queued", "starting") else terminal
+            group.append(_for_caller(_queued_job(entry), via_api_key))
+
     after_run = await _resolve(after) if after else None
-    runs = await asyncio.to_thread(_runs_after, after_run, limit + 1)
     status = await _current_status(current_subject, via_api_key)
     live_id = _status_field(status, "job_id") if status is not None else None
-
-    live = []
+    live = {}
     if live_id and _status_field(status, "phase") != "idle":
-        live = [
-            r
-            for r in reversed(_BATCHES.get(live_id, [live_id]))
-            if await asyncio.to_thread(get_run, r) is None
-        ]
-    if after_run in live:
-        live = live[live.index(after_run) + 1 :]
-        runs = await asyncio.to_thread(_runs_after, None, limit + 1)
-    elif after_run:
-        live = []
-    jobs = [_for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key) for run in runs]
-    jobs = [await _job(r, current_subject, via_api_key) for r in live] + jobs
+        for run_id in reversed(_BATCHES.get(live_id, [live_id])):
+            if await asyncio.to_thread(get_run, run_id) is None:
+                job = await _job(run_id, current_subject, via_api_key)
+                live[run_id] = job
+                if run_id == after_run:
+                    after = job["id"]
 
-    newest = max((job["created_at"] for job in jobs), default = 0)
-    jobs = [
-        job
-        for e, job in pending
-        if e.status in ("queued", "starting") or job["created_at"] > newest
-    ] + jobs
-    return {"object": "list", "data": jobs[:limit], "has_more": len(jobs) > limit}
+    return await asyncio.to_thread(
+        _list_job_page, queued, terminal, live, after, after_run, limit, via_api_key
+    )
 
 
 @router.get("/fine_tuning/jobs/{job_id}")

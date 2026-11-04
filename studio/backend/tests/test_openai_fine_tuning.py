@@ -1758,3 +1758,29 @@ def test_a_job_cancelled_during_the_batch_model_probe_never_starts(
     assert "ab"[cancelled] not in started
     assert statuses[cancelled] == "cancelled"
     assert calls["stop"] == []
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+def test_a_cancelled_queued_job_is_still_listed_after_a_newer_job_starts(
+    queue, monkeypatch, tmp_path, persisted
+):
+    client, _calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+        old = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.cancel(old.id)
+        before = await client.fine_tuning.jobs.list()
+        gpu["busy"] = False
+        newer = await _create(client, uploaded.id)
+        if persisted:
+            _finished_run(tmp_path, tmp_path / "chats.jsonl")
+        after = [job.id async for job in client.fine_tuning.jobs.list(limit = 1)]
+        retrieved = await client.fine_tuning.jobs.retrieve(old.id)
+        return old, newer, before, after, retrieved
+
+    old, newer, before, after, retrieved = _run(flow())
+    assert [(job.id, job.status) for job in before.data] == [(old.id, "cancelled")]
+    assert retrieved.status == "cancelled"
+    assert after == [newer.id, old.id]
