@@ -517,18 +517,18 @@ def test_starter_characters_arrive_once_with_portraits_and_stay_deleted(client):
     starters = [c for c in listed if "Starter" in c["tags"]]
     assert len(starters) == len(STARTERS)
     assert all(c["hasAvatar"] and c["creator"] == "Unsloth Studio" for c in starters)
-    mara = next(c for c in starters if c["name"] == "Captain Mara Okafor")
-    full = client.get(f"/api/characters/{mara['id']}").json()
+    rin = next(c for c in starters if c["name"] == "Rin Takeda")
+    full = client.get(f"/api/characters/{rin['id']}").json()
     assert full["firstMes"] and full["alternateGreetings"] and full["characterBook"]["entries"]
     assert (
-        client.get(f"/api/characters/{mara['id']}/avatar").headers["content-type"] == "image/webp"
+        client.get(f"/api/characters/{rin['id']}/avatar").headers["content-type"] == "image/webp"
     )
 
     # A second load adds nothing, and a deleted starter does not come back.
-    assert client.delete(f"/api/characters/{mara['id']}").status_code == 204
+    assert client.delete(f"/api/characters/{rin['id']}").status_code == 204
     again = client.get("/api/characters").json()["characters"]
     assert len([c for c in again if "Starter" in c["tags"]]) == len(STARTERS) - 1
-    assert all(c["name"] != "Captain Mara Okafor" for c in again)
+    assert all(c["name"] != "Rin Takeda" for c in again)
 
 
 def test_starter_cards_are_original_and_export_cleanly(client):
