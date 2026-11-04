@@ -316,7 +316,10 @@ class _Stripper(HTMLParser):
             self._pop_tags(index)
 
     def handle_starttag(self, tag, attrs):
-        hidden = _html_hidden(tag, attrs)
+        # markup inside raw text is literal text, even where older HTMLParsers parse it
+        hidden = _html_hidden(tag, attrs) and not any(
+            self._tag_positions.get(raw) for raw in _HTML_RAW_TEXT
+        )
         self._close_implied(tag, self._hidden_at is not None or hidden)
         if tag not in _HTML_VOID_TAGS:
             index = len(self._open_tags)

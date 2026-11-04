@@ -1470,3 +1470,8 @@ def test_html_hidden_until_found_remains_searchable(tmp_path, value):
 )
 def test_html_hidden_without_tracked_end_keeps_following_text(tmp_path, body):
     assert _parse_html(tmp_path, body).endswith("Current")
+
+
+def test_html_hidden_markup_inside_visible_raw_text_stays_text(tmp_path):
+    text = _parse_html(tmp_path, "<textarea><span hidden>Current</span></textarea><p>After</p>")
+    assert "Current" in text and text.endswith("After")
