@@ -14750,6 +14750,8 @@ class DiffusionBackend:
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 if (_hires_pass is None or not _hires_pass.refine) and not aux_pass:
                     object.__setattr__(state, "generation_count", state.generation_count + 1)
+                # chunks that ran placed differently leave no one placement; the live read covers none sampled
+                placed = set(chunk_placements) - {None}
                 result = {
                     "images": list(images),
                     "seed": int(seed),
@@ -14765,8 +14767,8 @@ class DiffusionBackend:
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
                     "denoiser_offload": (
-                        chunk_placements[0]
-                        if len(set(chunk_placements)) == 1 and chunk_placements[0] is not None
+                        (placed.pop() if len(placed) == 1 else None)
+                        if placed
                         else denoiser_offload(state.pipe, state.offload_policy)
                     ),
                     # Read after the deferred speed / step-cache toggles, so this is what ran.

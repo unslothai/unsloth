@@ -14569,8 +14569,8 @@ class _PinProbePipe(_FakePipe):
     [
         # the 2-image attempt cannot pin and runs out of memory; both 1-image retries run whole
         ([False, True, True], "resident", "resident"),
-        # a retry that cannot pin streams, so the generation did not run whole
-        ([False, True, False], "resident", "streamed"),
+        # one retry ran whole and the other streamed: no one placement describes the batch
+        ([False, True, False], "resident", None),
         # the pin covers pipe.transformer only: a second DiT (Ideogram 4) still streams
         ([False, True, True], "partial", "partial"),
     ],
