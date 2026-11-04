@@ -174,6 +174,24 @@ test("a screenshot of a file in a chat that is off screen is refused, not taken 
   }
 });
 
+test("reloading a file's preview in the desktop app reloads its frame", async () => {
+  endBrowserAgentRun(RUN);
+  useBrowserStore.getState().openFile({ blob: new Blob(["<p>x</p>"], { type: "text/html" }), name: "reload.html", contentType: "text/html", key: "html:reload" });
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) =>
+    op.op === "status" ? { installed: true, result: { ok: true, quietMs: 1000 } } : { installed: true, result: { ok: true, text: "x", links: [] } };
+  const store = useBrowserStore.getState();
+  const before = store.tabs.find((tab) => tab.id === store.activeTabId)?.reloadKey;
+  globals.__native = true;
+  try {
+    const reloaded = await act("reload");
+    assert.equal(reloaded.ok, true, reloaded.error);
+  } finally {
+    globals.__native = false;
+  }
+  const after = useBrowserStore.getState().tabs.find((tab) => tab.id === store.activeTabId)?.reloadKey;
+  assert.equal(after, (before ?? 0) + 1);
+});
+
 test("a PDF is read as text but not edited, and a text file has nothing to click", async () => {
   endBrowserAgentRun(RUN);
   useBrowserStore.getState().openFile({ blob: new Blob(["report body"], { type: "application/pdf" }), name: "report.pdf", contentType: "application/pdf", key: "f:pdf" });

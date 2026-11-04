@@ -818,7 +818,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const before = tabUrl(tab);
 
   if (action.op === "back" || action.op === "forward" || action.op === "reload") {
-    const native = useNativeBrowser.getState().enabled;
+    const native = useNativeBrowser.getState().enabled && currentEntry(tab).kind === "web";
     const store = useBrowserStore.getState();
     const nativeMove = native && action.op !== "reload" && Boolean(tab.nativeHistory?.[action.op]);
     const step = action.op === "back" ? -1 : action.op === "forward" ? 1 : 0;
