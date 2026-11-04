@@ -343,9 +343,13 @@ def loose_diffusion_checkpoints(folder: Path, *, entry_limit: Optional[int] = No
 
 def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
     """Mirrors the loaders' single-file refusals (pipeline-only, dual-expert, unnamed MiniMax-H3, a native-only
-    family's non-safetensors file)."""
+    family's non-safetensors file, a GGUF of a family with no GGUF loader)."""
     if image_fam is not None:
         if image_fam.pipeline_only:
+            return False
+        if str(filename or "").lower().endswith(".gguf") and not getattr(
+            image_fam, "gguf_loadable", True
+        ):
             return False
         if getattr(image_fam, "native_transformer_files_only", False):
             # MOSS-Image: a .safetensors single file loads on diffusers through the in-tree transformer.

@@ -222,7 +222,7 @@ def test_family_entries():
     assert chroma.pipeline_class == "ChromaPipeline"
     assert chroma.comfy_flow_shift == 1.0
     assert dict(chroma.scheduler_overrides) == {"use_beta_sigmas": True}
-    assert "fp8" in chroma.profile.scheme_deny
+    assert {"fp8", "int8", "nvfp4", "mxfp8"} <= chroma.profile.scheme_deny
     anima = detect_family("", override = "anima")
     assert anima.pipeline_class == "AnimaModularPipeline"
     assert default_generation_params("oneObsession_anima29BV2.safetensors", anima.base_repo) == (
@@ -280,3 +280,20 @@ def test_moss_pipeline_takes_a_supplied_vae():
 
     from core.inference.diffusion_moss_image import load_moss_image_pipeline
     assert "vae" in inspect.signature(load_moss_image_pipeline).parameters
+
+
+def test_anima_gguf_is_neither_offered_nor_loaded():
+    from core.inference.diffusion import DiffusionBackend
+    from core.inference.diffusion_families import detect_family, family_gguf_loadable
+    from hub.utils.comfy_models import _single_file_loadable
+
+    anima = detect_family("", override = "anima")
+    assert not family_gguf_loadable(anima)
+    assert not _single_file_loadable(anima, None, "anima-base-v1.0-Q8_0.gguf")
+    assert _single_file_loadable(anima, None, "anima-base-v1.0.safetensors")
+    with pytest.raises(ValueError, match = "GGUF files are not supported"):
+        DiffusionBackend().validate_load_request(
+            "someone/Anima-Base-GGUF", gguf_filename = "anima-base-v1.0-Q8_0.gguf", model_kind = "gguf"
+        )
+    # Chroma keeps its GGUF path (diffusers loads ChromaTransformer2DModel GGUFs).
+    assert family_gguf_loadable(detect_family("", override = "chroma"))

@@ -95,6 +95,9 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
+    # False for a family with no GGUF loader on either engine (Anima: its single files hold the DiT and the text
+    # conditioner, which only the safetensors loader splits), so the picker never offers a GGUF the load refuses.
+    gguf_loadable: bool = True
     # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
     native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
@@ -1209,10 +1212,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "chroma",
         comfy_shift_node = "sd3",
         label = "Chroma",
-        # fp8 W8A8 (activations quantized per row) drifts Chroma: same seed, mean |diff| 16 / 255 against bf16 and
-        # letterboxed renders (2 of 6 seeds where bf16 had none); the fp8 weights of a ComfyUI file are widened instead,
-        # as ComfyUI's own manual cast runs them.
-        profile = FamilyProfile(scheme_deny = frozenset({"fp8"})),
+        # Quantized activations drift Chroma. Same seed against a plain diffusers render of the same weights, mean
+        # |diff| / 255: fp8 W8A8 16.05 vs 3.53 with it off (and 2 of 6 seeds letterboxed, none without); int8 W8A8 on a
+        # GGUF 16.06 vs 4.40. Every activation-quantizing scheme is denied, so fp8 and GGUF weights widen to bf16
+        # (ComfyUI's manual cast) and no load re-quantizes the denoiser.
+        profile = FamilyProfile(scheme_deny = frozenset({"fp8", "int8", "nvfp4", "mxfp8"})),
         pipeline_class = "ChromaPipeline",
         transformer_class = "ChromaTransformer2DModel",
         base_repo = "lodestones/Chroma1-HD",
@@ -1233,6 +1237,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
         aliases = ("anima-base", "anima-2.9b"),
         prompt_hint = "Booru tags or natural language; start with 'masterpiece, best quality'. No score tags.",
+        gguf_loadable = False,
         fp16_incompatible = True,
     ),
     # HunyuanImage 2.1: a 17B dual-stream DiT with a Qwen2.5-VL encoder, a ByT5 glyph encoder and the 32x HunyuanImage
@@ -3040,7 +3045,7 @@ def pipeline_available_family_names() -> tuple[str, ...]:
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
     """A single-file-pipeline family or a multi-denoiser family has no transformer-only GGUF to load."""
-    return not fam.single_file_is_pipeline and not fam.pipeline_only
+    return not fam.single_file_is_pipeline and not fam.pipeline_only and fam.gguf_loadable
 
 
 def family_mlx_supported(fam: Optional[DiffusionFamily]) -> bool:

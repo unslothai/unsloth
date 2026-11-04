@@ -5161,6 +5161,10 @@ class DiffusionBackend:
                 f"stable-diffusion.cpp convert of the checkpoint, on disk). Load the .safetensors checkpoint, or "
                 f"such a GGUF, instead."
             )
+        if kind == "gguf" and not fam.gguf_loadable:
+            raise ValueError(
+                f"'{fam.name}' GGUF files are not supported yet; load its .safetensors single file instead."
+            )
         # A multi-denoiser family (Ideogram 4) has no transformer-only path; reject before eviction
         if kind in ("gguf", "single_file") and fam.pipeline_only:
             raise ValueError(
