@@ -280,20 +280,21 @@ def test_training_forward_without_for_training_frees_generate_memory(runtime):
     assert _Stats(model)()["graphs"] == 0
 
 
-def _gen_batch(model, tok, prompts, new):
+def _gen_tokens(model, tok, prompts, new):
+    # No returned cache (return_dict_in_generate hands the decode buffers over, so nothing is kept).
     enc = tok(prompts, return_tensors = "pt", padding = True).to("cuda")
     out = model.generate(
         **enc, max_new_tokens = new, min_new_tokens = new, do_sample = False,
-        pad_token_id = tok.pad_token_id, output_logits = True, return_dict_in_generate = True,
+        pad_token_id = tok.pad_token_id,
     )  # fmt: skip
-    return out.sequences.cpu(), torch.stack(out.logits).cpu()
+    return out.cpu()
 
 
 @rl_default
 def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
     """Alternating batch sizes with few new tokens: a call too short to win back a capture
     (short_call()) decodes eagerly without graph buffers for its batch; a short call of the kept
-    batch replays it; the kept graph stays valid across the eager calls. All bitwise equal to eager."""
+    batch replays it; the kept graph stays valid across the eager calls. Tokens equal eager."""
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
     model, tok = _load()
@@ -301,28 +302,33 @@ def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
     one, two = PROMPTS[:1], PROMPTS
     runtime.setenv(ENV, "0")
     eager = {
-        (p, n): _gen_batch(model, tok, ps, n)
+        (p, n): _gen_tokens(model, tok, ps, n)
         for p, ps in (("one", one), ("two", two))
         for n in (4, 24)
     }
     runtime.delenv(ENV)
 
     def check(p, ps, n):
-        got = _gen_batch(model, tok, ps, n)
-        assert torch.equal(got[0], eager[(p, n)][0]) and torch.equal(got[1], eager[(p, n)][1])
+        assert torch.equal(_gen_tokens(model, tok, ps, n), eager[(p, n)]), (p, n)
 
     def batches():
         return {k[0] for m in model.modules() for k in m.__dict__.get("_unsloth_graph_buffers", {})}
 
     check("two", two, 24)
     before = _Stats(model)()
-    assert before["captures"] > 0 and batches() == {2}
+    assert before["captures"] > 0 and batches() == {2}, (before, batches())
     check("one", one, 4)  # nothing kept for batch 1, 3 steps left: eager
     after = _Stats(model)()
-    assert after["captures"] == before["captures"] and after["replays"] == before["replays"]
-    assert batches() == {2}
+    assert after["captures"] == before["captures"] and after["replays"] == before["replays"], (
+        before,
+        after,
+    )
+    assert batches() == {2}, batches()
     check("two", two, 4)  # batch 2 is kept: replays without a capture
     short = _Stats(model)()
-    assert short["captures"] == before["captures"] and short["replays"] > before["replays"]
+    assert short["captures"] == before["captures"] and short["replays"] > before["replays"], (
+        before,
+        short,
+    )
     check("two", two, 24)
-    assert _Stats(model)()["captures"] == before["captures"]
+    assert _Stats(model)()["captures"] == before["captures"], (before, _Stats(model)())
