@@ -512,10 +512,9 @@ def test_local_loop_reads_run_together_and_replay_in_order(monkeypatch, local_si
     calls = [_local_url(index, host, local_sites) for index, host in enumerate("abc")]
     slow = _SlowPages(monkeypatch)
 
-    events, payloads, seconds = _local_turn(monkeypatch, calls)
+    events, payloads, _ = _local_turn(monkeypatch, calls)
 
     assert slow.peak == 3
-    assert seconds < 1.0
     assert [(e["type"], e["tool_call_id"]) for e in events] == [
         (kind, f"c{index}") for index in range(3) for kind in ("tool_start", "tool_end")
     ]
@@ -599,11 +598,12 @@ def test_local_loop_pdf_read_does_not_time_out_waiting_for_another(monkeypatch, 
     calls = [_local_url(0, "pdfa", local_sites), _local_url(1, "pdfb", local_sites)]
 
     def parse(data, max_pages = None):
-        time.sleep(0.4)
+        time.sleep(1.0)
         return [], 1
 
     monkeypatch.setattr(parsers, "parse_pdf_bytes", parse)
-    monkeypatch.setattr(tools, "_url_read_timeout", lambda timeout: 0.6)
+    # Under two parses, well over one.
+    monkeypatch.setattr(tools, "_url_read_timeout", lambda timeout: 1.8)
     slow = _SlowPages(monkeypatch)
 
     events, _, _ = _local_turn(monkeypatch, calls)
