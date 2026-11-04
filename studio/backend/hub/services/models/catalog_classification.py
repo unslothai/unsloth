@@ -99,13 +99,20 @@ def _gguf_architecture(path: str) -> Optional[str]:
 
 
 def _family_buildable_for_listing(family, *, model_kind: str) -> bool:
-    from core.inference.diffusion_engine_router import family_buildable_here
+    from core.inference import diffusion_engine_router as router
     from utils.hardware import hardware as hw
 
-    # Listing must not run hardware detection; the load re-checks buildability.
-    if not hw.DETECTION_COMPLETE.is_set():
-        return family is not None
-    return family_buildable_here(family, model_kind = model_kind)
+    if family is None:
+        return False
+    if hw.DETECTION_COMPLETE.is_set():
+        return router.family_buildable_here(family, model_kind = model_kind)
+    # Listing must not run hardware detection: only the engine prediction needs the device, so that
+    # answer stays provisional (the load re-checks it), while the device-free refusals still apply.
+    if router.native_gguf_only(family, model_kind):
+        return True
+    if router.family_pipeline_available(family):
+        return True
+    return model_kind == "gguf" and router.family_sd_cpp_supported(family)
 
 
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
