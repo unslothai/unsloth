@@ -11,6 +11,7 @@ on:
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      - 'unsloth_estimation/**'
       - 'tests/**'
       # validate_studio_features.py guards docker/jupyter and the docker notebook helpers.
       - 'docker/**'
@@ -53,6 +54,7 @@ on:
       - 'studio/**'
       - 'unsloth/**'
       - 'unsloth_cli/**'
+      - 'unsloth_estimation/**'
       - 'tests/**'
       - 'docker/**'
       - 'install.sh'

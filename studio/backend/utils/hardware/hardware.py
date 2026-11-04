@@ -6170,7 +6170,8 @@ def _determine_attention_impl_for_gpu_estimate(config) -> str:
 
 
 def _estimate_fp16_model_size_bytes_from_config(config) -> Optional[int]:
-    from .vram_estimation import extract_arch_config, compute_total_params
+    from unsloth_estimation import extract_arch_config
+    from unsloth_estimation.vram import compute_total_params
 
     arch = extract_arch_config(config)
     if arch is None:
@@ -6269,10 +6270,12 @@ def estimate_required_model_memory_gb(
     gradient_checkpointing: str = "unsloth",
     optimizer: str = "adamw_8bit",
 ) -> tuple[Optional[float], Dict[str, Any]]:
-    from .vram_estimation import (
+    from unsloth_estimation import (
         TrainingVramConfig,
         extract_arch_config,
         estimate_training_vram,
+    )
+    from unsloth_estimation.vram import (
         compute_total_params,
         compute_optimizer_bytes,
         compute_gradient_bytes,
