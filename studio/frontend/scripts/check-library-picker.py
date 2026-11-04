@@ -116,6 +116,10 @@ def main():
             remove = composer.get_by_role("button", name = "Remove file", exact = True)
             for attempt in range(2):
                 plus.click()
+                expect(
+                    page.get_by_role("menuitem", name = "Attach from Library", exact = True)
+                ).to_have_count(0)
+                page.get_by_role("menuitem", name = "More", exact = True).click()
                 page.get_by_role("menuitem", name = "Attach from Library", exact = True).click()
                 expect(dialog).to_be_visible()
                 dialog.get_by_placeholder("Search Library files...", exact = True).fill(name)
@@ -151,6 +155,7 @@ def main():
             page.evaluate("value => { window.__libraryPickerDocument = value; }", marker)
             retained = composer.element_handle()
             plus.click()
+            page.get_by_role("menuitem", name = "More", exact = True).click()
             page.get_by_role("menuitem", name = "Attach from Library", exact = True).click()
             expect(dialog).to_be_visible()
             page.go_back(wait_until = "domcontentloaded")

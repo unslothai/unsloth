@@ -7252,13 +7252,6 @@ const ComposerToolsMenu: FC<{
           Add photos &amp; files
         </DropdownMenuItem>
         <DropdownMenuItem
-          disabled={!composerCanAddAttachments}
-          onSelect={() => { libraryPickerRequested.current = true; }}
-        >
-          <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
-          Attach from Library
-        </DropdownMenuItem>
-        <DropdownMenuItem
           disabled={searchDisabled}
           className={
             toolsEnabled && !searchDisabled
@@ -7344,6 +7337,14 @@ const ComposerToolsMenu: FC<{
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
+            <DropdownMenuItem
+              disabled={!composerCanAddAttachments}
+              onSelect={() => { libraryPickerRequested.current = true; }}
+            >
+              <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
+              Attach from Library
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             {overflowPlusItems.map((id) => (
               <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
             ))}
