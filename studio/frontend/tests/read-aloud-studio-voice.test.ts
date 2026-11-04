@@ -302,7 +302,7 @@ test("the voice setting persists and Settings lists saved voices for the studio 
   // A voice deleted on the Audio page is cleared once the list is known.
   assert.match(
     tab,
-    /if \(ttsStudioVoiceId && savedVoicesListed && !hasSelectedStudioVoice\) \{\s*setTtsStudioVoiceId\(""\);/,
+    /if \(!ttsStudioVoiceId \|\| !savedVoicesListed \|\| hasSelectedStudioVoice\) \{[\s\S]*?\.confirmGone\(ttsStudioVoiceId\)[\s\S]*?if \(gone && !cancelled\) setTtsStudioVoiceId\(""\);/,
   );
   assert.match(
     tab,

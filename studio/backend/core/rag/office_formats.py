@@ -342,6 +342,8 @@ def _section_plan(tokens: list[tuple[str, str]]):
     thousands = 0
     while whole.endswith(","):  # trailing commas scale by thousands
         whole, thousands = whole[:-1], thousands + 1
+    while fraction.endswith(","):
+        fraction, thousands = fraction[:-1], thousands + 1
     grouped, whole = "," in whole, whole.replace(",", "")
     places, required = sum(fraction.count(c) for c in "0#?"), fraction.count("0")
     return (

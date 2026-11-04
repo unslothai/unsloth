@@ -231,7 +231,12 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
-import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
+import {
+  betweenToolRounds,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -6777,6 +6782,12 @@ function usePickComposerAttachment(): () => void {
   }, [aui, audioAttachmentsEnabled]);
 }
 
+const LazyLibraryAttachmentPicker = lazy(() =>
+  import("@/components/assistant-ui/library-attachment-picker").then((module) => ({
+    default: module.LibraryAttachmentPicker,
+  })),
+);
+
 const ComposerToolsMenu: FC<{
   side?: "top" | "bottom";
   researchAvailable: boolean;
@@ -6872,6 +6883,8 @@ const ComposerToolsMenu: FC<{
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  const libraryPickerRequested = useRef(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
@@ -7196,6 +7209,11 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    {libraryPickerOpen ? (
+      <Suspense fallback={null}>
+        <LazyLibraryAttachmentPicker onClose={() => setLibraryPickerOpen(false)} />
+      </Suspense>
+    ) : null}
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
@@ -7223,7 +7241,13 @@ const ComposerToolsMenu: FC<{
         avoidCollisions={true}
         className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
         // Don't refocus the + on close; restored focus showed a stray ring.
-        onCloseAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (libraryPickerRequested.current) {
+            libraryPickerRequested.current = false;
+            if (chatActive) setLibraryPickerOpen(true);
+          }
+        }}
       >
         <DropdownMenuItem
           disabled={!composerCanAddAttachments}
@@ -7318,6 +7342,14 @@ const ComposerToolsMenu: FC<{
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
+            <DropdownMenuItem
+              disabled={!composerCanAddAttachments}
+              onSelect={() => { libraryPickerRequested.current = true; }}
+            >
+              <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
+              Attach from Library
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             {overflowPlusItems.map((id) => (
               <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
             ))}
@@ -7705,7 +7737,22 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// Mounted only under the empty running reply, so the thread's other messages subscribe to nothing new.
+// GeneratingIndicator's status for the gap after a tool result, until the next pass streams its first part.
+const NextRoundIndicator: FC = () => {
+  const show = useAuiState(({ message }) =>
+    betweenToolRounds(message.status?.type === "running", message.content),
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <div data-slot="next-round-indicator" className="mt-2">
+      <GeneratingStatus />
+    </div>
+  );
+};
+
+// Mounted only under a running reply waiting on the model, so the thread's other messages subscribe to nothing new.
 const GeneratingStatus: FC = () => {
   // Keyed like DiffusionCanvas: a first turn reads "__default" until the thread persists.
   const threadKey =
@@ -7720,9 +7767,22 @@ const GeneratingStatus: FC = () => {
   const decoding = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.decode != null,
   );
+  const compacting = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.compacting === true,
+  );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
   const t = useT();
+  if (compacting) {
+    return (
+      <span
+        data-slot="compacting-progress"
+        className="generating-glint text-sm text-muted-foreground"
+      >
+        {t("generationStats.compactingContext")}
+      </span>
+    );
+  }
   const percent = prefill ? prefillPercent(prefill) : null;
   // Held at 100% until the first token: going back to Working... for that moment would flash too.
   if (prefill === null || !labelShown || percent === null || decoding) {
@@ -8296,6 +8356,7 @@ const AssistantMessage: FC = () => {
                 <DiffusionCanvas />
 
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
+                <NextRoundIndicator />
                 <SourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />
@@ -8988,7 +9049,7 @@ const UserMessage: FC = () => {
         {hasContent ? (
           <div
             dir="auto"
-            className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+            className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}

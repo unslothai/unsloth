@@ -408,7 +408,10 @@ def test_a_clef_fine_tune_serves_through_its_worker(home, client, clef):
     served = _clef_fine_tune(home, "clef_served_1")
     assert _listed(client) == [served]
     # The trainer's "Use in Decision API" names every run laya-ft:; the layout picks the prefix.
-    assert _put(client, enabled = True, model = "laya-ft:clef_served_1").status_code == 200
+    put = _put(client, enabled = True, model = "laya-ft:clef_served_1")
+    assert put.status_code == 200
+    # The trainer opens Try under the PUT answer's name.
+    assert put.json()["model"] == served
     assert client.get("/api/settings/systemone").json()["model"] == served
 
     answer = _post(client).json()
