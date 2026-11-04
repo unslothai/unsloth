@@ -348,8 +348,6 @@ test("a preset pick writes the whole preset to the installation defaults", async
   assert.equal(written.systemPrompt, "Talk like a pirate.");
 });
 
-// The report's own steps: the preset is built by hand on the loaded model, so every edit is filed as
-// that model's before the save turns the screen into a preset.
 test("a preset saved from hand edits does not come back after ejecting and picking Default", async () => {
   loadOrPoll(GEMMA);
   const store = useChatRuntimeStore.getState();
@@ -371,9 +369,7 @@ test("a preset saved from hand edits does not come back after ejecting and picki
   assert.deepEqual(presetOwnedKeys(byModel[GEMMA]), [], "nothing comes back on the next launch");
 });
 
-// Source-level, since the sheet needs a DOM: savePreset above stands in for this call. Clicking Save
-// blurs a number box during mousedown, and onClick runs before React re-renders, so the render's
-// `params` is the screen from before that entry: the save reads the store, as set() does.
+// Source-level (the sheet needs a DOM); savePreset above stands in for this call.
 test("saving a preset hands the loaded model's sampling to it, as a pick does", () => {
   const save = readSrc("features/chat/chat-settings-sheet.tsx").match(
     /function savePresetWithName\([^)]*\) \{[\s\S]*?\n {2}\}\n/,
