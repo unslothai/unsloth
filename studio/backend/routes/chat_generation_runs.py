@@ -13,7 +13,7 @@ import re
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
-from typing import Any
+from typing import Annotated, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -99,6 +99,20 @@ class CreateChatGenerationRun(BaseModel):
     # The owner's "stop when I close the tab": cancel the run once no tab has followed it for a
     # while (state/unattended_runs.py) rather than letting it finish in the background.
     stopWhenUnattended: bool = False
+    # In a character chat, who speaks in this reply. Stored on the reply when the run is made,
+    # so it survives a stop, a reload or a run that finishes with no tab open.
+    assistantRoleplay: Optional["AssistantRoleplay"] = None
+
+
+class AssistantRoleplay(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    kind: Literal["reply"] = "reply"
+    speakerId: str = Field(min_length = 1, max_length = 64)
+    speakerName: str = Field(default = "", max_length = 200)
+    plan: Optional[list[Annotated[str, Field(max_length = 64)]]] = Field(default = None, max_length = 16)
+
+
+CreateChatGenerationRun.model_rebuild()
 
 
 def _normalized_key(key: object) -> str:
@@ -377,6 +391,11 @@ async def create_chat_generation_run(
                 user_message_id = payload.userMessageId,
                 assistant_message_id = payload.assistantMessageId,
                 request_payload = sanitized,
+                reply_metadata = (
+                    {"roleplay": payload.assistantRoleplay.model_dump(exclude_none = True)}
+                    if payload.assistantRoleplay
+                    else None
+                ),
             )
         except db.ChatGenerationConflictError as exc:
             raise HTTPException(status_code = 409, detail = str(exc)) from exc

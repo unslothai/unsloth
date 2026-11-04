@@ -49,6 +49,7 @@ import { hydratePins } from "@/lib/pins-mirror";
 import { usePersonalizationSync } from "@/features/profile";
 import { useDeviceSettingsSync } from "@/features/settings/hooks/use-device-settings-sync";
 import { ScheduledTaskRunNotifier } from "@/features/scheduled-tasks/run-notifier";
+import { CharacterLightboxHost } from "@/features/characters/lightbox-host";
 import { RemoteCodeConsentDialog } from "@/features/security";
 import {
   SETTINGS_TABS,
@@ -371,6 +372,8 @@ function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
     return true;
   if (pathname === "/data-recipes" || pathname.startsWith("/data-recipes/"))
     return true;
+  // Characters only need a chat model, which a chat-only host runs.
+  if (pathname === "/characters" || pathname.startsWith("/characters/")) return true;
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
   if (pathname === "/audio" || pathname.startsWith("/audio/")) return true;
   if (pathname === "/video" || pathname.startsWith("/video/")) return true;
@@ -829,6 +832,7 @@ function RootLayout() {
       {/* These side-effect-only mounts stay last so they cannot shift existing React useId paths. */}
       {!isAuthFlowRoute && <HubSourceNoticeMount />}
       {!isAuthFlowRoute && <ScheduledTaskRunNotifier />}
+      {!isAuthFlowRoute && <CharacterLightboxHost />}
     </>
   );
 

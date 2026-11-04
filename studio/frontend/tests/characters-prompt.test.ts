@@ -1,0 +1,319 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  buildCharacterPrompt,
+  nudgeText,
+  stripSpeakerPrefix,
+  type PromptCharacter,
+} from "../src/features/characters/prompt/build.ts";
+import { activateLorebook } from "../src/features/characters/prompt/lorebook.ts";
+import { applyMacros } from "../src/features/characters/prompt/macros.ts";
+import { tidyRoleplayDisplay } from "../src/features/characters/prompt/display.ts";
+import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
+import { mentionedIds, planReplies, seededRandom } from "../src/features/characters/prompt/speakers.ts";
+import type { Character, ChatScene, Lorebook, LorebookEntry } from "../src/features/characters/types.ts";
+
+function character(overrides: Partial<PromptCharacter> & { id: string; name: string }): PromptCharacter {
+  return {
+    description: "",
+    personality: "",
+    scenario: "",
+    mesExample: "",
+    systemPrompt: "",
+    postHistoryInstructions: "",
+    depthPrompt: null,
+    characterBook: null,
+    ...overrides,
+  };
+}
+
+function entry(overrides: Partial<LorebookEntry>): LorebookEntry {
+  return {
+    id: 1,
+    keys: [],
+    secondary_keys: [],
+    content: "",
+    comment: "",
+    enabled: true,
+    constant: false,
+    selective: false,
+    case_sensitive: false,
+    insertion_order: 100,
+    position: "before_char",
+    depth: 4,
+    selective_logic: "and_any",
+    ...overrides,
+  };
+}
+
+function book(entries: LorebookEntry[], overrides: Partial<Lorebook> = {}): Lorebook {
+  return { name: "", scan_depth: 4, token_budget: 1024, recursive_scanning: false, extensions: {}, entries, ...overrides };
+}
+
+const NOW = new Date(2026, 10, 4, 9, 5);
+
+test("macros cover the names, comments, trim, dice and picks cards use", () => {
+  const ctx = { char: "Mira", user: "Pat", now: NOW, random: () => 0 };
+  assert.equal(applyMacros("{{char}} greets {{USER}} and <BOT> <user>", ctx), "Mira greets Pat and Mira Pat");
+  assert.equal(applyMacros("a{{// hidden note}}b", ctx), "ab");
+  assert.equal(applyMacros("line\n{{trim}}\nnext", ctx), "linenext");
+  assert.equal(applyMacros("{{random:red,green}} {{random::x, y::z}}", ctx), "red x, y");
+  assert.equal(applyMacros("{{roll:2d6+1}}", ctx), "3");
+  assert.equal(applyMacros("{{isodate}} {{isotime}} {{weekday}}", ctx), "2026-11-04 09:05 Wednesday");
+  assert.equal(applyMacros("{{original}}!", { ...ctx, original: "base" }), "base!");
+  assert.equal(applyMacros("{{unknown}} stays", ctx), "{{unknown}} stays");
+  assert.equal(applyMacros("{{group}}", { ...ctx, group: ["Mira", "Bo"] }), "Mira, Bo");
+});
+
+test("lorebook entries fire on whole-word keys, honor secondary logic, and keep to the budget", () => {
+  const lore = book([
+    entry({ id: "cat", keys: ["cat"], content: "Cats rule." }),
+    entry({ id: "sel", keys: ["tea"], selective: true, secondary_keys: ["cold"], selective_logic: "not_any", content: "Tea is warm." }),
+    entry({ id: "const", constant: true, content: "Always here.", position: "after_char" }),
+    entry({ id: "deep", keys: ["/dra(g|k)on/i"], content: "Dragons sleep.", position: "at_depth", depth: 2 }),
+    entry({ id: "off", keys: ["cat"], enabled: false, content: "Disabled." }),
+  ]);
+  const fired = activateLorebook(lore, ["A category of tea, and a Drakon."]);
+  assert.deepEqual(fired.before, ["Tea is warm."]);
+  assert.deepEqual(fired.after, ["Always here."]);
+  assert.deepEqual(fired.atDepth, [{ depth: 2, content: "Dragons sleep." }]);
+  const cold = activateLorebook(lore, ["cold tea and a cat"]);
+  assert.deepEqual(cold.before, ["Cats rule."]);
+  // Only messages within scan depth count.
+  const shallow = activateLorebook(book([entry({ keys: ["old"], content: "x" })], { scan_depth: 1 }), ["new", "old"]);
+  assert.equal(shallow.fired.length, 0);
+  const tight = activateLorebook(
+    book([entry({ id: 1, constant: true, content: "a".repeat(40) }), entry({ id: 2, constant: true, content: "b".repeat(40) })], { token_budget: 12 }),
+    [],
+  );
+  assert.equal(tight.fired.length, 1);
+});
+
+test("speaker planning is deterministic per message and follows each reply order", () => {
+  const cast = [
+    { id: "a", name: "Ann Lee", talkativeness: 0.5, muted: false },
+    { id: "b", name: "Bo", talkativeness: 1, muted: false },
+    { id: "c", name: "Cy", talkativeness: 0, muted: true },
+  ];
+  assert.deepEqual(mentionedIds("hey bo, and ann?", cast), ["b", "a"]);
+  assert.deepEqual(mentionedIds("bonfire", cast), []);
+  assert.deepEqual(planReplies({ cast, order: "list", userText: "", lastSpeakerId: null, seed: "m1" }), ["a", "b"]);
+  assert.deepEqual(planReplies({ cast, order: "manual", userText: "ann?", lastSpeakerId: null, seed: "m1" }), ["a"]);
+  assert.deepEqual(planReplies({ cast, order: "manual", userText: "hi", lastSpeakerId: "a", seed: "m1" }), ["b"]);
+  const natural = planReplies({ cast, order: "natural", userText: "Ann, look", lastSpeakerId: null, seed: "m1" });
+  assert.equal(natural[0], "a");
+  assert.ok(natural.includes("b"), "talkativeness 1 always joins");
+  assert.ok(!natural.includes("c"), "muted members never reply");
+  for (const seed of ["x", "y", "z"]) {
+    assert.deepEqual(
+      planReplies({ cast, order: "natural", userText: "", lastSpeakerId: "b", seed }),
+      planReplies({ cast, order: "natural", userText: "", lastSpeakerId: "b", seed }),
+    );
+  }
+  assert.notEqual(seededRandom("a")(), seededRandom("b")());
+});
+
+test("a one-on-one prompt keeps the system block stable and puts notes on user turns", () => {
+  const mira = character({
+    id: "m",
+    name: "Mira",
+    description: "{{char}} keeps a greenhouse for {{user}}.",
+    personality: "patient",
+    scenario: "Dusk.",
+    mesExample: "<START>\n{{user}}: Hi\n{{char}}: Hello.",
+    postHistoryInstructions: "Stay gentle.",
+    depthPrompt: { prompt: "Mira hides a secret.", depth: 0, role: "system" },
+    characterBook: book([entry({ keys: ["fern"], content: "Ferns are sacred to {{char}}." })]),
+  });
+  const built = buildCharacterPrompt({
+    cast: [mira],
+    speakerId: "m",
+    persona: { name: "Pat", description: "A traveler." },
+    scene: { authorsNote: { text: "Keep it short.", depth: 2 } },
+    history: [
+      { role: "user", text: "[Start a new chat]", meta: { kind: "opening" } },
+      { role: "assistant", text: "Hello Pat.", meta: { kind: "reply", speakerId: "m", speakerName: "Mira" } },
+      { role: "user", text: "Mira: what about the fern?" },
+      { role: "assistant", text: "Mira: They matter.", meta: { kind: "reply", speakerId: "m", speakerName: "Mira" } },
+      { role: "user", text: "Tell me more." },
+    ],
+    now: NOW,
+  });
+  assert.match(built.system, /^You are Mira in an ongoing roleplay with Pat\./);
+  assert.match(built.system, /## Lore\nFerns are sacred to Mira\./);
+  assert.match(built.system, /## Mira\nMira keeps a greenhouse for Pat\.\n\nMira's personality: patient/);
+  assert.match(built.system, /## Pat \(you\)\nA traveler\./);
+  assert.match(built.system, /## Scenario\nDusk\./);
+  assert.match(built.system, /Pat: Hi\nMira: Hello\./);
+  assert.equal(built.texts[0], "[Start a new chat]");
+  assert.equal(built.texts[3], "They matter.", "a leading name is stripped in one-on-one chats");
+  // Author's note at depth 2 lands on the user turn two above the end.
+  assert.equal(built.texts[2], "Mira: what about the fern?\n\n[Keep it short.]");
+  assert.equal(built.texts[4], "Tell me more.\n\n[Mira hides a secret.]\n\nStay gentle.");
+  assert.deepEqual(built.stop, ["\nPat:"]);
+});
+
+test("a card's system prompt replaces the frame and can keep it with {{original}}", () => {
+  const card = character({ id: "x", name: "X", systemPrompt: "{{original}} Speak in rhyme." });
+  const built = buildCharacterPrompt({
+    cast: [card],
+    speakerId: "x",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [{ role: "user", text: "hi" }],
+  });
+  assert.match(built.system, /^You are X in an ongoing roleplay with Pat\..* Speak in rhyme\.$/s);
+});
+
+test("a group prompt names every turn and stays append-only across speakers", () => {
+  const ann = character({ id: "a", name: "Ann", description: "A knight." });
+  const bo = character({ id: "b", name: "Bo", description: "A bard.", postHistoryInstructions: "Sing." });
+  const base = [
+    { role: "user" as const, text: "[Start a new chat]", meta: { kind: "opening" as const } },
+    { role: "assistant" as const, text: "I guard.", meta: { kind: "reply" as const, speakerId: "a", speakerName: "Ann" } },
+    { role: "user" as const, text: "", meta: { kind: "turn" as const, speakerId: "b" } },
+    { role: "assistant" as const, text: "Bo: I sing.", meta: { kind: "reply" as const, speakerId: "b", speakerName: "Bo" } },
+    { role: "user" as const, text: "Who is hungry?" },
+  ];
+  const first = buildCharacterPrompt({
+    cast: [ann, bo],
+    speakerId: "a",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: base,
+  });
+  assert.match(first.system, /^This is a group roleplay between Pat and Ann, Bo\./);
+  assert.match(first.system, /## Ann\nA knight\.\n\n## Bo\nA bard\./);
+  assert.deepEqual(first.texts, [
+    "[Start a new chat]",
+    "Ann: I guard.",
+    nudgeText("Bo"),
+    "Bo: I sing.",
+    `Pat: Who is hungry?\n\n${nudgeText("Ann")}`,
+  ]);
+  assert.deepEqual(first.stop, ["\nPat:", "\nBo:"]);
+  const next = buildCharacterPrompt({
+    cast: [ann, bo],
+    speakerId: "b",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [
+      ...base,
+      { role: "assistant", text: "Me.", meta: { kind: "reply", speakerId: "a", speakerName: "Ann" } },
+      { role: "user", text: "", meta: { kind: "turn", speakerId: "b" } },
+    ],
+  });
+  assert.equal(next.system, first.system, "the system block does not depend on the speaker");
+  // Every earlier turn reads exactly as it was sent, so only the new tail is new to the cache.
+  assert.deepEqual(next.texts.slice(0, 5), first.texts);
+  assert.equal(next.texts[5], "Ann: Me.");
+  assert.equal(next.texts[6], `Sing.\n\n${nudgeText("Bo")}`);
+});
+
+test("speaker prefixes are stripped in any common spelling", () => {
+  assert.equal(stripSpeakerPrefix("Mira: hi", "Mira"), "hi");
+  assert.equal(stripSpeakerPrefix("  **Mira**: hi", "Mira"), "hi");
+  assert.equal(stripSpeakerPrefix("Miranda: hi", "Mira"), "Miranda: hi");
+  assert.equal(stripSpeakerPrefix('"Mira: "Hm?"', "Mira"), '"Hm?"');
+  assert.equal(stripSpeakerPrefix("**Mira:** hi", "Mira"), "hi");
+});
+
+function member(id: string, name: string): Character {
+  return {
+    id, name, talkativeness: 0.5, description: "", personality: "", scenario: "", firstMes: "", alternateGreetings: [],
+    mesExample: "", systemPrompt: "", postHistoryInstructions: "", creatorNotes: "", creator: "", characterVersion: "",
+    tags: [], favorite: false, depthPrompt: null, characterBook: null, extensions: {}, hasAvatar: false, avatarType: null,
+    avatarRev: 0, createdAt: 0, updatedAt: 0, lastChatAt: null, chatCount: 0, cardSpec: null,
+  };
+}
+
+test("a group round plans once per user message and goes on until everyone planned has spoken", () => {
+  const cast = [member("a", "Ann"), member("b", "Bo")];
+  const scene: ChatScene = {
+    threadId: "t",
+    personaId: null,
+    settings: { replyOrder: "list" },
+    cast: [
+      { characterId: "a", position: 0, muted: false },
+      { characterId: "b", position: 1, muted: false },
+    ],
+  };
+  const user = { id: "u1", role: "user", content: [{ type: "text", text: "Hello" }] };
+  const reply = (id: string, speakerId: string, plan?: string[]) => ({
+    id,
+    role: "assistant",
+    content: [{ type: "text", text: "..." }],
+    metadata: { custom: { roleplay: { kind: "reply", speakerId, speakerName: speakerId, ...(plan ? { plan } : {}) } } },
+  });
+  const marker = (id: string, speakerId: string) => ({
+    id,
+    role: "user",
+    content: [{ type: "text", text: "" }],
+    metadata: { custom: { roleplay: { kind: "turn", speakerId } } },
+  });
+  assert.deepEqual(resolveSpeaker({ scene, cast, messages: [user] }), { speakerId: "a", plan: ["a", "b"] });
+  assert.equal(nextInRound([user, reply("r1", "a", ["a", "b"])], scene), "b");
+  // The marker names the speaker, so retrying Bo's reply keeps it Bo's.
+  assert.deepEqual(
+    resolveSpeaker({ scene, cast, messages: [user, reply("r1", "a", ["a", "b"]), marker("m", "b")] }),
+    { speakerId: "b" },
+  );
+  assert.equal(nextInRound([user, reply("r1", "a", ["a", "b"]), marker("m", "b"), reply("r2", "b")], scene), null);
+  const muted: ChatScene = { ...scene, cast: [scene.cast[0], { ...scene.cast[1], muted: true }] };
+  assert.equal(nextInRound([user, reply("r1", "a", ["a", "b"])], muted), null, "a muted member is skipped");
+  assert.deepEqual(resolveSpeaker({ scene, cast, messages: [user], requested: "b" }), { speakerId: "b" });
+  // A one-on-one chat never plans a round.
+  assert.deepEqual(resolveSpeaker({ scene, cast: [cast[0]], messages: [user] }), { speakerId: "a" });
+  assert.equal(textOf({ content: [{ type: "text", text: "x" }, { type: "image" }, { type: "text", text: "y" }] }), "x\n\ny");
+});
+
+test("a card's own wrapper tags are hidden on screen so the block inside renders", () => {
+  const text = "Look.\n\n<stats>\n```\nHP: 10\n```\n</stats>\n<details>\nkept\n</details>";
+  assert.equal(tidyRoleplayDisplay(text), "Look.\n\n\n```\nHP: 10\n```\n\n<details>\nkept\n</details>");
+  assert.equal(tidyRoleplayDisplay("a <b>bold</b> line"), "a <b>bold</b> line");
+});
+
+test("review fixes: opening retries keep the first member, notes skip a trailing reply, code keeps its tags", () => {
+  const cast = [member("a", "Ann"), member("b", "Bo")];
+  const scene: ChatScene = {
+    threadId: "t",
+    personaId: null,
+    settings: {},
+    cast: [
+      { characterId: "a", position: 0, muted: false },
+      { characterId: "b", position: 1, muted: false },
+    ],
+  };
+  const opening = {
+    id: "o",
+    role: "user",
+    content: [{ type: "text", text: "[Start a new chat]" }],
+    metadata: { custom: { roleplay: { kind: "opening" } } },
+  };
+  assert.deepEqual(resolveSpeaker({ scene, cast, messages: [opening] }), { speakerId: "a" });
+
+  const built = buildCharacterPrompt({
+    cast: [character({ id: "a", name: "Ann", postHistoryInstructions: "Stay brief." })],
+    speakerId: "a",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [
+      { role: "user", text: "Roll {{roll:d20}} for {{char}}" },
+      { role: "assistant", text: "Done." },
+    ],
+  });
+  assert.equal(built.texts[0], "Roll {{roll:d20}} for Ann", "history fixes only the names");
+  assert.equal(built.texts[1], "Done.", "no final instructions on a reply");
+
+  const code = "```html\n<template>\n</template>\n```\n<stats>\nok\n</stats>";
+  assert.equal(tidyRoleplayDisplay(code), "```html\n<template>\n</template>\n```\n\nok\n");
+});
+
+test("a long lorebook regex key is ignored rather than run", () => {
+  const long = `/${"(a+)+".repeat(40)}$/`;
+  const fired = activateLorebook(book([entry({ keys: [long], content: "never" })]), ["aaaa"]);
+  assert.equal(fired.fired.length, 0);
+});

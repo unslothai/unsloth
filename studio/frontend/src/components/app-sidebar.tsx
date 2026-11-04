@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { CharacterChatMark } from "@/features/characters/sidebar-mark";
 import { BrushCleaningIcon } from "@/lib/brush-cleaning-icon";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import {
@@ -143,6 +144,7 @@ import {
   LayerIcon,
   ApiIcon,
   Clock01Icon,
+  MaskTheater01Icon,
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -3540,6 +3542,44 @@ export function AppSidebar() {
         </button>
       ),
     },
+    characters: {
+      icon: MaskTheater01Icon,
+      label: t("shell.navigation.characters"),
+      badge: t("shell.navigation.newBadge"),
+      active: pathname === "/characters" || pathname.startsWith("/characters/"),
+      onClick: () => {
+        navigateFromRow({ to: "/characters" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/characters" }));
+      },
+      className: "group/characters-item relative",
+      newAction: {
+        label: t("characters.newCharacter"),
+        run: () => {
+          setMoreOpen(false);
+          navigateFromRow({ to: "/characters/$characterId/edit", params: { characterId: "new" } });
+          closeMobileIfOpen();
+        },
+      },
+      children: (
+        <button
+          type="button"
+          aria-label={t("characters.newCharacter")}
+          onClick={(e) => {
+            e.stopPropagation();
+            navigateFromRow({ to: "/characters/$characterId/edit", params: { characterId: "new" } });
+            closeMobileIfOpen();
+          }}
+          className="sidebar-row-action group-hover/characters-item:opacity-100 group-hover/characters-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+        >
+          <span className="sidebar-row-action-glyph">
+            <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-4" />
+          </span>
+        </button>
+      ),
+    },
   };
   const navRowPinned = (item: SidebarNavItemPref) =>
     sidebarNavRowPinned(item, sidebarNavAuto, { projectsSectionShowing });
@@ -5493,6 +5533,9 @@ export function AppSidebar() {
               {isPinned && variant !== "project" && (
                 <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
               )}
+              {item.type !== "compare" && !(isPinned && variant !== "project") ? (
+                <CharacterChatMark threadId={item.id} />
+              ) : null}
               <span className="truncate">
                 {pendingRename?.id === item.id ? pendingRename.title : item.title}
               </span>

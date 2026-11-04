@@ -3,6 +3,9 @@
 
 "use client";
 
+import { useRoleplaySpeakerName } from "@/features/characters/chat/message-parts";
+import { stripSpeakerPrefix } from "@/features/characters/prompt/build";
+import { tidyRoleplayDisplay } from "@/features/characters/prompt/display";
 import { openImageViewer } from "@/components/image-viewer";
 import { filesOpenInBrowser, openFileInBrowser } from "@/features/browser";
 import { useT } from "@/i18n";
@@ -1526,11 +1529,14 @@ function MarkdownTextRenderer({
 const MarkdownTextImpl = () => {
   const allowSearchImages = useContext(SearchImagesEnabledContext);
   const aui = useAui();
-  const { text, status } = useMessagePartTextSafe();
+  const { text: partText, status } = useMessagePartTextSafe();
   const partIndex =
     aui.part.source === "message" && aui.part.query.type === "index"
       ? aui.part.query.index
       : 0;
+  // A character's reply sometimes opens with its own name, which the chat already shows.
+  const speakerName = useRoleplaySpeakerName();
+  const text = speakerName ? tidyRoleplayDisplay(stripSpeakerPrefix(partText, speakerName)) : partText;
   // Streamdown only extends parsed blocks, so key per message; the cache generation covers edits
   // that drop retained blocks without changing the tail.
   const messageId = useAuiState(({ message }) => message.id);

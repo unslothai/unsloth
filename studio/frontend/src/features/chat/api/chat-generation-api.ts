@@ -44,6 +44,8 @@ export interface CreateChatGenerationRunInput {
   requestPayload: OpenAIChatCompletionsRequest;
   /** Stop the run once no tab follows it, instead of finishing in the background. Sent only when set. */
   stopWhenUnattended?: boolean;
+  /** A character chat's speaker for this reply, stored on the reply when the run is made. */
+  assistantRoleplay?: { kind: "reply"; speakerId: string; speakerName: string; plan?: string[] };
 }
 
 export interface ChatGenerationEvent {

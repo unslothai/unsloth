@@ -1,6 +1,17 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import {
+  RoleplayPersonaTag,
+  RoleplayReplyFrame,
+  useIsHiddenRoleplayTurn,
+  useRoleplayUserParts,
+} from "@/features/characters/chat/message-parts";
+import { CharacterChatPicker } from "@/features/characters/chat/start-picker";
+import {
+  RoleplaySpeakerBar,
+  useRoleplayComposerPlaceholder,
+} from "@/features/characters/chat/speaker-bar";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { AiSpeechIcon, BookmarkIcon, FileSearchIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { createPortal } from "react-dom";
@@ -459,6 +470,7 @@ import {
   MoreHorizontalIcon,
   PlusSignIcon,
   Cancel01Icon,
+  MaskTheater01Icon,
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -1852,6 +1864,9 @@ const RUN_SHRINK_WINDOW_MS = 1000;
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
+  // A character chat's opening and turn markers are for the model, not the screen.
+  const hiddenTurn = useIsHiddenRoleplayTurn();
+  if (hiddenTurn) return null;
   let body: ReactNode = null;
   switch (threadMessageKind(role, isEditing)) {
     case "edit":
@@ -2967,6 +2982,7 @@ const Composer: FC<{
   const pageDragging = useContext(PageDragContext);
   const nativeDragging = useContext(NativeAttachmentDragContext);
   const { overlay, closeOverlay } = useGeneratedImageOverlay();
+  const roleplayPlaceholder = useRoleplayComposerPlaceholder();
   const setImageToolsEnabled = useChatRuntimeStore(
     (s) => s.setImageToolsEnabled,
   );
@@ -5779,7 +5795,9 @@ const Composer: FC<{
                 id={inputId}
                 submitMode="none"
                 placeholder={
-                  overlay ? "Type your edits for your image" : "Ask anything"
+                  overlay
+                    ? "Type your edits for your image"
+                    : (roleplayPlaceholder ?? "Ask anything")
                 }
                 ref={inputRef}
                 data-type-to-activate="composer"
@@ -5919,6 +5937,7 @@ const Composer: FC<{
       onSubmit={handleSubmit}
     >
       <PromptQueueStack queueThreadIds={promptQueueThreadIds} />
+      <RoleplaySpeakerBar />
       {/* Chat with files card. Stays mounted while dictating to keep indexing state. */}
       <div className={isDictating ? "hidden" : "contents"}>
         <ThreadDocumentsBar
@@ -6883,6 +6902,7 @@ const ComposerToolsMenu: FC<{
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [characterPickerOpen, setCharacterPickerOpen] = useState(false);
   const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
   const libraryPickerRequested = useRef(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
@@ -7202,6 +7222,12 @@ const ComposerToolsMenu: FC<{
         </DropdownMenuSubContent>
       </DropdownMenuSub>
     ),
+    characters: (
+      <DropdownMenuItem onSelect={() => setCharacterPickerOpen(true)}>
+        <HugeiconsIcon icon={MaskTheater01Icon} strokeWidth={2} />
+        {t("characters.plusMenu")}
+      </DropdownMenuItem>
+    ),
   };
   const { pinned: pinnedPlusItems, overflow: overflowPlusItems } =
     splitPlusMenuItems(plusOrder, plusPins);
@@ -7213,6 +7239,9 @@ const ComposerToolsMenu: FC<{
       <Suspense fallback={null}>
         <LazyLibraryAttachmentPicker onClose={() => setLibraryPickerOpen(false)} />
       </Suspense>
+    ) : null}
+    {characterPickerOpen ? (
+      <CharacterChatPicker onClose={() => setCharacterPickerOpen(false)} />
     ) : null}
     <PromptStorageDialog
       open={promptStorageOpen}
@@ -8316,6 +8345,7 @@ const AssistantMessage: FC = () => {
       onFocus={focusReveal.onFocus}
       onBlur={focusReveal.onBlur}
     >
+      <RoleplayReplyFrame>
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0f1114] dark:text-foreground leading-relaxed">
         {isEditing ? (
           // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
@@ -8375,6 +8405,7 @@ const AssistantMessage: FC = () => {
         <LiveGenerationLine />
         <AssistantActionBar />
       </div>
+      </RoleplayReplyFrame>
       {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
@@ -9034,6 +9065,7 @@ const UserMessage: FC = () => {
   const hasContent = useAuiState(({ message }) =>
     message.content.some((part) => part.type !== "text" || part.text.trim() !== ""),
   );
+  const roleplayParts = useRoleplayUserParts();
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
@@ -9041,6 +9073,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <RoleplayPersonaTag />
       <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
@@ -9050,7 +9083,7 @@ const UserMessage: FC = () => {
           <div
             dir="auto"
             className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
-            <MessagePrimitive.Parts />
+            <MessagePrimitive.Parts components={roleplayParts} />
           </div>
         ) : null}
         <UserMessageFooter>
