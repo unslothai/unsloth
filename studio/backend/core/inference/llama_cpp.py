@@ -21206,8 +21206,7 @@ class LlamaCppBackend:
                 secrets,
             )
 
-        # These failures can also occur while opening a projector, drafter or shard.
-        # Do not blame the main GGUF without a filename from the runtime.
+        # Projectors, drafters and shards fail this way too: never name the main GGUF.
         if "data is not within the file bounds" in lowered:
             return LlamaCppBackend._with_startup_diagnostics(
                 "A model file appears incomplete or damaged. Check that the download finished.",
@@ -21224,8 +21223,7 @@ class LlamaCppBackend:
                 secrets,
             )
 
-        # Reuse the allocation detector used by startup recovery. A generic allocation
-        # failure need not be GPU memory; require GPU evidence on the same log line.
+        # GPU evidence on the allocation line itself: a host allocation failure keeps the fallback.
         if LlamaCppBackend._is_gpu_memory_start_failure(scan_tail):
             return LlamaCppBackend._with_startup_diagnostics(
                 "Couldn't allocate memory. Try lowering the context length or choosing a smaller model.",
