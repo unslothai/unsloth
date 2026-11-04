@@ -180,10 +180,10 @@ RULES = (
     ),
     Rule(
         "cp x attention",
-        "context parallel on sliding window / chunked / softcapped attention",
-        lambda q: q.cp > 1 and q.windowed,
-        "Unsloth's context parallel attention drops the window / chunk / softcap",
-        "drop cp for this model",
+        "ring context parallel on sliding window / chunked / softcapped attention",
+        lambda q: q.cp > 1 and q.windowed and q.cp_backend == "ring",
+        "ring attention drops the window / chunk / softcap (Ulysses runs the model's own attention function)",
+        "cp_backend=ulysses (or auto), or drop cp for this model",
     ),
     Rule(
         "cp x torch",
@@ -291,8 +291,10 @@ HOOKS = (
     "from_pretrained",
     "get_peft_model",
     "Trainer.__init__",
-    "Trainer.training_step",
-    "Trainer.prediction_step",
+    # Lower case: bound on one trainer instance (types.MethodType), never on the class. pp_env and the CP
+    # managers both bind these, so two of them on one trainer still cannot compose.
+    "trainer.training_step",
+    "trainer.prediction_step",
     "Trainer.save_model",
     "Accelerator.prepare_model",
     "Accelerator.prepare_data_loader",
@@ -382,7 +384,7 @@ FEATURES = (
             "Accelerator.clip_grad_norm_",
             "Trainer.save_model",
         ),
-        exclusive = ("Trainer.training_step", "Trainer.prediction_step"),
+        exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     Feature(
         "cp.ulysses",
@@ -394,8 +396,7 @@ FEATURES = (
         uses = ("packed_seq_lengths",),
         produces = ("seq_shard", "shift_labels", "position_ids"),
         hooks = ("Trainer.__init__", "attention_function"),
-        exclusive = ("Trainer.training_step", "Trainer.prediction_step"),
-        scope = "class",
+        exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     Feature(
         "cp.ring",
@@ -406,8 +407,7 @@ FEATURES = (
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         produces = ("seq_shard", "shift_labels", "cp_permutation", "position_ids"),
         hooks = ("Trainer.__init__", "attention_function"),
-        exclusive = ("Trainer.training_step", "Trainer.prediction_step"),
-        scope = "class",
+        exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     # Precision.
     Feature(

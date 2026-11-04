@@ -1653,9 +1653,30 @@ def adapter_state_dict(
             # rank-major whatever Zoo uses; how they trained here (grouped or not) does not matter.
             layout = "rank_major" if experts.peft_mode == "fold" else b_layout
             A, B = experts.adapters[param].peft_tensors(adapter, layout)
+            num_experts = _full(experts.adapters[param].lora_B[adapter]).shape[0]
+            A, B = _vanilla_expert_factors(experts.base_layer, A, B, num_experts, layout)
             out[f"{key}.lora_A.weight"] = A
             out[f"{key}.lora_B.weight"] = B
     return out
+
+
+def _vanilla_expert_factors(
+    base: nn.Module, A: torch.Tensor, B: torch.Tensor, num_experts: int, layout: str
+):
+    """Apply Zoo's moe_lora_factor_swap save rules (bypassed by this export) so vanilla PEFT loads it.
+
+    Only flagged classes, never a square pair; a legacy grouped lora_B is saved [out, E, R] as Zoo does."""
+    try:
+        from unsloth_zoo.temporary_patches import moe_lora_factor_swap as swap
+    except Exception:  # noqa: BLE001 - Zoo without the converter: nothing is rewritten on any save
+        return A, B
+    if layout != "rank_major":
+        if hasattr(swap, "_flatten_grouped_lora_B") and B.shape[1] % num_experts == 0:
+            B = B.reshape(B.shape[0], num_experts, B.shape[1] // num_experts)
+        return A, B
+    if A.shape[1] == B.shape[0] or not swap._factors_swapped(type(base)):
+        return A, B
+    return swap.swap_expert_lora_factors(A, B, num_experts)
 
 
 def _peft_moe_lora_b_layout() -> str:
