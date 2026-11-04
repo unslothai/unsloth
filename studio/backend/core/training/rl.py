@@ -22,9 +22,12 @@ RL_ROLES = {
     "orpo": ("prompt", "chosen", "rejected", "system"),
     "grpo": ("prompt", "answer", "system"),
 }
+# A preference set may hold whole conversations in chosen/rejected, the shared turns being the
+# prompt (TRL's implicit prompt), so a prompt column is optional there; format_rl_dataset still
+# refuses a row that ends up with no prompt.
 _REQUIRED_ROLES = {
-    "dpo": ("prompt", "chosen", "rejected"),
-    "orpo": ("prompt", "chosen", "rejected"),
+    "dpo": ("chosen", "rejected"),
+    "orpo": ("chosen", "rejected"),
     "grpo": ("prompt",),
 }
 _AUTO_ROLE_NAMES = {
@@ -243,10 +246,10 @@ def format_rl_dataset(
             )
 
     def convert(row: dict) -> dict:
-        value = row[roles["prompt"]]
+        value = row[roles["prompt"]] if "prompt" in roles else []
         extra_input = row.get("input")
         if (
-            roles["prompt"] == "instruction"
+            roles.get("prompt") == "instruction"
             and "input" not in roles.values()
             and (mapping or {}).get("input") != _IGNORE_ROLE
             and isinstance(value, str)
@@ -255,7 +258,7 @@ def format_rl_dataset(
         ):
             # Alpaca: the input column holds the instruction's material.
             value = f"{value}\n\n{extra_input}"
-        prompt = _as_messages(value, "user")
+        prompt = _as_messages(value, "user") if "prompt" in roles else []
         mapped = list(prompt)
         system = row.get(roles["system"]) if "system" in roles else None
         system = system or system_prompt
@@ -309,6 +312,11 @@ def format_rl_dataset(
             else:
                 out["chosen"] = _split_conversation(row[roles["chosen"]])[1]
                 out["rejected"] = _split_conversation(row[roles["rejected"]])[1]
+        if not any(m["role"] != "system" for m in out["prompt"]):
+            raise ValueError(
+                f"{objective.upper()} needs a prompt: map a prompt column under Column roles, or use "
+                "chosen and rejected conversations that share their opening turns."
+            )
         for column in extra:
             out[column] = row[column]
         if "chat_template_kwargs" in out and out["chat_template_kwargs"] is None:

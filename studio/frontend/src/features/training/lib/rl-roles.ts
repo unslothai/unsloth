@@ -48,9 +48,10 @@ export const RL_ROLES: Record<RlObjective, readonly RlRole[]> = {
   orpo: ["prompt", "chosen", "rejected", "system"],
   grpo: ["prompt", "answer", "system"],
 };
+// A preference set's prompt can be the opening turns its chosen and rejected conversations share.
 export const RL_REQUIRED_ROLES: Record<RlObjective, readonly RlRole[]> = {
-  dpo: ["prompt", "chosen", "rejected"],
-  orpo: ["prompt", "chosen", "rejected"],
+  dpo: ["chosen", "rejected"],
+  orpo: ["chosen", "rejected"],
   grpo: ["prompt"],
 };
 const AUTO_NAMES: Record<RlRole, readonly string[]> = {

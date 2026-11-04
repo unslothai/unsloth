@@ -596,6 +596,16 @@ async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
         if model is None:
             return None
         found.update(model)
+        picked = _picked_cache(ctx.params.get("base_model_cache"))
+        if picked:
+            from core.training.training import resolve_training_model_load_target
+
+            # Trained from an On device copy: the snapshot it resolves to (its commit) is the weights, and
+            # a copy gone from disk falls back to the Hub, which must train again too.
+            target = await asyncio.to_thread(
+                resolve_training_model_load_target, {"model_name": base, **picked}
+            )
+            found["base_model_snapshot"] = os.path.basename(target) if target != base else None
     if str(ctx.params.get("objective") or "sft") == "grpo":
         # A reward can be saved again under the same name, so the key holds what each rule checks.
         found["rewards"] = reward_rules(ctx.params.get("rewards"))

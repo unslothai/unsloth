@@ -55,6 +55,24 @@ def test_preference_rows_strip_the_user_turn_from_full_conversations():
     assert out[0]["prompt"] == [{"role": "user", "content": "q"}]
 
 
+@pytest.mark.parametrize("objective", ["dpo", "orpo"])
+def test_preference_rows_without_a_prompt_column_use_the_shared_turns(objective):
+    # trl-lib/ultrafeedback_binarized: only chosen and rejected, each the whole conversation.
+    convo = lambda reply: [
+        {"role": "user", "content": "What is 2 + 2?"},
+        {"role": "assistant", "content": reply},
+    ]
+    ds = Dataset.from_list([{"chosen": convo("4"), "rejected": convo("5")}])
+    out, roles = format_rl_dataset(ds, objective)
+    assert "prompt" not in roles
+    assert out[0]["prompt"] == [{"role": "user", "content": "What is 2 + 2?"}]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
+    assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
+    # Plain answers with no prompt anywhere are still refused.
+    with pytest.raises(ValueError, match = "needs a prompt"):
+        format_rl_dataset(Dataset.from_list([{"chosen": "4", "rejected": "5"}]), objective)
+
+
 def test_missing_roles_name_the_columns_found():
     with pytest.raises(ValueError, match = "chosen, rejected"):
         resolve_role_columns(["prompt", "text"], "orpo")

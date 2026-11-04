@@ -41,6 +41,10 @@ test("GSM8K columns auto-map for GRPO", () => {
     answer: "answer",
   });
   assert.deepEqual(missingRlRoles("grpo", ["question", "answer"], {}), []);
+  // A preference set's prompt can be the turns its chosen and rejected conversations share.
+  assert.deepEqual(missingRlRoles("dpo", ["chosen", "rejected"], {}), []);
+  assert.deepEqual(missingRlRoles("orpo", ["chosen", "text"], {}), ["rejected"]);
+  assert.deepEqual(missingRlRoles("grpo", ["text"], {}), ["prompt"]);
 });
 
 test("a GRPO mapping carried over to DPO drops the answer role and reports chosen/rejected", () => {

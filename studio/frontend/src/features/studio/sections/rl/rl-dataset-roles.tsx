@@ -250,7 +250,8 @@ export function RlDatasetRoles({
   const mappedRoles = new Set(Object.values(config.mapping));
   const required = RL_REQUIRED_ROLES[objective];
   const chipRoles = roles.filter(
-    (role) => required.includes(role) || role === "answer",
+    (role) =>
+      required.includes(role) || role === "answer" || role === "prompt",
   );
 
   return (

@@ -380,3 +380,37 @@ def test_a_repo_named_folder_on_disk_is_fingerprinted_not_looked_up(tmp_path, mo
         first["base_model_files"]
         and asyncio.run(training._model_material(Ctx(), "owner/model")) != first
     )
+
+
+def test_an_on_device_pick_keys_on_the_snapshot_it_trains_from(tmp_path, monkeypatch):
+    import asyncio
+
+    from core.training import training as core_training
+
+    async def material(ctx, *args):
+        return {}
+
+    monkeypatch.setattr(training, "dataset_material", material)
+    monkeypatch.setattr(training, "_model_material", material)
+    snapshots = {"now": str(tmp_path / "snapshots" / "aaa")}
+    monkeypatch.setattr(
+        core_training, "resolve_training_model_load_target", lambda values: snapshots["now"]
+    )
+    cache = {"known_cached": True, "local_path": str(tmp_path)}
+
+    class Ctx:
+        caller = None
+        inputs: dict = {}
+        params = {"base_model": "owner/model", "base_model_cache": cache}
+
+    first = asyncio.run(training.finetune_cache_material(Ctx()))
+    assert first["base_model_snapshot"] == "aaa"
+    # The cache moved to another downloaded snapshot: train again.
+    snapshots["now"] = str(tmp_path / "snapshots" / "bbb")
+    assert asyncio.run(training.finetune_cache_material(Ctx()))["base_model_snapshot"] == "bbb"
+    # The copy is gone and training falls back to the Hub: also a different key.
+    snapshots["now"] = "owner/model"
+    assert asyncio.run(training.finetune_cache_material(Ctx()))["base_model_snapshot"] is None
+    # No On device pick: the key is unchanged from before.
+    Ctx.params = {"base_model": "owner/model"}
+    assert "base_model_snapshot" not in asyncio.run(training.finetune_cache_material(Ctx()))
