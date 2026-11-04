@@ -180,6 +180,7 @@ def _case_train(
     ungate = False,
     mode = "lora",
     trl_aux = False,
+    aux_coef = None,
     device = "cpu",
     bypass_pre = False,
     bypass_post = False,
@@ -280,6 +281,14 @@ def _case_train(
     moe_calls = _count_moe_backend_calls() if count else None
     if router_aux:
         model.config.output_router_logits = True
+    if aux_coef is not None:
+        # TRL < 1.6 has no SFTConfig.router_aux_loss_coef: the model's own coefficient (config and the CausalLM)
+        for m in [model, *model.modules()]:
+            config = getattr(m, "config", None)
+            if config is not None and hasattr(config, "router_aux_loss_coef"):
+                config.router_aux_loss_coef = aux_coef
+            if "router_aux_loss_coef" in vars(m):
+                m.router_aux_loss_coef = aux_coef
     compiled = _block_compile_on_cpu(model) if compile else []
 
     # Data parallel replicas read different rows; cp / tp / pp peers share theirs.
@@ -351,7 +360,7 @@ def _case_train(
     if hasattr(args, "router_aux_loss_coef"):
         # TRL turns the MoE load balancing loss on from the architecture's coefficient unless this is 0.0
         # (it then sets output_router_logits on the config itself): aux off unless the case asks for it.
-        args.router_aux_loss_coef = None if (router_aux or trl_aux) else 0.0
+        args.router_aux_loss_coef = aux_coef if (router_aux or trl_aux) else 0.0
     if sft_cp:
         args.context_parallel_size = cp
         args.context_parallel_backend = "ulysses"
@@ -811,6 +820,27 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
         assert "error" not in res, (rank, res.get("trace"))
         assert res["output_router_logits"]
         _close(res, ref, what = (env, rank))
+
+
+@pytest.mark.parametrize("aux", [True, False], ids = ["aux_on", "aux_off"])
+@pytest.mark.parametrize("ga", [1, 2, 4])
+def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux):
+    """UNSLOTH_PP_SIZE=2 over Qwen3-MoE, router load-balancing loss on (SFTConfig coefficient 0.5, so the term
+    shows in every gradient) or off, one pipeline micro-batch per Trainer step, gradient accumulation 1 / 2 / 4:
+    the same SFTTrainer in one process over the same rows gives the same step losses, gradients and adapters.
+    One process weights each accumulation step's aux term by that step's token share of the window (the forward
+    Unsloth Zoo rewrites); a pipeline adding it in full trained a ~ga x larger term (GA 2: loss 9.12 vs 8.05)."""
+    kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
+    (ref,) = _spawn("train", 1, **kw)
+    assert ref["output_router_logits"] is aux, ref
+    env = {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"}
+    results = _spawn("train", 2, env, **kw)
+    _same_rows(results, ref, what = (ga, aux))
+    assert sorted(res.get("stage") for res in results) == [0, 1], results
+    for rank, res in enumerate(results):
+        # rel 5e-4 / 1e-5: transformers 4.x drifts ~1.4e-4 (grad norm) / ~5e-6 (adapters) at GA 4, aux off too; the aux
+        # weighting error this guards against is 13% (GA 2) to 42% (GA 4) of the loss
+        _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
 
 
 # LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance

@@ -635,6 +635,59 @@ def _moe_aux_plan(parts):
     return _MoEAux(inner, router_class, index, num_experts, routers)
 
 
+def _forward_aux_scaler(owner):
+    """The function the model's own forward wraps its router aux term in, or None.
+
+    Unsloth Zoo rewrites a CausalLM forward (fused_losses/aux_loss.py rewrite_aux_loss_ga) so the term it adds to
+    `loss` becomes `unsloth_ga_scale_aux_loss(term, labels, attention_mask, kwargs, num_items_in_batch, model)`:
+    the micro-batch's aux mean times its token share of the accumulation window. One process trains that; a
+    forward without the rewrite adds the term in full. Read from the forward that runs (the instance's, else the
+    class's), so the pipeline adds what that forward would, whatever version installed it."""
+    import inspect
+
+    forward = owner.__dict__.get("forward") or getattr(type(owner), "forward", None)
+    forward = getattr(forward, "__func__", forward)
+    seen = 0
+    while forward is not None and seen < 8:
+        seen += 1
+        code = getattr(forward, "__code__", None)
+        if code is not None and "unsloth_ga_scale_aux_loss" in code.co_names:
+            scaler = getattr(forward, "__globals__", {}).get("unsloth_ga_scale_aux_loss")
+            return scaler if callable(scaler) else None
+        forward = getattr(forward, "__wrapped__", None)
+    try:
+        forward = inspect.unwrap(getattr(type(owner), "forward", None))
+    except Exception:
+        return None
+    code = getattr(forward, "__code__", None)
+    if code is not None and "unsloth_ga_scale_aux_loss" in code.co_names:
+        scaler = getattr(forward, "__globals__", {}).get("unsloth_ga_scale_aux_loss")
+        return scaler if callable(scaler) else None
+    return None
+
+
+def _forward_aux_weighting(owner, term, kwargs, num_items_in_batch):
+    """`term` (coef x this micro-batch's aux loss) weighted as the model's forward weights it on one GPU: through
+    the same scaler with this micro-batch's labels / mask and the window's token count, else unchanged."""
+    scaler = _forward_aux_scaler(owner)
+    labels = kwargs.get("labels")
+    if scaler is None or labels is None:
+        return term
+    loss_kwargs = {
+        k: kwargs[k] for k in ("shift_labels", "packed_seq_lengths") if kwargs.get(k) is not None
+    }
+    if num_items_in_batch is not None:
+        loss_kwargs["num_items_in_batch"] = num_items_in_batch
+    return scaler(
+        term,
+        labels,
+        kwargs.get("attention_mask"),
+        loss_kwargs,
+        num_items_in_batch = num_items_in_batch,
+        model = owner,
+    )
+
+
 def _record_router(ctx, module, args, output):
     if ctx.router_logits is not None:  # inside this stage's forward (not a checkpoint recompute)
         index = ctx.moe.index
@@ -1167,7 +1220,10 @@ class _PPStageModule(nn.Module):
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
-                loss = loss + moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                loss = loss + _forward_aux_weighting(
+                    moe.owner, term, kwargs, ctx.num_items_in_batch
+                )
             elif carry:
                 # Auxiliary loss off: a zero term keeps the received carry in the graph (see the stage return).
                 loss = loss + 0 * carry[0].sum().to(loss.device)
