@@ -410,7 +410,6 @@ def _block_torchao(monkeypatch):
     # LoRA dispatcher into the blocked import. Answer as peft does with torchao absent (monkeypatch restores it).
     try:
         import importlib
-
         importlib.import_module("peft.tuners.lora.torchao")
     except Exception:  # noqa: BLE001 - no peft: nothing caches the answer
         pass
@@ -1273,6 +1272,8 @@ def test_blocked_torchao_holds_after_peft_cached_it_available(monkeypatch):
 
     monkeypatch.setattr(peft_torchao, "is_torchao_available", lambda: True)
     _block_torchao(monkeypatch)
-    monkeypatch.setitem(sys.modules, "torchao.utils", None)  # newer peft's dispatcher imports this one instead
+    monkeypatch.setitem(
+        sys.modules, "torchao.utils", None
+    )  # newer peft's dispatcher imports this one instead
     model = _toy()
     peft.inject_adapter_in_model(peft.LoraConfig(r = 4, target_modules = ["to_q"]), model)
