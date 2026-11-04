@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export const REASONING_ENABLED_KEY = "unsloth_model_reasoning_enabled";
-export const REASONING_ENABLED_PREFIX = `${REASONING_ENABLED_KEY}::`;
+const REASONING_ENABLED_PREFIX = "unsloth_model_reasoning_enabled::";
 
 function readPin(modelId: string): boolean | null {
   try {
@@ -23,16 +22,16 @@ export function pinnedReasoningEnabled(
 
 export function persistReasoningEnabled(
   modelId: string,
-  enabled: boolean | null,
+  enabled: boolean,
 ): void {
   if (!modelId) return;
   try {
     localStorage.setItem(
       `${REASONING_ENABLED_PREFIX}${modelId}`,
-      enabled === null ? "" : enabled ? "true" : "false",
+      String(enabled),
     );
   } catch {
-    // Keep going; this session still has the composer toggle.
+    // Private mode, or storage is full.
   }
 }
 

@@ -17,11 +17,10 @@ const {
   pinnedReasoningEffort,
 } = await import("../src/features/model-picker/components/model-selector/model-reasoning-effort.ts");
 const {
-  createModelReasoningEnabledStore,
-  useModelReasoningEnabledStore,
+  persistReasoningEnabled,
   pinnedReasoningEnabled,
   resolveReasoningEnabledOnLoad,
-} = await import("../src/features/model-picker/components/model-selector/model-reasoning-enabled.ts");
+} = await import("../src/features/model-picker/components/model-selector/reasoning-enabled-pin.ts");
 const { resolveExternalReasoningEffort } = await import("../src/features/chat/provider-capabilities.ts");
 
 const KEY = "unsloth_model_reasoning_effort";
@@ -50,7 +49,6 @@ async function boot(scenario: string, paired: boolean | null = true): Promise<Ru
   storageData.clear();
   storageData.set("unsloth_chat_settings_imported_to_studio_db", "true");
   useModelReasoningEffortStore.getState().syncFromStorage();
-  useModelReasoningEnabledStore.getState().syncFromStorage();
   settingsHttp.settings = { rememberParamsPerModel: false, reasoningEffort: "medium" };
   settingsHttp.puts.length = 0;
   threadRows.reset();
@@ -310,11 +308,8 @@ test("eject restores effort before a snapshotless chat captures its defaults", a
 
 test("thinking pins survive eject and outrank the family default on reload", () => {
   storageData.clear();
-  const store = createModelReasoningEnabledStore(storage);
-  store.getState().setModelReasoningEnabled("qwen-32b", false);
-  store.getState().setModelReasoningEnabled("qwen-9b", true);
-  useModelReasoningEnabledStore.getState().syncFromStorage();
-  assert.equal(store.getState().enabledByModel["qwen-32b"], false);
+  persistReasoningEnabled("qwen-32b", false);
+  persistReasoningEnabled("qwen-9b", true);
   assert.equal(storageData.get(`${ENABLED_KEY}::qwen-32b`), "false");
   assert.equal(
     resolveReasoningEnabledOnLoad({
