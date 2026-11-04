@@ -27197,8 +27197,7 @@ def _messages_have_input_audio(messages) -> bool:
 
 
 def _messages_have_embedded_image(messages) -> bool:
-    """True only for inline base64 image data URLs; durable runs would persist them into every later
-    turn."""
+    """True only for inline base64 image data URLs."""
     for msg in messages:
         content = getattr(msg, "content", None)
         if not isinstance(content, list):
