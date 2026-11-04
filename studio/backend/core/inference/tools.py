@@ -13294,6 +13294,7 @@ def execute_tool(
     tool_execution_mode: str = "auto",
     host_access_approved: bool = False,
     mcp_image = None,
+    started_read: "StartedUrlRead | None" = None,
 ) -> str:
     """Runs a tool by name; disable_sandbox skips python/terminal checks, blocklist and caps (secrets stay stripped); tool_execution_mode full is refused here."""
     from state.tool_policy import require_tool_access
@@ -13544,6 +13545,8 @@ def execute_tool(
         image_queries = arguments.get("image_queries") if isinstance(arguments, dict) else None
         if not query and not url and not _clean_image_queries(image_queries):
             return "No query provided."
+        if started_read is not None:
+            return _fit_result_to_room(started_read.result(), name)
         return _fit_result_to_room(
             _web_search(
                 query,
@@ -14649,6 +14652,10 @@ def _meta_refresh_target(body: bytes, page_url: str) -> str | None:
     return None
 
 
+# PyMuPDF is not thread-safe.
+_WEB_PDF_LOCK = threading.Lock()
+
+
 def _extract_pdf_text(data: bytes) -> str:
     """Extract page-delimited text with the same parser used by RAG ingestion."""
     from ..rag.parsers import parse_pdf_bytes
@@ -15729,7 +15736,12 @@ def _fetch_url_raw(
             if budget_error is not None:
                 return budget_error, "", content_type
             try:
-                pdf_text = _extract_pdf_text(raw_bytes)
+                queued_at = time.monotonic()
+                with _WEB_PDF_LOCK:
+                    # Time queued behind another read's PDF is not spent on this read.
+                    if deadline is not None:
+                        deadline += time.monotonic() - queued_at
+                    pdf_text = _extract_pdf_text(raw_bytes)
             except Exception as exc:
                 logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
                 return "(PDF content could not be read as text)", "", content_type
@@ -16296,8 +16308,18 @@ def _fetch_page_text(
     website_policy: dict | None = None,
 ) -> str:
     """Fetches a URL as readable text (HTML to Markdown); blocks private, loopback and link-local hosts"""
-    if max_chars is None:
-        max_chars = _page_char_budget()
+    page = _download_page(
+        url, timeout = timeout, cancel_event = cancel_event, website_policy = website_policy
+    )
+    return _render_page(page, max_chars)
+
+
+def _download_page(
+    url: str,
+    timeout: int = 30,
+    cancel_event = None,
+    website_policy: dict | None = None,
+):
     # One deadline for the whole fetch so the HTML fallback does not get a fresh timeout.
     deadline = None if timeout is None else time.monotonic() + timeout
     from .web_access_policy import check_url_access
@@ -16323,17 +16345,7 @@ def _fetch_page_text(
         )
         # A 200 README body is authoritative even when HTML; fall back only on failure.
         if err is None and body.strip():
-            readme_body = body
-            # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
-            if _looks_like_html_document(body):
-                from ._html_to_md import html_to_markdown
-                converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
-                readme_body = converted if converted.strip() else body
-            if readme_body.strip():
-                return _truncate_page_text(
-                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
-                    max_chars,
-                )
+            return ("readme", url, body)
 
     raw_file_url = _github_blob_raw_url(url)
     if raw_file_url:
@@ -16345,7 +16357,7 @@ def _fetch_page_text(
             **policy_kwargs,
         )
         if err is None and body.strip():
-            return _truncate_page_text(body.strip(), max_chars)
+            return ("text", url, body.strip())
 
     meta: dict = {}
     err, body, content_type = _fetch_url_raw(
@@ -16365,13 +16377,33 @@ def _fetch_page_text(
         return err
 
     # Sniff the body when Content-Type is missing or wrong.
-    is_html = "html" in content_type or _looks_like_html(body)
-    if not is_html:
-        # Converting plain text through the HTML renderer would collapse whitespace.
-        return _truncate_page_text(body.strip(), max_chars)
+    if "html" in content_type or _looks_like_html(body):
+        return ("html", url, body)
+    # Converting plain text through the HTML renderer would collapse whitespace.
+    return ("text", url, body.strip())
 
-    # Convert HTML to Markdown with the builtin converter (no external deps).
+
+# Reads the call's budget context vars: run inside execute_tool, never on a prefetch thread.
+def _render_page(page, max_chars: int | None = None) -> str:
+    if isinstance(page, str):
+        return page
+    if max_chars is None:
+        max_chars = _page_char_budget()
+    kind, url, body = page
+    if kind == "text":
+        return _truncate_page_text(body, max_chars)
     from ._html_to_md import SiteLinks, html_to_markdown
+
+    if kind == "readme":
+        readme_body = body
+        # Convert only real HTML; a Markdown README opening with a block tag is kept (_HTML_DOCUMENT_RE).
+        if _looks_like_html_document(body):
+            converted = html_to_markdown(body, main_content = True, max_span_chars = max_chars // 2)
+            readme_body = converted if converted.strip() else body
+        return _truncate_page_text(
+            f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+            max_chars,
+        )
 
     site_links = SiteLinks(url)
     # generated span cells get half the window budget, as html_to_markdown's own cap does for 16K
@@ -16689,6 +16721,43 @@ def _wrap_ddgs_client(cls, wrap, follow_redirects, signature, ddgs_exception) ->
     cls._unsloth_http1_retry = True
 
 
+class StartedUrlRead:
+    def __init__(self, url: str, timeout, cancel_event, website_policy) -> None:
+        self._done = threading.Event()
+        self._value = None
+        self._error: BaseException | None = None
+        context = contextvars.copy_context()
+        threading.Thread(
+            target = context.run,
+            args = (self._run, url, timeout, cancel_event, website_policy),
+            name = "web-url-read",
+            daemon = True,
+        ).start()
+
+    def _run(self, url, timeout, cancel_event, website_policy) -> None:
+        try:
+            self._value = _download_page(
+                url,
+                timeout = _url_read_timeout(timeout),
+                cancel_event = cancel_event,
+                website_policy = website_policy,
+            )
+        except BaseException as exc:  # noqa: BLE001 - re-raised to the caller by result()
+            self._error = exc
+        finally:
+            self._done.set()
+
+    def result(self) -> str:
+        self._done.wait()
+        if self._error is not None:
+            raise self._error
+        return _render_page(self._value)
+
+
+def _url_read_timeout(timeout):
+    return 60 if timeout is None else min(timeout, 60)
+
+
 class _ImageSweep:
     """Image lookup started beside the text search; the caller still decides whether to register it."""
 
@@ -16868,10 +16937,9 @@ def _web_search(
     """search approved tiers, fetch a URL, or return registered ``[[img:<id>]]`` images alone."""
     # Direct URL fetch mode.
     if url and url.strip():
-        fetch_timeout = 60 if timeout is None else min(timeout, 60)
         return _fetch_page_text(
             url.strip(),
-            timeout = fetch_timeout,
+            timeout = _url_read_timeout(timeout),
             cancel_event = cancel_event,
             website_policy = website_policy,
         )
