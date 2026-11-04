@@ -231,7 +231,12 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
-import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
+import {
+  betweenToolRounds,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -7708,11 +7713,9 @@ const GeneratingIndicator: FC = () => {
 // Between tool rounds the reply already has content, so the indicator above is gone while the next pass fits the
 // context, compacts it and processes the prompt. Shown until that pass streams its first part.
 const NextRoundIndicator: FC = () => {
-  const show = useAuiState(({ message }) => {
-    if (message.status?.type !== "running") return false;
-    const last = message.content.at(-1);
-    return last?.type === "tool-call" && last.result !== undefined;
-  });
+  const show = useAuiState(({ message }) =>
+    betweenToolRounds(message.status?.type === "running", message.content),
+  );
   if (!show) {
     return null;
   }

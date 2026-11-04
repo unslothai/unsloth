@@ -19,6 +19,7 @@ const {
   prefillSecondsLeft,
   withPrefillFit,
   readGenerationProgress,
+  betweenToolRounds,
 } = await import("../src/features/chat/lib/generation-progress.ts");
 const { describePlacement, loadedPlacementFrom } = await import(
   "../src/features/chat/lib/partial-offload.ts"
@@ -229,11 +230,21 @@ test("a tool result drops the last pass's figures, live or followed, so the next
 test("the status line comes back between tool rounds, after the finished call", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   const indicator = thread.slice(thread.indexOf("const NextRoundIndicator"), thread.indexOf("// Mounted only under a running reply"));
-  assert.match(indicator, /message\.status\?\.type !== "running"/);
-  assert.match(indicator, /last\?\.type === "tool-call" && last\.result !== undefined/);
+  assert.match(indicator, /betweenToolRounds\(message\.status\?\.type === "running", message\.content\)/);
   assert.match(indicator, /<GeneratingStatus \/>/);
   // After the parts, so it sits under the call it follows rather than above the reply.
   assert.match(thread, /<MessagePrimitive\.Parts components=\{ASSISTANT_PART_COMPONENTS\} \/>\s*<NextRoundIndicator \/>/);
+});
+
+test("a finished call shows the next round's status, past the sources a recovered reply ends with", () => {
+  const done = { type: "tool-call", result: "ok" };
+  const source = { type: "source" };
+  assert.equal(betweenToolRounds(true, [done]), true);
+  assert.equal(betweenToolRounds(true, [done, source, source]), true);
+  assert.equal(betweenToolRounds(false, [done]), false);
+  assert.equal(betweenToolRounds(true, [{ type: "tool-call" }, source]), false, "still running");
+  assert.equal(betweenToolRounds(true, [done, { type: "text" }, source]), false, "the next pass streamed");
+  assert.equal(betweenToolRounds(true, [source]), false);
 });
 
 test("decode frames keep draft acceptance only when both counts are there", () => {

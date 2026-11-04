@@ -18,6 +18,20 @@ function tokenCount(count: number, t: Translate, locale?: string): string {
   });
 }
 
+/** The newest part is a finished tool call, so the next pass has not streamed yet. Sources trail a recovered reply. */
+export function betweenToolRounds(
+  running: boolean,
+  content: readonly { type: string; result?: unknown }[],
+): boolean {
+  if (!running) return false;
+  for (let i = content.length - 1; i >= 0; i--) {
+    const part = content[i];
+    if (part.type === "source") continue;
+    return part.type === "tool-call" && part.result !== undefined;
+  }
+  return false;
+}
+
 export type GenerationProgressUpdate =
   | { phase: "prefill"; prefill: LivePrefillProgress }
   | { phase: "decode"; decode: LiveDecodeProgress }
