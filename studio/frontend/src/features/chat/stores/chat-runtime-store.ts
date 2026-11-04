@@ -5229,7 +5229,6 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
-        // Remember Off/On for this checkpoint so eject + reload does not restore the family default.
         if (
           state.params.checkpoint &&
           state.supportsReasoning &&
