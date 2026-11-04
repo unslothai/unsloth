@@ -171,11 +171,12 @@ MEASURED = (7.73, 9.51, 12.86)
 GENERIC = (8.33, 12.05, 19.03)
 
 
-def _cards(monkeypatch, *answers):
+def _cards(monkeypatch, *answers, driver = True):
     from utils.hardware import nvidia
 
     queue = [answer for answer in answers for _ in YUE2_BYTES]
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(queue.pop(0)))
+    monkeypatch.setattr(nvidia, "has_nvidia_driver", lambda: driver)
 
 
 def _yue2():
@@ -183,23 +184,37 @@ def _yue2():
 
 
 @pytest.mark.parametrize(
-    "capabilities, expected",
+    "capabilities, driver, expected",
     [
-        ({0: (8, 6)}, MEASURED),
-        ({0: (8, 9)}, MEASURED),
-        ({0: (12, 0)}, MEASURED),
-        # No NVIDIA card (AMD, Intel): the same weights, the same profile.
-        ({}, MEASURED),
+        ({0: (8, 6)}, True, MEASURED),
+        ({0: (8, 9)}, True, MEASURED),
+        ({0: (12, 0)}, True, MEASURED),
+        # No NVIDIA driver (AMD, Intel): the same weights, the same profile.
+        ({}, False, MEASURED),
         # Any pre-Ampere NVIDIA card, alone or beside a newer one: the generic formula.
-        ({0: (7, 5)}, GENERIC),
-        ({0: (8, 9), 1: (7, 5)}, GENERIC),
+        ({0: (7, 5)}, True, GENERIC),
+        ({0: (8, 9), 1: (7, 5)}, True, GENERIC),
+        # An NVIDIA host whose capability query failed (timed out): the card may be pre-Ampere.
+        ({}, True, GENERIC),
     ],
 )
-def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_is_present(
-    monkeypatch, capabilities, expected
+def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_may_be_present(
+    monkeypatch, capabilities, driver, expected
 ):
-    _cards(monkeypatch, capabilities)
+    _cards(monkeypatch, capabilities, driver = driver)
     assert _yue2() == expected
+
+
+@pytest.mark.parametrize(
+    "smi, procfs_gpus, expected",
+    [(None, 0, False), ("/usr/bin/nvidia-smi", 0, True), (None, 1, True)],
+)
+def test_an_nvidia_host_is_told_from_one_without_nvidia(monkeypatch, smi, procfs_gpus, expected):
+    from utils.hardware import nvidia
+
+    monkeypatch.setattr(nvidia.shutil, "which", lambda name: smi)
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: procfs_gpus)
+    assert nvidia.has_nvidia_driver() is expected
 
 
 def test_the_yue2_estimate_follows_the_current_inventory(monkeypatch):

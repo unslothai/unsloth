@@ -196,21 +196,23 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
 
 
 @pytest.mark.parametrize(
-    "capabilities, free_gb, fits",
+    "capabilities, driver, free_gb, fits",
     [
         # #16627: YuE2 Q8_0 needs 9.51 GiB; it peaks at 8.6 GiB at worst on an Ampere card.
-        ({0: (8, 6)}, 9.6, True),
-        ({}, 9.6, True),
-        ({0: (8, 6)}, 9.4, False),
-        # A pre-Ampere card keeps the generic 12.05 GiB.
-        ({0: (7, 5)}, 9.6, False),
+        ({0: (8, 6)}, True, 9.6, True),
+        ({}, False, 9.6, True),
+        ({0: (8, 6)}, True, 9.4, False),
+        # A pre-Ampere card, or an NVIDIA card whose capability is unknown, keeps the generic 12.05 GiB.
+        ({0: (7, 5)}, True, 9.6, False),
+        ({}, True, 9.6, False),
     ],
 )
-def test_yue2_q8_on_a_10gb_card(monkeypatch, capabilities, free_gb, fits):
+def test_yue2_q8_on_a_10gb_card(monkeypatch, capabilities, driver, free_gb, fits):
     from utils.hardware import nvidia
 
     monkeypatch.setattr(af, "offload_options", lambda model: [])
     monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(capabilities))
+    monkeypatch.setattr(nvidia, "has_nvidia_driver", lambda: driver)
     base = _model(sizes = (3,))
     variant = dataclasses.replace(
         base.variant, files = (dataclasses.replace(base.variant.files[0], size = 4531978293),)

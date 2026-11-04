@@ -159,11 +159,15 @@ _MEASURED_PROFILES = {
 _NOT_BEFORE_AMPERE = frozenset({"yue2"})
 
 
-def _has_pre_ampere_nvidia_card() -> bool:
-    """Read on every call: gpu_query caches the inventory and drops it on invalidation."""
+def _may_have_pre_ampere_nvidia_card() -> bool:
+    """Read on every call: gpu_query caches the inventory and drops it on invalidation. An NVIDIA host
+    whose capabilities can't be read (a timed-out query) counts as possibly pre-Ampere."""
     from utils.hardware import nvidia
 
-    return any(capability < (8, 0) for capability in nvidia.get_compute_capabilities().values())
+    capabilities = nvidia.get_compute_capabilities()
+    if not capabilities:
+        return nvidia.has_nvidia_driver()
+    return any(capability < (8, 0) for capability in capabilities.values())
 
 
 def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
@@ -173,7 +177,7 @@ def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float
     weights_gb = size_bytes / (1024**3)
     generic = weights_gb * _GENERIC_PROFILE[0] + _GENERIC_PROFILE[1]
     profile = _MEASURED_PROFILES.get(family or "")
-    if profile is None or (family in _NOT_BEFORE_AMPERE and _has_pre_ampere_nvidia_card()):
+    if profile is None or (family in _NOT_BEFORE_AMPERE and _may_have_pre_ampere_nvidia_card()):
         return round(generic, 2)
     per_weight, fixed, measured_up_to_gb = profile
     measured = weights_gb * per_weight + fixed

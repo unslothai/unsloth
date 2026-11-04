@@ -571,6 +571,12 @@ def _linux_nvidia_procfs_gpu_count() -> int:
     return len(entries)
 
 
+def has_nvidia_driver() -> bool:
+    """True when nvidia-smi resolves or the kernel driver lists a GPU. Tells an empty capability or
+    inventory query on an NVIDIA host (unreadable) from a host with no NVIDIA card."""
+    return shutil.which(_nvidia_smi_executable()) is not None or _linux_nvidia_procfs_gpu_count() > 0
+
+
 # Native tensor-core support: FP8 from Ada / Hopper (sm_89), NVFP4 from Blackwell (sm_100, sm_120).
 _CHECKPOINT_QUANT_MIN_CAPABILITY = (("fp8", (8, 9)), ("nvfp4", (10, 0)))
 
