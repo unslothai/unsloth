@@ -290,6 +290,8 @@ def test_oom_warning_is_emitted_once_per_process(G):
         (False, {}),
         (True, {"streamer": object()}),
         (True, {"past_key_values": object()}),
+        (True, {"stopping_criteria": [object()]}),
+        (True, {"logits_processor": [object()]}),
     ],
 )
 def test_oom_is_raised_when_a_redo_is_not_safe(G, graphs, kwargs):

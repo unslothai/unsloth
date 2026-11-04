@@ -386,8 +386,8 @@ HELD = "_unsloth_decode_held"
 
 
 def generate_with_fallback(model, generate, graphs, args, kwargs):
-    """On a graph-mode OOM, free graphs and redo once eagerly. A caller's streamer / past_key_values
-    already saw part of the call, so those re-raise instead."""
+    """On a graph-mode OOM, free graphs and redo once eagerly. A caller's streamer / past_key_values /
+    stopping_criteria / logits_processor may hold state from the failed attempt, so those re-raise instead."""
     global _OOM_WARNED, EAGER_REDOS
     try:
         return generate(*args, **kwargs)
@@ -397,6 +397,8 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
             or not graphable(model)
             or kwargs.get("streamer", None) is not None
             or kwargs.get("past_key_values", None) is not None
+            or kwargs.get("stopping_criteria", None)
+            or kwargs.get("logits_processor", None)
         ):
             raise
     if not _OOM_WARNED:
