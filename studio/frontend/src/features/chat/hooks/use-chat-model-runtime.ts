@@ -2719,7 +2719,10 @@ export function useChatModelRuntime() {
               reasoningAlwaysOn,
               supportsReasoning,
               supportsReasoningOff: reasoningStyle !== "reasoning_effort",
-              pinned: pinnedReasoningEnabled(modelId),
+              // Status sync re-keys the checkpoint to the load path, so a pin may sit under either.
+              pinned:
+                pinnedReasoningEnabled(loadPath) ??
+                pinnedReasoningEnabled(modelId),
               reloadingSameModel,
               previousEnabled: stateBeforeUnload.reasoningEnabled,
               reasoningDefault,
