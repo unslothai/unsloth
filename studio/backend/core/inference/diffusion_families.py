@@ -137,6 +137,9 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
+    # Scheduler config keys set after the ComfyUI shift, for a family whose template samples on another spacing
+    # (Chroma: ComfyUI's "beta" schedule = use_beta_sigmas). Empty keeps the shipped spacing.
+    scheduler_overrides: tuple[tuple[str, Any], ...] = field(default_factory = tuple)
     # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
     comfy_shift_node: Optional[str] = None
     comfy_shift_node_variants: tuple[tuple[str, Optional[str]], ...] = field(default_factory = tuple)
@@ -385,6 +388,7 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
+ANIMA_FAMILY_NAME = "anima"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
 _MOSS_IMAGE_CONVROT_SUFFIXES = (
@@ -1195,6 +1199,40 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # bit-identical): int8 ConvRot LPIPS-alex mean 0.015, SSIM 0.986, layerwise fp8 0.177; both stay one explicit
         # pick away (resident 4.87 -> 2.99 GiB, download 10.46 GB fp32 -> 3.21 GB).
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
+        fp16_incompatible = True,
+    ),
+    # Chroma (lodestones): an 8.9B FLUX.1-schnell derivative with real CFG, T5-XXL only (no CLIP) and the FLUX.1 VAE.
+    # ComfyUI's template: 26 steps, CFG 3.5, ModelSamplingAuraFlow shift 1 on the "beta" schedule. Shift 1 needs the beta
+    # spacing: on the linear one it renders soft, washed out and often letterboxed (and the shipped shift 3 still
+    # letterboxes some prompts), so both are set.
+    DiffusionFamily(
+        name = "chroma",
+        comfy_shift_node = "sd3",
+        label = "Chroma",
+        # fp8 W8A8 (activations quantized per row) drifts Chroma: same seed, mean |diff| 16 / 255 against bf16 and
+        # letterboxed renders (2 of 6 seeds where bf16 had none); the fp8 weights of a ComfyUI file are widened instead,
+        # as ComfyUI's own manual cast runs them.
+        profile = FamilyProfile(scheme_deny = frozenset({"fp8"})),
+        pipeline_class = "ChromaPipeline",
+        transformer_class = "ChromaTransformer2DModel",
+        base_repo = "lodestones/Chroma1-HD",
+        comfy_flow_shift = 1.0,
+        scheduler_overrides = (("use_beta_sigmas", True),),
+        aliases = ("chroma1", "chroma1-hd", "chroma-hd"),
+        prompt_hint = "Natural-language prompts; describe what to avoid in the negative prompt.",
+        fp16_incompatible = True,
+    ),
+    # Anima (CircleStone Labs): a Cosmos-Predict2 DiT driven by a Qwen3-0.6B encoder through an LLM adapter, on the
+    # Qwen-Image VAE. diffusers ships modular blocks only; diffusion_anima wraps them. A ComfyUI / Civitai single file
+    # carries the DiT and the adapter; the 2.9B community expansion is the same layout with 40 blocks.
+    DiffusionFamily(
+        name = ANIMA_FAMILY_NAME,
+        label = "Anima",
+        pipeline_class = "AnimaModularPipeline",
+        transformer_class = "CosmosTransformer3DModel",
+        base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
+        aliases = ("anima-base", "anima-2.9b"),
+        prompt_hint = "Booru tags or natural language; start with 'masterpiece, best quality'. No score tags.",
         fp16_incompatible = True,
     ),
     # HunyuanImage 2.1: a 17B dual-stream DiT with a Qwen2.5-VL encoder, a ByT5 glyph encoder and the 32x HunyuanImage
@@ -2137,6 +2175,11 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
+    # Anima: the ComfyUI Base v1 template runs 30 steps at CFG 4. Keyed by the base repo every Anima file resolves to:
+    # a bare "anima" key would match Animagine XL (an SDXL checkpoint) file names first.
+    ("circlestone-labs/anima", 30, 4.0),
+    # Chroma: the ComfyUI Chroma1-HD template (26 steps, CFG 3.5).
+    ("chroma", 26, 3.5),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
@@ -2649,6 +2692,7 @@ _DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 _PIPELINE_PROBE_FILES: dict[str, str] = {
     "Flux3ModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
     "Flux3DistilledModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
+    "AnimaModularPipeline": "modular_pipelines/anima/modular_pipeline.py",
 }
 
 

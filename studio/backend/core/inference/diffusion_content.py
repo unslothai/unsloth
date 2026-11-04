@@ -193,6 +193,8 @@ _DIT_PREFIXES = (
     "model.model.",
     "model.",
     "transformer.",
+    # Cosmos-Predict2 reference checkpoints (Anima's official files).
+    "net.",
     "",
 )
 
@@ -262,6 +264,19 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             return _dit("flux.2-dev", "a FLUX.2 [dev] diffusion transformer", layout)
         return _dit("flux.2-klein", "a FLUX.2 [klein] diffusion transformer", layout)
 
+    if "distilled_guidance_layer" in tops and (
+        {"double_blocks", "single_blocks"} <= tops
+        or {"transformer_blocks", "single_transformer_blocks"} <= tops
+    ):
+        layout = "diffusers" if "transformer_blocks" in tops else "comfy"
+        if any(t.startswith("nerf") for t in tops):
+            return _dit(
+                None,
+                "a Chroma1-Radiance (pixel-space) diffusion transformer (not supported)",
+                layout,
+            )
+        return _dit("chroma", "a Chroma diffusion transformer", layout)
+
     if "double_blocks" in tops and "single_blocks" in tops and "vector_in" in tops:
         in_ch = _dim(s, "img_in.weight", 1)
         if in_ch not in (None, 64):
@@ -299,6 +314,19 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
             "a Lumina-Image-2.0 diffusion transformer",
             "diffusers" if "time_caption_embed" in tops else "comfy",
         )
+
+    if {
+        "layers",
+        "text_embedder",
+        "shared_block_modulation",
+        "video_embedder",
+        "video_head_modulation",
+    } <= tops:
+        # Studio's in-tree port keeps the reference names, so a ComfyUI file and the hosted one read alike.
+        return _dit("moss-image", "a MOSS-Image diffusion transformer", "comfy")
+
+    if {"blocks", "llm_adapter", "x_embedder", "t_embedder", "final_layer"} <= tops:
+        return _dit("anima", "an Anima diffusion transformer", "comfy")
 
     if {"txtfusion", "tmlp", "first"} <= tops:
         return _dit("krea-2", "a Krea-2 diffusion transformer", "comfy")
