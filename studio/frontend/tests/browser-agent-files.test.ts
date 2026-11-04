@@ -94,6 +94,15 @@ test("a file's preview is read through its frame, and its links are not taken as
   assert.equal(snapshot.text, "link r1 x");
   assert.match(snapshot.note ?? "", /browser_edit_file/);
 
+  // In the desktop app web pages are native views, but a file's preview is still the frame.
+  globals.__native = true;
+  try {
+    const desktop = await act("snapshot");
+    assert.equal(desktop.text, "link r1 x", desktop.error);
+  } finally {
+    globals.__native = false;
+  }
+
   // The agent could have written that link itself, so following it asks as a made-up address does.
   let navigate = "https://example.com/";
   globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
@@ -115,6 +124,19 @@ test("a file's preview is read through its frame, and its links are not taken as
   navigate = "http://localhost/api/inference/other.html";
   const beside = await act("click", { ref: "r1" });
   assert.match(beside.error ?? "", /beside this one/);
+});
+
+test("a preview that misses the first call, as one just switched on from Source does, still answers", async () => {
+  endBrowserAgentRun(RUN);
+  let calls = 0;
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>, _code: string, timeoutMs: number) => {
+    // Lost before the shell listens: the panel hears nothing until its wait runs out.
+    if (calls++ === 0) return new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000 } };
+    return { installed: true, result: { ok: true, text: "ready", links: [] } };
+  };
+  const snapshot = await act("snapshot");
+  assert.equal(snapshot.text, "ready", snapshot.error);
 });
 
 test("a PDF is read as text but not edited, and a text file has nothing to click", async () => {

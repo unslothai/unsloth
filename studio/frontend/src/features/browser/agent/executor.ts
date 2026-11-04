@@ -91,6 +91,7 @@ const FILL_QUIET_MAX_MS = 1_000;
 // A loaded page that opened no request has drawn what it will; content still on its way arrives by a request.
 const FILL_IDLE_QUIET_MS = 120;
 const PAGE_READY_MS = 4_000;
+const FILE_FRAME_TRY_MS = 1_500;
 const POST_TIMEOUT_MS = 15_000;
 const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
 export const STOPPED = "The user stopped the browser agent. Do not use browser tools again unless they ask.";
@@ -469,7 +470,8 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
     cursor,
     ...(cursor ? { cursorColor: cursorAccent(), cursorStill: reducedMotion() } : {}),
   };
-  const native = useNativeBrowser.getState().enabled;
+  // A file's preview is the artifact frame even in the desktop app, where web pages are native views.
+  const native = useNativeBrowser.getState().enabled && currentEntry(tab).kind === "web";
   const started = Date.now();
   const fresh = () => {
     const base = nextBase;
@@ -489,8 +491,11 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
         if (reply && !reply.installed) reply = await call(fresh(), pageAgentSource());
       }
     } else {
-      reply = await requestFrameAgent(tab.id, command);
-      if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource());
+      // A preview just switched on from Source drops what reaches its frame before the shell listens,
+      // and a file tab is never marked loading: short tries, so one lost call isn't the whole wait.
+      const wait = currentEntry(tab).kind === "file" ? FILE_FRAME_TRY_MS : undefined;
+      reply = await requestFrameAgent(tab.id, command, undefined, wait);
+      if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource(), wait);
     }
     const answer = reply?.installed ? checkedAnswer(reply.result) : null;
     if (answer) return answer;

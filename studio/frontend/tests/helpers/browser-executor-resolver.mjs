@@ -9,7 +9,7 @@ const stub = (source) => ({ url: `data:text/javascript,${encodeURIComponent(sour
 
 const STUBS = {
   "../page-frame":
-    "export const requestFrameAgent = (tabId, op, code) => globalThis.__frameAgent(tabId, op, code);" +
+    "export const requestFrameAgent = (tabId, op, code, timeoutMs = 5000) => globalThis.__frameAgent(tabId, op, code, timeoutMs);" +
     " export const sendFrameCommand = (tabId, command) => globalThis.__frameCommand?.(tabId, command) ?? false;",
   "../capture": "export const screenshotPage = async () => null; export const captureHiddenPage = async () => null;",
   // Native pages only when a test sets globalThis.__native; it answers their calls via __callNative.
