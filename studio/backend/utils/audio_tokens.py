@@ -92,7 +92,8 @@ _MAX_TOKENIZER_CONFIG_BYTES = 32 * 1024 * 1024
 def may_hold_audio_tokens(raw: str) -> bool:
     """Whether a tokenizer_config's raw text is worth parsing. A false True costs only
     the parse that would have happened anyway; a false False misclassifies."""
-    return any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
+    # '"audio_token"' too: a JSON-escaped placeholder hides the markers from this raw scan.
+    return '"audio_token"' in raw or any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
 
 
 def declares_audio_token(tok_config: dict) -> bool:

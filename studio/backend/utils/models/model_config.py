@@ -1856,6 +1856,8 @@ def _detect_audio_from_tokenizer(
     """Returns definitive False only on a transient read failure, so callers retry instead of caching."""
 
     read_any = False  # parsed at least one tokenizer_config -> a None is definitive
+    # A declared audio_token whose encoder config could not be read keeps every negative unknown.
+    unresolved = False
 
     # 1) Selected local directory or local HF cache first (works for gated/offline models)
     try:
@@ -1915,6 +1917,7 @@ def _detect_audio_from_tokenizer(
                             if result:
                                 return result, True
                             if not known:
+                                unresolved = True
                                 continue
                         elif not raw.rstrip().endswith("}"):
                             continue
@@ -1927,6 +1930,7 @@ def _detect_audio_from_tokenizer(
                     if result:
                         return result, True
                     if not known:
+                        unresolved = True
                         continue
                     read_any = True
                     root_read.add(tok_path)
@@ -1952,17 +1956,17 @@ def _detect_audio_from_tokenizer(
 
     # This raw requests.get ignores HF offline flags, so gate it explicitly.
     if local_files_only or _env_offline():
-        return None, read_any
+        return None, read_any and not unresolved
 
     # A filesystem path is not a repo id, so no Hub URL; the local read is the whole answer, or /loras blocks the event loop on timeouts.
     if is_local_path(model_name):
-        return None, read_any
+        return None, read_any and not unresolved
 
     try:
         import requests
         import os
     except Exception:
-        return None, read_any
+        return None, read_any and not unresolved
 
     # `False` is falsy, so `or` would reach past it to the ambient credential.
     token = None if is_anonymous(hf_token) else (hf_token or os.environ.get("HF_TOKEN"))
@@ -2013,12 +2017,12 @@ def _detect_audio_from_tokenizer(
         if result:
             return result, True
         if not known:
-            transient = True
+            unresolved = True
             continue
         read_any = True
 
     # No audio tokens: definitive unless every attempt failed transiently.
-    return None, (read_any or not transient)
+    return None, (read_any or not transient) and not unresolved
 
 
 def _is_mmproj(filename: str) -> bool:

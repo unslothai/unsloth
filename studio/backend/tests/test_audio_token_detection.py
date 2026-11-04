@@ -796,3 +796,26 @@ def test_a_local_folder_without_a_config_is_definitively_not_audio(tmp_path):
 def test_the_hub_config_decides_a_declared_audio_token(monkeypatch, config_response, expected):
     responses = [_Resp(200, _V5_AUDIO_TOKENIZER), config_response, _Resp(404)]
     assert _detect_checked(monkeypatch, responses) == expected
+
+
+def test_an_unread_encoder_config_stays_unknown_past_a_readable_processor(monkeypatch):
+    # Gemma 4's processor_config carries no top-level audio_token, so it must not settle the answer.
+    responses = [
+        _Resp(200, _V5_AUDIO_TOKENIZER),
+        _Resp(503),
+        _Resp(404),
+        _Resp(200, {"feature_extractor": {}}),
+    ]
+    assert _detect_checked(monkeypatch, responses) == (None, False)
+
+
+def test_a_local_folder_with_an_escaped_audio_token_reads_its_encoder(tmp_path):
+    from utils.models import model_config
+
+    (tmp_path / "tokenizer_config.json").write_text(_escaped(_V5_AUDIO_TOKENIZER))
+    (tmp_path / "config.json").write_text(json.dumps(_WITH_ENCODER))
+
+    assert model_config._detect_audio_from_tokenizer(str(tmp_path), local_files_only = True) == (
+        "audio_vlm",
+        True,
+    )
