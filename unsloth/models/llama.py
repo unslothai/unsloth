@@ -3063,20 +3063,22 @@ def unsloth_fast_generate(self, *args, **kwargs):
 
     kwargs["pad_token_id"] = kwargs.pop("pad_token_id", model_eos_token_id)
 
-    # Decided once per call (env / RL generation scope), so the prefill and every decode step agree.
-    graphs = _decode_graphs.enabled()
-    if graphs:
-        _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
-    # Mixed precision autocast.
-    try:
-        with (
-            _get_inference_mode_context_manager(self),
-            torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
-        ):
-            output = self._old_generate(*args, **kwargs)
-    finally:
+    # Plain generate() decodes with CUDA graphs by default (UNSLOTH_DECODE_CUDA_GRAPHS=0 opts out);
+    # decided once per call, so the prefill and every decode step agree.
+    with _decode_graphs.generate_scope():
+        graphs = _decode_graphs.enabled()
         if graphs:
-            _decode_graphs.end_generation()
+            _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
+        # Mixed precision autocast.
+        try:
+            with (
+                _get_inference_mode_context_manager(self),
+                torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
+            ):
+                output = self._old_generate(*args, **kwargs)
+        finally:
+            if graphs:
+                _decode_graphs.end_generation()
     if graphs and restore_training_mode:
         # Back to training: the next optimizer step invalidates the graphs anyway; free them and the
         # decode buffers for training.
@@ -5630,6 +5632,8 @@ class FastLlamaModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_training!"
             )
         _tensor_parallel_for_training(model)
+        # Captured decode graphs and decode KV buffers from generate() would sit through training.
+        _decode_graphs.release_for_training(model)
         # Mode last, as model.train() was: a custom train() keeps the final say over the chain below.
         checkpointing, apply_training_mode = switch_training_mode(model, True, defer = True)
         use_gradient_checkpointing = resolve_training_gradient_checkpointing(

@@ -1,10 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""When CUDA-graph decode runs (decided per call): UNSLOTH_DECODE_CUDA_GRAPHS unset = off for plain
-model.generate(), on inside an RL trainer's generation (rl_generation(), entered by rl.py's
-unwrap_model_for_generation); =1 on everywhere, =0 off everywhere. Returning to training releases
-the graphs and every decode buffer."""
+"""When CUDA-graph decode runs (decided per call): UNSLOTH_DECODE_CUDA_GRAPHS unset = on inside
+Unsloth's generate() (generate_scope()) and an RL trainer's generation (rl_generation(), entered by
+rl.py's unwrap_model_for_generation), off for a hand-written decode loop outside both; =1 on
+everywhere, =0 off everywhere. Returning to training (or for_training) releases the graphs and every
+decode buffer."""
 
 import pytest
 
@@ -129,37 +130,61 @@ def _gen(
 
 
 @rl_default
-def test_plain_generate_off_rl_generate_on_and_released(runtime):
+def test_plain_generate_on_by_default_bitwise_and_released(runtime):
+    if not G._STUDIO_DEFAULT_OK:
+        pytest.skip("the plain generate() default stays eager on native Windows")
     model, tok = _load()
     FastLanguageModel.for_inference(model)
+    runtime.setenv(ENV, "0")
     eager = _gen(model, tok)
     assert _Stats(model)().get("replays", 0) == 0
     assert _graph_buffers(model) == 0
 
-    with G.rl_generation():
-        graph = _gen(model, tok)
+    # Unset: plain generate() replays graphs, bitwise equal to the eager step.
+    runtime.delenv(ENV)
+    graph = _gen(model, tok)
     stats = _Stats(model)()
     assert stats["disabled"] is None and stats["replays"] == 24 - 2, stats
     assert torch.equal(eager[0], graph[0]) and torch.equal(eager[1], graph[1])
+    with G.rl_generation():
+        assert torch.equal(_gen(model, tok)[1], eager[1])
 
-    # =0 wins inside the RL scope; =1 turns plain generate on.
+    # =0 wins inside both scopes.
     runtime.setenv(ENV, "0")
     replays = _Stats(model)()["replays"]
     with G.rl_generation():
         assert torch.equal(_gen(model, tok)[1], eager[1])
     assert _Stats(model)()["replays"] == replays
-    runtime.setenv(ENV, "1")
-    assert torch.equal(_gen(model, tok)[1], eager[1])
-    assert _Stats(model)()["replays"] > replays
+
+    # for_training frees what an inference-mode generate() kept (a returned cache would release them).
+    runtime.delenv(ENV)
+    enc = tok(PROMPTS, return_tensors = "pt", padding = True).to("cuda")
+    model.generate(**enc, max_new_tokens = 8, do_sample = False, pad_token_id = tok.pad_token_id)
+    assert _graph_buffers(model) > 0
+    FastLanguageModel.for_training(model)
+    assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
+    assert _Stats(model)()["graphs"] == 0
 
     # generate() called on a model in training mode returns to training: everything released.
-    runtime.delenv(ENV)
-    FastLanguageModel.for_training(model)
-    with G.rl_generation():
-        _gen(model, tok)
+    _gen(model, tok)
     assert model.training
     assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
     assert _Stats(model)()["graphs"] == 0
+
+
+def test_generate_scope_turns_graphs_on(runtime):
+    runtime.setattr(G, "_DEFAULT_OK", True)
+    runtime.setattr(G, "_STUDIO_DEFAULT_OK", True)
+    assert G.enabled() is False
+    with G.generate_scope():
+        assert G.enabled() is True
+        runtime.setenv(ENV, "0")
+        assert G.enabled() is False
+    runtime.delenv(ENV)
+    assert G.enabled() is False
+    runtime.setattr(G, "_STUDIO_DEFAULT_OK", False)  # native Windows
+    with G.generate_scope():
+        assert G.enabled() is False
 
 
 @rl_default

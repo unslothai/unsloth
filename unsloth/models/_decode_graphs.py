@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, only RL-trainer
-generate and Studio's chat worker on NVIDIA CUDA; graphs dropped when params, LoRA, quant or RoPE
-change.
+"""CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, on for every
+Unsloth generate() (plain, RL trainer, Studio chat) on NVIDIA CUDA outside native Windows for the
+model types below; graphs dropped when params, LoRA, quant or RoPE change, and freed by for_training.
 
 UNSLOTH_DECODE_CUDA_GRAPHS_FULL=1 also captures the attention cores: each step is then ONE graph that
 attends over a fixed span of cache rows (the next power of two >= the KV length, at least BUCKET, at
@@ -39,6 +39,7 @@ __all__ = [
     "enabled",
     "rl_generation",
     "studio_generation",
+    "generate_scope",
     "static",
     "alloc_decode_buffers",
     "decode_step",
@@ -123,6 +124,14 @@ class studio_generation(rl_generation):
 
     def __exit__(self, *exc):
         return super().__exit__(*exc) if self._entered else False
+
+
+class generate_scope(studio_generation):
+    """Per-thread scope of Unsloth's plain model.generate(): graphs default on as in Studio (eager
+    decode is host bound: ~1000 launches per step for a 28 layer model). Replays are bitwise equal
+    to the eager step; for_training() frees the graphs and decode buffers."""
+
+    __slots__ = ()
 
 
 def static():
