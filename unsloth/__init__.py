@@ -1136,11 +1136,17 @@ if _IS_MLX:
         _set_mlx_cuda_style_context_length(args, 1024)
         return args
 
+    def _mlx_dataset_order_edited(args):
+        return getattr(args, "_unsloth_mlx_dataset_order_implicit", False) and not isinstance(
+            args.dataset_order, _MLXImplicitStr
+        )
+
     def _default_mlx_dataset_order(args):
         if (
             not getattr(args, "streaming", False)
             and not getattr(args, "preserve_dataset_order", False)
             and not getattr(args, "_unsloth_mlx_dataset_order_explicit", False)
+            and not _mlx_dataset_order_edited(args)
         ):
             default_order = getattr(MLXTrainingConfig, "dataset_order", "default")
             if getattr(args, "dataset_order", default_order) in (None, default_order):
@@ -1215,7 +1221,7 @@ if _IS_MLX:
                 args,
                 "_unsloth_mlx_dataset_order_explicit",
                 False,
-            )
+            ) or _mlx_dataset_order_edited(args)
             append_eos_explicit = getattr(
                 args,
                 "_unsloth_mlx_append_eos_explicit",
@@ -1831,6 +1837,9 @@ if _IS_MLX:
                 if getattr(self, key) is None:
                     setattr(self, key, implicit(getattr(MLXTrainingConfig, key)))
             self._unsloth_mlx_initial_max_seq_length = self.max_seq_length
+            self._unsloth_mlx_dataset_order_implicit = isinstance(
+                self.dataset_order, _MLXImplicitStr
+            )
 
     def _resolve_mlx_trl_grad_clip(args):
         no_other_clip = args.max_grad_value is None and args.max_grad_leaf_norm is None

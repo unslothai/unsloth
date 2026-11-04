@@ -295,6 +295,10 @@ assert (swept.max_seq_length, swept.dataset_order, swept.beta) == (4096, "torch_
 assigned = trl.DPOConfig(max_length=4096)
 assigned.max_seq_length = zoo.MLXTrainingConfig.max_seq_length
 assert trl.DPOTrainer(model=long_model, args=assigned, train_dataset=[]).args.max_seq_length == zoo.MLXTrainingConfig.max_seq_length
+ordered = trl.DPOConfig()
+ordered.dataset_order = "default"
+for overrides in ({}, {"seed": 9}):
+    assert trl.DPOTrainer(model=model, args=ordered, train_dataset=[], **overrides).args.dataset_order == "default", overrides
 plain = trl.DPOTrainer(model=model, args=zoo.MLXTrainingConfig(max_steps=1), train_dataset=[]).args
 assert (plain.max_grad_norm, plain.max_grad_leaf_norm) == (0.0, 1.0), "zoo's leaf clip default survives conversion"
 assert trl.DPOTrainer(model=model, args=trl.SFTConfig(max_steps=1), train_dataset=[]).args.max_grad_norm == 1.0
