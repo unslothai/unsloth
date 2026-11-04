@@ -151,10 +151,13 @@ def _request_extra_headers(payload) -> dict[str, str]:
     if "extra_headers" in getattr(payload, "model_fields_set", set()):
         return normalize_provider_extra_headers(payload.extra_headers)
     provider_id = getattr(payload, "provider_id", None)
-    if not provider_id:
+    if not provider_id or payload.encrypted_api_key:
         return {}
     row = providers_db.get_provider(provider_id)
-    return normalize_provider_extra_headers(row.get("extra_headers") if row else None)
+    # Saved headers go only to the saved endpoint, like the saved key.
+    if not row or (payload.base_url or None) != (row.get("base_url") or None):
+        return {}
+    return normalize_provider_extra_headers(row.get("extra_headers"))
 
 
 def _provider_response(row: dict) -> ProviderResponse:
@@ -166,7 +169,12 @@ def _provider_response(row: dict) -> ProviderResponse:
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
-        extra_headers = normalize_provider_extra_headers(row.get("extra_headers")),
+        # Header values can carry credentials; other accounts use them without seeing them.
+        extra_headers = (
+            {}
+            if row.get("shared_by_owner")
+            else normalize_provider_extra_headers(row.get("extra_headers"))
+        ),
         is_enabled = bool(row["is_enabled"]),
         has_api_key = has_api_key,
         auth_kind = ("chatgpt_oauth" if row["provider_type"] == "openai_codex" else "api_key"),

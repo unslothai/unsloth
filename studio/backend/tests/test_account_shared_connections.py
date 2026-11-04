@@ -434,3 +434,59 @@ def test_checking_a_shared_connection_probes_no_model_and_quotes_no_upstream_err
         "message": "Connection failed. Ask the owner to check this connection.",
         "models_count": None,
     }
+
+
+@pytest.fixture
+def header_upstream():
+    seen = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("X-Gateway-Token"))
+            body = json.dumps({"data": [{"id": model} for model in UPSTREAM_MODELS]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target = server.serve_forever, daemon = True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}/v1", seen
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_shared_extra_headers_stay_with_the_saved_endpoint(monkeypatch, header_upstream):
+    base_url, seen = header_upstream
+    provider_id = owner_connection("https://api.example.com/v1")
+    run_as(
+        OWNER,
+        providers_db.update_provider,
+        provider_id,
+        extra_headers = {"X-Gateway-Token": "owner-header-secret"},
+    )
+    mpu.set_managed_private_provider_urls_allowed(True)
+    [row] = listed(ALICE)
+    assert "owner-header-secret" not in json.dumps(row)
+    [owner_row] = listed(OWNER)
+    assert owner_row["extra_headers"] == {"X-Gateway-Token": "owner-header-secret"}
+
+    monkeypatch.setattr(providers, "resolve_provider_api_key_or_400", lambda *a, **k: "alice-key")
+    with client_for(ALICE) as client:
+        response = client.post(
+            "/providers/models",
+            json = {
+                "provider_type": "custom",
+                "provider_id": provider_id,
+                "encrypted_api_key": "alice-encrypted",
+                "base_url": base_url,
+            },
+        )
+    assert response.status_code == 200, response.text
+    assert seen == [None]
