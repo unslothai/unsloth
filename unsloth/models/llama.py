@@ -3774,7 +3774,7 @@ class FastLlamaModel:
                 revision = revision,
             )
         model_config.model_name = model_name
-        backfill_fp8_modules_to_convert(
+        _fp8_backfilled = backfill_fp8_modules_to_convert(
             model_config,
             model_name,
             token,
@@ -4262,6 +4262,8 @@ class FastLlamaModel:
                     or _ct_requant
                     or _fp8_to_nf4
                     or _block_swap_saved is not None
+                    # Backfilled modules_to_convert lives only on model_config.
+                    or _fp8_backfilled
                 ):
                     # Transformers 5.x @strict init rejects extra kwargs alongside config=, so set overrides on the config instead.
                     if max_position_embeddings is not None:
@@ -4269,7 +4271,9 @@ class FastLlamaModel:
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
-                    if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
+                    if (
+                        _modelopt_rewritten or _fp8_to_nf4 or _fp8_backfilled
+                    ) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
                     try:
                         with sync_load_when_quantizing(

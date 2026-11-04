@@ -111,3 +111,12 @@ def test_both_loaders_backfill_before_loading():
         assert "backfill_fp8_modules_to_convert(" in src, name
         call = src.index("backfill_fp8_modules_to_convert(", src.index("def from_pretrained"))
         assert call < src.index(".from_pretrained(", call), name
+
+
+def test_llama_backfill_reaches_the_load():
+    # The plain llama.py load re-reads config.json unless it passes config=; a backfill must force that branch.
+    src = open(os.path.join(HERE, "unsloth", "models", "llama.py"), encoding = "utf-8").read()
+    assert "_fp8_backfilled = backfill_fp8_modules_to_convert(" in src
+    routing = src[src.index("or _block_swap_saved is not None") :]
+    routing = routing[: routing.index("):")]
+    assert "or _fp8_backfilled" in routing
