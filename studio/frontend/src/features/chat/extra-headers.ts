@@ -20,6 +20,7 @@ const FORBIDDEN_EXTRA_HEADERS = new Set([
   "x-goog-api-key",
 ]);
 const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const HEADER_VALUE_RE = /^[\t\x20-\x7e]*$/;
 const MAX_EXTRA_HEADERS = 16;
 
 export function normalizeProviderExtraHeaders(
@@ -73,6 +74,9 @@ export function parseExtraHeadersDraft(draft: string): Record<string, string> {
     }
     if (FORBIDDEN_EXTRA_HEADERS.has(name.toLowerCase())) {
       throw new Error(`Cannot set reserved header ${name}.`);
+    }
+    if (!HEADER_VALUE_RE.test(value)) {
+      throw new Error(`Header ${name} must be printable ASCII.`);
     }
     headers[name] = value;
   }

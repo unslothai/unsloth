@@ -49,6 +49,8 @@ _MAX_EXTRA_HEADERS = 16
 _MAX_HEADER_NAME = 64
 _MAX_HEADER_VALUE = 1024
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+# httpx encodes header values as ASCII; anything else fails every request to the connection.
+_HEADER_VALUE_RE = re.compile(r"^[\t\x20-\x7e]*$")
 _HEADER_TEMPLATE_RE = re.compile(r"\{\{\s*([A-Z][A-Z0-9_]*)\s*\}\}")
 _FORBIDDEN_EXTRA_HEADERS = frozenset(
     {
@@ -89,8 +91,8 @@ def normalize_provider_extra_headers(value) -> dict[str, str]:
             raise ValueError(f"Invalid extra header name: {raw_name!r}.")
         if name.lower() in _FORBIDDEN_EXTRA_HEADERS:
             raise ValueError(f"Cannot set reserved header {name!r}.")
-        if "\r" in raw_value or "\n" in raw_value:
-            raise ValueError(f"Header {name!r} cannot contain newlines.")
+        if not _HEADER_VALUE_RE.fullmatch(raw_value):
+            raise ValueError(f"Header {name!r} must be printable ASCII on one line.")
         if len(raw_value) > _MAX_HEADER_VALUE:
             raise ValueError(f"Header {name!r} is too long.")
         headers[name] = raw_value

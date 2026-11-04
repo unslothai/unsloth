@@ -60,6 +60,13 @@ def test_reserved_headers_are_rejected():
         )
 
 
+def test_header_values_must_be_sendable():
+    for value in ("Ünsloth", "a\nb", "a\x00b"):
+        with pytest.raises(ValueError, match = "printable ASCII"):
+            normalize_provider_extra_headers({"X-Title": value})
+    assert normalize_provider_extra_headers({"X-Title": "a\tb c"}) == {"X-Title": "a\tb c"}
+
+
 def test_template_interpolation():
     rendered = render_provider_extra_headers(
         HEADERS, {"CHAT_SESSION_ID": "thread-1", "MODEL": "gpt"}
