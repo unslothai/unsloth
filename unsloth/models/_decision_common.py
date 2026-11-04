@@ -276,10 +276,11 @@ def _internal(question, name = "") -> dict:
     if kind == "noul" and criteria is not None and not isinstance(criteria, dict):
         raise DecisionDataError('criteria may only have "true" and "false"')
     instructions = question.get("instructions")
-    laya_question = {
-        "type": kind,
-        "instructions": str(name) if instructions in (None, "") else instructions,
-    }
+    if instructions in (None, ""):
+        instructions = str(name)
+    elif not isinstance(instructions, str):
+        instructions = json.dumps(instructions, ensure_ascii = False)
+    laya_question = {"type": kind, "instructions": instructions}
     if criteria is not None:
         laya_question["criteria"] = criteria
     return _laya().agent.Agent._to_internal(laya_question)

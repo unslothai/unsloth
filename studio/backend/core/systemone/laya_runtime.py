@@ -1804,11 +1804,14 @@ def _agent_for(checkpoint: Checkpoint, wait: float):
 
 
 def _to_laya(question: dict[str, Any], name = "") -> dict[str, Any]:
+    import json
+
     instructions = question.get("instructions")
-    out = {
-        "type": question["type"],
-        "instructions": str(name) if instructions in (None, "") else instructions,
-    }
+    if instructions in (None, ""):
+        instructions = str(name)
+    elif not isinstance(instructions, str):
+        instructions = json.dumps(instructions, ensure_ascii = False)
+    out = {"type": question["type"], "instructions": instructions}
     if question.get("criteria") is not None:
         out["criteria"] = question["criteria"]
     return out
