@@ -375,7 +375,6 @@ def _util_pct(ordinal: int) -> Optional[float]:
         return None
     try:
         from .diffusion_device import smi_util_pct
-
         return smi_util_pct(int(ordinal))
     except Exception:  # noqa: BLE001
         return None
@@ -2586,7 +2585,11 @@ class CfgParallelRouter:
     def disable(self, reason: str) -> None:
         if self.disabled_reason is None:
             self.disabled_reason = reason
-            if reason.startswith("replica ") or "no longer idle" in reason or "carries hooks" in reason:
+            if (
+                reason.startswith("replica ")
+                or "no longer idle" in reason
+                or "carries hooks" in reason
+            ):
                 self.stats["replica_failures"] += 1
                 # the load's CFG batching lever takes over after this render (end_cfg_render), not unbatched branches
                 self.fallback_pending = getattr(self, "fallback", None) is not None
@@ -2772,13 +2775,17 @@ class CfgParallelRouter:
             return None
         if args:
             return self._skip_split("positional inputs")
-        extra = sorted(k for k, v in kwargs.items() if k not in allowed and v is not None and v is not False)
+        extra = sorted(
+            k for k, v in kwargs.items() if k not in allowed and v is not None and v is not False
+        )
         if extra:
             return self._skip_split(f"unknown inputs {extra}")
         if kwargs.get("joint_attention_kwargs"):
             return self._skip_split("attention kwargs")
         try:
-            (a0, k0), (a1, k1) = [(_split_batch(args, n, h), _split_batch(kwargs, n, h)) for h in (0, 1)]
+            (a0, k0), (a1, k1) = [
+                (_split_batch(args, n, h), _split_batch(kwargs, n, h)) for h in (0, 1)
+            ]
         except TypeError as exc:
             return self._skip_split(f"unsplittable input ({exc})")
         # inside the denoiser's own call: its root hooks already wrap the whole batch, so run_pair need not refuse them
@@ -2802,7 +2809,12 @@ class CfgParallelRouter:
         return None
 
     def run_pair(
-        self, primary_call: Callable[[], Any], args: tuple, kwargs: dict, *, inside_call: bool = False
+        self,
+        primary_call: Callable[[], Any],
+        args: tuple,
+        kwargs: dict,
+        *,
+        inside_call: bool = False,
     ) -> Optional[tuple]:
         """Second half on the replica, ``primary_call`` on the source. ``(first, second)``; None = run both on source;
         ``second`` None = replica failed. ``inside_call``: called from within the denoiser's own ``__call__`` (batch
@@ -3319,12 +3331,29 @@ class UnetCfgParallelRouter(CfgParallelRouter):
 # a leading size that is the token count, never the batch). Z-Image passes per-sample lists and has its own split.
 _DIT_BATCH_SPLIT_KWARGS = {
     "FluxTransformer2DModel": frozenset(
-        {"hidden_states", "encoder_hidden_states", "pooled_projections", "timestep", "img_ids", "txt_ids", "guidance",
-         "joint_attention_kwargs", "return_dict"}
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "pooled_projections",
+            "timestep",
+            "img_ids",
+            "txt_ids",
+            "guidance",
+            "joint_attention_kwargs",
+            "return_dict",
+        }
     ),
     "Flux2Transformer2DModel": frozenset(
-        {"hidden_states", "encoder_hidden_states", "timestep", "img_ids", "txt_ids", "guidance",
-         "joint_attention_kwargs", "return_dict"}
+        {
+            "hidden_states",
+            "encoder_hidden_states",
+            "timestep",
+            "img_ids",
+            "txt_ids",
+            "guidance",
+            "joint_attention_kwargs",
+            "return_dict",
+        }
     ),
 }
 BATCH_SPLIT_ENV = "UNSLOTH_DIFFUSION_BATCH_SPLIT"
@@ -3464,7 +3493,11 @@ def install_cfg_parallel(
             ) // (1 << 20)
             pick, auto_reason = automatic_partner(
                 probes.get(primary.index) or DeviceProbe(primary.index, "", None, None),
-                [probes[o] for o in selection.secondaries if probes.get(o) is not None and probes[o].free_mib is not None],
+                [
+                    probes[o]
+                    for o in selection.secondaries
+                    if probes.get(o) is not None and probes[o].free_mib is not None
+                ],
                 need,
             )
             candidates = [o for o in candidates if _idle_card(probes.get(o))]
@@ -3584,9 +3617,13 @@ def mirror_cfg_replica_adapter_scales(pipe: Any, logger: Any = None) -> bool:
     module = router.module_ref()
     if module is None:
         return False
-    src = [(n, m) for n, m in module.named_modules() if isinstance(getattr(m, "scaling", None), dict)]
+    src = [
+        (n, m) for n, m in module.named_modules() if isinstance(getattr(m, "scaling", None), dict)
+    ]
     dst = dict(
-        (n, m) for n, m in router.replica.named_modules() if isinstance(getattr(m, "scaling", None), dict)
+        (n, m)
+        for n, m in router.replica.named_modules()
+        if isinstance(getattr(m, "scaling", None), dict)
     )
     if not src or len(src) != len(dst):
         return False
@@ -3599,7 +3636,9 @@ def mirror_cfg_replica_adapter_scales(pipe: Any, logger: Any = None) -> bool:
         for attr in _ADAPTER_SCALE_ATTRS:
             if attr in layer.__dict__:
                 value = layer.__dict__[attr]
-                copy_layer.__dict__[attr] = dict(value) if isinstance(value, dict) else copy.copy(value)
+                copy_layer.__dict__[attr] = (
+                    dict(value) if isinstance(value, dict) else copy.copy(value)
+                )
     try:
         # the fingerprint covers adapter scales: record the new ones as the replica's, else the next step rebuilds it
         router.fingerprint = weights_fingerprint(module)
@@ -3607,7 +3646,10 @@ def mirror_cfg_replica_adapter_scales(pipe: Any, logger: Any = None) -> bool:
         return False
     router.stats["adapter_scale_mirrors"] = router.stats.get("adapter_scale_mirrors", 0) + 1
     if logger is not None:
-        logger.info("diffusion.multigpu: CFG-parallel replica kept; LoRA scales mirrored onto it (%d layers)", len(src))
+        logger.info(
+            "diffusion.multigpu: CFG-parallel replica kept; LoRA scales mirrored onto it (%d layers)",
+            len(src),
+        )
     return True
 
 

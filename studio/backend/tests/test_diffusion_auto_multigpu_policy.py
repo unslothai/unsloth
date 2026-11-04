@@ -14,8 +14,16 @@ T4 = "Tesla T4"
 TOTAL = 15360
 
 
-def card(o, name = T4, used = 400, util = 0.0, total = TOTAL):
-    return mg.DeviceProbe(ordinal = o, name = name, total_mib = total, free_mib = total - used, util_pct = util)
+def card(
+    o,
+    name = T4,
+    used = 400,
+    util = 0.0,
+    total = TOTAL,
+):
+    return mg.DeviceProbe(
+        ordinal = o, name = name, total_mib = total, free_mib = total - used, util_pct = util
+    )
 
 
 NEED = 6000
@@ -57,7 +65,9 @@ def test_automatic_partner_prefers_a_peer_link_on_a_tie_then_the_lowest_ordinal(
 def test_automatic_partner_eight_cards_lends_exactly_one():
     cards = [card(o, used = 400 + 10 * o) for o in range(8)]
     pick, _ = mg.automatic_partner(cards[3], cards, NEED)
-    assert pick == 0  # most free among the other seven; one replica per load whatever the card count
+    assert (
+        pick == 0
+    )  # most free among the other seven; one replica per load whatever the card count
 
 
 def test_idle_card_requires_low_memory_and_low_utilisation():
@@ -77,12 +87,25 @@ class FluxTransformer2DModel(torch.nn.Module):
         self.calls = []
 
     def forward(
-        self, hidden_states, encoder_hidden_states = None, pooled_projections = None, timestep = None, img_ids = None,
-        txt_ids = None, guidance = None, joint_attention_kwargs = None, return_dict = True, **extra,
+        self,
+        hidden_states,
+        encoder_hidden_states = None,
+        pooled_projections = None,
+        timestep = None,
+        img_ids = None,
+        txt_ids = None,
+        guidance = None,
+        joint_attention_kwargs = None,
+        return_dict = True,
+        **extra,
     ):
         self.calls.append(int(hidden_states.shape[0]))
         h = self.x(hidden_states) * timestep[:, None, None] * guidance[:, None, None]
-        h = h + self.t(encoder_hidden_states).mean(1, keepdim = True) + pooled_projections[:, None, :8]
+        h = (
+            h
+            + self.t(encoder_hidden_states).mean(1, keepdim = True)
+            + pooled_projections[:, None, :8]
+        )
         h = h + img_ids.float().mean() + txt_ids.float().mean()
         for value in extra.values():
             if isinstance(value, torch.Tensor):
@@ -117,8 +140,15 @@ def _flux_loop(model, batch, steps, **extra):
     for i in range(steps):
         t = torch.full((batch,), 1.0 - i / steps)
         out = model(
-            hidden_states = latents, encoder_hidden_states = emb, pooled_projections = pooled, timestep = t,
-            img_ids = img_ids, txt_ids = txt_ids, guidance = torch.full((batch,), 3.5), return_dict = False, **extra,
+            hidden_states = latents,
+            encoder_hidden_states = emb,
+            pooled_projections = pooled,
+            timestep = t,
+            img_ids = img_ids,
+            txt_ids = txt_ids,
+            guidance = torch.full((batch,), 3.5),
+            return_dict = False,
+            **extra,
         )[0]
         latents = latents - 0.1 * out
     return latents
@@ -142,7 +172,9 @@ def test_distilled_flux_batch_splits_from_the_second_step_and_matches_one_card()
     assert len(built) == 1
     assert model.calls[0] == 4
     assert sorted(set(model.calls[1:])) == [2]
-    assert built[0].calls.count(2) == 4  # (the copy carries the source's call log from before it was built)
+    assert (
+        built[0].calls.count(2) == 4
+    )  # (the copy carries the source's call log from before it was built)
 
 
 def test_next_render_splits_from_its_first_step():
@@ -184,8 +216,12 @@ def test_guided_render_keeps_cfg_routing_and_does_not_batch_split():
     g = torch.Generator().manual_seed(5)
     latents = torch.randn(2, 16, 8, generator = g)
     kw = dict(
-        encoder_hidden_states = torch.randn(2, 7, 6, generator = g), pooled_projections = torch.randn(2, 12, generator = g),
-        img_ids = torch.zeros(16, 3), txt_ids = torch.zeros(7, 3), guidance = torch.full((2,), 3.5), return_dict = False,
+        encoder_hidden_states = torch.randn(2, 7, 6, generator = g),
+        pooled_projections = torch.randn(2, 12, generator = g),
+        img_ids = torch.zeros(16, 3),
+        txt_ids = torch.zeros(7, 3),
+        guidance = torch.full((2,), 3.5),
+        return_dict = False,
     )
     for i in range(4):
         t = torch.full((2,), 1.0 - i / 4)
@@ -248,7 +284,6 @@ def _lora_model(seed = 0):
 
 def _set_scale(model, scale):
     from peft.tuners.lora import LoraLayer
-
     for mod in model.modules():
         if isinstance(mod, LoraLayer):
             mod.set_scale("style", scale)
@@ -258,9 +293,14 @@ def _one_call(model):
     g = torch.Generator().manual_seed(9)
     x = torch.randn(2, 16, 8, generator = g)
     return model(
-        hidden_states = x, encoder_hidden_states = torch.randn(2, 7, 6, generator = g),
-        pooled_projections = torch.randn(2, 12, generator = g), timestep = torch.ones(2), img_ids = torch.zeros(16, 3),
-        txt_ids = torch.zeros(7, 3), guidance = torch.ones(2), return_dict = False,
+        hidden_states = x,
+        encoder_hidden_states = torch.randn(2, 7, 6, generator = g),
+        pooled_projections = torch.randn(2, 12, generator = g),
+        timestep = torch.ones(2),
+        img_ids = torch.zeros(16, 3),
+        txt_ids = torch.zeros(7, 3),
+        guidance = torch.ones(2),
+        return_dict = False,
     )[0]
 
 
@@ -278,14 +318,24 @@ def test_weight_only_lora_change_mirrors_scales_onto_the_replica_bitwise():
         assert router.replica is replica and router.stats["replica_rebuilds"] == 0
         with torch.no_grad():
             src = router.orig_forward(
-                hidden_states = torch.ones(2, 16, 8), encoder_hidden_states = torch.ones(2, 7, 6),
-                pooled_projections = torch.ones(2, 12), timestep = torch.ones(2), img_ids = torch.zeros(16, 3),
-                txt_ids = torch.zeros(7, 3), guidance = torch.ones(2), return_dict = False,
+                hidden_states = torch.ones(2, 16, 8),
+                encoder_hidden_states = torch.ones(2, 7, 6),
+                pooled_projections = torch.ones(2, 12),
+                timestep = torch.ones(2),
+                img_ids = torch.zeros(16, 3),
+                txt_ids = torch.zeros(7, 3),
+                guidance = torch.ones(2),
+                return_dict = False,
             )[0]
             rep = replica(
-                hidden_states = torch.ones(2, 16, 8), encoder_hidden_states = torch.ones(2, 7, 6),
-                pooled_projections = torch.ones(2, 12), timestep = torch.ones(2), img_ids = torch.zeros(16, 3),
-                txt_ids = torch.zeros(7, 3), guidance = torch.ones(2), return_dict = False,
+                hidden_states = torch.ones(2, 16, 8),
+                encoder_hidden_states = torch.ones(2, 7, 6),
+                pooled_projections = torch.ones(2, 12),
+                timestep = torch.ones(2),
+                img_ids = torch.zeros(16, 3),
+                txt_ids = torch.zeros(7, 3),
+                guidance = torch.ones(2),
+                return_dict = False,
             )[0]
         assert torch.equal(src, rep)
         fresh = _lora_model()
@@ -326,8 +376,12 @@ def _cfg_steps(model, steps = 3):
     g = torch.Generator().manual_seed(4)
     latents = torch.randn(1, 16, 8, generator = g)
     kw = dict(
-        encoder_hidden_states = torch.randn(1, 7, 6, generator = g), pooled_projections = torch.randn(1, 12, generator = g),
-        img_ids = torch.zeros(16, 3), txt_ids = torch.zeros(7, 3), guidance = torch.ones(1), return_dict = False,
+        encoder_hidden_states = torch.randn(1, 7, 6, generator = g),
+        pooled_projections = torch.randn(1, 12, generator = g),
+        img_ids = torch.zeros(16, 3),
+        txt_ids = torch.zeros(7, 3),
+        guidance = torch.ones(1),
+        return_dict = False,
     )
     for i in range(steps):
         t = torch.full((1,), 1.0 - i / steps)
@@ -353,12 +407,16 @@ def test_render_time_replica_failure_hands_over_to_cfg_batching_between_renders(
     calls = []
     assert mg.set_cfg_parallel_fallback(pipe, lambda: calls.append("cfg_batch") or None)
     out = _cfg_steps(model)
-    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-6)  # the failing render finishes on the source
+    torch.testing.assert_close(
+        out, ref, rtol = 1e-5, atol = 1e-6
+    )  # the failing render finishes on the source
     assert router.disabled_reason.startswith("replica unavailable")
     assert calls == []  # never swapped inside a render
     mg.end_cfg_render(pipe)
     assert calls == ["cfg_batch"]
-    assert pipe not in mg._CFG_ROUTERS and "forward" not in model.__dict__  # router gone, cfg_batch can wrap it
+    assert (
+        pipe not in mg._CFG_ROUTERS and "forward" not in model.__dict__
+    )  # router gone, cfg_batch can wrap it
     mg.end_cfg_render(pipe)
     assert calls == ["cfg_batch"]  # once
 
@@ -386,4 +444,6 @@ def test_weight_only_lora_path_mirrors_before_it_would_drop_the_replica():
     src = inspect.getsource(diffusion)
     branch = src.split("if _lora_weights_only_change(")[1].split("# Read before loading")[0]
     assert "mirror_cfg_replica_adapter_scales(pipe, logger)" in branch
-    assert branch.index("mirror_cfg_replica_adapter_scales") < branch.index("invalidate_cfg_replica")
+    assert branch.index("mirror_cfg_replica_adapter_scales") < branch.index(
+        "invalidate_cfg_replica"
+    )
