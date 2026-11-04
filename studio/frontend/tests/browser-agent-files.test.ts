@@ -236,3 +236,31 @@ test("browser_tabs lists files by name and web pages by site, and switches by nu
   assert.equal(switched.ok, true);
   assert.equal(switched.file, "links.html");
 });
+
+test("file reads and previews bypass web-document readiness", async () => {
+  endBrowserAgentRun(RUN);
+  globals.__native = false;
+  let waits = 0;
+  globals.__webReady = async () => { waits++; return false; };
+  const previous = globals.__frameAgent;
+  globals.__frameAgent = async () => ({ installed: true, result: { ok: true, text: "Preview", links: [] } });
+  try {
+    useBrowserStore.getState().openFile({ blob: new Blob(["needle\nother"], { type: "text/plain" }), name: "notes.txt", contentType: "text/plain", key: "ready:text" });
+    const snapshot = await act("snapshot");
+    assert.equal(snapshot.ok, true, snapshot.error);
+    assert.match(snapshot.text ?? "", /needle/);
+    const found = await act("find", { query: "needle" });
+    assert.equal(found.ok, true, found.error);
+    assert.match(found.text ?? "", /needle/);
+    endBrowserAgentRun(RUN);
+    useBrowserStore.getState().openFile({ blob: new Blob(["<h1>Preview</h1>"], { type: "text/html" }), name: "preview.html", contentType: "text/html", key: "ready:preview" });
+    const preview = await act("snapshot");
+    assert.equal(preview.ok, true, preview.error);
+    assert.equal(preview.text, "Preview");
+    assert.equal(waits, 0);
+  } finally {
+    delete globals.__webReady;
+    globals.__frameAgent = previous;
+    endBrowserAgentRun(RUN);
+  }
+});

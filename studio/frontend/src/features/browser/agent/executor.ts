@@ -884,7 +884,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     return loaded ? arrive(loaded, before, action, context, since) : { ok: false, error: "the browser tab closed." };
   }
 
-  if (!useNativeBrowser.getState().enabled && !(await whenWebPageReady(tab.id, signal))) {
+  if (currentEntry(tab).kind === "web" && !useNativeBrowser.getState().enabled && !(await whenWebPageReady(tab.id, signal))) {
     return { ok: false, error: "the browser page is not ready." };
   }
   const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
