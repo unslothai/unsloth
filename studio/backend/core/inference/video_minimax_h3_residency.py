@@ -126,6 +126,122 @@ def is_resident(group: Any) -> bool:
     return bool(getattr(group, "_unsloth_resident", False))
 
 
+# A resident group's host copy is only read again on demote, so it is released while the group is resident and
+# rebuilt from the device copy (bit-exact) on demote: the H3 L4 load gives those ~11 GB to the conditioner instead.
+H3_RESIDENT_UNPIN_ENV = "UNSLOTH_H3_RESIDENT_UNPIN"
+_RELEASED_ATTR = "_unsloth_host_released"
+# MiB of available host RAM a rebuild leaves; below it the host-yield callback is asked to give RAM back first.
+H3_REBUILD_KEEP_MIB = 2048
+
+
+def h3_resident_unpin_enabled() -> bool:
+    return str(os.environ.get(H3_RESIDENT_UNPIN_ENV, "")).strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _host_leaf_bytes(tensor: Any) -> int:
+    return sum(int(leaf.numel()) * int(leaf.element_size()) for leaf in _host_leaves(tensor))
+
+
+def released_host_bytes(group: Any) -> int:
+    return int(getattr(group, _RELEASED_ATTR, 0) or 0)
+
+
+def release_host_copy(group: Any, logger: Any = None) -> int:
+    """Drop the host copy of a resident ``group`` (its weights live on the device); returns bytes released, 0 if kept.
+    Kept when off, when a background pin still owns the group, or when any weight still reads its host copy."""
+    if not h3_resident_unpin_enabled() or not is_resident(group) or released_host_bytes(group):
+        return 0
+    cpu = getattr(group, "cpu_param_dict", None)
+    if not isinstance(cpu, dict) or not cpu:
+        return 0
+    pinner = getattr(group, "_unsloth_background_pin", None)
+    wait = getattr(pinner, "wait", None)
+    if callable(wait):
+        try:
+            wait(group)
+        except Exception:  # noqa: BLE001 -- unknown pin state: keep the copy
+            return 0
+    tensors = _group_tensors(group)
+    if any(t not in cpu for t in tensors):
+        return 0
+    for t in tensors:
+        host = cpu[t]
+        if getattr(host, "device", None) is None or host.device.type != "cpu" or _reads(t, host):
+            return 0  # a weight still points at its host copy: not on the device
+    nbytes = sum(_host_leaf_bytes(cpu[t]) for t in tensors)
+    group.cpu_param_dict = {}
+    setattr(group, _RELEASED_ATTR, max(1, nbytes))
+    return nbytes
+
+
+def _host_copy_of(tensor: Any) -> Any:
+    """Host copy of a device ``tensor`` in the layout ``_pin_host_tensor`` gives (pinned where CUDA is up)."""
+    import torch
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+
+    if is_traceable_wrapper_subclass(tensor):
+        names, ctx = tensor.__tensor_flatten__()
+        inner = {name: _host_copy_of(getattr(tensor, name)) for name in names}
+        return type(tensor).__tensor_unflatten__(inner, ctx, tensor.size(), tensor.stride())
+    data = tensor.detach()
+    if type(data) is torch.nn.Parameter:
+        data = data.data
+    host = data.to("cpu", copy = True)
+    if not torch.cuda.is_available():
+        return host
+    return _pin_host_tensor(host)
+
+
+def rebuild_host_copy(group: Any, *, host_yield: Any = None, logger: Any = None) -> int:
+    """Re-create a released group's host copy from its device weights (an exact copy). ``host_yield(nbytes)`` is asked
+    for RAM first when the copy would leave under ``H3_REBUILD_KEEP_MIB`` available. Returns bytes rebuilt."""
+    need = released_host_bytes(group)
+    if not need:
+        return 0
+    import torch
+
+    if host_yield is not None:
+        try:
+            from .diffusion_small_host import host_ram_mib
+
+            _total, available = host_ram_mib()
+            if available is not None:
+                deficit = (need >> 20) + H3_REBUILD_KEEP_MIB - int(available)
+                if deficit > 0:
+                    host_yield(deficit << 20)
+        except Exception as exc:  # noqa: BLE001 -- rebuild anyway
+            if logger is not None:
+                logger.warning("video.h3_residency: host RAM check before a rebuild failed: %s", exc)
+    if torch.cuda.is_available():
+        torch.cuda.current_stream().synchronize()
+    host = {}
+    with torch.no_grad():
+        for t in _group_tensors(group):
+            source = t if _is_wrapper(t) else t.data
+            host[t] = _host_copy_of(source)
+    group.cpu_param_dict = host
+    setattr(group, _RELEASED_ATTR, 0)
+    return need
+
+
+def _is_wrapper(tensor: Any) -> bool:
+    from torch.utils._python_dispatch import is_traceable_wrapper_subclass
+    return is_traceable_wrapper_subclass(tensor)
+
+
+def _host_empty_cache() -> None:
+    try:
+        from .diffusion_memory import _host_empty_cache as empty
+        empty()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def make_resident(group: Any) -> None:
     """Onload ``group`` once and make its hooks' onload / offload no-ops, so it stays on the device."""
     import torch
@@ -150,12 +266,24 @@ def make_resident(group: Any) -> None:
     group._unsloth_resident = True
 
 
-def demote(group: Any) -> None:
-    """Undo ``make_resident``: restore the streaming onload / offload and move the weights back to the host copy."""
+def demote(group: Any, *, host_yield: Any = None, logger: Any = None, rebuild: bool = True) -> None:
+    """Undo ``make_resident``: restore the streaming onload / offload and move the weights back to the host copy.
+    A released host copy is rebuilt from the device first; ``rebuild=False`` (unload) drops the weights instead."""
     import torch
 
     if not is_resident(group):
         return
+    if released_host_bytes(group):
+        if rebuild:
+            nbytes = rebuild_host_copy(group, host_yield = host_yield, logger = logger)
+            if logger is not None:
+                logger.info(
+                    "video.h3_residency: rebuilt a demoted block's host copy from the device (%.2f GB)",
+                    nbytes / 1e9,
+                )
+        else:
+            group._unsloth_resident = False
+            return
     saved_on, saved_off = getattr(group, "_unsloth_saved_io", (None, None))
     for name, saved in (("onload_", saved_on), ("offload_", saved_off)):
         if saved is not None:
@@ -184,6 +312,9 @@ class H3Residency:
         self.top_bytes = group_payload_bytes(self.top) if self.top is not None else 0
         self.block_bytes = [group_payload_bytes(g) for g in self.blocks]
         self.max_blocks = 0
+        # host_yield(nbytes): frees host RAM (the conditioner's resident share) before a demoted block is rebuilt
+        self.host_yield: Any = None
+        self.released_bytes = 0
 
     @property
     def usable(self) -> bool:
@@ -224,15 +355,20 @@ class H3Residency:
         import torch
 
         for i in range(len(self.blocks) - 1, n - 1, -1):
-            demote(self.blocks[i])
+            demote(self.blocks[i], host_yield = getattr(self, "host_yield", None), logger = self.logger)
         if self.top is not None and not top:
-            demote(self.top)
+            demote(self.top, host_yield = getattr(self, "host_yield", None), logger = self.logger)
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         if self.top is not None and top:
             make_resident(self.top)
         for i in range(n):
             make_resident(self.blocks[i])
+        # Block groups only: the top-level group keeps its own pinned copy (it is re-pinned by its own path).
+        freed = sum(release_host_copy(self.blocks[i], logger = self.logger) for i in range(n))
+        if freed:
+            _host_empty_cache()
+        self.released_bytes = sum(released_host_bytes(g) for g in self.blocks)
 
     def fit(
         self,
@@ -248,12 +384,13 @@ class H3Residency:
         if self.logger is not None:
             self.logger.info(
                 "video.h3_residency: %d of %d denoiser blocks resident (+ top-level %s), %.2f GB on the device, "
-                "budget %.2f GB",
+                "budget %.2f GB, %.2f GB of resident host copies released",
                 n,
                 len(self.blocks),
                 "resident" if top else "streamed",
                 self.resident_bytes() / 1e9,
                 budget_bytes / 1e9,
+                self.released_bytes / 1e9,
             )
         return top, n
 
@@ -268,7 +405,7 @@ def release_all(residency: "H3Residency", *, logger: Any = None) -> None:
     for group in groups:
         try:
             if is_resident(group):
-                demote(group)
+                demote(group, host_yield = getattr(residency, "host_yield", None), logger = logger)
             else:
                 group.offload_()
         except Exception as exc:  # noqa: BLE001
