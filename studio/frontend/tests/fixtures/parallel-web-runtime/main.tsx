@@ -4,6 +4,8 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Dialog, DialogContent, DialogTitle } from "../../../src/components/ui/dialog";
 import "../../../src/index.css";
+// Discover the lazy runtime's Vite dependencies before the fixture starts.
+import "../../../src/features/browser/web-runtime";
 import { BrowserRuntimeRoot } from "../../../src/features/browser/browser-runtime-root";
 import { AnnotationPortal } from "../../../src/features/browser/annotation-portal";
 import { browserScopeContains } from "../../../src/features/browser/browser-scope";

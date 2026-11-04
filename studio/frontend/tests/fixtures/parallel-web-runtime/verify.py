@@ -244,6 +244,6 @@ with sync_playwright() as p:
     page.evaluate("window.store.getState().closePanel()")
     assert f.evaluate("window.marker") == marker
     print(
-        "PASS: Chromium retained A iframe and form state through B and panel hide; background focus did not steal B"
+        f"PASS: {engine} retained A iframe, assets, scroll and form state through B and read-only viewing; input isolation, annotations and clipping passed"
     )
     browser.close()
