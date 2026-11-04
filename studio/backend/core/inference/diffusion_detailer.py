@@ -692,11 +692,12 @@ def _detail_images(
     generate_kwargs: dict,
 ) -> None:
     from core.inference.diffusion_families import DIFFUSION_CANCELLED_MSG
+    from core.inference.diffusion_memory import agreed_placement
 
     seeds = result.get("seeds") or []
     records: list[Optional[dict]] = [None] * len(images)
     # crop inpaints skip the per-request whole tier, so a kept crop can stream where the base ran resident
-    placements = {result.get("denoiser_offload")}
+    placements = [result.get("denoiser_offload")]
     try:
         found, info = detect(images, settings, stop = stop_event.is_set)
     except Exception as exc:  # noqa: BLE001 -- the render stands; the recipe says why it was not detailed
@@ -776,7 +777,7 @@ def _detail_images(
             }
             continue
         images[index] = detailed.image
-        placements.update(crop_placements)
+        placements.extend(crop_placements)
         records[index] = {
             **detailed.record,
             **inherited,
@@ -795,7 +796,7 @@ def _detail_images(
             records[index]["detect_ms"] = info.get("detect_ms")
     result["images"] = images
     result["detailer"] = records
-    result["denoiser_offload"] = placements.pop() if len(placements) == 1 else None
+    result["denoiser_offload"] = agreed_placement(placements)
 
 
 __all__ = [

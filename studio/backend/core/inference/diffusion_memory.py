@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 from .rocm_bf16 import is_rocm_torch
 
@@ -6702,6 +6702,12 @@ def denoiser_offload(pipe: Any, offload_policy: Any) -> Optional[str]:
     if resident >= total:
         return DENOISER_RESIDENT
     return DENOISER_PARTIAL if resident else DENOISER_STREAMED
+
+
+def agreed_placement(placements: Iterable[Optional[str]]) -> Optional[str]:
+    """The placement every denoise of one image ran with; None when they differ (no one placement describes it)."""
+    distinct = set(placements)
+    return distinct.pop() if len(distinct) == 1 else None
 
 
 def denoisers_pinned_resident(pipe: Any) -> bool:

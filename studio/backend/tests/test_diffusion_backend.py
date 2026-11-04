@@ -14560,7 +14560,8 @@ class _PinProbePipe(_FakePipe):
         self.attempts += 1
         if self.fail_first and self.attempts == 1:
             raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
-        self.vae.decode()
+        if hasattr(self.vae, "decode"):
+            self.vae.decode()
         return super().__call__(**kwargs)
 
 
@@ -14647,3 +14648,21 @@ def test_saved_placement_is_read_after_the_steps_and_before_the_decode(
 
     assert pipe.decoded
     assert out["denoiser_offload"] == "resident"
+
+
+def test_a_pass_that_never_decodes_reads_the_placement_once_it_returns(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    # a latent-output pass (the hires latent-upscaler base) never enters the decoder
+    pipe = _PinProbePipe(fail_first = False)
+    pipe.vae = types.SimpleNamespace()
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: "resident")
+
+    assert backend.generate(prompt = "p", steps = 4)["denoiser_offload"] == "resident"

@@ -212,6 +212,7 @@ from .diffusion_memory import (
     plan_fits_total_capacity,
     denoisers_pinned_resident,
     denoiser_offload,
+    agreed_placement,
     install_encode_release,
     plan_keeps_transformer_resident,
     prequant_seed_device,
@@ -14520,7 +14521,7 @@ class DiffusionBackend:
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
                         # appended only if the chunk succeeds: an OOM attempt is split and retried
-                        chunk_placement = [None]
+                        chunk_placement: list = []
 
                         def _enter_denoise_phase(gen = gen) -> None:
                             if gen.phase == "encode":
@@ -14553,7 +14554,9 @@ class DiffusionBackend:
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU) there is no queue to be ahead of, so flip now."""
                             # every step ran (deferred returns settled), the pin still holds, no VAE OOM unpin yet
-                            chunk_placement[0] = denoiser_offload(state.pipe, state.offload_policy)
+                            chunk_placement.append(
+                                denoiser_offload(state.pipe, state.offload_policy)
+                            )
                             if peak_probe is not None:
                                 peak_probe.mark_decode()
                             _release_whole_denoiser()
@@ -14662,7 +14665,11 @@ class DiffusionBackend:
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
-                        chunk_placements.append(chunk_placement[0])
+                        # a pipeline that never enters the decoder is read once it returns
+                        chunk_placements.extend(
+                            chunk_placement[:1]
+                            or [denoiser_offload(state.pipe, state.offload_policy)]
+                        )
                         steps_done[0] += progress_steps
                 except BaseException:
                     if previewer is not None:
@@ -14750,8 +14757,6 @@ class DiffusionBackend:
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 if (_hires_pass is None or not _hires_pass.refine) and not aux_pass:
                     object.__setattr__(state, "generation_count", state.generation_count + 1)
-                # chunks that ran placed differently leave no one placement; the live read covers none sampled
-                placed = set(chunk_placements) - {None}
                 result = {
                     "images": list(images),
                     "seed": int(seed),
@@ -14766,11 +14771,7 @@ class DiffusionBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
-                    "denoiser_offload": (
-                        (placed.pop() if len(placed) == 1 else None)
-                        if placed
-                        else denoiser_offload(state.pipe, state.offload_policy)
-                    ),
+                    "denoiser_offload": agreed_placement(chunk_placements),
                     # Read after the deferred speed / step-cache toggles, so this is what ran.
                     "speed_mode": state.speed_mode,
                     "attention_backend": state.attention_backend,
