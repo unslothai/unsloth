@@ -78,12 +78,23 @@ def _ids(bsz, prompt):
     return types.SimpleNamespace(shape = (bsz, prompt), device = CUDA0)
 
 
-def _need(G, bsz, prompt, max_len = 0):
+def _need(
+    G,
+    bsz,
+    prompt,
+    max_len = 0,
+):
     rows, kv, work = G._call_bytes(_Model().config, bsz, prompt, torch.float16, 512, max_len)
     return G.CALIB_WORK * (kv + work) + G.CALIB_GRAPH_KV * kv
 
 
-def _plan(G, model, bsz, prompt, max_len = 0):
+def _plan(
+    G,
+    model,
+    bsz,
+    prompt,
+    max_len = 0,
+):
     return G.plan_call(model, _ids(bsz, prompt), torch.float16, 512, max_len)
 
 
@@ -127,7 +138,9 @@ def test_plan_counts_a_reusable_buffer_of_the_same_batch_size(G):
     rows, kv, work = G._call_bytes(model.config, 4, 128, torch.float16, 512)
     model.keep(4, rows)
     reused = model.attns[0]._unsloth_graph_buffers[(4, torch.float16, CUDA0)][0]
-    G._free_bytes = lambda device: int(_need(G, 4, 128) - reused.numel() * reused.element_size()) + 1
+    G._free_bytes = (
+        lambda device: int(_need(G, 4, 128) - reused.numel() * reused.element_size()) + 1
+    )
     assert _plan(G, model, 4, 128)[0] == "graph"
     assert model.held() == 1
 

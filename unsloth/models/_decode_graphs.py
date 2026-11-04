@@ -175,7 +175,14 @@ EAGER_UNFIT = 0
 NEEDS = "_unsloth_decode_needs"
 
 
-def _call_bytes(config, bsz, prompt, dtype, increment, max_len = 0):
+def _call_bytes(
+    config,
+    bsz,
+    prompt,
+    dtype,
+    increment,
+    max_len = 0,
+):
     """(cache rows, KV cache bytes, prefill working-set bytes) of one generate() call, sized as
     alloc_decode_buffers sizes the cache (grown up to the length hint). None when a dimension is missing."""
     try:
@@ -215,7 +222,13 @@ def _shape_key(bsz, prompt, max_len):
     return (bsz, _round_up(max(prompt, max_len) + 1, BUCKET))
 
 
-def plan_call(model, input_ids, dtype, increment, max_len = 0):
+def plan_call(
+    model,
+    input_ids,
+    dtype,
+    increment,
+    max_len = 0,
+):
     """Before a graphed generate(): ("graph", token) or ("eager", None).
 
     The call's need is its measured peak (first graphed call of this batch size and length bucket) with
