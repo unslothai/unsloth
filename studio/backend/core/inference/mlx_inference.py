@@ -187,7 +187,7 @@ def copy_cache_entries(entries):
         if not (_is_cache(entry) or isinstance(entry, (list, tuple))):
             raise TypeError(f"{type(entry).__name__} cannot be copied")
     copies = [_copy_value(entry, mx) for entry in entries]
-    # Queued, not awaited: banked between prefill chunks, a wait would idle the GPU until the next is queued.
+    # Not mx.eval: a wait between prefill chunks idles the GPU.
     mx.async_eval(list(_arrays(copies, mx)))
     return copies
 

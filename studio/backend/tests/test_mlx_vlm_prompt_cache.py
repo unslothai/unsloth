@@ -811,7 +811,6 @@ def test_a_lone_batched_row_holds_its_snapshots_from_the_cache_it_hands_back(rin
 
 @pytest.mark.parametrize("over_budget", (False, True))
 def test_a_batched_row_banks_a_boundary_without_waiting_on_the_gpu(monkeypatch, over_budget):
-    """Banked between prefill chunks: a wait would idle the GPU until the next chunk is queued."""
     mx = pytest.importorskip("mlx.core")
     cache = pytest.importorskip("mlx_vlm.models.cache")
 
