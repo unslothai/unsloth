@@ -209,6 +209,21 @@ def _shape_key(bsz, prompt, max_len):
     return (bsz, _round_up(max(prompt, max_len) + 1, BUCKET))
 
 
+def _kept_buffers(model, key, rows):
+    """(any graph buffers kept, bytes of a kept cache for `key` with >= rows). A helper so no reference to
+    the buffers outlives it: release() + empty_cache() can then actually free them before the recheck."""
+    kept, reused = False, 0
+    for m in model.modules():
+        store = m.__dict__.get("_unsloth_graph_buffers")
+        if not store:
+            continue
+        kept = True
+        bufs = store.get(key)
+        if bufs is not None and bufs[0].shape[0] >= rows:
+            reused += bufs[0].numel() * bufs[0].element_size()
+    return kept, reused
+
+
 def plan_call(
     model,
     input_ids,
@@ -236,17 +251,10 @@ def plan_call(
         need = MEASURED_MARGIN * measured
     else:
         need = CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
-    stores = [
-        m.__dict__["_unsloth_graph_buffers"]
-        for m in model.modules()
-        if "_unsloth_graph_buffers" in m.__dict__
-    ]
-    for store in stores:
-        bufs = store.get((bsz, dtype, device))
-        if bufs is not None and bufs[0].shape[0] >= rows:
-            need -= bufs[0].numel() * bufs[0].element_size()
+    kept, reused = _kept_buffers(model, (bsz, dtype, device), rows)
+    need -= reused
     free = _free_bytes(device)
-    if free < need and (any(stores) or any(state.graphs for state in _states(model))):
+    if free < need and (kept or any(state.graphs for state in _states(model))):
         release(model)
         _empty_cache()
         free = _free_bytes(device)

@@ -106,6 +106,32 @@ def test_plan_frees_kept_buffers_when_the_call_does_not_fit_beside_them(G):
     assert not any("paged_attention" in a.__dict__ for a in model.attns)
 
 
+def test_plan_holds_no_buffer_reference_when_it_empties_the_cache(G):
+    import weakref
+
+    model = _Model()
+    model.keep(1, 2816)
+    model.keep(4, 2816)
+    model.keep(16, 64)  # this call's batch size, too small to reuse: still scanned
+    refs = [
+        weakref.ref(bufs[0])
+        for a in model.attns
+        for bufs in a.__dict__["_unsloth_graph_buffers"].values()
+    ]
+    alive_at_empty = []
+
+    def empty():
+        G.emptied += 1
+        alive_at_empty.append(sum(r() is not None for r in refs))
+
+    G._empty_cache = empty
+    need = _need(G, 16, 2048, 2081)
+    free = iter([int(0.9 * need), int(1.1 * need)])
+    G._free_bytes = lambda device: next(free)
+    assert _plan(G, model, 16, 2048, 2081)[0] == "graph"
+    assert alive_at_empty == [0]
+
+
 def test_plan_runs_a_call_that_cannot_fit_eagerly_from_the_start(G):
     model = _Model()
     model.keep(4, 2816)
