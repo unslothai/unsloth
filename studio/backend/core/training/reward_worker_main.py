@@ -12,6 +12,7 @@ import inspect
 import json
 import math
 import os
+import stat
 import sys
 import time
 import traceback
@@ -57,9 +58,15 @@ def put(path, payload):
     _retry(lambda: os.replace(tmp, path))
 
 
-def read_text(path):
-    fd = os.open(path, os.O_RDONLY | _NO_FOLLOW)
+def read_text(path, tail = None):
+    # Non-blocking, then regular files only: a FIFO the reward put there would hang the reader.
+    fd = os.open(path, os.O_RDONLY | _NO_FOLLOW | getattr(os, "O_NONBLOCK", 0))
     with os.fdopen(fd, "rb") as f:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(f"{os.path.basename(path)} is not a regular file.")
+        if tail is not None:
+            f.seek(max(0, info.st_size - tail))
         return f.read().decode("utf-8", errors = "replace")
 
 
