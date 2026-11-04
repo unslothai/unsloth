@@ -20,6 +20,8 @@ import {
 } from "../utils/display-visibility.ts";
 
 export interface ChatPreferencesState {
+  titlePrompt: string;
+  setTitlePrompt: (value: string) => void;
   plainTextComposer: boolean;
   setPlainTextComposer: (value: boolean) => void;
   showContextWindowUsage: boolean;
@@ -76,6 +78,8 @@ function normalisePastedTextMinChars(value: unknown): number {
 export const useChatPreferencesStore = create<ChatPreferencesState>()(
   persist(
     (set) => ({
+      titlePrompt: "",
+      setTitlePrompt: (titlePrompt) => set({ titlePrompt }),
       ...normalizeComposerPreferences(null),
       setPlainTextComposer: (plainTextComposer) => set({ plainTextComposer }),
       setShowContextWindowUsage: (showContextWindowUsage) =>
@@ -147,6 +151,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
           | undefined;
         return {
           ...current,
+          titlePrompt: typeof saved?.titlePrompt === "string" ? saved.titlePrompt : "",
           ...normalizeComposerPreferences(saved),
           confirmDeleteChats: saved?.confirmDeleteChats ?? true,
           alwaysDeleteChatFiles: saved?.alwaysDeleteChatFiles ?? false,

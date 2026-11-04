@@ -1868,6 +1868,8 @@ export const ar = {
         newHasSpaces: "لا يمكن أن تحتوي كلمة المرور الجديدة على مسافات.",
       },
       chatDefaults: "الإعدادات الافتراضية للمحادثة",
+      customTitlePrompt: "تعليمات العنوان المخصصة",
+      customTitlePromptDescription: "اتركه فارغًا لاستخدام التعليمات الافتراضية.",
       autoTitleNewChats: "عنونة المحادثات الجديدة تلقائيًا",
       autoTitleNewChatsDescription:
         "إنشاء عنوان قصير من الرسالة الأولى.",
