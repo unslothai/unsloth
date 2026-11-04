@@ -4,6 +4,8 @@
 """SDPA stays off cuDNN for the calls torch later refused (pytorch#193893, #196678).
 CPU only: versions and capability are mocked; the wrapper is checked via the backend flags it runs under."""
 
+import shutil
+import sys
 import types
 
 import pytest
@@ -492,7 +494,16 @@ def cudnn_sdp_on():
     torch.backends.cuda.enable_cudnn_sdp(was)
 
 
-@pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
+_INDUCTOR = pytest.param(
+    "inductor",
+    marks = pytest.mark.skipif(
+        sys.platform == "win32" and shutil.which("cl") is None,
+        reason = "CPU inductor needs MSVC on Windows",
+    ),
+)
+
+
+@pytest.mark.parametrize("backend", ["aot_eager", _INDUCTOR])
 @pytest.mark.parametrize("first", ["cudnn_only", "fallback"])
 def test_aot_compiled_call_follows_a_later_policy(cudnn_sdp_on, probe_dq_nan, backend, first):
     # AOTAutograd fixes the backend at trace time: a later policy must not keep the old kernel.
