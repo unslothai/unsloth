@@ -1540,9 +1540,11 @@ class ExternalProviderClient:
         }
 
     def _credential_digest(self) -> str:
-        """Served-metadata cache identity: the key, plus routing headers when there are any."""
+        """Served-metadata cache identity: the key, plus the headers this request really sends."""
         material = self.api_key or ""
-        headers = getattr(self, "extra_headers", None)
+        headers = render_provider_extra_headers(
+            getattr(self, "extra_headers", None), getattr(self, "_header_vars", None)
+        )
         if headers:
             material = _json.dumps([material, headers], sort_keys = True)
         return hashlib.sha256(material.encode()).hexdigest()
@@ -1585,12 +1587,14 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
-        headers.update(
-            render_provider_extra_headers(
-                getattr(self, "extra_headers", {}),
-                getattr(self, "_header_vars", {}),
-            )
+        custom = render_provider_extra_headers(
+            getattr(self, "extra_headers", {}), getattr(self, "_header_vars", {})
         )
+        if custom:
+            # Header names are case-insensitive: an override replaces, never duplicates.
+            overridden = {name.lower() for name in custom}
+            headers = {k: v for k, v in headers.items() if k.lower() not in overridden}
+            headers.update(custom)
         return headers
 
     def _is_openai_compatible(self) -> bool:

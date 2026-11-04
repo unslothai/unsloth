@@ -270,6 +270,22 @@ def test_served_metadata_cache_identity_includes_headers():
         "custom", "https://gw.example/v1", "sk", extra_headers = {"X-Tenant": "b"}
     )
     assert len({plain._credential_digest(), a._credential_digest(), b._credential_digest()}) == 3
+    routed = ep.ExternalProviderClient(
+        "custom", "https://gw.example/v1", "sk", extra_headers = {"X-Route": "{{CHAT_SESSION_ID}}"}
+    )
+    routed.set_header_context("chat-1", "m")
+    first = routed._credential_digest()
+    routed.set_header_context("chat-2", "m")
+    assert routed._credential_digest() != first
+
+
+def test_extra_headers_replace_registry_headers_case_insensitively():
+    client = ep.ExternalProviderClient(
+        "openrouter", "https://openrouter.ai/api/v1", "sk", extra_headers = {"x-title": "My App"}
+    )
+    headers = client._auth_headers()
+    assert [k for k in headers if k.lower() == "x-title"] == ["x-title"]
+    assert headers["x-title"] == "My App"
 
 
 def test_route_sets_header_context_before_any_upstream_call(monkeypatch):
