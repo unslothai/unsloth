@@ -143,18 +143,18 @@ def _server_trainer(
     "server",
     [
         {"vllm_max_model_length": 512},
-        {"vllm_max_model_length": None},  # falls back to max_position_embeddings
-        {"vllm_max_model_length": None, "vlm": True},  # the text config's
+        {"vllm_max_model_length": None},
+        {"vllm_max_model_length": None, "vlm": True},
     ],
     ids = ["vllm_max_model_length", "max_position_embeddings", "vlm_text_config"],
 )
 @pytest.mark.parametrize("name", NAMES)
 def test_completion_cut_by_server_context_is_truncated(name, server):
     completions = [
-        [5] * 32,  # 480 + 32 = 512: capped by the server's context
-        [5] * 10,  # stop string after 10 tokens: 490 < 512
+        [5] * 32,  # 480 + 32 = 512
+        [5] * 10,
         [5] * 31 + [EOS],  # EOS at the limit is a normal stop
-        [5] * 128,  # completion budget exhausted
+        [5] * 128,
     ]
     prompts = [[7] * 480, [7] * 480, [7] * 480, [7] * 20]
     trainer = _server_trainer(128, **server)
