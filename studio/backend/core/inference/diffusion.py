@@ -290,6 +290,7 @@ from .diffusion_speed import (
     family_compiles_regionally,
     fp16_compile_explicit_only,
     fp16_unet_offloaded,
+    fused_qkv_added_bytes,
     fresh_compile_count,
     int8_gemm_live,
     arm_graphs_after_placement,
@@ -3049,6 +3050,51 @@ def _learned_peak_for_keys(
         if found is not None:
             return found
     return None
+
+
+DEFERRED_HEADROOM_ENV = "UNSLOTH_DIFFUSION_DEFERRED_HEADROOM"
+# Room kept free above the eager peak plus the profile's added weights: allocator fragmentation, the stable range's
+# granularity and the compiled render's cuBLAS / cuDNN workspaces (SDXL 2048^2 at 8 GiB: 346 MiB short of this OOMs).
+_DEFERRED_HEADROOM_MIN_BYTES = 512 << 20
+_DEFERRED_HEADROOM_FRACTION = 0.10
+
+
+def _deferred_profile_headroom_short(state: Any) -> Optional[str]:
+    """Why the deferred profile would not fit on the card, else None. The eager renders' measured peak plus the bytes
+    the profile adds to the denoiser (the U-Net QKV fuse keeps the unfused projections) must leave a margin inside
+    what this process can hold: free device memory plus its own allocator cache and stable ranges."""
+    if (os.environ.get(DEFERRED_HEADROOM_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    if getattr(state, "offload_policy", OFFLOAD_NONE) not in (OFFLOAD_NONE, OFFLOAD_MODEL):
+        return None  # streamed / grouped denoisers never hold the whole module on the card
+    added = fused_qkv_added_bytes(getattr(state, "pipe", None))
+    if added <= 0:
+        return None
+    try:
+        import torch
+
+        dev = torch.device(str(getattr(state, "device", "")))
+        if dev.type != "cuda" or not torch.cuda.is_available():
+            return None
+        if dev.index is None:
+            dev = torch.device("cuda", torch.cuda.current_device())
+        from .diffusion_stable_arena import mapped_bytes, peak_mapped_bytes
+
+        # the peak since the last render's probe reset: the eager renders this load just ran
+        peak = int(torch.cuda.max_memory_allocated(dev)) + int(peak_mapped_bytes(dev.index))
+        free, _total = torch.cuda.mem_get_info(dev)
+        capacity = int(free) + int(torch.cuda.memory_reserved(dev)) + int(mapped_bytes(dev.index))
+    except Exception:  # noqa: BLE001 - unreadable: engage as before
+        return None
+    need = peak + added
+    need += max(_DEFERRED_HEADROOM_MIN_BYTES, int(need * _DEFERRED_HEADROOM_FRACTION))
+    if need <= capacity:
+        return None
+    mib = 1 << 20
+    return (
+        f"eager peak {peak // mib} MiB + {added // mib} MiB of fused QKV weights + margin = {need // mib} MiB, "
+        f"this process can hold {capacity // mib} MiB"
+    )
 
 
 def _follow_live_graph_mode(state: Any) -> None:
@@ -13247,6 +13293,20 @@ class DiffusionBackend:
                 "diffusion.speed: deferred profile skipped (the UNet streams leaf by leaf; its weights must stay "
                 "under the offload hooks)"
             )
+            return
+        short = _deferred_profile_headroom_short(state)
+        if short is not None:
+            # declined before anything is patched: this load keeps rendering exactly as speed_mode=off
+            object.__setattr__(state, "deferred_static_plan", None)
+            logger.info(
+                "diffusion.speed: deferred profile declined, staying eager for this load (%s; %s=0 engages it "
+                "anyway)",
+                short,
+                DEFERRED_HEADROOM_ENV,
+            )
+            entry = (state.resolved or {}).get("speed_mode")
+            if isinstance(entry, dict):
+                entry["reason"] = f"auto: compiled profile declined, it does not fit on the card ({short})"
             return
         plan = state.deferred_static_plan
         object.__setattr__(state, "deferred_static_plan", None)

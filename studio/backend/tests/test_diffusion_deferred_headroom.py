@@ -1,0 +1,142 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The deferred speed profile declines when the eager peak plus the fused QKV copies would not fit on the card."""
+
+from __future__ import annotations
+
+import types
+
+import pytest
+
+torch = pytest.importorskip("torch")
+diffusers = pytest.importorskip("diffusers")
+
+from core.inference import diffusion as dmod  # noqa: E402
+from core.inference import diffusion_speed as dspeed  # noqa: E402
+
+MIB = 1 << 20
+HEADROOM_ENV = "UNSLOTH_DIFFUSION_DEFERRED_HEADROOM"
+
+
+def _tiny_unet():
+    from diffusers import UNet2DConditionModel
+
+    torch.manual_seed(0)
+    return UNet2DConditionModel(
+        sample_size = 8,
+        in_channels = 4,
+        out_channels = 4,
+        layers_per_block = 1,
+        block_out_channels = (32, 64),
+        down_block_types = ("DownBlock2D", "CrossAttnDownBlock2D"),
+        up_block_types = ("CrossAttnUpBlock2D", "UpBlock2D"),
+        cross_attention_dim = 24,
+        attention_head_dim = 8,
+        norm_num_groups = 8,
+    )
+
+
+def _bytes(module) -> int:
+    return sum(p.numel() * p.element_size() for p in module.parameters())
+
+
+def test_added_bytes_equal_what_diffusers_fuse_adds():
+    unet = _tiny_unet()
+    pipe = types.SimpleNamespace(unet = unet)
+    added = dspeed.fused_qkv_added_bytes(pipe)
+    before = _bytes(unet)
+    unet.fuse_qkv_projections()
+    assert added > 0
+    assert _bytes(unet) - before == added
+    # already fused: nothing more to add
+    assert dspeed.fused_qkv_added_bytes(pipe) == 0
+
+
+def test_no_unet_adds_nothing():
+    assert dspeed.fused_qkv_added_bytes(types.SimpleNamespace(transformer = object())) == 0
+
+
+@pytest.fixture
+def card(monkeypatch):
+    """A fake CUDA card: ``peak`` / ``free`` / ``reserved`` in MiB."""
+    reading = {"peak": 0, "free": 0, "reserved": 0}
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "max_memory_allocated", lambda dev = None: reading["peak"] * MIB)
+    monkeypatch.setattr(
+        torch.cuda, "mem_get_info", lambda dev = None: (reading["free"] * MIB, 24576 * MIB)
+    )
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev = None: reading["reserved"] * MIB)
+    monkeypatch.delenv(HEADROOM_ENV, raising = False)
+    return reading
+
+
+@pytest.fixture
+def engage(monkeypatch):
+    ran = []
+    monkeypatch.setattr(
+        dmod.DiffusionBackend, "_engage_deferred_profile", lambda self, state: ran.append(state)
+    )
+    monkeypatch.setattr(dmod, "invalidate_cfg_replica", lambda *a, **k: None)
+    monkeypatch.setattr(dmod, "drop_displaced_cfg_router", lambda *a, **k: None)
+    backend = object.__new__(dmod.DiffusionBackend)
+
+    def run(offload_policy = dmod.OFFLOAD_MODEL):
+        state = types.SimpleNamespace(
+            pipe = types.SimpleNamespace(unet = _tiny_unet()),
+            speed_deferred = True,
+            deferred_static_plan = {"every": 3, "min_steps": 20},
+            resolved = {"speed_mode": {"value": "deferred", "reason": "auto"}},
+            transformer_cache = None,
+            offload_policy = offload_policy,
+            device = "cuda:0",
+        )
+        dmod.DiffusionBackend._engage_deferred_speed(backend, state)
+        return state, bool(ran and ran[-1] is state)
+
+    return run
+
+
+def test_profile_declined_when_the_render_would_not_fit(card, engage):
+    # SDXL 2048^2 at 8 GiB on an L4: eager peak 6197 MiB, 544 MiB free beside a 7234 MiB cache
+    # (the tiny U-Net's fused copies are KiB: the peak sits 300 MiB inside capacity, short of the margin)
+    card.update(peak = 7778 - 300, free = 544, reserved = 7234)
+    state, engaged = engage()
+    assert not engaged
+    assert state.speed_deferred is False  # never retried on this load
+    assert state.deferred_static_plan is None  # no static skip either: renders stay as speed_mode=off
+    assert "declined" in state.resolved["speed_mode"]["reason"]
+
+
+def test_profile_engages_when_the_render_fits(card, engage):
+    # SDXL 1024^2 at 8 GiB: eager peak 5232 MiB leaves room for the fused copies
+    card.update(peak = 5232, free = 1322, reserved = 6456)
+    _state, engaged = engage()
+    assert engaged
+
+
+def test_header_names_the_kill_switch():
+    assert dmod.DEFERRED_HEADROOM_ENV == HEADROOM_ENV
+
+
+def test_kill_switch_engages_regardless(card, engage, monkeypatch):
+    card.update(peak = 7700, free = 50, reserved = 7728)
+    monkeypatch.setenv(HEADROOM_ENV, "0")
+    _state, engaged = engage()
+    assert engaged
+
+
+def test_grouped_offload_is_not_gated(card, engage):
+    card.update(peak = 7700, free = 50, reserved = 7728)
+    _state, engaged = engage(offload_policy = dmod.OFFLOAD_GROUP)
+    assert engaged
+
+
+def test_unreadable_card_engages(card, engage, monkeypatch):
+    def boom(dev = None):
+        raise RuntimeError("no reading")
+
+    monkeypatch.setattr(torch.cuda, "mem_get_info", boom)
+    card.update(peak = 7700)
+    _state, engaged = engage()
+    assert engaged

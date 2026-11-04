@@ -995,6 +995,42 @@ def _denoiser_unet(pipe: Any) -> Any:
     return None
 
 
+def fused_qkv_added_bytes(pipe: Any) -> int:
+    """Device bytes the default tier's U-Net QKV fuse adds. diffusers' ``fuse_projections`` builds ``to_qkv`` /
+    ``to_kv`` beside the ``to_q`` / ``to_k`` / ``to_v`` it keeps, so a U-Net that moves whole (model offload) or stays
+    resident carries both (SDXL: 4897 MiB grows to 6132 MiB). 0 when the tier would not fuse."""
+    unet = _denoiser_unet(pipe)
+    if unet is None:
+        return 0
+    try:
+        import torch
+        from .diffusion_native_quant import is_native_quantised
+
+        if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+            return 0
+        total = 0
+        for module in unet.modules():
+            if not callable(getattr(module, "fuse_projections", None)) or getattr(
+                module, "fused_projections", False
+            ):
+                continue
+            names = (
+                ("to_k", "to_v")
+                if getattr(module, "is_cross_attention", False)
+                else ("to_q", "to_k", "to_v")
+            )
+            if getattr(module, "add_q_proj", None) is not None:
+                names += ("add_q_proj", "add_k_proj", "add_v_proj")
+            for name in names:
+                linear = getattr(module, name, None)
+                for t in (getattr(linear, "weight", None), getattr(linear, "bias", None)):
+                    if isinstance(t, torch.Tensor):
+                        total += t.numel() * t.element_size()
+        return total
+    except Exception:  # noqa: BLE001 - unreadable: no extra bytes claimed
+        return 0
+
+
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch); the compile cache keys on it."""
     mode = normalize_speed_mode(speed_mode)
