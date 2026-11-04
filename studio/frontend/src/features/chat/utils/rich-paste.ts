@@ -74,11 +74,18 @@ function codeSpan(text: string): string {
   return `${ticks}${pad}${text}${pad}${ticks}`;
 }
 
+// textContent drops <br>, which some sites use for code line breaks.
+function preText(node: PasteNode): string {
+  if (node.nodeType !== 1) return node.textContent ?? "";
+  if (node.nodeName.toUpperCase() === "BR") return "\n";
+  return Array.from(node.childNodes).map(preText).join("");
+}
+
 function preBlock(node: PasteNode): string {
   const code = elements(node).find((child) => child.nodeName.toUpperCase() === "CODE");
   const cls = `${attr(node, "class")} ${code ? attr(code, "class") : ""}`;
   const lang = /(?:language|lang)-([\w+#-]+)/.exec(cls)?.[1] ?? "";
-  const text = (node.textContent ?? "").replace(/\n$/, "");
+  const text = preText(node).replace(/\n$/, "");
   const fence = "`".repeat(Math.max(3, ...(text.match(/`{3,}/g) ?? []).map((run) => run.length + 1)));
   return `\n\n${FENCE_OPEN}${fence}${lang}\n${text}\n${fence}${FENCE_CLOSE}\n\n`;
 }

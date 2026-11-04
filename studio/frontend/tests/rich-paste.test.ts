@@ -102,6 +102,15 @@ test("code blocks keep their indentation and language", () => {
   assert.equal(htmlNodeToMarkdown(body), "```python\ndef f():\n    return 1\n```");
 });
 
+test("code blocks keep lines separated by <br>", () => {
+  const html = "<b>Example</b><pre><code>x = 1<br>print(x)</code></pre>";
+  const body = el("body", el("b", "Example"), el("pre", el("code", "x = 1", el("br"), "print(x)")));
+  assert.equal(
+    richPasteMarkdown(clipboard(html, "Example\nx = 1\nprint(x)"), () => body),
+    "**Example**\n\n```\nx = 1\nprint(x)\n```",
+  );
+});
+
 test("code inside a list item keeps its blank lines", () => {
   const body = el("body", el("ul", el("li", "Example", el("pre", el("code", 'message = """first\n\nthird"""')))));
   assert.equal(htmlNodeToMarkdown(body), '- Example\n  ```\n  message = """first\n\n  third"""\n  ```');
