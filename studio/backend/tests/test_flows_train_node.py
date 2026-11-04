@@ -1106,3 +1106,34 @@ def test_a_window_over_joined_splits_of_unknown_size_counts_the_rows_each_has(mo
     assert [r["q"] for r in rows] == [f"validation{i}" for i in range(50, 55)]
     rows = training._hub_rows({"ref": "a/b", "split": "train+validation"}, None, 98, 101)
     assert [r["q"] for r in rows] == ["train98", "train99", "validation0", "validation1"]
+
+
+def test_the_previous_chat_model_is_put_back_with_its_own_context_and_precision(monkeypatch):
+    loads = []
+
+    async def load_llm(*a, **k):
+        loads.append(k)
+
+    monkeypatch.setattr("studio_mcp.loading.load_llm", load_llm)
+    monkeypatch.setattr(training, "note_loaded", lambda *a: None)
+    status = {
+        "model_identifier": "unsloth/Qwen3-4B",
+        "gguf_variant": None,
+        "requested_context_length": 65536,
+        "load_in_4bit": False,
+    }
+    ctx = _Ctx(lambda *a: status)
+    ctx.resident = {}
+    ctx.set_status = lambda *a, **k: None
+    previous = asyncio.run(training.active_chat_model(ctx))
+    asyncio.run(training.restore_chat_model(ctx, previous, "run-1"))
+    assert loads[0]["max_seq_length"] == 65536 and loads[0]["load_in_4bit"] is False
+    # A status without them keeps the old defaults.
+    loads.clear()
+    asyncio.run(
+        training.restore_chat_model(ctx, {"repo": "unsloth/Qwen3-4B", "variant": None}, "run-1")
+    )
+    assert (
+        loads[0]["max_seq_length"] == training.FLOW_CHAT_CONTEXT
+        and loads[0]["load_in_4bit"] is True
+    )

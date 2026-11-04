@@ -415,6 +415,12 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
     """What identifies the weights a run starts from: a local folder's files, a Hub repo's revision,
     and for a saved LoRA folder the same for the base it loads under it. None = cannot tell."""
     found: dict = {}
+    if base.startswith("ref:"):
+        # A model picked from Studio's inventory names its folder by a handle, as training resolves it.
+        from hub.utils.host_paths import resolve_host_path_reference
+        base = resolve_host_path_reference(base) or ""
+        if not os.path.isabs(base):
+            return None
     if os.path.isabs(base):
         from core.flows.engine import _local_fingerprint
 
@@ -1122,7 +1128,14 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
     model = status.get("model_identifier") if isinstance(status, dict) else None
     if not isinstance(model, str) or not model.strip():
         return None
-    return {"repo": model, "variant": status.get("gguf_variant") or None}
+    found = {"repo": model, "variant": status.get("gguf_variant") or None}
+    # How it was loaded, so putting it back keeps its context and precision.
+    context = status.get("requested_context_length")
+    if isinstance(context, int) and not isinstance(context, bool) and context > 0:
+        found["max_seq_length"] = context
+    if isinstance(status.get("load_in_4bit"), bool):
+        found["load_in_4bit"] = status["load_in_4bit"]
+    return found
 
 
 async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replaced_by: str) -> None:
@@ -1142,8 +1155,8 @@ async def restore_chat_model(ctx: NodeContext, previous: Optional[dict], replace
             None,
             model = previous["repo"],
             variant = previous["variant"],
-            max_seq_length = FLOW_CHAT_CONTEXT,
-            load_in_4bit = True,
+            max_seq_length = previous.get("max_seq_length") or FLOW_CHAT_CONTEXT,
+            load_in_4bit = previous.get("load_in_4bit", True),
             hf_token = None,
             kind = "llm",
             deadline = time.monotonic() + 1800,

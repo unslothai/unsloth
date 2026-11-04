@@ -254,3 +254,31 @@ async def test_a_hub_lora_trains_again_when_the_base_it_names_changes(world, mon
     revisions["org/base"] = "b2"
     await _run(eng, _flow(base_model = "me/my-lora"))
     assert len(world["trained"]) == 2
+
+
+@run_async
+async def test_a_base_model_picked_by_inventory_handle_is_fingerprinted_through_it(
+    world, tmp_path, monkeypatch
+):
+    import os
+
+    from hub.utils import host_paths
+
+    base = tmp_path / "my-model"
+    base.mkdir()
+    (base / "model.safetensors").write_bytes(b"old")
+    monkeypatch.setattr(
+        host_paths, "resolve_host_path_reference", lambda v: str(base) if v == "ref:mine" else None
+    )
+    eng = _engine(world)
+    await _run(eng, _flow(base_model = "ref:mine"))
+    await _run(eng, _flow(base_model = "ref:mine"))
+    assert len(world["trained"]) == 1
+    (base / "model.safetensors").write_bytes(b"new weights")
+    os.utime(base / "model.safetensors", ns = (1, 1))
+    await _run(eng, _flow(base_model = "ref:mine"))
+    assert len(world["trained"]) == 2
+    # A handle that no longer resolves cannot be told apart, so it trains again.
+    await _run(eng, _flow(base_model = "ref:gone"))
+    await _run(eng, _flow(base_model = "ref:gone"))
+    assert len(world["trained"]) == 4
