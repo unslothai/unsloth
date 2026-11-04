@@ -134,18 +134,33 @@ function CharactersLibrary({ openImport }: { openImport: boolean }) {
   }, [openImport, navigate]);
 
   const list = useMemo(() => order.map((id) => characters[id]).filter(Boolean), [order, characters]);
+  // Cards spell the same tag differently ("Fantasy", "fantasy"), so tags group by lowercase and each chip
+  // shows the most common spelling.
   const tagCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const character of list)
-      for (const value of character.tags) counts.set(value, (counts.get(value) ?? 0) + 1);
-    return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([value]) => value);
+    const groups = new Map<string, { count: number; spellings: Map<string, number> }>();
+    for (const character of list) {
+      for (const value of character.tags) {
+        const key = value.toLowerCase();
+        const group = groups.get(key) ?? { count: 0, spellings: new Map<string, number>() };
+        group.count += 1;
+        group.spellings.set(value, (group.spellings.get(value) ?? 0) + 1);
+        groups.set(key, group);
+      }
+    }
+    return [...groups.entries()]
+      .map(([key, group]) => ({
+        key,
+        count: group.count,
+        label: [...group.spellings.entries()].sort((a, b) => b[1] - a[1])[0][0],
+      }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
   }, [list]);
   const shown = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const filtered = list.filter(
       (character) =>
         (!favoritesOnly || character.favorite) &&
-        (!tag || character.tags.includes(tag)) &&
+        (!tag || character.tags.some((value) => value.toLowerCase() === tag)) &&
         (!needle ||
           character.name.toLowerCase().includes(needle) ||
           character.tags.some((value) => value.toLowerCase().includes(needle)) ||
@@ -251,9 +266,9 @@ function CharactersLibrary({ openImport }: { openImport: boolean }) {
             <HugeiconsIcon icon={StarIcon} strokeWidth={1.8} className={cn("size-3.5", favoritesOnly && "fill-current")} />
             {t("characters.favorites")}
           </FilterChip>
-          {tagChips.map((value) => (
-            <FilterChip key={value} active={tag === value} onClick={() => setTag(tag === value ? null : value)}>
-              {value}
+          {tagChips.map(({ key, label }) => (
+            <FilterChip key={key} active={tag === key} onClick={() => setTag(tag === key ? null : key)}>
+              {label}
             </FilterChip>
           ))}
           </div>

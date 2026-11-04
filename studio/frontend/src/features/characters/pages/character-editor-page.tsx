@@ -7,7 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { Textarea } from "@/components/ui/textarea";
+import { getInferenceStatus } from "@/features/chat/api/chat-api";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
 import { useNativeFileDrop } from "@/features/native-intents";
 import { useT } from "@/i18n";
 import { toast } from "@/lib/toast";
@@ -88,7 +90,18 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
   const [saving, setSaving] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
-  const contextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const storeContextLength = useChatRuntimeStore((s) => s.loadedContextLength);
+  const [statusContextLength, setStatusContextLength] = useState<number | null>(null);
+  useEffect(() => {
+    // Opened from a link before Chat has read the server's status, the store does not know the loaded model yet.
+    if (storeContextLength != null) return;
+    const controller = new AbortController();
+    getInferenceStatus(controller.signal)
+      .then((status) => setStatusContextLength(loadedContextFields(status).loadedContextLength))
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [storeContextLength]);
+  const contextLength = storeContextLength ?? statusContextLength;
   const choosePictureRef = useRef<(file: File | undefined) => void>(() => {});
   // The portrait takes a dropped image too, the desktop app included.
   const pictureDrop = useNativeFileDrop({
