@@ -3057,13 +3057,21 @@ class CfgParallelRouter:
                 t.numel() * t.element_size() for t in (*module.parameters(), *module.buffers())
             ) // (1 << 20)
             free, total = self._secondary_free_total_mib()
-            if getattr(self, "automatic_idle_only", False) and not _idle_card(
-                DeviceProbe(ordinal = self.secondary.index, name = "", total_mib = total, free_mib = free)
-            ):
-                # Automatic borrowed this card because it was idle at load; something else took it since
-                raise RuntimeError(
-                    f"{self.secondary} is no longer idle ({free} of {total} MiB free)"
-                )
+            if getattr(self, "automatic_idle_only", False):
+                util = _util_pct(self.secondary.index)
+                if not _idle_card(
+                    DeviceProbe(
+                        ordinal = self.secondary.index,
+                        name = "",
+                        total_mib = total,
+                        free_mib = free,
+                        util_pct = util,
+                    )
+                ):
+                    # Automatic borrowed this card because it was idle at load; something else took it since
+                    raise RuntimeError(
+                        f"{self.secondary} is no longer idle ({free} of {total} MiB free, {util}% busy)"
+                    )
             reserve = _replica_reserve_mib(free, total)
             if free is not None and need_mib + reserve > free:
                 raise RuntimeError(
