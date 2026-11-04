@@ -266,6 +266,12 @@ def test_placement_refusal_states_the_estimate_and_the_free_memory(monkeypatch):
     assert "It needs about 11.5 GB of GPU memory while running. Free GPU memory," in unknown.message
     bare = af.classify_audio_cpp_failure(text, model = model)
     assert bare.message.startswith("No single GPU has enough free memory for Model M. Free GPU")
+    # YuE2 Q8_0 on a 10 GB card: one decimal would read "needs 9.5, and 9.5 is free".
+    close = af.classify_audio_cpp_failure(text, model = model, free_gb = 9.5, required_gb = 9.51)
+    assert (
+        "It needs about 9.51 GB of GPU memory while running, and the most free on one GPU is 9.50 GB."
+        in close.message
+    )
 
 
 def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
