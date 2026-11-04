@@ -161,6 +161,7 @@ class eager_scope:
 # T4: eager peaked 1.14x the estimate; graph capture OOMed at ~12 GiB free (~0.26 x KV extra).
 CALIB_WORK = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_WORK", "1.15"))
 CALIB_GRAPH_KV = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_KV", "0.30"))
+# A shape's largest measured footprint x this raises (never lowers) the estimate.
 MEASURED_MARGIN = 1.05
 EAGER_UNFIT = 0
 NEEDS = "_unsloth_decode_needs"
@@ -208,7 +209,8 @@ def _alloc_stats(device):
 
 
 def _shape_key(bsz, prompt, max_len):
-    return (bsz, _round_up(max(prompt, max_len) + 1, BUCKET))
+    # Prompt and total length both: one total with a longer prompt has a larger prefill.
+    return (bsz, _round_up(prompt + 1, BUCKET), _round_up(max(prompt, max_len) + 1, BUCKET))
 
 
 def _kept_buffers(model, key, rows):
@@ -251,12 +253,12 @@ def plan_call(
         return "graph", None
     key = _shape_key(bsz, prompt, max_len)
     measured = model.__dict__.get(NEEDS, {}).get(key)
-    # A measurement is the call's whole footprint (record_need adds back a cache it reused), so the
-    # cache kept for this shape now is subtracted exactly once.
-    if measured is not None:
-        need = MEASURED_MARGIN * measured
-    else:
-        need = CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
+    # A measurement can only raise the calibrated estimate (it corrects estimates that run low on other
+    # GPUs; an early-stopped call peaks low). It is the call's whole footprint (record_need adds back a
+    # cache it reused), so the cache kept for this shape now is subtracted exactly once.
+    estimate = CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
+    full = estimate if measured is None else max(estimate, MEASURED_MARGIN * measured)
+    need = full
     kept, reused = _kept_buffers(model, (bsz, dtype, device), rows)
     need -= reused
     free = _free_bytes(device)
@@ -265,11 +267,7 @@ def plan_call(
         _empty_cache()
         free = _free_bytes(device)
         reused = 0
-        need = (
-            MEASURED_MARGIN * measured
-            if measured is not None
-            else CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
-        )
+        need = full
     if free < need:
         EAGER_UNFIT += 1
         return "eager", None
@@ -277,15 +275,16 @@ def plan_call(
 
 
 def record_need(model, token):
-    """Store the first graphed call's footprint per shape: its peak above the start plus the kept cache it
-    reused (already allocated at the start, so not in the peak delta). The peak is never reset (not ours
-    to reset), so a call that did not raise it has no exact reading and is skipped."""
+    """Store the largest graphed footprint seen per shape: a call's peak above its start plus the kept
+    cache it reused (already allocated at the start, so not in the peak delta). The peak is never reset
+    (not ours to reset), so a call that did not raise it has no exact reading and is skipped."""
     if token is None:
         return
     key, device, start, peak_before, reused = token
     peak = _alloc_stats(device)[1]
     if peak > peak_before:
-        model.__dict__.setdefault(NEEDS, {}).setdefault(key, peak - start + reused)
+        needs = model.__dict__.setdefault(NEEDS, {})
+        needs[key] = max(needs.get(key, 0), peak - start + reused)
 
 
 def decode_batch(

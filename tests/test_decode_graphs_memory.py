@@ -172,37 +172,76 @@ def test_plan_lets_non_cuda_or_shapeless_inputs_through(G):
     assert G.EAGER_UNFIT == 0
 
 
-def test_measured_peak_replaces_the_estimate_for_its_shape(G):
+def test_measured_peak_can_only_raise_the_estimate(G):
     model = _Model()
+    est = _need(G, 4, 2048, 2081)
     stats = {"alloc": 3 * GB, "peak": 3 * GB}
     G._alloc_stats = lambda device: (stats["alloc"], stats["peak"])
     G._free_bytes = lambda device: 20 * GB
     plan, token = _plan(G, model, 4, 2048, 2081)
     assert plan == "graph"
-    stats["peak"] = 5 * GB
+    stats["peak"] = 5 * GB  # 2 GiB above the start: below the estimate
     G.record_need(model, token)
     key = G._shape_key(4, 2048, 2081)
-    assert model.__dict__[G.NEEDS][key] == 2 * GB
-    # A later call of that shape is judged by the measurement (x MEASURED_MARGIN), not the estimate.
-    G._free_bytes = lambda device: int(2.0 * GB * G.MEASURED_MARGIN) + 1
-    assert _plan(G, model, 4, 2048, 2081)[0] == "graph"
-    G._free_bytes = lambda device: int(2.0 * GB * G.MEASURED_MARGIN) - 1
+    assert model.__dict__[G.NEEDS][key] == 2 * GB < est
+    # A measurement below the estimate does not lower the need.
+    G._free_bytes = lambda device: int(est) - 1
     assert _plan(G, model, 4, 2048, 2081)[0] == "eager"
-    # Only the first graphed call of a shape is recorded; a call that did not raise the peak is not.
-    stats["peak"] = 9 * GB
+    G._free_bytes = lambda device: int(est) + 1
+    assert _plan(G, model, 4, 2048, 2081)[0] == "graph"
+    # A later, larger peak of the same shape wins and raises the need above the estimate.
     G._free_bytes = lambda device: 20 * GB
-    G.record_need(model, _plan(G, model, 4, 2048, 2081)[1])
-    assert model.__dict__[G.NEEDS][key] == 2 * GB
+    plan, token = _plan(G, model, 4, 2048, 2081)
+    stats["peak"] = 3 * GB + 6 * GB
+    G.record_need(model, token)
+    assert model.__dict__[G.NEEDS][key] == 6 * GB > est
+    G._free_bytes = lambda device: int(G.MEASURED_MARGIN * 6 * GB) - 1
+    assert _plan(G, model, 4, 2048, 2081)[0] == "eager"
+    G._free_bytes = lambda device: int(G.MEASURED_MARGIN * 6 * GB) + 1
+    assert _plan(G, model, 4, 2048, 2081)[0] == "graph"
+    # A call that did not raise the process peak has no exact reading and is not stored.
     G.record_need(model, _plan(G, model, 1, 128)[1])
     assert G._shape_key(1, 128, 0) not in model.__dict__[G.NEEDS]
 
 
+def test_prompt_length_is_part_of_the_shape(G):
+    # Batch 4, prompts 128 and 2048, both to 4096 tokens: one total-length bucket, different footprints.
+    assert G._shape_key(4, 128, 4096) != G._shape_key(4, 2048, 4096)
+    model = _Model()
+    stats = {"alloc": 3 * GB, "peak": 3 * GB}
+    G._alloc_stats = lambda device: (stats["alloc"], stats["peak"])
+    G._free_bytes = lambda device: 30 * GB
+    plan, token = _plan(G, model, 4, 128, 4096)
+    stats["peak"] = 3 * GB + GB // 2  # the short prompt's small peak
+    G.record_need(model, token)
+    long_need = _need(G, 4, 2048, 4096)
+    G._free_bytes = lambda device: int(long_need) - 1
+    assert _plan(G, model, 4, 2048, 4096)[0] == "eager"
+
+
+def test_an_early_stop_measurement_never_admits_a_full_length_call(G):
+    # The first call of a shape stopped on EOS before its cache grew: its peak is small. A later call
+    # of the same shape that generates to the limit is still judged by at least the estimate.
+    model = _Model()
+    est = _need(G, 4, 2048, 4096)
+    stats = {"alloc": 3 * GB, "peak": 3 * GB}
+    G._alloc_stats = lambda device: (stats["alloc"], stats["peak"])
+    G._free_bytes = lambda device: 30 * GB
+    plan, token = _plan(G, model, 4, 2048, 4096)
+    stats["peak"] = 3 * GB + GB
+    G.record_need(model, token)
+    G._free_bytes = lambda device: int(G.MEASURED_MARGIN * GB) + 1
+    assert _plan(G, model, 4, 2048, 4096)[0] == "eager"
+    G._free_bytes = lambda device: int(est) + 1
+    assert _plan(G, model, 4, 2048, 4096)[0] == "graph"
+
+
 def test_release_keeps_the_measured_needs(G):
     model = _Model()
-    model.__dict__[G.NEEDS] = {(4, 2304): GB}
+    model.__dict__[G.NEEDS] = {(4, 2304, 2304): GB}
     model.keep(4, 2816)
     G.release_for_training(model)
-    assert model.__dict__[G.NEEDS] == {(4, 2304): GB}
+    assert model.__dict__[G.NEEDS] == {(4, 2304, 2304): GB}
 
 
 def _oom_while_graphed(G, seen):
@@ -388,7 +427,7 @@ def test_causal_lm_forward_calls_the_training_release():
 def test_measured_need_includes_a_reused_cache_and_is_discounted_once(G):
     # The first graphed call of a shape reused a kept cache: peak - start misses those bytes. The stored
     # need is the whole footprint, so the next plan subtracts the reuse exactly once and, once the cache
-    # is released, judges the full number.
+    # is released, judges the full number. 8 GiB above the start keeps the measurement above the estimate.
     model = _Model(layers = 1)
     rows, kv, work = G._call_bytes(model.config, 4, 2048, torch.float16, 512, 2081)
     model.keep(4, rows)
@@ -400,16 +439,18 @@ def test_measured_need_includes_a_reused_cache_and_is_discounted_once(G):
     G._free_bytes = lambda device: 20 * GB
     plan, token = _plan(G, model, 4, 2048, 2081)
     assert plan == "graph"
-    stats["peak"] = 4 * GB  # 1 GiB above the start, on top of the reused cache
+    stats["peak"] = 11 * GB
     G.record_need(model, token)
     key = G._shape_key(4, 2048, 2081)
-    assert model.__dict__[G.NEEDS][key] == 1 * GB + reused_bytes
+    total = 8 * GB + reused_bytes
+    assert model.__dict__[G.NEEDS][key] == total
+    assert G.MEASURED_MARGIN * total > _need(G, 4, 2048, 2081)
     # Cache still kept: the plan needs margin x total - reused.
-    need = G.MEASURED_MARGIN * (1 * GB + reused_bytes) - reused_bytes
+    need = G.MEASURED_MARGIN * total - reused_bytes
     G._free_bytes = lambda device: int(need) + 1
     assert _plan(G, model, 4, 2048, 2081)[0] == "graph" and model.held() == 1
     # Too little for that: the cache is released, and the full footprint must then fit.
-    free = iter([int(need) - 1, int(G.MEASURED_MARGIN * (1 * GB + reused_bytes)) - 1])
+    free = iter([int(need) - 1, int(G.MEASURED_MARGIN * total) - 1])
     G._free_bytes = lambda device: next(free)
     assert _plan(G, model, 4, 2048, 2081)[0] == "eager" and model.held() == 0
 
