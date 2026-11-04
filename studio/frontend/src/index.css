@@ -6381,6 +6381,18 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
+/* The selected tab: a light glass pill, not the solid card or accent fill. */
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome [role="tab"][aria-selected="true"] {
+  background-color: color-mix(in srgb, var(--glass-hover), var(--foreground) 4%) !important;
+  background-image: var(--glass-sheen, none);
+  box-shadow: var(--glass-hover-rim);
+}
+/* Over a native page the body is holed and drops its blur, so the rows beside the page (toolbar,
+   bookmarks, device and agent bars) carry the frost themselves; none of them overlaps the page. */
+html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-panel-body[data-native-hole] > :not([data-browser-page]) {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
   background-image: var(--glass-sheen);
