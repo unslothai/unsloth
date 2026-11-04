@@ -386,6 +386,7 @@ from .diffusion_precision import (
     torchao_quantize_importable,
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
+from . import diffusion_lora_files as lora_files
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
@@ -989,6 +990,9 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     if not pinned:
         return False
     import torch
+
+    # LoKR adapters keep their scale as a tensor already; written here so this path covers every baked adapter.
+    lora_files.set_kron_weights(pipe, weights)
 
     for module, adapter, _base in pinned:
         value = module.scaling.get(adapter)
@@ -10087,10 +10091,13 @@ class DiffusionBackend:
                                         hf_token = hf_token,
                                     )
                                     for name, path, _weight in baked:
-                                        pipe.load_lora_weights(path, adapter_name = name)
-                                    pipe.set_adapters(
+                                        lora_files.load_adapter(
+                                            pipe, path, name, getattr(fam, "name", None)
+                                        )
+                                    lora_files.set_adapter_weights(
+                                        pipe,
                                         [n for (n, _p, _w) in baked],
-                                        adapter_weights = [w for (_n, _p, w) in baked],
+                                        [w for (_n, _p, w) in baked],
                                     )
                                     pipe._unsloth_loras = baked
                                     pipe._unsloth_loras_baked = True
@@ -10229,6 +10236,29 @@ class DiffusionBackend:
                     effective_speed = resolve_speed_mode(speed_mode, is_gguf = kind == "gguf")
                     split_expected = _layer_split_expected(pipe, plan)
                     # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.
+                    if comfy_compile and _has_active_lora(loras):
+                        # A ComfyUI-quantized file is already int8 / fp8, so its adapters attach here, before the
+                        # compile, as a quantized build's do before quantize_: weight changes then run on the compiled
+                        # build (pinned scales), and only a different adapter set needs a reload.
+                        baked = self._resolve_lora_set(
+                            [(i, w) for (i, w) in loras if w != 0],
+                            family = getattr(fam, "name", None),
+                            hf_token = hf_token,
+                        )
+                        for name, path, _weight in baked:
+                            lora_files.load_adapter(pipe, path, name, getattr(fam, "name", None))
+                        lora_files.set_adapter_weights(
+                            pipe,
+                            [n for (n, _p, _w) in baked],
+                            [w for (_n, _p, w) in baked],
+                        )
+                        pipe._unsloth_loras = baked
+                        pipe._unsloth_loras_baked = True
+                        logger.info(
+                            "diffusion.lora_bake: %d adapter(s) attached to the ComfyUI-quantized transformer "
+                            "before the compile",
+                            len(baked),
+                        )
                     quant_forces_compile = (
                         transformer_quant_engaged is not None or comfy_compile
                     ) and (
@@ -11487,11 +11517,12 @@ class DiffusionBackend:
             )
             for name, path, _weight in baked:
                 check_cancelled()
-                pipe.load_lora_weights(path, adapter_name = name)
+                lora_files.load_adapter(pipe, path, name, getattr(fam, "name", None))
             check_cancelled()
-            pipe.set_adapters(
+            lora_files.set_adapter_weights(
+                pipe,
                 [n for (n, _p, _w) in baked],
-                adapter_weights = [w for (_n, _p, w) in baked],
+                [w for (_n, _p, w) in baked],
             )
             pipe._unsloth_loras = baked
             pipe._unsloth_loras_baked = True
@@ -13247,14 +13278,15 @@ class DiffusionBackend:
             _refuse_lora_without_loader(getattr(state, "family", None), specs)
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
-        if quant in ("int8", "fp8", "nvfp4", "mxfp8"):
+        # A ComfyUI-quantized file reports no transformer_quant, but its adapters are baked the same way.
+        if quant in ("int8", "fp8", "nvfp4", "mxfp8") or quant_baked:
             self._adjust_baked_loras(state, pipe, specs, current, quant_baked, cancel)
             return
 
         if not specs:
             if current:
                 try:
-                    pipe.unload_lora_weights()
+                    lora_files.unload_adapters(pipe)
                 except Exception:  # noqa: BLE001 -- best-effort clear
                     pass
                 pipe._unsloth_loras = ()
@@ -13288,7 +13320,7 @@ class DiffusionBackend:
         weights = [w for _n, _p, w in desired]
         if _lora_weights_only_change(state, pipe, current, desired):
             try:
-                pipe.set_adapters(names, adapter_weights = weights)
+                lora_files.set_adapter_weights(pipe, names, weights)
             except Exception:  # noqa: BLE001 -- the full reload below sets the same scales or fails cleanly
                 pass
             else:
@@ -13301,14 +13333,14 @@ class DiffusionBackend:
         file_sigs = _lora_file_sigs(desired)
         try:
             if current:
-                pipe.unload_lora_weights()
+                lora_files.unload_adapters(pipe)
             setattr(pipe, _LORA_FILE_SIGS_ATTR, None)
             for name, path, _weight in desired:
-                pipe.load_lora_weights(path, adapter_name = name)
-            pipe.set_adapters(names, adapter_weights = weights)
+                lora_files.load_adapter(pipe, path, name, getattr(state.family, "name", None))
+            lora_files.set_adapter_weights(pipe, names, weights)
         except Exception as exc:  # noqa: BLE001 -- surface as a clean 400
             try:
-                pipe.unload_lora_weights()
+                lora_files.unload_adapters(pipe)
             except Exception:  # noqa: BLE001
                 pass
             pipe._unsloth_loras = ()
@@ -13354,7 +13386,7 @@ class DiffusionBackend:
                 if _set_pinned_lora_scales(pipe, {}):
                     pipe._unsloth_loras = disabled
                     return
-                pipe.set_adapters(names, adapter_weights = [0.0] * len(names))
+                lora_files.set_adapter_weights(pipe, names, [0.0] * len(names))
                 pipe._unsloth_loras = disabled
                 # Adapter scales are Python values read inside the LoRA forward, so a graph bakes them in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -13386,9 +13418,10 @@ class DiffusionBackend:
         if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
             pipe._unsloth_loras = updated
             return
-        pipe.set_adapters(
+        lora_files.set_adapter_weights(
+            pipe,
             [n for (n, _p, _w) in updated],
-            adapter_weights = [w for (_n, _p, w) in updated],
+            [w for (_n, _p, w) in updated],
         )
         pipe._unsloth_loras = updated
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
@@ -15295,7 +15328,10 @@ class DiffusionBackend:
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
         )
-        compiled = "compiled" in (getattr(state, "speed_optims", ()) or ())
+        # Baked adapters ride inside the compiled build (weight changes write pinned scales).
+        compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()) and not getattr(
+            state.pipe, "_unsloth_loras_baked", False
+        )
         lora_block = _lora_load_block_reason(state.pipe)
         lora_load_ok = lora_block is None
         lora_reason = lora_block or diffusion_lora.lora_unavailable_reason(

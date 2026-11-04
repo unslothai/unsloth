@@ -157,8 +157,11 @@ def test_lora_unavailable_reason_names_the_cause():
     assert "NVFP4" in dl.lora_unavailable_reason(
         engine = "diffusers", family = "flux.1", model_kind = "pipeline", transformer_quant = "nvfp4"
     )
-    assert "no LoRA loader" in dl.lora_unavailable_reason(
-        engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = None
+    assert (
+        dl.lora_unavailable_reason(
+            engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = None
+        )
+        is None
     )
     assert "Speed" in dl.lora_unavailable_reason(
         engine = "diffusers",
@@ -594,16 +597,29 @@ def test_scan_local_tolerates_bad_sidecar(tmp_path, monkeypatch):
     assert entry.families == () and entry.weight_default == 1.0
 
 
-def test_moss_image_has_no_lora_loader_so_lora_is_gated_off(monkeypatch):
+def test_moss_image_has_a_lora_loader():
+    pytest.importorskip("torch")
+    pytest.importorskip("diffusers")
+    from core.inference.diffusion_moss_image import MOSSImagePipeline, MOSSImageTransformer
+
+    for method in ("load_lora_weights", "set_adapters", "unload_lora_weights", "get_list_adapters"):
+        assert hasattr(MOSSImagePipeline, method)
+    assert hasattr(MOSSImageTransformer, "load_lora_adapter")
+    assert dl.supports_lora(
+        engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = None
+    )
+
+
+def test_a_family_without_a_lora_loader_is_gated_off(monkeypatch):
+    """The gate for an in-tree pipeline with no LoRA loader, exercised on MOSS-Image as if it still had none."""
     import threading
 
     pytest.importorskip("torch")
     pytest.importorskip("diffusers")
 
     from core.inference.diffusion_families import detect_family
-    from core.inference.diffusion_moss_image import MOSSImagePipeline
 
-    assert not hasattr(MOSSImagePipeline, "load_lora_weights")
+    monkeypatch.setattr(dl, "_DIFFUSERS_LORA_UNSUPPORTED_FAMILIES", ("moss-image",))
     for quant in (None, "int8", "fp8"):
         assert not dl.supports_lora(
             engine = "diffusers", family = "moss-image", model_kind = "pipeline", transformer_quant = quant
