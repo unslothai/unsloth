@@ -45,6 +45,9 @@ class RecipeHeldoutSpec(BaseModel):
     prompt_column: str = Field(..., min_length = 1)
     reference_column: Optional[str] = None
     system_prompt: str = ""
+    system_column: Optional[str] = Field(
+        None, description = "A column holding each row's own system message, as training used it"
+    )
     scorer: Literal["reference", "json", "markdown", "python", "judge"] = "reference"
     rubric: str = ""
     model_alias: str = Field(..., min_length = 1)

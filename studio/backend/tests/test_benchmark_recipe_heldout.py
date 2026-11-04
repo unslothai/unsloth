@@ -401,3 +401,36 @@ def test_every_local_scoring_request_withdraws_studios_tools(harness):
 def test_reference_matching_keeps_symbols_that_change_the_answer(output, reference, passed):
     from core.benchmark.recipe_heldout import score_with_validator
     assert score_with_validator("reference", output, reference)[0] is passed
+
+
+def test_each_row_is_asked_with_its_own_system_message():
+    rows = [
+        {"system": "Reply with RED", "q": "What label?", "a": "RED"},
+        {"system": "Reply with BLUE", "q": "What label?", "a": "BLUE"},
+        {"system": "", "q": "What label?", "a": "GREEN"},
+    ]
+
+    def chat(target, messages):
+        system = messages[0]["content"] if messages[0]["role"] == "system" else ""
+        return system.rsplit(" ", 1)[-1] if system else "none"
+
+    spec = {"rows": rows, "prompt_column": "q", "reference_column": "a", "scorer": "reference"}
+    result = run_benchmark(
+        {**spec, "system_column": "system", "system_prompt": "Reply with GREEN"}, chat = chat
+    )
+    # A blank cell falls back to the run's prompt.
+    assert result["candidate"]["passed"] == 3
+    assert run_benchmark(spec, chat = chat)["candidate"]["passed"] == 0
+
+
+def test_the_route_asks_each_row_with_its_own_system_message(harness, monkeypatch):
+    asked = []
+
+    def post(client, target, messages):
+        asked.append(messages[0]["content"] if messages[0]["role"] == "system" else None)
+        return "4"
+
+    monkeypatch.setattr(route, "post_chat", post)
+    rows = [{**r, "rule": f"Rule {i}"} for i, r in enumerate(ROWS)]
+    _run(_request(rows = rows, scorer = "reference", baseline = {"mode": "none"}, system_column = "rule"))
+    assert asked == ["Rule 0", "Rule 1", "Rule 2"]

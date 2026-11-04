@@ -347,6 +347,22 @@ def _system_prompt(ctx: NodeContext) -> str:
     return trained if isinstance(trained, str) else ""
 
 
+SYSTEM_GUESSES = ("system", "system_prompt")
+
+
+def _system_column(ctx: NodeContext, columns: list[str]) -> Optional[str]:
+    """The column whose value was each training row's system message: the one the checkpoint's
+    mapping named, else one named like a system prompt (training's formatter finds it by name).
+    None under the Advanced override, which is every row's system message."""
+    if str(ctx.params.get("system_prompt") or "").strip():
+        return None
+    checkpoint = ctx.inputs.get("checkpoint")
+    named = checkpoint.get("system_column") if isinstance(checkpoint, dict) else None
+    if isinstance(named, str) and named in columns:
+        return named
+    return next((c for c in columns if c.strip().lower() in SYSTEM_GUESSES), None)
+
+
 async def _recipe_heldout(
     ctx: NodeContext, label: str, is_lora: bool, max_rows: int, token: str
 ) -> dict:
@@ -385,6 +401,7 @@ async def _recipe_heldout(
         "prompt_column": prompt_col,
         "reference_column": reference_col,
         "system_prompt": _system_prompt(ctx),
+        "system_column": _system_column(ctx, columns),
         "scorer": scorer,
         "rubric": str(ctx.params.get("rubric") or ""),
         "model_alias": "candidate",

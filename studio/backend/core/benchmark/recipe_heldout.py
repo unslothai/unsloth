@@ -162,6 +162,7 @@ def run_benchmark(
     prompt_column: str = spec["prompt_column"]
     reference_column: str | None = spec.get("reference_column") or None
     system_prompt: str = spec.get("system_prompt") or ""
+    system_column: str | None = spec.get("system_column") or None
     targets = ["candidate"] + (["baseline"] if spec.get("with_baseline") else [])
     per_target: dict[str, list[dict[str, Any]]] = {t: [] for t in targets}
     total = len(rows) * len(targets)
@@ -171,7 +172,9 @@ def run_benchmark(
     for index, row in enumerate(rows):
         prompt = _cell(row, prompt_column)
         reference = _cell(row, reference_column)
-        messages = ([{"role": "system", "content": system_prompt}] if system_prompt else []) + [
+        # A row's own system message (training sent it) unless the run sets one for every row.
+        system = (_cell(row, system_column).strip() and _cell(row, system_column)) or system_prompt
+        messages = ([{"role": "system", "content": system}] if system else []) + [
             {"role": "user", "content": prompt}
         ]
         for target in targets:

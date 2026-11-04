@@ -794,3 +794,33 @@ def test_a_stop_from_the_evals_page_refuses_the_reserved_run_but_keeps_the_slot_
     # The node frees it once its load has ended.
     assert slot.cancel("node-a")
     assert slot.try_begin(None, "someone") is not None
+
+
+def test_the_hold_out_is_asked_with_each_rows_system_message_unless_overridden(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", False
+
+    rows = [{"rule": "Reply with RED", "question": "What label?", "answer": "RED"}]
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(r) for r in rows]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+
+    def spec(params = None, checkpoint = None):
+        sent = []
+        ctx = _Ctx(_routes(sent))
+        ctx.params.update(params or {})
+        ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", **(checkpoint or {})}
+        try:
+            asyncio.run(benchmark.benchmark(ctx))
+        except Exception:
+            pass
+        return sent[0]["recipe"]
+
+    assert spec(checkpoint = {"system_column": "rule"})["system_column"] == "rule"
+    # The Advanced override is every row's system message.
+    assert spec({"system_prompt": "Be terse."}, {"system_column": "rule"})["system_column"] is None
+    rows[0] = {"system": "Reply with RED", "question": "What label?", "answer": "RED"}
+    assert spec()["system_column"] == "system"

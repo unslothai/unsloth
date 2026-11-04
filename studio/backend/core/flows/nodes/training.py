@@ -284,6 +284,13 @@ async def finetune(ctx: NodeContext) -> dict:
     system = trained_system_prompt(config)
     if system:
         checkpoint["system_prompt"] = system
+    mapping = config.get("custom_format_mapping")
+    # Each row's own system message: Benchmark scores the hold-out with it, as training saw it.
+    per_row = [
+        c for c, role in (mapping.items() if isinstance(mapping, dict) else []) if role == "system"
+    ]
+    if per_row:
+        checkpoint["system_column"] = per_row[0]
     return {
         "checkpoint": checkpoint,
         "metrics": metrics,
