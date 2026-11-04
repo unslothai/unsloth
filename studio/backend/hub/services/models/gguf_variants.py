@@ -1102,7 +1102,7 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
-                    # The number the load check compares, so the picker can't disagree with a refusal.
+                    # What the load check compares, so the picker cannot disagree with a refusal.
                     estimated_resident_gb = estimate_resident_gb(variant.size_bytes, model.family),
                     download_remaining_bytes = remaining,
                     downloaded = downloaded,
