@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""GRPO's packed forwards stay off for models that mix tokens across packed rows.
-
-Sequence packing and PrefixGrouper score a batch as one flattened stream with per-row position_ids. DeepSeek V4's
-compressors, Zaya's CCA and RecurrentGemma's RG-LRU ignore those, so SFT keeps padding-free off for them
-(packing_boundary_blocker). Their leak is under the packed paths' 0.7 nat self-verify, so GRPO has to refuse them
-up front as well."""
+"""GRPO keeps its packed forwards off for models whose layers mix packed rows (packing_boundary_blocker)."""
 
 import ast
 from pathlib import Path
