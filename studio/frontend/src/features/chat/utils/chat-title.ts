@@ -201,6 +201,7 @@ export interface ExternalRoutingFields {
   provider_reasoning_config?: CustomReasoningConfig;
   provider_request_usage?: true;
   encrypted_api_key?: string;
+  extra_headers?: Record<string, string>;
 }
 
 export type ExternalRoutingUnavailableReason =
@@ -279,6 +280,9 @@ export async function buildExternalRoutingFields(
             apiKey,
             options.forceRefreshPublicKey ?? false,
           ),
+          ...(provider.extraHeaders && Object.keys(provider.extraHeaders).length
+            ? { extra_headers: provider.extraHeaders }
+            : {}),
         }
       : {}),
   };
