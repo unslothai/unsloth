@@ -206,6 +206,9 @@ export const id = {
         history: "Membaca riwayat penjelajahan Anda",
         move: "Menggerakkan mouse",
         drag: "Menyeret",
+        tabs: "Melihat tab",
+        readFile: "Membaca file",
+        editFile: "Mengedit file",
       },
     },
     title: "Browser",
@@ -361,6 +364,8 @@ export const id = {
     askBeforeDownloadingSetting: "Tanya sebelum mengunduh",
     askBeforeDownloadingSettingDescription:
       "Konfirmasi file dari situs web sebelum disimpan.",
+    askBeforeProgramDownloadsSetting: "Tanya sebelum mengunduh program",
+    askBeforeProgramDownloadsSettingDescription: "Konfirmasi file yang dapat menjalankan program, seperti .exe atau .dmg, meskipun unduhan lain tidak bertanya.",
     downloadSitesSetting: "Izin unduhan situs",
     downloadSitesSettingDescription:
       "Situs yang Anda pilih untuk selalu diizinkan atau diblokir unduhannya.",
@@ -369,6 +374,7 @@ export const id = {
     downloadSitesFor: "Unduhan dari {host}",
     downloadSitesRemove: "Lupakan {host}",
     downloadSiteAllow: "Selalu izinkan",
+    downloadSiteAllowAll: "Izinkan program juga",
     downloadSiteBlock: "Selalu blokir",
     downloadPrompt: {
       title: "Unduh file ini?",
@@ -376,6 +382,9 @@ export const id = {
       dangerous:
         "File seperti ini dapat menjalankan program di komputer Anda. Unduh hanya jika Anda memercayai {host}.",
       remember: "Ingat untuk lain kali",
+      once: "Tanya lain kali",
+      site: "Selalu untuk {host}",
+      all: "Selalu unduh, dari semua situs",
       cancel: "Batal",
       download: "Unduh",
       blocked: "Unduhan dari {host} diblokir.",

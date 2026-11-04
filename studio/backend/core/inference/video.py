@@ -3452,8 +3452,18 @@ def _read_cast_cache(
         if not cands:
             return []
         if device is not None:
-            from .video_small_host import stage_misses
-            stage_misses(cands, device, logger = logger, cancel_check = cancel_check)
+            from .video_small_host import converted_others_mib, stage_misses
+            others = converted_others_mib(
+                source,
+                cands,
+                torch_dtype = pipe_kwargs.get("torch_dtype"),
+                cache_dir = None
+                if source and os.path.isdir(str(source))
+                else pipe_kwargs.get("cache_dir"),
+                revision = revision,
+                skip = tuple(pipe_kwargs),
+            )
+            stage_misses(cands, device, logger = logger, cancel_check = cancel_check, others_mib = others)
         hits = read_all(cands, logger = logger, cancel_check = cancel_check)
         pipe_kwargs.update(hits)
         if hits:

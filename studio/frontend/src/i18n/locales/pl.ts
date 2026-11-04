@@ -206,6 +206,9 @@ export const pl = {
         history: "Odczyt historii przeglądania",
         move: "Przesuwanie myszy",
         drag: "Przeciąganie",
+        tabs: "Przeglądanie kart",
+        readFile: "Czytanie pliku",
+        editFile: "Edytowanie pliku",
       },
     },
     title: "Przeglądarka",
@@ -361,6 +364,8 @@ export const pl = {
     askBeforeDownloadingSetting: "Pytaj przed pobraniem",
     askBeforeDownloadingSettingDescription:
       "Potwierdzaj pliki z witryn przed ich zapisaniem.",
+    askBeforeProgramDownloadsSetting: "Pytaj przed pobraniem programów",
+    askBeforeProgramDownloadsSettingDescription: "Potwierdzaj pliki, które mogą uruchamiać programy, takie jak .exe lub .dmg, nawet gdy inne pobrania nie pytają.",
     downloadSitesSetting: "Uprawnienia witryn do pobierania",
     downloadSitesSettingDescription:
       "Witryny, z których pobieranie jest zawsze dozwolone lub zawsze blokowane.",
@@ -369,6 +374,7 @@ export const pl = {
     downloadSitesFor: "Pobieranie z {host}",
     downloadSitesRemove: "Zapomnij {host}",
     downloadSiteAllow: "Zawsze zezwalaj",
+    downloadSiteAllowAll: "Zezwalaj też na programy",
     downloadSiteBlock: "Zawsze blokuj",
     downloadPrompt: {
       title: "Pobrać ten plik?",
@@ -377,6 +383,9 @@ export const pl = {
       dangerous:
         "Takie pliki mogą uruchamiać programy na Twoim komputerze. Pobierz go tylko wtedy, gdy ufasz witrynie {host}.",
       remember: "Zapamiętaj na przyszłość",
+      once: "Zapytaj następnym razem",
+      site: "Zawsze dla {host}",
+      all: "Zawsze pobieraj, z każdej witryny",
       cancel: "Anuluj",
       download: "Pobierz",
       blocked: "Zablokowano pobieranie z {host}.",
