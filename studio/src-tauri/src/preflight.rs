@@ -1332,7 +1332,6 @@ exit 1
                 .count()
         };
 
-        // Miss at launch: the healthy capability is answered while `-h` is still running.
         install_launch_cli_probe_like_setup(bin.clone());
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         while capability_calls() == 0 && std::time::Instant::now() < deadline {
@@ -1341,8 +1340,7 @@ exit 1
         assert_eq!(capability_calls(), 1, "{}", read_calls());
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        // The preflight fingerprints the tree on its first poll, then waits on the launch `-h`.
-        // An update changes the install in that window, and only then does `-h` finish.
+        // An update changes the tree after the preflight fingerprints it, before `-h` finishes.
         let change_tree_then_release_help = async {
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
             fs::write(fake.dir.join("uv.lock"), "changed").unwrap();
