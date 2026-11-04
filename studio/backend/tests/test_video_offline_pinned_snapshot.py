@@ -26,7 +26,14 @@ INDEX = {
 }
 
 
-def _snapshot(cache, repo, sha, *, tokenizer = True, ref = False):
+def _snapshot(
+    cache,
+    repo,
+    sha,
+    *,
+    tokenizer = True,
+    ref = False,
+):
     folder = cache / ("models--" + repo.replace("/", "--"))
     snap = folder / "snapshots" / sha
     (snap / "scheduler").mkdir(parents = True)
@@ -62,7 +69,10 @@ def test_the_one_pinned_snapshot_without_refs_main_is_used(cache):
 
     _snapshot(cache, MIRROR, SHA)
     assert V._video_offline_pinned_snapshot(UPSTREAM, MIRROR) == (MIRROR, SHA)
-    assert V._video_offline_pinned_snapshot(UPSTREAM) == (MIRROR, SHA)  # found through the mirror pair
+    assert V._video_offline_pinned_snapshot(UPSTREAM) == (
+        MIRROR,
+        SHA,
+    )  # found through the mirror pair
 
 
 def test_with_the_pin_the_cached_check_accepts_the_snapshot(cache):
@@ -71,7 +81,9 @@ def test_with_the_pin_the_cached_check_accepts_the_snapshot(cache):
 
     _snapshot(cache, MIRROR, SHA)
     fam = _family()
-    assert not V._video_cached_while_hub_unreachable(None, MIRROR, None, None, revision = None, family = fam)
+    assert not V._video_cached_while_hub_unreachable(
+        None, MIRROR, None, None, revision = None, family = fam
+    )
     repo, sha = V._video_offline_pinned_snapshot(UPSTREAM, MIRROR)
     assert V._video_cached_while_hub_unreachable(None, repo, None, None, revision = sha, family = fam)
 
@@ -81,12 +93,13 @@ def test_an_incomplete_pinned_snapshot_is_still_refused(cache):
 
     _snapshot(cache, MIRROR, SHA, tokenizer = False)
     repo, sha = V._video_offline_pinned_snapshot(UPSTREAM, MIRROR)
-    assert not V._video_cached_while_hub_unreachable(None, repo, None, None, revision = sha, family = _family())
+    assert not V._video_cached_while_hub_unreachable(
+        None, repo, None, None, revision = sha, family = _family()
+    )
 
 
 def test_a_repo_with_refs_main_resolves_as_before(cache):
     from core.inference import video as V
-
     _snapshot(cache, MIRROR, SHA, ref = True)
     assert V._video_offline_pinned_snapshot(UPSTREAM, MIRROR) is None
 
@@ -109,7 +122,6 @@ def test_both_sides_of_the_pair_cached_without_refs_is_ambiguous(cache):
 
 def test_nothing_cached_or_a_local_path(cache, tmp_path):
     from core.inference import video as V
-
     assert V._video_offline_pinned_snapshot(UPSTREAM, MIRROR) is None
     assert V._video_offline_pinned_snapshot(str(tmp_path), None) is None
 
@@ -122,4 +134,6 @@ def test_the_offline_snapshot_lookup_needs_the_commit(cache):
     snap = _snapshot(cache, MIRROR, SHA)
     with pytest.raises(LocalEntryNotFoundError):
         snapshot_download(MIRROR, cache_dir = str(cache), local_files_only = True)
-    assert snapshot_download(MIRROR, cache_dir = str(cache), local_files_only = True, revision = SHA) == str(snap)
+    assert snapshot_download(
+        MIRROR, cache_dir = str(cache), local_files_only = True, revision = SHA
+    ) == str(snap)

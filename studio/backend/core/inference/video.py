@@ -2330,7 +2330,9 @@ def _video_offline_pinned_snapshot(
             d.name
             for d in snaps.iterdir()
             if d.is_dir()
-            and any((d / name).is_file() for name in ("model_index.json", "modular_model_index.json"))
+            and any(
+                (d / name).is_file() for name in ("model_index.json", "modular_model_index.json")
+            )
         ]
         if len(holding) > 1:
             return None
