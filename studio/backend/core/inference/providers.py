@@ -217,13 +217,12 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "kimi": {
         "display_name": "Kimi",
         "base_url": "https://api.moonshot.ai/v1",
-        # Surface only the SoTA multimodal models (kimi-k3, kimi-k2.6/k2.5);
-        # moonshot-v1-* and dated k2 previews are filtered by the allowlist.
         # Docs: https://platform.kimi.ai/docs/models
         # Listing/overview: https://platform.kimi.ai/docs/api/list-models
         #                   https://platform.kimi.ai/docs/api/overview
         "default_models": [
             "kimi-k3",
+            "kimi-k3.1-pro",
             "kimi-k2.6",
             "kimi-k2.5",
         ],
@@ -236,7 +235,8 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "auth_header": "Authorization",
         "auth_prefix": "Bearer ",
         "notes": "Moonshot API key. China: use base URL https://api.moonshot.cn/v1",
-        "model_id_allowlist": re.compile(r"^kimi-(?:k3|k2\.[56])$"),
+        "model_id_allowlist": re.compile(r"^kimi-k\d"),
+        "model_id_denylist": re.compile(r"-preview$|^kimi-k2-thinking"),
         # Reasoning-class: the API rejects custom temperature/top_p ("only 1
         # is allowed"). Strip both so the server uses its required defaults.
         "body_omit": ("temperature", "top_p"),
@@ -509,26 +509,20 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
     "openrouter": {
         "display_name": "OpenRouter",
         "base_url": "https://openrouter.ai/api/v1",
-        # Curated picker list (locked, not live /models).
+        # Live /models fills the rest; ~*-latest aliases track new releases.
         "default_models": [
             "openrouter/free",
-            "openai/gpt-4o",
-            "anthropic/claude-sonnet-4-5",
-            "google/gemini-2.5-flash",
-            "mistralai/mistral-large-2411",
-            "deepseek/deepseek-r1",
-            "mistralai/mistral-small-3.1-24b-instruct",
-            "perceptron/perceptron-mk1",
-            "inclusionai/ring-2.6-1t:free",
-            "google/gemini-3.1-flash-lite",
-            "baidu/cobuddy:free",
-            "openai/gpt-chat-latest",
-            "x-ai/grok-4.3",
-            "ibm-granite/granite-4.1-8b",
-            "openrouter/owl-alpha",
-            "poolside/laguna-xs.2:free",
+            "openrouter/auto",
+            "~anthropic/claude-sonnet-latest",
+            "~anthropic/claude-opus-latest",
+            "~openai/gpt-sol-latest",
+            "~openai/gpt-mini-latest",
             "~google/gemini-pro-latest",
+            "~google/gemini-flash-latest",
+            "~x-ai/grok-latest",
+            "~deepseek/deepseek-flash-latest",
             "~moonshotai/kimi-latest",
+            "~z-ai/glm-latest",
         ],
         "supports_streaming": True,
         "supports_vision": True,
@@ -543,7 +537,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
             "X-Title": "Unsloth Studio",
         },
         "notes": "Unified gateway to 300+ models across all major providers. HTTP-Referer and X-Title headers sent for attribution.",
-        "model_list_mode": "curated",
     },
     "typesafe": {
         "display_name": "TypeSafe",

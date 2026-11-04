@@ -1389,8 +1389,11 @@ class TestEstimateMemoryRoute:
         resp = _estimate(model_path = "org/model", n_ctx = 32_768, mlx_kv_quant = "4")
         assert (seen["kv_bits"], resp.context_fitted, widths) == (4, 24_576, [(str(tmp_path), 4)])
         widths.clear()
+        monkeypatch.setattr(mlx_inference, "mlx_vlm_snapshot_store_available", lambda: False)
         resp = _estimate(model_path = "org/model", mlx_kv_quant = "tq-4", mlx_kv_bits = 4)
-        assert (asked["kv_bits"], seen["kv_bits"], widths) == (None, None, [])
+        turboquant = mm.MlxTurboQuant(4)
+        assert (asked["kv_bits"], seen["kv_bits"], widths) == (turboquant, turboquant, [])
+        assert (asked.pop("vision"), asked["retains_history"]) == (True, False)
 
         refuses["answer"] = True
         resp = _estimate(model_path = "org/model", mlx_kv_bits = 4)
@@ -3736,11 +3739,14 @@ class TestMlxEstimateKvBits:
             ("4", None, 4),
             (" 8 ", 4, 8),
             ("auto", 8, None),
-            ("tq-4", 4, None),
+            ("tq-4", 4, ("turboquant", 4)),
+            ("tq-3.5", None, ("turboquant", 3.5)),
             ("bogus", 4, None),
         ],
     )
     def test_kv_bits_resolution(self, quant, bits, expected):
+        if isinstance(expected, tuple):
+            expected = mm.MlxTurboQuant(expected[1])
         assert ri._mlx_estimate_kv_bits(quant, bits) == expected
 
 
@@ -4151,6 +4157,105 @@ def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, mon
     assert not os.path.exists(view)
 
 
+@pytest.mark.parametrize("name", ["_ensure_omlx_layout", "_ensure_deepseek_v41_omlx_layout"])
+def test_unsloth_zoo_installs_its_oq_layout_by_either_name(monkeypatch, name):
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
+    installed = []
+    for other in ("_ensure_omlx_layout", "_ensure_deepseek_v41_omlx_layout"):
+        monkeypatch.delattr(loader, other, raising = False)
+    monkeypatch.setattr(loader, name, installed.append, raising = False)
+    mm._install_oq_renames({"model_type": "glm5_next"})
+    assert installed == ["glm5_next"]
+
+
+def test_a_glm5_next_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, monkeypatch):
+    if not _HAVE_MLX:
+        pytest.skip("needs MLX to build and load a checkpoint")
+    glm = pytest.importorskip("mlx_vlm.models.glm5_next.glm5_next")
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
+    if "glm5_next" not in getattr(loader, "_OMLX_LAYOUTS", {}):
+        pytest.skip("this unsloth_zoo loads no GLM-5.3 oQ quant")
+    import re
+
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx.utils import tree_flatten
+    from mlx_vlm.models.glm5_next.config import ModelConfig
+
+    linear = {
+        "num_heads": 2,
+        "head_dim": 64,
+        "short_conv_kernel_size": 4,
+        "kda_layers": [0],
+        "full_attn_layers": [1],
+    }
+    text = dict(
+        model_type = "glm5_next_text",
+        vocab_size = 512,
+        hidden_size = 256,
+        num_hidden_layers = 2,
+        intermediate_size = 256,
+        moe_intermediate_size = 128,
+        n_routed_experts = 16,
+        num_experts_per_tok = 2,
+        first_k_dense_replace = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        q_lora_rank = 128,
+        kv_lora_rank = 128,
+        qk_head_dim = 64,
+        qk_nope_head_dim = 64,
+        qk_rope_head_dim = 0,
+        v_head_dim = 64,
+        index_n_heads = 2,
+        index_head_dim = 64,
+        linear_attn_config = linear,
+        layer_types = ["linear_attention", "deepseek_sparse_attention"],
+        mlp_layer_types = ["dense", "sparse"],
+    )
+    vision = dict(depth = 1, hidden_size = 64, intermediate_size = 128, num_heads = 1, out_hidden_size = 256)
+    config = {"model_type": "glm5_next", "text_config": text, "vision_config": vision}
+    model = glm.Model(ModelConfig.from_dict(json.loads(json.dumps(config))))
+    nn.quantize(
+        model,
+        64,
+        4,
+        class_predicate = lambda path, module: hasattr(module, "to_quantized")
+        and model.quant_predicate(path, module),
+    )
+    config["quantization"] = {"group_size": 64, "bits": 4, "mode": "affine"}
+    params = dict(tree_flatten(model.parameters()))
+
+    # The layout omlx writes: its forget gate module, the fused convolution as `conv1d`, `vision_model`.
+    def omlx(key):
+        key = key.replace("vision_tower.", "vision_model.").replace(".qkv_conv.conv.", ".conv1d.")
+        return re.sub(r"\.self_attn\.(f_b_proj|A_log|dt_bias)", r".self_attn.forget_gate.\1", key)
+
+    fbg = "language_model.model.layers.0.self_attn.fbg_a_proj."
+    stored = {omlx(k): v for k, v in params.items() if not k.startswith(fbg)}
+    for leaf in ("weight", "scales", "biases"):
+        for name, part in zip(
+            ("forget_gate.f_a_proj", "b_proj", "g_a_proj"),
+            mx.split(params[fbg + leaf], [64, 66], axis = 0),
+        ):
+            stored[f"language_model.model.layers.0.self_attn.{name}.{leaf}"] = part
+    stored["language_model.mtp.0.eh_proj.weight"] = mx.zeros((256, 512))
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), stored)
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    model_dir = str(tmp_path)
+    priced = mm._snapshot_config(model_dir)
+    sanitize = glm.Model.sanitize
+    if getattr(sanitize, "_unsloth_omlx_layout", False):
+        pytest.skip("an earlier load in this process installed the oQ layout")
+    monkeypatch.setattr(glm.Model, "sanitize", sanitize)
+    assert mm._load_is_refused(model_dir, priced, load_in_4bit = False) is None
+    glm.Model.sanitize = sanitize
+    experts = sum(v.nbytes for k, v in params.items() if ".switch_mlp." in k)
+    found = mm._offloadable(model_dir, priced)
+    assert (found["expert_bytes"], found["experts"]) == (experts, None)
+
+
 try:
     import importlib
 
@@ -4297,6 +4402,7 @@ class TestCacheWidthName:
             "2-bit",
         ]
         assert _caption([_GROWING] * 10, 4, False) == "bf16"
+        assert _caption([_GROWING] * 10, mm.MlxTurboQuant(3.5), True) == "TurboQuant 3.5-bit"
 
     def test_an_entry_that_cannot_convert_keeps_its_width_through_a_converting_run(self):
         staying = _plan_entry(converts = False, quant_slope = _GROWING["slope"])
@@ -4512,8 +4618,8 @@ def test_a_full_width_cache_pays_for_the_widest_call_mlx_does_not_fuse(monkeypat
     floor = mm._compute_bytes(_BONSAI[:3], 2, 2048, [_GROWING], n_ctx, None)
     asked = _unfused_route(monkeypatch, fuses)
     priced = mm._compute_bytes(_BONSAI, 2, 2048, [_GROWING], n_ctx, None)
-    assert priced - floor == cells * _SCORE
-    assert (2048, 16 * 2048) in asked
+    assert priced - floor == pytest.approx(cells * _SCORE, abs = 1)
+    assert (2048, 2 * 2048) in asked
 
 
 def test_a_tail_unfused_past_any_fixed_scan_is_still_priced(monkeypatch):
@@ -4521,7 +4627,7 @@ def test_a_tail_unfused_past_any_fixed_scan_is_still_priced(monkeypatch):
     _unfused_route(monkeypatch, lambda L, S: L <= 8 or L > 8160)
     floor = mm._compute_bytes(_BONSAI[:3], 2, 16384, [_GROWING], 32768, None)
     priced = mm._compute_bytes(_BONSAI, 2, 16384, [_GROWING], 32768, None)
-    assert priced - floor == 8160 * (16384 + 8160) * _SCORE
+    assert priced - floor == pytest.approx(8160 * (16384 + 8160) * _SCORE, abs = 1)
 
 
 def test_the_scores_charged_never_fall_as_the_context_grows(monkeypatch):
@@ -4542,6 +4648,13 @@ def test_a_windowed_model_and_an_unreachable_zoo_keep_the_old_price(monkeypatch)
     assert mm._compute_bytes(widths, 2, 2048, [_GROWING], 262144, None) == floor
 
 
+def _longest_unfused_d256_tail():
+    from unsloth_zoo.mlx.nax import nax_available
+
+    # NAX fuses head_dim 256 from 1024 queries.
+    return 1023 if nax_available() else 2047
+
+
 @_NEEDS_MLX
 class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
     """unsloth-zoo routes each call between a score matrix and a dequantized copy of the cache."""
@@ -4557,8 +4670,6 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
             (GQA, 256, True),
             (MHA, 2048, True),
             (MHA, 256, False),
-            (WIDE, 2048, False),
-            (WIDE, 256, False),
         ],
     )
     def test_both_halves_of_the_wrappers_choice_are_asked(self, widths, chunk, copies):
@@ -4581,25 +4692,57 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         scores = mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
         assert priced - floor == row * 32768 < scores
 
-    def test_the_decode_step_still_scores_where_that_is_the_wider_of_the_two(self):
+    def test_a_short_call_still_scores_where_that_is_the_wider_of_the_two(self):
+        # 256:1 is past the vector kernel's limit, so the eight-query tail is unfused.
         widths = (3584, 18944, 256, 1, 64, 0)
         row = mm._dequantized_row_bytes(widths, 2, 8, 64, 2048)
         floor = mm._compute_bytes(widths[:3], 2, 2048, [], 32768, None)
         charged = mm._compute_bytes(widths, 2, 2048, [], 32768, 2048, 8, 64) - floor
-        assert row is not None and charged == (32769) * 256 * 2 * mm._SCORE_LIVE
+        assert row is not None
+        assert charged == pytest.approx(8 * (15 * 2048 + 8) * 256 * 2 * mm._SCORE_LIVE, abs = 1)
         assert charged > row * 32768
 
-    def test_a_full_width_cache_is_charged_the_scores_mlx_builds_below_nax(self):
-        from unsloth_zoo.mlx.nax import nax_available
+    def test_a_full_width_cache_is_charged_only_the_tail_the_runtime_leaves_unfused(self):
+        from unsloth_zoo.mlx import attention
 
-        if nax_available():
-            pytest.skip("NAX fuses head_dim 256 prefill")
+        if not hasattr(attention, "runtime_fuses"):
+            pytest.skip("this zoo keeps head_dim 256 on mlx's dispatch")
+        assert mm._dequantized_row_bytes(self.WIDE, 2, 4, 64, 2048) is not None
         plan = [_GROWING] * 4
         unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
         assert mm._compute_bytes(self.GQA, 2, 2048, plan, 32768, None) == unrouted
         wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
-        assert (
-            wide - unrouted == mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._SCORE_LIVE
+        tail = _longest_unfused_d256_tail()
+        assert wide - unrouted == pytest.approx(
+            tail * (3 * 2048 + tail) * 16 * 2 * mm._SCORE_LIVE, abs = 1
+        )
+
+    def test_a_copied_route_is_charged_a_tail_whose_scores_outgrow_the_copy(self):
+        from unsloth_zoo.mlx import attention
+
+        if not hasattr(attention, "runtime_fuses"):
+            pytest.skip("this zoo keeps head_dim 256 on mlx's dispatch")
+        widths, n_ctx = (3584, 18944, 32, 2, 256, 0), 262144
+        row = mm._dequantized_row_bytes(widths, 2, 4, 64, 2048)
+        floor = mm._compute_bytes(widths[:3], 2, 2048, [], n_ctx, None)
+        queries = _longest_unfused_d256_tail()
+        tail = queries * (3 * 2048 + queries) * 32 * 2 * mm._SCORE_LIVE
+        priced = mm._compute_bytes(widths, 2, 2048, [], n_ctx, 0, 4, 64) - floor
+        assert priced == int(max(row * n_ctx, tail))
+
+    def test_an_older_zoo_keeps_head_dim_256_on_mlxs_dispatch(self, monkeypatch):
+        from unsloth_zoo.mlx import attention
+        from unsloth_zoo.mlx.nax import nax_available
+
+        if nax_available():
+            pytest.skip("NAX fuses head_dim 256 prefill")
+        monkeypatch.delattr(attention, "runtime_fuses", raising = False)
+        assert mm._dequantized_row_bytes(self.WIDE, 2, 4, 64, 2048) is None
+        plan = [_GROWING] * 4
+        unrouted = mm._compute_bytes(self.GQA[:3], 2, 2048, plan, 32768, None)
+        wide = mm._compute_bytes(self.WIDE, 2, 2048, plan, 32768, None)
+        assert wide - unrouted == pytest.approx(
+            mm._widest_quantized_scores(32768, 0, 2048) * 16 * 2 * mm._SCORE_LIVE, abs = 1
         )
 
     def test_a_zoo_that_cannot_route_it_keeps_the_scores_whole(self, monkeypatch):
@@ -4616,8 +4759,8 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
         assert mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048) is None
         floor = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, None)
         priced = mm._compute_bytes(self.GQA, 2, 2048, [], 32768, 2048, 4, 64)
-        assert priced - floor == (
-            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE
+        assert priced - floor == pytest.approx(
+            mm._widest_quantized_scores(32768, 2048, 2048) * 32 * 2 * mm._SCORE_LIVE, abs = 1
         )
 
     @pytest.mark.parametrize(
@@ -4639,7 +4782,7 @@ class TestTheQuantizedAttentionRouteIsTheOneZooTakes:
 
     def test_a_tower_whose_values_are_narrower_keeps_the_scores(self):
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 64), 2, 4, 64, 2048) is None
-        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 192, 128), 2, 4, 64, 2048) is None
+        assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 160, 128), 2, 4, 64, 2048) is None
         assert mm._dequantized_row_bytes((3584, 18944, 32, 8, 128, 128), 2, 4, 64, 2048) == (
             mm._dequantized_row_bytes(self.GQA, 2, 4, 64, 2048)
         )
@@ -4708,6 +4851,178 @@ def test_the_route_is_asked_about_a_cache_longer_than_the_chunk(monkeypatch, chu
     ((queries, keys, values, mask),) = asked
     assert queries == chunk and keys == values > chunk
     assert mask == "causal"
+
+
+def test_chunks_below_a_forced_routes_key_floor_still_charge_their_scores(monkeypatch):
+    _unfused_route(monkeypatch, lambda L, S: L > 15 and S >= 8192)
+    assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 2048) == 2047 * (3 * 2048 + 2047)
+    assert mm._widest_unfused_scores(_BONSAI, 2, 4352, 2048) == 2048 * 2 * 2048
+    assert mm._widest_unfused_scores(_BONSAI, 2, 32768, 4096) == 4095 * 8191
+    assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 16384) == 8191 * 8191
+
+
+@pytest.mark.parametrize(
+    "fuses",
+    [
+        lambda L, S: L > 15 and S >= 256,
+        lambda L, S: L >= 32 or (L > 15 and S >= 256),
+        lambda L, S: L > 8,
+        lambda L, S: L > 8 and L == S,
+        lambda L, S: False,
+    ],
+)
+def test_the_widest_call_matches_walking_every_prompt_the_context_admits(monkeypatch, fuses):
+    _unfused_route(monkeypatch, fuses)
+    for chunk in (16, 48, 64, 80, 96, 384):
+        for n_ctx in range(2, 900, 37):
+            widest = 0
+            for prompt in range(1, n_ctx + 1):
+                whole, rest = divmod(prompt - 1, chunk)
+                calls = [(chunk, held * chunk) for held in range(1, whole + 1)]
+                calls += [(rest, whole * chunk + rest)] if rest else []
+                calls += [(1, prompt)]
+                widest = max([widest] + [L * S for L, S in calls if not fuses(L, S)])
+            charged = mm._widest_unfused_scores(_BONSAI, 2, n_ctx, chunk)
+            assert widest <= charged <= max(widest, n_ctx + 1), (chunk, n_ctx)
+
+
+def test_tails_below_a_key_floor_are_charged_though_every_full_chunk_fuses(monkeypatch):
+    # NAX head_dim 256: mlx fuses from 1024 queries, and shorter calls only past the floor.
+    _unfused_route(monkeypatch, lambda L, S: L >= 1024 or (L > 15 and S >= 8192))
+    assert mm._widest_unfused_scores(_BONSAI, 2, 65536, 2048) == 1023 * (3 * 2048 + 1023)
+
+
+@_NEEDS_MLX
+@pytest.mark.parametrize("on_nax, row", [(False, 4 * 192 * 2), (True, 4 * 512 * 2)])
+def test_a_padded_route_is_charged_its_copies_where_they_outgrow_the_scores(
+    monkeypatch, on_nax, row
+):
+    from unsloth_zoo.mlx import attention, nax
+
+    if not hasattr(attention, "forced_padding_row_bytes"):
+        pytest.skip("needs a zoo with the padded route")
+    monkeypatch.setattr(nax, "nax_available", lambda: on_nax)
+    widths = (4096, 16384, 64, 4, 192, 128)
+    n_ctx = 2**22
+    floor = mm._compute_bytes(widths[:3], 2, 2048, [], n_ctx, None)
+    assert mm._compute_bytes(widths, 2, 2048, [], n_ctx, None) - floor >= row * n_ctx
+    assert mm._padding_row_bytes(widths, 2, 8191) == 0
+
+
+@_NEEDS_MLX
+def test_the_score_multiple_is_what_an_unfused_call_really_holds():
+    import mlx.core as mx
+
+    q = mx.zeros((1, 8, 512, 112), dtype = mx.bfloat16) + 1
+    k = mx.zeros((1, 8, 8192, 112), dtype = mx.bfloat16) + 1
+    mx.eval(q, k)
+    mx.synchronize()
+    mx.clear_cache()
+    base = mx.get_active_memory()
+    mx.reset_peak_memory()
+    mx.eval(mx.fast.scaled_dot_product_attention(q, k, k, scale = 0.1, mask = "causal"))
+    held = (mx.get_peak_memory() - base) / (8 * 512 * 8192 * 2)
+    assert held <= mm._SCORE_LIVE < held * 1.1
+
+
+@_NEEDS_MLX
+class TestATurboQuantCacheIsSizedAsMlxVlmConvertsIt:
+    @pytest.fixture(autouse = True)
+    def _off_nax(self, monkeypatch):
+        from unsloth_zoo.mlx import nax
+        monkeypatch.setattr(nax, "nax_available", lambda: False)
+
+    @pytest.mark.parametrize(
+        "widths, scored_cells",
+        [
+            ((3584, 18944, 16, 4, 256, 256), 2047 * (3 * 2048 + 2047)),
+            # mlx's own kernel for this width starts above 8 queries.
+            ((3584, 18944, 32, 4, 64, 64), 8 * (16 * 2048 + 8)),
+        ],
+    )
+    def test_a_prefill_is_charged_its_dequantized_cache_and_any_scores(self, widths, scored_cells):
+        from unsloth_zoo.mlx import attention
+
+        if scored_cells and not hasattr(attention, "runtime_fuses"):
+            pytest.skip("needs a zoo with the head_dim 256 fused route")
+        n_ctx = 16 * 2048 + 1024
+        floor = mm._compute_bytes((*widths[:3], 0, 0, 0), 2, 2048, [], n_ctx, None)
+        priced = mm._compute_bytes(widths, 2, 2048, [], n_ctx, 0, mm.MlxTurboQuant(4)) - floor
+        copied = widths[3] * (widths[4] + widths[5]) * 10 * (n_ctx - 1)
+        assert priced == pytest.approx(
+            copied + scored_cells * widths[2] * 2 * mm._SCORE_LIVE, abs = 1
+        )
+
+    @staticmethod
+    def _filled(
+        entry,
+        tokens = 40,
+        width = 64,
+    ):
+        import mlx.core as mx
+        entry.update_and_fetch(
+            mx.zeros((1, 2, tokens, width), dtype = mx.bfloat16),
+            mx.zeros((1, 2, tokens, width), dtype = mx.bfloat16),
+        )
+        return entry
+
+    def test_every_layer_but_the_last_converts_and_the_probed_cache_is_left_whole(self):
+        from mlx_vlm.models.cache import CacheList, KVCache
+        from mlx_vlm.turboquant import TurboQuantKVCache
+
+        cache = [
+            CacheList(self._filled(KVCache())),
+            self._filled(KVCache()),
+            self._filled(KVCache()),
+        ]
+        converted = mm._quantize_like_runtime(cache, mm.MlxTurboQuant(4))
+        assert [
+            isinstance(leaf, TurboQuantKVCache)
+            for entry in converted
+            for leaf in mm._sub_caches(entry)
+        ] == [True, True, False]
+        assert converted[2] is cache[2]
+        assert all(isinstance(leaf, KVCache) for entry in cache for leaf in mm._sub_caches(entry))
+
+    @pytest.mark.parametrize("bits", [4, 3.5])
+    def test_the_bytes_counted_are_the_ones_mlx_vlm_holds(self, bits):
+        from mlx_vlm.models.cache import KVCache
+
+        cache = [self._filled(KVCache(), width = 128) for _ in range(3)]
+        leaf = mm._quantize_like_runtime(cache, mm.MlxTurboQuant(bits))[0]
+        assert 0 < mm._entry_bytes(leaf) == leaf.nbytes < mm._entry_bytes(cache[0])
+
+    def test_a_cache_mlx_vlm_does_not_convert_stays_full_width(self):
+        from mlx_lm.models.cache import KVCache
+        assert mm._quantize_like_runtime([KVCache() for _ in range(3)], mm.MlxTurboQuant(4)) is None
+
+    def test_a_model_whose_attention_cannot_read_the_converted_cache_is_priced_full_width(self):
+        import mlx.core as mx
+
+        # moondream2 hands the fetched TurboQuant state straight to mx.fast.
+        config = {
+            "model_type": "moondream2",
+            "text_config": {
+                "hidden_size": 64,
+                "num_hidden_layers": 2,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 4,
+                "intermediate_size": 128,
+                "vocab_size": 512,
+            },
+            "vision_config": {
+                "hidden_size": 32,
+                "num_hidden_layers": 1,
+                "num_attention_heads": 2,
+                "intermediate_size": 64,
+            },
+        }
+        probed = mm._probe(config, mx.bfloat16, 8, None)
+        with mm.weightless_forward():
+            build, make_prompt_cache, _ = next(iter(mm._probe_models(config, mx.bfloat16)))
+            cache = make_prompt_cache(build())
+        assert mm._quantize_like_runtime(cache, mm.MlxTurboQuant(4)) is not None
+        assert mm._probe(config, mx.bfloat16, 8, mm.MlxTurboQuant(4)) == probed
 
 
 @pytest.mark.skipif(not _HAVE_MLX, reason = "imports architecture modules")
@@ -5393,7 +5708,7 @@ _UNFUSED_HEAD_DIM_256_SCORES = {
             None,
             2_061_600,
             98_304,
-            690_952_857,
+            690_702_180,
             2,
             "bf16",
         ),

@@ -1315,9 +1315,27 @@ def test_swap_passes_streamed_only_for_the_onload_device_install(monkeypatch):
     import core.inference.diffusion_int8_fused as fused
 
     monkeypatch.setattr(fused, "resident_cuda_device", lambda t: torch.device("cuda", 0))
+    # An NVIDIA host; ROCm torch refuses the explicit-device install (next test).
+    monkeypatch.setattr(g8, "is_rocm_torch", lambda _torch: False)
     g8._swap(torch.nn.Linear(2, 2), device = "cuda:0")
     g8._swap(torch.nn.Linear(2, 2))
     assert seen == [(0, True), (0, False)]
+
+
+def test_rocm_torch_swaps_nothing_for_an_onload_device(monkeypatch):
+    seen = []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(
+        g8, "_swap_on", lambda t, lg, i, streamed = False: seen.append((i, streamed)) or 0
+    )
+    import core.inference.diffusion_int8_fused as fused
+
+    monkeypatch.setattr(g8, "is_rocm_torch", lambda _torch: True)
+    monkeypatch.setattr(fused, "is_rocm_torch", lambda _torch: True)
+    assert g8._swap(torch.nn.Linear(2, 2), device = "cuda:0") == 0
+    assert fused.resident_cuda_device(torch.nn.Linear(2, 2)) is None
+    assert g8._split_cards(torch.nn.Linear(2, 2)) == ()
+    assert seen == []
 
 
 @needs_cuda
