@@ -1421,3 +1421,36 @@ test("a recipe block dragged out of its frame stays in its recipe, and the frame
   assert.match(canvas, /const recipe = ownRecipe\(graph, id\);\s*if \(recipe\) membership\[id\] = recipe;/);
   assert.match(canvas, /holdRecipeBlocks\(group, moved, sizesRef\.current\)/);
 });
+
+test("a duplicated column skips names the recipe's setup blocks hold, and a copied reader sees its copied image", async () => {
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group: small, nodes: base } = sqlGroup();
+  const presets = (small.config.model_configs as Record<string, unknown>[]).map((m, i) =>
+    i === 0 ? { ...m, alias: "domain_2" } : m,
+  );
+  const group = {
+    ...small,
+    rect: [-100, -100, 4000, 1000] as [number, number, number, number],
+    config: { ...small.config, model_configs: presets },
+  };
+  const images = [{ modality: "image", column_name: "domain", data_type: "url" }];
+  const nodes = base.map((n) =>
+    columnName(n) === "sql_prompt"
+      ? { ...n, params: { column: { ...(n.params.column as object), multi_modal_context: images } } }
+      : n,
+  );
+  useDocStore.getState().load({ ...doc(nodes as never), groups: [group] });
+  const store = useDocStore.getState();
+  const domain = byName(nodes, "domain");
+  const reader = byName(nodes, "sql_prompt");
+  const fragment = cloneFragment(store.graph, [domain.id, reader.id], [40, 40]);
+  store.insertFragment(fragment);
+  const graph = useDocStore.getState().graph;
+  const copied = graph.nodes[fragment.nodes[0].id];
+  // domain_2 is a model preset's alias: the copy takes domain_3.
+  assert.equal(columnName(copied), "domain_3");
+  const copy = graph.nodes[fragment.nodes[1].id].params.column as Record<string, unknown>;
+  assert.deepEqual(copy.multi_modal_context, [{ ...images[0], column_name: "domain_3" }]);
+  assert.equal(studioView(graph.groups.recipe, Object.values(graph.nodes).filter((n) => n.group === "recipe")).errors.length, 0);
+});

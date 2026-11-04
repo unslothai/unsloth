@@ -42,14 +42,17 @@ function uniqueColumn(
   group: string | null,
   nodes: Record<string, FlowNode>,
   order: string[],
+  config?: Record<string, unknown>,
 ): FlowNode {
   const name = columnNameOf(node);
   if (node.type !== RECIPE_COLUMN || !group || !name) return node;
-  const taken = new Set(
-    order
+  const taken = new Set<unknown>([
+    ...order
       .filter((id) => nodes[id].type === RECIPE_COLUMN && nodes[id].group === group)
       .map((id) => columnNameOf(nodes[id])),
-  );
+    // Columns share one namespace with the recipe's other blocks: two of one name never open again.
+    ...setupNames(config),
+  ]);
   if (!taken.has(name)) return node;
   let n = 2;
   while (taken.has(`${name}_${n}`)) n += 1;
@@ -62,8 +65,30 @@ function uniqueColumn(
   };
 }
 
-/** Fields that name another column outright, not through a Jinja reference. */
-const COLUMN_NAME_FIELDS = new Set(["category", "reference_column_name", "subcategory_parent"]);
+/** The names a recipe's providers, model presets, tool profiles and seed take. */
+function setupNames(config: Record<string, unknown> | undefined): unknown[] {
+  if (!config) return [];
+  const pick = (key: string, field: string) =>
+    Array.isArray(config[key])
+      ? (config[key] as Record<string, unknown>[]).map((item) => item?.[field])
+      : [];
+  return [
+    ...pick("model_providers", "name"),
+    ...pick("mcp_providers", "name"),
+    ...pick("model_configs", "alias"),
+    ...pick("tool_configs", "tool_alias"),
+    ...(config.seed_config ? ["seed"] : []),
+  ];
+}
+
+/** Fields that name another column outright, not through a Jinja reference (`column_name` is an
+ * AI column's image context). */
+const COLUMN_NAME_FIELDS = new Set([
+  "category",
+  "reference_column_name",
+  "subcategory_parent",
+  "column_name",
+]);
 
 /** A column's definition with column ``from`` renamed to ``to`` wherever it reads it: Jinja
  * references, the fields that name a column, a validator's target list and sampler conditions. */
@@ -811,7 +836,13 @@ export const useDocStore = create<DocState>((set, get) => {
                 nodes[id].group === group &&
                 !nodes[id].disabled,
             );
-          const unique = uniqueColumn(node, group, nodes, nodeOrder);
+          const unique = uniqueColumn(
+            node,
+            group,
+            nodes,
+            nodeOrder,
+            group ? (s.graph.groups[group]?.config ?? undefined) : undefined,
+          );
           const from = columnNameOf(node);
           const to = columnNameOf(unique);
           if (group && from && to && from !== to)

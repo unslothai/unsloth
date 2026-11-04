@@ -315,3 +315,26 @@ def test_scrub_drops_prefixed_credential_keys_and_keeps_ordinary_ones():
         }
     )
     assert out == {"max_tokens": 512, "token_count": 3, "prompt": "hello"}
+
+
+def test_scrub_keeps_a_structured_outputs_field_names_and_a_transforms_columns():
+    from core.flows.package import scrub
+
+    schema = {
+        "type": "object",
+        "properties": {"token": {"type": "string"}, "text": {"type": "string"}},
+        "required": ["token", "text"],
+        "additionalProperties": False,
+    }
+    transform = {
+        "processor_type": "schema_transform",
+        "name": "chat",
+        "template": {"token": "{{ t }}", "nested": {"password": "{{ p }}"}},
+    }
+    out = scrub({"column": {"output_format": schema, "api_key": "x"}, "processors": [transform]})
+    assert out["column"]["output_format"] == schema and "api_key" not in out["column"]
+    assert out["processors"][0]["template"] == transform["template"]
+    # Anywhere else a credential-named key still goes, and a live token in a value is still blanked.
+    assert scrub({"properties": {"token": "abc"}}) == {"properties": {}}
+    leaked = scrub({"processor_type": "schema_transform", "template": {"a": "hf_" + "x" * 30}})
+    assert "hf_" not in str(leaked)

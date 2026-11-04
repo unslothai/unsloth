@@ -57,13 +57,27 @@ def _local_url(url: Any) -> bool:
     return isinstance(url, str) and url.startswith("/api/") and "//" not in url and "\\" not in url
 
 
-def scrub(value: Any) -> Any:
-    """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively."""
+# Keys that are names someone chose, not settings: an object schema's properties (a structured
+# output's `token` field), and every key of a schema transform's template (its output columns).
+_NAMES = ("properties", "patternProperties", "$defs", "definitions")
+
+
+def _names_below(parent: dict, key: Any, names: str) -> str:
+    if names == "all" or (key == "template" and parent.get("processor_type") == "schema_transform"):
+        return "all"
+    if key in _NAMES and (parent.get("type") == "object" or "$schema" in parent):
+        return "one"
+    return ""
+
+
+def scrub(value: Any, names: str = "") -> Any:
+    """Drop secret-looking keys, blank secret-looking strings and media URLs that leave this Studio, recursively.
+    ``names`` is "one" when this dict's keys are names, "all" when every key below is."""
     if isinstance(value, dict):
         found = {
-            k: scrub(v)
+            k: scrub(v, _names_below(value, k, names))
             for k, v in value.items()
-            if not (isinstance(k, str) and _SECRET_KEY.search(k))
+            if names or not (isinstance(k, str) and _SECRET_KEY.search(k))
         }
         # Request headers carry credentials under any name (Cookie, X-Custom-Auth): keep the names, drop the values.
         if isinstance(found.get("headers"), dict):
@@ -76,7 +90,7 @@ def scrub(value: Any) -> Any:
             found.pop("url")
         return found
     if isinstance(value, list):
-        return [scrub(v) for v in value]
+        return [scrub(v, names if names == "all" else "") for v in value]
     if isinstance(value, str):
         if _SECRET_VALUE.search(value):
             value = _SECRET_VALUE.sub("", value)
