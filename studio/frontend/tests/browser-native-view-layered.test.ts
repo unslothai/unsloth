@@ -157,7 +157,9 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     zoomChanged?.();
     assert.equal(html.vars.get("--native-hole-x"), "625px");
     assert.equal(placeholder.vars.get("--native-hole-h"), "750px");
-    assert.equal(wallpaper.vars.get("--native-hole-x"), "525px");
+    // the mask is no fixed background: it keeps the unscaled rect less the layer's corner
+    assert.equal(wallpaper.vars.get("--native-hole-x"), "400px");
+    assert.equal(wallpaper.vars.get("--native-hole-w"), "500px");
     (globalThis as { nativeViewZoom?: number }).nativeViewZoom = 1;
     zoomChanged?.();
     assert.equal(html.vars.get("--native-hole-x"), "500px");

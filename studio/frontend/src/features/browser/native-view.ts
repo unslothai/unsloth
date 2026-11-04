@@ -588,12 +588,13 @@ function placeHole(): void {
   const zoom = getAppliedInterfaceZoom() || 1;
   const left = holeClip ? Math.max(holeBounds.x, holeClip.left) : holeBounds.x;
   const right = holeClip ? Math.min(holeBounds.x + holeBounds.width, holeClip.right) : holeBounds.x + holeBounds.width;
-  const values = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height].map((value) => value / zoom);
+  const rect = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height];
+  const values = rect.map((value) => value / zoom);
   for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
-  // A mask is not a fixed background: its lengths are the layer's own CSS pixels, from its corner.
+  // A mask is not a fixed background, so no zoom correction: the rect less the layer's corner, both CSS px.
   for (const node of masked) {
     const box = node.getBoundingClientRect();
-    const local = [values[0] - box.left, values[1] - box.top, values[2], values[3]];
+    const local = [rect[0] - box.left, rect[1] - box.top, rect[2], rect[3]];
     HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${local[index]}px`));
   }
 }
