@@ -1500,3 +1500,29 @@ test("resizing a recipe frame or grouping its blocks never takes them out of the
   assert.equal(graph.nodes[nodes[0].id].group, "recipe");
   assert.equal(graph.nodes.free.group, "plain");
 });
+
+test("a rename or a delete leaves the template's own variable of that name alone", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  const { withoutReference } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  assert.equal(
+    replaceRef('{{ topic }} / {% set topic = "fixed" %}{{ topic | upper }}', "topic", "subject"),
+    '{{ subject }} / {% set topic = "fixed" %}{{ topic | upper }}',
+  );
+  assert.equal(
+    replaceRef("{% set topic = topic | upper %}{{ topic }}", "topic", "subject"),
+    "{% set topic = subject | upper %}{{ topic }}",
+  );
+  assert.equal(
+    replaceRef("{% for t in topic %}{{ t }}{% endfor %}{% if topic %}x{% endif %}", "topic", "subject"),
+    "{% for t in subject %}{{ t }}{% endfor %}{% if subject %}x{% endif %}",
+  );
+  const reader = {
+    name: "r",
+    column_type: "expression",
+    expr: "{{ topic }} / {% for topic in ['one', 'two'] %}{{ topic }}{% endfor %}",
+  };
+  assert.equal(
+    withoutReference(reader as never, "topic").expr,
+    " / {% for topic in ['one', 'two'] %}{{ topic }}{% endfor %}",
+  );
+});

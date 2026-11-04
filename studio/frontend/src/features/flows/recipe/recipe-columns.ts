@@ -4,7 +4,12 @@
 // Recipe group columns as plain JSON (studio/backend/core/flows/recipe_import.py): references, wires, summaries.
 // Kept free of Recipe Studio's editor code so the canvas can load it eagerly.
 
-import { removeRef } from "@/features/recipe-studio/utils/refs";
+import {
+  type JinjaScope,
+  boundAt,
+  jinjaScopes,
+  tagReadPart,
+} from "@/features/recipe-studio/utils/refs";
 import type { DocGraph } from "../stores/doc-store";
 import type { FlowEdge, FlowGroup, FlowNode } from "../types";
 import { columnBlock } from "./recipe-kinds";
@@ -53,69 +58,37 @@ const NAME = /[A-Za-z_][A-Za-z0-9_-]*/g;
 const BLOCK = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
 const QUOTED = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
 
-/** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}`, a
- * `{% set %}`'s from there on, each starting after its own tag (whose right side reads the scope
- * before it). Inside them the name is that variable, not a column. */
-function localScopes(text: string): { name: string; from: number; to: number }[] {
-  const scopes: { name: string; from: number; to: number }[] = [];
-  const open: { names: string[]; from: number }[] = [];
-  const ident = /[A-Za-z_][A-Za-z0-9_]*/g;
-  for (const block of text.matchAll(BLOCK)) {
-    if (block[2] === undefined) continue;
-    const tag = block[2].replace(QUOTED, '""').trim();
-    const at = block.index ?? 0;
-    const after = at + block[0].length;
-    const loop = LOOP.exec(tag);
-    if (loop) open.push({ names: loop[1].match(ident) ?? [], from: after });
-    else if (/^endfor\b/.test(tag)) {
-      const scope = open.pop();
-      for (const name of scope?.names ?? [])
-        scopes.push({ name, from: scope?.from ?? 0, to: at });
-    } else {
-      const set = SET.exec(tag);
-      for (const name of set?.[1].match(ident) ?? [])
-        scopes.push({ name, from: after, to: text.length });
-    }
+/** The names a tag at ``at`` reads, leaving out the template's own variables there. */
+function tagNames(
+  output: string | undefined,
+  statement: string | undefined,
+  at: number,
+  scopes: JinjaScope[],
+): string[] {
+  // A quoted string is text, not a column: `{{ "topic" }}` reads nothing.
+  const body = (
+    statement === undefined ? (output ?? "") : tagReadPart(statement).read
+  ).replace(QUOTED, '""');
+  const names: string[] = [];
+  for (const match of body.matchAll(NAME)) {
+    const before = body.slice(0, match.index).trimEnd();
+    if (before.endsWith(".") || before.endsWith("|")) continue;
+    if (boundAt(scopes, match[0], at)) continue;
+    // `{{gross-discount}}` subtracts two columns unless one column has that hyphenated name: both
+    // readings count, as `recipe_import._template_names` reads them.
+    names.push(
+      match[0],
+      ...(match[0].includes("-") ? match[0].split("-").filter(Boolean) : []),
+    );
   }
-  // An unclosed loop runs to the end.
-  for (const scope of open)
-    for (const name of scope.names) scopes.push({ name, from: scope.from, to: text.length });
-  return scopes;
-}
-
-const LOOP = /^for\s+(.+?)\s+in\b([\s\S]*)$/;
-const SET = /^set\s+([^=]+?)\s*=([\s\S]*)$/;
-
-/** What a tag reads: a loop's iterable and a `set`'s right side, not the names they bind. */
-function readPart(body: string, isTag: boolean): string {
-  if (!isTag) return body;
-  const tag = body.trim();
-  return LOOP.exec(tag)?.[2] ?? SET.exec(tag)?.[2] ?? body;
+  return names;
 }
 
 function templateNames(text: string): string[] {
-  const names: string[] = [];
-  const scopes = localScopes(text);
-  for (const block of text.matchAll(BLOCK)) {
-    // A quoted string is text, not a column: `{{ "topic" }}` reads nothing.
-    const body = readPart(
-      (block[1] ?? block[2] ?? "").replace(QUOTED, '""'),
-      block[2] !== undefined,
-    );
-    const at = block.index ?? 0;
-    const local = new Set(
-      scopes.filter((s) => s.from <= at && at <= s.to).map((s) => s.name),
-    );
-    for (const match of body.matchAll(NAME)) {
-      const before = body.slice(0, match.index).trimEnd();
-      if (before.endsWith(".") || before.endsWith("|")) continue;
-      if (local.has(match[0])) continue;
-      // `{{gross-discount}}` subtracts two columns unless one column has that hyphenated name: both
-      // readings count, as `recipe_import._template_names` reads them.
-      names.push(match[0], ...(match[0].includes("-") ? match[0].split("-").filter(Boolean) : []));
-    }
-  }
-  return names;
+  const scopes = jinjaScopes(text);
+  return [...text.matchAll(BLOCK)].flatMap((block) =>
+    tagNames(block[1], block[2], block.index ?? 0, scopes),
+  );
 }
 
 /** The other columns a column reads, in first-mention order; mirrors `recipe_import.column_references`. */
@@ -204,13 +177,16 @@ export function referenceEdgeDiff(
 export function pendingToolProfiles(group: FlowGroup): string[] {
   const nodes = Array.isArray(group.ui?.nodes) ? group.ui.nodes : [];
   const saved = new Set(
-    (Array.isArray(group.config?.tool_configs) ? group.config.tool_configs : []).map(
-      (t) => (t as { tool_alias?: string }).tool_alias,
-    ),
+    (Array.isArray(group.config?.tool_configs)
+      ? group.config.tool_configs
+      : []
+    ).map((t) => (t as { tool_alias?: string }).tool_alias),
   );
   return nodes.flatMap((node) => {
     const n = node as { node_type?: string; id?: string };
-    return n.node_type === "tool_config" && n.id && !saved.has(n.id) ? [n.id] : [];
+    return n.node_type === "tool_config" && n.id && !saved.has(n.id)
+      ? [n.id]
+      : [];
   });
 }
 
@@ -238,7 +214,9 @@ export function columnLoop(columns: RecipeColumn[]): string[] | null {
   );
   const reads = new Map(
     columns.flatMap((c) =>
-      typeof c.name === "string" ? [[c.name, columnReferences(c, names)] as const] : [],
+      typeof c.name === "string"
+        ? [[c.name, columnReferences(c, names)] as const]
+        : [],
     ),
   );
   const state = new Map<string, 1 | 2>();
@@ -294,12 +272,21 @@ const TEXT_FIELDS = ["prompt", "system_prompt", "expr"];
 /** The template without the `{{ ... }}` tags that read `ref`, plain (`{{ ref }}`) or not (`{{ ref.key }}`,
  * `{{ ref | upper }}`); `{% ... %}` tags are left, since dropping one would break the template. */
 function withoutOutputTags(template: string, ref: string): string {
-  // A tag is removed line by line, so a line left empty by it goes too (removeRef's rule).
-  return removeRef(template, ref)
+  // Read against the whole template, so a loop's own variable of that name is kept. A tag is removed
+  // line by line, so a line left empty by it goes too (removeRef's rule).
+  const scopes = jinjaScopes(template);
+  let offset = 0;
+  return template
     .split("\n")
     .flatMap((line) => {
-      const next = line.replace(/\{\{[\s\S]*?\}\}/g, (tag) =>
-        templateNames(tag).includes(ref) ? "" : tag,
+      const start = offset;
+      offset += line.length + 1;
+      const next = line.replace(
+        /\{\{([\s\S]*?)\}\}/g,
+        (tag, output: string, at: number) =>
+          tagNames(output, undefined, start + at, scopes).includes(ref)
+            ? ""
+            : tag,
       );
       if (next === line) return [line];
       return next.trim() ? [next.replace(/\s+$/g, "")] : [];
