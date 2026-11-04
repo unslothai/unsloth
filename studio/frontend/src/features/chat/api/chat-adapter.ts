@@ -50,7 +50,7 @@ import { isMlxId } from "@/features/model-picker/components/model-selector/recom
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
@@ -4005,6 +4005,25 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
     const cachedInventoryFailed =
       ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
+
+    // Deferred detection reads as "unknown", which admits non-GGUF caches a chat-only host cannot load and
+    // aborts before the default GGUF. Measure first, only when such a candidate exists: a GGUF-only cache stays torch-free.
+    if (
+      usePlatformStore.getState().detectionDeferred &&
+      (allModelRepos.some(isChattableCachedRepo) ||
+        localRows.some(
+          (row) =>
+            !isGgufLocalRow(row) &&
+            isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ))
+    ) {
+      try {
+        await fetchDeviceType({ detectHardware: true });
+      } catch {
+        // Still unmeasured: fail open, as before.
+      }
+      options?.abortSignal?.throwIfAborted();
+    }
 
     // Include on-disk models the picker indexes, not just the managed cache.
     const sources = orderAutoLoadSources(

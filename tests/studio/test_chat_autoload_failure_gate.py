@@ -129,6 +129,8 @@ export type Scenario = {
   platformFetched: boolean;
   /** true = the backend answered but deferred hardware detection. */
   detectionDeferred: boolean;
+  /** What a detectHardware read measures; unset keeps chatOnly. */
+  detectedChatOnly?: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -600,10 +602,20 @@ const usePlatformStore = {
     // Server-reported unless a scenario says the probe has not landed.
     fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
+    detectionDeferred: SCENARIO.detectionDeferred === true,
     capabilitiesUnknown: () =>
       SCENARIO.platformFetched === false || SCENARIO.detectionDeferred === true,
   }),
 };
+// A detectHardware read measures the verdict: detectedChatOnly is what the host turns out to be.
+async function fetchDeviceType(options?: any) {
+  if (options?.detectHardware) {
+    EVENTS.push({ kind: "detectHardware" });
+    SCENARIO.detectionDeferred = false;
+    if (SCENARIO.detectedChatOnly !== undefined) SCENARIO.chatOnly = SCENARIO.detectedChatOnly;
+  }
+  return SCENARIO.platform?.deviceType ?? SCENARIO.deviceType ?? "linux";
+}
 function isMlxId(value: string) {
   return typeof value === "string" && value.toLowerCase().includes("mlx");
 }
@@ -1699,12 +1711,42 @@ def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
 
 
 def test_a_deferred_hardware_verdict_does_not_hide_cached_non_gguf_rows():
-    """Deferred detection reports a provisional chat_only, not a measurement."""
+    """Deferred detection reports a provisional chat_only, not a measurement: autoload measures it
+    first, and a host that turns out to have a GPU backend still loads the cached non-GGUF repo."""
     out = _run(
-        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true,"
+        "scenario({ chatOnly: true, detectedChatOnly: false, platformFetched: true,"
+        " detectionDeferred: true,"
         " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
     )
+    assert [e for e in out["events"] if e["kind"] == "detectHardware"] == [
+        {"kind": "detectHardware"}
+    ]
     assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_deferred_verdict_on_a_chat_only_host_falls_back_to_the_default_gguf():
+    """Measured chat-only: the cached non-GGUF repo is skipped and the default GGUF loads, as when
+    detection ran at startup, instead of a refused load ending the autoload with an error."""
+    out = _run(
+        "scenario({ chatOnly: true, detectedChatOnly: true, platformFetched: true,"
+        " detectionDeferred: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }],"
+        " load: (p) => p.model_path === 'org/st'"
+        " ? new Error('Chat-only install: this model needs a GPU backend; load a GGUF model.')"
+        " : LOADED(p) })"
+    )
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
+    assert out["result"]["loaded"] is True
+
+
+def test_a_deferred_verdict_with_only_gguf_cached_does_not_detect_hardware():
+    """A GGUF-only cache runs anywhere, so autoload keeps the idle path free of the hardware probe."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true,"
+        " ggufRepos: [{ repo_id: 'org/g-GGUF', size_bytes: 1 }] })"
+    )
+    assert [e for e in out["events"] if e["kind"] == "detectHardware"] == []
 
 
 def test_a_cached_adapter_repo_is_never_auto_loaded():
