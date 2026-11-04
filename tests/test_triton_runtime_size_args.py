@@ -25,11 +25,10 @@ CASES = {
         "_qk_norm_rope_forward": ("seqlen",),
         "_qk_norm_rope_backward": ("seqlen",),
     },
-    "nf4_gemv.py": {"_gemv_nf4_kernel": ("M",), "_gemv_nf4_words_kernel": ("M",)},
 }
 
-# Sizes that must keep Triton's % 16 hint: they mask a contiguous axis or offset a vector load,
-# so dropping it loses vectorised memory access.
+# Sizes that must keep Triton's specialization: they mask a contiguous axis or offset a vector load
+# (the % 16 hint), or, for the NF4 GEMV's M, == 1 folds the row split at batch 1 (measured faster).
 KEEP_SPECIALIZED = {
     "swiglu.py": {"_fg_kernel": ("n_elements",), "_DWf_DW_dfg_kernel": ("n_elements",)},
     "geglu.py": {
@@ -38,8 +37,8 @@ KEEP_SPECIALIZED = {
     },
     "nf4.py": {"_nf4_dequant_kernel": ("n_elements", "n_bytes")},
     "nf4_gemv.py": {
-        "_gemv_nf4_kernel": ("OUT_STRIDE", "K"),
-        "_gemv_nf4_words_kernel": ("OUT_STRIDE", "K"),
+        "_gemv_nf4_kernel": ("OUT_STRIDE", "K", "M"),
+        "_gemv_nf4_words_kernel": ("OUT_STRIDE", "K", "M"),
     },
     "fp8_lora.py": {"_fp8_tensorwise_cast_kernel": ("numel",)},
 }
