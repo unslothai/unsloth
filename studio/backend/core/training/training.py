@@ -294,6 +294,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "is_decision": values.get("is_decision", False),
         "model_subfolder": values.get("model_subfolder"),
         "decision_layout": values.get("decision_layout"),
+        "decision_head": values.get("decision_head"),
         "num_epochs": values.get("num_epochs", 3),
         "learning_rate": values.get("learning_rate", "2e-4"),
         "embedding_learning_rate": values.get("embedding_learning_rate"),
@@ -2511,7 +2512,12 @@ class TrainingBackend:
         """First model-load stall respawns the worker over HTTP; later stalls surface as errors."""
         msg = event.get("message", "Download stalled")
         with self._lock:
-            recover = self._in_model_load and not self._xet_fallback_used
+            # A stall queued behind an error or completion must not respawn a finished run.
+            recover = (
+                self._in_model_load
+                and not self._xet_fallback_used
+                and not self._complete_seen.is_set()
+            )
             proc = self._proc
             run_id = self.current_job_id
             if recover:

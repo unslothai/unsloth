@@ -1876,6 +1876,26 @@ export const hi = {
       autoTitleNewChats: "नई चैट को स्वतः शीर्षक दें",
       autoTitleNewChatsDescription:
         "पहले संदेश से एक छोटा शीर्षक बनाएं।",
+      mlWarmup: {
+        sectionTitle: "स्टार्टअप प्रदर्शन",
+        description: "पहले उपयोग को तेज़ करने के लिए चुनी गई सुविधाओं को पहले से तैयार करें। सभी विकल्प डिफ़ॉल्ट रूप से बंद हैं। इन्हें चालू करने पर साझा डिपेंडेंसी लोड हो सकती हैं और निष्क्रिय अवस्था में RAM का उपयोग बढ़ सकता है।",
+        restartRequired: "Unsloth को पुनः शुरू करने के बाद बदलाव लागू होंगे।",
+        hardwareLabel: "हार्डवेयर की पहचान",
+        hardwareDescription: "GPU की पहचान करें और PyTorch तैयार करें।",
+        textLabel: "टेक्स्ट मॉडल",
+        textDescription: "Transformers का टेक्स्ट मॉडल समर्थन तैयार करें।",
+        datasetsLabel: "डेटासेट की तैयारी",
+        datasetsDescription: "प्रीव्यू और प्रोसेसिंग के लिए Datasets और उसकी डिपेंडेंसी तैयार करें।",
+        mediaLabel: "इमेज और वीडियो मॉडल",
+        mediaDescription: "Diffusers और मॉडलों की साझा डिपेंडेंसी तैयार करें।",
+        advanced: "उन्नत",
+        quantizationLabel: "इमेज क्वांटाइज़ेशन की पूर्व-जाँच",
+        quantizationDescription: "क्वांटाइज़्ड इमेज मॉडल को पहली बार लोड करने से पहले समर्थन की जाँच करें। इससे RAM का उपयोग थोड़ी देर के लिए बढ़ सकता है।",
+        requiredBySelections: "आपके चुने हुए विकल्पों के लिए आवश्यक है।",
+        disabledByEnv: "बैकएंड एनवायरनमेंट में UNSLOTH_STUDIO_DISABLE_TORCH_WARM द्वारा अक्षम।",
+        loadError: "स्टार्टअप की पूर्व-तैयारी की सेटिंग्स लोड करने में विफल।",
+        saveError: "स्टार्टअप की पूर्व-तैयारी की सेटिंग्स सहेजने में विफल।",
+      },
       helperLlm: {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "स्टार्टअप पर Helper LLM को प्री-कैश करें",
@@ -2978,8 +2998,8 @@ export const hi = {
       inlineEditResponseDescription: "जवाब संपादित करें को “और” मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       turnNavigation: "टर्न नेविगेशन",
       turnNavigationDescription: "लंबी चैट के बाएँ किनारे पर आपके संदेशों की एक पट्टी दिखाएँ। किसी टर्न का प्रीव्यू देखने के लिए होवर करें, उस पर जाने के लिए क्लिक करें, और बाद में ढूँढने के लिए बुकमार्क करें।",
-      composerAtBottom: "कंपोज़र नीचे",
-      composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
+      composerPosition: "कंपोज़र की जगह",
+      composerPositionDescription: "नई चैट शुरू होने पर कंपोज़र कहाँ दिखे, पेज के ऊपर से लेकर नीचे तक।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
       projectAttachmentsDescription:
         "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",
@@ -3450,6 +3470,9 @@ export const hi = {
         docs: "दस्तावेज़",
         docsLabel: "निर्णय API दस्तावेज़ खोलें",
         description: "इस मशीन के मॉडल या कनेक्शन के किसी निर्णय मॉडल से टेक्स्ट पर हाँ/नहीं, बहुविकल्पी और स्कोर वाले सवालों के जवाब दें। TypeSafe SDK के साथ काम करता है।",
+        codeTitle: "कोड से कॉल करें",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "अन्य MCP क्लाइंट इसी टोकन से यहाँ कनेक्ट होते हैं।",
         enable: "अनुरोधों का जवाब दें",
         enableDescription: "/v1/systemone चलाता है। चालू करने पर मॉडल डाउनलोड होता है।",
         enableRemoteDescription: "/v1/systemone चलाता है।",
@@ -3604,7 +3627,7 @@ export const hi = {
         desktopAvailableDescription:
           "अभी अपडेट करें। अपडेट पूरा होने पर डेस्कटॉप ऐप फिर से शुरू होगा।",
         desktopExternalServer:
-          "ऐप पहले से चल रहे Unsloth सर्वर से जुड़ा है और उसे अपडेट नहीं कर सकता। उस सर्वर को रोकें, फिर अपडेट करने के लिए डेस्कटॉप ऐप बंद करके दोबारा खोलें।",
+          "पोर्ट {port} पर एक ऐसे Unsloth सर्वर से जुड़ा है जिसे इस ऐप ने शुरू नहीं किया, जैसे टर्मिनल में `unsloth studio`। उसे वहीं रोकें जहाँ से वह शुरू हुआ था, फिर अपडेट करने के लिए ऐप बंद करके दोबारा खोलें।",
         desktopManualInstall:
           "नवीनतम Linux पैकेज इंस्टॉल करने के लिए रिलीज़ पेज खोलें।",
         desktopCheckFailed: "अपडेट की जाँच नहीं हो सकी",
@@ -5089,6 +5112,8 @@ export const hi = {
     removeLevel: "स्तर {n} हटाएँ",
     addLevel: "स्तर जोड़ें",
     jsonHelp: "अनुरोध का बॉडी। चलाने पर यह जैसा है वैसा ही भेजा जाता है।",
+    copyBody: "बॉडी कॉपी करें",
+    copyCurl: "cURL के रूप में कॉपी करें",
     examples: "उदाहरण",
     presetToolApproval: "एजेंट के टूल कॉल को मंज़ूरी दें",
     presetPromptInjection: "प्रॉम्प्ट इंजेक्शन पकड़ें",
@@ -5474,6 +5499,7 @@ export const hi = {
   generationStats: {
     working: "प्रक्रिया जारी है...",
     processingPrompt: "प्रॉम्प्ट प्रोसेस हो रहा है {percent}%",
+    compactingContext: "संदर्भ संक्षिप्त किया जा रहा है...",
     timeLeft: "{eta} बाकी",
     tokensOne: "{count} टोकन",
     tokens: "{count} टोकन",

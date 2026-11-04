@@ -1979,6 +1979,26 @@ export const sv = {
       autoTitleNewChats: "Skapa automatiskt rubriker för nya chattar",
       autoTitleNewChatsDescription:
         "Generera en rubrik från det första meddelandet.",
+      mlWarmup: {
+        sectionTitle: "Prestanda vid start",
+        description: "Förbered valda funktioner för snabbare första användning. Alla är av som standard. Alternativen kan läsa in delade beroenden och använda mer RAM när appen är inaktiv.",
+        restartRequired: "Ändringarna tillämpas efter att Unsloth har startats om.",
+        hardwareLabel: "Identifiering av maskinvara",
+        hardwareDescription: "Identifiera GPU och förbered PyTorch.",
+        textLabel: "Textmodeller",
+        textDescription: "Förbered stödet för textmodeller i Transformers.",
+        datasetsLabel: "Förberedelse av dataset",
+        datasetsDescription: "Förbered Datasets och dess beroenden för förhandsvisningar och bearbetning.",
+        mediaLabel: "Bild- och videomodeller",
+        mediaDescription: "Förbered Diffusers och delade modellberoenden.",
+        advanced: "Avancerat",
+        quantizationLabel: "Förkontroller för bildkvantisering",
+        quantizationDescription: "Kontrollera stödet innan en kvantiserad bildmodell läses in för första gången. Kan tillfälligt öka RAM-användningen.",
+        requiredBySelections: "Krävs för dina val.",
+        disabledByEnv: "Inaktiverat av UNSLOTH_STUDIO_DISABLE_TORCH_WARM i backendens miljö.",
+        loadError: "Det gick inte att läsa in inställningarna för förberedelse vid start.",
+        saveError: "Det gick inte att spara inställningarna för förberedelse vid start.",
+      },
       helperLlm: {
         sectionTitle: "Hjälp-LLM",
         preloadOnStartup: "Förcacha hjälp-LLM vid start",
@@ -3132,8 +3152,8 @@ export const sv = {
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
       turnNavigation: "Turnavigering",
       turnNavigationDescription: "Visar dina meddelanden som en list vid vänsterkanten i långa chattar. Hovra för att förhandsgranska en tur, klicka för att hoppa dit och bokmärk turer för att hitta dem igen.",
-      composerAtBottom: "Inmatningsfält längst ned",
-      composerAtBottomDescription: "Starta nya chattar med inmatningsfältet längst ned på sidan i stället för i mitten.",
+      composerPosition: "Inmatningsfältets placering",
+      composerPositionDescription: "Var inmatningsfältet hamnar när en ny chatt startar, från sidans överkant ända ned till botten.",
       projectAttachments: "Dela filer i ett projekt",
       projectAttachmentsDescription:
         "Gör nya chattbilagor tillgängliga för alla chattar i projektet.",
@@ -3626,6 +3646,9 @@ export const sv = {
         docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
+        codeTitle: "Anropa från kod",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andra MCP-klienter ansluter hit med samma token.",
         enable: "Hantera begäranden",
         enableDescription:
           "Hanterar /v1/systemone. När du aktiverar det hämtas modellen.",
@@ -3782,7 +3805,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Ansluten till en Unsloth-server på port {port} som den här appen inte har startat, till exempel `unsloth studio` i en terminal. Stoppa den där den startades, avsluta sedan appen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -5321,6 +5344,8 @@ export const sv = {
     removeLevel: "Ta bort nivå {n}",
     addLevel: "Lägg till nivå",
     jsonHelp: "Begärans body. Kör skickar den precis som den är.",
+    copyBody: "Kopiera brödtext",
+    copyCurl: "Kopiera som cURL",
     examples: "Exempel",
     presetToolApproval: "Godkänna agentens verktygsanrop",
     presetPromptInjection: "Upptäcka promptinjektion",
@@ -5706,6 +5731,7 @@ export const sv = {
   generationStats: {
     working: "Arbetar...",
     processingPrompt: "Bearbetar prompt {percent}%",
+    compactingContext: "Komprimerar kontext...",
     timeLeft: "{eta} kvar",
     tokensOne: "{count} token",
     tokens: "{count} token",

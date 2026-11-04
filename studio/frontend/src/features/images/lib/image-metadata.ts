@@ -1020,6 +1020,7 @@ export const INFO_RECIPE_KEYS = [
   "text_encoder_quant",
   "memory_mode",
   "offload_policy",
+  "denoiser_offload",
   "speed_mode",
   "attention_backend",
   "transformer_cache",

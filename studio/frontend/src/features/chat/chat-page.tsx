@@ -25,6 +25,7 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -4609,7 +4610,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div data-wallpaper-chrome-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
+          <div data-wallpaper-chrome-controls="" data-chat-model-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4858,6 +4859,7 @@ export function ChatPage({
             aborting generation (#8908). Any key here brings the bug back. Compare renders as a
             sibling so it hides this rather than unmounting it, since ComparePane builds its own
             providers and nesting throws. */}
+        <LibraryAttachmentTargetContext.Provider value={active ? shownChatKey : null}>
         {baseView ? (
           <div
             className={
@@ -4933,6 +4935,7 @@ export function ChatPage({
           />
         ) : null}
 
+        </LibraryAttachmentTargetContext.Provider>
         {showBrowserOverlay ? <BrowserOverlay /> : null}
       </div>
 

@@ -4870,9 +4870,13 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
 
 
 @functools.cache
-def _video_family_capabilities() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    # Once per process: on Metal the device probe allocates and syncs, which a status poll must not repeat.
-    available = pipeline_available_video_families(device = resolve_diffusion_device_target().device)
+def _video_family_capabilities(
+    *, detect_device: bool = True
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # Cache provisional and measured catalogs separately: idle status must not import torch,
+    # and on Metal the actual device probe allocates and syncs, so later polls reuse its answer.
+    device = resolve_diffusion_device_target().device if detect_device else None
+    available = pipeline_available_video_families(device = device)
     return (
         tuple(fam.name for fam in available),
         tuple(fam.name for fam in available if fam.modular_workflow),
@@ -14062,8 +14066,13 @@ class VideoBackend:
         return self.status()
 
     def status(self) -> dict[str, Any]:
+        from utils.hardware import hardware as hw
+
         state = self._state
-        supported, modular = _video_family_capabilities()
+        supported, modular = _video_family_capabilities(
+            detect_device = state is not None
+            or (hw.DEVICE is not None and hw.DETECTION_COMPLETE.is_set())
+        )
         if state is None:
             return {
                 "loaded": False,

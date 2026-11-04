@@ -25,6 +25,9 @@ export const BROWSER_EXECUTED_TOOLS: ReadonlySet<string> = new Set<string>([
   "browser_evaluate",
   "browser_screenshot",
   "browser_history",
+  "browser_tabs",
+  "browser_read_file",
+  "browser_edit_file",
 ]);
 
 /**
