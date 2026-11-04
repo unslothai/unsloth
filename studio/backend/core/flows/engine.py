@@ -2126,6 +2126,9 @@ class FlowEngine:
             name = key.get("local")
             if isinstance(name, str) and os.path.isabs(name):
                 key["files"] = await asyncio.to_thread(_local_fingerprint, name)
+            elif not name:
+                # Which checkpoint Chat holds cannot be told: never reuse a dataset made on another.
+                key["unknown"] = uuid.uuid4().hex
             return key
         return None
 

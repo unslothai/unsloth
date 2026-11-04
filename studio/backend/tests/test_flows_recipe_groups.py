@@ -844,7 +844,8 @@ def test_a_recipe_on_chats_loaded_model_is_keyed_on_that_model_and_quant(monkeyp
     loaded = {"name": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
 
     async def resident(caller):
-        return {"llm": [loaded["name"]]}, {"gguf_variant": loaded["variant"]}
+        status = {"gguf_variant": loaded["variant"], "model_identifier": loaded["name"]}
+        return {"llm": [loaded["name"]]}, status
 
     monkeypatch.setattr(loading, "_resident", resident)
 
@@ -904,7 +905,7 @@ def test_a_recipe_on_chats_model_is_cached_under_the_model_it_ran_on(monkeypatch
     loaded = {"name": "org/model-a"}
 
     async def resident(caller):
-        return {"llm": [loaded["name"]]}, {}
+        return {"llm": [loaded["name"]]}, {"model_identifier": loaded["name"]}
 
     monkeypatch.setattr(loading, "_resident", resident)
     payload = copy.deepcopy(SQL)
@@ -1110,7 +1111,10 @@ def test_a_named_recipe_model_without_a_quant_is_keyed_on_the_quant_chat_holds(m
     held = {"name": "unsloth/Qwen3-4B-GGUF", "variant": "Q4_K_M"}
 
     async def resident(caller):
-        return {"llm": [held["name"]]}, {"gguf_variant": held["variant"]}
+        return {"llm": [held["name"]]}, {
+            "gguf_variant": held["variant"],
+            "model_identifier": held["name"],
+        }
 
     monkeypatch.setattr(loading, "_resident", resident)
 
@@ -1284,3 +1288,41 @@ def test_a_recipes_named_local_model_is_in_the_flows_download_plan():
     doc, _ = flow_from_recipe(payload, name = "SQL")
     needs = model_needs(compile_flow(doc))
     assert {"kind": "chat", "repo": "unsloth/gemma-4-E2B-it-GGUF", "variant": "Q4_K_M"} in needs
+
+
+def test_chats_checkpoint_is_read_through_its_handle_not_its_public_name(monkeypatch, tmp_path):
+    from core.flows import engine as engine_mod
+    from hub.utils import host_paths
+    from studio_mcp import loading
+
+    first, second = tmp_path / "a" / "model.gguf", tmp_path / "b" / "model.gguf"
+    for path in (first, second):
+        path.parent.mkdir()
+        path.write_bytes(b"w" * len(str(path)))
+    loaded = {"path": first}
+
+    async def resident(caller):
+        # An API-key caller sees the bare file stem and a ref: handle, never the path.
+        handle = host_paths.cache_reference(str(loaded["path"]))
+        return {"llm": ["model"]}, {"model_identifier": handle, "gguf_variant": "Q4_K_M"}
+
+    monkeypatch.setattr(loading, "_resident", resident)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+
+    recipe = {
+        "model_providers": [{"name": "local", "is_local": True}],
+        "model_configs": [{"alias": "m", "provider": "local", "model": "local"}],
+    }
+    eng = engine_mod.FlowEngine()
+    key = lambda: asyncio.run(  # noqa: E731
+        eng._model_key(
+            Ctx(), {"type": GENERATE_TYPE}, {RECIPE_PARAM: {"recipe": recipe, "run": {}}}
+        )
+    )
+    one = key()
+    assert one["local"] == str(first) and one["files"]
+    loaded["path"] = second
+    assert key() != one

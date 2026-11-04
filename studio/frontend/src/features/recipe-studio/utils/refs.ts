@@ -107,7 +107,12 @@ export function jinjaScopes(text: string): JinjaScope[] {
     } else {
       const set = SET_RE.exec(tag);
       const inLoop = open[open.length - 1];
-      for (const name of set?.[1].match(ident) ?? []) {
+      // `{% set ns.topic = ... %}` sets an attribute of `ns`: it binds no variable named topic.
+      const targets = (set?.[1] ?? "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter((t) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(t));
+      for (const name of targets) {
         if (inLoop) inLoop.sets.push({ name, from: after });
         else scopes.push({ name, from: after, to: text.length });
       }
@@ -132,7 +137,10 @@ export function boundAt(
  * its own variables are bound there (``bound``). */
 /** A tag's inside without Jinja's whitespace control (`{%- endfor %}`, `{% for x in y -%}`). */
 function unmarked(body: string): string {
-  return body.trim().replace(/^[-+]\s*/, "").replace(/\s*[-+]$/, "");
+  return body
+    .trim()
+    .replace(/^[-+]\s*/, "")
+    .replace(/\s*[-+]$/, "");
 }
 
 export function tagReadPart(body: string): {

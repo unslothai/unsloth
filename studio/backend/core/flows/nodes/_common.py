@@ -356,8 +356,22 @@ async def resident_identity(ctx: Any, model_kind: str) -> dict:
     name = names[0] if names else None
     if ctx is not None:
         ctx.resident[slot] = name
+    if slot == "llm":
+        # Chat's main checkpoint itself: its public name can be a bare file stem two checkpoints share.
+        name = _checkpoint(status.get("model_identifier"))
     variant = status.get("gguf_variant") if slot == "llm" else None
     return {"local": name, "variant": variant.lower() if isinstance(variant, str) else None}
+
+
+def _checkpoint(identifier: Any) -> Optional[str]:
+    """A status ``model_identifier``, with the ``ref:`` handle an API-key caller is shown resolved
+    to the path it stands for."""
+    if not isinstance(identifier, str) or not identifier.strip():
+        return None
+    if identifier.startswith("ref:"):
+        from hub.utils.host_paths import resolve_host_path_reference
+        return resolve_host_path_reference(identifier)
+    return identifier
 
 
 # slot -> (repo, variant, owner load count): a media reload outside Flows changes the count.
@@ -616,13 +630,11 @@ async def _ensure_model(
 
 async def _primary_name(ctx: Any) -> Optional[str]:
     from studio_mcp import loading
-
     try:
         _, status = await loading._resident(_caller(ctx))
     except Exception:
         return None
-    name = status.get("model_identifier")
-    return name if isinstance(name, str) and name.strip() else None
+    return _checkpoint(status.get("model_identifier"))
 
 
 async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
@@ -634,11 +646,10 @@ async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
         slots, status = await loading._resident(_caller(ctx))
     except Exception:
         return None
-    main = status.get("model_identifier")
-    main = main if isinstance(main, str) and main.strip() else None
+    main = _checkpoint(status.get("model_identifier"))
     if main and loading._same_id(main, repo):
         return main
-    if any(loading._same_id(name, repo) for name in slots.get("llm") or []):
+    if any(loading._same_id(_checkpoint(name) or name, repo) for name in slots.get("llm") or []):
         await ctx.call("POST", "/api/inference/unload", json = {"model_path": repo})
     return main
 

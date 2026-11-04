@@ -1703,3 +1703,11 @@ test("Jinja whitespace control still closes a loop, and a recipe's model presets
   assert.equal(modelSignature({}, groups), "unsloth/gemma-gguf:q4_k_m");
   assert.equal(modelSignature({}), "");
 });
+
+test("setting a namespace's attribute binds no variable of that name", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{% set ns = namespace() %}{% set ns.topic = 'local' %}{{ topic }}", "topic", "subject"),
+    "{% set ns = namespace() %}{% set ns.topic = 'local' %}{{ subject }}",
+  );
+});
