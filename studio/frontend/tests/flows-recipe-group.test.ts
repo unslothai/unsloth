@@ -1595,3 +1595,49 @@ test("a loop's filter reads its own variable: a rename or a reference never reac
   assert.deepEqual(columnReferences(col("{% for topic in [0, 1] if topic > 0 %}x{% endfor %}"), names), []);
   assert.deepEqual(columnReferences(col("{% for t in items if t > limit %}{% endfor %}"), names), ["items", "limit"]);
 });
+
+test("a set inside a loop ends with it, and a rename reaches an override's parent column", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef('{% for item in [1] %}{% set topic = "inside" %}{{ topic }}{% endfor %}{{ topic }}', "topic", "subject"),
+    '{% for item in [1] %}{% set topic = "inside" %}{{ topic }}{% endfor %}{{ subject }}',
+  );
+  const { group } = sqlGroup();
+  const nodes: FlowNode[] = [
+    {
+      id: "domain",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [0, 0],
+      params: { column: { name: "domain", column_type: "sampler", sampler_type: "category", params: { values: ["science", "art"] } } },
+    },
+    {
+      id: "sub",
+      type: COLUMN_TYPE,
+      v: 1,
+      group: "recipe",
+      pos: [320, 0],
+      params: {
+        column: {
+          name: "sub",
+          column_type: "sampler",
+          sampler_type: "subcategory",
+          params: { category: "domain", values: { science: ["physics"], art: ["paint"] } },
+          conditional_params: {
+            "domain == 'science'": { sampler_type: "subcategory", category: "domain", values: { science: ["chem"], art: ["clay"] } },
+          },
+        },
+      },
+    },
+  ];
+  const view = studioView({ ...group, config: { ...group.config } }, nodes);
+  assert.deepEqual(view.errors, []);
+  const domain = Object.values(view.configs).find((c) => c.name === "domain");
+  assert.ok(domain);
+  const edit = commitStudioEdit(group, nodes, view, applyConfigPatch(view.configs, domain.id, { name: "area" }));
+  const sub = edit.nodes.find((n) => n.id === "sub")?.params.column as Record<string, unknown>;
+  assert.deepEqual(sub.conditional_params, {
+    "area == 'science'": { sampler_type: "subcategory", category: "area", values: { science: ["chem"], art: ["clay"] } },
+  });
+});

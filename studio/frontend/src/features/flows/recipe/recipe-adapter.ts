@@ -387,6 +387,8 @@ export function savedView(before: StudioView, configs: Record<string, NodeConfig
   return { ...before, configs, processors: renamedProcessors(before, configs) };
 }
 
+const PARENT_FIELDS = ["category", "reference_column_name", "subcategory_parent"];
+
 /** A sampler's conditions (`tier == 'premium'`) with renamed columns renamed; the same object when none is. */
 function renamedConditions(conditions: unknown, renames: Map<string, string>): unknown {
   const record = asRecord(conditions);
@@ -397,7 +399,16 @@ function renamedConditions(conditions: unknown, renames: Map<string, string>): u
       let renamed = rule;
       for (const [from, to] of renames) renamed = renameRoot(renamed, from, to);
       if (renamed !== rule) changed = true;
-      return [renamed, value];
+      // An override names its parent column outright too (a subcategory's `category`).
+      const params = asRecord(value);
+      let override = value;
+      for (const field of PARENT_FIELDS) {
+        const to = typeof params?.[field] === "string" ? renames.get(params[field] as string) : undefined;
+        if (to === undefined) continue;
+        override = { ...(asRecord(override) ?? {}), [field]: to };
+        changed = true;
+      }
+      return [renamed, override];
     }),
   );
   return changed ? next : conditions;

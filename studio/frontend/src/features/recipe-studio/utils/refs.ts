@@ -82,29 +82,39 @@ export type JinjaScope = { name: string; from: number; to: number };
  * before it). Inside them the name is that variable, not a column. */
 export function jinjaScopes(text: string): JinjaScope[] {
   const scopes: JinjaScope[] = [];
-  const open: { names: string[]; from: number }[] = [];
+  // A loop's own names, and the `set`s made inside it: both end at its `{% endfor %}`.
+  const open: {
+    names: string[];
+    from: number;
+    sets: { name: string; from: number }[];
+  }[] = [];
   const ident = /[A-Za-z_][A-Za-z0-9_]*/g;
+  const close = (scope: (typeof open)[number], to: number) => {
+    for (const name of scope.names) scopes.push({ name, from: scope.from, to });
+    for (const set of scope.sets) scopes.push({ ...set, to });
+  };
   for (const block of text.matchAll(JINJA_TAG_RE)) {
     if (block[2] === undefined) continue;
     const tag = block[2].replace(QUOTED_RE, '""').trim();
     const at = block.index ?? 0;
     const after = at + block[0].length;
     const loop = LOOP_RE.exec(tag);
-    if (loop) open.push({ names: loop[1].match(ident) ?? [], from: after });
+    if (loop)
+      open.push({ names: loop[1].match(ident) ?? [], from: after, sets: [] });
     else if (/^endfor\b/.test(tag)) {
       const scope = open.pop();
-      for (const name of scope?.names ?? [])
-        scopes.push({ name, from: scope?.from ?? 0, to: at });
+      if (scope) close(scope, at);
     } else {
       const set = SET_RE.exec(tag);
-      for (const name of set?.[1].match(ident) ?? [])
-        scopes.push({ name, from: after, to: text.length });
+      const inLoop = open[open.length - 1];
+      for (const name of set?.[1].match(ident) ?? []) {
+        if (inLoop) inLoop.sets.push({ name, from: after });
+        else scopes.push({ name, from: after, to: text.length });
+      }
     }
   }
   // An unclosed loop runs to the end.
-  for (const scope of open)
-    for (const name of scope.names)
-      scopes.push({ name, from: scope.from, to: text.length });
+  for (const scope of open) close(scope, text.length);
   return scopes;
 }
 
