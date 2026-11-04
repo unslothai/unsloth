@@ -224,7 +224,7 @@ def test_audio_reference_ambiguity(
         keys.append("datasets/clips/a.wav")
     if nested_audio:
         keys.append("datasets/train/clips/a.wav")
-    _install(monkeypatch, keys, contents = {manifest_key: content})
+    client = _install(monkeypatch, keys, contents = {manifest_key: content})
 
     if expected is None:
         with pytest.raises(ValueError, match = "Ambiguous audio reference") as error:
@@ -233,6 +233,7 @@ def test_audio_reference_ambiguity(
         assert manifest_key in str(error.value)
         assert "./" in str(error.value) and "s3://" in str(error.value)
         assert (tmp_path / "train" / ("rows" + suffix)).read_text() == content
+        assert [key for _, key, _ in client.downloaded] == [manifest_key]
         return
 
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
