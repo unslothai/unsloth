@@ -3816,8 +3816,6 @@ export const vi = {
         allTools: "Tất cả công cụ",
         selectAll: "Chọn tất cả",
         selectNone: "Không chọn gì",
-        turnAllOn: "Bật tất cả",
-        groupToggle: "Tất cả công cụ {group}",
         description:
           "Mỗi công cụ bạn bật sẽ thêm vào những gì agent đọc trước khi bắt đầu, vì vậy hãy tắt những công cụ bạn không cần. Agent không bao giờ thấy công cụ đã tắt và các lệnh gọi đến nó bị từ chối. Agent đã kết nối sẽ thấy thay đổi khi kết nối lại.",
         saveError: "Không thể lưu cài đặt công cụ Unsloth MCP.",

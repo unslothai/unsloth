@@ -3860,8 +3860,6 @@ export const nl = {
         allTools: "Alle tools",
         selectAll: "Alles selecteren",
         selectNone: "Niets selecteren",
-        turnAllOn: "Alles aanzetten",
-        groupToggle: "Alle {group}-tools",
         description:
           "Elke tool die aan staat telt mee in wat agents lezen voordat ze beginnen, dus zet uit wat je niet nodig hebt. Agents zien een uitgezette tool nooit, en aanroepen ervan worden geweigerd. Al verbonden agents zien de wijziging als ze opnieuw verbinden.",
         saveError: "Kon de instelling voor Unsloth MCP-tools niet opslaan.",

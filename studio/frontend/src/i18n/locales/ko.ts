@@ -3331,8 +3331,6 @@ export const ko = {
         allTools: "모든 도구",
         selectAll: "모두 선택",
         selectNone: "선택 안 함",
-        turnAllOn: "모두 켜기",
-        groupToggle: "{group}의 모든 도구",
         description:
           "켜 둔 도구는 모두 에이전트가 시작 전에 읽는 내용에 더해지므로, 필요 없는 도구는 끄세요. 꺼진 도구는 에이전트에게 보이지 않으며 호출도 거부됩니다. 이미 연결된 에이전트는 다시 연결할 때 변경 사항을 봅니다.",
         saveError: "Unsloth MCP 도구 설정을 저장하지 못했습니다.",

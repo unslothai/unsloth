@@ -3875,8 +3875,6 @@ export const es419 = {
         allTools: "Todas las herramientas",
         selectAll: "Seleccionar todo",
         selectNone: "No seleccionar nada",
-        turnAllOn: "Activar todas",
-        groupToggle: "Todas las herramientas de {group}",
         description:
           "Cada herramienta activada se suma a lo que los agentes leen antes de empezar, así que desactiva las que no necesites. Los agentes nunca ven una herramienta desactivada y sus llamadas se rechazan. Los agentes ya conectados ven el cambio al volver a conectarse.",
         saveError: "No se pudo guardar la configuración de herramientas de Unsloth MCP.",

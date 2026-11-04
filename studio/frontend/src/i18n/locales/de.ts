@@ -3387,8 +3387,6 @@ export const de = {
         allTools: "Alle Tools",
         selectAll: "Alle auswählen",
         selectNone: "Keine auswählen",
-        turnAllOn: "Alle einschalten",
-        groupToggle: "Alle Tools in {group}",
         description:
           "Jedes eingeschaltete Tool vergrößert, was Agents vor dem Start lesen, also schalte aus, was du nicht brauchst. Agents sehen ausgeschaltete Tools nie, und Aufrufe werden abgelehnt. Bereits verbundene Agents sehen die Änderung nach dem erneuten Verbinden.",
         saveError: "Die Einstellung für das Unsloth MCP-Tool konnte nicht gespeichert werden.",

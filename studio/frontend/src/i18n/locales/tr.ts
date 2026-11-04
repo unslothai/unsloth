@@ -3812,8 +3812,6 @@ export const tr = {
         allTools: "Tüm araçlar",
         selectAll: "Tümünü seç",
         selectNone: "Hiçbirini seçme",
-        turnAllOn: "Tümünü aç",
-        groupToggle: "Tüm {group} araçları",
         description:
           "Açık bıraktığın her araç, ajanların başlamadan önce okuduğu şeye eklenir, bu yüzden ihtiyacın olmayanları kapat. Ajanlar kapalı bir aracı asla görmez ve ona yapılan çağrılar reddedilir. Zaten bağlı olan ajanlar değişikliği yeniden bağlandıklarında görür.",
         saveError: "Unsloth MCP araç ayarı kaydedilemedi.",

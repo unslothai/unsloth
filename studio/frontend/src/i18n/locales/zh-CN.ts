@@ -3287,8 +3287,6 @@ export const zhCN = {
         allTools: "全部工具",
         selectAll: "全选",
         selectNone: "全不选",
-        turnAllOn: "全部开启",
-        groupToggle: "{group}中的全部工具",
         description:
           "每个开启的工具都会增加智能体开始前要读取的内容，所以请关闭不需要的工具。智能体永远看不到已关闭的工具，对它的调用会被拒绝。已连接的智能体在重新连接后才会看到变化。",
         saveError: "无法保存 Unsloth MCP 工具设置。",

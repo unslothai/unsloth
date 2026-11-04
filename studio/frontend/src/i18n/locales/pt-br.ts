@@ -3354,8 +3354,6 @@ export const ptBR = {
         allTools: "Todas as ferramentas",
         selectAll: "Selecionar tudo",
         selectNone: "Não selecionar nenhuma",
-        turnAllOn: "Ativar todas",
-        groupToggle: "Todas as ferramentas de {group}",
         description:
           "Cada ferramenta ativada aumenta o que os agentes leem antes de começar, então desative as que você não usa. Os agentes nunca veem uma ferramenta desativada, e as chamadas a ela são recusadas. Agentes já conectados veem a mudança quando se reconectam.",
         saveError: "Não foi possível salvar a configuração da ferramenta do Unsloth MCP.",

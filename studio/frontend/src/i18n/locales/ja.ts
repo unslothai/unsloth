@@ -3317,8 +3317,6 @@ export const ja = {
         allTools: "すべてのツール",
         selectAll: "すべて選択",
         selectNone: "選択なし",
-        turnAllOn: "すべてオンにする",
-        groupToggle: "{group} のすべてのツール",
         description:
           "オンにしたツールはすべて、エージェントが開始前に読む内容に加わります。使わないものはオフにしてください。オフのツールはエージェントに見えず、呼び出しも拒否されます。接続済みのエージェントには再接続時に反映されます。",
         saveError: "Unsloth MCP のツール設定を保存できませんでした。",

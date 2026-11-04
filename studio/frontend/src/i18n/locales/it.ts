@@ -3282,8 +3282,6 @@ export const it = {
         allTools: "Tutti gli strumenti",
         selectAll: "Seleziona tutto",
         selectNone: "Non selezionare nulla",
-        turnAllOn: "Attiva tutti",
-        groupToggle: "Tutti gli strumenti di {group}",
         description:
           "Ogni strumento attivo si aggiunge a ciò che gli agenti leggono prima di iniziare, quindi disattiva quelli che non ti servono. Gli agenti non vedono mai uno strumento disattivato e le sue chiamate vengono rifiutate. Gli agenti già connessi vedono la modifica quando si riconnettono.",
         saveError: "Impossibile salvare l’impostazione dello strumento di Unsloth MCP.",

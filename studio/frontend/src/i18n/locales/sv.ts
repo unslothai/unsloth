@@ -3521,8 +3521,6 @@ export const sv = {
         allTools: "Alla verktyg",
         selectAll: "Markera alla",
         selectNone: "Markera inga",
-        turnAllOn: "Slå på alla",
-        groupToggle: "Alla verktyg i {group}",
         description:
           "Varje verktyg som är på läggs till det agenter läser innan de börjar, så stäng av dem du inte behöver. Agenter ser aldrig ett avstängt verktyg, och anrop till det nekas. Redan anslutna agenter ser ändringen när de ansluter igen.",
         saveError: "Det gick inte att spara inställningen för verktyget i Unsloth MCP.",

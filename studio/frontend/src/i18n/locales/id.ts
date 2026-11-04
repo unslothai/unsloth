@@ -3815,8 +3815,6 @@ export const id = {
         allTools: "Semua alat",
         selectAll: "Pilih semua",
         selectNone: "Jangan pilih apa pun",
-        turnAllOn: "Aktifkan semua",
-        groupToggle: "Semua alat {group}",
         description:
           "Setiap alat yang aktif menambah apa yang dibaca agen sebelum mulai, jadi nonaktifkan yang tidak Anda perlukan. Agen tidak pernah melihat alat yang nonaktif, dan panggilan ke alat itu ditolak. Agen yang sudah terhubung melihat perubahannya saat terhubung ulang.",
         saveError: "Tidak dapat menyimpan pengaturan alat Unsloth MCP.",

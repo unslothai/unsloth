@@ -3529,8 +3529,6 @@ export const en = {
         allTools: "All tools",
         selectAll: "Select all",
         selectNone: "Select none",
-        turnAllOn: "Turn all on",
-        groupToggle: "All {group} tools",
         description:
           "Every tool you leave on adds to what agents read before they start, so turn off the ones you don't need. Agents never see a tool that's off, and calls to it are refused. Agents already connected see the change when they reconnect.",
         saveError: "Couldn't save the Unsloth MCP tool setting.",

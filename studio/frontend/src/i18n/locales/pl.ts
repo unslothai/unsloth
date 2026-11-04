@@ -3861,8 +3861,6 @@ export const pl = {
         allTools: "Wszystkie narzędzia",
         selectAll: "Zaznacz wszystko",
         selectNone: "Nie zaznaczaj nic",
-        turnAllOn: "Włącz wszystkie",
-        groupToggle: "Wszystkie narzędzia: {group}",
         description:
           "Każde włączone narzędzie dokłada się do tego, co agenci czytają przed startem, więc wyłącz te, których nie potrzebujesz. Agenci nigdy nie widzą wyłączonego narzędzia, a jego wywołania są odrzucane. Już połączeni agenci zobaczą zmianę po ponownym połączeniu.",
         saveError: "Nie udało się zapisać ustawienia narzędzi Unsloth MCP.",
