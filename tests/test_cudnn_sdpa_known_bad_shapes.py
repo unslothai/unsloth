@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""SDPA must stay off cuDNN for exactly the calls torch later refused itself:
-- pytorch#193893 (guard pytorch#194963, in torch 2.14): one-query-row decode on SM 10.x / 11.x with
-  cuDNN 9.19 - 9.25.0 except 9.24.1 gives wrong attention.
-- pytorch#196678 (guard pytorch#196861, in torch 2.15): non-causal SDPA backward on SM90 with
-  cuDNN < 9.26 and a key length of 64 mod 128 gives NaN dQ.
-CPU only: capability, cuDNN and torch versions are mocked; the wrapper is checked by recording the
-SDPA backend flags its inner call runs under."""
+"""SDPA stays off cuDNN for the calls torch later refused (pytorch#193893, #196678).
+CPU only: versions and capability are mocked; the wrapper is checked via the backend flags it runs under."""
 
 import types
 
@@ -70,8 +65,6 @@ def test_dq_nan_gate(torch_version, cudnn, cap, expected):
 
 
 class _FakeCuda:
-    """Enough of a CUDA tensor for the per-call decision (no GPU here)."""
-
     def __init__(
         self,
         *shape,
@@ -199,7 +192,6 @@ class TestDevices:
 
 @pytest.fixture
 def recorder(monkeypatch):
-    """Installs the fix over a recording SDPA (devices mocked), restoring F afterwards."""
     import torch.nn.functional as F
 
     calls = []
@@ -232,7 +224,6 @@ def recorder(monkeypatch):
     monkeypatch.delenv("UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA", raising = False)
     fixes.fix_cudnn_sdpa_known_bad_shapes()
     assert F.scaled_dot_product_attention is not fake_sdpa
-    # The CPU test session may start with some backends off; every test starts from all on.
     with sdpa_kernel(ALL_BACKENDS):
         yield F, calls
 
@@ -256,9 +247,7 @@ class TestWrapper:
         q = _FakeCuda(2, 8, 704, 64, requires_grad = True)
         F.scaled_dot_product_attention(q, _FakeCuda(2, 8, 704, 64), _FakeCuda(2, 8, 704, 64), mask)
         assert [_flags(c) for c in calls] == [NO_CUDNN, NO_CUDNN]
-        # Arguments pass through untouched.
         assert calls[0]["mask"] is mask and calls[0]["kw"] == {"enable_gqa": True}
-        # The policy is restored after the call.
         assert torch.backends.cuda.cudnn_sdp_enabled()
 
     def test_other_calls_keep_cudnn(self, recorder):
@@ -293,8 +282,7 @@ class TestWrapper:
         assert F.scaled_dot_product_attention is wrapped
 
     def test_compiled_fullgraph(self, recorder, monkeypatch):
-        # CPU tensors stand in for the trigger: the wrapper must trace without a graph break, and
-        # the traced graph must carry the backend switch around the real SDPA.
+        # Must trace without a graph break, with the backend switch around the real SDPA.
         F, _ = recorder
         monkeypatch.setattr(fixes, "_sdpa_cudnn_known_bad", lambda *a: "dq_nan")
         real = torch._C._nn.scaled_dot_product_attention
@@ -305,7 +293,6 @@ class TestWrapper:
             return gm.forward
 
         torch._dynamo.reset()
-        # Rebuild the wrapper over the real SDPA so the compiled call runs real attention.
         monkeypatch.setattr(F, "scaled_dot_product_attention", real)
         fixes.fix_cudnn_sdpa_known_bad_shapes()
         wrapped = F.scaled_dot_product_attention
@@ -318,7 +305,6 @@ class TestWrapper:
         out = torch.compile(fn, backend = backend, fullgraph = True)(q)
         torch.testing.assert_close(out, real(q, q, q))
         code = "\n".join(graphs)
-        # cuDNN switched off around the call by one graph call (not at trace time).
         assert "_sdpa_without_cudnn(" in code, code
         torch._dynamo.reset()
 
@@ -339,11 +325,9 @@ def test_cudnn_off_tests_the_key_length_value():
 
 @pytest.fixture
 def cpu_dq_nan(monkeypatch):
-    """Real CPU SDPA standing in for an affected H100: the device check is mocked (Dynamo reads
-    is_cuda from the fake tensor), the rest of the dQ-NaN rule, key-length test included, is real."""
+    """CPU SDPA as an affected H100: only the device check is mocked."""
     import torch.nn.functional as F
 
-    # Before the key-length helper existed the test was inline: s_kv % 128 == 64.
     length = getattr(fixes, "_sdpa_cudnn_dq_nan_length", lambda k: k.shape[-2] % 128 == 64)
 
     def known_bad(decode, dq, query, key, is_causal):
@@ -371,8 +355,7 @@ def _qkv(s_kv):
 
 @pytest.mark.parametrize("strict", [False, True])
 def test_compiled_dynamic_key_length_is_not_specialized(cpu_dq_nan, strict):
-    # Lengths on and off 64 mod 128 must share one graph (no s_kv % 128 guard), and a strict
-    # mark_dynamic key length must still compile.
+    # One graph for lengths on and off 64 mod 128; strict mark_dynamic must compile.
     wrapped = cpu_dq_nan
     graphs = []
 
@@ -390,14 +373,12 @@ def test_compiled_dynamic_key_length_is_not_specialized(cpu_dq_nan, strict):
                 torch._dynamo.mark_dynamic(v, 2, min = 128, max = 512)
             fn(q, k, v).backward()
     assert len(graphs) == 1
-    # The cuDNN switch is in the graph: the wrapper engaged.
     names = ("_sdpa_without_cudnn(", "_sdpa_cudnn_off(", "_sdpa_kernel(")
     assert any(name in graphs[0].code for name in names)
 
 
 def test_compiled_call_reads_policy_at_call_time(cpu_dq_nan):
-    # Compiled under one policy, called under another: the caller's later policy decides the
-    # backend, and exactly that policy is left in place afterwards.
+    # Compiled under one policy, called under another: the later policy decides and is kept.
     wrapped = cpu_dq_nan
     fn = torch.compile(lambda q, k, v: wrapped(q, k, v), backend = lambda gm, ex: gm.forward,
                        fullgraph = True)  # fmt: skip
@@ -437,9 +418,7 @@ def _raising_op():
 
 @pytest.mark.parametrize("mode", ["plain", "eager_graph"])
 def test_raising_sdpa_restores_the_policy(cpu_dq_nan, monkeypatch, mode):
-    # SDPA raising mid-call (e.g. CUDA OOM) must still restore the caller's flags and leave no
-    # unmatched switch, also from an executable FX graph, where a Python finally around separate
-    # switch / restore nodes does not survive.
+    # A raising SDPA (e.g. OOM) still restores the flags, also from an FX graph.
     import torch.nn.functional as F
 
     boom = _raising_op()
@@ -457,7 +436,6 @@ def test_raising_sdpa_restores_the_policy(cpu_dq_nan, monkeypatch, mode):
             for _ in range(2):
                 with pytest.raises(RuntimeError, match = "simulated"):
                     fn(*_qkv(192))
-                # Checked inside the context: its exit would restore the flags itself.
                 assert _sdp_flags() == before
                 assert fixes._SDPA_CUDNN_HELD[0] == depth
     finally:
@@ -469,8 +447,7 @@ _PROBE = []
 
 
 def _probe_op():
-    """A CompositeImplicitAutograd op that, like aten SDPA, picks its kernel from the live cuDNN
-    flag when it is decomposed: per call in eager, once while tracing under AOTAutograd."""
+    """Like aten SDPA, picks its kernel from the live cuDNN flag when decomposed."""
     if not _PROBE:
         lib = torch.library.Library("unsloth_cudnn_sdpa_probe", "FRAGMENT")
         lib.define("probe(Tensor q, Tensor k, Tensor v) -> Tensor")
@@ -518,11 +495,8 @@ def cudnn_sdp_on():
 @pytest.mark.parametrize("backend", ["aot_eager", "inductor"])
 @pytest.mark.parametrize("first", ["cudnn_only", "fallback"])
 def test_aot_compiled_call_follows_a_later_policy(cudnn_sdp_on, probe_dq_nan, backend, first):
-    # AOTAutograd fixes SDPA's backend while tracing and Dynamo does not guard the backend flags:
-    # a call compiled under one policy and invoked under another must not keep the first one's
-    # kernel (a cuDNN-only compile must not leave cuDNN in place once a fallback is enabled).
+    # AOTAutograd fixes the backend at trace time: a later policy must not keep the old kernel.
     wrapped = probe_dq_nan
-    # Static shapes: a symbolic key length takes the conservative branch (cuDNN off) instead.
     fn = torch.compile(lambda q, k, v: wrapped(q, k, v), backend = backend, fullgraph = True,
                        dynamic = False)  # fmt: skip
     policies = [CUDNN_ONLY, CUDNN_MATH] if first == "cudnn_only" else [CUDNN_MATH, CUDNN_ONLY]
@@ -534,7 +508,6 @@ def test_aot_compiled_call_follows_a_later_policy(cudnn_sdp_on, probe_dq_nan, ba
                 ratio = (fn(q, k, v) / q).detach().flatten()[0].item()
                 expected = 3.0 if hit and policy is CUDNN_MATH else 2.0
                 assert ratio == pytest.approx(expected, rel = 0.01), (s_kv, policy)  # fp16 2q / 3q
-                # Matches an uncompiled call, and leaves the caller's policy exactly in place.
                 eager = (wrapped(q, k, v) / q).detach().flatten()[0].item()
                 assert eager == pytest.approx(expected, rel = 0.01)
                 assert _sdp_flags() == before
@@ -565,8 +538,7 @@ def _cell(wrapper, name):
 
 
 def test_overlapping_calls_keep_cudnn_off(recorder):
-    # The backend flags are process-wide: a matching call that starts while another one has cuDNN
-    # off must still run without cuDNN after the first call restores the flag.
+    # A call starting while another holds cuDNN off still runs without cuDNN after the first restores.
     import threading
 
     F, calls = recorder
@@ -587,7 +559,6 @@ def test_overlapping_calls_keep_cudnn_off(recorder):
         return inner(query, key, value, *args, **kwargs)
 
     fixes._SDPA_CUDNN_ORIGINALS[token] = gated
-    # A call that bypasses the cuDNN switch goes straight to the wrapped SDPA: route it here too.
     wrapper = F.scaled_dot_product_attention
     original_cell = _cell(wrapper, "original")
     saved = original_cell.cell_contents
@@ -618,8 +589,7 @@ def test_overlapping_calls_keep_cudnn_off(recorder):
 
 
 def test_many_threads_never_see_cudnn(recorder):
-    # Stress: every matching call from 8 threads runs with cuDNN off; the caller's flag is back on
-    # (and no switch is left held) once all of them return.
+    # 8 threads: every matching call runs with cuDNN off; flag back on, nothing held, at the end.
     import threading
     import time
 

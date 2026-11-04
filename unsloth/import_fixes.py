@@ -7835,9 +7835,7 @@ def fix_cudnn_sdpa_backward_grad_layout():
 
 _SDPA_CUDNN_KNOWN_BAD_FLAG = "_unsloth_avoids_cudnn_sdpa_known_bad_shapes"
 _SDPA_CUDNN_KNOWN_BAD_WARNED = set()
-# The backend flags are process-wide: wrapped calls in flight on any thread that hold cuDNN off.
-# cuDNN goes off with the first and back on with the last, so a call overlapping another one
-# never runs (or is routed) under a flag the other already restored.
+# Backend flags are process-wide: refcount wrapped calls in flight so overlapping calls never see cuDNN back on early.
 _SDPA_CUDNN_HELD = [0]
 _SDPA_CUDNN_LOCK = threading.Lock()
 _SDPA_CUDNN_DECODE = "decode"
@@ -7852,10 +7850,8 @@ def _torch_release(torch_version):
 
 
 def _cudnn_sdpa_decode_corrupts(torch_version, cudnn_version, capability):
-    """pytorch#193893: cuDNN 9.19 - 9.25.0 (but not 9.24.1) SDPA with one query row (decode) on
-    SM 10.x / 11.x gives wrong outputs (a negative-logit row whose KV tail is padded gets row max 0).
-    torch 2.14 refuses that call itself (pytorch#194963, same version / device rule); torch <= 2.13
-    does not, and its cu128 / cu129 / cu130 wheels ship cuDNN 9.19 / 9.20. cu126 wheels ship 9.10."""
+    """pytorch#193893: cuDNN 9.19 - 9.25.0 (not 9.24.1) one-row decode on SM 10.x / 11.x is wrong.
+    torch 2.14 refuses it (pytorch#194963); <= 2.13 cu128+ wheels ship 9.19 / 9.20."""
     release = _torch_release(torch_version)
     if release is None or release >= TrueVersion("2.14") or cudnn_version is None:
         return False
@@ -7866,9 +7862,8 @@ def _cudnn_sdpa_decode_corrupts(torch_version, cudnn_version, capability):
 
 
 def _cudnn_sdpa_dq_nan(torch_version, cudnn_version, capability):
-    """pytorch#196678: cuDNN < 9.26 SDPA backward on SM90 returns NaN dQ for non-causal calls with
-    a key length of 64 mod 128 (a padding row's logsumexp below ln(FLT_MIN), e.g. left padding).
-    torch 2.15 refuses that call (pytorch#196861, same rule) and ships cuDNN 9.26."""
+    """pytorch#196678: cuDNN < 9.26 on SM90 gives NaN dQ for non-causal s_kv % 128 == 64.
+    torch 2.15 refuses it (pytorch#196861)."""
     release = _torch_release(torch_version)
     if release is None or release >= TrueVersion("2.15") or cudnn_version is None:
         return False
@@ -7876,7 +7871,6 @@ def _cudnn_sdpa_dq_nan(torch_version, cudnn_version, capability):
 
 
 def _sdpa_cudnn_known_bad_devices():
-    """(decode devices, dQ-NaN devices): CUDA indices where torch would still pick a broken cuDNN path."""
     try:
         import torch
 
@@ -7902,17 +7896,13 @@ def _sdpa_cudnn_known_bad_devices():
 
 
 def _sdpa_cudnn_dq_nan_length(key):
-    """s_kv % 128 == 64. While compiling, defer to _sdpa_cudnn_off, which tests the length's value:
-    testing it here would guard on a dynamic key length (an extra graph, or a strict mark_dynamic
-    failing)."""
+    # Compiling: _sdpa_cudnn_off tests the value, so a dynamic length adds no guard.
     import torch
     return torch.compiler.is_compiling() or key.shape[-2] % 128 == 64
 
 
 def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
-    """Which known cuDNN bug this call would hit if torch picked cuDNN for it (None if none).
-    Mirrors torch's own guards: s_q == 1 (pytorch#194963), and not causal, query requires grad,
-    s_kv % 128 == 64 (pytorch#196861; a mask is not required there, nor here)."""
+    """The known cuDNN bug this call would hit, mirroring torch's later guards; None if none."""
     import torch
 
     if not getattr(query, "is_cuda", False) or getattr(query, "is_nested", False):
@@ -7921,7 +7911,7 @@ def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
     if index not in decode_devices and index not in dq_devices:
         return None
     dtype = query.dtype
-    # CUDA autocast casts fp32 SDPA inputs to half before dispatch; cuDNN takes fp16 / bf16 only.
+    # Autocast casts fp32 SDPA inputs to half before dispatch.
     if dtype == torch.float32 and torch.is_autocast_enabled("cuda"):
         dtype = torch.get_autocast_dtype("cuda")
     if dtype not in (torch.float16, torch.bfloat16) or query.dim() < 2:
@@ -7941,20 +7931,14 @@ def _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal):
 
 
 class _SdpaCudnnPolicy(types.ModuleType):
-    """The caller's SDPA backend policy, readable so torch.compile guards on it. A compiled graph
-    keeps the SDPA backend it was traced with (AOTAutograd decomposes the call into one backend's
-    op) and Dynamo folds backend flag reads to constants without a guard. An attribute read off a
-    module object is guarded by value and re-read on every call, as torch.backends.cudnn.enabled is,
-    so a policy change that flips this decision recompiles instead of reusing the old backend."""
+    """Dynamo folds SDPA backend flags without a guard, but guards a module attribute by value:
+    reading the policy here makes a compiled graph recompile when the policy flips its backend."""
 
     @property
     def cudnn_off(self):
-        """cuDNN SDPA is on, and a fallback (flash / efficient / math) is on to run instead."""
         import torch
-
         cuda = torch.backends.cuda
-        # While a wrapped call holds cuDNN off, the caller's flag is still on: another thread's
-        # matching call must take the switch too, not run unprotected once the holder restores.
+        # A held switch counts as on, so another thread's matching call also takes it.
         return (cuda.cudnn_sdp_enabled() or _SDPA_CUDNN_HELD[0] > 0) and (
             cuda.flash_sdp_enabled() or cuda.mem_efficient_sdp_enabled() or cuda.math_sdp_enabled()
         )
@@ -7964,10 +7948,8 @@ _SDPA_CUDNN_POLICY = _SdpaCudnnPolicy("unsloth_sdpa_cudnn_policy")
 
 
 def _sdpa_cudnn_off(key_length = None):
-    """Turn cuDNN SDPA off unless it is the only enabled backend (or key_length, when given, is not
-    64 mod 128). A symbolic length counts as a hit. Returns the switch, for _sdpa_cudnn_restore.
-    Refcounted across threads: the count goes up before the flag goes off, and the flag comes back
-    on before the count drops, so an unlocked policy read never sees the caller's cuDNN as off."""
+    """Turn cuDNN SDPA off unless it is the only backend; a symbolic key_length counts as a hit.
+    The count rises before the flag drops, so an unlocked policy read never sees cuDNN off."""
     import torch
 
     if not (key_length is None or isinstance(key_length, torch.SymInt) or key_length % 128 == 64):
@@ -7982,9 +7964,7 @@ def _sdpa_cudnn_off(key_length = None):
 
 
 def _sdpa_cudnn_restore(switch):
-    """Undo a _sdpa_cudnn_off that returned True: the last call in flight turns cuDNN back on."""
     import torch
-
     if not switch:
         return
     with _SDPA_CUDNN_LOCK:
@@ -7993,7 +7973,7 @@ def _sdpa_cudnn_restore(switch):
         _SDPA_CUDNN_HELD[0] -= 1
 
 
-_SDPA_CUDNN_ORIGINALS = {}  # install token -> the SDPA it wraps (a graph constant, unlike a function)
+_SDPA_CUDNN_ORIGINALS = {}  # str token -> wrapped SDPA (a graph constant, unlike a function)
 _SDPA_CUDNN_MESSAGES = {
     _SDPA_CUDNN_DECODE: "single-token decode on this Blackwell GPU (cuDNN 9.19 - 9.25.0 "
     "returns wrong attention there, pytorch#193893)",
@@ -8003,10 +7983,8 @@ _SDPA_CUDNN_MESSAGES = {
 
 
 def _sdpa_without_cudnn(token, bug, key_length, query, key, value, *args, **kwargs):
-    """Switch cuDNN off, run SDPA, restore the caller's flag, all in one call. Registered with
-    allow_in_graph, so an eager graph keeps it as one node and this finally runs at call time even
-    if SDPA raises; AOTAutograd traces through it, so the traced SDPA avoids cuDNN (the wrapper's
-    guarded _SDPA_CUDNN_POLICY read recompiles on a policy change)."""
+    """allow_in_graph: one eager-graph node whose finally runs even if SDPA raises; AOTAutograd
+    traces through it, so the traced SDPA avoids cuDNN."""
     import torch
 
     switch = _sdpa_cudnn_off(key_length)
@@ -8023,10 +8001,9 @@ def _sdpa_without_cudnn(token, bug, key_length, query, key, value, *args, **kwar
 
 
 def fix_cudnn_sdpa_known_bad_shapes():
-    """Keep SDPA off cuDNN for exactly the calls torch 2.14 / 2.15 later refused (wrong decode on
-    Blackwell, pytorch#193893; NaN dQ on H100 / H200, pytorch#196678). Only the caller's enabled
-    flash / efficient / math backends run instead; a cuDNN-only policy is left alone. Not installed
-    unless a visible device is affected. UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1 opts out."""
+    """Keep SDPA off cuDNN for the calls torch 2.14 / 2.15 later refuse (pytorch#193893, #196678),
+    only when a visible device is affected and another backend is enabled.
+    UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA=1 opts out."""
     if os.environ.get("UNSLOTH_ALLOW_BUGGY_CUDNN_SDPA", "0") == "1":
         return
     decode_devices, dq_devices = _sdpa_cudnn_known_bad_devices()
@@ -8042,9 +8019,7 @@ def fix_cudnn_sdpa_known_bad_shapes():
     if getattr(F.scaled_dot_product_attention, _SDPA_CUDNN_KNOWN_BAD_FLAG, False):
         return
 
-    # Dynamo folds the backend flags at trace time and bakes sdpa_kernel's restore: keep the
-    # switch, SDPA and restore as one graph call, so an eager graph honours the caller's policy
-    # and restores it even when SDPA raises (a trailing restore node would be skipped).
+    # Switch, SDPA and restore stay one graph call: a trailing restore node would be skipped on a raise.
     torch._dynamo.allow_in_graph(_sdpa_without_cudnn)
     original = F.scaled_dot_product_attention
     token = f"sdpa_{len(_SDPA_CUDNN_ORIGINALS)}"  # a str: Dynamo may make an int symbolic
@@ -8062,8 +8037,7 @@ def fix_cudnn_sdpa_known_bad_shapes():
         **kwargs,
     ):
         bug = _sdpa_cudnn_known_bad(decode_devices, dq_devices, query, key, is_causal)
-        # Compiled, this read is a guard: a graph traced under one policy decision (and so with
-        # or without cuDNN in it) is not reused under the other.
+        # Compiled, this policy read is a guard.
         if bug is not None and _SDPA_CUDNN_POLICY.cudnn_off:
             key_length = key.shape[-2] if bug == _SDPA_CUDNN_DQ_NAN else None
             return _sdpa_without_cudnn(
