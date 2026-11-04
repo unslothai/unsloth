@@ -38,6 +38,6 @@ test("metric stderr shows in the score's units, not as a raw float string", () =
 
 test("a scoreboard row keeps the quant visible when the model name truncates", () => {
   const board = read("components/eval-scoreboard.tsx");
-  assert.match(board, /<ModelLabel model=\{b\.model\} \/>/);
+  assert.match(board, /<ModelLabel model=\{labels\[b\.model\] \?\? b\.model\} \/>/);
   assert.match(board, /<span className="truncate">\{name\}<\/span>\s*\{quant && <span className="shrink-0/);
 });
