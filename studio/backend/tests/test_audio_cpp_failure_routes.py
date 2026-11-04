@@ -189,6 +189,7 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
         ("cuda", {0: (8, 6)}, True),
         ("cuda", {0: (7, 5)}, False),
         ("cuda", {}, False),
+        # The Vulkan profile asks 9.51 GiB, just over this card.
         ("vulkan", {0: (8, 6)}, False),
     ],
 )
@@ -209,7 +210,7 @@ def test_yue2_q8_on_a_10gb_ampere_card(monkeypatch, backend, capabilities, fits)
     if not fits:
         with pytest.raises(HTTPException) as raised:
             _preflight(None, availability = availability, prepared = prepared, model = model)
-        assert "It needs about 12.1 GB" in raised.value.detail["message"]
+        assert raised.value.detail["code"] == "out_of_memory"
         return
     placement = _preflight(None, availability = availability, prepared = prepared, model = model)
     assert placement.resolved_gpu_ids == [0] and placement.native_required_gb == 9.32

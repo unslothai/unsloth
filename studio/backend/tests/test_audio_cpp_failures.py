@@ -150,6 +150,7 @@ YUE2_BYTES = (2933424181, 4531978293, 7529267253)
 
 
 MEASURED = (7.83, 9.32, 12.11)
+VULKAN = (7.73, 9.51, 12.86)
 GENERIC = (8.33, 12.05, 19.03)
 
 
@@ -176,8 +177,9 @@ def _yue2():
         ("cuda", {0: (7, 5)}, GENERIC),
         ("cuda", {}, GENERIC),
         ("cuda", {0: (8, 9), 1: (7, 5)}, GENERIC),
-        # Only the CUDA backend was measured: Vulkan on the same Ampere card is not.
-        ("vulkan", {0: (8, 6)}, GENERIC),
+        # Vulkan on the same card peaks up to 0.9 GiB higher (3090: 6.5 / 8.6 / 11.9 GiB).
+        ("vulkan", {0: (8, 6)}, VULKAN),
+        ("vulkan", {0: (7, 5)}, GENERIC),
         ("cpu", {0: (8, 6)}, GENERIC),
         (None, {0: (8, 6)}, GENERIC),
     ],
