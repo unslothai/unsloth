@@ -1781,6 +1781,8 @@ def _reconcile_folder(job_id: str) -> None:
     def drain_one() -> None:
         if not in_flight:
             return
+        # Hold no rag.db handle while the workers run, as before the shared connection.
+        rag_db.release_reused()
         completed, _ = wait(tuple(in_flight), return_when = FIRST_COMPLETED)
         for future in completed:
             pending = in_flight.pop(future)
@@ -1921,6 +1923,8 @@ def _reconcile_folder(job_id: str) -> None:
     with rag_db.reuse_connections():
         for rel in removable:
             _check_running()
+            # Only stat calls until _delete_mapping: hold no rag.db handle across them.
+            rag_db.release_reused()
             _check_root_identity(folder["path"], scanned_identity)
             if _source_reappeared(folder["path"], rel, excluded):
                 raise _FolderChanged("Linked source reappeared during reconciliation")

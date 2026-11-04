@@ -327,6 +327,9 @@ class _ReusedConnection(sqlite_gate.GatedConnection):
         if slot is None or slot.conn is not self:
             super().close()
             return
+        if not slot.checked_out:
+            # A repeated close of an idle connection: nothing to end.
+            return
         slot.checked_out = False
         try:
             self.rollback()
@@ -367,6 +370,16 @@ class _ReuseSlot:
 
 
 _reuse_state = threading.local()
+
+
+def release_reused() -> None:
+    """Close this thread's shared connection now if no caller holds it, so a reuse_connections() block
+    keeps no rag.db handle open while it waits or only stats files (an account rename on Windows sees
+    the same handles as without the block). The next get_connection() in the block opens a new one.
+    No-op outside a block or while the connection is checked out."""
+    slot = getattr(_reuse_state, "slot", None)
+    if slot is not None and slot.conn is not None and not slot.checked_out:
+        slot.discard()
 
 
 @contextmanager

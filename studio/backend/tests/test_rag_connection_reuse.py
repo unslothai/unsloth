@@ -10,7 +10,6 @@ import os
 import sqlite3
 import threading
 from contextlib import closing
-from pathlib import Path
 
 import pytest
 
@@ -250,3 +249,95 @@ def test_folder_sync_reuses_connections_and_commits_each_file(
     assert durable == [10**18] * 12
     # Four fresh opens per file before, none now beyond the fixed per-pass ones.
     assert len(opens) < 12 * 3
+
+
+def test_release_reused_closes_only_an_idle_shared_connection(rag_home):
+    rag_db.release_reused()  # outside a block: nothing to do
+    with rag_db.reuse_connections():
+        held = rag_db.get_connection()
+        rag_db.release_reused()
+        assert not _closed(held)
+        held.close()
+        rag_db.release_reused()
+        assert _closed(held)
+        fresh = rag_db.get_connection()
+        assert fresh is not held
+        fresh.close()
+        assert rag_db.get_connection() is fresh
+        fresh.close()
+    assert _closed(fresh)
+
+
+def test_a_stale_close_does_not_end_another_callers_work(rag_home):
+    _make_table()
+    with rag_db.reuse_connections():
+        first = rag_db.get_connection()
+        first.close()
+        first.close()
+        second = rag_db.get_connection()
+        assert second is first
+        second.close()
+        rag_db.release_reused()
+        third = rag_db.get_connection()
+        assert third is not first
+        third.execute("INSERT INTO reuse_probe VALUES('live', 1)")
+        first.close()
+        assert third.in_transaction
+        third.commit()
+        third.close()
+    assert _independent_rows() == [("live", 1)]
+
+
+def test_folder_sync_holds_no_handle_while_waiting_or_statting(
+    rag_home, stub_embeddings, monkeypatch
+):
+    from core.rag import folder_sync
+
+    source = rag_home / "source"
+    source.mkdir()
+    for index in range(6):
+        (source / f"f{index}.txt").write_text(f"file {index} " + "words " * 20, encoding = "utf-8")
+    folder = folder_sync.create_folder(
+        scope_type = "knowledge_base",
+        scope_id = "scope-1",
+        path = str(source),
+        name = "Docs",
+    )
+    created: list[tuple[int, sqlite3.Connection]] = []
+    connect = sqlite_gate.connect
+
+    def tracking_connect(*args, **kwargs):
+        conn = connect(*args, **kwargs)
+        created.append((threading.get_ident(), conn))
+        return conn
+
+    def open_on_this_thread() -> int:
+        keepers = set(map(id, rag_db._wal_keepers.values()))
+        me = threading.get_ident()
+        return sum(
+            1
+            for owner, conn in created
+            if owner == me and id(conn) not in keepers and not _closed(conn)
+        )
+
+    seen = {"wait": [], "stat": []}
+    wait = folder_sync.wait
+    reappeared = folder_sync._source_reappeared
+
+    def checking_wait(*args, **kwargs):
+        seen["wait"].append(open_on_this_thread())
+        return wait(*args, **kwargs)
+
+    def checking_reappeared(*args, **kwargs):
+        seen["stat"].append(open_on_this_thread())
+        return reappeared(*args, **kwargs)
+
+    monkeypatch.setattr(rag_db.sqlite_gate, "connect", tracking_connect)
+    monkeypatch.setattr(folder_sync, "wait", checking_wait)
+    monkeypatch.setattr(folder_sync, "_source_reappeared", checking_reappeared)
+    assert _run(folder["id"])["status"] == "completed"
+    for index in range(3):
+        (source / f"f{index}.txt").unlink()
+    assert _run(folder["id"])["status"] == "completed"
+    assert seen["wait"] and set(seen["wait"]) == {0}
+    assert len(seen["stat"]) == 3 and set(seen["stat"]) == {0}
