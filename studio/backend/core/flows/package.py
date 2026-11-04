@@ -80,7 +80,7 @@ def scrub(value: Any, names: str = "") -> Any:
             if names or not (isinstance(k, str) and _SECRET_KEY.search(k))
         }
         # Request headers carry credentials under any name (Cookie, X-Custom-Auth): keep the names, drop the values.
-        if isinstance(found.get("headers"), dict):
+        if not names and isinstance(found.get("headers"), dict):
             found["headers"] = {
                 k: v if str(k).lower() in _PLAIN_HEADERS else ""
                 for k, v in found["headers"].items()

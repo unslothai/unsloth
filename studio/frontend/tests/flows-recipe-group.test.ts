@@ -1454,3 +1454,11 @@ test("a duplicated column skips names the recipe's setup blocks hold, and a copi
   assert.deepEqual(copy.multi_modal_context, [{ ...images[0], column_name: "domain_3" }]);
   assert.equal(studioView(graph.groups.recipe, Object.values(graph.nodes).filter((n) => n.group === "recipe")).errors.length, 0);
 });
+
+test("a formula subtracting two columns reads both, as the backend's import does", async () => {
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const net = { name: "net", column_type: "expression", expr: "{{gross-discount}}" };
+  assert.deepEqual(columnReferences(net as never, new Set(["gross", "discount"])), ["gross", "discount"]);
+  // A column whose name has a hyphen is still read whole.
+  assert.deepEqual(columnReferences(net as never, new Set(["gross-discount"])), ["gross-discount"]);
+});

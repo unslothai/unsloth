@@ -65,7 +65,9 @@ function templateNames(text: string): string[] {
       const before = body.slice(0, match.index).trimEnd();
       if (before.endsWith(".") || before.endsWith("|")) continue;
       if (loopVars.has(match[0])) continue;
-      names.push(match[0]);
+      // `{{gross-discount}}` subtracts two columns unless one column has that hyphenated name: both
+      // readings count, as `recipe_import._template_names` reads them.
+      names.push(match[0], ...(match[0].includes("-") ? match[0].split("-").filter(Boolean) : []));
     }
   }
   return names;
