@@ -3600,6 +3600,11 @@ def mirror_cfg_replica_adapter_scales(pipe: Any, logger: Any = None) -> bool:
             if attr in layer.__dict__:
                 value = layer.__dict__[attr]
                 copy_layer.__dict__[attr] = dict(value) if isinstance(value, dict) else copy.copy(value)
+    try:
+        # the fingerprint covers adapter scales: record the new ones as the replica's, else the next step rebuilds it
+        router.fingerprint = weights_fingerprint(module)
+    except Exception:  # noqa: BLE001 - unverifiable: drop the replica as before
+        return False
     router.stats["adapter_scale_mirrors"] = router.stats.get("adapter_scale_mirrors", 0) + 1
     if logger is not None:
         logger.info("diffusion.multigpu: CFG-parallel replica kept; LoRA scales mirrored onto it (%d layers)", len(src))

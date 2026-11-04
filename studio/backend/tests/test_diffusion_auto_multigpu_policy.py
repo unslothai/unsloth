@@ -292,6 +292,13 @@ def test_weight_only_lora_change_mirrors_scales_onto_the_replica_bitwise():
         _set_scale(fresh, 0.5)
         with torch.no_grad():
             assert torch.equal(_one_call(fresh), _one_call(router.replica))
+        # a guided render after the change keeps the same replica (no rebuild) and matches a one-card fresh load
+        with torch.no_grad():
+            out = _cfg_steps(model)
+            fresh_out = _cfg_steps(fresh)
+        assert router.replica is replica and router.stats["replica_rebuilds"] == 0
+        assert router.stats["replica_calls"] >= 2
+        assert torch.equal(out, fresh_out)
     finally:
         mg._CFG_ROUTERS.pop(pipe, None)
 
