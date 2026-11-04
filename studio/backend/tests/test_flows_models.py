@@ -323,6 +323,22 @@ def test_flows_own_lora_bake_reload_keeps_the_variant_record(monkeypatch):
     assert per_node == [2, 0, 0], per_node
 
 
+def test_streamed_reload_of_the_resident_model_keeps_its_gguf_variant(monkeypatch):
+    repo = "unsloth/FLUX.2-klein-4B-GGUF"
+    loads = []
+
+    async def fake_load_media(caller, ctx, **kwargs):
+        loads.append((kwargs.get("model"), kwargs.get("variant"), kwargs.get("knobs")))
+
+    monkeypatch.setattr(loading, "load_media", fake_load_media)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_BAKED_LORAS", {})
+    status = {"loaded": True, "repo_id": repo, "gguf_variant": "Q4_K_M"}
+    assert asyncio.run(_common._reload_with_loras(_ImageCtx(status), None, []))
+    assert loads == [(repo, "Q4_K_M", None)]
+
+
 class _BakedPipe:
     def set_adapters(
         self,

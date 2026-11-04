@@ -1094,7 +1094,10 @@ async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[li
             status = await ctx.call("GET", IMAGE_STATUS)
         except FlowNodeError:
             return False
-        repo = status.get("repo_id") if isinstance(status, dict) else None
+        status = status if isinstance(status, dict) else {}
+        repo = status.get("repo_id")
+        # Keep the resident GGUF quant: an unset variant resolves to the repo default and can switch files.
+        variant = status.get("gguf_variant") or None
     if not repo:
         return False
     wanted = frozenset(item["id"] for item in loras or [] if item.get("weight", 1.0) > 0)
