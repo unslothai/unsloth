@@ -47,6 +47,7 @@ class _Model(torch.nn.Module):
         self.config = types.SimpleNamespace(
             num_hidden_layers = 36, hidden_size = 2560, num_attention_heads = 32,
             num_key_value_heads = 8, head_dim = 128, intermediate_size = 9728, vocab_size = 151936,
+            model_type = "qwen3",
         )  # fmt: skip
         self.attns = torch.nn.ModuleList(_Attn() for _ in range(layers))
 
@@ -476,3 +477,30 @@ def test_keep_only_keeps_the_batch_size_decode_used(G):
     G.keep_only(model, None)
     assert {k for a in model.attns for k in a._unsloth_graph_buffers} == {(4, torch.float16, CUDA0)}
     assert [k[0] for k in state.graphs] == [4]
+
+
+@pytest.mark.parametrize("model_type", ["mistral", "qwen2", "gemma", "gemma2"])
+def test_a_model_type_that_never_graphs_keeps_eager_oom_and_planning(G, model_type):
+    """Mistral / Qwen2 / Gemma reach plain generate() with graph mode on but always decode eagerly: an
+    OOM there raises once as before (no redo, no CUDA-graph warning) and the plan neither estimates nor
+    releases nor counts an unfit call."""
+    model = _Model()
+    model.config.model_type = model_type
+    model.keep(1, 2816)
+    calls = []
+
+    def generate(*args, **kw):
+        calls.append(G.enabled())
+        raise torch.cuda.OutOfMemoryError("CUDA out of memory (stand-in)")
+
+    with G.generate_scope():
+        with warnings.catch_warnings(record = True) as caught:
+            warnings.simplefilter("always")
+            with pytest.raises(torch.cuda.OutOfMemoryError):
+                G.generate_with_fallback(model, generate, G.enabled(), (), {})
+    assert calls == [True]
+    assert not [w for w in caught if "ran out of GPU memory" in str(w.message)]
+    assert G.EAGER_REDOS == 0 and model.held() == 1
+    G._free_bytes = lambda device: 0
+    assert G.plan_call(model, _ids(16, 2048), torch.float16, 256, 4096) == ("graph", None)
+    assert G.EAGER_UNFIT == 0 and model.held() == 1 and G.emptied == 0

@@ -40,6 +40,7 @@ __all__ = [
     "studio_generation",
     "generate_scope",
     "eager_scope",
+    "graphable",
     "plan_call",
     "record_need",
     "decode_batch",
@@ -227,6 +228,11 @@ def _kept_buffers(model, key, rows):
     return kept, reused
 
 
+def graphable(model):
+    """Whether this model type can take the graphed decode step; others decode eagerly in graph mode."""
+    return getattr(getattr(model, "config", None), "model_type", None) in _SUPPORTED_MODEL_TYPES
+
+
 def plan_call(
     model,
     input_ids,
@@ -241,7 +247,8 @@ def plan_call(
     global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
-        not hasattr(input_ids, "shape")
+        not graphable(model)
+        or not hasattr(input_ids, "shape")
         or len(input_ids.shape) < 2
         or getattr(device, "type", None) != "cuda"
     ):
@@ -331,6 +338,7 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
     except torch.cuda.OutOfMemoryError:
         if (
             not graphs
+            or not graphable(model)
             or kwargs.get("streamer", None) is not None
             or kwargs.get("past_key_values", None) is not None
         ):
