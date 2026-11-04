@@ -209,6 +209,8 @@ def _now() -> str:
 
 
 def _hash_file(path: str) -> str:
+    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
+    rag_db.release_reused()
     digest = hashlib.sha256()
     with open(path, "rb") as source:
         for block in iter(lambda: source.read(1 << 20), b""):
@@ -552,6 +554,8 @@ def _update_folder(
 def _remove_snapshot(path: str | None) -> None:
     if not path:
         return
+    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
+    rag_db.release_reused()
     try:
         root = os.path.realpath(str(rag_uploads_root()))
         target = os.path.realpath(path)
@@ -1211,6 +1215,8 @@ def _scan(
 
 
 def _snapshot(root: str, metadata: dict) -> str:
+    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
+    rag_db.release_reused()
     source = metadata["path"]
     resolved = os.path.realpath(source)
     if not _is_within(root, resolved):
@@ -1298,6 +1304,8 @@ def _check_running() -> None:
 
 
 def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
+    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
+    rag_db.release_reused()
     try:
         current = _root_identity(root)
     except RuntimeError as exc:
@@ -1308,6 +1316,8 @@ def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
 
 def _source_reappeared(root: str, relative_path: str, excluded: set[str]) -> bool:
     """check scanner eligibility without following a replaced path component."""
+    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
+    rag_db.release_reused()
     path = PurePosixPath(relative_path)
     parts = path.parts
     if (
@@ -1923,8 +1933,6 @@ def _reconcile_folder(job_id: str) -> None:
     with rag_db.reuse_connections():
         for rel in removable:
             _check_running()
-            # Only stat calls until _delete_mapping: hold no rag.db handle across them.
-            rag_db.release_reused()
             _check_root_identity(folder["path"], scanned_identity)
             if _source_reappeared(folder["path"], rel, excluded):
                 raise _FolderChanged("Linked source reappeared during reconciliation")

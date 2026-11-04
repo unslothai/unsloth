@@ -220,9 +220,9 @@ def test_folder_sync_reuses_connections_and_commits_each_file(
     monkeypatch.setattr(rag_db.sqlite_gate, "connect", counting_connect)
     assert _run(folder["id"])["status"] == "completed"
     attach_opens = len(opens)
-    # About fourteen fresh opens per file before; one per file now (the worker's block) plus the
-    # lease heartbeat and a fixed per-pass overhead.
-    assert attach_opens < 12 * 6
+    # About fourteen fresh opens per file before; three per file now (the worker's block and two in
+    # finish_pending) plus the lease heartbeat and a fixed per-pass overhead.
+    assert attach_opens < 12 * 8
 
     # Metadata-only changes: each file's row must be committed before the next file starts.
     for path in source.iterdir():
@@ -247,8 +247,9 @@ def test_folder_sync_reuses_connections_and_commits_each_file(
     opens.clear()
     assert _run(folder["id"])["status"] == "completed"
     assert durable == [10**18] * 12
-    # Four fresh opens per file before, none now beyond the fixed per-pass ones.
-    assert len(opens) < 12 * 3
+    # Four fresh opens per file before (68 here); three now, since the stat and snapshot removal
+    # between them hold no connection.
+    assert len(opens) < 20 + 12 * 4 - 6
 
 
 def test_release_reused_closes_only_an_idle_shared_connection(rag_home):
@@ -288,7 +289,7 @@ def test_a_stale_close_does_not_end_another_callers_work(rag_home):
     assert _independent_rows() == [("live", 1)]
 
 
-def test_folder_sync_holds_no_handle_while_waiting_or_statting(
+def test_folder_sync_holds_no_handle_while_waiting_statting_or_copying(
     rag_home, stub_embeddings, monkeypatch
 ):
     from core.rag import folder_sync
@@ -320,24 +321,32 @@ def test_folder_sync_holds_no_handle_while_waiting_or_statting(
             if owner == me and id(conn) not in keepers and not _closed(conn)
         )
 
-    seen = {"wait": [], "stat": []}
-    wait = folder_sync.wait
-    reappeared = folder_sync._source_reappeared
+    # Probes sit inside the file work (after each helper's release), counting this thread's open handles.
+    seen = {"wait": [], "reappeared": [], "snapshot": [], "identity": [], "uploads": []}
 
-    def checking_wait(*args, **kwargs):
-        seen["wait"].append(open_on_this_thread())
-        return wait(*args, **kwargs)
+    def probe(name, real):
+        def wrapper(*args, **kwargs):
+            seen[name].append(open_on_this_thread())
+            return real(*args, **kwargs)
 
-    def checking_reappeared(*args, **kwargs):
-        seen["stat"].append(open_on_this_thread())
-        return reappeared(*args, **kwargs)
+        monkeypatch.setattr(folder_sync, real.__name__, wrapper)
 
+    probe("wait", folder_sync.wait)
+    probe("reappeared", folder_sync.PurePosixPath)
+    probe("snapshot", folder_sync._copy_exact)
+    probe("identity", folder_sync._root_identity)
+    probe("uploads", folder_sync.rag_uploads_root)
     monkeypatch.setattr(rag_db.sqlite_gate, "connect", tracking_connect)
-    monkeypatch.setattr(folder_sync, "wait", checking_wait)
-    monkeypatch.setattr(folder_sync, "_source_reappeared", checking_reappeared)
+    assert _run(folder["id"])["status"] == "completed"
+    for path in source.iterdir():
+        os.utime(path, ns = (10**18, 10**18))
     assert _run(folder["id"])["status"] == "completed"
     for index in range(3):
         (source / f"f{index}.txt").unlink()
     assert _run(folder["id"])["status"] == "completed"
     assert seen["wait"] and set(seen["wait"]) == {0}
-    assert len(seen["stat"]) == 3 and set(seen["stat"]) == {0}
+    assert len(seen["reappeared"]) == 3 and set(seen["reappeared"]) == {0}
+    assert len(seen["snapshot"]) == 12 and set(seen["snapshot"]) == {0}
+    assert len(seen["identity"]) >= 6 + 6 + 3 * 2 and set(seen["identity"]) == {0}
+    # twelve snapshot targets, six touch-pass removals, three removals after _delete_mapping commits
+    assert len(seen["uploads"]) >= 12 + 6 + 3 and set(seen["uploads"]) == {0}
