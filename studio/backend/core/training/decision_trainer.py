@@ -41,7 +41,12 @@ _abandoned_downloads: list[threading.Thread] = []
 
 def end_abandoned_download(event_queue: Any) -> None:
     # Shutdown joins the hub executor threads, so the worker would keep downloading and refuse the next run.
-    if not any(thread.is_alive() for thread in _abandoned_downloads):
+    # Only a worker process owns its exit; the in-process MLX adapter passes a plain queue from a thread.
+    owns_process = (
+        hasattr(event_queue, "join_thread")
+        and threading.current_thread() is threading.main_thread()
+    )
+    if not owns_process or not any(thread.is_alive() for thread in _abandoned_downloads):
         return
     with contextlib.suppress(Exception):
         event_queue.close()

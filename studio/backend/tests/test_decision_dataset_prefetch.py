@@ -288,6 +288,13 @@ def test_an_abandoned_download_does_not_hold_the_worker_open(tmp_path):
         decision_trainer._abandoned_downloads.append(thread)
         events = multiprocessing.get_context("spawn").Queue()
         events.put({"type": "error", "error": "bad rows"})
+        # The in-process MLX adapter: a plain queue, or any call off the main thread, must return.
+        import queue
+        worker._end_abandoned_decision_download(queue.Queue())
+        caller = threading.Thread(target = worker._end_abandoned_decision_download, args = (events,))
+        caller.start()
+        caller.join()
+        print("host survived", flush = True)
         worker._end_abandoned_decision_download(events)
         """
     )
@@ -304,6 +311,7 @@ def test_an_abandoned_download_does_not_hold_the_worker_open(tmp_path):
         finally:
             proc.kill()
     assert returncode == 0, log.read_text()[-2000:]
+    assert "host survived" in log.read_text()
     assert time.monotonic() - started < 25
 
 
