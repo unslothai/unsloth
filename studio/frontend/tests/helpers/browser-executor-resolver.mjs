@@ -24,7 +24,6 @@ const STUBS = {
     " export const localOriginGranted = (tabId, url) => globalThis.__granted?.get(tabId) === new URL(url).origin;",
   "../panel-availability": "export const browserPanelAvailable = () => globalThis.__panel !== false;",
   "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
-  // By extension alone: the real kinds come from the file viewers, which need a DOM.
   "./file-reader":
     "export const fileTabKind = ({ name }) => /\\.html?$/.test(name) ? 'preview' : /\\.pdf$/.test(name) ? 'document' : /\\.png$/.test(name) ? 'image' : 'text';" +
     " export const editable = (entry, kind) => kind === 'preview' || kind === 'text';" +

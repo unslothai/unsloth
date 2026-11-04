@@ -41,7 +41,6 @@ export function applyFileEdit(source: string, edit: FileEdit): { text: string; l
   let old = edit.oldText ?? "";
   let next = edit.newText ?? "";
   if (!old) return { error: "old_text is empty." };
-  // Read as lines, a CRLF file's text comes back with bare newlines.
   if (!source.includes(old) && source.includes("\r\n") && old.includes("\n")) {
     old = old.replace(/\r?\n/g, "\r\n");
     next = next.replace(/\r?\n/g, "\r\n");

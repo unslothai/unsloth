@@ -53,7 +53,6 @@ test("an edit replaces text found once, refuses ambiguous or missing text, and k
   assert.deepEqual(applyFileEdit("x x", { oldText: "x", newText: "y", replaceAll: true }), { text: "y y", line: 1 });
   assert.match((applyFileEdit("abc", { oldText: "z", newText: "y" }) as { error: string }).error, /not in the file/);
   assert.deepEqual(applyFileEdit("a\r\nb\r\nc", { oldText: "a\nb", newText: "a\nB" }), { text: "a\r\nB\r\nc", line: 1 });
-  // A replacement with $& is the text itself, not a pattern.
   assert.deepEqual(applyFileEdit("price", { oldText: "price", newText: "$&5" }), { text: "$&5", line: 1 });
   assert.deepEqual(applyFileEdit("old", { content: "new" }), { text: "new", line: 1 });
 });
@@ -94,7 +93,6 @@ test("a file's preview is read through its frame, and its links are not taken as
   assert.equal(snapshot.text, "link r1 x");
   assert.match(snapshot.note ?? "", /browser_edit_file/);
 
-  // In the desktop app web pages are native views, but a file's preview is still the frame.
   globals.__native = true;
   try {
     const desktop = await act("snapshot");
@@ -103,7 +101,6 @@ test("a file's preview is read through its frame, and its links are not taken as
     globals.__native = false;
   }
 
-  // The agent could have written that link itself, so following it asks as a made-up address does.
   let navigate = "https://example.com/";
   globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
     if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000 } };
@@ -142,7 +139,6 @@ test("a click that takes the preview a while is sent once, not again after a sho
   endBrowserAgentRun(RUN);
   let clicks = 0;
   globals.__frameAgent = (_tabId: string, op: Record<string, unknown>, _code: string, timeoutMs: number) => {
-    // As requestFrameAgent: no answer within its wait is null, though the page still runs the call.
     const answer = (value: unknown, after = 0) =>
       Promise.race([new Promise((resolve) => setTimeout(() => resolve(value), after)), new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs))]);
     if (op.op === "click") {
@@ -198,7 +194,6 @@ test("an edit stopped while the file is read leaves the file as it was", async (
   const released = new Promise<void>((resolve) => { release = resolve; });
   const slow = Object.assign(new Blob([source], { type: "text/html" }), { text: () => released.then(() => source) });
   useBrowserStore.getState().openFile({ blob: slow, name: "stop.html", contentType: "text/html", key: "html:stop" });
-  // Its own run: a stopped run's later actions all answer "stopped".
   const pending = act("edit_file", { oldText: "Keep", newText: "Changed" }, "stopped-run");
   for (let i = 0; i < 100 && agentChat("new").runKey !== "stopped-run"; i++) await new Promise((resolve) => setTimeout(resolve, 5));
   await new Promise((resolve) => setTimeout(resolve, 20));

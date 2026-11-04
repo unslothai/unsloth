@@ -366,7 +366,6 @@ type BrowserState = {
     options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
   ) => void;
   openFile: (input: OpenFileInput) => void;
-  /** The tab's file as edited, after the version it shows, so Back goes to that one. */
   editFile: (tabId: string, blob: Blob) => void;
   navigate: (
     tabId: string,
@@ -738,7 +737,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       if (shown?.kind !== "file") return;
       const fileId = newId("file");
       files.set(fileId, blob);
-      // Without the openKey: reopening the original from chat refreshes a tab in place, which would drop the edit.
+      // No openKey: a reopen from chat would replace the edit in place.
       const { openKey: _, ...rest } = shown;
       set((state) => ({ tabs: patchTab(state.tabs, tabId, (current) => pushEntry(current, { ...rest, fileId })) }));
     },

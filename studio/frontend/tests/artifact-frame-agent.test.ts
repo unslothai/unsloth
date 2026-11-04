@@ -10,7 +10,6 @@ const backend = readFileSync(new URL("../../backend/routes/inference.py", import
 const shell = backend.match(/_ARTIFACT_PREVIEW_FRAME_HTML = """([\s\S]*?)"""/)![1]!.replace(/\\(["\\])/g, "$1");
 const script = shell.match(/<script>([\s\S]*?)<\/script>/)![1]!;
 
-/** The shell with just enough DOM to run an inline script, and no eval: the strict CSP has none. */
 function preview() {
   const listeners = new Map<string, Array<(event: unknown) => void>>();
   const reports: Array<Record<string, unknown>> = [];
@@ -70,7 +69,6 @@ function preview() {
   return { context, message, reports };
 }
 
-// Made in the canvas's realm: compared by value.
 const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
 const agentCode = "(() => ({ run: (op) => ({ ok: true, text: `ran ${op.op}` }) }))();";
 const agent = (id: string, fields = {}) => ({ type: "unsloth:browser-command", command: "agent", id, op: { op: "snapshot" }, ...fields });

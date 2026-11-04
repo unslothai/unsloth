@@ -3942,8 +3942,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
         const annotationFactory = (post) => {
           /* ANNOTATE_JS */
         };
-        // Browser use (agent/page-agent.ts): no eval under this CSP, so an inline script hands the agent
-        // over on a one-time key, with built-ins taken before the canvas's scripts can replace them.
+        // No eval under this CSP: the page agent arrives as an inline script, on a one-time key.
         const buildAgent = (() => {
           let apply, create, root, setText, append, detach, random, join, Words;
           try {

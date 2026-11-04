@@ -471,7 +471,7 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
     cursor,
     ...(cursor ? { cursorColor: cursorAccent(), cursorStill: reducedMotion() } : {}),
   };
-  // A file's preview is the artifact frame even in the desktop app, where web pages are native views.
+  // File previews are frames, never native views.
   const native = useNativeBrowser.getState().enabled && currentEntry(tab).kind === "web";
   const started = Date.now();
   const fresh = () => {
@@ -492,7 +492,7 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
         if (reply && !reply.installed) reply = await call(fresh(), pageAgentSource());
       }
     } else {
-      // A mounting preview drops calls and is never marked loading: short tries, for reads only (safe twice).
+      // Short tries for reads only: they are safe to repeat.
       const wait = currentEntry(tab).kind === "file" && READ_OPS.has(String(request.op)) ? FILE_FRAME_TRY_MS : undefined;
       reply = await requestFrameAgent(tab.id, command, undefined, wait);
       if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource(), wait);
@@ -708,7 +708,7 @@ function nameStep(chat: string, info: ElementInfo): void {
 
 function permissions(context: Pick<Run, "fullAccess" | "inFile">) {
   const stored = useBrowserAgentStore.getState().permissions;
-  // A file's preview is no site and its forms can't send (form-action 'none'); its links are still gated.
+  // Preview forms can't send (form-action 'none'); links are still gated.
   const saved = context.inFile
     ? { ...stored, defaults: { ...stored.defaults, actions: "allow" as const, unlabelled: "allow" as const } }
     : stored;
@@ -783,7 +783,6 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (owner && owner !== context.runKey) {
     return { ok: false, error: "Another reply in this chat is using the browser right now. Wait for it to finish, or tell the user." };
   }
-  // A reply starts on the file the user has in front: "fix this page" means the one on screen.
   const front = owner ? null : frontTab(chat);
   if (front && currentEntry(front).kind === "file" && agentChat(chat).tabId !== front.id) moveRun(context, front.id);
   patchAgentChat(chat, { working: true, runKey: context.runKey, step: stepOf(action) });
@@ -889,7 +888,6 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       if (!chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
       context.inFile = true;
       showPreview(ready);
-      // Until the frame answers, so an action isn't the call a mounting preview drops.
       const warm = await pageCall(ready, { op: "status" }).catch((error: Error) => ({ ok: false, error: error.message }));
       if (!warm.ok) return { ok: false, error: warm.error ?? NO_PAGE_IN_FILE };
     }
@@ -950,7 +948,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
   const activates = action.op === "press" && (action.key === "Enter" || action.key === "Space");
-  // A pressed link in a preview is followed by the frame itself, past the gate.
+  // The frame would follow a pressed link unchecked.
   if (context.inFile && activates && info.role === "link") return { ok: false, error: "click the link instead of pressing a key on it." };
   if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", gated, here, action.policy, permissions(context)));
   // Deleting is editing: a password or card field the agent can't type into it can't empty either.
@@ -1141,7 +1139,7 @@ function fileTab(context: Run): BrowserTab | null {
   return front;
 }
 
-/** Web tabs by site alone: a title can say what the user is reading, which history access guards. */
+/** Web tabs by site alone: a title is browsing history. */
 async function listTabs(action: BrowserAction, context: Run): Promise<Result> {
   const { chat } = context.session;
   const tabs = useBrowserStore.getState().tabs.filter((tab) => tab.chat === chat);
@@ -1236,7 +1234,6 @@ async function editFile(tab: BrowserTab, action: BrowserAction, signal?: AbortSi
   const edited = applyFileEdit(source, { oldText: action.oldText, newText: action.newText, replaceAll: action.replaceAll, content: action.content });
   if ("error" in edited) return { ok: false, error: edited.error };
   if (edited.text === source) return { ok: true, file: entry.name, note: "The file already reads that way; nothing changed." };
-  // Stop may have come, or the user gone Back or reopened the file, while it was read.
   if (signal?.aborted) return { ok: false, error: STOPPED };
   const now = findTab(tab.id);
   if (!now || currentEntry(now) !== entry) return { ok: false, error: "the tab changed while the file was being edited; read it again." };
@@ -1264,13 +1261,12 @@ async function observeFile(tab: BrowserTab, entry: FileEntry, context: Run, note
   if (!fresh || fresh.loading || currentEntry(fresh) !== entry) {
     return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
   }
-  // The agent can write this page, so its links are no one else's choice: following one asks as a new address would.
+  // The agent can write this page, so its links are not the user's.
   if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set();
   const source = op.op === "snapshot" ? "This is a file's preview; browser_read_file and browser_edit_file work on its source." : "";
   return { ok: true, file: entry.name, text: answer.text, note: [note, answer.note, source].filter(Boolean).join(" ") || undefined };
 }
 
-/** A relative link resolves into Studio, which serves the preview, not to a page. */
 function openFromFile(url: string, action: BrowserAction, context: Run): Promise<Result> {
   if (isStudioUrl(url)) {
     return Promise.resolve({
@@ -1444,7 +1440,6 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
   return afterward(tab, before, action, context, since, up.note);
 }
 
-/** A preview's form action is the panel's own frame address, and its forms can't send. */
 function gateable(info: ElementInfo, context: Run): ElementInfo {
   return context.inFile ? { ...info, formAction: "" } : info;
 }
@@ -1592,7 +1587,6 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   const entry = currentEntry(tab);
   const kind = entry.kind === "file" ? await kindOf(entry) : null;
   if (entry.kind === "file" && kind === "image") return imageFile(entry);
-  // A file has no view of its own to capture off screen: the panel there is another chat's.
   if (entry.kind === "file" && !chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
   if (!isTauri) return { ok: false, error: "screenshots of the browser panel need the desktop app; use browser_snapshot." };
   // A page at work off screen is captured on its own; one on screen as the panel shows it.
@@ -1631,7 +1625,7 @@ function dataUrl(blob: Blob): Promise<string> {
   });
 }
 
-/** From the blob, not a capture, so it works in the web app; PNG, as the server reads no SVG or AVIF. */
+// PNG: the server reads no SVG or AVIF.
 async function imageFile(entry: FileEntry): Promise<Result> {
   const blob = browserFile(entry.fileId);
   const url = blob ? URL.createObjectURL(blob) : null;

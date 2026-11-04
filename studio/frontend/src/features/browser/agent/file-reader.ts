@@ -8,7 +8,6 @@ import { type FileTabKind, MAX_EDIT_BYTES } from "./file-tab";
 
 type FileEntry = Extract<BrowserEntry, { kind: "file" }>;
 
-// Text underneath, though the panel shows them as a picture or a table.
 const TEXT_UNDERNEATH = /\.(svg|csv|tsv)$/i;
 const TEXT_UNDERNEATH_TYPE = /^(image\/svg\+xml|text\/csv|text\/tab-separated-values)\b/i;
 
