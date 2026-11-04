@@ -64,7 +64,7 @@ class Query:
     hybrid: bool = False  # linear attention / state space layers beside attention
     multimodal: bool = False
     windowed: bool = False  # sliding window, chunked attention or logit softcapping
-    mode: str = "lora"  # lora, qlora, full
+    mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
     torch: tuple = (0, 0)
@@ -951,9 +951,40 @@ def _model_traits(model):
     return family, hybrid, multimodal, windowed
 
 
+def _low_precision(model) -> Optional[str]:
+    """Return "fp8" if fp8 LoRA is requested / attached or torchao Float8Linear layers exist, else None."""
+    stack, seen = [model], set()
+    while stack and len(seen) < 8:
+        m = stack.pop()
+        if m is None or id(m) in seen:
+            continue
+        seen.add(id(m))
+        # enable_fp8_lora leaves an empty bases tuple when it converted nothing: that run trains in 16 bit.
+        requested = isinstance(getattr(m, "_unsloth_fp8_lora_recipe", None), str) and (
+            getattr(m, "_unsloth_fp8_lora_bases", None) != ()
+        )
+        linears = getattr(m, "_unsloth_float8_linears", None)
+        if requested or (isinstance(linears, (list, tuple)) and len(linears) > 0):
+            return "fp8"
+        stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
+    try:
+        for m in model.modules():
+            if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
+                return "fp8"
+            cls = type(m)
+            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+                return "fp8"
+    except Exception:
+        pass
+    return None
+
+
 def _mode(model):
     if model is None or isinstance(model, str):
         return "lora"
+    low_precision = _low_precision(model)
+    if low_precision is not None:
+        return low_precision
     if getattr(model, "is_loaded_in_4bit", False) or getattr(
         getattr(model, "config", None), "quantization_config", None
     ):
