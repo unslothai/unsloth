@@ -369,8 +369,10 @@ def trained_system_prompt(config: dict) -> str:
     the SFT mapping's system prompt. A per-row system column has no single value to reuse."""
     mapping = config.get("custom_format_mapping")
     if config.get("objective") == "grpo" and config.get("rl_system_prompt"):
-        # A column mapped to the system role wins over the fallback prompt, row by row.
-        if isinstance(mapping, dict) and "system" in mapping.values():
+        # The fallback is only known to be every row's system message under an explicit mapping with
+        # no system column: without one, a `system` column or a conversation's own system message
+        # (found by the formatter) wins row by row, so no single prompt is claimed.
+        if not isinstance(mapping, dict) or not mapping or "system" in mapping.values():
             return ""
         return str(config["rl_system_prompt"])
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
@@ -852,7 +854,8 @@ def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
         return stream()
     if known > HOLDOUT_MAX_ROWS:
         raise _too_many(known)
-    return load_dataset(ref, subset, split = split, token = token)
+    # Streamed even when small: a whole-split load prepares every split of the dataset first.
+    return stream()
 
 
 def _load_rows(

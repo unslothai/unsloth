@@ -904,8 +904,14 @@ def test_chat_with_checkpoint_asks_with_the_trained_system_prompt(monkeypatch):
 
 
 def test_the_checkpoint_carries_the_one_system_prompt_training_used():
-    grpo = {"objective": "grpo", "rl_system_prompt": "Use <answer> tags."}
+    grpo = {
+        "objective": "grpo",
+        "rl_system_prompt": "Use <answer> tags.",
+        "custom_format_mapping": {"q": "user", "a": "assistant"},
+    }
     assert training.trained_system_prompt(grpo) == "Use <answer> tags."
+    # Without a mapping the formatter may find a system column or message per row: no single prompt.
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}) == ""
     sft = {
         "custom_format_mapping": {
             "q": "user",
@@ -1165,3 +1171,10 @@ def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
     assert training.trained_system_prompt(config) == ""
     config["custom_format_mapping"] = {"question": "user"}
     assert training.trained_system_prompt(config) == "Reason, then answer."
+
+
+def test_a_small_whole_split_is_streamed_too(monkeypatch):
+    # The world's loader refuses any non-streamed read.
+    asked = _compound_world(monkeypatch, {"train": 3, "test": 50})
+    rows = training._hub_rows({"ref": "a/b", "split": "train"}, None, 0, None)
+    assert [r["q"] for r in rows] == ["train0", "train1", "train2"] and asked == ["train"]
