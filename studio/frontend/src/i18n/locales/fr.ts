@@ -3993,8 +3993,6 @@ export const fr = {
             "Ce jeu de données semble contenir des images, ce qui empêche son utilisation en streaming.",
           audioDataset:
             "Ce jeu de données semble contenir de l'audio, ce qui empêche son utilisation en streaming.",
-          appleSilicon:
-            "Le streaming n'est pas encore pris en charge sur Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "réponses de l'assistant uniquement",

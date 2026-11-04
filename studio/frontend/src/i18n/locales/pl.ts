@@ -4281,8 +4281,6 @@ export const pl = {
             "Ten zbiór danych wygląda na obrazy, których nie można strumieniować.",
           audioDataset:
             "Ten zbiór danych wygląda na audio, którego nie można strumieniować.",
-          appleSilicon:
-            "Strumieniowanie nie jest jeszcze obsługiwane na Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "tylko odpowiedzi asystenta",

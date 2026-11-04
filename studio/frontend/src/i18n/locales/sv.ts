@@ -4123,7 +4123,6 @@ export const sv = {
             "Den här datauppsättningen verkar innehålla bilder, som inte kan strömmas.",
           audioDataset:
             "Den här datauppsättningen verkar innehålla ljud, som inte kan strömmas.",
-          appleSilicon: "Strömning stöds inte på Apple Silicon (MLX) ännu.",
         },
         options: {
           trainOnCompletions: "endast assistentslutföranden",
