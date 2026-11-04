@@ -39,3 +39,9 @@ test("a bookmark made in another window survives a bookmark made in this one", (
     "chat-b": ["m2"],
   });
 });
+
+test("clearing storage in another window drops this window's bookmarks", () => {
+  data.clear();
+  for (const listener of listeners) listener({ key: null });
+  assert.deepEqual(useBookmarkedTurnsStore.getState().bookmarkedByThread, {});
+});
