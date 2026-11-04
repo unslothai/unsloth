@@ -3508,6 +3508,11 @@ def install_cfg_parallel(
         candidates = same if cfg_parallel_mode() != "force" else list(selection.secondaries)
         automatic = selection.automatic and cfg_parallel_mode() != "force"
         auto_reason = None
+        try:
+            placed = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).values()
+        except TypeError:
+            placed = ()
+        occupied = {str(d) for d in placed} - {str(primary)}
         if automatic:
             # nothing else may live on a card Automatic borrows for a replica (busy: memory in use or computing)
             need = sum(
@@ -3515,21 +3520,19 @@ def install_cfg_parallel(
             ) // (1 << 20)
             pick, auto_reason = automatic_partner(
                 probes.get(primary.index) or DeviceProbe(primary.index, "", None, None),
+                # a card holding the split's components cannot take the replica: never the one Automatic lends
                 [
                     probes[o]
                     for o in selection.secondaries
-                    if probes.get(o) is not None and probes[o].free_mib is not None
+                    if probes.get(o) is not None
+                    and probes[o].free_mib is not None
+                    and f"cuda:{o}" not in occupied
                 ],
                 need,
             )
             candidates = [o for o in candidates if _idle_card(probes.get(o))]
             if pick is not None:
                 candidates = [pick]
-        try:
-            placed = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).values()
-        except TypeError:
-            placed = ()
-        occupied = {str(d) for d in placed} - {str(primary)}
         if occupied:
             candidates = [o for o in candidates if f"cuda:{o}" not in occupied]
         if not candidates and occupied:

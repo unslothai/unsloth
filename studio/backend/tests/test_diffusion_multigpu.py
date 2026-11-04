@@ -2806,3 +2806,35 @@ def test_warm_signature_keys_on_storage_offset_and_autocast():
     with torch.autocast("cpu", enabled = False, cache_enabled = False):
         assert mg._call_signature((base[:4],), {}) != a
     assert mg._call_signature((base[:4],), {}) == a
+
+
+def test_automatic_partner_skips_a_card_holding_the_splits_components(monkeypatch):
+    """Three cards, Automatic: the idlest card holds a small text encoder of the split, so it cannot take the replica;
+    the next idle card does (the occupied card is excluded before the partner is chosen, not after)."""
+
+    class Pipe:
+        transformer = _Dit()
+
+    probes = {
+        0: mg.DeviceProbe(ordinal = 0, name = "B200", total_mib = 180000, free_mib = 170000, util_pct = 0.0),
+        1: mg.DeviceProbe(ordinal = 1, name = "B200", total_mib = 180000, free_mib = 179900, util_pct = 0.0),
+        2: mg.DeviceProbe(ordinal = 2, name = "B200", total_mib = 180000, free_mib = 179800, util_pct = 0.0),
+    }
+    monkeypatch.setattr(mg, "cfg_parallel_decline", lambda pipe, **kw: None)
+    monkeypatch.setattr(mg, "_module_device", lambda m: torch.device("cuda", 0))
+    monkeypatch.setattr(
+        mg, "probe_devices", lambda ordinals, **kw: {o: probes[o] for o in ordinals}
+    )
+    pipe = Pipe()
+    mg._PLACEMENTS[pipe] = {
+        "placement": {"transformer": "cuda:0", "vae": "cuda:0", "text_encoder": "cuda:1"}
+    }
+    try:
+        with mg.selection_scope(
+            mg.MultiGpuSelection(primary = 0, secondaries = (1, 2), automatic = True)
+        ):
+            assert mg.install_cfg_parallel(pipe, offload_policy = "none") is None
+        assert str(mg._CFG_ROUTERS[pipe].secondary) == "cuda:2"
+    finally:
+        mg.uninstall_cfg_parallel(pipe)
+        mg._PLACEMENTS.pop(pipe, None)
