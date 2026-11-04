@@ -81,8 +81,8 @@ def engage(monkeypatch):
     monkeypatch.setattr(dmod, "drop_displaced_cfg_router", lambda *a, **k: None)
     backend = object.__new__(dmod.DiffusionBackend)
 
-    def run(offload_policy = dmod.OFFLOAD_MODEL):
-        state = types.SimpleNamespace(
+    def make(offload_policy = dmod.OFFLOAD_MODEL):
+        return types.SimpleNamespace(
             pipe = types.SimpleNamespace(unet = _tiny_unet()),
             speed_deferred = True,
             deferred_static_plan = {"every": 3, "min_steps": 20},
@@ -91,9 +91,13 @@ def engage(monkeypatch):
             offload_policy = offload_policy,
             device = "cuda:0",
         )
+
+    def run(offload_policy = dmod.OFFLOAD_MODEL, state = None):
+        state = state if state is not None else make(offload_policy)
         dmod.DiffusionBackend._engage_deferred_speed(backend, state)
         return state, bool(ran and ran[-1] is state)
 
+    run.make = make
     return run
 
 
@@ -140,3 +144,13 @@ def test_unreadable_card_engages(card, engage, monkeypatch):
     card.update(peak = 7700)
     _state, engaged = engage()
     assert engaged
+
+
+def test_eager_peak_read_at_render_end_survives_a_counter_reset(card, engage):
+    # a caller resets the peak counters before the 3rd generate: the eager peak noted as render 2 ended still counts
+    state = engage.make()
+    card.update(peak = 7778 - 300, free = 544, reserved = 7234)
+    dmod._note_deferred_eager_peak(state)
+    card["peak"] = 10
+    _state, engaged = engage(state = state)
+    assert not engaged

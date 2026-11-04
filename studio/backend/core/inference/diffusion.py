@@ -3059,6 +3059,39 @@ _DEFERRED_HEADROOM_MIN_BYTES = 512 << 20
 _DEFERRED_HEADROOM_FRACTION = 0.10
 
 
+_DEFERRED_EAGER_PEAK_ATTR = "_unsloth_deferred_eager_peak"
+
+
+def _deferred_peak_now(dev: Any) -> int:
+    from .diffusion_stable_arena import peak_mapped_bytes
+    import torch
+
+    return int(torch.cuda.max_memory_allocated(dev)) + int(peak_mapped_bytes(dev.index))
+
+
+def _cuda_device_of(state: Any) -> Any:
+    import torch
+
+    dev = torch.device(str(getattr(state, "device", "")))
+    if dev.type != "cuda" or not torch.cuda.is_available():
+        return None
+    return dev if dev.index is not None else torch.device("cuda", torch.cuda.current_device())
+
+
+def _note_deferred_eager_peak(state: Any) -> None:
+    """Keep the highest device peak of this load's eager renders, read as each one ends (a caller may reset the peak
+    counters before the next generate, which would hide them from a read at engagement)."""
+    try:
+        dev = _cuda_device_of(state)
+        if dev is None:
+            return
+        pipe = state.pipe
+        peak = max(_deferred_peak_now(dev), int(getattr(pipe, _DEFERRED_EAGER_PEAK_ATTR, 0) or 0))
+        setattr(pipe, _DEFERRED_EAGER_PEAK_ATTR, peak)
+    except Exception:  # noqa: BLE001 - measurement only
+        pass
+
+
 def _deferred_profile_headroom_short(state: Any) -> Optional[str]:
     """Why the deferred profile would not fit on the card, else None. The eager renders' measured peak plus the bytes
     the profile adds to the denoiser (the U-Net QKV fuse keeps the unfused projections) must leave a margin inside
@@ -3073,15 +3106,16 @@ def _deferred_profile_headroom_short(state: Any) -> Optional[str]:
     try:
         import torch
 
-        dev = torch.device(str(getattr(state, "device", "")))
-        if dev.type != "cuda" or not torch.cuda.is_available():
+        dev = _cuda_device_of(state)
+        if dev is None:
             return None
-        if dev.index is None:
-            dev = torch.device("cuda", torch.cuda.current_device())
-        from .diffusion_stable_arena import mapped_bytes, peak_mapped_bytes
+        from .diffusion_stable_arena import mapped_bytes
 
-        # the peak since the last render's probe reset: the eager renders this load just ran
-        peak = int(torch.cuda.max_memory_allocated(dev)) + int(peak_mapped_bytes(dev.index))
+        # the eager renders this load ran, as each one ended (plus anything since)
+        peak = max(
+            _deferred_peak_now(dev),
+            int(getattr(state.pipe, _DEFERRED_EAGER_PEAK_ATTR, 0) or 0),
+        )
         free, _total = torch.cuda.mem_get_info(dev)
         capacity = int(free) + int(torch.cuda.memory_reserved(dev)) + int(mapped_bytes(dev.index))
     except Exception:  # noqa: BLE001 - unreadable: engage as before
@@ -14803,6 +14837,8 @@ class DiffusionBackend:
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 if (_hires_pass is None or not _hires_pass.refine) and not aux_pass:
                     object.__setattr__(state, "generation_count", state.generation_count + 1)
+                    if state.speed_deferred:
+                        _note_deferred_eager_peak(state)
                 result = {
                     "images": list(images),
                     "seed": int(seed),
