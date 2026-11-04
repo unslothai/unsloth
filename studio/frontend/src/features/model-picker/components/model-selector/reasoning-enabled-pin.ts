@@ -47,7 +47,9 @@ export function resolveReasoningEnabledOnLoad(options: {
   if (options.reasoningAlwaysOn) return true;
   if (!options.supportsReasoning) return options.reasoningDefault;
   if (!options.supportsReasoningOff) return true;
-  if (options.pinned !== null) return options.pinned;
+  // A same-model reload keeps what is on screen: a chat switch restores its own value without
+  // writing the pin, so the pin can be stale here.
   if (options.reloadingSameModel) return options.previousEnabled;
+  if (options.pinned !== null) return options.pinned;
   return options.reasoningDefault;
 }

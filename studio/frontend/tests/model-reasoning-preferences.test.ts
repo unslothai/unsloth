@@ -385,6 +385,23 @@ test("thinking pins survive eject and outrank the family default on reload", () 
   );
 });
 
+test("a same-model reload keeps the live value over a stale pin", () => {
+  for (const previousEnabled of [true, false]) {
+    assert.equal(
+      resolveReasoningEnabledOnLoad({
+        reasoningAlwaysOn: false,
+        supportsReasoning: true,
+        supportsReasoningOff: true,
+        pinned: !previousEnabled,
+        reloadingSameModel: true,
+        previousEnabled,
+        reasoningDefault: true,
+      }),
+      previousEnabled,
+    );
+  }
+});
+
 test("turning thinking off pins the loaded checkpoint; persist false does not", async () => {
   const runtime = await boot("thinking-pin");
   const store = runtime.useChatRuntimeStore;
