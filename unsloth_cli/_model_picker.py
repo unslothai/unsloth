@@ -3,17 +3,33 @@
 
 """Numbered picker over the models on this device, shared by `unsloth chat` and `unsloth start`."""
 
+from pathlib import Path
 from typing import Callable, List, Optional
 
 import typer
 
 
 def _is_gguf_entry(entry) -> bool:
-    # Downloaded GGUFs resolve to a .gguf file (or keep a *-GGUF repo id when that fails); GGUF
-    # exports and local folders carry exactly "gguf" as detail. Not a substring match: a path or
-    # dataset title containing "gguf" would list a model the agent then loads and refuses.
+    if entry.detail.lower() == "gguf":
+        return True
+    # A training directory can be named *-GGUF or *.gguf without containing GGUF weights.
+    try:
+        if Path(entry.model).is_dir():
+            return False
+    except OSError:
+        return False
     model = entry.model.lower().rstrip("/")
-    return model.endswith((".gguf", "-gguf")) or entry.detail.lower() == "gguf"
+    if model.endswith(".gguf"):
+        return True
+    if not model.endswith("-gguf"):
+        return False
+    from huggingface_hub.utils import HFValidationError, validate_repo_id
+
+    try:
+        validate_repo_id(model)
+    except HFValidationError:
+        return False
+    return True
 
 
 def quiet_inventory_logs() -> None:
