@@ -27,9 +27,8 @@ __all__ = [
 ]
 
 
-# M (decode rows) stays specialized: M == 1 folds the row split (unspecialized was 0.5-0.9% slower on
-# T4), batch 1 (fast_gemv) and 2..4 rows (gemv_nf4_rows, capped per GPU) are separate call sites, and
-# no cap reaches 16, so it adds no variant per call site. K and OUT_STRIDE keep their % 16 hint.
+# M stays specialized: M == 1 folds the row split (unspecialized 0.5-0.9% slower on T4), and M == 1
+# vs 2..4 are separate call sites, so no extra variants.
 @triton.jit
 def _gemv_nf4_kernel(
     X,
@@ -42,7 +41,7 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
-    M,  # runtime, specialized on == 1 on purpose (see above)
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
     BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
     BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
@@ -111,7 +110,7 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
-    M,  # runtime, specialized on == 1 on purpose (see above)
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
     BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
     BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight

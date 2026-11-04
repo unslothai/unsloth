@@ -84,8 +84,6 @@ def _norm_rope_fwd_block(
     tl.store(y_ptr + HALF, y1 * cos1[None, :] + y0 * sin1[None, :], mask = mask)
 
 
-# seqlen only splits a row into (batch, position): unspecialized, so decode (seqlen 1) and every
-# prompt length share one variant.
 @triton.jit(do_not_specialize = ("seqlen",))
 def _qk_norm_rope_forward(
     Qo,

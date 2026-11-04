@@ -223,8 +223,7 @@ def _rope_embedding_QK(
 
 
 # No triton.heuristics wrapper: the launcher passes real bools, and the wrapper's per-call cost
-# showed up at small (decode / short-sequence) shapes. seqlen only feeds the row -> (batch,
-# position) split: unspecialized, decode (seqlen 1) and every prompt length share one variant.
+# showed up at small (decode / short-sequence) shapes.
 _rope_embedding_QK = triton.jit(_rope_embedding_QK, do_not_specialize = ("seqlen",))
 
 # Elements of one half-head tile a program rotates: several heads per program instead of one

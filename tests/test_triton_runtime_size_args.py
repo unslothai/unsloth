@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Per-call sizes (token rows, split counts, decode rows, sequence length) stay runtime Triton
-arguments with do_not_specialize, so a kernel does not compile a new variant per prompt length,
-batch size, split count or decode step; every tl.constexpr in the decode / NF4 / LoRA kernels says
-why it is static for a model."""
+"""Per-call sizes stay do_not_specialize (no recompile per shape); every tl.constexpr says why it is static."""
 
 import ast
 import pathlib
@@ -13,7 +10,6 @@ import pytest
 
 KERNELS = pathlib.Path(__file__).resolve().parents[1] / "unsloth" / "kernels"
 
-# Values that change with batch size, sequence length or decode step and only feed index math.
 CASES = {
     "layernorm.py": {
         "layernorm_backward_dw": ("n_rows", "rows_per_program"),
@@ -27,8 +23,7 @@ CASES = {
     },
 }
 
-# Sizes that must keep Triton's specialization: they mask a contiguous axis or offset a vector load
-# (the % 16 hint), or, for the NF4 GEMV's M, == 1 folds the row split at batch 1 (measured faster).
+# Must stay specialized: % 16 hint on masked/vector loads; NF4 GEMV M == 1 folds the row split.
 KEEP_SPECIALIZED = {
     "swiglu.py": {"_fg_kernel": ("n_elements",), "_DWf_DW_dfg_kernel": ("n_elements",)},
     "geglu.py": {
@@ -43,7 +38,6 @@ KEEP_SPECIALIZED = {
     "fp8_lora.py": {"_fp8_tensorwise_cast_kernel": ("numel",)},
 }
 
-# Every tl.constexpr parameter of these kernels carries a comment saying why it is static.
 COMMENTED = ("nf4.py", "nf4_gemv.py", "fp8_lora.py", "multi_lora.py")
 
 
@@ -61,7 +55,6 @@ def _names(node):
 
 
 def _do_not_specialize(tree, fn):
-    # @triton.jit(do_not_specialize = ...) or name = triton.jit(name, do_not_specialize = ...).
     calls = [d for d in fn.decorator_list if isinstance(d, ast.Call)]
     for node in ast.walk(tree):
         if (
@@ -121,7 +114,6 @@ def test_every_constexpr_is_commented(rel):
         cx = [a for a in fn.args.args if _is_constexpr(a)]
         if not cx:
             continue
-        # The signature: from the def line to the line holding the body's first statement.
         end = fn.body[0].lineno - 1
         comments = " ".join(l.split("#", 1)[1] for l in lines[fn.lineno - 1 : end] if "#" in l)
         for a in cx:
