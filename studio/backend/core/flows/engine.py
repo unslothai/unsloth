@@ -34,7 +34,7 @@ from core.flows import model_settings
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
 from core.flows.compiler import FOR_EACH, RECIPE_PARAM, CompileError, Plan, compile_flow
-from core.flows.registry import FlowCancelled, FlowNodeError, load_handlers
+from core.flows.registry import CACHE_HOOKS, FlowCancelled, FlowNodeError, load_handlers
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
 from utils.account_context import AccountContext, arun_as, current_account
@@ -1853,6 +1853,14 @@ class FlowEngine:
         cacheable = spec["cacheable"] and not (
             spec.get("model_kind") and not (isinstance(choice, dict) and choice.get("repo"))
         )
+        hook = CACHE_HOOKS.get(spec["type"]) if cacheable else None
+        extra = None
+        if hook is not None:
+            try:
+                extra = await hook.material(ctx)
+            except Exception:
+                logger.debug("flows: cache material failed", exc_info = True)
+            cacheable = extra is not None
         if cacheable and not forced:
             try:
                 model_key = await self._model_key(ctx, spec, params)
@@ -1863,7 +1871,8 @@ class FlowEngine:
                     inputs,
                     model = model_key,
                     seed = seed,
-                    flow_params = ctx.flow_params,
+                    flow_params = ctx.flow_params if hook is None or hook.flow_params else None,
+                    extra = extra,
                 )
                 pending = rs.pending_cache(key)
                 hit = (
@@ -1877,6 +1886,8 @@ class FlowEngine:
                     from core.flows.nodes._common import gallery_media_present
                     if not await asyncio.to_thread(gallery_media_present, hit):
                         hit = None
+                if hit is not None and hook is not None and not await hook.valid(ctx, hit):
+                    hit = None
             except Exception:
                 logger.debug("flows: cache lookup failed", exc_info = True)
                 hit = None
@@ -1888,7 +1899,7 @@ class FlowEngine:
                 key = cache_key(
                     spec["type"], spec["v"], params, inputs,
                     model = await self._model_key(ctx, spec, params), seed = seed,
-                    flow_params = ctx.flow_params,
+                    flow_params = ctx.flow_params if hook is None or hook.flow_params else None, extra = extra,
                 )  # fmt: skip
             except Exception:
                 key = None
@@ -1985,7 +1996,7 @@ class FlowEngine:
         finally:
             rs.cancel_hooks.pop((nid, iteration), None)
         outputs = dict(outputs or {})
-        if key is not None and spec["cacheable"]:
+        if key is not None and cacheable:
             if rs.persist:
                 rs._unsaved_cache[key] = (spec["type"], outputs)
             else:
@@ -2372,12 +2383,16 @@ def _implicit_local_model(recipe: Any) -> bool:
 def _local_fingerprint(path: str) -> Optional[list]:
     try:
         if os.path.isdir(path):
-            entries = sorted(os.scandir(path), key = lambda e: e.name)
+            # Every file under it by relative path: a model's modules can live in subfolders
+            # (a sentence-transformers `2_Dense`), and they load with it.
             digest = hashlib.sha256()
-            for e in entries:
-                if e.is_file():
-                    st = e.stat()
-                    digest.update(f"{e.name}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+            for root, dirs, files in os.walk(path):
+                dirs.sort()
+                for name in sorted(files):
+                    full = os.path.join(root, name)
+                    st = os.stat(full)
+                    rel = os.path.relpath(full, path).replace(os.sep, "/")
+                    digest.update(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
             return [[os.path.basename(path.rstrip(os.sep)), digest.hexdigest()]]
         st = os.stat(path)
         return [[os.path.basename(path), st.st_size, st.st_mtime_ns]]

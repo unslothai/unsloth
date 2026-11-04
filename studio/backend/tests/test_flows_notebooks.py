@@ -45,8 +45,13 @@ VISION = _nb(
 )
 GRPO = _nb(
     "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
-    "dataset = load_dataset('open-r1/DAPO-Math-17k-Processed', 'en', split = 'train')",
-    "trainer = GRPOTrainer(model = model, reward_funcs = [match_format], args = GRPOConfig(max_steps = 100))",
+    'SYSTEM_PROMPT = """Answer in <reasoning></reasoning> then <answer></answer>"""',
+    "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+    "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []\n"
+    "def soft_format_reward_func(completions, **kwargs):\n    return []",
+    "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func, soft_format_reward_func, "
+    "int_reward_func], args = GRPOConfig(max_steps = 100, num_generations = 6, max_prompt_length = 1024, "
+    "max_completion_length = 1024))",
 )
 
 
@@ -81,12 +86,54 @@ def test_vision_and_audio_notebooks_pick_the_model_task():
     assert _tune(doc)["task"] == "audio"
 
 
-def test_rl_notebook_is_reported_not_imported():
+def test_grpo_notebook_imports_onto_the_fine_tune_node():
     doc, report = notebook_import.read_notebook(GRPO, "Qwen3_(4B)-GRPO.ipynb")
-    assert doc is None
-    assert any("GRPO" in line for line in report["unsupported"])
-    assert any("reward functions" in line for line in report["unsupported"])
+    tune = _tune(doc)
+    assert tune["objective"] == "grpo" and tune["max_steps"] == 100
+    assert tune["rewards"] == [
+        {"name": "exact-answer", "weight": 1.0},
+        {"name": "soft-xml-format", "weight": 1.0},
+    ]
+    assert tune["num_generations"] == 6 and tune["system_prompt"].startswith("Answer in")
+    assert tune["max_prompt_length"] == 1024 and tune["max_completion_length"] == 1024
+    assert any("int_reward_func" in line for line in report["approximated"])
+    assert not any("correctness_reward_func" in line for line in report["approximated"])
+
+
+def test_grpo_notebook_without_a_library_reward_is_reported_not_imported():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [game_score], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("game_score" in line for line in report["unsupported"])
     assert report["colab_url"].endswith("/nb/Qwen3_(4B)-GRPO.ipynb")
+
+
+def test_format_reward_names_win_over_exact_and_an_sft_warm_up_is_refused():
+    assert notebook_import._library_rewards(["match_format_exactly", "check_answer"])[0] == [
+        {"name": "strict-xml-format", "weight": 1.0},
+        {"name": "exact-answer", "weight": 1.0},
+    ]
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = SFTTrainer(model = model, args = SFTConfig(max_steps = 5))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("two training stages" in line for line in report["unsupported"])
+
+
+def test_dpo_notebook_carries_its_beta():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "PatchDPOTrainer()\ndataset = load_dataset('a/prefs', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(beta = 0.2, max_steps = 5))",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert _tune(doc)["objective"] == "dpo" and _tune(doc)["beta"] == 0.2
 
 
 def test_importer_never_executes_notebook_code(tmp_path):
@@ -114,15 +161,21 @@ def test_import_notebook_route(client):  # noqa: F811
     rl = client.post(
         "/api/flows/import/notebook", content = GRPO, params = {"name": "Qwen3_(4B)-GRPO.ipynb"}
     )
-    assert rl.status_code == 200 and rl.json()["flow"] is None
+    assert rl.status_code == 200 and rl.json()["flow"] is not None
     assert client.post("/api/flows/import/notebook", content = b"{}").status_code == 400
 
 
 def test_catalog_marks_what_studio_can_train():
     entry = catalog._entry("Llama3.1_(8B)-Alpaca.ipynb", {}, {})
     assert entry["category"] == "sft" and entry["studio_task"] == "text"
-    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] is None
-    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] is None
+    assert catalog._entry("Zephyr_(7B)-DPO.ipynb", {}, {})["studio_task"] == "text"
+    assert catalog._entry("Qwen3_(4B)-GRPO.ipynb", {}, {})["studio_task"] == "text"
+    assert (
+        catalog._entry("gpt_oss_(20B)_Reinforcement_Learning_2048_Game.ipynb", {}, {})[
+            "studio_task"
+        ]
+        is None
+    )
     assert catalog._entry("EmbeddingGemma_(300M).ipynb", {}, {})["studio_task"] == "embedding"
     assert catalog._entry("Llama3.2_(1B)-Phone_Deployment.ipynb", {}, {})["studio_task"] is None
 
@@ -192,17 +245,51 @@ def _start_body(params: dict) -> dict:
     return body
 
 
-def test_unset_new_settings_send_the_same_start_request():
+def test_unset_settings_send_the_train_pages_defaults():
     body = _start_body({})
     assert body == {
         "model_name": "unsloth/Qwen3-0.6B",
         "training_type": "LoRA/QLoRA",
+        "load_in_4bit": True,
         "format_type": "auto",
         "max_steps": 60,
         "learning_rate": "0.0002",
-        "lora_r": 16,
         "max_seq_length": 2048,
+        "use_lora": True,
+        "lora_r": 16,
+        "lora_alpha": 32,
+        "lora_dropout": 0.05,
+        "use_rslora": False,
+        "use_loftq": False,
+        "use_dora": False,
+        "target_modules": [
+            "q_proj",
+            "k_proj",
+            "v_proj",
+            "o_proj",
+            "gate_proj",
+            "up_proj",
+            "down_proj",
+        ],
+        "finetune_vision_layers": True,
+        "finetune_language_layers": True,
+        "finetune_attention_modules": True,
+        "finetune_mlp_modules": True,
+        "optim": "adamw_8bit",
+        "lr_scheduler_type": "linear",
+        "batch_size": 4,
+        "gradient_accumulation_steps": 8,
+        "weight_decay": 0.001,
+        "warmup_steps": 5,
+        "save_steps": 0,
+        "eval_steps": 0.0,
+        "early_stopping_patience": 0,
         "random_seed": 1,
+        "packing": False,
+        "train_on_completions": False,
+        "gradient_checkpointing": "unsloth",
+        "offload_layers": 0,
+        "prefetch_depth": 2,
         "hf_dataset": "org/data",
         "train_split": "train",
     }
@@ -306,8 +393,8 @@ def test_decision_notebooks_stay_in_colab():
     assert doc is None and any("decision" in line for line in report["unsupported"])
 
 
-def test_load_in_4bit_is_sent_only_when_off_and_orpheus_trains_16bit():
-    assert "load_in_4bit" not in _start_body({})
+def test_load_in_4bit_follows_the_switch_and_orpheus_trains_16bit():
+    assert _start_body({})["load_in_4bit"] is True
     assert _start_body({"load_in_4bit": False})["load_in_4bit"] is False
     doc = next(d for d in build_examples.build() if d["id"] == "notebook-tts-sft")
     assert _tune(doc)["load_in_4bit"] is False
@@ -361,7 +448,7 @@ def test_importer_carries_responses_only_vision_by_name_and_no_embedding_streami
     )
     assert _tune(doc)["train_on_completions"] is True
     assert _start_body({"train_on_completions": True})["train_on_completions"] is True
-    assert "train_on_completions" not in _start_body({})
+    assert _start_body({})["train_on_completions"] is False
     vision, _ = notebook_import.read_notebook(
         _nb(
             "model, processor = FastModel.from_pretrained(model_name = 'unsloth/gemma-3n-E4B-it')",
@@ -524,7 +611,29 @@ def test_embedding_notebooks_with_another_loss_are_reported():
     assert doc is not None
 
 
-def test_lora_settings_studio_cannot_forward_are_reported():
+def test_two_rl_stages_are_refused():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_steps = 5))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("more than one RL stage" in line for line in report["unsupported"])
+
+
+def test_two_stages_of_the_same_rl_objective_are_refused():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [check_answer], args = GRPOConfig(max_steps = 9))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+    assert doc is None and any("GRPO and GRPO" in line for line in report["unsupported"])
+
+
+def test_lora_settings_carry_over_to_the_finetune_node():
     def read(peft_args):
         nb = _nb(
             "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
@@ -533,21 +642,27 @@ def test_lora_settings_studio_cannot_forward_are_reported():
         )
         doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
         assert doc is not None and report["unsupported"] == []
-        return [line for line in report["approximated"] if "LoRA" in line or "rslora" in line]
+        lines = [
+            line for line in report["approximated"] if "lora" in line or "target_modules" in line
+        ]
+        return _tune(doc), lines
 
-    custom = read(", target_modules = ['q_proj'], lora_dropout = 0.1, use_rslora = True")
-    assert len(custom) == 3
-    assert any("target_modules" in line for line in custom)
-    assert any("dropout" in line for line in custom)
-    assert any("use_rslora" in line for line in custom)
-    # The standard notebook settings match Studio's defaults and stay quiet.
-    assert (
-        read(
-            ", target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', "
-            "'down_proj'], lora_dropout = 0, use_rslora = False"
-        )
-        == []
+    tune, lines = read(", target_modules = ['q_proj'], lora_dropout = 0.1, use_rslora = True")
+    assert lines == []
+    assert tune["target_modules"] == ["q_proj"] and tune["lora_dropout"] == 0.1
+    assert tune["lora_variant"] == "rslora"
+    # The standard notebook settings arrive as they are, dropout 0 included.
+    tune, lines = read(
+        ", target_modules = ['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', "
+        "'down_proj'], lora_dropout = 0, use_rslora = False"
     )
+    assert lines == [] and tune["lora_dropout"] == 0.0 and "lora_variant" not in tune
+    assert len(tune["target_modules"]) == 7
+    # "all-linear" carries over; a PEFT regex string cannot be a module list, so it is reported.
+    tune, lines = read(", target_modules = 'all-linear'")
+    assert lines == [] and tune["target_modules"] == ["all-linear"]
+    tune, lines = read(", target_modules = '.*q_proj'")
+    assert "target_modules" not in tune and len(lines) == 1 and "PEFT regex" in lines[0]
 
 
 _SEVEN = "['q_proj', 'k_proj', 'v_proj', 'o_proj', 'gate_proj', 'up_proj', 'down_proj']"
@@ -580,11 +695,10 @@ def test_lora_targets_follow_the_latest_assignment_of_a_constant():
         assert doc is not None
         return _lora_lines(report)
 
-    # The seven defaults reassigned to something else must be reported, not masked by the old list.
-    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = 'all-linear'")) == 1
-    assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = ['q_proj']")) == 1
+    # A later assignment wins; one the reader cannot follow is reported, not masked by the old list.
+    assert read(f"TARGETS = {_SEVEN}", "TARGETS = 'all-linear'") == []
+    assert read(f"TARGETS = {_SEVEN}", "TARGETS = ['q_proj']") == []
     assert len(read(f"TARGETS = {_SEVEN}", "TARGETS = pick_targets()")) == 1
-    # And the reverse: a later default list wins over an earlier string.
     assert read("TARGETS = 'all-linear'", f"TARGETS = {_SEVEN}") == []
     # Augmented assignment, in-place mutation, item assignment and loops change the list too.
     assert len(read(f"TARGETS = {_SEVEN}", "TARGETS += ['lm_head']")) == 1
@@ -622,19 +736,132 @@ def test_lora_scalars_follow_an_unresolved_reassignment():
     assert read("DROP = 0", peft_args = ", lora_dropout = DROP") == []
 
 
-def test_embedding_lora_targets_compare_against_embedding_defaults():
-    def read(targets):
-        nb = _nb(
-            "model = FastSentenceTransformer.from_pretrained(model_name = 'unsloth/embeddinggemma-300m')\n"
-            f"model = FastSentenceTransformer.get_peft_model(model, r = 32, target_modules = {targets})",
-            "dataset = load_dataset('a/b', split = 'train')",
-            "loss = MultipleNegativesRankingLoss(model)\n"
-            "trainer = SentenceTransformerTrainer(model = model, loss = loss)",
-        )
-        doc, report = notebook_import.read_notebook(nb, "x.ipynb")
-        assert doc is not None
-        return _lora_lines(report)
+def test_embedding_lora_targets_carry_over():
+    nb = _nb(
+        "model = FastSentenceTransformer.from_pretrained(model_name = 'unsloth/embeddinggemma-300m')\n"
+        f"model = FastSentenceTransformer.get_peft_model(model, r = 32, target_modules = {_SEVEN})",
+        "dataset = load_dataset('a/b', split = 'train')",
+        "loss = MultipleNegativesRankingLoss(model)\n"
+        "trainer = SentenceTransformerTrainer(model = model, loss = loss)",
+    )
+    doc, report = notebook_import.read_notebook(nb, "x.ipynb")
+    assert doc is not None and _lora_lines(report) == []
+    assert len(_tune(doc)["target_modules"]) == 7
 
-    assert read("['q_proj', 'k_proj', 'v_proj', 'o_proj']") == []
-    seven = read(_SEVEN)
-    assert len(seven) == 1 and "q/k/v/o projections)" in seven[0]
+
+def test_grpo_reward_weights_carry_over():
+    def read(config):
+        nb = _nb(
+            "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+            "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+            "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []\n"
+            "def soft_format_reward_func(completions, **kwargs):\n    return []",
+            "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func, soft_format_reward_func], "
+            f"args = GRPOConfig(max_steps = 10{config}))",
+        )
+        doc, report = notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")
+        return _tune(doc)["rewards"], [l for l in report["approximated"] if "reward_weights" in l]
+
+    rewards, lines = read(", reward_weights = [0.0, 5.0]")
+    assert rewards == [
+        {"name": "exact-answer", "weight": 0.0},
+        {"name": "soft-xml-format", "weight": 5.0},
+    ]
+    assert lines == []
+    rewards, lines = read(", reward_weights = WEIGHTS")
+    assert [r["weight"] for r in rewards] == [1.0, 1.0] and len(lines) == 1
+    rewards, lines = read("")
+    assert [r["weight"] for r in rewards] == [1.0, 1.0] and lines == []
+
+
+def test_a_preference_notebooks_max_length_caps_the_node_context():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft', max_seq_length = 4096)",
+        "dataset = load_dataset('HuggingFaceH4/ultrafeedback_binarized', split = 'train_prefs')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_length = 1024, max_prompt_length = 512))",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert _tune(doc)["max_seq_length"] == 1024
+
+
+def test_a_dpo_completion_cap_is_reported_not_claimed():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "dataset = load_dataset('a/prefs', split = 'train')",
+        "trainer = DPOTrainer(model = model, args = DPOConfig(max_completion_length = 128))",
+    )
+    doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert "max_completion_length" not in _tune(doc)
+    assert any("max_completion_length = 128" in line for line in report["approximated"])
+
+
+def test_grpo_clipping_and_truncation_masking_are_imported():
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B-Base')",
+        "dataset = load_dataset('openai/gsm8k', 'main', split = 'train')",
+        "def correctness_reward_func(prompts, completions, answer, **kwargs):\n    return []",
+        "trainer = GRPOTrainer(model = model, reward_funcs = [correctness_reward_func], args = GRPOConfig("
+        "epsilon_high = 0.28, mask_truncated_completions = True))",
+    )
+    tune = _tune(notebook_import.read_notebook(nb, "Qwen3_(4B)-GRPO.ipynb")[0])
+    assert tune["epsilon_high"] == pytest.approx(0.28)
+    assert tune["mask_truncated_completions"] is True
+    off = nb.replace(b"True", b"False")
+    assert (
+        _tune(notebook_import.read_notebook(off, "Qwen3_(4B)-GRPO.ipynb")[0])[
+            "mask_truncated_completions"
+        ]
+        is False
+    )
+
+
+@pytest.mark.parametrize(
+    "loss, reported",
+    [
+        ("'ipo'", True),
+        ("['sigmoid', 'bco_pair']", True),
+        ("LOSS", True),
+        ("'sigmoid'", False),
+        (None, False),
+    ],
+)
+def test_a_dpo_loss_other_than_sigmoid_is_reported(loss, reported):
+    args = f"loss_type = {loss}, max_steps = 5" if loss else "max_steps = 5"
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/zephyr-sft')",
+        "dataset = load_dataset('a/prefs', split = 'train')",
+        "LOSS = 'hinge'",
+        f"trainer = DPOTrainer(model = model, args = DPOConfig({args}))",
+    )
+    _doc, report = notebook_import.read_notebook(nb, "Zephyr_(7B)-DPO.ipynb")
+    assert any("loss_type" in line for line in report["approximated"]) is reported
+
+
+@pytest.mark.parametrize("rank", [1, 2, 256])
+def test_a_notebooks_lora_rank_reaches_training_unchanged(rank):
+    from core.flows.engine import param_values
+    from core.flows.specs import SPECS_BY_TYPE
+
+    nb = _nb(
+        "model, tokenizer = FastLanguageModel.from_pretrained(model_name = 'unsloth/Qwen3-4B')\n"
+        f"model = FastLanguageModel.get_peft_model(model, r = {rank})",
+        "dataset = load_dataset('mlabonne/FineTome-100k', split = 'train')",
+    )
+    doc, _ = notebook_import.read_notebook(nb, "Qwen3_(4B).ipynb")
+    node = next(n for n in doc["nodes"] if n["type"] == "train.finetune")
+    assert param_values(SPECS_BY_TYPE["train.finetune"], node)["lora_r"] == rank
+
+
+def test_saved_training_settings_keep_the_range_flows_accepted_before():
+    from core.flows.engine import param_values
+    from core.flows.specs import SPECS_BY_TYPE
+
+    saved = {
+        "lora_r": 256,
+        "lora_alpha": 512,
+        "batch_size": 64,
+        "gradient_accumulation_steps": 128,
+        "warmup_steps": 500,
+    }
+    params = param_values(SPECS_BY_TYPE["train.finetune"], {"params": saved})
+    assert {k: params[k] for k in saved} == saved

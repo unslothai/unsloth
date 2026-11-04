@@ -10,7 +10,7 @@ import {
 import { CollapsibleSectionTriggerButton } from "@/features/recipe-studio/dialogs/shared/collapsible-section-trigger";
 import { FieldLabel } from "@/features/recipe-studio/dialogs/shared/field-label";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Suspense, lazy, memo, useCallback, useState } from "react";
+import { Fragment, Suspense, lazy, memo, useCallback, useState } from "react";
 import { loopMembers } from "../app/app-form";
 import { useCatalogStore } from "../stores/catalog-store";
 import { cloneFragment, useDocStore } from "../stores/doc-store";
@@ -43,6 +43,8 @@ import { CopyTextButton } from "./copy-text";
 import { FlowHfDatasetFields, HF_DATASET_NODE } from "./dataset-picker-field";
 import { OutputValue } from "./output-value";
 import { ParamField } from "./param-fields";
+import { paramVisible } from "./param-visible";
+import { RewardTryPanel } from "./reward-try";
 import { CATEGORY_TONES } from "./node-tones";
 import { TriggerPanel } from "./trigger-panel";
 
@@ -105,7 +107,7 @@ function ParamRow({
 }) {
   return (
     <div className="grid gap-1.5">
-      <FieldLabel label={param.label} />
+      <FieldLabel label={param.label} hint={param.help} />
       {bound ? (
         <p className="rounded-lg border border-dashed border-border/60 px-3 py-2 text-xs text-muted-foreground">
           Set by its connected input
@@ -316,7 +318,11 @@ function InspectorImpl() {
               <FlowHfDatasetFields params={node.params} onChange={setParams} />
             ) : (
               spec.params
-              .filter((param) => !param.advanced)
+              .filter(
+                (param) =>
+                  !param.advanced &&
+                  paramVisible(param, node.params, spec.params),
+              )
               .map((param) => (
                 <ParamRow
                   key={param.id}
@@ -338,16 +344,26 @@ function InspectorImpl() {
               </CollapsibleTrigger>
               <CollapsibleContent className="mt-3 flex flex-col gap-4">
                 {spec.params
-                  .filter((param) => param.advanced)
-                  .map((param) => (
-                    <ParamRow
-                      key={param.id}
-                      param={param}
-                      bound={param.bindable === true && boundParams.has(param.id)}
-                      value={node.params[param.id]}
-                      onChange={(value) => setParam(param.id, value)}
-                      onPatch={setParams}
-                    />
+                  .filter(
+                    (param) =>
+                      param.advanced &&
+                      paramVisible(param, node.params, spec.params),
+                  )
+                  .map((param, i, shown) => (
+                    <Fragment key={param.id}>
+                      {param.group && param.group !== shown[i - 1]?.group && (
+                        <p className="border-border/60 border-t pt-3 text-xs font-medium text-foreground first:border-t-0 first:pt-0">
+                          {param.group}
+                        </p>
+                      )}
+                      <ParamRow
+                        param={param}
+                        bound={param.bindable === true && boundParams.has(param.id)}
+                        value={node.params[param.id]}
+                        onChange={(value) => setParam(param.id, value)}
+                        onPatch={setParams}
+                      />
+                    </Fragment>
                   ))}
               </CollapsibleContent>
             </Collapsible>
@@ -355,6 +371,8 @@ function InspectorImpl() {
         </section>
         )}
         {node.type === GENERATE_TYPE && <RecipePanel node={node} />}
+        {spec.type === "train.finetune" &&
+          node.params.objective === "grpo" && <RewardTryPanel node={node} />}
         {spec.type.startsWith("trigger.") && (
           <TriggerPanel nodeId={node.id} kind={spec.type} />
         )}
