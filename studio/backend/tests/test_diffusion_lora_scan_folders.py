@@ -128,7 +128,10 @@ def test_loras_under_a_comfyui_folder_are_listed(catalog, tmp_path, registered):
     assert [e.local_path for e in _local().values()] == [str(lora)]
 
 
-def test_loras_listed_in_extra_model_paths_yaml_are_listed(catalog, tmp_path):
+def test_loras_listed_in_extra_model_paths_yaml_are_listed(catalog, tmp_path, monkeypatch):
+    from hub.storage import scan_folders
+
+    monkeypatch.setattr(scan_folders, "_denied_path_prefixes", lambda: [])
     root = tmp_path / "ComfyUI"
     (root / "models" / "checkpoints").mkdir(parents = True)
     lora = _safetensors(tmp_path / "shared" / "Lora" / "style.safetensors")
