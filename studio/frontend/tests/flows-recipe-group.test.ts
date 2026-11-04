@@ -1699,8 +1699,15 @@ test("Jinja whitespace control still closes a loop, and a recipe's model presets
     "{% for topic in items -%}{{ topic | upper }}{%- endfor %}{{ subject }}",
   );
   const { modelSignature } = await import("../src/features/flows/ux-rules.ts");
-  const groups = { r: { config: { model_configs: [{ model: "unsloth/Gemma-GGUF", gguf_variant: "Q4_K_M" }] } } };
-  assert.equal(modelSignature({}, groups), "unsloth/gemma-gguf:q4_k_m");
+  const groups = {
+    r: { config: { model_configs: [{ alias: "m", model: "unsloth/Gemma-GGUF", gguf_variant: "Q4_K_M" }] } },
+  };
+  const column = { type: "recipe.column", group: "r", params: { column: { model_alias: "m" } } };
+  const step = { type: "recipe.generate", group: "r", params: {} };
+  assert.equal(modelSignature({ c: column, s: step }, groups), "unsloth/gemma-gguf:q4_k_m");
+  // Off until its Recipe Dataset step runs, or while no enabled column uses the preset.
+  assert.equal(modelSignature({ c: column, s: { ...step, disabled: true } }, groups), "");
+  assert.equal(modelSignature({ c: { ...column, disabled: true }, s: step }, groups), "");
   assert.equal(modelSignature({}), "");
 });
 

@@ -149,7 +149,13 @@ export function downloadBytes(models: PlanModel[]): number | null {
 export function modelSignature(
   nodes: Record<
     string,
-    { params?: Record<string, unknown> | null; disabled?: boolean } | undefined
+    | {
+        params?: Record<string, unknown> | null;
+        disabled?: boolean;
+        type?: string;
+        group?: string | null;
+      }
+    | undefined
   >,
   groups: Record<
     string,
@@ -157,12 +163,27 @@ export function modelSignature(
   > = {},
 ): string {
   const picks: string[] = [];
-  // A recipe's model presets name the model its Recipe Dataset step loads.
-  for (const group of Object.values(groups)) {
+  // A recipe whose Recipe Dataset step runs loads the presets its enabled AI columns use: enabling
+  // the step or pointing a column at another preset is a new model to check.
+  for (const [id, group] of Object.entries(groups)) {
+    const members = Object.values(nodes).filter(
+      (n) => n?.group === id && !n.disabled,
+    );
+    if (!members.some((n) => n?.type === "recipe.generate")) continue;
+    const aliases = new Set(
+      members.map(
+        (n) =>
+          ((n?.params?.column ?? {}) as { model_alias?: unknown }).model_alias,
+      ),
+    );
     const presets = group?.config?.model_configs;
     for (const preset of Array.isArray(presets) ? presets : []) {
-      const p = preset as { model?: unknown; gguf_variant?: unknown };
-      if (typeof p?.model === "string" && p.model)
+      const p = preset as {
+        model?: unknown;
+        gguf_variant?: unknown;
+        alias?: unknown;
+      };
+      if (typeof p?.model === "string" && p.model && aliases.has(p.alias))
         picks.push(
           `${p.model.toLowerCase()}:${String(p.gguf_variant ?? "").toLowerCase()}`,
         );
