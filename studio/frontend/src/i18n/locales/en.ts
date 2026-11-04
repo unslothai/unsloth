@@ -3497,7 +3497,7 @@ export const en = {
         backend: "Runtime",
         backendAuto: "Auto",
         backendDescription:
-          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
+          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. Exported Laya fine-tunes use llama.cpp when it is chosen here. llama.cpp also reads images.",
         backendDescriptionMlx:
           "Auto serves Clef through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads images for Clef models only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",

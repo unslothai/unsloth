@@ -748,6 +748,7 @@ class SystemOneSettingsResponse(BaseModel):
     input_modalities: list[str] = ["text"]
     # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
     layout: Optional[str] = None
+    has_gguf_form: bool = False
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -1809,6 +1810,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         fallback_reason = fallback if effective == "pytorch" or effective is None else None,
         input_modalities = laya_runtime.input_modalities(configured),
         layout = getattr(configured, "layout", None),
+        has_gguf_form = laya_runtime.has_native_form(configured),
     )
 
 
