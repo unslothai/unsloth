@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The desktop CSP forbids WASM, so shiki must use the JS regex engine; also exercises the
- * character-budget eviction branch, unreachable from other fixtures.
- */
-
 import assert from "node:assert/strict";
 import test from "node:test";
 import type {
@@ -38,7 +33,6 @@ const highlightOnce = (
   });
 
 test("the highlighter uses the JavaScript regex engine, not the WASM one", () => {
-  // assert.match prints the whole subject, burying the message, so assert a boolean.
   assert.ok(
     /createJavaScriptRegexEngine/.test(PLUGIN_SOURCE),
     "code-plugin must build its highlighter with shiki's JavaScript regex engine",
@@ -49,6 +43,16 @@ test("the highlighter uses the JavaScript regex engine, not the WASM one", () =>
       "(default-src 'self', no wasm-unsafe-eval) blocks; the packaged app ships " +
       "this same bundle and no CI job would catch it",
   );
+});
+
+const RUNTIME_SHIKI_IMPORT = /^import\s+(?!type\b)[^;]*?\bfrom\s+"shiki";/m;
+
+test("the highlighter factory is built without shiki's default WASM engine", () => {
+  assert.ok(
+    !RUNTIME_SHIKI_IMPORT.test(PLUGIN_SOURCE),
+    'code-plugin must take only types from "shiki"; build the factory from shiki/core',
+  );
+  assert.ok(PLUGIN_SOURCE.includes("= createBundledHighlighter<"));
 });
 
 const sourceOfSize = (id: number, chars: number): string => {
@@ -71,7 +75,6 @@ const stillCached = async (
   (await highlightOnce(plugin, { code, language, themes: THEMES })) === previous;
 
 test("the character budget evicts even while the fence count is under its limit", async () => {
-  // ~600 KB over 100 fences exceeds MAX_CACHED_CHARACTERS but not MAX_FENCES.
   const plugin = createCodePlugin({ themes: THEMES });
   const first = sourceOfSize(0, 6_000);
   const held = await highlightOnce(plugin, {

@@ -71,8 +71,8 @@ def _kernel() -> Optional[Callable]:
         sob,
         sos,
         soh,
-        HALF: tl.constexpr,
-        BLOCK: tl.constexpr,
+        HALF: tl.constexpr,  # hd // 2
+        BLOCK: tl.constexpr,  # block size over heads x pairs
     ):
         row = tl.program_id(0)
         b = row // S

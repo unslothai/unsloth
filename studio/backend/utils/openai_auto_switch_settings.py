@@ -583,7 +583,7 @@ def normalize_model_override(
     if _clean_str(payload.get("gpu_memory_mode"), VALID_GPU_MEMORY_MODES) == "manual":
         entry["gpu_memory_mode"] = "manual"
 
-    gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 1024)
+    gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 2**31 - 1)
     if gpu_layers is not None:
         entry["gpu_layers"] = gpu_layers
 
