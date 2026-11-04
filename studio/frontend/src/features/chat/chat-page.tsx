@@ -25,6 +25,7 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -113,9 +114,9 @@ import {
   CONVERSATION_MARKDOWN_FORMAT,
   CONVERSATION_MARKDOWN_LABEL,
 } from "./utils/conversation-markdown";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Archive03Icon,
-  Delete02Icon,
+  ArchiveIcon,
   Download01Icon,
   Edit03Icon,
   LayoutAlignRightIcon,
@@ -2478,7 +2479,7 @@ function ProjectLanding({
                           onSelect={() => void handleArchive(item)}
                         >
                           <HugeiconsIcon
-                            icon={Archive03Icon}
+                            icon={ArchiveIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
@@ -2489,7 +2490,7 @@ function ProjectLanding({
                           onSelect={() => handleDelete(item)}
                         >
                           <HugeiconsIcon
-                            icon={Delete02Icon}
+                            icon={TrashIcon}
                             strokeWidth={1.75}
                             className="size-icon"
                           />
@@ -4858,6 +4859,7 @@ export function ChatPage({
             aborting generation (#8908). Any key here brings the bug back. Compare renders as a
             sibling so it hides this rather than unmounting it, since ComparePane builds its own
             providers and nesting throws. */}
+        <LibraryAttachmentTargetContext.Provider value={active ? shownChatKey : null}>
         {baseView ? (
           <div
             className={
@@ -4933,6 +4935,7 @@ export function ChatPage({
           />
         ) : null}
 
+        </LibraryAttachmentTargetContext.Provider>
         {showBrowserOverlay ? <BrowserOverlay /> : null}
       </div>
 

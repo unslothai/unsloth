@@ -2511,7 +2511,12 @@ class TrainingBackend:
         """First model-load stall respawns the worker over HTTP; later stalls surface as errors."""
         msg = event.get("message", "Download stalled")
         with self._lock:
-            recover = self._in_model_load and not self._xet_fallback_used
+            # A stall queued behind an error or completion must not respawn a finished run.
+            recover = (
+                self._in_model_load
+                and not self._xet_fallback_used
+                and not self._complete_seen.is_set()
+            )
             proc = self._proc
             run_id = self.current_job_id
             if recover:

@@ -11,13 +11,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { useChatFavoritesStore } from "@/features/library/chats/favorites-store";
 import { useT } from "@/i18n";
-import { Settings01Icon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { isDownloadCancelled } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Cancel01Icon,
-  Delete02Icon,
   Download01Icon,
   LayerIcon,
   PencilEdit02Icon,
@@ -177,7 +176,7 @@ export function ProjectMenuItems({
       </Item>
       {!opening && <OpenProjectFolderItem projectId={project.id} />}
       <DropdownMenuSeparator />
-      <Item icon={Delete02Icon} destructive onSelect={onDelete}>
+      <Item icon={TrashIcon} destructive onSelect={onDelete}>
         {t("library.chats.menu.deleteProject")}
       </Item>
     </>

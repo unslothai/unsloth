@@ -322,6 +322,15 @@ def test_second_stall_surfaces_error_without_respawn():
     assert proc.is_alive() is False
 
 
+def test_stall_queued_behind_an_error_does_not_respawn():
+    b, proc = _backend_mid_load()
+    b._handle_event({"type": "error", "error": "No usable decisions in the dataset", "stack": ""})
+    b._handle_event({"type": "stall", "message": "no progress for 180s"})
+    assert b._needs_xet_respawn is False
+    assert b._progress.error == "No usable decisions in the dataset"
+    assert proc.is_alive() is False
+
+
 def test_model_load_completed_disarms_recovery():
     b, _ = _backend_mid_load()
     b._handle_event({"type": "model_load_completed"})

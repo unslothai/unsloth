@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const es419 = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, con marcador",
+    bookmark: "Marcar turno",
+    removeBookmark: "Quitar marcador",
+    navigator: "Turnos",
+  },
   chatBackground: {
     noBackground: "Sin fondo",
     sizing: "Tamaño de imagen",
@@ -31,6 +38,7 @@ export const es419 = {
     halftone: "Semitono",
     scanlines: "Líneas de barrido",
     visibility: "Visibilidad",
+    conversationVisibility: "Visibilidad en conversaciones",
     blur: "Desenfoque de imagen",
     position: "Posición",
     horizontal: "Posición horizontal",
@@ -40,8 +48,8 @@ export const es419 = {
     scopeChats: "Chats",
     scopeAll: "Todas las páginas",
     positionValue: "Horizontal {x} %, vertical {y} %",
-    newChat: "Nuevo chat",
-    conversation: "Conversación",
+    newChat: "Vista previa del chat nuevo",
+    conversation: "Vista previa de la conversación",
     prompt: "¿Qué te gustaría explorar?",
     response: "Tu conversación sigue siendo legible sobre el fondo.",
     storageError: "No se pudo guardar el fondo. Comprueba el almacenamiento del navegador.",
@@ -49,6 +57,26 @@ export const es419 = {
     dimensionsError: "Elige una imagen de menos de 40 megapíxeles.",
     decodeError: "No se pudo leer esta imagen. Prueba otro archivo.",
     effectError: "No se pudo generar el efecto. Elige Ninguno u otra imagen.",
+    material: "Vidrio",
+    materialSolid: "Desactivado",
+    materialTransparent: "Transparente",
+    materialFrosted: "Esmerilado",
+    materialBlurred: "Desenfocado",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "Vidrio del sistema macOS",
+    materialMacosNote: "Usa el material de ventana translúcido de macOS, así que se ve tu escritorio a través.",
+    materialNativeFailed: "Esta versión de Unsloth Desktop no puede usar el material de macOS. Actualiza la app para activarlo.",
+    glassTheme: "Tema de vidrio",
+    materialStyle: "Estilo",
+    materialMenus: "Menús de vidrio",
+    materialMenusDescription: "Los desplegables, menús y selectores también usan vidrio.",
+    materialStrength: "Intensidad del vidrio",
+    lens: "Lente de vidrio",
+    lensDescription: "Curva la imagen bajo el cuadro de texto como un vidrio real.",
+    lensOff: "Desactivado",
+    lensMagnify: "Ampliar",
+    lensShrink: "Reducir",
   },
 
   linkMenu: {
@@ -712,6 +740,8 @@ export const es419 = {
     plainText: "Redactor de texto sin formato",
     plainTextDescription:
       "Mantiene el código, Markdown y los enlaces como texto literal. Desactívalo para mostrar una vista previa con formato.",
+    richPaste: "Pegar texto con formato",
+    richPasteDescription: "Pega enlaces, tablas y formato como Markdown. {shortcut} pega texto sin formato. Pronto, un editor de texto enriquecido completo.",
     showContext: "Uso de la ventana de contexto",
     sendShortcut: "Atajo para enviar",
     sendMultiline: "{mod} + Enter en mensajes de varias líneas",
@@ -827,37 +857,6 @@ export const es419 = {
     compactEmpty: "Aún no hay nada que compactar",
     compactUnsupported:
       "La compactación requiere un modelo GGUF o MLX compatible con herramientas",
-  },
-  halloween: {
-    navLabel: "Truco o trato…",
-    title: "¡¿Truco o trato?!",
-    description:
-      "Preparamos algunos sustos para Unsloth, disponibles el resto de octubre.",
-    chooseTheme: "Elige un tema terrorífico",
-    spookyGreetings: "Saludos terroríficos",
-    spookyGreetingsDescription:
-      "El perezoso recibe los chats nuevos con un susto.",
-    decorations: "Arañas y murciélagos",
-    decorationsDescription: "Telarañas, y alguna que otra araña o murciélago.",
-    surprise: "¡Truco o trato!",
-    surpriseDescription: "Deja que el perezoso elija un tema por ti.",
-    themesTitle: "Temas terroríficos",
-    back: "Atrás",
-    footer: "Unsloth vuelve a la normalidad a medianoche del 1 de noviembre.",
-    removeNow: "Quitar ahora",
-    hideFromSidebar: "Ocultar de la barra lateral",
-    greeting: {
-      pumpkins: "Las calabazas ya están talladas. ¿Qué sigue?",
-      brewing: "¡A preparar la poción!",
-      trickOrTreat: "¿Truco o trato?",
-      manor: "Te damos la bienvenida a la mansión",
-      manorName: "Te damos la bienvenida a la mansión, {name}",
-      happyHalloween: "¡Feliz Halloween!",
-      happyHalloweenName: "¡Feliz Halloween, {name}!",
-      spirits: "Los espíritus están escuchando…",
-      mysteries: "¿Qué misterios descubriremos esta noche?",
-      conjure: "¿Qué puedo conjurar para ti?",
-    },
   },
   welcome: {
     goodToSeeYou: "Me alegra verte",
@@ -1172,6 +1171,7 @@ export const es419 = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Elige la contraseña del propietario de la instalación antes de agregar otra cuenta. La usarás para iniciar sesión cuando esta instalación tenga varias cuentas.",
       signsInAs: "Inicia sesión como {username}",
       signsInAsOwner: "Inicia sesión como {alias} o {username}",
       signInName: "Tu nombre de inicio de sesión",
@@ -2062,6 +2062,26 @@ export const es419 = {
       autoTitleNewChats: "Poner título automático a los chats nuevos",
       autoTitleNewChatsDescription:
         "Genera un título a partir del primer mensaje.",
+      mlWarmup: {
+        sectionTitle: "Rendimiento al iniciar",
+        description: "Prepara las funciones seleccionadas para acelerar su primer uso. Todas están desactivadas de forma predeterminada. Estas opciones pueden cargar dependencias compartidas y aumentar el uso de RAM en reposo.",
+        restartRequired: "Los cambios se aplican después de reiniciar Unsloth.",
+        hardwareLabel: "Detección de hardware",
+        hardwareDescription: "Detectar las GPU y preparar PyTorch.",
+        textLabel: "Modelos de texto",
+        textDescription: "Preparar el soporte de Transformers para modelos de texto.",
+        datasetsLabel: "Preparación de conjuntos de datos",
+        datasetsDescription: "Preparar Datasets y sus dependencias para las vistas previas y el procesamiento.",
+        mediaLabel: "Modelos de imagen y video",
+        mediaDescription: "Preparar Diffusers y las dependencias compartidas de los modelos.",
+        advanced: "Avanzado",
+        quantizationLabel: "Verificaciones previas de cuantización de imagen",
+        quantizationDescription: "Verificar la compatibilidad antes de cargar por primera vez un modelo de imagen cuantizado. Puede aumentar brevemente el uso de RAM.",
+        requiredBySelections: "Necesario para las opciones seleccionadas.",
+        disabledByEnv: "Desactivado por UNSLOTH_STUDIO_DISABLE_TORCH_WARM en el entorno del backend.",
+        loadError: "No se pudo cargar la configuración de preparación al iniciar.",
+        saveError: "No se pudo guardar la configuración de preparación al iniciar.",
+      },
       helperLlm: {
         sectionTitle: "LLM auxiliar",
         preloadOnStartup: "Precargar el LLM auxiliar en caché al iniciar",
@@ -2132,6 +2152,7 @@ export const es419 = {
           "No se pudo guardar la configuración de cambio automático de modelo.",
         idleError:
           "Ingresa 0 para mantener el modelo cargado, o al menos 60 segundos.",
+        idleUnsaved: "Aún no se guardó.",
         keepKv: "Conservar el contexto del chat entre descargas de memoria",
         keepKvDescription:
           "Guarda la caché KV antes de liberar el modelo por inactividad, o antes de que un modelo de imagen o video ocupe la GPU, para que los chats reanudados no tengan que volver a leer el historial. Hasta 10 GB en disco.",
@@ -2201,6 +2222,14 @@ export const es419 = {
           off: "Ejecuta todas las llamadas a herramientas sin preguntar. El código de Python y terminal sigue ejecutándose en el sandbox, que limita a qué archivos de tu computadora puede acceder. Sin un sandbox del sistema que funcione, las llamadas riesgosas preguntan primero.",
           full: "Ejecuta todas las llamadas a herramientas sin preguntar y desactiva el sandbox de código, así que el código de Python y terminal puede leer y cambiar cualquier archivo al que tenga acceso tu cuenta.",
         },
+      },
+      display: {
+        title: "Visualización",
+        timeFormat: "Formato de hora",
+        timeFormatDescription: "Muestra las horas en formato de 12 o 24 horas.",
+        timeFormatSystem: "Predeterminado del sistema",
+        timeFormat12: "12 horas",
+        timeFormat24: "24 horas",
       },
       notifications: {
         sectionTitle: "Notificaciones",
@@ -2444,6 +2473,13 @@ export const es419 = {
       avatarShapeRounded: "Redondeada",
       greetingSloth: "Saludo",
       greetingSlothDescription: "Mostrar el saludo en los chats nuevos.",
+      greetingDefault: "Predeterminado",
+      greetingCustom: "Personalizado",
+      greetingImage: "Imagen",
+      greetingText: "Texto del saludo",
+      greetingTextDescription: "Déjalo vacío para usar los saludos integrados.",
+      greetingFileError: "Elige un PNG, JPEG, WebP o GIF de menos de 10 MB.",
+      greetingImageError: "No se pudo usar esta imagen. Prueba con una más pequeña.",
       chooseSloth: "O elige un perezoso",
       noPicture: "Sin foto de perfil",
       noneLabel: "Ninguno",
@@ -2567,15 +2603,10 @@ export const es419 = {
         label: "Tema",
         description: "Colores que se usan en Unsloth, en modo claro y oscuro.",
         standard: "Estándar",
-        classic: "Clásico",
-        minimal: "Minimalista",
         moreThemes: "Más temas",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Dulce o truco",
-        description:
-          "Temas de Halloween y saludos terroríficos, hasta el 1 de noviembre.",
+      composer: {
+        title: "Editor",
       },
       code: {
         title: "Código",
@@ -2597,7 +2628,7 @@ export const es419 = {
         chatWidth: {
           label: "Ancho del chat",
           description: "Ancho de los mensajes y del cuadro de redacción.",
-          standard: "Estándar",
+          standard: "Predeterminado",
           wide: "Amplio",
           full: "Ancho completo",
         },
@@ -3232,6 +3263,8 @@ export const es419 = {
         "Las notificaciones están bloqueadas. Permítelas para Unsloth en la configuración del navegador o del sistema y vuelve a intentarlo.",
       replyNotificationKeywords:
         "notificación avisar alerta terminado completado listo respuesta segundo plano minimizado escritorio sonido notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Vistas previas de enlaces",
+      showLinkPreviewsDescription: "Mostrar vistas previas al pasar el cursor sobre los enlaces a fuentes.",
       showResponseModel: "Modelo de la respuesta",
       showResponseModelDescription:
         "Muestra los detalles del modelo en las respuestas del asistente.",
@@ -3248,6 +3281,8 @@ export const es419 = {
       inlineEditResponse: "Editar respuesta en las respuestas",
       inlineEditResponseDescription:
         "Mantén Editar respuesta en cada respuesta, en lugar de en el menú Más.",
+      turnNavigation: "Navegación por turnos",
+      turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
       composerAtBottom: "Cuadro de mensaje abajo",
       composerAtBottomDescription:
         "Empieza los chats nuevos con el cuadro de mensaje en la parte inferior de la página en lugar del centro.",
@@ -3776,6 +3811,9 @@ export const es419 = {
         docsLabel: "Abrir la documentación de la API de decisiones",
         description:
           "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en esta computadora o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
+        codeTitle: "Llámalo desde código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Otros clientes MCP se conectan aquí con el mismo token.",
         enable: "Atender solicitudes",
         enableDescription:
           "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
@@ -3932,8 +3970,6 @@ export const es419 = {
         repoCheckoutFallback:
           "Si aún tienes el checkout del repositorio, ejecuta el instalador local desde ahí:",
         restartAfterUpdate: "Reinicia Unsloth después de actualizar.",
-        desktopManaged:
-          "La app de escritorio busca nuevas versiones automáticamente. También puedes buscar o actualizar aquí en cualquier momento.",
         desktopReady: "Actualizaciones de la app de escritorio",
         desktopReadyDescription:
           "Verifica si hay disponible una versión más reciente de la app de escritorio.",
@@ -3944,7 +3980,7 @@ export const es419 = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación se conectó a un servidor de Unsloth que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en una terminal. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudieron buscar actualizaciones",
@@ -5543,6 +5579,8 @@ export const es419 = {
     removeLevel: "Quitar el nivel {n}",
     addLevel: "Agregar nivel",
     jsonHelp: "El cuerpo de la solicitud. Ejecutar lo envía tal cual.",
+    copyBody: "Copiar cuerpo",
+    copyCurl: "Copiar como cURL",
     examples: "Ejemplos",
     presetToolApproval: "Aprobar llamadas a herramientas de agentes",
     presetPromptInjection: "Detectar inyección de prompts",
@@ -5943,5 +5981,61 @@ export const es419 = {
     later: "Más tarde",
     update: "Actualizar",
     undo: "Deshacer",
+  },
+  generationStats: {
+    working: "Procesando...",
+    processingPrompt: "Procesando el prompt {percent}%",
+    compactingContext: "Compactando el contexto...",
+    timeLeft: "quedan {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "borrador {accepted}/{drafted} aceptados ({percent}%)",
+    timing: {
+      trigger: "Tiempos del mensaje",
+      firstToken: "Primer token",
+      speedInStep: "Velocidad (por paso)",
+      effective: "Efectiva",
+      output: "Salida",
+      denoising: "Eliminación de ruido",
+      stepsOne: "{count} paso",
+      steps: "{count} pasos",
+      blocksOne: "{count} bloque",
+      blocks: "{count} bloques",
+      canvas: "Lienzo",
+      generation: "Generación",
+      answerTokens: "Tokens de respuesta",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Fragmentos",
+      promptEval: "Evaluación del prompt",
+      promptSpeed: "Velocidad del prompt",
+      speed: "Velocidad",
+      tokens: "Tokens",
+      draftAccepted: "Borrador aceptado",
+      denoisingSteps: "Pasos de eliminación de ruido",
+      blocksLabel: "Bloques",
+      cacheHits: "Aciertos de caché",
+      cacheWrites: "Escrituras en caché",
+      stopReason: "Motivo de parada",
+      stoppedByYou: "Detenido por ti",
+      endOfTurn: "Fin del turno",
+      lengthLimit: "Límite de longitud",
+      toolCall: "Llamada a herramienta",
+      contentFilter: "Filtro de contenido",
+    },
+    placement: {
+      title: "Ubicación de los pesos",
+      allOnCpu: "Las {total} capas en la CPU",
+      split: "{gpu} de {total} capas en la GPU, {cpu} en la CPU",
+      allOnGpu: "Las {total} capas en la GPU",
+      expertCache: "Las {total} capas en la GPU, todos los expertos en RAM ({amount} de caché de expertos en la GPU)",
+      expertSpillOne: "Las {total} capas en la GPU, pesos de expertos de {count} capa en RAM",
+      expertSpill: "Las {total} capas en la GPU, pesos de expertos de {count} capas en RAM",
+      inUnifiedMemory: "{amount} en memoria unificada",
+      inSharedMemory: "{amount} en memoria compartida",
+      inVram: "{amount} en VRAM",
+      inRam: "{amount} en RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;
