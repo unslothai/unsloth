@@ -2812,6 +2812,22 @@ def apply_chat_template_for_generation(
     if reasoning_kwargs:
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
+    if reasoning_effort is not None:
+        from core.inference.llama_cpp import _fit_reasoning_effort_to_template
+
+        # Fit per attempt: sanitizing or a tools-less retry can switch tool_use to default.
+        attempts = [
+            {
+                **kw,
+                "reasoning_effort": _fit_reasoning_effort_to_template(
+                    "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools"))),
+                    reasoning_effort,
+                ),
+            }
+            if "reasoning_effort" in kw
+            else kw
+            for kw in attempts
+        ]
 
     # A tools=-less retry selects "default", so its messages need that template's profile.
     _fallback_markup = _UNPARSED

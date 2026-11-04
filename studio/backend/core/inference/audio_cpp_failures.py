@@ -134,10 +134,31 @@ def attach_failure(exc: BaseException, failure: Optional[AudioCppFailure]) -> Ba
     return exc
 
 
-def estimate_resident_gb(size_bytes: int) -> float:
+# GiB; resident = weights * per_weight + fixed. Generic matches Qwen3-TTS at its 8192-token cap.
+_GENERIC_PROFILE = (2.5, 1.5)
+# family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 CUDA peak plus at least
+# 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
+_MEASURED_PROFILES = {
+    "chatterbox": (1.0, 3.5, 3.5),
+    "higgs_audio_tts": (1.0, 2.0, 4.8),
+    "kokoro_tts": (1.0, 3.5, 0.2),
+    "voxcpm2": (2.2, 4.7, 4.5),
+    "voxtral_tts": (1.0, 2.0, 4.4),
+}
+
+
+def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
     """Resident GPU memory for an audio.cpp package: weights plus graph and cache buffers.
-    Measured TTS peaks run about 3x the q8 weights (Qwen3-TTS 0.6B: 1.9 GB file, 5.9 GB peak)."""
-    return round(size_bytes / (1024**3) * 2.5 + 1.5, 2)
+    A measured family uses its own profile; a package past the sizes measured for it gets the
+    larger of that profile and the generic one."""
+    weights_gb = size_bytes / (1024**3)
+    generic = weights_gb * _GENERIC_PROFILE[0] + _GENERIC_PROFILE[1]
+    profile = _MEASURED_PROFILES.get(family or "")
+    if profile is None:
+        return round(generic, 2)
+    per_weight, fixed, measured_up_to_gb = profile
+    measured = weights_gb * per_weight + fixed
+    return round(measured if weights_gb <= measured_up_to_gb else max(measured, generic), 2)
 
 
 def smaller_variants(
@@ -160,7 +181,7 @@ def smaller_variants(
         extra += found.size_bytes if found is not None else 0
     rows = []
     for variant in sorted(model.variants, key = lambda v: v.size_bytes, reverse = True):
-        estimate = estimate_resident_gb(variant.size_bytes + extra)
+        estimate = estimate_resident_gb(variant.size_bytes + extra, getattr(model, "family", None))
         if not 0 < variant.size_bytes < model.size_bytes or (
             free_gb is not None and estimate > free_gb
         ):
