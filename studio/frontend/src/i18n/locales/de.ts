@@ -5557,6 +5557,7 @@ export const de = {
   generationStats: {
     working: "Wird bearbeitet...",
     processingPrompt: "Prompt-Verarbeitung {percent}%",
+    compactingContext: "Kontext wird komprimiert...",
     timeLeft: "noch {eta}",
     tokensOne: "{count} Token",
     tokens: "{count} Tokens",

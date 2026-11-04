@@ -5945,6 +5945,7 @@ export const pl = {
   generationStats: {
     working: "Przetwarzanie...",
     processingPrompt: "Przetwarzanie promptu {percent}%",
+    compactingContext: "Kompaktowanie kontekstu...",
     timeLeft: "zostało {eta}",
     tokensOne: "tokeny: {count}",
     tokens: "tokeny: {count}",

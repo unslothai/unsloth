@@ -7179,7 +7179,22 @@ class _PrefillProgressSignal:
         self._decode: Optional[dict] = None
         self._decode_sent_at = 0.0
         self._decode_started = False
+        # Counters, not a frame: one fit reports once, and the event loop sends each new report once.
+        self._compactions = 0
+        self._compactions_sent = 0
         self.wants_timings = inner is not None or live
+
+    def round_ended(self) -> None:
+        """A tool result closed the pass: its unsent prefill and decode figures must not follow into the next round."""
+        self._prefill_sent = self._prefill
+        self._decode = None
+        self._decode_started = False
+
+    def compacting(self) -> None:
+        if self._live:
+            # Cleared first: a figure from the last pass sent after this report would clear the label on the client.
+            self.round_ended()
+            self._compactions += 1
 
     @property
     def needs_phase(self) -> bool:
@@ -7255,6 +7270,11 @@ class _PrefillProgressSignal:
         once per ``_LIVE_DECODE_FRAME_INTERVAL_S``. None when nothing is due."""
         if not self._live:
             return None
+        # Before prefill: a pending report always precedes the prompt pass that follows its fit.
+        compactions = self._compactions
+        if compactions != self._compactions_sent:
+            self._compactions_sent = compactions
+            return 'data: {"type":"generation_progress","phase":"compacting"}\n\n'
         prefill = self._prefill
         if prefill is not None and prefill is not self._prefill_sent:
             self._prefill_sent = prefill
@@ -32443,6 +32463,8 @@ async def produce_openai_chat_completions(
                             continue
 
                         if event["type"] in ("tool_start", "tool_end"):
+                            if event["type"] == "tool_end":
+                                _gguf_prefill_signal.round_ended()
                             if event["type"] == "tool_start":
                                 # Gated with the card since the stamp is set once: a caller that cannot
                                 # see the card would otherwise report the tool run as its TTFT.

@@ -368,13 +368,38 @@ def _fit_rolling_remembered(messages, kwargs):
     return fitted, truncation
 
 
+def _once(on_compacting):
+    """``on_compacting`` at most once per fit, never raising: a progress report must not break a fit."""
+    fired = False
+
+    def fire() -> None:
+        nonlocal fired
+        if fired:
+            return
+        fired = True
+        try:
+            on_compacting()
+        except Exception:  # noqa: BLE001
+            logger.debug("compaction progress report failed", exc_info = True)
+
+    return fire
+
+
+def _compaction_reporter(perf_callback):
+    report = getattr(perf_callback, "compacting", None)
+    return report if callable(report) else None
+
+
 def _fit_with_instruction_pins(
     messages,
     *,
     anchor_ids = None,
+    on_compacting = None,
     **kwargs,
 ):
     """Pins are recomputed each fit (inline recall swaps the user dict), dropped if they block a fit, and must never mutate the anchor set the caller passed."""
+    if on_compacting is not None:
+        kwargs["on_evict"] = _once(on_compacting)
     anchors = set(anchor_ids or ())
     try:
         from core.inference import instruction_pin
@@ -37004,6 +37029,7 @@ class LlamaCppBackend:
                 )
                 openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -37970,6 +37996,7 @@ class LlamaCppBackend:
                     )
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
+                        on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -38160,6 +38187,7 @@ class LlamaCppBackend:
                 try:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
+                        on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -40592,6 +40620,7 @@ class LlamaCppBackend:
                 )
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -40750,6 +40779,7 @@ class LlamaCppBackend:
             try:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(

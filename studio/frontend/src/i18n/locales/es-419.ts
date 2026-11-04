@@ -5980,6 +5980,7 @@ export const es419 = {
   generationStats: {
     working: "Procesando...",
     processingPrompt: "Procesando el prompt {percent}%",
+    compactingContext: "Compactando el contexto...",
     timeLeft: "quedan {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",

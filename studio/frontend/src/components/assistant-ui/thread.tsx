@@ -231,7 +231,12 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
-import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
+import {
+  betweenToolRounds,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -7732,7 +7737,22 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// Mounted only under the empty running reply, so the thread's other messages subscribe to nothing new.
+// GeneratingIndicator's status for the gap after a tool result, until the next pass streams its first part.
+const NextRoundIndicator: FC = () => {
+  const show = useAuiState(({ message }) =>
+    betweenToolRounds(message.status?.type === "running", message.content),
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <div data-slot="next-round-indicator" className="mt-2">
+      <GeneratingStatus />
+    </div>
+  );
+};
+
+// Mounted only under a running reply waiting on the model, so the thread's other messages subscribe to nothing new.
 const GeneratingStatus: FC = () => {
   // Keyed like DiffusionCanvas: a first turn reads "__default" until the thread persists.
   const threadKey =
@@ -7747,9 +7767,22 @@ const GeneratingStatus: FC = () => {
   const decoding = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.decode != null,
   );
+  const compacting = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.compacting === true,
+  );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
   const t = useT();
+  if (compacting) {
+    return (
+      <span
+        data-slot="compacting-progress"
+        className="generating-glint text-sm text-muted-foreground"
+      >
+        {t("generationStats.compactingContext")}
+      </span>
+    );
+  }
   const percent = prefill ? prefillPercent(prefill) : null;
   // Held at 100% until the first token: going back to Working... for that moment would flash too.
   if (prefill === null || !labelShown || percent === null || decoding) {
@@ -8323,6 +8356,7 @@ const AssistantMessage: FC = () => {
                 <DiffusionCanvas />
 
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
+                <NextRoundIndicator />
                 <SourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />

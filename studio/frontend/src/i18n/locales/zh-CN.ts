@@ -5385,6 +5385,7 @@ export const zhCN = {
   generationStats: {
     working: "正在处理...",
     processingPrompt: "正在处理提示词 {percent}%",
+    compactingContext: "正在压缩上下文...",
     timeLeft: "剩余 {eta}",
     tokensOne: "{count} 个 token",
     tokens: "{count} 个 token",

@@ -5892,6 +5892,7 @@ export const vi = {
   generationStats: {
     working: "Đang xử lý...",
     processingPrompt: "Đang xử lý lời nhắc {percent}%",
+    compactingContext: "Đang thu gọn ngữ cảnh...",
     timeLeft: "còn {eta}",
     tokensOne: "{count} token",
     tokens: "{count} token",
