@@ -170,3 +170,23 @@ class TestAcceleratorExtrasCarryTheirCompanions:
             if not any("flashattention" in d or "flash-attn" in d for d in extras[n])
         ]
         assert missing == [], f"ampere torch 2.8 extras missing flash-attn: {missing}"
+
+
+def test_every_auto_install_torch_extra_is_published():
+    # A tag _auto_install.py prints but PyPI lacks makes pip warn and resolve another torch (#16520).
+    import re
+
+    source = (REPO_ROOT / "unsloth" / "_auto_install.py").read_text(encoding = "utf-8")
+    tags = re.findall(r"x = 'cu\{\}\{\}-torch(\d+)'", source)
+    assert tags, "no torch tags parsed from _auto_install.py"
+    extras = _load()["project"].get("optional-dependencies", {})
+    missing = []
+    for tag in tags:
+        # torch 2.12+ ships on cu126 / cu130 only.
+        wanted = [f"cu126-torch{tag}", f"cu130-torch{tag}"] if int(tag) >= 2120 else None
+        if wanted is None:
+            if not any(n.startswith("cu") and n.endswith(f"-torch{tag}") for n in extras):
+                missing.append(f"cu*-torch{tag}")
+        else:
+            missing += [n for n in wanted if n not in extras]
+    assert missing == [], f"auto-install extras missing from the PyPI metadata: {missing}"
