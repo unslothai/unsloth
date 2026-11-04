@@ -40,3 +40,11 @@ test("automatic catalog loads ignore the typed API key and Base URL", () => {
     /const baseUrl = silent\s*\? editingProvider\?\.baseUrl \|\| null\s*: parseBaseUrlForProvider\(\s*baseUrlDraft,/,
   );
 });
+
+test("explicit OpenRouter reloads keep saved routing variants too", () => {
+  const dialog = readSrc("features/chat/chat-providers-dialog.tsx");
+  assert.match(
+    dialog,
+    /if \(silent \|\| hasPublicModelCatalog\(providerType\)\) \{\s*setAvailableModels\(withSavedModelIds\(modelIds, selectedModelIds\)\);/,
+  );
+});

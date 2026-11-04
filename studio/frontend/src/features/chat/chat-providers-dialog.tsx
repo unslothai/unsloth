@@ -824,7 +824,8 @@ export function ChatProvidersSettings({
           ].filter((id) => id.length > 0),
         ),
       ]);
-      if (silent) {
+      // OpenRouter routing variants (:nitro, :floor) are valid ids that /models never lists.
+      if (silent || hasPublicModelCatalog(providerType)) {
         setAvailableModels(withSavedModelIds(modelIds, selectedModelIds));
       } else {
         setAvailableModels(modelIds);
