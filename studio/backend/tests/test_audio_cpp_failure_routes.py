@@ -146,6 +146,18 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
     )
 
 
+def test_with_nothing_to_unload_the_refusal_reads_the_cards_free_memory(monkeypatch):
+    # No resident model: no post-handoff availability. The live reading still names the free
+    # memory and keeps variants that do not fit out of the suggestions.
+    monkeypatch.setattr(af, "offload_options", lambda model: [])
+    monkeypatch.setattr(ri, "_visible_gpu_memory_gb", lambda: {0: (7.0, 8.0), 1: (5.0, 8.0)})
+    with pytest.raises(HTTPException) as raised:
+        _preflight(None, availability = None, prepared = ([0, 1], {"selection_mode": "fallback_all"}))
+    detail = raised.value.detail
+    assert [row["label"] for row in detail["smaller_variants"]] == ["Q2", "Q1"]
+    assert "and the most free on one GPU is 7.0 GB." in detail["message"]
+
+
 @pytest.mark.parametrize(
     "family, size_gb, free_gb, fits",
     [
