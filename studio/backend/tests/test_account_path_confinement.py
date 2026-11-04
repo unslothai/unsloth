@@ -578,6 +578,7 @@ if os.name != "nt":
     _DOT_NAMED_MODULE_PATHS.append(".\\...")
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason = "Win32 strips trailing dots from folder names")
 @pytest.mark.parametrize("path", _DOT_NAMED_MODULE_PATHS)
 def test_a_dot_named_module_folder_index_outside_the_model_is_flagged(tmp_path, path):
     from utils.security.file_security import escaping_weight_references
