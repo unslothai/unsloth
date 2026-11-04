@@ -197,14 +197,14 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         stride_am,
         stride_wn,
         stride_cm,
-        HAS_BIAS: tl.constexpr,
-        XS_FP32: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        EVEN_K: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        GROUP_M: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        XS_FP32: tl.constexpr,  # activation scale is fp32
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        EVEN_K: tl.constexpr,  # K divisible by BLOCK_K
+        BLOCK_M: tl.constexpr,  # block size along M (rows)
+        BLOCK_N: tl.constexpr,  # block size along N (out features)
+        BLOCK_K: tl.constexpr,  # block size along K (in features)
+        GROUP_M: tl.constexpr,  # M tiles per swizzle group
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)
@@ -268,13 +268,13 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         N,
         K,
         stride_cm,
-        HAS_BIAS: tl.constexpr,
-        XS_FP32: tl.constexpr,
-        WS_FP32: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        GROUP_M: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        XS_FP32: tl.constexpr,  # activation scale is fp32
+        WS_FP32: tl.constexpr,  # weight scale is fp32
+        BLOCK_M: tl.constexpr,  # block size along M (rows)
+        BLOCK_N: tl.constexpr,  # block size along N (out features)
+        BLOCK_K: tl.constexpr,  # block size along K (in features)
+        GROUP_M: tl.constexpr,  # M tiles per swizzle group
     ):
         pid = tl.program_id(0)
         num_pid_m = tl.cdiv(M, BLOCK_M)

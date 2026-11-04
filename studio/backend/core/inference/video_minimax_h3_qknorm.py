@@ -64,9 +64,9 @@ def _kernel() -> Any:
         stride_h,
         cos_stride,
         eps,
-        D: tl.constexpr,
-        HALF: tl.constexpr,
-        ROWS: tl.constexpr,
+        D: tl.constexpr,  # hd
+        HALF: tl.constexpr,  # rotary dim // 2
+        ROWS: tl.constexpr,  # rows per program
     ):
         pid = tl.program_id(0).to(tl.int64)
         rows = pid * ROWS + tl.arange(0, ROWS).to(tl.int64)

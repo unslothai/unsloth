@@ -78,9 +78,9 @@ def _lh_fwd(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -147,8 +147,8 @@ def _lh_bwd_pre(
     sdom,
     H,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -203,9 +203,9 @@ def _lh_bwd_dq(
     H,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     start_m = tl.program_id(0)
     off_bh = tl.program_id(1)
@@ -291,9 +291,9 @@ def _lh_bwd_dkdv(
     HKV,
     G,
     S,
-    HEAD_DIM: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
+    HEAD_DIM: tl.constexpr,  # hd
+    BLOCK_M: tl.constexpr,  # query rows per program
+    BLOCK_N: tl.constexpr,  # key rows per step
 ):
     # One program owns a kv block of one kv head and loops over its G query heads,
     # so GQA needs no atomics and no repeated K / V.
