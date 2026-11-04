@@ -131,6 +131,8 @@ export type Scenario = {
   detectionDeferred: boolean;
   /** What a detectHardware read measures; unset keeps chatOnly. */
   detectedChatOnly?: boolean;
+  /** Health reads after the detectHardware read before the verdict lands (a busy host). */
+  detectionReads?: number;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -607,12 +609,25 @@ const usePlatformStore = {
       SCENARIO.platformFetched === false || SCENARIO.detectionDeferred === true,
   }),
 };
-// A detectHardware read measures the verdict: detectedChatOnly is what the host turns out to be.
+// A detectHardware read starts detection; it lands after detectionReads more health reads (0 = within
+// that read's own wait). detectedChatOnly is what the host turns out to be.
+let DETECTION_READS_LEFT = -1;
 async function fetchDeviceType(options?: any) {
   if (options?.detectHardware) {
     EVENTS.push({ kind: "detectHardware" });
     SCENARIO.detectionDeferred = false;
+    DETECTION_READS_LEFT = SCENARIO.detectionReads ?? 0;
+  } else if (DETECTION_READS_LEFT > 0) {
+    EVENTS.push({ kind: "healthRead" });
+    DETECTION_READS_LEFT -= 1;
+  }
+  if (DETECTION_READS_LEFT === 0) {
+    SCENARIO.platformFetched = true;
     if (SCENARIO.detectedChatOnly !== undefined) SCENARIO.chatOnly = SCENARIO.detectedChatOnly;
+    DETECTION_READS_LEFT = -1;
+  } else if (DETECTION_READS_LEFT > 0) {
+    // Still detecting: the reply is provisional, so the verdict stays unmeasured.
+    SCENARIO.platformFetched = false;
   }
   return SCENARIO.platform?.deviceType ?? SCENARIO.deviceType ?? "linux";
 }
@@ -1738,6 +1753,27 @@ def test_a_deferred_verdict_on_a_chat_only_host_falls_back_to_the_default_gguf()
     assert "org/st" not in _loaded_paths(out)
     assert _loaded_paths(out) == [DEFAULT_MODEL]
     assert out["result"]["loaded"] is True
+
+
+def test_a_deferred_verdict_that_outlasts_the_health_wait_is_still_awaited():
+    """On a busy host detection outlasts the health read's own wait: autoload keeps reading until the
+    verdict lands instead of trying the cached non-GGUF repo on the still-unknown one."""
+    out = _run(
+        "scenario({ chatOnly: true, detectedChatOnly: true, detectionReads: 3,"
+        " platformFetched: true, detectionDeferred: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }],"
+        " load: (p) => p.model_path === 'org/st'"
+        " ? new Error('Chat-only install: this model needs a GPU backend; load a GGUF model.')"
+        " : LOADED(p) })"
+    )
+    assert [e["kind"] for e in out["events"] if e["kind"] in ("detectHardware", "healthRead")] == [
+        "detectHardware",
+        "healthRead",
+        "healthRead",
+        "healthRead",
+    ]
+    assert "org/st" not in _loaded_paths(out)
+    assert _loaded_paths(out) == [DEFAULT_MODEL]
 
 
 def test_a_deferred_verdict_with_only_gguf_cached_does_not_detect_hardware():
