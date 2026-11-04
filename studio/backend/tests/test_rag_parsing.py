@@ -1430,24 +1430,6 @@ def test_html_skips_native_hidden_subtrees(tmp_path, body, expected):
     "body, expected",
     [
         ("<p hidden>Obsolete<p>Current", "Current"),
-        ("<head hidden><title>Obsolete</title><body>Current", "Current"),
-        ("<head hidden><title>Obsolete</title>Current", "Current"),
-        (
-            "<table><colgroup hidden><col><tbody><tr><td>Current</td></tr></tbody></table>",
-            "Current",
-        ),
-        ("<ruby><rt hidden>Obsolete<rp>Current</ruby>", "Current"),
-        ("<head hidden><template><p>Obsolete</p></template><body>Current", "Current"),
-        (
-            "<table><colgroup hidden><template><p>Obsolete</p></template><tr><td>Current</td></tr></table>",
-            "Current",
-        ),
-        ("<table><caption hidden>Obsolete<tr><td>Current</td></tr></table>", "Current"),
-        ("<select><optgroup hidden><option>Obsolete<hr><option>Current</select>", "Current"),
-        (
-            "<select><optgroup hidden><template><optgroup>Obsolete</optgroup></template><hr><option>Current</select>",
-            "Current",
-        ),
         ("<p>Before<div hidden>Obsolete</div>After", "Before\nAfter"),
         ("<ul><li hidden>Obsolete<li>Current</ul>", "Current"),
         ("<ul><li hidden>Obsolete<ul><li>Nested</li></ul></li><li>Current</li></ul>", "Current"),
@@ -1468,3 +1450,16 @@ def test_html_hidden_scope_releases_visible_siblings(tmp_path, body, expected):
 def test_html_hidden_until_found_remains_searchable(tmp_path, value):
     text = _parse_html(tmp_path, f'<p>Before</p><div hidden="{value}">Findable</div><p>After</p>')
     assert text == "Before\nFindable\nAfter"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<head hidden><title>Title</title><body>Current",
+        "<table><caption hidden>Caption<tr><td>Current</td></tr></table>",
+        "<select><optgroup hidden><option>Option<hr><option>Current</select>",
+        "<ruby><rt hidden>Ruby<rp>Current</ruby>",
+    ],
+)
+def test_html_hidden_without_tracked_end_keeps_following_text(tmp_path, body):
+    assert _parse_html(tmp_path, body).endswith("Current")

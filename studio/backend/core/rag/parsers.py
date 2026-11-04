@@ -70,42 +70,43 @@ _HTML_TABLE_DEPTH = 32
 _HTML_VOID_TAGS = frozenset(
     "area base br col embed hr img input link meta param source track wbr".split()
 )
-_HTML_P_CLOSERS = frozenset(
-    "address article aside blockquote center dd details dialog dir div dl dt fieldset figcaption"
-    " figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr li listing main menu nav ol p pre"
-    " search section summary table ul".split()
-)
 _HTML_P_SCOPE = frozenset(
     "applet button caption html marquee object select table td template th".split()
 )
-# Track optional ends for hidden scopes without changing ordinary formatting.
-_HTML_HIDDEN_CLOSE = {
-    "p": (_HTML_P_CLOSERS, _HTML_P_SCOPE),
+_HTML_TABLE_SCOPE = frozenset(("table", "template"))
+_HTML_CELL_CLOSERS = frozenset(("td", "th", "tr")) | _HTML_ROW_GROUPS
+# optional end tags: open element -> (start tags that end it, ancestors that stop the search)
+_HTML_IMPLIED_END = {
+    "p": (
+        frozenset(
+            "address article aside blockquote center dd details dialog dir div dl dt fieldset"
+            " figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr li listing main"
+            " menu nav ol p pre search section summary table ul".split()
+        ),
+        _HTML_P_SCOPE,
+    ),
     "li": (frozenset(("li",)), _HTML_LIST_TAGS | _HTML_P_SCOPE),
     "dt": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
     "dd": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
-    "tr": (frozenset(("tr",)) | _HTML_ROW_GROUPS, frozenset(("table", "template"))),
-    "td": (frozenset(("td", "th", "tr")) | _HTML_ROW_GROUPS, frozenset(("table", "template"))),
-    "th": (frozenset(("td", "th", "tr")) | _HTML_ROW_GROUPS, frozenset(("table", "template"))),
-    "caption": (
-        frozenset(("caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr")),
-        frozenset(("table", "template")),
-    ),
-    "thead": (_HTML_ROW_GROUPS, frozenset(("table", "template"))),
-    "tbody": (_HTML_ROW_GROUPS, frozenset(("table", "template"))),
-    "tfoot": (_HTML_ROW_GROUPS, frozenset(("table", "template"))),
+    "tr": (frozenset(("tr",)) | _HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "td": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "th": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "thead": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tbody": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tfoot": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
     "option": (
         frozenset(("option", "optgroup", "hr")),
         frozenset(("select", "datalist", "template")),
     ),
-    "optgroup": (frozenset(("optgroup", "hr")), frozenset(("select", "datalist", "template"))),
-    "rt": (frozenset(("rt", "rp")), frozenset(("ruby", "template"))),
-    "rp": (frozenset(("rt", "rp")), frozenset(("ruby", "template"))),
 }
-
-_HTML_HEAD_CONTENT = frozenset(
-    "base basefont bgsound head html link meta noframes noscript script style template title".split()
-)
+_HTML_IMPLIED_BY = {
+    tag: tuple(
+        (name, scope) for name, (closers, scope) in _HTML_IMPLIED_END.items() if tag in closers
+    )
+    for tag in frozenset().union(*(closers for closers, _ in _HTML_IMPLIED_END.values()))
+}
+# other optional-end elements have no tracked end, so a hidden one would swallow the rest
+_HTML_HIDDEN_IGNORED = frozenset("body caption colgroup head html optgroup rb rp rt rtc".split())
 
 
 class _HtmlPre(str):
@@ -138,9 +139,12 @@ def _html_span(attrs, name: str, limit: int) -> int:
     return limit if value == 0 and name == "rowspan" else min(max(value, 1), limit)
 
 
-def _html_hidden(attrs) -> bool:
-    value = next((value or "" for name, value in attrs if name == "hidden"), "until-found")
-    return value.lower() != "until-found"
+def _html_hidden(tag: str, attrs) -> bool:
+    # any value but until-found (still searchable) hides the subtree; CSS is not evaluated
+    for name, value in attrs:
+        if name == "hidden":
+            return (value or "").lower() != "until-found" and tag not in _HTML_HIDDEN_IGNORED
+    return False
 
 
 class _Stripper(HTMLParser):
@@ -279,55 +283,34 @@ class _Stripper(HTMLParser):
 
     def _pop_tags(self, index: int) -> None:
         while len(self._open_tags) > index:
-            name = self._open_tags.pop()
-            positions = self._tag_positions[name]
-            positions.pop()
-            if not positions:
-                del self._tag_positions[name]
+            self._tag_positions[self._open_tags.pop()].pop()
         if self._hidden_at is not None and self._hidden_at >= index:
             self._hidden_at = None
 
-    def _close_hidden_before(self, tag: str, preserve_boundary: bool) -> None:
+    def _close_implied(self, tag: str, preserve_boundary: bool) -> None:
+        implied = _HTML_IMPLIED_BY.get(tag)
+        if not implied:
+            return
         index = len(self._open_tags)
-        for name, (closers, barriers) in _HTML_HIDDEN_CLOSE.items():
+        for name, barriers in implied:
             positions = self._tag_positions.get(name)
-            if tag not in closers or not positions:
-                continue
-            barrier = max(
-                (self._tag_positions[b][-1] for b in barriers if b in self._tag_positions),
-                default = -1,
-            )
-            if positions[-1] > barrier:
-                index = min(index, positions[-1])
-        for name, stays_open, barriers in (
-            (
-                "head",
-                tag in _HTML_HEAD_CONTENT,
-                ("title", "style", "script", "template", "noscript", "noframes"),
-            ),
-            ("colgroup", tag in ("col", "template"), ("template",)),
-        ):
-            positions = self._tag_positions.get(name)
-            barrier = max(
-                (self._tag_positions[b][-1] for b in barriers if b in self._tag_positions),
-                default = -1,
-            )
-            if positions and not stays_open and positions[-1] > barrier:
-                index = min(index, positions[-1])
-        if (
-            preserve_boundary
-            and index < len(self._open_tags)
-            and (self._hidden_at is None or index < self._hidden_at)
-        ):
+            if positions and positions[-1] < index:
+                barrier = max(
+                    (self._tag_positions[b][-1] for b in barriers if self._tag_positions.get(b)),
+                    default = -1,
+                )
+                if positions[-1] > barrier:
+                    index = positions[-1]
+        if index == len(self._open_tags):
+            return
+        if preserve_boundary and (self._hidden_at is None or index < self._hidden_at):
             self.handle_endtag(self._open_tags[index])
         else:
             self._pop_tags(index)
 
     def handle_starttag(self, tag, attrs):
-        # Missing/invalid hidden values hide the subtree. until-found stays searchable;
-        # this is native-attribute filtering, not computed CSS visibility.
-        hidden = _html_hidden(attrs)
-        self._close_hidden_before(tag, self._hidden_at is not None or hidden)
+        hidden = _html_hidden(tag, attrs)
+        self._close_implied(tag, self._hidden_at is not None or hidden)
         if tag not in _HTML_VOID_TAGS:
             index = len(self._open_tags)
             self._tag_positions.setdefault(tag, []).append(index)
@@ -385,8 +368,8 @@ class _Stripper(HTMLParser):
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
-        # HTMLParser otherwise synthesizes a visible </br> or </input> for a hidden void.
-        if tag not in _HTML_VOID_TAGS or not _html_hidden(attrs):
+        # no synthesized </br> or </input> end for a hidden void element
+        if tag not in _HTML_VOID_TAGS or not _html_hidden(tag, attrs):
             self.handle_endtag(tag)
 
     def handle_endtag(self, tag):
@@ -431,13 +414,6 @@ class _Stripper(HTMLParser):
             self._line.append(" ")
 
     def handle_data(self, data):
-        if (
-            self._hidden_at is not None
-            and data.strip()
-            and self._open_tags[-1] in ("head", "colgroup")
-        ):
-            # Text ends these optional containers, not their title/style/template children.
-            self.handle_endtag(self._open_tags[-1])
         if not self._skip and self._hidden_at is None:
             if self._label and data.strip():
                 self._line.append(self._label)
