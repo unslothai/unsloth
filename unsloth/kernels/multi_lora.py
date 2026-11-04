@@ -1520,6 +1520,61 @@ def adapter_token_counts(
     )
 
 
+# fp32 logits the batch loss materializes at once: a full-vocab fp32 copy of B x T logits (plus what
+# cross_entropy saves for backward) is several times the bf16 logits, and an OOM fails every member.
+_CE_CHUNK_ELEMENTS = 1 << 25
+
+
+class _ChunkedTokenCrossEntropy(torch.autograd.Function):
+    """Per-token cross entropy of ``logits[:, :-1]`` against (B, T - 1) labels, a few tokens at a time.
+
+    Each chunk is cast to fp32 on its own, so only one chunk's fp32 copy is alive. Forward saves the logits,
+    the labels and the fp32 logsumexp per token; backward forms ``softmax - onehot`` from them in one pass,
+    without running cross_entropy again. Losses match one ``F.cross_entropy`` over ``logits[:, :-1].float()``.
+    """
+
+    @staticmethod
+    def forward(ctx, logits, labels, ignore_index, chunk):
+        B, T1 = labels.shape
+        loss = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        lse = torch.empty((B, T1), dtype = torch.float32, device = logits.device)
+        for b in range(B):
+            for t in range(0, T1, chunk):
+                e = min(t + chunk, T1)
+                x = logits[b, t:e].float()
+                y = labels[b, t:e]
+                valid = y != ignore_index
+                token = F.cross_entropy(x, y, ignore_index = ignore_index, reduction = "none")
+                picked = x.gather(1, torch.where(valid, y, 0)[:, None]).squeeze(1)
+                loss[b, t:e] = token
+                # logsumexp = loss + the label's logit; +inf on ignored tokens makes their softmax 0.
+                lse[b, t:e] = torch.where(valid, token + picked, float("inf"))
+        ctx.save_for_backward(logits, labels, lse)
+        ctx.ignore_index, ctx.chunk = ignore_index, chunk
+        return loss
+
+    @staticmethod
+    def backward(ctx, grad_loss):
+        logits, labels, lse = ctx.saved_tensors
+        grad = torch.zeros_like(logits)
+        B, T1 = labels.shape
+        for b in range(B):
+            for t in range(0, T1, ctx.chunk):
+                e = min(t + ctx.chunk, T1)
+                y = labels[b, t:e]
+                valid = y != ctx.ignore_index
+                g = torch.where(valid, grad_loss[b, t:e].float(), 0.0)
+                p = torch.exp(logits[b, t:e].float() - lse[b, t:e, None])
+                p.scatter_add_(1, torch.where(valid, y, 0)[:, None], -torch.ones_like(g)[:, None])
+                grad[b, t:e] = p.mul_(g[:, None])
+        return grad, None, None, None
+
+
+def _token_cross_entropy(logits, shift_labels, ignore_index):
+    chunk = max(1, _CE_CHUNK_ELEMENTS // max(1, logits.shape[-1]))
+    return _ChunkedTokenCrossEntropy.apply(logits, shift_labels, ignore_index, chunk)
+
+
 def per_adapter_loss(
     logits: torch.Tensor,
     labels: torch.Tensor,
@@ -1536,14 +1591,8 @@ def per_adapter_loss(
     gradient accumulation ``num_items_in_batch`` = per-adapter ``adapter_token_counts`` summed over the window.
     Returns (total, this rank's per-adapter losses).
     """
-    shift_logits = logits[:, :-1].float()
     shift_labels = labels[:, 1:]
-    token_loss = F.cross_entropy(
-        shift_logits.reshape(-1, shift_logits.shape[-1]),
-        shift_labels.reshape(-1),
-        ignore_index = ignore_index,
-        reduction = "none",
-    ).view(shift_labels.shape)
+    token_loss = _token_cross_entropy(logits, shift_labels.to(logits.device), ignore_index)
     valid = (shift_labels != ignore_index).float()
     ids = _label_adapter_ids(row_adapter_ids, labels)
     # Tokens with no adapter add zero to slot 0 instead of being masked out: no host sync under compile.
