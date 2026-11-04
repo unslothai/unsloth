@@ -4668,6 +4668,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        estimated_resident_gb = getattr(v, "estimated_resident_gb", None),
                         lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(

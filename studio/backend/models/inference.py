@@ -7010,6 +7010,8 @@ class AudioCatalogModel(BaseModel):
     languages: Optional[List[str]] = None
     status: Optional[Literal["supported", "community", "experimental", "testing", "wip"]] = None
     size_bytes: Optional[int] = None
+    # GiB of GPU memory the load check requires for size_bytes; set per request (it reads the GPUs).
+    estimated_resident_gb: Optional[float] = None
     downloaded: bool = False
     unsupported_reason: Optional[str] = None
 

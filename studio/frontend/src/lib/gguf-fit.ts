@@ -105,6 +105,30 @@ export interface GgufVariantSizes {
   download_size_bytes?: number;
   /** Lookup tables inside `size_bytes` llama.cpp reads lazily from disk; 0 on older backends. */
   lookup_table_bytes?: number;
+  /** audio.cpp only: the GiB its load check requires. It loads whole on one GPU, never offloaded. */
+  estimated_resident_gb?: number | null;
+}
+
+/** The audio.cpp load check's verdict on one card, or null for any other GGUF (or no GPU known). */
+export function audioCppResidentFit(
+  variant: GgufVariantSizes,
+  gpuGb: number,
+): GgufFitClass | null {
+  const resident = variant.estimated_resident_gb;
+  if (resident == null || !(resident > 0) || !(gpuGb > 0)) return null;
+  return resident <= gpuGb ? "fits" : "oom";
+}
+
+/** A variant's fit: the audio.cpp estimate where the backend gave one, else the llama.cpp rule. */
+export function classifyVariantFitOnCard(
+  fitOf: (sizeBytes: number) => GgufFitClass,
+  variant: GgufVariantSizes,
+  gpuGb: number,
+): GgufFitClass {
+  return (
+    audioCppResidentFit(variant, gpuGb) ??
+    classifyGgufFitWithLookupTables(fitOf, variant)
+  );
 }
 
 /** The larger of `size_bytes` and `download_size_bytes` (companions like mmproj or a drafter).
@@ -135,8 +159,9 @@ export function classifyGgufVariantFit(
   variant: GgufVariantSizes,
   input: GgufFitInput,
 ): GgufFitClass {
-  return classifyGgufFitWithLookupTables(
+  return classifyVariantFitOnCard(
     (sizeBytes) => classifyGgufFit(sizeBytes, input),
     variant,
+    input.gpuGb ?? 0,
   );
 }

@@ -33,6 +33,8 @@ export interface AudioCatalogRow {
   languages: readonly string[] | null;
   status: AudioCatalogStatus | null;
   size_bytes: number | null;
+  /** GiB of GPU memory the load check requires; absent on an older backend. */
+  estimated_resident_gb?: number | null;
   downloaded: boolean;
   unsupported_reason: string | null;
 }
@@ -119,9 +121,10 @@ export function catalogMoreRows(
 }
 
 /** A "More models" row; the picker reads `sizeBytes` for its size column. */
-export function catalogModelOption(
-  row: AudioCatalogRow,
-): ModelOption & { sizeBytes: number | null } {
+export function catalogModelOption(row: AudioCatalogRow): ModelOption & {
+  sizeBytes: number | null;
+  estimatedResidentGb: number | null;
+} {
   // Named by folder like the seed rows, and a Community repo by its full id: two repos can
   // share one spec display name, or one repo name.
   const name = row.folder || row.id;
@@ -135,6 +138,7 @@ export function catalogModelOption(
         ? [row.display_name, about].filter(Boolean).join(" · ")
         : about,
     sizeBytes: row.size_bytes,
+    estimatedResidentGb: row.estimated_resident_gb ?? null,
   };
 }
 

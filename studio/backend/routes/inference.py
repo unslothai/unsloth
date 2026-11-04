@@ -50242,6 +50242,9 @@ async def audio_catalog(current_subject: str = Depends(get_current_subject)):
             status_code = 503,
             detail = "Unsloth Studio could not list audio models right now.",
         ) from None
+    for row in rows:
+        if row.get("size_bytes"):
+            row["estimated_resident_gb"] = audio_cpp_resident_gb(row["size_bytes"], row.get("family"))
     return payload.model_copy(update = {"models": [AudioCatalogModel(**r) for r in rows]})
 
 

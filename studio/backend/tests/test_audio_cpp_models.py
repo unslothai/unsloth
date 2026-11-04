@@ -3239,3 +3239,18 @@ def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignor
     if "bogus" in options:
         assert body["options"] == {"speed": 1.5}
     assert b.last_generation_stats == {"seed": sent and int(sent), "ignored_options": ignored}
+
+
+def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
+    # The picker shows this beside the file size, so it is the number a refusal would state.
+    from core.inference.audio_cpp_failures import estimate_resident_gb
+
+    names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-bf16.gguf"]
+    _online(monkeypatch, *names, size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", network = True)
+    assert model.family == "kokoro_tts" and len(model.variants) == 2
+    for variant in model.variants:
+        expected = estimate_resident_gb(variant.size_bytes, model.family)
+        assert rows[variant.key].estimated_resident_gb == expected
+        assert expected != estimate_resident_gb(variant.size_bytes)

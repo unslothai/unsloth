@@ -118,7 +118,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  classifyGgufFitWithLookupTables,
+  classifyVariantFitOnCard,
   ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
@@ -975,6 +975,11 @@ function VramBadge({
 }
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
+
+/** The audio.cpp estimate as the load check's refusal states it ("12.2 GB"). */
+function residentGbLabel(gb: number): string {
+  return `${gb.toFixed(1)} GB`;
+}
 
 function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
@@ -2876,10 +2881,12 @@ function GgufVariantExpander({
   );
 
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
+  // audio.cpp variants carry the backend's own estimate: judged on it, as their load check is.
+  const cardGb = anyBudgetGb ? (gpuGb ?? 0) : 0;
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
-      classifyGgufFitWithLookupTables(getGgufFit, variant),
-    [getGgufFit],
+      classifyVariantFitOnCard(getGgufFit, variant, cardGb),
+    [getGgufFit, cardGb],
   );
 
   const variantGroups = useMemo(
@@ -2900,12 +2907,12 @@ function GgufVariantExpander({
         continue;
       }
       const pick =
-        recommendedQuantForDevice(group.variants, getGgufFit, preferred) ??
+        recommendedQuantForDevice(group.variants, getGgufFit, preferred, cardGb) ??
         preferred;
       if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;
-  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
+  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit, cardGb]);
   // Keyed by presentation group while footprints bucket by dependency_key, so ask via the variant.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
@@ -3227,7 +3234,14 @@ function GgufVariantExpander({
               />
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
-                  <SizeText value={formatBytes(v.size_bytes)} />
+                  <>
+                    <SizeText value={formatBytes(v.size_bytes)} />
+                    {v.estimated_resident_gb ? (
+                      <span title="GPU memory the load check requires">
+                        {` · ${residentGbLabel(v.estimated_resident_gb)} to run`}
+                      </span>
+                    ) : null}
+                  </>
                 ) : (
                   <GgufDownloadFootprint
                     checkpointBytes={v.size_bytes}
@@ -3794,7 +3808,10 @@ export function HubModelPicker({
   /** A second Recommended group under its own ListLabel; rows reuse the recommended renderer. */
   moreModels?: {
     label: string;
-    models: (ModelOption & { sizeBytes?: number | null })[];
+    models: (ModelOption & {
+      sizeBytes?: number | null;
+      estimatedResidentGb?: number | null;
+    })[];
   };
 }) {
   const gpu = useGpuInfo();
@@ -4792,6 +4809,7 @@ export function HubModelPicker({
         likes: 0,
         isGguf: model.isGguf ?? true,
         estimatedSizeBytes: model.sizeBytes ?? undefined,
+        estimatedResidentGb: model.estimatedResidentGb ?? undefined,
       }))
       .filter(
         (row) =>
@@ -4906,6 +4924,16 @@ export function HubModelPicker({
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
+        // audio.cpp: the backend's estimate against the card, the number its load check compares.
+        const resident = r.estimatedResidentGb;
+        if (resident && rowInferenceGpu.memoryTotalGb > 0) {
+          map.set(r.id, {
+            meta,
+            status: resident <= rowInferenceGpu.memoryTotalGb ? null : "oom",
+            est: resident,
+          });
+          continue;
+        }
         map.set(r.id, {
           meta,
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped

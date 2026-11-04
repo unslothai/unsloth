@@ -996,6 +996,7 @@ async def _audio_cpp_variants_answer(
 ) -> Optional[VariantsAnswer]:
     """group audio.cpp umbrella and package components; generic single-file repos return None."""
     from core.inference import audio_cpp_models
+    from core.inference.audio_cpp_failures import estimate_resident_gb
 
     text = (repo_id or "").strip()
     umbrella = audio_cpp_models.is_umbrella_id(text)
@@ -1101,6 +1102,8 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
+                    # The number the load check compares, so the picker can't disagree with a refusal.
+                    estimated_resident_gb = estimate_resident_gb(variant.size_bytes, model.family),
                     download_remaining_bytes = remaining,
                     downloaded = downloaded,
                     partial = partial,
