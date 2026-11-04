@@ -2322,7 +2322,8 @@ def _unsloth_grpo_is_truncated(trainer, completion_ids, prompt_ids, eos_and_pad)
             model_config = getattr(getattr(engine, "vllm_config", None), "model_config", None)
         max_model_len = getattr(model_config, "max_model_len", None)
         if model_config is None:
-            # Server mode: the server's real limit cannot be read, so prefer vllm_max_model_length (as TRL does).
+            # Server mode: the server's real limit cannot be read; prefer vllm_max_model_length, else
+            # max_position_embeddings (TRL uses only the latter).
             max_model_len = getattr(getattr(trainer, "args", None), "vllm_max_model_length", None)
             if max_model_len is None:
                 config = getattr(getattr(trainer, "model", None), "config", None)
