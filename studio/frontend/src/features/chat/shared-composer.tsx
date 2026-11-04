@@ -194,6 +194,7 @@ import {
 } from "./compare-run-ownership";
 import {
   loadedContextForParams,
+  mergeBackendRecommendedInference,
   resolveExplicitCtxPin,
   resolveFitMaxSeqLength,
   retainedContextPin,
@@ -1963,17 +1964,38 @@ export function SharedComposer({
         }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
+        const paneMaxTokensCap = replayMaxTokensCap(
+          loadedContextFields(resp).loadedContextLength ??
+            (!resp.is_gguf && effectiveMaxSeqLength > 0
+              ? effectiveMaxSeqLength
+              : null),
+        );
         store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          { maxTokensCap: paneMaxTokensCap },
+        );
+        const paneParams = useChatRuntimeStore.getState().params;
+        store.setParams(
           {
-            maxTokensCap: replayMaxTokensCap(
-              loadedContextFields(resp).loadedContextLength ??
-                (!resp.is_gguf && effectiveMaxSeqLength > 0
-                  ? effectiveMaxSeqLength
-                  : null),
-            ),
+            ...mergeBackendRecommendedInference({
+              current: paneParams,
+              response: resp,
+              modelId: resp.model,
+              presetSource: useChatRuntimeStore.getState().activePresetSource,
+              loadedContextLength: loadedContextFields(resp).loadedContextLength,
+            }),
+            ...(targetIsGguf
+              ? {}
+              : {
+                  maxSeqLength: loadedContextForParams(
+                    loadedContextFields(resp).loadedContextLength,
+                    effectiveMaxSeqLength,
+                    paneParams.maxSeqLength,
+                  ),
+                }),
           },
+          { fromModelDefaults: true, maxTokensCap: paneMaxTokensCap },
         );
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
@@ -2078,17 +2100,6 @@ export function SharedComposer({
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
-        if (!targetIsGguf) {
-          const paneParams = useChatRuntimeStore.getState().params;
-          store.setParams({
-            ...paneParams,
-            maxSeqLength: loadedContextForParams(
-              loadedContextFields(resp).loadedContextLength,
-              effectiveMaxSeqLength,
-              paneParams.maxSeqLength,
-            ),
-          });
-        }
         loadedFromConfig = config != null;
         // /api/models/list can lag the model's actual state.
         const currentModels = useChatRuntimeStore.getState().models;
