@@ -389,7 +389,7 @@ async def _connection_decide(
 
 
 async def _connection_key(provider_id: str, config: dict) -> str:
-    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled")
+    routing_fields = ("provider_type", "base_url", "api_type", "is_enabled", "extra_headers")
     async with provider_config_guard(provider_id):
         current = await asyncio.to_thread(providers_db.get_provider, provider_id)
         if current is None or any(current.get(f) != config.get(f) for f in routing_fields):

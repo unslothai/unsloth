@@ -301,3 +301,23 @@ def test_route_sets_header_context_before_any_upstream_call(monkeypatch):
     with pytest.raises(ContextSet) as reached:
         _drive(inf_mod._proxy_to_external_provider(payload, request))
     assert reached.value.args == ("chat-7", "m")
+
+
+def test_decision_key_refuses_headers_changed_mid_start(monkeypatch):
+    from fastapi import HTTPException
+    from routes import systemone
+
+    row = {
+        "provider_type": "custom",
+        "base_url": "https://gw.example/v1",
+        "api_type": "systemone",
+        "is_enabled": True,
+        "extra_headers": {"X-Gateway-Token": "new"},
+    }
+    monkeypatch.setattr(systemone.providers_db, "get_provider", lambda _pid: dict(row))
+    monkeypatch.setattr(systemone, "resolve_provider_api_key_or_400", lambda *a, **k: "new-key")
+    stale = {**row, "extra_headers": {"X-Gateway-Token": "old"}}
+    with pytest.raises(HTTPException) as refused:
+        _drive(systemone._connection_key("p", stale))
+    assert refused.value.status_code == 409
+    assert _drive(systemone._connection_key("p", dict(row))) == "new-key"
