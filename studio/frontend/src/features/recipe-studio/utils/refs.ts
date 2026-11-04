@@ -126,6 +126,23 @@ function blockNames(
   };
 }
 
+/** Where a macro header's parameter defaults are (`macro show(value=topic)` reads topic), as
+ * [start, end) offsets into ``body``. The macro's name and parameter names read nothing. */
+function macroDefaults(body: string): [number, number][] {
+  const open = body.indexOf("(");
+  if (open < 0) return [];
+  const list = topLevel(body.slice(open + 1));
+  const close = list.indexOf(")");
+  const spans: [number, number][] = [];
+  let start = open + 1;
+  for (const param of (close < 0 ? list : list.slice(0, close)).split(",")) {
+    const eq = /=(?!=)/.exec(param);
+    if (eq) spans.push([start + eq.index + 1, start + param.length]);
+    start += param.length + 1;
+  }
+  return spans;
+}
+
 export type JinjaScope = { name: string; from: number; to: number };
 
 /** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}` (or
@@ -186,6 +203,9 @@ export function jinjaScopes(text: string): JinjaScope[] {
     } else {
       const set = SET_RE.exec(tag);
       const inBlock = open[open.length - 1];
+      // A `set` inside an `if` (within its own scope block) may not run, so a read after it can still be
+      // the column: it binds nothing here, and a rename renames it with the reads (replaceRef).
+      if (blocks[blocks.length - 1] === "if") continue;
       // `{% set ns.topic = ... %}` sets an attribute of `ns`: it binds no variable named topic.
       const targets = (set?.[1] ?? "")
         .split(",")
@@ -231,7 +251,14 @@ export function tagReadPart(body: string): {
 } {
   const header = /^(macro\b|call\s*\()/.exec(unmarked(body));
   if (header?.[1] === "macro")
-    return { head: body, read: "", filter: "", bound: [] };
+    return {
+      head: body,
+      read: macroDefaults(body)
+        .map(([a, b]) => body.slice(a, b))
+        .join(" , "),
+      filter: "",
+      bound: [],
+    };
   if (header) {
     // `call(user) list_users(users)`: the call after the parameter list reads.
     const start = body.indexOf("(");
@@ -280,7 +307,24 @@ export function replaceRef(template: string, from: string, to: string): string {
         return exact.test(output)
           ? `{{ ${to} }}`
           : `{{${renameRoot(output, from, to)}}}`;
+      if (/^macro\b/.test(unmarked(statement))) {
+        // Only the parameter defaults read; rename them right to left so offsets hold.
+        let next = statement;
+        for (const [a, b] of macroDefaults(statement).reverse())
+          next =
+            next.slice(0, a) +
+            renameRoot(next.slice(a, b), from, to) +
+            next.slice(b);
+        return `{%${next}%}`;
+      }
       const { head, read, filter, bound } = tagReadPart(statement);
+      // A conditional `set` of the name binds nothing (jinjaScopes): it is renamed with the reads.
+      const target = new RegExp(`(?<![\\w.])${escapeRegExp(from)}(?![\\w])`);
+      if (
+        SET_RE.test(unmarked(statement)) &&
+        !boundAt(scopes, from, at + tag.length)
+      )
+        return `{%${head.replace(target, to)}${renameRoot(read, from, to)}${filter}%}`;
       const kept = bound.includes(from) ? filter : renameRoot(filter, from, to);
       return `{%${head}${renameRoot(read, from, to)}${kept}%}`;
     },

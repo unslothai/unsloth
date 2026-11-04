@@ -1757,6 +1757,25 @@ test("with, macro and call blocks bind their own names, so a rename or a referen
     replaceRef(macro, "format", "display_format"),
     "{{ display_format }}{% macro format(value) %}{{ value | upper }}{% endmacro %}{{ format(topic) }}",
   );
+  // A macro's parameter defaults read the column; its parameter names do not.
+  assert.equal(
+    rename("{% macro show(value=topic, n) %}{{ value }}{% endmacro %}{{ show() }}"),
+    "{% macro show(value=area, n) %}{{ value }}{% endmacro %}{{ show() }}",
+  );
+  assert.deepEqual(
+    columnReferences(col("{% macro show(value=topic) %}{{ value }}{% endmacro %}{{ show() }}"), names),
+    ["topic"],
+  );
+  // A `set` inside an `if` may not run: the read after it can be the column, so both are renamed.
+  assert.equal(
+    rename('{% if u %}{% set topic = "o" %}{{ topic }}{% endif %}{{ topic }}'),
+    '{% if u %}{% set area = "o" %}{{ area }}{% endif %}{{ area }}',
+  );
+  assert.deepEqual(
+    columnReferences(col('{% if u %}{% set topic = "o" %}{% endif %}{{ topic }}'), names),
+    ["topic"],
+  );
+  assert.equal(rename("{% set topic = topic %}{{ topic }}"), "{% set topic = area %}{{ topic }}");
   const withFormat = new Set(["topic", "format"]);
   assert.deepEqual(
     columnReferences(col("{% macro format(value) %}{{ value }}{% endmacro %}{{ format(topic) }}"), withFormat),
