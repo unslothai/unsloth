@@ -7,7 +7,9 @@
 import {
   type JinjaScope,
   boundAt,
+  inRaw,
   jinjaScopes,
+  rawSpans,
   tagReadPart,
 } from "@/features/recipe-studio/utils/refs";
 import type { DocGraph } from "../stores/doc-store";
@@ -97,8 +99,12 @@ function tagNames(
 
 function templateNames(text: string): string[] {
   const scopes = jinjaScopes(text);
+  // A raw block's insides are literal text.
+  const raw = rawSpans(text);
   return [...text.matchAll(BLOCK)].flatMap((block) =>
-    tagNames(block[1], block[2], block.index ?? 0, scopes),
+    inRaw(raw, block.index ?? 0)
+      ? []
+      : tagNames(block[1], block[2], block.index ?? 0, scopes),
   );
 }
 
@@ -286,6 +292,7 @@ function withoutOutputTags(template: string, ref: string): string {
   // Read against the whole template, so a loop's own variable of that name is kept. A tag is removed
   // line by line, so a line left empty by it goes too (removeRef's rule).
   const scopes = jinjaScopes(template);
+  const raw = rawSpans(template);
   let offset = 0;
   return template
     .split("\n")
@@ -295,6 +302,7 @@ function withoutOutputTags(template: string, ref: string): string {
       const next = line.replace(
         /\{\{([\s\S]*?)\}\}/g,
         (tag, output: string, at: number) =>
+          !inRaw(raw, start + at) &&
           tagNames(output, undefined, start + at, scopes).includes(ref)
             ? ""
             : tag,

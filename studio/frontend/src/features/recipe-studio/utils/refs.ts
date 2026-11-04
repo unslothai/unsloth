@@ -143,6 +143,23 @@ function macroDefaults(body: string): [number, number][] {
   return spans;
 }
 
+const RAW_RE =
+  /\{%[-+]?\s*raw\s*[-+]?%\}[\s\S]*?(?:\{%[-+]?\s*endraw\s*[-+]?%\}|$)/g;
+
+/** Where a template's `{% raw %}...{% endraw %}` blocks are, as [start, end) offsets: their insides
+ * are literal text, not tags. An unclosed one runs to the end, as Jinja reads it. */
+export function rawSpans(text: string): [number, number][] {
+  return [...text.matchAll(RAW_RE)].map((m) => [
+    m.index ?? 0,
+    (m.index ?? 0) + m[0].length,
+  ]);
+}
+
+/** Whether offset ``at`` is inside a raw block (after its `{% raw %}` tag starts). */
+export function inRaw(spans: [number, number][], at: number): boolean {
+  return spans.some(([a, b]) => a < at && at < b);
+}
+
 export type JinjaScope = { name: string; from: number; to: number };
 
 /** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}` (or
@@ -166,8 +183,9 @@ export function jinjaScopes(text: string): JinjaScope[] {
     for (const name of scope.names) scopes.push({ name, from: scope.from, to });
     for (const set of scope.sets) scopes.push({ ...set, to });
   };
+  const raw = rawSpans(text);
   for (const block of text.matchAll(JINJA_TAG_RE)) {
-    if (block[2] === undefined) continue;
+    if (block[2] === undefined || inRaw(raw, block.index ?? 0)) continue;
     const tag = unmarked(block[2].replace(QUOTED_RE, '""'));
     const at = block.index ?? 0;
     const after = at + block[0].length;
@@ -296,13 +314,14 @@ export function replaceRef(template: string, from: string, to: string): string {
     return template;
   }
   const scopes = jinjaScopes(template);
+  const raw = rawSpans(template);
   const exact = new RegExp(`^\\s*${escapeRegExp(from)}\\s*$`);
   // In every tag the name is renamed where it is a variable root (`{{ ticket.title }}`,
   // `{% if ticket.priority %}`), except where the template binds it itself (`{% set ticket = ... %}`).
   return template.replace(
     JINJA_TAG_RE,
     (tag, output, statement, at: number) => {
-      if (boundAt(scopes, from, at)) return tag;
+      if (boundAt(scopes, from, at) || inRaw(raw, at)) return tag;
       if (output !== undefined)
         return exact.test(output)
           ? `{{ ${to} }}`

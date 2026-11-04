@@ -1776,6 +1776,14 @@ test("with, macro and call blocks bind their own names, so a rename or a referen
     ["topic"],
   );
   assert.equal(rename("{% set topic = topic %}{{ topic }}"), "{% set topic = area %}{{ topic }}");
+  // A raw block is literal text: no rename, no reference, no removal inside it.
+  const raw = "{%- raw -%}{{ topic | upper }}{% endraw %} {{ topic }}";
+  assert.equal(rename(raw), "{%- raw -%}{{ topic | upper }}{% endraw %} {{ area }}");
+  assert.deepEqual(columnReferences(col("{% raw %}{{ topic }}{% endraw %}{{ words }}"), names), ["words"]);
+  assert.equal(
+    withoutReference(col("{% raw %}{{ topic }}{% endraw %}\n{{ topic }}"), "topic").expr,
+    "{% raw %}{{ topic }}{% endraw %}",
+  );
   const withFormat = new Set(["topic", "format"]);
   assert.deepEqual(
     columnReferences(col("{% macro format(value) %}{{ value }}{% endmacro %}{{ format(topic) }}"), withFormat),
