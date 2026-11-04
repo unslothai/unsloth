@@ -176,21 +176,12 @@ def _component_dir(cand: Any) -> str:
     return str(Path(cand.config_path).parent)
 
 
-def _device_load_kwargs(cand: Any, device: Any, card_mib: Optional[int] = None) -> dict:
+def _device_load_kwargs(cand: Any, device: Any) -> dict:
     from .diffusion_cast_cache import _load_kwargs
 
     kwargs = _load_kwargs(cand)
     kwargs.pop("output_loading_info", None)
-    if card_mib is None:
-        kwargs["device_map"] = {"": str(device)}
-        return kwargs
-    import torch
-
-    # Split: accelerate fills the card up to ``card_mib`` block by block, the rest lands in host RAM.
-    dev = torch.device(device)
-    index = dev.index if dev.index is not None else torch.cuda.current_device()
-    kwargs["device_map"] = "auto"
-    kwargs["max_memory"] = {index: f"{int(card_mib)}MiB", "cpu": "1024GiB"}
+    kwargs["device_map"] = {"": str(device)}
     return kwargs
 
 
@@ -200,10 +191,8 @@ def stage_on_device(
     *,
     logger: Any = None,
     cancel_check: Optional[Callable[[], None]] = None,
-    card_mib: Optional[int] = None,
 ) -> bool:
-    """Load ``cand`` alone onto ``device`` (split with host RAM past ``card_mib``), write its cast-cache entry from
-    the loaded tensors, free it."""
+    """Load ``cand`` alone onto ``device``, write its cast-cache entry from the device tensors, free it."""
     import torch
 
     from .diffusion_cast_cache import _state_names, save
@@ -211,9 +200,7 @@ def stage_on_device(
     t0 = time.perf_counter()
     module = None
     try:
-        module = cand.cls.from_pretrained(
-            _component_dir(cand), **_device_load_kwargs(cand, device, card_mib)
-        )
+        module = cand.cls.from_pretrained(_component_dir(cand), **_device_load_kwargs(cand, device))
         module.eval()
         if cancel_check is not None:
             cancel_check()
@@ -224,10 +211,9 @@ def stage_on_device(
         path = save(cand, module, logger = logger, check = cancel_check)
         if logger is not None:
             logger.info(
-                "video.small_host: %s staged on %s%s in %.1f s (%s)",
+                "video.small_host: %s staged on %s in %.1f s (%s)",
                 cand.component,
                 device,
-                f" (split: {card_mib} MiB on the card, the rest in host RAM)" if card_mib else "",
                 time.perf_counter() - t0,
                 "cast cache written" if path else "not written",
             )
@@ -347,9 +333,10 @@ def stage_misses(
         for name in plan.stage:
             if cancel_check is not None:
                 cancel_check()
-            if plan.split.get(name) and not stage_forced():
-                # A card / host split loads through accelerate's cpu offload, whose host share comes back as meta
-                # tensors (nothing to write); the source shards cast one tensor at a time instead, card untouched.
+            if plan.split.get(name):
+                # A card / host split through accelerate's cpu offload brings its host share back as meta tensors
+                # (nothing to write); the source shards cast one tensor at a time instead, card untouched. If that
+                # fails the component is left to the normal load.
                 t0 = time.perf_counter()
                 if save_from_source(by_name[name], logger = logger, check = cancel_check) is not None:
                     done.append(name)
@@ -360,14 +347,8 @@ def stage_misses(
                             name,
                             time.perf_counter() - t0,
                         )
-                    continue
-            if stage_on_device(
-                by_name[name],
-                device,
-                logger = logger,
-                cancel_check = cancel_check,
-                card_mib = plan.split.get(name),
-            ):
+                continue
+            if stage_on_device(by_name[name], device, logger = logger, cancel_check = cancel_check):
                 done.append(name)
         if plan.engaged and plan.skipped and not stage_disabled():
             # Neither the card nor a card / host split takes it: write its cast from the source shards one tensor at a

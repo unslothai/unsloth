@@ -315,18 +315,15 @@ def test_converted_others_counts_only_a_half_dtype_change(pipe_dir):
     assert VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT, skip = ("text_encoder",)) == 0
 
 
-def test_split_load_kwargs_cap_the_card():
+def test_device_load_kwargs_put_the_whole_component_on_the_card():
     import types
     from unittest import mock
 
     cand = types.SimpleNamespace()
-
     with mock.patch.object(CC, "_load_kwargs", lambda c: {"torch_dtype": torch.float16, "output_loading_info": True}):
         whole = VS._device_load_kwargs(cand, "cuda:0")
-        split = VS._device_load_kwargs(cand, "cuda:0", card_mib = 13832)
     assert whole["device_map"] == {"": "cuda:0"} and "max_memory" not in whole
-    assert split["device_map"] == "auto" and split["max_memory"][0] == "13832MiB"
-    assert "output_loading_info" not in split
+    assert "output_loading_info" not in whole
 
 
 def test_a_dit_neither_the_card_nor_a_split_takes_is_cast_from_its_shards(pipe_dir, monkeypatch):
@@ -377,3 +374,17 @@ def test_a_split_plan_casts_from_the_source_shards_instead(pipe_dir, monkeypatch
     V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
     assert written == ["transformer"] and ("transformer", "cuda") not in calls
     _identical(pipe_kwargs["transformer"], _dense(_cands(pipe_dir)["transformer"]))
+
+
+def test_a_split_plan_whose_source_cast_fails_is_left_to_the_normal_load(pipe_dir, monkeypatch):
+    """No accelerate card / host split as a fallback (its host share comes back as meta tensors): a split-planned
+    component whose source cast fails is not staged at all, so the pipeline loads it as on main."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 16000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    calls = _wire(monkeypatch, available = 18000, total = 20000)
+    monkeypatch.setattr(CC, "save_from_source", lambda cand, **kw: None)
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert ("transformer", "cuda") not in calls and "transformer" not in pipe_kwargs
