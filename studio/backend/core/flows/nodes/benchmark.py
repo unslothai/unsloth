@@ -357,10 +357,32 @@ def _system_column(ctx: NodeContext, columns: list[str]) -> Optional[str]:
     if str(ctx.params.get("system_prompt") or "").strip():
         return None
     checkpoint = ctx.inputs.get("checkpoint")
-    named = checkpoint.get("system_column") if isinstance(checkpoint, dict) else None
-    if isinstance(named, str) and named in columns:
-        return named
+    checkpoint = checkpoint if isinstance(checkpoint, dict) else {}
+    if "system_column" in checkpoint:
+        # Training's mapping said which column, if any, was the system message.
+        named = checkpoint["system_column"]
+        return named if isinstance(named, str) and named in columns else None
+    if checkpoint.get("system_prompt"):
+        # Training sent one system prompt to every row, whatever columns the rows have.
+        return None
     return next((c for c in columns if c.strip().lower() in SYSTEM_GUESSES), None)
+
+
+def _labelled(rows: list[dict], columns: tuple, ctx: NodeContext) -> list[dict]:
+    """The rows with the label names training gave numeric labels (Fine-tune's label mapping)."""
+    checkpoint = ctx.inputs.get("checkpoint")
+    labels = checkpoint.get("label_mapping") if isinstance(checkpoint, dict) else None
+    named = [
+        c for c in columns if c and isinstance(labels, dict) and isinstance(labels.get(c), dict)
+    ]
+    if not named:
+        return rows
+    from utils.datasets.dataset_utils import _extract_column_value
+
+    return [
+        {**r, **{c: _extract_column_value(r[c], c, labels) for c in named if r.get(c) is not None}}
+        for r in rows
+    ]
 
 
 async def _recipe_heldout(
@@ -389,6 +411,8 @@ async def _recipe_heldout(
         str(ctx.params.get("reference_column") or "").strip(),
         REFERENCE_GUESSES,
     )
+    # The failures output keeps the original rows.
+    asked = _labelled(asked, (prompt_col, reference_col), ctx)
     scorer = SCORERS.get(str(ctx.params.get("scorer") or ""), "reference")
     if scorer == "reference" and not reference_col:
         raise FlowNodeError(

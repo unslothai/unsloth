@@ -824,3 +824,31 @@ def test_the_hold_out_is_asked_with_each_rows_system_message_unless_overridden(m
     assert spec({"system_prompt": "Be terse."}, {"system_column": "rule"})["system_column"] is None
     rows[0] = {"system": "Reply with RED", "question": "What label?", "answer": "RED"}
     assert spec()["system_column"] == "system"
+    # Training sent its own prompt, or its mapping left the column out: the column is not asked.
+    assert spec(checkpoint = {"system_prompt": "Reply with GREEN"})["system_column"] is None
+    assert spec(checkpoint = {"system_column": ""})["system_column"] is None
+
+
+def test_the_hold_out_is_scored_against_the_label_names_training_used(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", False
+
+    rows = [{"question": "Great film", "answer": 1}, {"question": "Dull", "answer": "0"}]
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(r) for r in rows]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    ctx.inputs["checkpoint"] = {
+        "kind": "checkpoint",
+        "name": "run-1",
+        "label_mapping": {"answer": {"0": "negative", "1": "positive"}},
+    }
+    try:
+        asyncio.run(benchmark.benchmark(ctx))
+    except Exception:
+        pass
+    assert [r["answer"] for r in sent[0]["recipe"]["rows"]] == ["positive", "negative"]

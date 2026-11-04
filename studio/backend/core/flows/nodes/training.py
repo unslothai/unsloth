@@ -285,12 +285,15 @@ async def finetune(ctx: NodeContext) -> dict:
     if system:
         checkpoint["system_prompt"] = system
     mapping = config.get("custom_format_mapping")
-    # Each row's own system message: Benchmark scores the hold-out with it, as training saw it.
-    per_row = [
-        c for c, role in (mapping.items() if isinstance(mapping, dict) else []) if role == "system"
-    ]
-    if per_row:
-        checkpoint["system_column"] = per_row[0]
+    if isinstance(mapping, dict) and mapping:
+        # How training read the rows, so Benchmark asks and scores the hold-out the same way: each
+        # row's own system message (none when the mapping names no system column), and the names
+        # numeric labels became.
+        per_row = [c for c, role in mapping.items() if role == "system"]
+        checkpoint["system_column"] = per_row[0] if per_row else ""
+        labels = mapping.get("__label_mapping")
+        if isinstance(labels, dict) and labels:
+            checkpoint["label_mapping"] = labels
     return {
         "checkpoint": checkpoint,
         "metrics": metrics,
