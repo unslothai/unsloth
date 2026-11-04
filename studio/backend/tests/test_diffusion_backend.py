@@ -14562,16 +14562,18 @@ class _PinProbePipe(_FakePipe):
 
 
 @pytest.mark.parametrize(
-    "pins, expected",
+    "pins, pinned_placement, expected",
     [
         # the 2-image attempt cannot pin and runs out of memory; both 1-image retries run whole
-        ([False, True, True], "resident"),
+        ([False, True, True], "resident", "resident"),
         # a retry that cannot pin streams, so the generation did not run whole
-        ([False, True, False], "streamed"),
+        ([False, True, False], "resident", "streamed"),
+        # the pin covers pipe.transformer only: a second DiT (Ideogram 4) still streams
+        ([False, True, True], "partial", "partial"),
     ],
 )
 def test_saved_placement_counts_only_chunks_that_finished(
-    fake_runtime, tmp_path, monkeypatch, pins, expected
+    fake_runtime, tmp_path, monkeypatch, pins, pinned_placement, expected
 ):
     import core.inference.diffusion as diffusion
 
@@ -14581,14 +14583,22 @@ def test_saved_placement_counts_only_chunks_that_finished(
     object.__setattr__(state, "pipe", pipe)
     object.__setattr__(state, "offload_policy", "group")
     outcomes = list(pins)
+    held = [False]
+
+    def _pin(*a, **kw):
+        if not outcomes.pop(0):
+            return None
+        held[0] = True
+        return lambda: held.__setitem__(0, False)
+
     monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: (1.0, 2.0, 64))
+    monkeypatch.setattr(diffusion, "pin_denoiser_for_call", _pin)
+    # the live hooks: the load streams, a held pin moves what it covers on the GPU
     monkeypatch.setattr(
         diffusion,
-        "pin_denoiser_for_call",
-        lambda *a, **kw: (lambda: None) if outcomes.pop(0) else None,
+        "denoiser_offload",
+        lambda pipe, policy: pinned_placement if held[0] else "streamed",
     )
-    # the load's own placement, which a generation that ran whole overrides
-    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: "streamed")
 
     out = backend.generate(prompt = "p", steps = 4, batch_size = 2)
 

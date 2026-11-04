@@ -212,7 +212,6 @@ from .diffusion_memory import (
     plan_fits_total_capacity,
     denoisers_pinned_resident,
     denoiser_offload,
-    DENOISER_RESIDENT,
     install_encode_release,
     plan_keeps_transformer_resident,
     prequant_seed_device,
@@ -14444,8 +14443,8 @@ class DiffusionBackend:
                         )
                         whole_tier = None
                 whole_release: list = []
-                # per finished chunk under a whole-tier pricing: whether it ran with the denoiser pinned
-                whole_pinned: list[bool] = []
+                # per finished chunk under a whole-tier pricing: the live placement it denoised with
+                chunk_placements: list = []
 
                 def _release_whole_denoiser() -> None:
                     while whole_release:
@@ -14522,9 +14521,9 @@ class DiffusionBackend:
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
                         # recorded only once this chunk succeeds: an OOM attempt is split and retried
-                        chunk_whole = [False]
+                        chunk_placement = [None]
 
-                        def _enter_denoise_phase(gen = gen, chunk_whole = chunk_whole) -> None:
+                        def _enter_denoise_phase(gen = gen, chunk_placement = chunk_placement) -> None:
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
@@ -14538,7 +14537,6 @@ class DiffusionBackend:
                                     activation_mib = whole_tier[2],
                                     logger = logger,
                                 )
-                                chunk_whole[0] = release is not None
                                 if release is not None:
                                     whole_release.append(release)
                                     logger.info(
@@ -14548,6 +14546,11 @@ class DiffusionBackend:
                                         whole_tier[0],
                                         whole_tier[1],
                                     )
+                            if whole_tier is not None:
+                                # read off the hooks while the pin holds: it pins only pipe.transformer
+                                chunk_placement[0] = denoiser_offload(
+                                    state.pipe, state.offload_policy
+                                )
 
                         chunk_ticker[0] = _CompletedStepTicker(progress_steps)
 
@@ -14664,7 +14667,7 @@ class DiffusionBackend:
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
                         if whole_tier is not None:
-                            whole_pinned.append(chunk_whole[0])
+                            chunk_placements.append(chunk_placement[0])
                         steps_done[0] += progress_steps
                 except BaseException:
                     if previewer is not None:
@@ -14768,8 +14771,8 @@ class DiffusionBackend:
                     "offload_policy": state.offload_policy,
                     # How this generation's denoiser ran: a streamed load can run a request whole.
                     "denoiser_offload": (
-                        DENOISER_RESIDENT
-                        if whole_pinned and all(whole_pinned)
+                        chunk_placements[0]
+                        if len(set(chunk_placements)) == 1 and chunk_placements[0] is not None
                         else denoiser_offload(state.pipe, state.offload_policy)
                     ),
                     # Read after the deferred speed / step-cache toggles, so this is what ran.
