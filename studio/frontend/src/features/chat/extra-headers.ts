@@ -23,23 +23,6 @@ const HEADER_NAME_RE = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 const HEADER_VALUE_RE = /^[\t\x20-\x7e]*$/;
 const MAX_EXTRA_HEADERS = 16;
 
-export function normalizeProviderExtraHeaders(
-  value: unknown,
-): Record<string, string> | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const headers: Record<string, string> = {};
-  for (const [rawName, rawValue] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof rawName !== "string" || typeof rawValue !== "string") continue;
-    const name = rawName.trim();
-    if (!name || !HEADER_NAME_RE.test(name)) continue;
-    if (FORBIDDEN_EXTRA_HEADERS.has(name.toLowerCase())) continue;
-    headers[name] = rawValue;
-  }
-  const names = Object.keys(headers);
-  if (names.length === 0) return undefined;
-  return Object.fromEntries(names.slice(0, MAX_EXTRA_HEADERS).map((name) => [name, headers[name]]));
-}
-
 export function extraHeadersToDraft(
   headers: Record<string, string> | undefined,
 ): string {
@@ -51,24 +34,31 @@ export function extraHeadersToDraft(
 export function parseExtraHeadersDraft(draft: string): Record<string, string> {
   const trimmed = draft.trim();
   if (!trimmed) return {};
+  const entries: [string, unknown][] = [];
   if (trimmed.startsWith("{")) {
     const parsed: unknown = JSON.parse(trimmed);
-    const headers = normalizeProviderExtraHeaders(parsed);
-    if (!headers) {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Extra headers JSON must be an object of header names to string values.");
     }
-    return headers;
+    entries.push(...Object.entries(parsed as Record<string, unknown>));
+  } else {
+    for (const line of trimmed.split("\n")) {
+      const text = line.trim();
+      if (!text || text.startsWith("#")) continue;
+      const separator = text.indexOf(":");
+      if (separator <= 0) {
+        throw new Error(`Invalid extra header line: ${text}`);
+      }
+      entries.push([text.slice(0, separator), text.slice(separator + 1)]);
+    }
   }
   const headers: Record<string, string> = {};
-  for (const line of trimmed.split("\n")) {
-    const text = line.trim();
-    if (!text || text.startsWith("#")) continue;
-    const separator = text.indexOf(":");
-    if (separator <= 0) {
-      throw new Error(`Invalid extra header line: ${text}`);
+  for (const [rawName, rawValue] of entries) {
+    const name = rawName.trim();
+    if (typeof rawValue !== "string") {
+      throw new Error(`Header ${name} must have a string value.`);
     }
-    const name = text.slice(0, separator).trim();
-    const value = text.slice(separator + 1).trim();
+    const value = rawValue.trim();
     if (!HEADER_NAME_RE.test(name)) {
       throw new Error(`Invalid extra header name: ${name}`);
     }

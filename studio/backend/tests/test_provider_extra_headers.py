@@ -270,3 +270,34 @@ def test_served_metadata_cache_identity_includes_headers():
         "custom", "https://gw.example/v1", "sk", extra_headers = {"X-Tenant": "b"}
     )
     assert len({plain._credential_digest(), a._credential_digest(), b._credential_digest()}) == 3
+
+
+def test_route_sets_header_context_before_any_upstream_call(monkeypatch):
+    from models.inference import ChatCompletionRequest
+    from routes import inference as inf_mod
+
+    class ContextSet(Exception):
+        pass
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def set_header_context(self, thread_id, model):
+            raise ContextSet(thread_id, model)
+
+    monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", lambda *a, **k: "key")
+    monkeypatch.setattr(inf_mod, "ExternalProviderClient", FakeClient)
+    payload = ChatCompletionRequest(
+        messages = [{"role": "user", "content": "hello"}],
+        provider_type = "custom",
+        provider_base_url = "https://gw.example/v1",
+        encrypted_api_key = "encrypted",
+        extra_headers = HEADERS,
+        external_model = "m",
+        thread_id = "chat-7",
+    )
+    request = SimpleNamespace(headers = {}, state = SimpleNamespace(skip_api_monitor = True))
+    with pytest.raises(ContextSet) as reached:
+        _drive(inf_mod._proxy_to_external_provider(payload, request))
+    assert reached.value.args == ("chat-7", "m")

@@ -48,8 +48,10 @@ test("extra header drafts round-trip and reject reserved names", async () => {
   assert.throws(() => headers.parseExtraHeadersDraft("Authorization: Bearer secret"));
   const json = headers.parseExtraHeadersDraft('{"X-Title":"Studio"}');
   assert.equal(json["X-Title"], "Studio");
-  assert.equal(headers.normalizeProviderExtraHeaders({ Authorization: "nope", "X-Title": "ok" })["X-Title"], "ok");
-  assert.equal(headers.normalizeProviderExtraHeaders({ Authorization: "nope" }), undefined);
+  assert.throws(() => headers.parseExtraHeadersDraft('{"Authorization":"nope","X-Title":"ok"}'));
+  assert.throws(() => headers.parseExtraHeadersDraft('{"X-Count":1}'));
+  const many = Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`X-H${i}`, "v"]));
+  assert.throws(() => headers.parseExtraHeadersDraft(JSON.stringify(many)), /At most 16/);
 });
 
 test("explicit-key routing sends extra headers; a saved key leaves them on the record", async () => {

@@ -28341,6 +28341,9 @@ async def _proxy_to_external_provider(
         **({"extra_headers": extra_headers} if extra_headers else {}),
         **({"managed_loopback": True} if managed is not None else {}),
     )
+    # Metadata preflights (served context window, template) run before streaming starts.
+    if extra_headers:
+        client.set_header_context(payload.thread_id, model)
     _non_stream_custom_responses = (
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )

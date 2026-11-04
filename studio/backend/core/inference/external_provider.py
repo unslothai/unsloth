@@ -1529,6 +1529,16 @@ class ExternalProviderClient:
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
 
+    def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
+        """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
+        session = (thread_id or "").strip()
+        self._header_vars = {
+            "CHAT_SESSION_ID": session,
+            "THREAD_ID": session,
+            "MODEL": model or "",
+            "PROVIDER_TYPE": self.provider_type,
+        }
+
     def _credential_digest(self) -> str:
         """Served-metadata cache identity: the key, plus routing headers when there are any."""
         material = self.api_key or ""
@@ -1625,12 +1635,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
-        self._header_vars = {
-            "CHAT_SESSION_ID": (thread_id or "").strip(),
-            "THREAD_ID": (thread_id or "").strip(),
-            "MODEL": model or "",
-            "PROVIDER_TYPE": self.provider_type,
-        }
+        self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
