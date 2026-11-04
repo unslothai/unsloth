@@ -1255,29 +1255,37 @@ def _cut_problem(sizes: list[int], head: int, head_max_len: int) -> str | None:
     return None
 
 
+@functools.lru_cache(maxsize = 256)
+def _export_cut(checkpoint: Checkpoint, name: str, key: str) -> str | None:
+    import json
+
+    question = json.loads(key)
+    count, head_max_len = _export_counter(checkpoint)
+    sizes = [
+        1 + min(_LAYA_OPTION_TOKENS, count(f" {option}")) for option in _export_options(question)
+    ]
+    # As native_worker._wire_questions sends it and laya's _to_internal reads it.
+    instructions = question.get("instructions")
+    if instructions in (None, ""):
+        instructions = name
+    elif not isinstance(instructions, str):
+        instructions = json.dumps(instructions)
+    return _cut_problem(sizes, count(f"{question['type']} question: {instructions}"), head_max_len)
+
+
 def _refuse_cut_questions(checkpoint: Checkpoint, questions: dict[str, dict[str, Any]]) -> None:
     """llama.cpp cuts what does not fit Laya's question budget without saying so; refused here as PyTorch refuses it."""
     import json
 
     try:
-        count, head_max_len = _export_counter(checkpoint)
+        _export_counter(checkpoint)
     except Exception as exc:
         raise Unavailable(
             503, "model_unavailable", f"Could not read the tokenizer of {checkpoint.name}: {exc}"
         ) from None
     for name, question in questions.items():
-        sizes = [
-            1 + min(_LAYA_OPTION_TOKENS, count(f" {option}"))
-            for option in _export_options(question)
-        ]
-        # As native_worker._wire_questions sends it and laya's _to_internal reads it.
-        instructions = question.get("instructions")
-        if instructions in (None, ""):
-            instructions = str(name)
-        elif not isinstance(instructions, str):
-            instructions = json.dumps(instructions)
-        head = count(f"{question['type']} question: {instructions}")
-        if (problem := _cut_problem(sizes, head, head_max_len)) is not None:
+        key = json.dumps(question, ensure_ascii = False)
+        if (problem := _export_cut(checkpoint, str(name), key)) is not None:
             raise Unavailable(422, "invalid_request_error", f"Question {name!r} {problem}.")
 
 
