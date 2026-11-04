@@ -1290,6 +1290,15 @@ def _ensure_character_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Which bundled starter characters an account has received, so a deleted one stays deleted.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS character_starters (
+            starter_id TEXT NOT NULL PRIMARY KEY,
+            seeded_at INTEGER NOT NULL
+        )
+        """
+    )
 
 
 def _prompt_entry_from_row(row: sqlite3.Row) -> dict:

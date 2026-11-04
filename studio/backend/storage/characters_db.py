@@ -239,7 +239,9 @@ def create_character(
     card: Optional[dict] = None,
     avatar: Optional[bytes] = None,
     avatar_type: Optional[str] = None,
-) -> dict:
+    starter_id: Optional[str] = None,
+) -> Optional[dict]:
+    """A new character; with *starter_id*, only if the account never received that starter (None otherwise)."""
     character_id = uuid.uuid4().hex
     now = now_ms()
     values = _character_values(fields)
@@ -257,6 +259,16 @@ def create_character(
         write_image("characters", character_id, avatar)
     try:
         with _connect("BEGIN IMMEDIATE") as conn:
+            if starter_id is not None:
+                # Claimed in the same transaction as the insert, so two loads cannot seed twice.
+                claimed = conn.execute(
+                    "INSERT OR IGNORE INTO character_starters (starter_id, seeded_at) VALUES (?, ?)",
+                    (starter_id, now),
+                ).rowcount
+                if not claimed:
+                    if avatar:
+                        delete_image("characters", character_id)
+                    return None
             (count,) = conn.execute("SELECT COUNT(*) FROM characters").fetchone()
             if count >= MAX_CHARACTERS:
                 raise LimitReached(f"An account can hold up to {MAX_CHARACTERS} characters.")
@@ -270,6 +282,11 @@ def create_character(
             delete_image("characters", character_id)
         raise
     return get_character(character_id)  # type: ignore[return-value]
+
+
+def seeded_starters() -> set[str]:
+    with _connect() as conn:
+        return {row[0] for row in conn.execute("SELECT starter_id FROM character_starters")}
 
 
 def update_character(character_id: str, fields: dict) -> Optional[dict]:

@@ -245,7 +245,7 @@ def test_import_list_edit_export_and_delete(client):
     character_id = character["id"]
 
     listed = client.get("/api/characters").json()["characters"]
-    assert [c["id"] for c in listed] == [character_id]
+    assert [c["id"] for c in listed if "Starter" not in c["tags"]] == [character_id]
 
     patched = client.patch(
         f"/api/characters/{character_id}", json = {"name": "Mira II", "clear": ["characterBook"]}
@@ -508,3 +508,39 @@ def test_a_fork_keeps_the_cast_and_scene(client):
     scene = client.get("/api/characters/chats/forked").json()
     assert [m["characterId"] for m in scene["cast"]] == [a["id"]]
     assert scene["settings"] == {"scenario": "A dock."}
+
+
+def test_starter_characters_arrive_once_with_portraits_and_stay_deleted(client):
+    from core.characters.starters import STARTERS
+
+    listed = client.get("/api/characters").json()["characters"]
+    starters = [c for c in listed if "Starter" in c["tags"]]
+    assert len(starters) == len(STARTERS)
+    assert all(c["hasAvatar"] and c["creator"] == "Unsloth Studio" for c in starters)
+    mara = next(c for c in starters if c["name"] == "Captain Mara Okafor")
+    full = client.get(f"/api/characters/{mara['id']}").json()
+    assert full["firstMes"] and full["alternateGreetings"] and full["characterBook"]["entries"]
+    assert (
+        client.get(f"/api/characters/{mara['id']}/avatar").headers["content-type"] == "image/webp"
+    )
+
+    # A second load adds nothing, and a deleted starter does not come back.
+    assert client.delete(f"/api/characters/{mara['id']}").status_code == 204
+    again = client.get("/api/characters").json()["characters"]
+    assert len([c for c in again if "Starter" in c["tags"]]) == len(STARTERS) - 1
+    assert all(c["name"] != "Captain Mara Okafor" for c in again)
+
+
+def test_starter_cards_are_original_and_export_cleanly(client):
+    from core.characters.starters import STARTER_DIR, STARTERS
+
+    for starter in STARTERS:
+        card = json.loads((STARTER_DIR / f"{starter}.json").read_text())
+        data = card["data"]
+        assert card["spec"] == "chara_card_v2" and data["creator"] == "Unsloth Studio"
+        text = json.dumps(data)
+        assert "\u2014" not in text and "\u2013" not in text
+        assert (STARTER_DIR / f"{starter}.webp").read_bytes()[8:12] == b"WEBP"
+    character = client.get("/api/characters").json()["characters"][0]
+    exported = client.get(f"/api/characters/{character['id']}/export?format=png")
+    assert exported.status_code == 200 and exported.content.startswith(b"\x89PNG")

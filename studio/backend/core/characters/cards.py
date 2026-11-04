@@ -75,6 +75,31 @@ def sniff_image_type(data: bytes) -> Optional[str]:
     return None
 
 
+def character_fields(parsed: "ParsedCard") -> dict:
+    """A parsed card as the fields a stored character takes."""
+    fields = parsed.fields
+    return {
+        "name": fields["name"],
+        "description": fields["description"],
+        "personality": fields["personality"],
+        "scenario": fields["scenario"],
+        "firstMes": fields["first_mes"],
+        "alternateGreetings": fields["alternate_greetings"],
+        "mesExample": fields["mes_example"],
+        "systemPrompt": fields["system_prompt"],
+        "postHistoryInstructions": fields["post_history_instructions"],
+        "creatorNotes": fields["creator_notes"],
+        "creator": fields["creator"],
+        "characterVersion": fields["character_version"],
+        "tags": fields["tags"],
+        "talkativeness": fields["talkativeness"],
+        "favorite": fields["favorite"],
+        "depthPrompt": fields["depth_prompt"],
+        "characterBook": fields["character_book"],
+        "extensions": fields["extensions"],
+    }
+
+
 # ── PNG chunks ──────────────────────────────────────────────────────────────
 
 

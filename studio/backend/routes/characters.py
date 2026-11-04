@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from auth.authentication import get_current_subject
-from core.characters import cards
+from core.characters import cards, starters
 from storage import characters_db as db
 
 router = APIRouter()
@@ -197,6 +197,7 @@ def _checked_image(data: bytes) -> str:
 
 @router.get("")
 def list_characters(current_subject: str = Depends(get_current_subject)):
+    starters.seed_starters()
     return {"characters": [_public(c) for c in db.list_characters()]}
 
 
@@ -220,31 +221,10 @@ async def import_character(
         parsed = await asyncio.to_thread(cards.parse_card_file, data, filename)
     except cards.CardError as exc:
         raise HTTPException(status_code = 400, detail = str(exc)) from None
-    fields = parsed.fields
-    payload = {
-        "name": fields["name"],
-        "description": fields["description"],
-        "personality": fields["personality"],
-        "scenario": fields["scenario"],
-        "firstMes": fields["first_mes"],
-        "alternateGreetings": fields["alternate_greetings"],
-        "mesExample": fields["mes_example"],
-        "systemPrompt": fields["system_prompt"],
-        "postHistoryInstructions": fields["post_history_instructions"],
-        "creatorNotes": fields["creator_notes"],
-        "creator": fields["creator"],
-        "characterVersion": fields["character_version"],
-        "tags": fields["tags"],
-        "talkativeness": fields["talkativeness"],
-        "favorite": fields["favorite"],
-        "depthPrompt": fields["depth_prompt"],
-        "characterBook": fields["character_book"],
-        "extensions": fields["extensions"],
-    }
     try:
         character = await asyncio.to_thread(
             db.create_character,
-            payload,
+            cards.character_fields(parsed),
             card = parsed.card,
             avatar = parsed.avatar,
             avatar_type = parsed.avatar_type,
