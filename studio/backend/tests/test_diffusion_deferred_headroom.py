@@ -21,7 +21,6 @@ HEADROOM_ENV = "UNSLOTH_DIFFUSION_DEFERRED_HEADROOM"
 
 def _tiny_unet():
     from diffusers import UNet2DConditionModel
-
     torch.manual_seed(0)
     return UNet2DConditionModel(
         sample_size = 8,
@@ -108,7 +107,9 @@ def test_profile_declined_when_the_render_would_not_fit(card, engage):
     state, engaged = engage()
     assert not engaged
     assert state.speed_deferred is False  # never retried on this load
-    assert state.deferred_static_plan is None  # no static skip either: renders stay as speed_mode=off
+    assert (
+        state.deferred_static_plan is None
+    )  # no static skip either: renders stay as speed_mode=off
     assert "declined" in state.resolved["speed_mode"]["reason"]
 
 

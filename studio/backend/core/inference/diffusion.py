@@ -3065,7 +3065,6 @@ _DEFERRED_EAGER_PEAK_ATTR = "_unsloth_deferred_eager_peak"
 def _deferred_peak_now(dev: Any) -> int:
     from .diffusion_stable_arena import peak_mapped_bytes
     import torch
-
     return int(torch.cuda.max_memory_allocated(dev)) + int(peak_mapped_bytes(dev.index))
 
 
@@ -13340,7 +13339,9 @@ class DiffusionBackend:
             )
             entry = (state.resolved or {}).get("speed_mode")
             if isinstance(entry, dict):
-                entry["reason"] = f"auto: compiled profile declined, it does not fit on the card ({short})"
+                entry["reason"] = (
+                    f"auto: compiled profile declined, it does not fit on the card ({short})"
+                )
             return
         plan = state.deferred_static_plan
         object.__setattr__(state, "deferred_static_plan", None)
