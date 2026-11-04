@@ -393,13 +393,37 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
             pipe.load_lora_weights(plain, adapter_name = name)
         finally:
             _rewrap_kron(wrappers)
+            if wrappers:
+                _refresh_group_offload(_kron_roots(pipe))
     if lokr:
         attached = _attach_lokr(pipe, name, lokr, family)
+        _refresh_group_offload(_kron_roots(pipe))
         if not plain:
             pipe.__dict__.setdefault(KRON_ONLY_ATTR, set()).add(name)
         logger.info("diffusion.lora: %s applies %d LoKR module(s)", name, attached)
     if not plain and not lokr:
         raise ValueError(f"{name} holds no LoRA or LoKR weights this loader recognises")
+
+
+def _kron_roots(pipe: Any) -> list:
+    roots = {
+        id(adapter.root): adapter.root
+        for adapters in pipe.__dict__.get(KRON_ATTR, {}).values()
+        for adapter in adapters
+    }
+    return list(roots.values())
+
+
+def _refresh_group_offload(roots: list) -> None:
+    """Re-apply group offloading on ``roots``, as diffusers does after injecting or removing PEFT layers: the offload
+    groups list their tensors when applied, so LoKR buffers registered since would stay on the host, and dropped ones
+    would leave stale entries. A component without group offloading is unchanged."""
+    if not roots:
+        return
+    from diffusers.hooks.group_offloading import _maybe_remove_and_reapply_group_offloading
+
+    for root in roots:
+        _maybe_remove_and_reapply_group_offloading(root)
 
 
 def _unwrap_kron(pipe: Any) -> list:
@@ -453,8 +477,10 @@ def set_kron_weights(pipe: Any, weights: dict) -> None:
 
 def unload_adapters(pipe: Any) -> None:
     """``pipe.unload_lora_weights`` plus every LoKR wrapper."""
+    roots = _kron_roots(pipe)
     for adapters in pipe.__dict__.pop(KRON_ATTR, {}).values():
         for adapter in adapters:
             adapter.remove()
     pipe.__dict__.pop(KRON_ONLY_ATTR, None)
     pipe.unload_lora_weights()
+    _refresh_group_offload(roots)

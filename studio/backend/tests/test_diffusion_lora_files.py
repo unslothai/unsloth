@@ -191,3 +191,60 @@ def test_moss_and_anima_have_a_lora_loader():
     from core.inference.diffusion_lora import diffusers_lora_family_supported
     assert diffusers_lora_family_supported("moss-image")
     assert diffusers_lora_family_supported("anima")
+
+
+@pytest.mark.parametrize("use_stream", [False, True])
+def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_stream):
+    """A LoKR file applied to a transformer that already streams through diffusers group offload (Studio attaches
+    adapters at generate time): the offload groups are rebuilt, so the factors onload with their block, and unloading
+    rebuilds them again."""
+    if not torch.cuda.is_available():
+        pytest.skip("needs CUDA")
+    from diffusers.hooks import apply_group_offloading
+    from safetensors.torch import save_file
+
+    torch.manual_seed(0)
+
+    class _Net(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.blocks = torch.nn.ModuleList([_Block(), _Block(24)])
+
+        def forward(self, x):
+            return self.blocks[0](self.blocks[1](x))
+
+    class _Pipe:
+        def __init__(self, transformer):
+            self.transformer = transformer
+
+        def unload_lora_weights(self):
+            pass
+
+    net = _Net().bfloat16()
+    apply_group_offloading(
+        net,
+        onload_device = torch.device("cuda"),
+        offload_device = torch.device("cpu"),
+        offload_type = "block_level",
+        num_blocks_per_group = 1,
+        use_stream = use_stream,
+    )
+    x = torch.randn(2, 24, device = "cuda", dtype = torch.bfloat16)
+    bare = net(x)
+    w1, w2 = torch.randn(4, 3), torch.randn(9, 8)
+    path = tmp_path / "lokr.safetensors"
+    save_file(
+        {
+            "diffusion_model.blocks.0.proj.q.lokr_w1": w1,
+            "diffusion_model.blocks.0.proj.q.lokr_w2": w2,
+        },
+        path,
+    )
+    pipe = _Pipe(net)
+    lf.load_adapter(pipe, str(path), "k", "moss-image")
+    out = net(x)
+    inner = net.blocks[1](x)
+    expected = bare + (inner @ torch.kron(w1, w2).to("cuda", torch.bfloat16).T)
+    assert torch.allclose(out.float(), expected.float(), atol = 0.25, rtol = 0.05)
+    lf.unload_adapters(pipe)
+    assert torch.equal(net(x), bare)
