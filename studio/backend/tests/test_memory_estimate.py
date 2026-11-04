@@ -4151,13 +4151,15 @@ def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, mon
     assert not os.path.exists(view)
 
 
-def test_an_older_unsloth_zoo_installs_its_oq_layout_by_its_old_name(monkeypatch):
+@pytest.mark.parametrize("name", ["_ensure_omlx_layout", "_ensure_deepseek_v41_omlx_layout"])
+def test_unsloth_zoo_installs_its_oq_layout_by_either_name(monkeypatch, name):
     loader = pytest.importorskip("unsloth_zoo.mlx.loader")
     installed = []
-    monkeypatch.delattr(loader, "_ensure_omlx_layout", raising = False)
-    monkeypatch.setattr(loader, "_ensure_deepseek_v41_omlx_layout", installed.append, raising = False)
-    mm._install_oq_renames({"model_type": "deepseek_v41"})
-    assert installed == ["deepseek_v41"]
+    for other in ("_ensure_omlx_layout", "_ensure_deepseek_v41_omlx_layout"):
+        monkeypatch.delattr(loader, other, raising = False)
+    monkeypatch.setattr(loader, name, installed.append, raising = False)
+    mm._install_oq_renames({"model_type": "glm5_next"})
+    assert installed == ["glm5_next"]
 
 
 def test_a_glm5_next_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, monkeypatch):
