@@ -50,17 +50,6 @@ test("turning the wallpaper fade off drops the band behind the composer", () => 
 	);
 });
 
-test("the composer fade only checks direct children inside :has() while typing", () => {
-	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const paths = [...css.matchAll(/:has\(([^()]*)\)\s+\.thread-bottom-fade\b/g)]
-		.map(([, path]) => path.trim().replace(/\s*>\s*/g, " > ").trim());
-	// A descendant search here made every keystroke restyle a long chat in WebView2.
-	assert.deepEqual(new Set(paths), new Set([
-		'> .chat-wallpaper[data-ready] > .chat-wallpaper-image[data-fade="false"]',
-		'> .chat-wallpaper[data-ready] > .chat-wallpaper-frame > .chat-wallpaper-image[data-fade="false"]',
-	]));
-});
-
 test("glass strength repairs malformed persisted data", () => {
 	assert.equal(sanitizeStrength(undefined), 50);
 	assert.equal(sanitizeStrength(Number.NaN), 50);

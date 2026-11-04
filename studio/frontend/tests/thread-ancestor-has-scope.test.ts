@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import ts from "@typescript/typescript6";
+import postcss from "postcss";
+import selectorParser from "postcss-selector-parser";
 
 import { openingTag } from "./helpers/tsx-ast.ts";
 
@@ -97,4 +99,23 @@ test("index.css has no descendant-argument :has() on the panels that hold the th
   const offenders =
     css.match(/(?:#chat-thread|\.chat-artifact-split|\.chat-thread-pane)[^{},]*:has\((?!\s*>)/g) ?? [];
   assert.deepEqual(offenders, [], `descendant-argument :has() on a thread ancestor: ${offenders.join(" | ")}`);
+});
+
+test("wallpaper :has() paths stay child-only even after the first child", () => {
+  const css = postcss.parse(readText("../src/index.css"));
+  css.walkRules((rule) => {
+    if (!rule.selector.includes(".chat-wallpaper") || !rule.selector.includes(":has(")) return;
+    selectorParser().astSync(rule.selector).walkPseudos((pseudo) => {
+      if (pseudo.value !== ":has") return;
+      for (const path of pseudo.nodes) {
+        if (!path.nodes.some((node) => node.type === "class" && node.value === "chat-wallpaper")) continue;
+        // A leading child combinator alone still allows a later descendant search across the chat.
+        assert.equal(path.first?.type, "combinator", rule.selector);
+        assert.equal(path.first?.value, ">", rule.selector);
+        path.walkCombinators((step) => {
+          assert.equal(step.value, ">", rule.selector);
+        });
+      }
+    });
+  });
 });
