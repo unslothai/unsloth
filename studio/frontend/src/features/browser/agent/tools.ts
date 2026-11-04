@@ -27,7 +27,6 @@ export const BROWSER_HISTORY_TOOL = "browser_history";
 
 export const BROWSER_SCRIPT_TOOL = "browser_evaluate";
 
-/** The browser tools to offer this chat's turn. */
 export function browserAgentToolsForTurn(chat = shownBrowserChat()): string[] {
   const { historyAccess, scriptAccess } = useBrowserAgentStore.getState();
   if (!browserAgentEnabled(chat)) return [];

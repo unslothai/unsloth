@@ -850,7 +850,6 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   syncBackground();
 }
 
-/** True once `tabId`'s page is open, false after `timeoutMs`. */
 export async function whenViewOpen(tabId: string, timeoutMs = 5000): Promise<boolean> {
   const until = Date.now() + timeoutMs;
   while (!views.has(tabId) || openingInBackground.has(tabId)) {
