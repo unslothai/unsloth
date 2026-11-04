@@ -7,7 +7,7 @@ import { test } from "node:test";
 
 register("./helpers/browser-executor-resolver.mjs", import.meta.url);
 const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
-const { agentChat, answerQuestion, endBrowserAgentRun } = await import("../src/features/browser/agent/agent-store.ts");
+const { agentChat, answerQuestion, endBrowserAgentRun, stopBrowserAgent } = await import("../src/features/browser/agent/agent-store.ts");
 const { applyFileEdit, numberedLines } = await import("../src/features/browser/agent/file-tab.ts");
 const { browserFile, currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
 
@@ -17,13 +17,13 @@ const RUN = "r";
 type Result = { ok: boolean; error?: string; text?: string; note?: string; file?: string };
 
 let next = 0;
-async function act(op: string, fields: Record<string, unknown> = {}): Promise<Result> {
+async function act(op: string, fields: Record<string, unknown> = {}, runKey = RUN): Promise<Result> {
   const posted: { result: Result }[] = [];
   globals.__authFetch = async (_url: string, init: { body: string }) => {
     posted.push(JSON.parse(init.body));
     return new Response(null, { status: 200 });
   };
-  await runBrowserAction({ id: `f${next++}`, sessionId: "s", op, direction: "down", policy, ...fields }, { runKey: RUN, userText: "" });
+  await runBrowserAction({ id: `f${next++}`, sessionId: "s", op, direction: "down", policy, ...fields }, { runKey, userText: "" });
   assert.equal(posted.length, 1);
   return posted[0].result;
 }
@@ -189,6 +189,25 @@ test("reloading a file's preview in the desktop app reloads its frame", async ()
   }
   const after = useBrowserStore.getState().tabs.find((tab) => tab.id === store.activeTabId)?.reloadKey;
   assert.equal(after, (before ?? 0) + 1);
+});
+
+test("an edit stopped while the file is read leaves the file as it was", async () => {
+  endBrowserAgentRun(RUN);
+  const source = "<h1>Keep</h1>";
+  let release = () => {};
+  const released = new Promise<void>((resolve) => { release = resolve; });
+  const slow = Object.assign(new Blob([source], { type: "text/html" }), { text: () => released.then(() => source) });
+  useBrowserStore.getState().openFile({ blob: slow, name: "stop.html", contentType: "text/html", key: "html:stop" });
+  // Its own run: a stopped run's later actions all answer "stopped".
+  const pending = act("edit_file", { oldText: "Keep", newText: "Changed" }, "stopped-run");
+  for (let i = 0; i < 100 && agentChat("new").runKey !== "stopped-run"; i++) await new Promise((resolve) => setTimeout(resolve, 5));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  stopBrowserAgent("new");
+  release();
+  const result = await pending;
+  assert.equal(result.ok, false);
+  assert.equal(await shownText(), source);
+  endBrowserAgentRun("stopped-run");
 });
 
 test("a PDF is read as text but not edited, and a text file has nothing to click", async () => {

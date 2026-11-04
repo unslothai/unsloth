@@ -800,7 +800,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     const target = fileTab(context);
     if (!target) return { ok: false, error: NO_FILE };
     useBrowserStore.getState().revealIn(chat, target.id);
-    return action.op === "read_file" ? readFile(target, action.startLine ?? 1) : editFile(target, action);
+    return action.op === "read_file" ? readFile(target, action.startLine ?? 1) : editFile(target, action, signal);
   }
 
   const shown = agentTab(context) ?? fileTab(context);
@@ -1224,7 +1224,7 @@ async function findInFile(tab: BrowserTab, query: string, note: string): Promise
   return { ok: true, file: file.entry.name, text: found.join("\n"), note: [note, summary].filter(Boolean).join(" ") };
 }
 
-async function editFile(tab: BrowserTab, action: BrowserAction): Promise<Result> {
+async function editFile(tab: BrowserTab, action: BrowserAction, signal?: AbortSignal): Promise<Result> {
   const file = await fileContent(tab);
   if (!file) return { ok: false, error: NO_FILE };
   const { entry, blob } = file;
@@ -1236,7 +1236,8 @@ async function editFile(tab: BrowserTab, action: BrowserAction): Promise<Result>
   const edited = applyFileEdit(source, { oldText: action.oldText, newText: action.newText, replaceAll: action.replaceAll, content: action.content });
   if ("error" in edited) return { ok: false, error: edited.error };
   if (edited.text === source) return { ok: true, file: entry.name, note: "The file already reads that way; nothing changed." };
-  // The user may have gone Back, or reopened the file, while it was read.
+  // Stop may have come, or the user gone Back or reopened the file, while it was read.
+  if (signal?.aborted) return { ok: false, error: STOPPED };
   const now = findTab(tab.id);
   if (!now || currentEntry(now) !== entry) return { ok: false, error: "the tab changed while the file was being edited; read it again." };
   useBrowserStore.getState().editFile(tab.id, new Blob([edited.text], { type: blob.type || entry.contentType }));
