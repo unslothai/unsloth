@@ -227,7 +227,10 @@ export function applyActiveModelStatusToStore(
   const preserveThinkingOnLoad = resolvePreserveThinkingOnLoad(status);
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
-  const pinnedThinking = pinnedReasoningEnabled(checkpointId);
+  // Page-start adoption keeps the restored chat / installation value; the pin seeds loads only.
+  const pinnedThinking = options.adoptingExistingServerModel
+    ? null
+    : pinnedReasoningEnabled(checkpointId);
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const incomingMlxKvQuant = normalizeMlxKvQuant(status.mlx_kv_quant_requested);
   const incomingMlxInt8Prefill = status.mlx_int8_prefill_requested === true;

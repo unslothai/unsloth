@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { register } from "node:module";
 import test from "node:test";
 import type { ExternalReasoningCapabilities } from "../src/features/chat/provider-capabilities.ts";
@@ -400,6 +401,17 @@ test("a same-model reload keeps the live value over a stale pin", () => {
       previousEnabled,
     );
   }
+});
+
+test("adopting a resident model at page start does not read the thinking pin", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/lib/apply-inference-status-to-store.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /const pinnedThinking = options\.adoptingExistingServerModel\s*\?\s*null\s*:\s*pinnedReasoningEnabled\(checkpointId\);/,
+  );
 });
 
 test("turning thinking off pins the loaded checkpoint; persist false does not", async () => {
