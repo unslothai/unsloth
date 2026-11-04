@@ -713,3 +713,35 @@ async def test_a_player_invoke_that_ends_early_stops_its_early_load(studio, monk
             eng.invoke(app = None, flow_id = "f1", doc = parsed, entry = "out"), timeout = 20
         )
     assert studio["unloads"] == ["m2"]
+
+
+@run_async
+async def test_a_load_ahead_asks_for_the_cards_own_and_saved_load_settings(studio, monkeypatch):
+    from core.flows import model_settings
+
+    seen: dict = {}
+    fake = _common.ensure_model
+
+    async def ensure_model(
+        ctx,
+        kind,
+        choice,
+        options = None,
+    ):
+        seen.setdefault(choice["repo"], options)
+        return await fake(ctx, kind, choice, options)
+
+    monkeypatch.setattr(_common, "ensure_model", ensure_model)
+    monkeypatch.setattr(
+        model_settings, "saved_load", lambda repo, variant = None: {"kv_cache_dtype": "q8_0"}
+    )
+    d = _chain("prefetch-load")
+    g2 = next(n for n in d["nodes"] if n["id"] == "g2")
+    g2["params"]["load"] = {"max_seq_length": 8192}
+    g2["params"]["use_model_settings"] = True
+    eng = _engine({"input.text": _text, "llm.generate": _gen, "text.template": _slow_template([])})
+    rs = await _run(eng, d)
+    assert rs.status == "completed" and rs.prefetched == 1
+    assert seen["m2"] == model_settings.card_load_kwargs(g2["params"])
+    assert seen["m2"]["max_seq_length"] == 8192
+    assert seen["m1"] is None

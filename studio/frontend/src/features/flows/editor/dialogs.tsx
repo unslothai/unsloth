@@ -165,7 +165,7 @@ export function ModelRequirementList({ models }: { models: PlanModel[] }) {
             {model.kind}
           </Badge>
           <span
-            className="min-w-0 flex-1 truncate font-mono text-xs"
+            className="min-w-0 flex-1 truncate text-xs"
             title={model.repo}
           >
             {model.repo}
@@ -180,7 +180,7 @@ export function ModelRequirementList({ models }: { models: PlanModel[] }) {
               model.loaded
                 ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                 : model.downloaded
-                  ? "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300"
+                  ? "border-border bg-muted text-foreground"
                   : model.fits === false
                     ? "border-destructive/25 bg-destructive/10 text-destructive"
                     : "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300"

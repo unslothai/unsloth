@@ -166,6 +166,8 @@ interface ModelSelectorProps {
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they
    *  pick so it reads as separate from the chat model. */
   placeholder?: string;
+  /** Resident mark when there is no eject: Chat's check, or the default dot. */
+  loadedMark?: "dot" | "check";
 }
 
 // Space before the description or suffix, drawn inside its box so it truncates away with the text.
@@ -185,6 +187,7 @@ function ModelSelectorTrigger({
   loadedNames,
   // Task pages name what they pick ("Select image model"), so the choice reads as separate from the chat model.
   placeholder = "Select model",
+  loadedMark = "dot",
 }: {
   loadedCount?: number;
   loadedNames?: string[];
@@ -198,6 +201,7 @@ function ModelSelectorTrigger({
   dataTour?: string;
   onEject?: () => void;
   placeholder?: string;
+  loadedMark?: "dot" | "check";
 }) {
   const severalLoaded = loadedCount > 1;
   const listsNames = severalLoaded && (loadedNames?.length ?? 0) > 1;
@@ -263,6 +267,13 @@ function ModelSelectorTrigger({
                 className="hidden size-3.5 text-red-500 group-hover/trigger:block"
               />
             </span>
+          ) : loadedMark === "check" ? (
+            <HugeiconsIcon
+              icon={CheckmarkCircle02Icon}
+              strokeWidth={1.75}
+              aria-hidden={true}
+              className="size-3.5 shrink-0 text-emerald-500"
+            />
           ) : (
             <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
           ))}
@@ -824,6 +835,7 @@ export function ModelSelector({
   rowFilter,
   moreModels,
   hubCapability,
+  loadedMark,
   hubTask,
   placeholder,
   loaded,
@@ -1008,6 +1020,7 @@ export function ModelSelector({
         triggerLabelClassName={triggerLabelClassName}
         dataTour={triggerDataTour}
         onEject={onEject ? () => handleEject() : undefined}
+        loadedMark={loadedMark}
         loadedCount={loadedCount}
         loadedNames={loadedNames}
         placeholder={placeholder}

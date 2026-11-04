@@ -37,6 +37,8 @@ export interface RuntimeState {
   startRun: (runId: string) => void;
   applyEvents: (events: RunEvent[]) => void;
   seedOutputs: (nodes: Record<string, Partial<NodeRuntime>>) => void;
+  /** Drops what these cards last showed, so they read as not run. */
+  forget: (ids: string[]) => void;
   clear: () => void;
 }
 
@@ -290,6 +292,13 @@ export const useRuntimeStore = create<RuntimeState>((set, get) => ({
       for (const [id, partial] of Object.entries(seed)) {
         nodes[id] = { ...(nodes[id] ?? IDLE_RUNTIME), ...partial };
       }
+      return { nodes };
+    }),
+  forget: (ids) =>
+    set((s) => {
+      if (!ids.some((id) => s.nodes[id])) return s;
+      const nodes = { ...s.nodes };
+      for (const id of ids) delete nodes[id];
       return { nodes };
     }),
   clear: () =>

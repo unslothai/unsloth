@@ -663,8 +663,9 @@ FOLLOW_STOP = re.compile(
 )
 # Only a negation right before the phrase flips it; one further back ("don't forget to follow me")
 # may negate another verb, so the model's own action stands.
-NEGATION = re.compile(r"\b(don['\u2019]?t|do not|never|no need to)\W*$")
-NEGATION_NEAR = re.compile(r"\b(don['\u2019]?t|do not|never|no need to|not)\b(\W+\w+){1,4}\W*$")
+_NEGATIONS = r"don['\u2019]?t|do not|never|no need to|can['\u2019]?t|cannot|won['\u2019]?t"
+NEGATION = re.compile(rf"\b({_NEGATIONS})\W*$")
+NEGATION_NEAR = re.compile(rf"\b({_NEGATIONS}|not)\b(\W+\w+){{1,4}}\W*$")
 
 
 def _phrase(pattern: re.Pattern, text: str) -> str | None:
