@@ -71,7 +71,8 @@ export function McpAccessSection({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toolsOpen, setToolsOpen] = useState(false);
-  const [toolsSaving, setToolsSaving] = useState(false);
+  // Newest tool change; an older reply arriving late must not undo a newer optimistic flip.
+  const toolsRequest = useRef(0);
   const [toolsError, setToolsError] = useState<string | null>(null);
   const sectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
@@ -142,14 +143,33 @@ export function McpAccessSection({
   }, [consumeScrollTarget, scrollTarget, loaded]);
 
   const saveTools = async (states: Record<string, boolean>) => {
-    setToolsSaving(true);
+    const request = ++toolsRequest.current;
     setToolsError(null);
+    // Flip the chips at once; the server reply (or a resync) settles the real state.
+    setSettings((current) =>
+      current?.tools
+        ? {
+            ...current,
+            tools: current.tools.map((tool) =>
+              Object.hasOwn(states, tool.name)
+                ? { ...tool, enabled: states[tool.name] }
+                : tool,
+            ),
+          }
+        : current,
+    );
     try {
-      setSettings(await updateMcpTools(states));
+      const next = await updateMcpTools(states);
+      if (request === toolsRequest.current) {
+        setSettings(next);
+      }
     } catch (err) {
       // resync because a rejected update may leave the server value unknown.
       try {
-        setSettings(await loadMcpAccess());
+        const next = await loadMcpAccess();
+        if (request === toolsRequest.current) {
+          setSettings(next);
+        }
       } catch (refreshError) {
         console.warn(
           "Couldn't refresh the MCP tools after a rejected change.",
@@ -157,8 +177,6 @@ export function McpAccessSection({
         );
       }
       setToolsError(errorMessage(err) ?? t("settings.mcp.tools.saveError"));
-    } finally {
-      setToolsSaving(false);
     }
   };
 
@@ -336,7 +354,6 @@ export function McpAccessSection({
           open={toolsOpen}
           onOpenChange={setToolsOpen}
           tools={settings.tools}
-          saving={toolsSaving}
           error={toolsError}
           onSave={(states) => void saveTools(states)}
         />

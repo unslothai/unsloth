@@ -7,8 +7,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MCP_TOOL_DESCRIPTION_KEYS,
   MCP_TOOL_LABEL_KEYS,
   groupMcpTools,
+  mcpToolDescriptionKey,
   mcpToolLabelKey,
 } from "../src/features/settings/components/mcp-tool-labels.ts";
 import { SETTINGS_TABS } from "../src/features/settings/stores/settings-dialog-store.ts";
@@ -146,32 +148,63 @@ test("tools fall into the five groups in order, with unknown areas last", () => 
   }
 });
 
-test("a group switch is on only when all its tools are, and every change sends the full off list", () => {
-  assert.match(TOOLS, /checked=\{on === group\.tools\.length\}/);
+test("each group and every tool get one row that says what a click does, and every change sends only the changed tools", () => {
+  // No switches and no symbols to decode: the row's right side says "Select all" or "Select none".
+  assert.doesNotMatch(TOOLS, /<Switch|groupTurnO|"mixed"/);
+  assert.match(TOOLS, /const allOn = on === tools\.length;/);
+  assert.match(
+    TOOLS,
+    /allOn\s+\? "settings\.mcp\.tools\.selectNone"\s+: "settings\.mcp\.tools\.selectAll"/,
+  );
+  // Some or none on turns every tool on; only an all-on group turns off, and it sends only what flips.
+  assert.match(
+    TOOLS,
+    /tools\s+\.filter\(\(tool\) => tool\.enabled === allOn\)\s+\.map\(\(tool\) => tool\.name\),\s+!allOn,/,
+  );
+  // "All tools" heads the list; every row shows how many are on.
+  assert.match(TOOLS, /label=\{t\("settings\.mcp\.tools\.allTools"\)\}\s+prominent=\{true\}/);
+  assert.match(TOOLS, /t\("settings\.mcp\.tools\.count", \{ on, total: tools\.length \}\)/);
+  assert.equal(en.settings.mcp.tools.selectAll, "Select all");
+  assert.equal(en.settings.mcp.tools.selectNone, "Select none");
   // Only the changed tools go to the server, which merges them into its stored list.
   assert.match(
     TOOLS,
     /onSave\(Object\.fromEntries\(names\.map\(\(name\) => \[name, on\]\)\)\)/,
   );
-  assert.match(TOOLS, /t\("settings\.mcp\.tools\.groupToggle", \{\s*group: label,/);
-  // "Turn all on" is disabled until something is off, and turns on only the tools that are off.
-  assert.match(
-    TOOLS,
-    /<Button\s+variant="outline"\s+disabled=\{saving \|\| !anyOff\}\s+onClick=\{\(\) =>\s+setEnabled\(\s+tools\.filter\(\(tool\) => !tool\.enabled\)\.map\(\(tool\) => tool\.name\),\s+true,/,
-  );
-  assert.match(TOOLS, /disabled=\{saving\}/);
+  // The footer only closes; a rule appears above it while more of the list is below.
+  assert.match(TOOLS, /moreBelow \? "border-border" : "border-transparent"/);
 });
 
-test("tool rows are one line, reuse the chat menu row, toggle from the name and each has its own icon", () => {
+test("each tool is one pill chip with its own icon, a checkbox role and a shape cue for on and off", () => {
   assert.match(
     TOOLS,
-    /<label\s+data-mcp-tool=\{tool\.name\}\s+className="flex min-h-9 cursor-pointer items-center gap-2\.5 rounded-lg px-2 py-1 has-disabled:cursor-default"/,
+    /<button\s+type="button"\s+role="checkbox"\s+aria-checked=\{on\}\s+data-mcp-tool=\{tool\.name\}/,
   );
-  assert.match(TOOLS, /<Switch\s+size="sm"\s+aria-label=\{label\}/);
+  assert.match(TOOLS, /onClick=\{\(\) => onToggle\(!on\)\}/);
+  assert.match(TOOLS, /relative flex min-h-9 w-full min-w-0 cursor-pointer select-none items-center gap-2\.5 rounded-full/);
+  // The Hub filter look: a stronger fill and a bare tick when on, a lighter fill and no tick when off.
+  assert.match(TOOLS, /\? "bg-wash-9 text-foreground dark:bg-wash-14"\s+: "bg-wash-4 text-muted-foreground hover:bg-wash-6 hover:text-foreground"/);
+  assert.match(TOOLS, /\{on \? \(\s*<HugeiconsIcon\s+icon=\{Tick02Icon\}/);
+  // No disc around any mark and no accent.
+  assert.doesNotMatch(TOOLS, /bg-control-accent|ring-wash-2\d/);
+  assert.match(TOOLS, /motion-reduce:transition-none/);
+  // Three columns when the dialog is wide, fewer when narrow.
+  assert.match(TOOLS, /grid grid-cols-1 gap-1\.5 @sm:grid-cols-2 @xl:grid-cols-3/);
   for (const name of CATALOG) {
     assert.match(TOOLS, new RegExp(`\\n  ${name}: \\w+Icon,`), name);
   }
   assert.doesNotMatch(TOOLS, /forcedByEnv|toast/);
+});
+
+test("tool changes flip at once, and a late reply can't undo a newer change", () => {
+  const save = SECTION.slice(
+    SECTION.indexOf("const saveTools = async"),
+    SECTION.indexOf("// subscribe to same-tab tunnel changes"),
+  );
+  assert.ok(save.indexOf("setSettings((current)") < save.indexOf("updateMcpTools(states)"));
+  assert.match(save, /const request = \+\+toolsRequest\.current;/);
+  assert.match(save, /if \(request === toolsRequest\.current\) \{\s+setSettings\(next\);/);
+  assert.doesNotMatch(SECTION, /toolsSaving|saving=\{/);
 });
 
 test("a rejected tool change resyncs and shows the error in the dialog", () => {
@@ -227,11 +260,15 @@ test("every catalog tool has a short label, and an unknown one falls back to its
   assert.equal(mcpToolLabelKey("brand_new_tool"), null);
   assert.equal(mcpToolLabelKey("constructor"), null);
   assert.match(TOOLS, /const label = labelKey \? t\(labelKey\) : tool\.name;/);
-  // The raw name moves behind a hover; an unknown tool shows it as the label.
-  assert.match(
-    TOOLS,
-    /<TooltipContent className="font-mono text-ui-11">\s*\{tool\.name\}/,
-  );
+  // Hover says what the tool does, with the raw name under it; an unknown tool shows its name as the label.
+  assert.deepEqual(Object.keys(MCP_TOOL_DESCRIPTION_KEYS), CATALOG);
+  for (const name of CATALOG) {
+    const key = mcpToolDescriptionKey(name);
+    assert.ok(key, name);
+    assert.equal(typeof lookup(en, key), "string", key);
+  }
+  assert.equal(mcpToolDescriptionKey("constructor"), null);
+  assert.match(TOOLS, /<span>\{t\(descriptionKey\)\}<\/span>\s*<span className="font-mono text-ui-11 opacity-60">\{tool\.name\}<\/span>/);
 });
 
 test("the English copy says Unsloth, never Studio", () => {

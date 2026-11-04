@@ -10,7 +10,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Switch } from "@/components/ui/switch";
 import {
   Tooltip,
   TooltipContent,
@@ -18,6 +17,8 @@ import {
 } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
 import { AiSpeechIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { Tick02Icon } from "@/lib/tick-icon";
+import { cn } from "@/lib/utils";
 import {
   AiBrain01Icon,
   Album02Icon,
@@ -43,9 +44,17 @@ import {
   TaskDone01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import type { ReactElement } from "react";
+import {
+  type ReactElement,
+  useEffect,
+  useState,
+} from "react";
 import type { McpToolSetting } from "../api/mcp-access";
-import { groupMcpTools, mcpToolLabelKey } from "./mcp-tool-labels";
+import {
+  groupMcpTools,
+  mcpToolDescriptionKey,
+  mcpToolLabelKey,
+} from "./mcp-tool-labels";
 
 const TOOL_ICONS: Readonly<Record<string, IconSvgElement>> = {
   studio_status: DashboardSpeed01Icon,
@@ -77,157 +86,243 @@ function toolIcon(name: string): IconSvgElement {
   return Object.hasOwn(TOOL_ICONS, name) ? TOOL_ICONS[name] : McpServerIcon;
 }
 
-function ToolRow({
+/** One row for many tools: the whole row is the button, and its right side says in words what a
+ *  click does, like the Hub filter's "Select all". Symbols (a tick or a dash) left new users guessing. */
+function GroupToggle({
+  tools,
+  label,
+  prominent = false,
+  onSet,
+}: {
+  tools: readonly McpToolSetting[];
+  label: string;
+  prominent?: boolean;
+  onSet: (names: readonly string[], on: boolean) => void;
+}): ReactElement {
+  const t = useT();
+  const on = tools.filter((tool) => tool.enabled).length;
+  const allOn = on === tools.length;
+  return (
+    <button
+      type="button"
+      // Some or none on turns every tool on; only an all-on group turns off.
+      onClick={() =>
+        onSet(
+          tools
+            .filter((tool) => tool.enabled === allOn)
+            .map((tool) => tool.name),
+          !allOn,
+        )
+      }
+      className={cn(
+        "group/toggle flex shrink-0 cursor-pointer items-center gap-2 rounded-full pe-3 text-start outline-none transition-colors duration-150 focus-visible:ring-3 focus-visible:ring-ring/40 motion-reduce:transition-none",
+        prominent
+          ? "min-h-11 gap-2.5 bg-wash-4 ps-4 hover:bg-wash-6"
+          : "min-h-8 ps-3 hover:bg-wash-4",
+      )}
+    >
+      <span
+        className={cn(
+          "text-ui-14 text-foreground",
+          prominent ? "font-medium" : "font-semibold",
+        )}
+      >
+        {label}
+      </span>
+      <span className="text-ui-12 tabular-nums text-muted-foreground">
+        {t("settings.mcp.tools.count", { on, total: tools.length })}
+      </span>
+      <span className="ms-auto text-ui-13 text-muted-foreground transition-colors duration-150 group-hover/toggle:text-foreground motion-reduce:transition-none">
+        {t(
+          allOn
+            ? "settings.mcp.tools.selectNone"
+            : "settings.mcp.tools.selectAll",
+        )}
+      </span>
+    </button>
+  );
+}
+
+function ToolChip({
   tool,
-  disabled,
   onToggle,
 }: {
   tool: McpToolSetting;
-  disabled: boolean;
   onToggle: (on: boolean) => void;
 }): ReactElement {
   const t = useT();
   const labelKey = mcpToolLabelKey(tool.name);
+  const descriptionKey = mcpToolDescriptionKey(tool.name);
   const label = labelKey ? t(labelKey) : tool.name;
-  // The whole row is the switch's label, so clicking the name toggles it too.
-  return (
-    <label
+  const on = tool.enabled;
+  // The Hub filter look: on is the stronger fill with a tick, off the lighter fill with muted text
+  // and no tick, so the tick (not color) carries the state.
+  const chip = (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
       data-mcp-tool={tool.name}
-      className="flex min-h-9 cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1 has-disabled:cursor-default"
+      onClick={() => onToggle(!on)}
+      className={cn(
+        "relative flex min-h-9 w-full min-w-0 cursor-pointer select-none items-center gap-2.5 rounded-full py-1.5 ps-3.5 pe-8 text-start outline-none transition-colors duration-150 focus-visible:ring-3 focus-visible:ring-ring/40 motion-reduce:transition-none",
+        on
+          ? "bg-wash-9 text-foreground dark:bg-wash-14"
+          : "bg-wash-4 text-muted-foreground hover:bg-wash-6 hover:text-foreground",
+      )}
     >
-      <span className="flex size-4 shrink-0 items-center justify-center text-foreground/80 [&_svg]:size-4">
+      <span className="flex size-4 shrink-0 items-center justify-center [&_svg]:size-4">
         <HugeiconsIcon icon={toolIcon(tool.name)} strokeWidth={1.75} />
       </span>
-      {/* The raw tool name is for debugging, so it waits behind a hover. */}
-      {labelKey ? (
-        <Tooltip>
-          <TooltipTrigger asChild={true}>
-            <span className="min-w-0 flex-1 truncate text-ui-13 text-foreground">
-              {label}
-            </span>
-          </TooltipTrigger>
-          <TooltipContent className="font-mono text-ui-11">
-            {tool.name}
-          </TooltipContent>
-        </Tooltip>
-      ) : (
-        <span className="min-w-0 flex-1 truncate font-mono text-ui-13 text-foreground">
-          {label}
-        </span>
-      )}
-      <Switch
-        size="sm"
-        aria-label={label}
-        checked={tool.enabled}
-        disabled={disabled}
-        onCheckedChange={onToggle}
-      />
-    </label>
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-ui-13",
+          labelKey ? null : "font-mono",
+        )}
+      >
+        {label}
+      </span>
+      {on ? (
+        <HugeiconsIcon
+          icon={Tick02Icon}
+          strokeWidth={2}
+          aria-hidden={true}
+          className="pointer-events-none absolute end-2.5 size-4"
+        />
+      ) : null}
+    </button>
+  );
+  // A tool this build doesn't know already shows its raw name and has nothing to add.
+  if (!descriptionKey) {
+    return chip;
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild={true}>{chip}</TooltipTrigger>
+      <TooltipContent className="flex max-w-64 flex-col gap-0.5 text-start">
+        <span>{t(descriptionKey)}</span>
+        <span className="font-mono text-ui-11 opacity-60">{tool.name}</span>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
-/** Grouped on/off switches for the tools served at /mcp/. Saves each change at once. */
+/** Whether the list has more below its visible part, for the rule above the footer. */
+function useMoreBelow(): [(el: HTMLDivElement | null) => void, boolean] {
+  // A callback ref: the dialog content mounts after this component's first effect.
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    if (!el) {
+      return;
+    }
+    const update = () =>
+      setMore(el.scrollTop + el.clientHeight < el.scrollHeight - 1);
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      observer.disconnect();
+    };
+  }, [el]);
+  return [setEl, more];
+}
+
+/** Grouped tool chips for the tools served at /mcp/. Saves each change at once. */
 export function McpToolsDialog({
   open,
   onOpenChange,
   tools,
-  saving,
   error,
   onSave,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   tools: readonly McpToolSetting[];
-  saving: boolean;
   error: string | null;
   /** Receives the tools to change, by name; the server merges them into its list. */
   onSave: (states: Record<string, boolean>) => void;
 }): ReactElement {
   const t = useT();
   const groups = groupMcpTools(tools);
-  const anyOff = tools.some((tool) => !tool.enabled);
+  const [listRef, moreBelow] = useMoreBelow();
 
   // Send only the tools that change, so a toggle elsewhere at the same time still lands.
   const setEnabled = (names: readonly string[], on: boolean) => {
-    onSave(Object.fromEntries(names.map((name) => [name, on])));
+    if (names.length > 0) {
+      onSave(Object.fromEntries(names.map((name) => [name, on])));
+    }
   };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
+      {/* Header and footer stay put; only the tool list scrolls, and only on short windows. */}
+      <DialogContent
+        className="flex flex-col gap-5 overflow-hidden outline-none sm:max-w-2xl"
+        // Focus the dialog itself: Enter on "All tools" would flip every tool, and a focused
+        // chip would pop its tooltip. Tab still lands on the first control.
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          (event.currentTarget as HTMLElement).focus();
+        }}
+      >
+        <DialogHeader className="pe-8">
           <DialogTitle>{t("settings.mcp.tools.dialogTitle")}</DialogTitle>
           <DialogDescription>
             {t("settings.mcp.tools.description")}
           </DialogDescription>
         </DialogHeader>
 
-        <div data-testid="mcp-tools" className="flex flex-col gap-3">
-          {error ? (
-            <p className="text-xs leading-snug text-destructive">{error}</p>
-          ) : null}
-          {groups.map((group) => {
-            const on = group.tools.filter((tool) => tool.enabled).length;
-            const label = t(group.labelKey);
-            return (
+        {error ? (
+          <p className="text-xs leading-snug text-destructive">{error}</p>
+        ) : null}
+
+        <div
+          ref={listRef}
+          data-testid="mcp-tools"
+          className="@container -mx-7 flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto scroll-rounded px-7"
+        >
+          <GroupToggle
+            tools={tools}
+            label={t("settings.mcp.tools.allTools")}
+            prominent={true}
+            onSet={setEnabled}
+          />
+          {groups.map((group) => (
               <section
                 key={group.id}
                 data-mcp-tool-group={group.id}
-                className="flex flex-col"
+                aria-label={t(group.labelKey)}
+                className="flex flex-col gap-1.5"
               >
-                <div className="flex items-center gap-2.5 px-3 pb-1">
-                  <h3 className="min-w-0 flex-1 text-ui-12 font-medium text-muted-foreground">
-                    {label}
-                    <span className="ml-1.5 tabular-nums">
-                      {on}/{group.tools.length}
-                    </span>
-                  </h3>
-                  {/* On only when every tool in the group is on; flipping it sets them all. */}
-                  <Switch
-                    size="sm"
-                    aria-label={t("settings.mcp.tools.groupToggle", {
-                      group: label,
-                    })}
-                    checked={on === group.tools.length}
-                    disabled={saving}
-                    onCheckedChange={(next) =>
-                      setEnabled(
-                        group.tools.map((tool) => tool.name),
-                        next,
-                      )
-                    }
-                  />
-                </div>
-                <div className="flex flex-col rounded-xl border border-border/70 p-1">
+                <GroupToggle
+                  tools={group.tools}
+                  label={t(group.labelKey)}
+                  onSet={setEnabled}
+                />
+                <div className="grid grid-cols-1 gap-1.5 @sm:grid-cols-2 @xl:grid-cols-3">
                   {group.tools.map((tool) => (
-                    <ToolRow
+                    <ToolChip
                       key={tool.name}
                       tool={tool}
-                      disabled={saving}
                       onToggle={(next) => setEnabled([tool.name], next)}
                     />
                   ))}
                 </div>
               </section>
-            );
-          })}
+          ))}
         </div>
 
-        <DialogFooter>
-          {/* Disabled rather than hidden, so the footer doesn't shift while toggling. */}
-          <Button
-            variant="outline"
-            disabled={saving || !anyOff}
-            onClick={() =>
-              setEnabled(
-                tools.filter((tool) => !tool.enabled).map((tool) => tool.name),
-                true,
-              )
-            }
-          >
-            {t("settings.mcp.tools.turnAllOn")}
-          </Button>
-          <Button onClick={() => onOpenChange(false)}>
+        {/* A rule shows only while more of the list is below, so nothing hides behind the footer. */}
+        <DialogFooter
+          className={cn(
+            "-mx-7 -mt-5 flex-row justify-end border-t px-7 pt-5",
+            moreBelow ? "border-border" : "border-transparent",
+          )}
+        >
+          <Button variant="dark" onClick={() => onOpenChange(false)}>
             {t("common.done")}
           </Button>
         </DialogFooter>
