@@ -1927,6 +1927,14 @@ def _generation_defaults_for(
     return {"steps": int(steps), "guidance": float(guidance)}
 
 
+def _lora_fuse_dits(pipe: Any) -> list:
+    from .diffusion_autoopt import targets as _targets
+    try:
+        return list(_targets.denoiser_dits(pipe))
+    except Exception:  # noqa: BLE001 - no DiT: the U-Net alone
+        return []
+
+
 def _refuse_lora_without_loader(fam: Any, loras: Any) -> None:
     """A family whose pipeline has no LoRA loader refuses an active selection before anything loads."""
     from core.inference import diffusion_lora
@@ -13184,6 +13192,7 @@ class DiffusionBackend:
 
         if not specs:
             if current:
+                self._unfuse_loras(state, pipe)
                 try:
                     pipe.unload_lora_weights()
                 except Exception:  # noqa: BLE001 -- best-effort clear
@@ -13214,7 +13223,11 @@ class DiffusionBackend:
             cancel = cancel,
         )
         if desired == current:
+            # the same set as the last render: fold it into the weights (no-op once folded)
+            self._fuse_constant_loras(state, pipe)
             return
+        # a change: put the original weights back first, so the paths below see exactly the unfused model
+        self._unfuse_loras(state, pipe)
         names = [name for name, _p, _w in desired]
         weights = [w for _n, _p, w in desired]
         if _lora_weights_only_change(state, pipe, current, desired):
@@ -13254,6 +13267,32 @@ class DiffusionBackend:
         # load_lora_weights can re-materialise parameters the graphs baked pointers to.
         cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
         invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+
+    def _fuse_constant_loras(self, state: Any, pipe: Any) -> None:
+        """Fold an unchanged LoRA set into a resident dense denoiser (diffusion_lora_fuse); any failure stays unfused."""
+        from . import diffusion_lora_fuse as lora_fuse
+
+        if not lora_fuse.enabled() or lora_fuse.fused(pipe):
+            return
+        if getattr(state, "offload_policy", None) != OFFLOAD_NONE or getattr(
+            pipe, "_unsloth_loras_baked", False
+        ):
+            return  # offloaded weights move every render; quantised bakes keep their own path
+        denoisers = [
+            m for m in (getattr(pipe, "unet", None), *_lora_fuse_dits(pipe)) if m is not None
+        ]
+        denoisers = list({id(m): m for m in denoisers}.values())
+        if denoisers and lora_fuse.fuse(pipe, denoisers, logger):
+            # graphs recorded the unfused forward; a CFG replica copied the unfused weights
+            cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+            invalidate_cfg_replica(pipe, "the LoRA set was folded into the weights", logger)
+
+    def _unfuse_loras(self, state: Any, pipe: Any) -> None:
+        """Restore the original weights of a folded LoRA set (bit-exact) before any change to it."""
+        from . import diffusion_lora_fuse as lora_fuse
+        if lora_fuse.unfuse(pipe):
+            cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+            invalidate_cfg_replica(pipe, "the folded LoRA set was restored", logger)
 
     def _adjust_baked_loras(
         self,
