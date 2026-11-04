@@ -386,6 +386,13 @@ def test_short_calls_and_threshold(monkeypatch):
     assert fold.requested_new_tokens(model, (), {"max_new_tokens": 127}) < fold._min_tokens()
     monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "bad")
     assert fold._min_tokens() == 128
+    # Decode CUDA graphs already remove most of the per-token LoRA cost: folding pays back later.
+    monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS")
+    monkeypatch.setattr(fold, "_graphs_enabled", lambda: True)
+    assert fold._min_tokens() == 512
+    assert _generate(model, 128)[0] is False
+    monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "64")
+    assert fold._min_tokens() == 64
 
 
 def test_other_threads_wait_for_restore(_clean):

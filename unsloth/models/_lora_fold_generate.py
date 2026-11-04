@@ -53,15 +53,28 @@ def _refuse(reason):
     return None
 
 
-# T4 break-even (fold + unfold / per-token saving): ~37 tokens eager, ~57 with decode CUDA graphs.
+# Break-even (fold + unfold / per-token saving), L4 1B LoRA: 5-16 tokens eager; 43-216 tokens with decode
+# CUDA graphs, which already remove most of the per-token LoRA launch cost.
 _DEFAULT_MIN_TOKENS = 128
+_DEFAULT_MIN_TOKENS_GRAPHS = 512
 
 
 def _min_tokens():
+    value = os.environ.get("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS")
+    if value is not None:
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return _DEFAULT_MIN_TOKENS_GRAPHS if _graphs_enabled() else _DEFAULT_MIN_TOKENS
+
+
+def _graphs_enabled():
     try:
-        return int(os.environ.get("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", _DEFAULT_MIN_TOKENS))
-    except ValueError:
-        return _DEFAULT_MIN_TOKENS
+        from ._decode_graphs import enabled
+        return bool(enabled())
+    except Exception:
+        return False
 
 
 def _exact_api():
