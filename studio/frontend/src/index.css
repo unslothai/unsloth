@@ -5872,13 +5872,12 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 		max(0px, calc(100% - var(--native-hole-x) - var(--native-hole-w))) var(--native-hole-h) !important;
 }
 
-/* A backdrop-filter paints its blurred backdrop across the whole box, the hole included. */
+/* A backdrop-filter would paint over the hole. */
 [data-native-hole] {
 	-webkit-backdrop-filter: none !important;
 	backdrop-filter: none !important;
 }
-/* The wallpaper is no ancestor of the page, so it is masked around the hole instead; the lengths are
-   the layer's own (native-view.ts sets them from its corner), not the viewport's. */
+/* Element-local lengths, set by native-view.ts. */
 [data-native-hole-mask] {
 	--native-hole-mask: linear-gradient(#000, #000);
 	-webkit-mask-image: var(--native-hole-mask), var(--native-hole-mask), var(--native-hole-mask), var(--native-hole-mask);
@@ -6274,7 +6273,6 @@ html[data-glass="macos"] .unsloth-composer-surface {
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
 }
-/* Open conversations only, not the welcome view. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper {
   opacity: calc(.7 * (.4 + .6 * var(--wallpaper-conversation, 0)));
@@ -6315,7 +6313,7 @@ html.dark[data-glass="liquid-3d"] {
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
   background-image: var(--glass-sheen);
-  /* A divider only: an inner glow here reads as a shadow around the scrollbar. */
+  /* No inner glow: it read as a shadow around the scrollbar. */
   box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
 }
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
@@ -6381,14 +6379,12 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* The selected tab: a light glass pill, not the solid card or accent fill. */
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome [role="tab"][aria-selected="true"] {
   background-color: color-mix(in srgb, var(--glass-hover), var(--foreground) 4%) !important;
   background-image: var(--glass-sheen, none);
   box-shadow: var(--glass-hover-rim);
 }
-/* Over a native page the body is holed and drops its blur, so the rows beside the page (toolbar,
-   bookmarks, device and agent bars) carry the frost themselves; none of them overlaps the page. */
+/* A holed body drops its blur, so the rows beside the page carry it. */
 html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-panel-body[data-native-hole] > :not([data-browser-page]) {
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
@@ -6462,7 +6458,7 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
 }
-/* Frost the buttons, not their row, so the glass is the hover's box; same glass as the composer. */
+/* On the buttons, not the row, so the glass is the hover's box. */
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
   position: relative;
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent) !important;
@@ -6492,7 +6488,7 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 html[data-glass="macos"] .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]),
 html[data-glass="macos"] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]),
-/* The account row is a menu trigger, which takes over its data-slot. */
+/* A menu trigger takes over the account row's data-slot. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .app-user-trigger:is(:hover, [data-state="open"]),
 html[data-glass="macos"] [data-slot="sidebar-inner"] .app-user-trigger:is(:hover, [data-state="open"]) {
   background-color: var(--glass-hover);
@@ -6547,7 +6543,7 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
 html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   background-image: var(--glass-sheen);
 }
-/* The browser menu pins its fill to a surface resolved on <html> (layered !important), so point that surface at the glass. */
+/* Its fill is pinned (layered !important) to a surface resolved on <html>. */
 html[data-glass][data-glass-menus] .browser-menu[data-slot] {
   --browser-menu-surface: var(--glass-menu-fill);
   --accent: var(--glass-hover);
@@ -6595,12 +6591,11 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
   --color-accent: var(--glass-hover);
   --color-sidebar-accent: var(--glass-hover);
 }
-/* Library row actions hard-code a solid dark hover; the picture controls (dark:bg-neutral-700) stay solid on purpose. */
+/* Picture controls (dark:bg-neutral-700) stay solid on purpose. */
 html.dark[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] [class*="dark:hover:bg-neutral-600"]:not([class*="dark:bg-neutral-700"]):hover {
   background-color: var(--glass-hover);
   box-shadow: var(--glass-hover-rim);
 }
-/* Every hover token, not just --accent, so icon buttons in menus, popovers and dialogs hover as glass too. */
 html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface, [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {
   --nav-surface-hover: var(--glass-hover);
   --panel-surface-hover: var(--glass-hover);
@@ -6715,7 +6710,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   --color-panel-surface-hover: var(--glass-hover);
   --color-chat-icon-bg-hover: var(--glass-hover);
 }
-/* No backdrop-filter on the pane: a backdrop-root pane makes sticky headers inside re-tint it into bands. */
+/* No backdrop-filter on the pane: sticky headers inside a backdrop root re-tint it into bands. */
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
   content: none;
 }
@@ -6724,12 +6719,11 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
 }
-/* A hint of frost on the wallpaper itself; an image blur the user set (an inline filter) wins. */
+/* A user image blur (inline filter) wins. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallpaper .chat-wallpaper-artwork:not([style*="filter"]) {
   filter: blur(1.5px);
 }
-/* A surface with its own backdrop-filter is a backdrop root, so a frosted child cannot see the text scrolling
-   beneath it; surfaces holding one carry their blur on a layer behind their content instead. */
+/* A backdrop root hides the text beneath a frosted child, so such surfaces blur on a layer instead. */
 html[data-glass][data-glass-menus] :is([data-slot$="popover-content"], [data-slot$="menu-content"], [data-slot="dialog-content"]):has(.sticky, [data-glass-float]),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"]:has(.sticky, [data-glass-float]) {
   -webkit-backdrop-filter: none !important;
@@ -6758,7 +6752,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-/* Not on the chat canvas: a wide sticky wrapper there would blur a band of the wallpaper. */
+/* Not the chat canvas: a wide sticky wrapper would blur a band of wallpaper. */
 html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-content"], [data-slot="dialog-content"], [data-slot="sheet-content"], [data-slot$="menu-content"]) .sticky {
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
   backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));

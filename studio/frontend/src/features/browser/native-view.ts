@@ -554,7 +554,7 @@ function lendKeys(blocked: boolean): void {
 const HOLE_ATTRIBUTE = "data-native-hole";
 const HOLE_VARS = ["--native-hole-x", "--native-hole-y", "--native-hole-w", "--native-hole-h"] as const;
 let holed: HTMLElement[] = [];
-// The wallpaper paints under the page without being its ancestor, so it is masked around the hole.
+// The wallpaper is no ancestor of the page, so it is masked instead.
 const MASK_ATTRIBUTE = "data-native-hole-mask";
 let masked: HTMLElement[] = [];
 let holeSignature = "";
@@ -591,7 +591,7 @@ function placeHole(): void {
   const rect = [left, holeBounds.y, Math.max(0, right - left), holeBounds.height];
   const values = rect.map((value) => value / zoom);
   for (const node of holed) HOLE_VARS.forEach((name, index) => node.style.setProperty(name, `${values[index]}px`));
-  // A mask is not a fixed background, so no zoom correction: the rect less the layer's corner, both CSS px.
+  // No zoom correction: a mask is no fixed background.
   for (const node of masked) {
     const box = node.getBoundingClientRect();
     const local = [rect[0] - box.left, rect[1] - box.top, rect[2], rect[3]];
@@ -608,7 +608,7 @@ function markHole(): boolean {
   // Theme: html classes, palette and inline color vars, minus our own.
   const root = document.documentElement;
   const theme = (root.style.cssText ?? "").replace(/--native-hole-[^;]*;?/g, "");
-  // From the page's own ancestors, not a document-wide scan: this runs on every recheck.
+  // Ancestors only, no document scan: this runs on every recheck.
   const layers = chain
     .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
     .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));

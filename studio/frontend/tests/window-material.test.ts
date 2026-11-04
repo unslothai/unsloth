@@ -97,7 +97,6 @@ test("other pages under glass read over one tinted pane with the sidebar's floor
 	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  background-color: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \+ 6%\)/);
 	const pane = /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.doesNotMatch(pane, /backdrop-filter/);
-	// The image stays as sharp as beside a chat: no page-only blur on the artwork.
 	assert.doesNotMatch(css, /\[data-wallpaper-route="page"\][^{]*\.chat-wallpaper-artwork \{/);
 });
 
@@ -167,16 +166,13 @@ test("glass over an open conversation dims the image and thickens only that comp
 	const conversation = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\):not\(:has\(\.aui-thread-welcome-center\)\)`;
 	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
 	assert.match(css, new RegExp(`${conversation} \\.unsloth-composer-surface,[^{]*\\{\\n  --glass-composer-boost: 9%;`));
-	// The boost sits outside the max(), so a high readability floor cannot swallow it.
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
 });
 
 test("glass frosts the chat model controls and gives the account row the row hover", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	// The glass sits on the buttons themselves, so it is exactly the hover's box; the hover layers over it.
 	const model = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
 	const glass = new RegExp(`${model} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
-	// The composer's glass: its fill formula and blur, with no padding around the hover box.
 	assert.match(glass, /var\(--glass-composer-fill\) min\(96%, calc\(max\(calc\(var\(--glass-tint\) \+ 14%\)/);
 	assert.match(glass, /backdrop-filter: blur\(var\(--glass-blur\)\) saturate/);
 	assert.doesNotMatch(glass, /padding/);
@@ -197,7 +193,6 @@ test("glass frosts sticky bars in panels and popups, floating buttons, and softe
 
 test("glass surfaces holding a frosted child move their own blur behind their content", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	// A backdrop-filter on the surface makes it a backdrop root, and then the child's frost cannot reach the text beneath it.
 	assert.match(css, /\[data-slot="dialog-content"\]\):has\(\.sticky, \[data-glass-float\]\),\n[^{]*\{\n  -webkit-backdrop-filter: none !important;\n  backdrop-filter: none !important;\n  isolation: isolate;/);
 	assert.match(css, /:has\(\.sticky, \[data-glass-float\]\)::before \{\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 });
@@ -214,7 +209,7 @@ test("the browser menu takes the glass fill instead of its pinned dark surface",
 
 test("menus, popovers and dialogs point every hover token at the glass hover", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const at = css.indexOf("/* Every hover token, not just --accent");
+	const at = css.indexOf('[data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {\n  --nav-surface-hover');
 	assert.notEqual(at, -1);
 	const rule = css.slice(at, css.indexOf("}", at));
 	for (const token of ["nav-surface-hover", "panel-surface-hover", "chat-icon-bg-hover", "panel-input-surface-hover"]) {

@@ -27,12 +27,10 @@ test("the browser's glass frosts the tab strip and panel body, never the section
   const frosted = rules.filter(([, , body]) => /backdrop-filter/.test(body));
   assert.ok(frosted.length > 0);
   for (const [, selector] of frosted) {
-    // Over a native page the holed body's rows beside the page carry the frost, never the page box.
     for (const part of selector.split(",")) assert.match(part.trim(), /\[data-slot="browser-panel"\](:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)( ?\[data-native-hole\] > :not\(\[data-browser-page\]\))?$/);
   }
 });
 
-// A backdrop-filter paints over the hole, and the wallpaper is no ancestor of the page, so neither may cover a website.
 test("a native page's hole drops backdrop filters and masks the wallpaper layer", () => {
   const css = readSrc("index.css");
   assert.match(css, /\[data-native-hole\] \{\n\t-webkit-backdrop-filter: none !important;\n\tbackdrop-filter: none !important;/);

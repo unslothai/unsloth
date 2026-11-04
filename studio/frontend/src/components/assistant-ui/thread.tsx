@@ -2809,7 +2809,7 @@ const ThreadWelcome: FC<{
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
             : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
           // Without the greeting, its row and gap become padding, so the composer stays where it was.
-          // An image greeting rises 76px above its row, so its padding never drops below that.
+          // The image row's -76px margin needs at least that much padding.
           !composerAtBottom &&
             (greeting.kind === "image" && !incognito
               ? "pt-[max(calc(76px*var(--ui-space-scale,1)),calc(27.5dvh*var(--welcome-lift,1)))]"

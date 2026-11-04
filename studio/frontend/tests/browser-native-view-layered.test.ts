@@ -53,7 +53,6 @@ const html = node("html", "rgb(255, 255, 255)", null);
 const section = node("section", "oklch(0.97 0 0)", html);
 const wrapper = node("wrapper", "rgba(0, 0, 0, 0)", section);
 const placeholder = node("placeholder", "oklch(1 0 0 / 1)", wrapper);
-// The wallpaper layer: under the page but no ancestor of it, at its own corner, beside it in the workspace.
 const wallpaper = Object.assign(node("wallpaper", "rgba(0, 0, 0, 0)", html), {
   getBoundingClientRect: () => rect(100, 40, 1000, 800),
   classList: { contains: (token: string) => token === "chat-wallpaper" },
@@ -143,7 +142,6 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     // the rect goes on each holed node (the vars don't inherit), so moving it restyles only those
     assert.equal(placeholder.vars.get("--native-hole-y"), "100px");
     assert.equal(wrapper.vars.has("--native-hole-x"), false);
-    // the wallpaper is masked around the same rect, in its own coordinates
     assert.equal(wallpaper.attributes.has("data-native-hole-mask"), true);
     assert.equal(wallpaper.attributes.has("data-native-hole"), false);
     assert.equal(wallpaper.vars.get("--native-hole-x"), "400px");
@@ -157,7 +155,6 @@ test("a menu over a layered page neither captures nor hides it, and owns its inp
     zoomChanged?.();
     assert.equal(html.vars.get("--native-hole-x"), "625px");
     assert.equal(placeholder.vars.get("--native-hole-h"), "750px");
-    // the mask is no fixed background: it keeps the unscaled rect less the layer's corner
     assert.equal(wallpaper.vars.get("--native-hole-x"), "400px");
     assert.equal(wallpaper.vars.get("--native-hole-w"), "500px");
     (globalThis as { nativeViewZoom?: number }).nativeViewZoom = 1;

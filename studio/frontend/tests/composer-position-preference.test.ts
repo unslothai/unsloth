@@ -32,13 +32,11 @@ test("only the top of the range docks the composer", () => {
   const thread = readSrc("components/assistant-ui/thread.tsx");
   assert.match(thread, /s\.newChatComposerPosition >= COMPOSER_POSITION_BOTTOM/);
   assert.match(thread, /const composerAtBottom = composerPosition >= COMPOSER_POSITION_BOTTOM;/);
-  // The middle (50) keeps the original 27.5dvh top padding exactly.
   assert.match(thread, /pt-\[calc\(27\.5dvh\*var\(--welcome-lift,1\)\)\]/);
 });
 
 test("an image greeting keeps room for its raised row at low composer positions", () => {
 	const thread = readSrc("components/assistant-ui/thread.tsx");
-	// The image row has -mt-[76px]; padding below that would clip it under the header at position 0.
 	assert.match(thread, /-mt-\[calc\(76px\*var\(--ui-space-scale,1\)\)\]/);
 	assert.match(thread, /greeting\.kind === "image" && !incognito\n\s*\? "pt-\[max\(calc\(76px\*var\(--ui-space-scale,1\)\),calc\(27\.5dvh\*var\(--welcome-lift,1\)\)\)\]"/);
 });
