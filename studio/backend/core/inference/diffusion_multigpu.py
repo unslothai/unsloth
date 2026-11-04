@@ -68,11 +68,69 @@ def automatic_cfg_parallel_off() -> bool:
     )
 
 
+# ... and computes at most this much (nvidia-smi utilization.gpu, percent): a card running another job is not lent.
+AUTO_CFG_PARALLEL_IDLE_UTIL_PCT = 5.0
+
+
 def _idle_card(probe: Any) -> bool:
     free, total = getattr(probe, "free_mib", None), getattr(probe, "total_mib", None)
     if free is None or total is None:
         return False
+    util = getattr(probe, "util_pct", None)
+    if util is not None and float(util) > AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:
+        return False
     return int(total) - int(free) <= AUTO_CFG_PARALLEL_IDLE_USED_MIB
+
+
+def automatic_partner(
+    primary: Any,
+    cards: Sequence[Any],
+    need_mib: int,
+    *,
+    p2p: Optional[dict[int, bool]] = None,
+) -> tuple[Optional[int], str]:
+    """The card Automatic lends a load's replica to, from ``cards`` (DeviceProbe-like: ordinal, name, total_mib,
+    free_mib, util_pct), or None and the reason. Pure: no device is touched.
+
+    One partner per load, on any number of cards: CFG-parallel and the batch split each need exactly one second
+    copy, and a third copy would have no second call to run (a step has at most two guidance branches, and a batch is
+    cut in two). The cards left over stay free for another load (keep multiple models loaded) or another app.
+
+    A card is a candidate only when it is (in this order of rejection):
+      - not the primary;
+      - the same card model as the primary (same kernels, so the branches agree and neither card waits on a slower
+        one; a mixed pair such as a 4090 with a 3060 is never paired automatically, ``force`` overrides);
+      - idle: at most ``AUTO_CFG_PARALLEL_IDLE_USED_MIB`` in use and at most ``AUTO_CFG_PARALLEL_IDLE_UTIL_PCT``
+        utilisation (another process's work is never slowed and its memory never taken);
+      - able to hold the replica plus its reserve.
+    Among candidates: the most usable free memory, then a peer-to-peer link to the primary, then the lowest ordinal.
+    A static rule, not a trial: on identical idle cards the measured gains are 1.46x to 1.79x (well beyond A/A)."""
+    p2p = p2p or {}
+    pidx = getattr(primary, "ordinal", None)
+    pname = getattr(primary, "name", None)
+    rejected: dict[str, list[int]] = {}
+    fits: list[tuple[int, int, int]] = []
+    for card in cards:
+        o = int(card.ordinal)
+        if o == pidx:
+            continue
+        if not pname or card.name != pname:
+            rejected.setdefault("a different card model", []).append(o)
+            continue
+        if not _idle_card(card):
+            rejected.setdefault("busy", []).append(o)
+            continue
+        free = int(card.free_mib)
+        usable = free - _replica_reserve_mib(free, card.total_mib)
+        if usable < int(need_mib):
+            rejected.setdefault(f"short of the {int(need_mib)} MiB replica", []).append(o)
+            continue
+        fits.append((usable, 1 if p2p.get(o) else 0, -o))
+    if fits:
+        return -max(fits)[2], "idle card of the same model"
+    if not rejected:
+        return None, "no other card"
+    return None, "; ".join(f"cuda:{','.join(map(str, v))} {k}" for k, v in rejected.items())
 
 
 def cfg_parallel_mode() -> str:
@@ -265,6 +323,7 @@ class DeviceProbe:
     name: str
     total_mib: Optional[int]
     free_mib: Optional[int]
+    util_pct: Optional[float] = None
 
 
 _PROBE_LOCK = threading.Lock()
@@ -303,8 +362,23 @@ def probe_devices(ordinals: Sequence[int]) -> dict[int, DeviceProbe]:
     out: dict[int, DeviceProbe] = {}
     for o in ords:
         free, total = _free_total_mib(o)
-        out[o] = DeviceProbe(ordinal = o, name = _NAMES.get(o, ""), total_mib = total, free_mib = free)
+        out[o] = DeviceProbe(
+            ordinal = o, name = _NAMES.get(o, ""), total_mib = total, free_mib = free, util_pct = _util_pct(o)
+        )
     return out
+
+
+def _util_pct(ordinal: int) -> Optional[float]:
+    """nvidia-smi utilisation of a card an automatic load may borrow; None elsewhere (unknown counts as idle)."""
+    selection = _SELECTION.get()
+    if selection is None or not selection.automatic or int(ordinal) == selection.primary:
+        return None
+    try:
+        from .diffusion_device import smi_util_pct
+
+        return smi_util_pct(int(ordinal))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def best_secondary(
@@ -2474,7 +2548,10 @@ class CfgParallelRouter:
             "kv_cache_declined": 0,
             "kv_prefill_primary_calls": 0,
             "replica_failures": 0,
+            "batch_splits": 0,
         }
+        # the last render ran one call per step (no guidance branches): a batch can split from its first step
+        self.last_render_single = False
         # source prefix-KV cache id -> (source cache, the tensors it held when copied, the replica's copy)
         self.kv_mirrors: dict[int, tuple[Any, list, Any]] = {}
         self.kv_declined: dict[int, tuple[Any, list]] = {}
@@ -2544,6 +2621,7 @@ class CfgParallelRouter:
         self.prev_latent = None
         self.template = None
         self.b0_leaves = {}
+        self.last_render_single = self.singles >= 1 and not self.cfg_seen
         self.branch = 0
         # the next render shows its own guidance shape: no speculative branch before its first odd call
         self.cfg_seen = False
@@ -2613,6 +2691,15 @@ class CfgParallelRouter:
                 self._prefetch(args, kwargs)
                 sig = _call_signature(args, kwargs)
                 self._launch_prediction(latent, sig)
+        if (
+            self.branch == 0
+            and not self.cfg_seen
+            and (self.singles >= 1 or self.last_render_single)
+            and self.disabled_reason is None
+        ):
+            out = self._batch_split(latent, args, kwargs)
+            if out is not None:
+                return out
         prefill = self.branch % 2 == 1 and _is_prefill(kwargs)
         if (
             self.branch % 2 == 1
@@ -2664,6 +2751,42 @@ class CfgParallelRouter:
             self.stats["kv_prefill_primary_calls"] += 1
         self.stats["primary_calls"] += 1
         return self._primary_noting(sig, args, kwargs)
+
+    def _batch_split(self, latent: Any, args: tuple, kwargs: dict) -> Any:
+        """A step without guidance branches (a distilled model, or both branches batched into one call) whose batch is
+        even: the first half runs on the source, the second on the replica at the same time. Only for denoiser classes
+        whose every batched input is known (``_DIT_BATCH_SPLIT_KWARGS``); anything else, an odd batch, or the kill
+        switch keeps the call whole. None = not split (the caller runs it whole)."""
+        torch = _torch()
+        module = self.module_ref()
+        allowed = _DIT_BATCH_SPLIT_KWARGS.get(type(module).__name__) if module is not None else None
+        if allowed is None or _batch_split_disabled() or torch.compiler.is_compiling():
+            return None
+        if getattr(module, "_compiled_call_impl", None) is not None:
+            return None
+        n = latent.shape[0] if isinstance(latent, torch.Tensor) and latent.dim() >= 1 else 0
+        if n < 2 or n % 2 or args:
+            return None
+        if any(k not in allowed and v is not None and v is not False for k, v in kwargs.items()):
+            return None
+        if kwargs.get("joint_attention_kwargs"):
+            return None
+        try:
+            (a0, k0), (a1, k1) = [(_split_batch(args, n, h), _split_batch(kwargs, n, h)) for h in (0, 1)]
+        except TypeError:
+            return None
+        res = self.run_pair(lambda: self._primary_noting(None, a0, k0), a1, k1)
+        # run_pair forgets the step: keep this one's latent so the next call is read as a new step
+        self.prev_latent = latent
+        self.branch = 0
+        if res is None:
+            return None
+        first, second = res
+        if second is None:
+            second = self._primary(*a1, **k1)
+        self.stats["primary_calls"] += 1
+        self.stats["batch_splits"] += 1
+        return _join_batch(first, second)
 
     def run_pair(
         self, primary_call: Callable[[], Any], args: tuple, kwargs: dict
@@ -3178,6 +3301,25 @@ class UnetCfgParallelRouter(CfgParallelRouter):
         return _join_batch(first, second)
 
 
+# DiT classes whose batch may be cut along dim 0 (every per-sample input is a dim-0 tensor; ids, when unbatched, keep
+# a leading size that is the token count, never the batch). Z-Image passes per-sample lists and has its own split.
+_DIT_BATCH_SPLIT_KWARGS = {
+    "FluxTransformer2DModel": frozenset(
+        {"hidden_states", "encoder_hidden_states", "pooled_projections", "timestep", "img_ids", "txt_ids", "guidance",
+         "joint_attention_kwargs", "return_dict"}
+    ),
+    "Flux2Transformer2DModel": frozenset(
+        {"hidden_states", "encoder_hidden_states", "timestep", "img_ids", "txt_ids", "guidance",
+         "joint_attention_kwargs", "return_dict"}
+    ),
+}
+BATCH_SPLIT_ENV = "UNSLOTH_DIFFUSION_BATCH_SPLIT"
+
+
+def _batch_split_disabled() -> bool:
+    return (os.environ.get(BATCH_SPLIT_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+
+
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
 _CFG_DECLINES: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
 
@@ -3281,9 +3423,10 @@ def install_cfg_parallel(
     offload_policy: str,
     logger: Any = None,
 ) -> Optional[str]:
-    """Arm CFG-parallel on ``pipe.transformer`` when a secondary card can hold a replica. The replica is built on the
-    first step that shows two branches, so a guidance-distilled model never pays for it. Returns the decline reason or
-    None when armed."""
+    """Arm CFG-parallel on ``pipe.transformer`` (or a U-Net) when a secondary card can hold a replica. The replica is
+    built on the first step that shows two branches, or, for a FLUX.1 / FLUX.2 denoiser, the first step of a render
+    without branches whose batch is even (batch split): a distilled model rendering one image never pays for it.
+    Automatic placement lends one card per load (:func:`automatic_partner`). Returns the decline reason or None."""
     selection = current_selection()
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
     if reason is None:
@@ -3299,9 +3442,20 @@ def install_cfg_parallel(
         ]
         candidates = same if cfg_parallel_mode() != "force" else list(selection.secondaries)
         automatic = selection.automatic and cfg_parallel_mode() != "force"
+        auto_reason = None
         if automatic:
-            # nothing else may live on a card Automatic borrows for a replica
+            # nothing else may live on a card Automatic borrows for a replica (busy: memory in use or computing)
+            need = sum(
+                t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers())
+            ) // (1 << 20)
+            pick, auto_reason = automatic_partner(
+                probes.get(primary.index) or DeviceProbe(primary.index, "", None, None),
+                [probes[o] for o in selection.secondaries if probes.get(o) is not None and probes[o].free_mib is not None],
+                need,
+            )
             candidates = [o for o in candidates if _idle_card(probes.get(o))]
+            if pick is not None:
+                candidates = [pick]
         try:
             placed = ((_PLACEMENTS.get(pipe) or {}).get("placement") or {}).values()
         except TypeError:
@@ -3313,8 +3467,9 @@ def install_cfg_parallel(
             reason = f"the only replica card ({', '.join(sorted(occupied))}) holds the split's components"
         elif not candidates and automatic and same:
             reason = (
-                f"automatic GPU placement: no idle card for a replica (more than "
-                f"{AUTO_CFG_PARALLEL_IDLE_USED_MIB} MiB in use; select several cards or set {CFG_PARALLEL_ENV}=force)"
+                f"automatic GPU placement: no idle card for a replica ({auto_reason}; idle = at most "
+                f"{AUTO_CFG_PARALLEL_IDLE_USED_MIB} MiB in use and {AUTO_CFG_PARALLEL_IDLE_UTIL_PCT:g}% busy; "
+                f"select several cards or set {CFG_PARALLEL_ENV}=force)"
             )
         elif not candidates:
             reason = "secondary card is a different model (bit-identity needs the same kernels)"
@@ -3360,7 +3515,8 @@ def install_cfg_parallel(
                 denoiser._unsloth_cfg_router = router
                 if logger is not None:
                     logger.info(
-                        "diffusion.multigpu: CFG-parallel armed (replica on cuda:%s when guidance runs two branches%s)",
+                        "diffusion.multigpu: CFG-parallel armed (replica on cuda:%s when guidance runs two branches or"
+                        " an even batch splits%s)",
                         best,
                         "; U-Net batch split" if router_cls is UnetCfgParallelRouter else "",
                     )
