@@ -1391,3 +1391,13 @@ def test_a_saved_dataset_folder_with_no_parquet_trains_again(tmp_path):
     # save_to_disk() writes Arrow files: the `*.parquet` the cache hashes matches none of them.
     (tmp_path / "data-00000-of-00001.arrow").write_bytes(b"rows")
     assert training._content_hash(f"{tmp_path}/*.parquet") is None
+
+
+def test_a_csv_grpo_set_reads_its_first_row_as_training_does(tmp_path, monkeypatch):
+    source = tmp_path / "q.csv"
+    source.write_text("question,answer\n00123,123\n00456,456\n")
+    monkeypatch.setattr("core.flows.nodes.data.local_seed_path", lambda ref: str(source))
+    row = training._first_row({"source": "local", "ref": "uploads/q.csv"}, None)
+    assert row["question"] == "00123"
+    config = {"objective": "grpo", "rl_system_prompt": "Reason, then answer."}
+    assert training.trained_system_prompt(config, row) == "Reason, then answer."

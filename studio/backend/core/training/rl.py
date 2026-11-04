@@ -271,8 +271,11 @@ def format_rl_dataset(
                 # Kept as None: "" would let an empty <answer></answer> match a missing label.
                 out["answer"] = None if answer is None else str(answer)
         else:
-            chosen = _as_messages(row[roles["chosen"]], "assistant")
-            rejected = _as_messages(row[roles["rejected"]], "assistant")
+            chosen_cell, rejected_cell = row[roles["chosen"]], row[roles["rejected"]]
+            if "prompt" not in roles:
+                chosen_cell, rejected_cell = _implicit_text_prompt(chosen_cell, rejected_cell)
+            chosen = _as_messages(chosen_cell, "assistant")
+            rejected = _as_messages(rejected_cell, "assistant")
             # Like TRL's extract_prompt: the longest shared prefix is the prompt, the rest is each
             # completion. The prompt column then holds only the conversation's first turn.
             shared = 0
@@ -445,6 +448,25 @@ def _row_tools(row: dict):
     else:
         tools = decode(tools)
     return tools or None
+
+
+def _implicit_text_prompt(chosen: Any, rejected: Any) -> tuple[Any, Any]:
+    """Text pairs with no prompt column (hh-rlhf's transcripts) hold the prompt as their shared start:
+    split it off as TRL's extract_prompt does, as one user turn both conversations open with."""
+    if not (isinstance(chosen, str) and isinstance(rejected, str)):
+        return chosen, rejected
+    cut = 0
+    while cut < min(len(chosen), len(rejected)) and chosen[cut] == rejected[cut]:
+        cut += 1
+    if cut and cut < min(len(chosen), len(rejected)) and chosen[cut - 1] == " ":
+        cut -= 1  # the space starts each completion, as TRL leaves it
+    if not chosen[:cut].strip():
+        return chosen, rejected
+    prompt = {"role": "user", "content": chosen[:cut]}
+    return (
+        [prompt, {"role": "assistant", "content": chosen[cut:]}],
+        [prompt, {"role": "assistant", "content": rejected[cut:]}],
+    )
 
 
 def _strip_nulls(value: Any) -> Any:

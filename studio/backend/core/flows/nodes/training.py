@@ -951,7 +951,16 @@ def _first_row(dataset: dict, token: Any) -> Optional[dict]:
             builder = next((b for ext, b in LOADERS.items() if path.endswith(ext)), None)
             if builder is None:
                 return None
-            streamed = load_dataset(builder, data_files = path, split = "train", streaming = True)
+            from utils.datasets.cells import csv_as_text_kwargs
+
+            # CSV cells stay text as training reads them: "00123" is a string prompt, not 123.
+            streamed = load_dataset(
+                builder,
+                data_files = path,
+                split = "train",
+                streaming = True,
+                **csv_as_text_kwargs([path]),
+            )
         return next(iter(streamed), None)
     except Exception:
         return None
