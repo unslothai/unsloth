@@ -161,6 +161,30 @@ def test_the_size_adds_the_cuda_runtime_zip(managed, monkeypatch):
     assert plan["status"]["update_size_bytes"] == 400_000_000 and plan["update_available"] is True
 
 
+@pytest.mark.parametrize("arch", ["arm64", "x64"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_update_size_uses_the_matching_architecture_runtime_in_a_mixed_release(
+    managed, monkeypatch, arch, reverse
+):
+    monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(aupd.platform, "machine", lambda: arch)
+    monkeypatch.setattr(aupd._installer(), "torch_provides_cuda_runtime", lambda _major: False)
+    _write_record(
+        managed.tree,
+        asset = f"audio-v0.9.0-unsloth.1-bin-windows-{arch}-cuda13.zip",
+        accelerator = "cuda",
+        accelerator_request = "cuda",
+    )
+    assets = [
+        (f"audio-{_LATEST}-bin-windows-{arch}-cuda13.zip", 100_000_000),
+        (f"audio-{_LATEST}-cudart-windows-x64-cuda13.zip", 300_000_000),
+        (f"audio-{_LATEST}-cudart-windows-arm64-cuda13.zip", 200_000_000),
+    ]
+    managed.state.assets = dict(reversed(assets) if reverse else assets)
+    size = aupd.chained_phase_plan()["status"]["update_size_bytes"]
+    assert size == (300_000_000 if arch == "arm64" else 400_000_000)
+
+
 @pytest.mark.parametrize("torch_has_runtime", [False, True])
 def test_the_cuda_runtime_zip_follows_the_current_torch(managed, monkeypatch, torch_has_runtime):
     monkeypatch.setattr(aupd.platform, "system", lambda: "Windows")

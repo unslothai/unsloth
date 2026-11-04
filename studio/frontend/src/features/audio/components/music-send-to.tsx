@@ -2,10 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
-import {
-  PencilEdit02Icon,
-  TimeQuarterPassIcon,
-} from "@hugeicons/core-free-icons";
+import { Edit03Icon, TimeQuarterPassIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { AudioGalleryClip } from "../api";
 import { type SendAction, sendActionsFor } from "../music/music-edit-rules";
@@ -20,7 +17,7 @@ const SEND_LABEL: Record<SendAction, string> = {
 };
 
 const SEND_ICON = {
-  edit: PencilEdit02Icon,
+  edit: Edit03Icon,
   extend: TimeQuarterPassIcon,
 } as const;
 

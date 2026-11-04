@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Download a FastFlowLM model's files with resume, into the folder FastFlowLM reads.
-
-FastFlowLM's own pull cannot resume. It writes each file straight to its final name, starts a
-failed file over from zero (three tries), must finish each file within an hour, and takes a file a
-killed pull left half-written as complete. Studio downloads the files here instead: each one goes
-to ``<name>.partial``, continues from there with a Range request after any interruption, and is
-renamed only once its hash matches. lemond's pull then finds every file present and only
-registers the model.
-"""
+"""Resumable FastFlowLM downloads into the folder it reads; renamed from .partial once hash matches"""
 
 from __future__ import annotations
 

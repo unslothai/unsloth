@@ -65,6 +65,7 @@ from core.inference.tool_loop_controller import (
     _WORKSPACE_READ_TOOLS,
     BROWSER_TOOL_NAMES,
     REPEATABLE_TOOL_NAMES,
+    TRUNCATED_TOOL_TURN_MESSAGE,
     ToolLoopController,
     _reruns_after_new_work,
     append_deferred_nudges,
@@ -132,6 +133,7 @@ def _is_rehearsal_prefix(
     active_tools: list[dict],
     *,
     unrestricted: bool = False,
+    _names: Optional[list] = None,
 ) -> bool:
     """Names that are not markerless-promotable stream as prose rather than being held for a call."""
     if not stripped or any(ch.isspace() for ch in stripped):
@@ -142,11 +144,11 @@ def _is_rehearsal_prefix(
         name, bracket, _ = stripped.partition("[")
         # Until '[' lands the name is open: terminal may yet become terminal_logs.
         return not bracket or _markerless_promotable(name, None)
-    for name in _active_tool_names(active_tools):
+    for name in _active_tool_names(active_tools) if _names is None else _names:
         # Shared gate, not the built-in three: refuses mcp__* names too, and holding a suffix hides text.
-        if not _markerless_promotable(name, None):
-            continue
-        if stripped == name or f"{name}[ARGS]".startswith(stripped):
+        if (stripped == name or f"{name}[ARGS]".startswith(stripped)) and _markerless_promotable(
+            name, None
+        ):
             return True
     return False
 
@@ -158,21 +160,30 @@ def _held_rehearsal_tail_len(
     unrestricted: bool = False,
 ) -> int:
     """Length of a trailing bare tool-name token held while streaming so the name does not leak; also call:NAME{ prefixes, seen only once the brace arrives."""
+    names = None if unrestricted else _active_tool_names(active_tools)
+    # Restricted mode: same NAME[ARGS] bound as llama_cpp._held_rehearsal_tail_len.
+    limit = (
+        len(text)
+        if unrestricted
+        else max(
+            (len(name) for name in names if isinstance(name, str)),
+            default = 0,
+        )
+        + len("[ARGS]")
+    )
     i = len(text)
-    while i > 0 and not text[i - 1].isspace():
+    stop = max(0, i - limit - 1)
+    while i > stop and not text[i - 1].isspace():
         i -= 1
     tail = text[i:]
     held = (
         len(tail)
-        if tail and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted)
+        if tail
+        and len(tail) <= limit
+        and _is_rehearsal_prefix(tail, active_tools, unrestricted = unrestricted, _names = names)
         else 0
     )
-    return max(
-        held,
-        held_bare_gemma_tail_len(
-            text, lambda: None if unrestricted else _active_tool_names(active_tools)
-        ),
-    )
+    return max(held, held_bare_gemma_tail_len(text, lambda: names))
 
 
 def _rehearsal_name_start(
@@ -619,6 +630,9 @@ def run_safetensors_tool_loop(
     permission_mode, bypass_permissions = normalize_tool_permissions(
         permission_mode, bypass_permissions
     )
+    from state.tool_approvals import LiveToolPermissions, bind_permission_upgrade
+
+    live_permissions = LiveToolPermissions(session_id, cancel_event)
     sandbox_level = normalize_sandbox_level(sandbox_level)
     stream_tool_execution = account_tool_stream(stream_tool_execution)
     from core.inference.skill_mentions import load_mentioned_skills
@@ -631,6 +645,7 @@ def run_safetensors_tool_loop(
         confirm_tool_calls = confirm_tool_calls,
         session_id = session_id,
         cancel_event = cancel_event,
+        permission_upgrade = live_permissions,
         context_length = context_length,
         continue_final_message = continue_final_message,
         # The downstream tokenizer owns fitting; only system context is guaranteed.
@@ -1274,6 +1289,31 @@ def run_safetensors_tool_loop(
             # Strip a leading bare-JSON call from kept content, since _strip_tool_markup_final only knows XML.
             content_text = strip_leading_bare_json_call(content_text, _enabled_tool_names)
 
+        # Transformers/MLX report the finished turn here; never run a healed, token-cut call.
+        turn_stats = (generation_stats_holder or {}).get("stats") or {}
+        if tool_calls and (
+            turn_stats.get("truncated")
+            or turn_stats.get("finish_reason") in ("length", "content_filter")
+        ):
+            if provisional_render_html_started and not provisional_resolved:
+                provisional_resolved = True
+                yield {
+                    "type": "tool_end",
+                    "tool_name": "render_html",
+                    "tool_call_id": provisional_render_html_id,
+                    "result": TRUNCATED_TOOL_TURN_MESSAGE,
+                    "provenance": _tool_event_provenance(provisional = True),
+                }
+            # Empty status resets the route cursor; send only text not already streamed.
+            display = _strip_streaming_display(cumulative_display)
+            notice = display[len(last_emitted) :] + ("\n\n" if display else "")
+            yield {"type": "status", "text": ""}
+            yield {
+                "type": "content",
+                "text": notice + TRUNCATED_TOOL_TURN_MESSAGE,
+            }
+            return
+
         if final_attempt_done:
             if content_text:
                 yield {"type": "content", "text": content_text}
@@ -1402,6 +1442,9 @@ def run_safetensors_tool_loop(
             # Bypass wins here too, so a direct internal caller with both flags
             # never prompts. "auto" pauses only high-risk calls; "off" pauses only a
             # high-risk python/terminal call without OS isolation.
+            permission_mode, bypass_permissions = live_permissions.apply(
+                permission_mode, bypass_permissions
+            )
             needs_confirm = needs_tool_confirmation(
                 confirm_tool_calls = bool(confirm_tool_calls),
                 bypass_permissions = bypass_permissions,
@@ -1424,6 +1467,7 @@ def run_safetensors_tool_loop(
             )
             approval_id = new_approval_id() if needs_confirm else ""
             decision_slot = begin_tool_decision(session_id, approval_id) if needs_confirm else None
+            bind_permission_upgrade(decision_slot, live_permissions, eligible = image_share is None)
             if needs_confirm:
                 note_host_access(approval_id, decision.tool_name, decision.arguments)
             start_event = decision.tool_start_event()
@@ -1455,6 +1499,11 @@ def run_safetensors_tool_loop(
                 )
                 # Read before decision_slot is dropped in the deny branch below.
                 _decision_reason = decision_reason(decision_slot)
+                permission_mode, bypass_permissions = live_permissions.apply(
+                    permission_mode, bypass_permissions
+                )
+                if bypass_permissions:
+                    strict_isolation = False
                 if _decision is not None and _decision != "deny":
                     yield decision.tool_approved_event(approval_id)
                     yield {"type": "status", "text": decision.status_text}
@@ -1626,7 +1675,7 @@ def run_safetensors_tool_loop(
         # The turn that ends the loop offers no tools again, so do not ask for a retry there.
         over_cap_final = bool(over_cap) and (
             tool_controller.force_final_answer
-            or (not unrestricted_tools and not tool_controller.active_tools())
+            or (not unrestricted_tools and not tool_controller.has_active_tools())
             or (_turn_executed_real_tool and _executed_tool_iters + 1 >= max_tool_iterations)
         )
         if over_cap:
@@ -1672,7 +1721,7 @@ def run_safetensors_tool_loop(
         if tool_controller.force_final_answer:
             final_attempt_done = True
             continue
-        if not unrestricted_tools and not tool_controller.active_tools():
+        if not unrestricted_tools and not tool_controller.has_active_tools():
             final_attempt_done = True
             continue
         # Only real tool turns count against the cap, so a no-op correction turn is free (GGUF parity).

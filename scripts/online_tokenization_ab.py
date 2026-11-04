@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Eager vs online preparation, measured through Unsloth's real training path.
-
-Drives ``UnslothTrainer.load_model`` -> ``prepare_model_for_training`` ->
-``load_and_format_dataset`` -> ``start_training``, so the integrated gating is
-what gets measured. The arms differ only by ``UNSLOTH_STUDIO_ONLINE_TOKENIZATION``:
-
-    python scripts/online_tokenization_ab.py --arm eager  --dataset <split> --out ab_eager.json
-    python scripts/online_tokenization_ab.py --arm online --dataset <split> --out ab_online.json
-
-Same seed, rows and order, so per-step losses must match; a mismatch means the
-lazy transform is not producing the rows the eager map produced.
-"""
+"""A/B eager vs online tokenization (UNSLOTH_STUDIO_ONLINE_TOKENIZATION); per-step losses must match."""
 
 from __future__ import annotations
 

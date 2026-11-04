@@ -4,7 +4,7 @@
 import { DeleteConfirmDialog } from "@/features/hub";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactNode, useCallback, useState } from "react";
 
@@ -69,7 +69,7 @@ export function ModelDeleteAction({
         )}
       >
         <HugeiconsIcon
-          icon={Delete02Icon}
+          icon={TrashIcon}
           strokeWidth={1.75}
           className={cn("size-3.5", iconClassName)}
         />

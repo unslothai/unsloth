@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Unsloth-owned tool execution loop for the ChatGPT Codex subscription transport.
-
-The loop itself now lives in ``core.inference.studio_tool_loop`` and is shared
-with every other external provider. What stays here is the Codex transport: the
-app-server call signature, its conversation-affinity ids, and the encrypted
-reasoning replay that only this provider emits.
-"""
+"""Codex transport only; the shared tool loop lives in core.inference.studio_tool_loop."""
 
 from __future__ import annotations
 

@@ -103,6 +103,8 @@ jobs:
           - arm: null-control
             label: Merge base vs itself, the null
     env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
       PORT_A: '18904'
       PORT_B: '18905'
       HOME_A: ${{ github.workspace }}/.parity/home_a
@@ -119,7 +121,7 @@ jobs:
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 
@@ -371,6 +373,9 @@ jobs:
     name: Parity verdict, scored against the null
     needs: arms
     runs-on: ubuntu-latest
+    env:
+      # A release published mid-run puts an update card over the controls the scripts click.
+      UNSLOTH_DISABLE_UPDATE_CHECK: '1'
     permissions:
       contents: read
       pull-requests: read  # the PR's labels as they are now; see "Read the PR's labels"
@@ -380,7 +385,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
         with:
           python-version: '3.12'
 

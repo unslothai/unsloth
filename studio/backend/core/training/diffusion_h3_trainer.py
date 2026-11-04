@@ -78,6 +78,7 @@ from core.training.diffusion_train_common import (
     _apply_perf_flags,
     _assert_trusted_base_model,
     _emit,
+    training_fetch_repo,
     _latent_cache_forced,
     _latent_cache_over_budget,
     _restore_perf_flags,
@@ -437,7 +438,9 @@ def run_h3_lora_training(
         cfg.data_dir, instance_prompt = cfg.instance_prompt, caption_column = cfg.caption_column
     )
     cfg = replace(cfg, train_steps = resolve_train_steps(cfg, len(pairs)), num_epochs = 0)
-    _emit(on_event, "model_load_started", num_images = len(pairs))
+    _emit(
+        on_event, "model_load_started", num_images = len(pairs), fetch_repo = training_fetch_repo(cfg)
+    )
     if _check_stop():
         out_dir = Path(cfg.output_dir).expanduser()
         _emit(
@@ -553,6 +556,7 @@ def _train_h3(cfg, pairs, rng, device, weight_dtype, on_event, _check_stop, _sav
             "through one set of linears, so the activation range is not the per-family range "
             "the fp8 filter was measured against. Use nf4, int8 or bf16."
         )
+    _emit(on_event, "model_load_started", fetch_repo = training_fetch_repo(cfg))
     transformer = _load_transformer(cfg, device, base_precision)
     transformer.requires_grad_(False)
     # DEFAULT_LORA_TARGETS here means "unset", so the family's own regex wins.

@@ -196,6 +196,7 @@ def saving(monkeypatch, tmp_path):
         "_refuse_unsaveable_text_core",
         "_cast_state_dict_16bit",
         "_requests_float32",
+        "_collect_garbage",
     }
     nodes = []
     for node in tree.body:

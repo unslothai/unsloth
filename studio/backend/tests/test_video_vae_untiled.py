@@ -200,3 +200,82 @@ def test_free_bytes_does_not_count_graph_held_cache(monkeypatch):
     monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda device, total: 0)
     monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda device = None: 500 * 2**20)
     assert U._free_bytes(torch.device("cuda", 0)) == 1100 * 2**20
+
+
+class CpuOffload:
+    def __init__(
+        self,
+        prev_model,
+        vae,
+        fail = False,
+    ):
+        self.prev_module_hook = types.SimpleNamespace(model = prev_model)
+        self.vae = vae
+        self.fail = fail
+        self.calls = 0
+
+    def pre_forward(self, module, *args, **kwargs):
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("hook")
+        self.prev_module_hook.model.to_empty(device = "cpu")
+        return args, kwargs
+
+
+class HookedVAE(FakeVAE):
+    def parameters(self):
+        return self.decoder.parameters()
+
+    def decode(
+        self,
+        z,
+        return_dict = False,
+    ):
+        self._hf_hook.pre_forward(self)
+        return super().decode(z, return_dict = return_dict)
+
+
+def _offloaded_pipe(fail = False):
+    denoiser = torch.nn.Linear(4, 4, device = "meta")  # "on the card": any non-host device
+    vae = HookedVAE()
+    vae._hf_hook = CpuOffload(denoiser, vae, fail = fail)
+    need = U.untiled_decode_bytes(WAN, tuple(Z.shape))
+    big = int(need * U._MARGIN + U._MARGIN_BYTES) + 2**30
+
+    def free(device):
+        resident = next(denoiser.parameters()).device.type != "cpu"
+        return big - 8 * 2**30 if resident else big
+
+    return vae, denoiser, free
+
+
+def test_fit_check_reads_free_memory_after_the_denoiser_offload(monkeypatch):
+    vae, denoiser, free = _offloaded_pipe()
+    monkeypatch.setattr(U, "_free_bytes", free)
+    assert U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("untiled",)
+    assert next(denoiser.parameters()).device.type == "cpu"
+    # once here, then the decode's own hook call (which finds everything in place)
+    assert vae._hf_hook.calls == 2
+    assert vae.calls == [False]
+
+
+def test_fit_check_offload_kill_switch_reads_before_the_hook(monkeypatch):
+    monkeypatch.setenv(U.FREE_AFTER_OFFLOAD_ENV, "0")
+    vae, _denoiser, free = _offloaded_pipe()
+    monkeypatch.setattr(U, "_free_bytes", free)
+    assert U.install_untiled_decode(_pipe(vae), WAN)
+    assert vae.decode(Z) == ("tiled",)
+    assert vae._hf_hook.calls == 1
+
+
+def test_fit_check_skips_the_hook_once_offloaded_and_survives_a_failing_hook(monkeypatch):
+    vae, denoiser, free = _offloaded_pipe()
+    denoiser.to_empty(device = "cpu")
+    vae.decoder = vae.decoder.to("meta")  # the VAE already on the card
+    assert U.run_offload_hook_first(vae) is False
+    assert vae._hf_hook.calls == 0
+    failing, _d, free = _offloaded_pipe(fail = True)
+    assert U.run_offload_hook_first(failing) is False
+    plain = FakeVAE()
+    assert U.run_offload_hook_first(plain) is False

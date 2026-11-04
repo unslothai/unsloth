@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Standalone speech-to-text (STT) sidecar for dictation.
-
-Loads a Whisper model (via Transformers) in a spawn child of its own, separate from the chat model's
-inference subprocess, so dictation works with any chat model without evicting it. Curated defaults
-plus any Transformers-compatible Whisper repo; weights come through Unsloth's Model Hub and stay
-warm briefly between dictations. CUDA runs float16; MPS and CPU run float32.
-
-Everything except the model itself stays here: device choice, the Hub cache, audio decoding,
-windowing and the idle timer. Only the load and the generate happen in
-core/inference/stt_transformers_worker.py, because an accelerator context is never returned while
-the process holding it lives and the backend must not be the process that takes one.
-"""
+"""Whisper dictation sidecar; load and generate run in stt_transformers_worker.py in a spawn child."""
 
 from __future__ import annotations
 
@@ -1471,14 +1460,14 @@ class WhisperSttSidecar:
     ):
         """An explicit device differing from the resident one reloads the model; None keeps what is
         resident."""
-        from core.inference.audio_device import audio_device_default, normalize_audio_device
+        from core.inference.audio_device import normalize_audio_device, stt_device_default
 
         if request_cancel_event is not None and request_cancel_event.is_set():
             raise SttTranscriptionCancelledError("Transcription cancelled.")
         model_id = resolve_model_id(model)
         # None means no opinion, not auto: do not move a model another surface placed.
         requested = None if device is None else normalize_audio_device(device)
-        preference = audio_device_default() if requested is None else requested
+        preference = stt_device_default() if requested is None else requested
         with self._lock:
             if request_cancel_event is not None and request_cancel_event.is_set():
                 raise SttTranscriptionCancelledError("Transcription cancelled.")

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { type DocumentAnnotations, onChatThreadsDeleted, useChatRuntimeStore } from "@/features/chat";
+import type { DocumentAnnotations } from "@/features/chat/utils/document-annotations";
+import { onChatThreadsDeleted } from "@/features/chat/utils/chat-thread-tombstones";
+import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { create } from "zustand";
 import { localOriginOf, unwrapRedirect } from "./address";
 import type { BrowserPage } from "./api";
@@ -321,7 +323,7 @@ type BrowserState = {
   /** A new chat got its id on its first save: its tabs go with it. */
   adoptChat: (from: string, to: string) => void;
   /** A web tab for `chat`, in front only when that chat is on screen (`background`: behind its front tab); its id. */
-  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean }) => string | null;
+  openTabIn: (chat: string, url: string, options?: { from?: string; background?: boolean; temporary?: boolean }) => string | null;
   forgetChat: (chat: string) => void;
   /** `tabId` in front of `chat`'s open panel: now if it is on screen, else when it comes back. */
   revealIn: (chat: string, tabId: string) => void;
@@ -364,6 +366,7 @@ type BrowserState = {
     options?: { newTab?: boolean; background?: boolean; method?: "GET" | "POST"; body?: string; from?: string },
   ) => void;
   openFile: (input: OpenFileInput) => void;
+  editFile: (tabId: string, blob: Blob) => void;
   navigate: (
     tabId: string,
     request: { url: string; method?: "GET" | "POST"; body?: string; from?: string; temporary?: boolean },
@@ -572,7 +575,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     },
     openTabIn: (chat, url, options) => {
       if (!isWeb(url)) return null;
-      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from));
+      const tab = createTab(webEntry(unwrapRedirect(url), undefined, undefined, options?.from, options?.temporary));
       openTab(tab, options?.background, undefined, chat);
       return tab.id;
     },
@@ -727,6 +730,16 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       const tab = createTab(entry, openKey);
       openTab(tab);
       if (page) get().setFileView(tab.id, { pageTarget: { page } });
+    },
+    editFile: (tabId, blob) => {
+      const tab = get().tabs.find((candidate) => candidate.id === tabId);
+      const shown = tab && currentEntry(tab);
+      if (shown?.kind !== "file") return;
+      const fileId = newId("file");
+      files.set(fileId, blob);
+      // No openKey: a reopen from chat would replace the edit in place.
+      const { openKey: _, ...rest } = shown;
+      set((state) => ({ tabs: patchTab(state.tabs, tabId, (current) => pushEntry(current, { ...rest, fileId })) }));
     },
     navigate: (tabId, request, options) => {
       if (!isWeb(request.url)) return;

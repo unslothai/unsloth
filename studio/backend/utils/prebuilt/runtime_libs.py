@@ -1,13 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""CUDA runtime dirs the loader does not find on its own (Python wheels, privately vendored dirs).
-
-Kept in sync with install_llama_prebuilt.py's python_runtime_dirs and
-prebuilt_core.py's linux_runtime_dirs_for_required_libraries; the backend cannot
-import the studio/ installer scripts, so this small copy stays importable with
-only the backend root on sys.path.
-"""
+"""CUDA runtime dirs the loader misses; synced with install_llama_prebuilt.py and prebuilt_core.py;
+must stay importable with only the backend root on sys.path."""
 
 from __future__ import annotations
 

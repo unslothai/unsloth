@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import glob
 import functools
 import json
@@ -26,6 +27,7 @@ __all__ = [
     "MLX_KV_BLOCK",
     "MLX_PREFILL_CHUNK",
     "MlxMemoryBreakdown",
+    "MlxTurboQuant",
     "mlx_fit_context",
     "mlx_fit_outcome",
     "mlx_memory_breakdown",
@@ -51,15 +53,23 @@ _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
 _RECURRENT_DTYPE_SIZE = 4
 
-_QUANT_SCORE_DTYPE_SIZE = 4
-
-_QUANT_SCORE_LIVE = 1.0
+# Score copies an unfused call holds; Metal measured 1.01-1.13 (mlx 0.32.4), NAX d512 tails 1.32 (in the fixed charge).
+_SCORE_LIVE = 1.13
+# A TurboQuant prefill holds the whole cache dequantized to float32 and cast to the query dtype; measured.
+_TURBOQUANT_DEQUANT_BYTES = 10
 
 _WIDTH_NAMES = {"float64": "f64", "float32": "f32", "bfloat16": "bf16", "float16": "f16"}
 
 _CACHE_BOUND_ATTRS = ("max_size", "chunk_size")
 
 _MAX_SAFETENSORS_HEADER = 100_000_000
+
+
+@dataclass(frozen = True)
+class MlxTurboQuant:
+    """A TurboQuant cache of ``bits`` per element, passed where an ``mx.quantize`` width goes."""
+
+    bits: float
 
 
 @dataclass
@@ -200,12 +210,20 @@ def _checkpoint_tensors(model_dir: str, config: Optional[dict], dtype):
 def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
     """Parameter bytes the load leaves resident, at the width it holds them."""
     import contextlib
+    import inspect
     import io
 
     from mlx.utils import tree_flatten
     from unsloth_zoo.mlx.loader import (
         _apply_mlx_quantization,
         _resolve_mlx_quantization_spec,
+    )
+
+    # Chat loads quantize embeddings with the rest; an older unsloth_zoo keeps them full width.
+    embeddings = (
+        {"quantize_embeddings": True}
+        if "quantize_embeddings" in inspect.signature(_resolve_mlx_quantization_spec).parameters
+        else {}
     )
 
     spec = (
@@ -227,6 +245,7 @@ def _resident_bytes(model_dir: str, config: dict, quantize: bool) -> int:
             quant_predicate = None,
             quantize_modules = None,
             force_requantize = False,
+            **embeddings,
         )
     )
     if quantize and not spec.enabled:
@@ -455,6 +474,8 @@ def _whole_model(config: dict, dtype):
         raise ValueError("this checkpoint carries its own model module")
     if _builds_on_mlx_vlm(config):
         from mlx_vlm.utils import get_model_and_args
+
+        _install_oq_renames(config)
         arch = get_model_and_args(config)[0]
         model = arch.Model(_loader_config(arch, config))
     else:
@@ -522,10 +543,29 @@ def _probe_models(config: dict, dtype):
     yield prepared(_whole_tower), make_prompt_cache, getattr(arch, "Model", None)
 
 
-def _quantize_like_runtime(cache, kv_bits: Optional[int]):
+def _turboquant_like_runtime(cache, bits: float):
+    from mlx_vlm.generate.common import maybe_quantize_kv_cache
+    from mlx_vlm.turboquant import TurboQuantKVCache
+
+    # mlx-vlm converts in place, CacheLists included, and the probe still reads the full-width cache.
+    converted = [copy.copy(entry) for entry in cache]
+    maybe_quantize_kv_cache(converted, 0, _KV_GROUP_SIZE, bits, kv_quant_scheme = "turboquant")
+    return [
+        new if any(isinstance(leaf, TurboQuantKVCache) for leaf in _sub_caches(new)) else old
+        for new, old in zip(converted, cache)
+    ]
+
+
+def _quantize_like_runtime(cache, kv_bits):
     """The converted cache a load ends up with, or None if nothing in it converts."""
     if not kv_bits:
         return None
+    if isinstance(kv_bits, MlxTurboQuant):
+        try:
+            converted = _turboquant_like_runtime(cache, kv_bits.bits)
+        except Exception:
+            return None
+        return converted if any(new is not old for new, old in zip(converted, cache)) else None
     from core.inference.mlx_inference import _quantize_kv_entries
 
     try:
@@ -562,17 +602,13 @@ def _entry_bytes(entry) -> int:
     # mlx-lm 0.32's KV `state` is the whole preallocated buffer; `keys_and_values` is the held part.
     held = getattr(entry, "keys_and_values", None)
     state = held() if callable(held) and getattr(entry, "keys", None) is not None else entry.state
-    if isinstance(state, mx.array):
-        state = (state,)
-    elif not isinstance(state, (list, tuple)):
-        return 0
-    total = 0
-    for item in state:
+
+    def nbytes(item) -> int:
         if isinstance(item, mx.array):
-            total += item.size * item.dtype.size
-        elif isinstance(item, (list, tuple)):
-            total += sum(sub.size * sub.dtype.size for sub in item if isinstance(sub, mx.array))
-    return total
+            return item.size * item.dtype.size
+        return sum(nbytes(sub) for sub in item) if isinstance(item, (list, tuple)) else 0
+
+    return nbytes(state)
 
 
 def _width_name(dtype) -> str:
@@ -589,7 +625,10 @@ def _cache_width_name(
         if slot["slope"] <= 0:
             continue
         quantized = converted and slot["converts"]
-        name = f"{kv_bits}-bit" if quantized else full_width
+        name = full_width
+        if quantized:
+            turboquant = isinstance(kv_bits, MlxTurboQuant)
+            name = f"TurboQuant {kv_bits.bits:g}-bit" if turboquant else f"{kv_bits}-bit"
         const, slope = ("quant_const", "quant_slope") if quantized else ("const", "slope")
         charged[name] = (
             charged.get(name, 0.0)
@@ -719,6 +758,23 @@ def weightless_forward():
         _DEFERRED_EVAL.depth -= 1
 
 
+def _turboquant_runs(model, make_prompt_cache, kv_bits) -> bool:
+    # The load keeps TurboQuant only after two decode steps over a converted cache succeed.
+    import mlx.core as mx
+
+    if not isinstance(kv_bits, MlxTurboQuant):
+        return True
+    try:
+        trial = _quantize_like_runtime(make_prompt_cache(model), kv_bits)
+        if trial is not None:
+            for _ in range(2):
+                model(mx.zeros((1, 1), dtype = mx.int32), cache = trial)
+    except Exception as exc:
+        logger.debug("MLX estimate prices a refused TurboQuant cache at full width: %s", exc)
+        return False
+    return True
+
+
 def _probe(config: dict, dtype, n_tokens: int, kv_bits):
     import mlx.core as mx
 
@@ -743,6 +799,8 @@ def _probe(config: dict, dtype, n_tokens: int, kv_bits):
         if cache is None:
             raise failure
         quantized = _quantize_like_runtime(cache, kv_bits)
+        if quantized is not None and not _turboquant_runs(model, make_prompt_cache, kv_bits):
+            quantized = None
     entries = _entries(cache, quantized)
     if quantized is not None:
         converted = [leaf for entry in quantized for leaf in _sub_caches(entry)]
@@ -933,27 +991,27 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
     try:
         import mlx.core as mx
 
-        from unsloth_zoo.mlx.attention import (
-            _row_bytes,
-            dequantizing_is_smaller,
-            fused_kernel_exists,
-        )
+        from unsloth_zoo.mlx.attention import _row_bytes, dequantizing_is_smaller
     except Exception as exc:
         logger.debug("MLX estimate cannot reach the quantized-attention wrapper: %s", exc)
         return None
+    if _zoo_route() is None:
+        return None
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
+        # Long context: chunks never fuse over fewer keys than queries, and forced routes start at a key count (#15935).
+        cached = max(prefill_chunk + 1, 1 << 16)
 
         def rows(width):
             return mx.quantize(
-                mx.zeros((1, kv_heads, 1, width), dtype = dtype),
+                mx.zeros((1, kv_heads, cached, width), dtype = dtype),
                 group_size = kv_group_size,
                 bits = kv_bits,
             )
 
         keys, values = rows(head_dim), rows(value_dim or head_dim)
         queries = mx.zeros((1, heads, prefill_chunk, head_dim), dtype = dtype)
-        if not fused_kernel_exists(queries, keys, values, kv_group_size, "causal"):
+        if not _zoo_route()(queries, keys, values, kv_group_size, "causal"):
             return None
         if not dequantizing_is_smaller(queries, keys, values, kv_group_size):
             return None
@@ -981,14 +1039,142 @@ def _compute_bytes(
     attention_width = (hidden + intermediate) * dtype_size * _ATTENTION_LIVE
     recurrent_width = sum(int(entry["conv_width"]) for entry in plan) * _RECURRENT_DTYPE_SIZE
     total = _COMPUTE_BASE_BYTES + prefill_chunk * (attention_width + recurrent_width)
-    if quant_boundary is not None:
-        score = heads * _QUANT_SCORE_DTYPE_SIZE * _QUANT_SCORE_LIVE
+    if quant_boundary is not None and isinstance(kv_bits, MlxTurboQuant):
+        # mlx-vlm decodes on its own kernel, and prefills attending over a dequantized cache.
+        kv_heads, head_dim, value_dim = widths[3:]
+        copy_row = kv_heads * (head_dim + (value_dim or head_dim)) * _TURBOQUANT_DEQUANT_BYTES
+        score = heads * dtype_size * _SCORE_LIVE
+        cells = _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk)
+        copy_row += _padding_row_bytes(widths, dtype_size, n_ctx)
+        total += copy_row * max(n_ctx - 1, 0) + cells * score
+    elif quant_boundary is not None:
+        score = heads * dtype_size * _SCORE_LIVE
         row = _dequantized_row_bytes(widths, dtype_size, kv_bits, kv_group_size, prefill_chunk)
         if row is None:
             total += _widest_quantized_scores(n_ctx, quant_boundary, prefill_chunk) * score
         else:
-            total += max(row * n_ctx, (n_ctx + 1) * score)
+            cells = max(n_ctx + 1, _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk))
+            total += max(
+                (row + _padding_row_bytes(widths, dtype_size, n_ctx)) * n_ctx, cells * score
+            )
+    elif not any(entry.get("bound_spec") for entry in plan):
+        # Windowed models are skipped: the config's head_dim need not be the full-context layers' width.
+        score = heads * dtype_size * _SCORE_LIVE
+        cells = _widest_unfused_scores(widths, dtype_size, n_ctx, prefill_chunk)
+        total += max(cells * score, _padding_row_bytes(widths, dtype_size, n_ctx) * n_ctx)
     return int(total)
+
+
+def _widest_unfused_scores(widths, dtype_size: int, n_ctx: int, prefill_chunk: int) -> int:
+    """Query x key cells of the widest call mlx leaves unfused over every prompt the context admits."""
+    heads, kv_heads, head_dim = (*widths[2:], 0, 0, 0)[:3]
+    route = _zoo_route() if heads and kv_heads and head_dim else None
+    if route is None:
+        return 0
+    widths, chunk = tuple(widths), prefill_chunk
+
+    def unfused(queries, keys):
+        return not _attention_fuses(route, widths, dtype_size, queries, keys)
+
+    def longest_tail(whole, limit):
+        # The tail of a prompt holding no whole chunk is its first call, so it is square.
+        short, first_fused = _unfused_tails(route, widths, dtype_size, whole * chunk)
+        if limit > 8 and first_fused > 9:
+            return min(limit, first_fused - 1)
+        return max((r for r in short if r <= limit), default = 0)
+
+    whole, rest = divmod(max(n_ctx - 1, 0), chunk)
+    cells = [n_ctx + 1 if unfused(1, 2) or unfused(1, n_ctx + 1) else 0]
+    if whole and unfused(chunk, chunk):
+        cells.append(chunk * chunk)
+
+    # A forced route starts at a key count, so calls stop being unfused somewhere short of the context.
+    if whole >= 2 and unfused(chunk, 2 * chunk):
+        lo, hi = 2, whole + 1
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            lo, hi = (mid, hi) if unfused(chunk, mid * chunk) else (lo, mid)
+        cells.append(chunk * lo * chunk)
+    r = longest_tail(whole, rest)
+    cells.append(r * (whole * chunk + r))
+    if whole:
+        far = longest_tail(whole - 1, chunk - 1)
+        cells.append(far * ((whole - 1) * chunk + far))
+        # The widest tail below the floor can be any of them: it shrinks as it nears the floor.
+        for held in range(whole - 1):
+            r = longest_tail(held, chunk - 1)
+            if r <= far:
+                break
+            cells.append(r * (held * chunk + r))
+    return max(cells)
+
+
+# Past any context: a shape still unfused here never fuses.
+_TAIL_MAX = 1 << 24
+
+
+@functools.lru_cache(maxsize = 64)
+def _unfused_tails(route, widths, dtype_size: int, later: int):
+    """Unfused tails of up to 8 queries, and the first longer one that fuses.
+
+    Past 8 queries mlx's kernels only switch on as queries grow, so one boundary splits the two."""
+
+    def unfused(r):
+        return not _attention_fuses(route, widths, dtype_size, r, r + later)
+
+    short = tuple(r for r in range(1, 9) if unfused(r))
+    lo, hi = 8, 9
+    while hi < _TAIL_MAX and unfused(hi):
+        lo, hi = hi, min(hi * 2, _TAIL_MAX)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        lo, hi = (mid, hi) if unfused(mid) else (lo, mid)
+    return short, hi
+
+
+def _padding_row_bytes(widths, dtype_size: int, n_ctx: int) -> int:
+    """Bytes per cached token of the padded K and V a forced route holds; 0 on a zoo without one."""
+    _heads, kv_heads, head_dim, value_dim = (*widths[2:], 0, 0, 0, 0)[:4]
+    try:
+        from unsloth_zoo.mlx.attention import forced_padding_row_bytes
+    except Exception:
+        return 0
+    return forced_padding_row_bytes(head_dim, value_dim or head_dim, kv_heads, dtype_size, n_ctx)
+
+
+def _zoo_route():
+    try:
+        import mlx.core  # noqa: F401
+
+        from unsloth_zoo.mlx.attention import fused_kernel_exists
+    except Exception:
+        return None
+    try:
+        from unsloth_zoo.mlx.attention import runtime_fuses
+    except ImportError:
+        # An older zoo leaves head_dim 256 prefill on mlx's own dispatch.
+        return fused_kernel_exists
+    return runtime_fuses
+
+
+def _attention_fuses(route, widths, dtype_size: int, queries: int, keys: int) -> bool:
+    """Whether mlx fuses a full-width causal call; elsewhere it materializes the scores."""
+    import mlx.core as mx
+
+    _heads, kv_heads, head_dim, value_dim = (*widths[2:], 0, 0, 0, 0)[:4]
+    try:
+        dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
+
+        # zoo reads only shapes and dtypes; a group of one makes the scales the cache's width.
+        def cache(width):
+            scales = mx.zeros((1, kv_heads, keys, width), dtype = dtype)
+            return scales, scales, scales
+
+        q = mx.zeros((1, widths[2], queries, head_dim), dtype = dtype)
+        return bool(route(q, cache(head_dim), cache(value_dim or head_dim), 1, "causal"))
+    except Exception as exc:
+        logger.debug("MLX estimate cannot route the attention: %s", exc)
+        return True
 
 
 def _load_is_refused(model_dir: str, config: dict, load_in_4bit: bool) -> Optional[str]:
@@ -1149,9 +1335,46 @@ def _lazy_checkpoint(model_dir: str, config: dict):
     with weightless_forward():
         if _builds_on_mlx_vlm(config):
             from mlx_vlm.utils import load_model
-            return load_model(Path(model_dir), lazy = True, strict = False)
+
+            _install_oq_renames(config)
+            view, owner = _loader_view(model_dir, config)
+            if owner is None:
+                return load_model(Path(view), lazy = True, strict = False)
+            model = owner.call(load_model, Path(view), lazy = True, strict = False)
+            owner.transfer_to(model)
+            return model
         from mlx_lm.utils import load_model
         return load_model(Path(model_dir), lazy = True, strict = False)[0]
+
+
+def _loader_view(model_dir: str, config: dict) -> tuple:
+    """``(path, owner)``: unsloth_zoo's config view of ``model_dir`` (owner None without unsloth_zoo)."""
+    import io
+
+    try:
+        from unsloth_zoo.mlx.loader import (
+            _MLXVLMConfigViewOwner,
+            _materialize_mlx_vlm_config_override,
+        )
+    except Exception:
+        return model_dir, None
+    with contextlib.redirect_stdout(io.StringIO()):
+        view, _ = _materialize_mlx_vlm_config_override(model_dir, config)
+    return view, _MLXVLMConfigViewOwner(view, model_dir)
+
+
+def _install_oq_renames(config: dict) -> None:
+    """unsloth_zoo's sanitize renames for oQ quants, as its load installs them."""
+    try:
+        from unsloth_zoo.mlx import loader
+    except Exception:
+        return
+    # Older unsloth_zoo installs its one oQ layout (DeepSeek-V4.1) by that name.
+    install = getattr(loader, "_ensure_omlx_layout", None) or getattr(
+        loader, "_ensure_deepseek_v41_omlx_layout", None
+    )
+    if install is not None:
+        install(config.get("model_type"))
 
 
 @functools.lru_cache(maxsize = 4)
@@ -1443,9 +1666,7 @@ def mlx_fit_outcome(
     sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
     if sizing is None:
         return "unsizable", None
-    if any(sizing.offload):
-        least, share = mlx_offload_planner().SAFETY_MARGIN
-        budget_bytes = min(budget_bytes - least, budget_bytes / (1 + share))
+    budget_bytes = _fit_budget(sizing, budget_bytes)
     ceiling = max(int(max_ctx or 0), MLX_KV_BLOCK)
     at_ceiling = _priced_at(sizing, ceiling)
     if at_ceiling is None:
@@ -1467,6 +1688,33 @@ def mlx_fit_outcome(
     return ("no_fit", None) if best is None else ("fitted", (best // MLX_KV_BLOCK) * MLX_KV_BLOCK)
 
 
+def _fit_budget(sizing: _MlxSizing, budget_bytes: int) -> float:
+    if not any(sizing.offload):
+        return budget_bytes
+    least, share = mlx_offload_planner().SAFETY_MARGIN
+    return min(budget_bytes - least, budget_bytes / (1 + share))
+
+
+def mlx_headroom(
+    model_dir: str,
+    *,
+    budget_bytes: int,
+    n_ctx: int,
+    kv_bits: Optional[int] = None,
+    prefill_chunk: Optional[int] = None,
+    load_in_4bit: bool = False,
+    vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
+    offload: Optional[tuple] = None,
+) -> Optional[int]:
+    """Bytes of ``budget_bytes`` a load at ``n_ctx`` leaves free (as ``mlx_fit_outcome`` prices it), None if unsized."""
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter, offload)
+    priced = None if sizing is None else _priced_at(sizing, max(int(n_ctx or 0), MLX_KV_BLOCK))
+    if priced is None:
+        return None
+    return max(int(_fit_budget(sizing, budget_bytes) - priced.total_bytes), 0)
+
+
 def mlx_offload_plan(
     model_dir: str,
     *,
@@ -1479,12 +1727,17 @@ def mlx_offload_plan(
     prefill_chunk: Optional[int] = None,
     load_in_4bit: bool = False,
     vision: Optional[bool] = None,
+    drafter: Optional[tuple] = None,
 ) -> Optional[tuple]:
     """The ``(ple, experts, prefill_step)`` unsloth_zoo's 50/50 rule takes for this load, priced
-    as Studio prices it; a knob not ``"auto"`` and a pinned ``context`` are kept. When nothing fits,
-    everything offloadable goes to disk. None when the load cannot be planned."""
+    as Studio prices it, with ``drafter`` when given; a knob not ``"auto"`` and a pinned ``context``
+    are kept. When nothing fits, everything offloadable goes to disk. None when the load cannot be planned."""
     planner = mlx_offload_planner()
-    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
+    sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision, drafter)
+    if sizing is None and drafter is not None:
+        # A drafter that cannot be sized cannot attach either: plan the target as if none was asked for.
+        drafter = None
+        sizing = _size_load(model_dir, kv_bits, prefill_chunk, load_in_4bit, vision)
     if planner is None or sizing is None:
         return None
     with _on_route(vision):
@@ -1493,7 +1746,7 @@ def mlx_offload_plan(
 
     def context_cost(tokens, step):
         if step not in sized:
-            sized[step] = _size_load(model_dir, kv_bits, step, load_in_4bit, vision)
+            sized[step] = _size_load(model_dir, kv_bits, step, load_in_4bit, vision, drafter)
         priced = sized[step] and _priced_at(sized[step], tokens)
         if priced is None:
             raise ValueError(f"cannot price {tokens} tokens")

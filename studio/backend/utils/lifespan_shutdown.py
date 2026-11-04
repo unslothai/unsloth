@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Resilient FastAPI lifespan shutdown cleanup.
-
-On an abrupt shutdown (Windows console-close, interpreter teardown racing
-uvicorn) the loop's default executor may already be dead, so an unguarded
-``asyncio.to_thread`` raise here would abort the nested-lifespan unwind and
-surface as "Application shutdown failed". Dependency-injected so it can be
-unit-tested without the heavy backend import graph.
-"""
+"""Shutdown cleanup that tolerates a dead default executor, so asyncio.to_thread cannot abort unwind."""
 
 import asyncio
 import contextvars

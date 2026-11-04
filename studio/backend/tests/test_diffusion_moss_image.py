@@ -443,7 +443,7 @@ def test_family_row_defaults_and_trust():
         and fam.transformer_class == "MOSSImageTransformer"
     )
     for repo in ("OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base", "moss-image"):
-        assert df.default_generation_params(repo) == (50, 3.0), repo
+        assert df.default_generation_params(repo) == (25, 2.5), repo
     trusted = trusted_repo_ids(df._FAMILIES)
     assert {"openmoss-team/moss-image-sft", "openmoss-team/moss-image-base"} <= trusted
 
@@ -594,3 +594,132 @@ def test_step_callback_latents_are_bchw(pipelines):
         callback_on_step_end = on_step,
     )
     assert shapes == [(1, 128, 2, 3)] * 2
+
+
+@pytest.mark.parametrize(
+    "identity, expected",
+    [
+        ("OpenMOSS-Team/MOSS-Image-SFT", ((), 1.0)),
+        ("unsloth/MOSS-Image-SFT-FP8", ((), 1.0)),
+        ("/models/my-moss-folder", ((), 1.0)),
+        (None, ((), 1.0)),
+        ("OpenMOSS-Team/MOSS-Image-Base", ((22,), 0.5)),
+        ("unsloth/MOSS-Image-Base-FP8", ((22,), 0.5)),
+        ("/hub/models--OpenMOSS-Team--MOSS-Image-Base/snapshots/abc", ((22,), 0.5)),
+        ("moss_image_base", ((22,), 0.5)),
+    ],
+)
+def test_reference_uncond_skip_per_checkpoint(moss, monkeypatch, identity, expected):
+    monkeypatch.delenv(moss.REFERENCE_SKIP_ENV, raising = False)
+    assert moss.reference_uncond_skip(identity) == expected
+
+
+@pytest.mark.parametrize(
+    "identity", ["OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"]
+)
+def test_reference_skip_kill_switch_restores_block_22_always(moss, monkeypatch, identity):
+    monkeypatch.setenv(moss.REFERENCE_SKIP_ENV, "0")
+    assert moss.reference_uncond_skip(identity) == ((22,), 1.0)
+
+
+def test_percent_to_sigma_is_the_discrete_flow_formula(moss):
+    assert moss.percent_to_sigma(0.0, 5.0) == 1.0
+    assert moss.percent_to_sigma(1.0, 5.0) == 0.0
+    assert moss.percent_to_sigma(0.5, 5.0) == pytest.approx(2.5 / 3.0)
+    assert moss.percent_to_sigma(0.5, 1.0) == pytest.approx(0.5)
+
+
+def _uncond_skips(
+    moss,
+    transformer,
+    monkeypatch,
+    steps,
+    checkpoint,
+    schedule = "sgm_uniform",
+    **kwargs,
+):
+    """Negative-branch ``skip_layers`` per step."""
+    import torch
+
+    pipe = moss.MOSSImagePipeline(transformer, moss.MOSSImageScheduler(sigma_schedule = schedule))
+    pipe.set_progress_bar_config(disable = True)
+    if checkpoint is not None:
+        pipe._unsloth_checkpoint = checkpoint
+    calls = []
+
+    def spy(latents, *args, **kw):
+        calls.append(kw.get("skip_layers"))
+        return (torch.zeros_like(latents),)
+
+    monkeypatch.setattr(transformer, "forward", spy)
+    _, embeds, _ = _inputs(lengths = (9,), seed = 3)
+    _, negative, _ = _inputs(lengths = (4,), seed = 4)
+    pipe(
+        prompt_embeds = embeds,
+        negative_prompt_embeds = negative,
+        height = 32,
+        width = 32,
+        num_inference_steps = steps,
+        output_type = "latent",
+        generator = torch.Generator("cpu").manual_seed(0),
+        **kwargs,
+    )
+    monkeypatch.undo()
+    assert calls[0::2] == [None] * steps
+    return calls[1::2]
+
+
+@pytest.mark.parametrize("schedule", ["sgm_uniform", "training_grid"])
+def test_base_skips_block_22_for_the_first_half_of_sigma(
+    moss, transformers_pair, monkeypatch, schedule
+):
+    _, ours = transformers_pair
+    monkeypatch.delenv(moss.REFERENCE_SKIP_ENV, raising = False)
+    skips = _uncond_skips(moss, ours, monkeypatch, 25, "OpenMOSS-Team/MOSS-Image-Base", schedule)
+    assert skips == [(22,)] * 13 + [None] * 12
+
+
+def test_sft_skips_nothing_and_unknown_pipe_keeps_the_official_default(
+    moss, transformers_pair, monkeypatch
+):
+    _, ours = transformers_pair
+    monkeypatch.delenv(moss.REFERENCE_SKIP_ENV, raising = False)
+    assert _uncond_skips(moss, ours, monkeypatch, 4, "OpenMOSS-Team/MOSS-Image-SFT") == [None] * 4
+    assert _uncond_skips(moss, ours, monkeypatch, 4, None) == [(22,)] * 4
+
+
+@pytest.mark.parametrize(
+    "checkpoint", ["OpenMOSS-Team/MOSS-Image-SFT", "OpenMOSS-Team/MOSS-Image-Base"]
+)
+def test_kill_switch_skips_block_22_every_step(moss, transformers_pair, monkeypatch, checkpoint):
+    _, ours = transformers_pair
+    monkeypatch.setenv(moss.REFERENCE_SKIP_ENV, "0")
+    skips = _uncond_skips(moss, ours, monkeypatch, 6, checkpoint)
+    assert skips == [(22,)] * 6
+
+
+def test_explicit_uncond_skip_arguments_win_over_the_checkpoint(
+    moss, transformers_pair, monkeypatch
+):
+    _, ours = transformers_pair
+    monkeypatch.delenv(moss.REFERENCE_SKIP_ENV, raising = False)
+    sft = "OpenMOSS-Team/MOSS-Image-SFT"
+    assert _uncond_skips(moss, ours, monkeypatch, 4, sft, uncond_skip_layers = [22]) == [(22,)] * 4
+    base = "OpenMOSS-Team/MOSS-Image-Base"
+    assert _uncond_skips(moss, ours, monkeypatch, 4, base, uncond_skip_end = 1.0) == [(22,)] * 4
+    with pytest.raises(ValueError):
+        _uncond_skips(moss, ours, monkeypatch, 2, base, uncond_skip_start = 0.6, uncond_skip_end = 0.5)
+
+
+def test_loader_records_the_checkpoint_and_diffusion_passes_the_base_repo(moss):
+    import inspect
+
+    assert "checkpoint" in inspect.signature(moss.load_moss_image_pipeline).parameters
+    assert "pipe._unsloth_checkpoint = str(checkpoint or repo_id)" in inspect.getsource(
+        moss.load_moss_image_pipeline
+    )
+    source = (_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
+    calls = source.split("load_moss_image_pipeline(")[1:]
+    calls = [c for c in calls if "dtype" in c.split(")")[0] or "dtype," in c[:200]]
+    assert len(calls) == 2
+    assert all("checkpoint = base," in c[:900] for c in calls)

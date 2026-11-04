@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""MCP tools reach Unsloth Studio through its own HTTP routes, in-process, as the API-key caller. Calling the route functions directly would skip the auth dependency, so the call would run as the owner and see host paths; going through the app means each call is authenticated, account-scoped and redacted exactly as the same request from the agent would be.
-
-The in-process client is deliberately remote: a TEST-NET peer and an ``.invalid`` Host fail every loopback, LAN and keyless check, so a forwarded call can never use keyless access, whatever Unsloth Studio's keyless scope. Only the caller's key and, where a route reads it, the Hub token header are sent; nothing from the inbound request is copied."""
+"""In-process as the API-key caller so auth and redaction apply; TEST-NET peer and .invalid Host
+make keyless access impossible; only the key and Hub token header are sent"""
 
 from __future__ import annotations
 

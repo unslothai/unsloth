@@ -1,24 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Load a ComfyUI-format quantized single-file DiT, or refuse it by name.
-
-ComfyUI keeps quantized codes under each layer's ``.weight`` with ``.weight_scale`` (some formats also
-``.input_scale``, ...) beside it, the format declared per layer (``<layer>.comfy_quant`` JSON tensor), in
-the header's ``_quantization_metadata`` table, or by the legacy ``scaled_fp8`` marker + ``.scale_weight``.
-Stock ``from_single_file`` casts the codes as weights and drops the scales: the load succeeds and renders noise.
-
-From the header alone: int8_tensorwise (optionally ConvRot) maps into Studio's int8 runtime with codes and
-per-row scales unchanged; float8_e4m3fn into Studio's per-row fp8 runtime (scalar scale repeated per row);
-nvfp4 into Studio's FlashInfer NVFP4 Linear and mxfp8 into a ``torch._scaled_mm`` block-scaled Linear
-(``diffusion_comfy_block``); where none runs, or for layers Studio keeps in bf16 and float8_e5m2, layers
-dequantize. Any other format is refused by name, never mis-loaded.
-
-Row mapping: the family's converter runs once on float64 row tags ``(source key, row)``; the tags that
-come out say which source rows each diffusers weight holds. A converter that splices columns, changes
-the column count or transforms values leaves undecodable tags and is refused. (Tags are constant along a
-row: a pure input-column reorder would go unseen; no diffusers converter does one.)
-"""
+"""ComfyUI quantized single-file DiTs: stock loader drops scales and renders noise; others refused."""
 
 from __future__ import annotations
 
@@ -961,8 +944,9 @@ def fp8_storage_wanted(
     widened_mib: Optional[int] = None,
     host_available_mib: Optional[int] = None,
 ) -> bool:
-    """Store fp8 only when widening would offload or leave under the host reserve: widening is otherwise faster
-    (measured +45% s/step eager for storage on Krea 2 / B200, parity compiled)."""
+    """Store fp8 only when widening would offload (on MPS, which never offloads: overrun the resident margin,
+    ``diffusion_memory.mps_plan_tight``) or leave under the host reserve: widening is otherwise faster (measured
+    +45% s/step eager for storage on Krea 2 / B200, parity compiled; +13% on MPS)."""
     if not comfy_fp8_storage(target, lora = lora):
         return False
     if fp8_storage_forced() or offload:
@@ -994,10 +978,8 @@ def fp8_widen_chosen(
 
 def comfy_fp8_storage(target: Any = None, *, lora: bool = False) -> bool:
     """Whether fp8 storage can run: same weights as the load-time dequant, half the bytes. Off for a LoRA (needs
-    dense Linears), MPS and torch without float8."""
+    dense Linears) and torch without float8."""
     if lora or fp8_storage_disabled():
-        return False
-    if str(getattr(target, "device", "") or "").split(":")[0] == "mps":
         return False
     try:
         import torch
@@ -1455,7 +1437,7 @@ def load_comfy_quant_transformer(
     filters = {
         fmt: make_filter_fn(
             min_features,
-            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family),
+            exclude_name_tokens = exclude_tokens_for_scheme(scheme, family, baked = True),
             require_divisible = divisible_for_scheme(scheme),
         )
         for fmt, scheme in schemes.items()

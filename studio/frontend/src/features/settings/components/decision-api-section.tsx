@@ -29,6 +29,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -38,13 +39,22 @@ import {
   useDownloadManagerStore,
 } from "@/features/hub";
 import { translate, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import {
+  ApiExampleBox,
+  useApiExampleChoices,
+} from "../../api-monitor/components/api-example-box";
 import { scrollIntoPane } from "../lib/scroll-into-pane";
 import { ArrowUpRight01Icon, TaskDone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access";
 import {
   type SystemOneBackend,
   decisionRuntimeLabel,
@@ -63,8 +73,14 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
+import {
+  buildDecisionApiSnippet,
+  decisionApiKey,
+  decisionMcpUrl,
+} from "./decision-api-snippets";
 import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
+import { UrlPill } from "./url-pill";
 import { PlayIcon } from "lucide-react";
 
 const DOWNLOAD_SCOPE = "systemone";
@@ -85,10 +101,34 @@ function errorMessage(error: unknown): string | null {
 
 export function DecisionApiSection({
   showHeading = true,
+  apiKey,
+  useTunnel = false,
+  keylessScope = "off",
+  keylessExposure = null,
 }: {
   showHeading?: boolean;
+  apiKey?: string | null;
+  useTunnel?: boolean;
+  keylessScope?: KeylessApiAccessScope;
+  keylessExposure?: KeylessApiAccessExposure | null;
 } = {}): ReactElement | null {
   const t = useT();
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const base =
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
+  const exampleKey = decisionApiKey(apiKey, {
+    base,
+    tunnel: useTunnel && !!cloudflareUrl,
+    scope: keylessScope,
+    exposure: keylessExposure,
+  });
+  const choices = useApiExampleChoices(base, "curl");
   const [settings, setSettings] = useState<SystemOneSettings | null>(null);
   const [connections, setConnections] = useState<SystemOneConnection[] | null>(
     null,
@@ -347,11 +387,25 @@ export function DecisionApiSection({
     }
   };
 
+  // title, not aria-label, so the accessible name stays the visible text.
+  const docsLink = (
+    <a
+      href={DOCS_URL}
+      target="_blank"
+      rel="noreferrer"
+      title={t("settings.apiKeys.decisionApi.docsLabel")}
+      className="inline-flex shrink-0 items-center gap-1 rounded-full font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {t("settings.apiKeys.decisionApi.docs")}
+      <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
+    </a>
+  );
   const header = (
     <div className="flex items-start justify-between gap-3">
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="flex min-w-0 items-baseline gap-2">
-          {showHeading && (
+        {/* Centred, not baseline: the h2 is a flex box, so its baseline is the icon's foot. */}
+        {showHeading && (
+          <div className="flex min-w-0 items-center gap-3">
             <h2 className="settings-heading flex items-center gap-2 text-base font-semibold font-heading">
               <HugeiconsIcon
                 icon={TaskDone01Icon}
@@ -360,21 +414,12 @@ export function DecisionApiSection({
               />
               {t("settings.apiKeys.decisionApi.title")}
             </h2>
-          )}
-          {/* title, not aria-label, so the accessible name stays the visible text. */}
-          <a
-            href={DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            title={t("settings.apiKeys.decisionApi.docsLabel")}
-            className="inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-ui-11 font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {t("settings.apiKeys.decisionApi.docs")}
-            <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
-          </a>
-        </div>
+            <span className="text-ui-11">{docsLink}</span>
+          </div>
+        )}
         <p className="text-xs leading-relaxed text-muted-foreground">
           {t("settings.apiKeys.decisionApi.description")}
+          {showHeading ? null : <span className="ml-1.5 inline-flex align-baseline">{docsLink}</span>}
         </p>
       </div>
       {settings ? (
@@ -408,21 +453,29 @@ export function DecisionApiSection({
     </div>
   );
   const errorLine = error ? (
-    <p className="px-4 py-2.5 text-xs leading-snug text-destructive">{error}</p>
+    <p className="py-2.5 text-xs leading-snug text-destructive">{error}</p>
   ) : null;
 
   if (!settings) {
-    return error ? (
+    return (
       <section
         data-settings-label={t("settings.apiKeys.decisionApi.title")}
         className="flex min-w-0 max-w-full flex-col gap-4"
       >
         {header}
-        <div className="overflow-hidden rounded-xl border border-border/70">
-          {errorLine}
+        <div>
+          {errorLine ?? (
+            <p
+              role="status"
+              className="flex items-center gap-2 py-3 text-xs text-muted-foreground"
+            >
+              <Spinner />
+              {t("settings.apiKeys.decisionApi.loading")}
+            </p>
+          )}
         </div>
       </section>
-    ) : null;
+    );
   }
 
   const current = settings.models.find((m) => m.name === settings.model);
@@ -430,10 +483,11 @@ export function DecisionApiSection({
   const remote = connections?.find((c) => c.name === settings.model);
   const knownModel = current !== undefined || isRemote;
   const longLabel = isRemote || current?.kind === "fine_tune";
-  // Laya is PyTorch only; Clef runs on any runtime, a GGUF-only model on llama.cpp or MLX.
+  // Laya is PyTorch only unless exported; Clef runs on any runtime, a GGUF-only model on llama.cpp or MLX.
   const runtimeChoice =
     isClefDecisionModel(settings.model) ||
     settings.layout === "clef" ||
+    settings.hasGgufForm ||
     !!current?.llamaCppOnly;
   const connectionGroups = [
     ...new Set(connections?.map((c) => c.providerId)),
@@ -497,9 +551,9 @@ export function DecisionApiSection({
     >
       {header}
 
-      <div className="overflow-hidden rounded-xl border border-border/70">
+      <div>
         {errorLine}
-        <div className={cn("px-4 py-1", error && "border-t border-border/60")}>
+        <div className="py-1">
           <SettingsRow
             label={t("settings.apiKeys.decisionApi.enable")}
             description={
@@ -745,18 +799,50 @@ export function DecisionApiSection({
 
           {connections?.length === 0 && !settings.modelLocked ? (
             <p className="pb-3 text-xs text-muted-foreground">
-              {t("settings.apiKeys.decisionApi.addConnection")}{" "}
+              {t("settings.apiKeys.decisionApi.addConnection")}
               <button
                 type="button"
-                className="font-medium text-foreground underline underline-offset-2 hover:text-primary"
+                className="text-foreground underline underline-offset-2 hover:text-primary"
+                // openDialog, not setActiveTab: the API page shows this card with no dialog open.
                 onClick={() =>
-                  useSettingsDialogStore.getState().setActiveTab("connections")
+                  useSettingsDialogStore.getState().openDialog("connections")
                 }
               >
-                {t("settings.apiKeys.decisionApi.openConnections")}
+                {t("settings.apiKeys.decisionApi.connectionsLink")}
               </button>
+              {t("settings.apiKeys.decisionApi.addConnectionSuffix")}
             </p>
           ) : null}
+        </div>
+      </div>
+
+      <div className="flex min-w-0 flex-col gap-3">
+        <h3 className="text-ui-13 font-medium text-foreground">
+          {t("settings.apiKeys.decisionApi.codeTitle")}
+        </h3>
+        {enabled ? null : (
+          <p className="text-xs text-muted-foreground">
+            {t("decisions.tryItOff")}
+          </p>
+        )}
+        <ApiExampleBox
+          choices={choices}
+          hasRealKey={Boolean(apiKey)}
+          code={buildDecisionApiSnippet({
+            base,
+            apiKey: exampleKey,
+            language: choices.language,
+            os: choices.os,
+          })}
+        />
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.apiKeys.decisionApi.mcpUrl")}
+          </span>
+          <UrlPill url={decisionMcpUrl(base, settings.mcpUrl)} />
+          <p className="text-xs text-muted-foreground">
+            {t("settings.apiKeys.decisionApi.mcpUrlDescription")}
+          </p>
         </div>
       </div>
 
@@ -766,6 +852,7 @@ export function DecisionApiSection({
         initialModel={tryModel}
         settings={settings}
         connections={connections ?? []}
+        curlTarget={{ base, apiKey: exampleKey, os: choices.os }}
         onRun={() => {
           loadSystemOneSettings().then(setSettings, () => undefined);
         }}

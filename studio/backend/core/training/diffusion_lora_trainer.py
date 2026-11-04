@@ -56,6 +56,7 @@ from core.training.diffusion_train_common import (  # noqa: F401
     _config_from_dict,
     _CONFIG_ALIASES,
     _emit,
+    training_fetch_repo,
     resolve_train_device,
     _latent_cache_forced,
     _latent_cache_over_budget,
@@ -395,7 +396,12 @@ def run_diffusion_lora_training(
                     "GPUs only, so expect slow steps and previews."
                 ),
             )
-        _emit(on_event, "model_load_started", num_images = len(pairs))
+        _emit(
+            on_event,
+            "model_load_started",
+            num_images = len(pairs),
+            fetch_repo = training_fetch_repo(cfg),
+        )
 
         # Honour a stop requested before the (slow) base model load.
         if _check_stop():
@@ -412,9 +418,12 @@ def run_diffusion_lora_training(
             )
             return str(out_dir)
 
-        pipe = StableDiffusionXLPipeline.from_pretrained(
-            cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
-        )
+        from core.training.diffusion_load_progress import report_model_load_progress
+
+        with report_model_load_progress(on_event):
+            pipe = StableDiffusionXLPipeline.from_pretrained(
+                cfg.base_model, torch_dtype = weight_dtype, token = cfg.hf_token, add_watermarker = False
+            )
         unet, vae = pipe.unet, pipe.vae
         tokenizers = [pipe.tokenizer, pipe.tokenizer_2]
         text_encoders = [pipe.text_encoder, pipe.text_encoder_2]
@@ -956,7 +965,10 @@ def run_diffusion_training_process(*, event_queue: Any, stop_queue: Any, config:
         # normalized() validates the family; the registry sends DiT families to their own trainer.
         cfg = _config_from_dict(config).normalized()
         trainer = get_trainer(cfg.resolved_family)
-        trainer(cfg, on_event = on_event, should_stop = should_stop)
+        from .diffusion_download_progress import TrainingDownloadProgress
+
+        with TrainingDownloadProgress(on_event) as report:
+            trainer(cfg, on_event = report, should_stop = should_stop)
     except Exception as exc:  # noqa: BLE001 -- surfaced to the parent as an error event
         # Emit both keys: the diffusion service reads ``message``, the generic worker reads ``error``.
         event_queue.put(

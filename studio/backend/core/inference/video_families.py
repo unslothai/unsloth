@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Pure helpers for text-to-video model identification.
-
-The video registry mirrors ``diffusion_families`` (no torch/diffusers imports, so
-everything unit-tests without the heavy runtime) but is a SEPARATE registry with a
-separate backend: video pipelines take frame/fps arguments, return frame stacks
-(and, for LTX-2, synchronized audio) instead of PIL images, and their artifacts are
-MP4s. Keeping the registries apart means neither picker can mis-route a checkpoint
-to the wrong engine.
-
-A video checkpoint published as a single-file GGUF only carries the DiT weights;
-the VAE / text encoder / connectors / vocoder come from the companion diffusers
-base repo, exactly like the image GGUF path.
-"""
+"""Pure helpers with no torch/diffusers imports (unit-testable without the runtime); separate video
+registry so no picker misroutes; GGUF is DiT-only, needs a base repo"""
 
 from __future__ import annotations
 
@@ -568,7 +557,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         base_repo = "MiniMaxAI/MiniMax-H3",
         aliases = ("minimax_h3", "minimaxh3", "h3"),
         has_audio = True,
-        default_steps = 30,
+        # The t2v template's non-LoRA path: 20 steps, BasicGuider (CFG 1); the turbo LoRA path is the PDD row.
+        default_steps = 20,
         default_guidance = 1.0,
         default_num_frames = 124,
         default_fps = 24,
@@ -595,6 +585,8 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         bf16_components_gb = (66.3, 66.8, 11.1),
         # Regionally compilable; dynamic=True traces once. Engage only when resident (slower under offload).
         supports_torch_compile = True,
+        # Near-equal inductor norm-reduction configs rendered different clips per fresh process for one seed.
+        filter_reduction_configs = True,
         # CUDA graph declined: no measurable win (GPU-bound) for ~8 GB extra memory and 31 s capture.
         supports_cuda_graph = False,
         # Streamed, H3's prequant groups onload through diffusers' stream path, which waits on the host per group: a
@@ -1168,6 +1160,36 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
             if any(normalize_family_name(t) == norm for t in (fam.name, *fam.aliases)):
                 return fam
         return None
+    memo = _detect_video_family_memo()
+    try:
+        return memo[repo_id]
+    except (KeyError, TypeError):
+        pass
+    family = _detect_video_family_by_name(repo_id)
+    try:
+        if len(memo) >= _DETECT_VIDEO_FAMILY_MEMO_MAX:
+            memo.clear()
+        memo[repo_id] = family
+    except TypeError:
+        pass
+    return family
+
+
+_DETECT_VIDEO_FAMILY_MEMO_MAX = 8192
+# Paired with the tables it was filled from: replacing either starts an empty memo.
+_detect_video_family_memo_state: tuple[object, object, dict] = ((), (), {})
+
+
+def _detect_video_family_memo() -> dict:
+    global _detect_video_family_memo_state
+    families, unsupported, memo = _detect_video_family_memo_state
+    if families is not _FAMILIES or unsupported is not _UNSUPPORTED_VIDEO_CHECKPOINTS:
+        memo = {}
+        _detect_video_family_memo_state = (_FAMILIES, _UNSUPPORTED_VIDEO_CHECKPOINTS, memo)
+    return memo
+
+
+def _detect_video_family_by_name(repo_id: str) -> Optional[VideoFamily]:
     # I2V / VACE / FastWan names can carry a T2V token (Wan2.1_T2V_14B_FusionX_VACE): no T2V pipeline over those weights.
     if unsupported_video_checkpoint_reason(repo_id):
         return None

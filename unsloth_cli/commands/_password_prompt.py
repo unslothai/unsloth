@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Masked terminal password prompt for the first-exposure password change.
-
-Mirror of ``studio/backend/auth/terminal_prompt.py`` -- keep the two in sync.
-The CLI parent cannot import the backend package outside the studio venv, so the
-reader is duplicated here (like the auth mirroring in ``commands/studio.py``).
-
-Input echoes one ``*`` per character (unlike ``getpass``). All output goes to
-stderr so redirected stdout stays clean.
-"""
+"""Masked password prompt, mirror of studio/backend/auth/terminal_prompt.py (keep in sync)."""
 
 from __future__ import annotations
 

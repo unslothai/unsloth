@@ -14,13 +14,7 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Native Transformers/Diffusers audio generation backends.
-
-This module intentionally has no ML imports at module import time. The worker uses
-``is_native_audio_model`` before choosing its MLX or Unsloth runtime, including on
-Apple Silicon, and imports torch/transformers only after the normal version and
-remote-code security gates have run.
-"""
+"""No ML imports at load; torch/transformers load only after version and remote-code security gates."""
 
 from __future__ import annotations
 

@@ -1,19 +1,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Keep the top-level group and a block prefix of a block-streamed Wan or HunyuanVideo-1.5 denoiser resident, re-fitted
-per request.
-
-Room = free + unused cache + already resident - need. Need is the streamed floor + base overhead + the runtime estimate,
-or, for a request no larger (pixels x frames) than a completed one, that request's measured peak x 1.15 + 1 GiB; the
-estimate stays the lower bound. Resident groups keep their host copy, so streaming them again is a pointer swap.
-Kill switches: UNSLOTH_VIDEO_DIT_RESIDENT=0, UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top-level group only),
-UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0 (estimate only).
-
-Calibration is not Wan-only: ``arm_request`` arms the same peak measurement for any video family, and every recorded
-peak also lands in a process-wide table keyed by the loaded model (``calibration_key``), so a reload of the same model
-and the offload refusal (``measured_extra_mib``) reuse it. ``UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0`` turns reuse off.
-"""
+"""Keeps top group and block prefix of a Wan or HunyuanVideo-1.5 denoiser resident, re-fitted per
+request; need estimate stays the lower bound; kill switches UNSLOTH_VIDEO_DIT_RESIDENT=0,
+UNSLOTH_VIDEO_DIT_RESIDENT_BLOCKS=0 (top group only), UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED=0
+(estimate only)."""
 
 from __future__ import annotations
 

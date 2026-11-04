@@ -76,6 +76,8 @@ export function applyPerModelConfigToRuntime(
     customContextLength: config.customContextLength ?? null,
     mlxKvQuant: config.mlxKvQuant ?? null,
     mlxInt8Prefill: config.mlxInt8Prefill ?? false,
+    mlxAnePrefill: config.mlxAnePrefill ?? false,
+    mlxFastVerify: config.mlxFastVerify ?? false,
     mlxPleOffload: config.mlxPleOffload ?? null,
     mlxExpertOffload: config.mlxExpertOffload ?? null,
     kvCacheDtype: config.kvCacheDtype ?? null,
@@ -151,6 +153,8 @@ export function currentRuntimePerModelConfig(
     kvCacheDtype: s.kvCacheDtype ?? null,
     mlxKvQuant: s.mlxKvQuant ?? null,
     mlxInt8Prefill: s.mlxInt8Prefill ?? false,
+    mlxAnePrefill: s.mlxAnePrefill ?? false,
+    mlxFastVerify: s.mlxFastVerify ?? false,
     mlxPleOffload: s.mlxPleOffload ?? null,
     mlxExpertOffload: s.mlxExpertOffload ?? null,
     speculativeType: normalizeSpeculativeType(s.speculativeType),
@@ -209,6 +213,8 @@ export function perModelConfigsEqual(
     (a.kvCacheDtype ?? null) === (b.kvCacheDtype ?? null) &&
     (a.mlxKvQuant ?? null) === (b.mlxKvQuant ?? null) &&
     Boolean(a.mlxInt8Prefill) === Boolean(b.mlxInt8Prefill) &&
+    Boolean(a.mlxAnePrefill) === Boolean(b.mlxAnePrefill) &&
+    Boolean(a.mlxFastVerify) === Boolean(b.mlxFastVerify) &&
     (a.mlxPleOffload ?? null) === (b.mlxPleOffload ?? null) &&
     (a.mlxExpertOffload ?? null) === (b.mlxExpertOffload ?? null) &&
     speculative(a.speculativeType) === speculative(b.speculativeType) &&

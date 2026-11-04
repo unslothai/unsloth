@@ -1,20 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Opt-in encoding through the ``tokenizers`` 1.0 release candidate.
-
-transformers requires ``tokenizers<0.24`` and builds its tokenizers from the 0.x component API,
-which the RC drops, so the RC cannot replace 0.x. Instead it is installed beside it:
-
-    pip install --pre --no-deps --target ~/.cache/unsloth/tokenizers_v1 "tokenizers>=1.0.0rc2"
-    UNSLOTH_TOKENIZERS_V1=1 python train.py   # UNSLOTH_TOKENIZERS_V1_PATH overrides the directory
-
-and loaded under another module name. The fast tokenizer's 0.x backend is then wrapped: plain
-encodes (str input, no pair, no pre-split words; padding and truncation included) run on the RC,
-everything else goes to 0.x unchanged. Each RC copy is built from the backend's own JSON and must
-match 0.x on a probe set first, else the backend stays on 0.x. Fields the RC's ``Encoding`` lacks
-(offsets, tokens, word ids, special tokens mask, ...) are recomputed by 0.x on first access.
-"""
+"""Opt-in tokenizers 1.0 RC (UNSLOTH_TOKENIZERS_V1=1): plain encodes only; a backend failing the
+probe against 0.x stays on 0.x."""
 
 import contextlib
 import copy

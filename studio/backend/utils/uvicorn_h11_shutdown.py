@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Silence uvicorn's h11 shutdown traceback on Windows (issue #8404).
-
-Every clean shutdown on Windows printed an unhandled asyncio traceback ending in ``h11._util.LocalProtocolError: can't handle event type Response when role=SERVER and state=CLOSED``. Nothing breaks, but a full traceback on a normal exit reads as a crash and gets reported as one.
-
-The sequence, all of it in third-party code. First, ``uvicorn.Server.shutdown()`` walks the live connections and calls ``H11Protocol.shutdown()`` (``uvicorn/protocols/http/h11_impl.py``), which sends ``h11.ConnectionClosed()``, moving the h11 server state to CLOSED, then calls ``transport.close()``. Second, the browser is still polling ``/api/inference/status`` and ``/api/inference/monitor`` on that keep-alive connection, so a request can already be sitting in the socket, and on Windows the proactor transport still hands it to the protocol after ``close()``: ``_ProactorReadPipeTransport._loop_reading()`` assigns ``length`` from ``fut.result()`` before returning early on ``self._closing``, and its ``finally:`` clause calls ``_data_received()`` anyway (CPython ``Lib/asyncio/proactor_events.py``). ``close()`` does cancel ``_read_fut``, but a read whose overlapped ``WSARecv()`` already completed had ``_ov`` cleared by ``_OverlappedFuture.set_result()``, so ``cancel()`` is a no-op and the done callback queued before ``close()`` still runs. CPython 3.9 also set ``data = None`` in that branch and so never delivered, and 3.10 dropped that line when the reader moved to ``recv_into()``, which is why the report needs 3.10 or newer; the selector transport used on Linux and macOS removes the reader inside ``close()``, and uvloop calls ``_stop_reading()`` inside its own ``close()`` (and does not build on Windows at all), so this is Windows-only in practice. Third, h11 sees bytes after it expected EOF, so ``next_event()`` raises ``RemoteProtocolError``, uvicorn logs "Invalid HTTP request received." and calls ``send_400_response()``, whose very first ``self.conn.send(...)`` raises ``LocalProtocolError`` because the server state is CLOSED; nothing catches it, so it escapes ``data_received()`` back into the proactor read callback and asyncio's default handler prints the traceback.
-
-The fix stops step 2 from reaching h11 at all rather than swallowing the exception at the end: once ``ConnectionClosed`` is sent and the transport closed, no further byte can legally be written on that connection, so the inbound data belongs to a request that will never be answered and dropping it is exactly what the selector transport already does. Suppressing the ``LocalProtocolError`` instead would hide genuine protocol errors on live connections and leave the equally misleading "Invalid HTTP request received." warning behind.
-"""
+"""Stops the Windows proactor feeding bytes to h11 after uvicorn sent ConnectionClosed, which
+printed a spurious LocalProtocolError traceback on clean shutdown; dropping that data beats
+suppressing the error, which would hide real protocol errors."""
 
 from __future__ import annotations
 

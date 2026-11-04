@@ -1,14 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Let AOTAutogradCache store the denoiser graphs that hold an ``sdpa_kernel`` block.
-
-Dynamo bakes ``sdpa_kernel`` into the graph as ``_backend_from_string`` / ``_sdpa_kernel`` calls, which are not on
-AOTAutogradCache's allowlist, so every regional block of FLUX.1, Z-Image and Qwen-Image re-ran AOT tracing on each
-process start (pytorch/pytorch#194007; 2.6 / 4.7 / 1.8 s of a B200 restart's first render). Their arguments are graph
-constants, so the graph keys them apart; the one ambient input, SDPA's backend priority order, goes into the marked
-value torch folds into the cache key. UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it.
-"""
+"""Lets AOTAutogradCache store denoiser graphs with an sdpa_kernel block (FLUX.1, Z-Image, Qwen-
+Image), whose Dynamo-baked calls are not on AOTAutogradCache's allowlist; the SDPA backend
+priority order is keyed into the cache. UNSLOTH_DIFFUSION_SDPA_AOT_CACHE=0 disables it."""
 
 from __future__ import annotations
 

@@ -470,6 +470,9 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     """The gate must not trust hasattr, because the in-process fix installs placeholders that pass it."""
     import torch.nn.functional as F
 
+    if IF.TORCHAO_DISABLED_FOR_OLD_TORCH:
+        pytest.skip("import unsloth disabled torchao for this torch; there is no torchao to shim")
+
     if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
         pytest.skip("this torch provides every symbol; nothing to place")
 

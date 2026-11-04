@@ -1,12 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""HF cache inspection, download registry state, and orphan-worker reaping. Worker spawning and exit handling live in :mod:`hub.services.download_lifecycle`; this module owns the registry state machine plus the cache/marker inspection those workers depend on.
-
-Resume model: up to huggingface_hub 1.17 the HTTP transport supported true partial-file resume, opening ``<etag>.incomplete`` in append mode and sending ``Range: bytes={resume_size}-``. 1.18 replaced that with a process-unique ``<etag>.<nonce>.incomplete`` opened ``"wb"`` and unlinked on the way out, so no transport resumes within a file any more and a surviving partial is litter (see :func:`hf_partials_are_resumable`); resume is now whole-file only, with ``snapshot_download`` skipping shards already materialized. The XET transport CANNOT resume from a ``.incomplete`` partial at all, since ``hf_xet.download_files`` rewrites the destination from scratch, though network-level dedup still happens through the separate chunk cache these helpers never touch.
-
-Cross-transport corruption: a partial written by XET (or ``hf_transfer``'s parallel-Range writer) can be sparse, with a high reported size and zero-filled gaps below, and feeding it to the HTTP resumer would produce a correct-sized blob whose internal bytes are silently wrong. So transport markers are kept at the download's scope (repo for snapshots/datasets, variant for GGUF) and an HTTP partial is never inherited unless the marker proves the previous writer was the same single-stream sequential writer. Marker writes go through tmp+rename in :func:`prepare_cache_for_transport` before the worker hands off to ``snapshot_download``, so the next process always sees a consistent provenance signal.
-"""
+"""HF cache and registry; HTTP partials resume only if a marker proves a sequential writer (XET or
+hf_transfer partials can be sparse and silently wrong); XET cannot resume; markers written
+tmp+rename before snapshot_download handoff."""
 
 from __future__ import annotations
 
@@ -66,6 +63,8 @@ _HTTP_MAX_FILE_BYTES_FALLBACK = 50 * 1000 * 1000 * 1000
 
 _HTTP_SIZE_CEILING_MARKER = "too large to be downloaded using the regular download method"
 
+_MODELSCOPE_XET_REASON = "ModelScope does not offer Xet, so downloads from it use HTTPS"
+
 
 def http_max_file_bytes() -> int:
     """The largest single file the HTTP transport can fetch."""
@@ -77,8 +76,16 @@ def http_max_file_bytes() -> int:
     return value if value > 0 else _HTTP_MAX_FILE_BYTES_FALLBACK
 
 
+def _modelscope_is_source() -> bool:
+    from utils.hub_settings import MODELSCOPE, active_source
+    return active_source() == MODELSCOPE
+
+
 def http_size_ceiling_reason(largest_file_bytes: Optional[int]) -> Optional[str]:
-    """An unknown size (None or 0) is no evidence, so the transport choice is left exactly as it was."""
+    """An unknown size (None or 0) is no evidence, so the transport choice is left exactly as it was.
+    ModelScope's CDN serves any size over HTTPS, and its worker lifts the hub's client-side check."""
+    if _modelscope_is_source():
+        return None
     try:
         largest = int(largest_file_bytes or 0)
     except (TypeError, ValueError):
@@ -135,10 +142,15 @@ def get_download_transport_capabilities(
     largest_file_bytes: Optional[int] = None,
 ) -> DownloadTransportCapabilities:
     """probe checks live Xet health, ram_gate applies memory pressure, largest_file_bytes HTTP size limit."""
-    xet_available = importlib.util.find_spec("hf_xet") is not None
+    # A ModelScope "Xet" job is plain HTTP in practice (the adapter sends no Xet headers), under a marker that then purges its partials.
+    modelscope_xet_reason = _MODELSCOPE_XET_REASON if _modelscope_is_source() else None
+    xet_reason = modelscope_xet_reason
+    if xet_reason is None and importlib.util.find_spec("hf_xet") is None:
+        xet_reason = "Xet transport is unavailable because hf_xet is not installed."
+    xet_available = xet_reason is None
     http_reason = http_size_ceiling_reason(largest_file_bytes)
     auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
-    auto_reason: Optional[str] = None
+    auto_reason: Optional[str] = modelscope_xet_reason
     auto_forced = False
     if xet_available:
         try:
@@ -180,12 +192,7 @@ def get_download_transport_capabilities(
         auto_reason = "Xet (HTTPS cannot fetch a file this large)"
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = http_reason is None, reason = http_reason),
-        xet = DownloadTransportCapability(
-            available = xet_available,
-            reason = None
-            if xet_available
-            else "Xet transport is unavailable because hf_xet is not installed.",
-        ),
+        xet = DownloadTransportCapability(available = xet_available, reason = xet_reason),
         auto_resolves_to = auto_transport,
         auto_reason = auto_reason,
         partials_resumable = hf_partials_are_resumable(),

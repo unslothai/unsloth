@@ -689,6 +689,9 @@ def test_split_vae_families_hold_cudnn_benchmark_off(repo, pipeline_class):
         ("black-forest-labs/FLUX.1-schnell", (10, 0), True),
         ("black-forest-labs/FLUX.1-Kontext-dev", (10, 0), True),
         ("black-forest-labs/FLUX.1-schnell", (9, 0), False),
+        ("Qwen/Qwen-Image-2.1", (10, 0), True),
+        ("Qwen/Qwen-Image-2.1", (8, 9), True),
+        ("Qwen/Qwen-Image-2.1", (9, 0), True),
     ],
 )
 def test_reduction_filter_archs(monkeypatch, repo, cap, pinned):

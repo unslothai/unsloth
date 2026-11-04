@@ -2,23 +2,10 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Cross-platform Node.js prebuilt installer for Unsloth Studio.
-
-Downloads an official Node.js archive from nodejs.org (or the dist mirror in
-``UNSLOTH_NODE_MIRROR``) into an isolated
-``<UNSLOTH_HOME>/node`` and never touches the system Node/npm. Pinning Node 24+
-LTS clears the Unsloth frontend build floor (Vite 8: Node ^20.19 || >=22.12,
-npm >= 11) with the npm it bundles.
-
-Archives are verified against sha256 digests pinned in ``node_prebuilt_pins.json``
-(committed in-tree), not a checksum re-fetched from the same origin as the archive.
-
-Mirrors ``install_llama_prebuilt.py`` so the setup scripts drive it the same way.
-Exit codes: 0 success, 1 error, 2 fallback, 3 busy, 4 access denied. A re-run that already matches
-logs "already matches" and returns 0 without downloading (the scripts grep it).
-A failed update that keeps a usable install logs "keeping existing isolated Node" and
-also returns 0 (the scripts grep that too).
-"""
+"""Installs isolated Node.js 24+ LTS into <UNSLOTH_HOME>/node, never touching system Node/npm;
+archives sha256-checked against in-tree node_prebuilt_pins.json, not from the archive origin;
+exit 0 success, 1 error, 2 fallback, 3 busy, 4 access denied; setup scripts grep the already
+matches line."""
 
 from __future__ import annotations
 
@@ -51,7 +38,7 @@ _STUDIO_DIR = str(Path(__file__).resolve().parent)
 if _STUDIO_DIR not in sys.path:
     sys.path.insert(0, _STUDIO_DIR)
 
-from prebuilt_core import DownloadProgress, make_staging_dir  # noqa: E402
+from prebuilt_core import DownloadProgress, copy_response_body, make_staging_dir  # noqa: E402
 
 try:
     from filelock import FileLock, Timeout as FileLockTimeout
@@ -127,6 +114,19 @@ class HostInfo:
     is_windows: bool
 
 
+def tar_archive_ext() -> str:
+    # Import, not find_spec: lzma.py exists even when _lzma was not built.
+    try:
+        import lzma  # noqa: F401
+    except ImportError:
+        return ".tar.gz"
+    return ".tar.xz"
+
+
+def gzip_alternative(asset: str) -> str:
+    return asset[: -len(".tar.xz")] + ".tar.gz" if asset.endswith(".tar.xz") else asset
+
+
 def detect_host() -> HostInfo:
     system = platform.system()
     machine = platform.machine().lower()
@@ -149,8 +149,7 @@ def detect_host() -> HostInfo:
         # Node 24 ships no linux-armv7l build.
         raise PrebuiltFallback(f"unsupported CPU architecture for Node prebuilt: {machine}")
 
-    # Not .tar.xz so the extractor needs no xz.
-    archive_ext = ".zip" if is_windows else ".tar.gz"
+    archive_ext = ".zip" if is_windows else tar_archive_ext()
     return HostInfo(
         system = system,
         machine = machine,
@@ -314,15 +313,9 @@ def download_file(url: str, destination: Path) -> None:
                     if _LOG_TO_STDOUT:
                         progress.stream = sys.stdout
                         progress.is_tty = progress.is_tty and sys.stdout.isatty()
-                    downloaded_bytes = 0
-                    while True:
-                        chunk = response.read(1024 * 1024)
-                        if not chunk:
-                            break
-                        handle.write(chunk)
-                        downloaded_bytes += len(chunk)
-                        progress.update(downloaded_bytes)
-                    progress.finish(downloaded_bytes)
+                    copy_response_body(
+                        response, handle.write, total_bytes = total_bytes, progress = progress
+                    )
                 handle.flush()
                 os.fsync(handle.fileno())
             if not tmp_path.exists() or tmp_path.stat().st_size == 0:
@@ -441,7 +434,7 @@ def resolve_expected_sha256(pins: dict, version: str, asset: str, *, allow_unver
     return expected
 
 
-# ── Safe archive extraction (zip + tar.gz, traversal/symlink guarded) ──
+# ── Safe archive extraction (zip + tar.gz + tar.xz, traversal/symlink guarded) ──
 def _safe_extract_path(base: Path, member_name: str) -> Path:
     member_path = Path(member_name.replace("\\", "/"))
     if member_path.is_absolute():
@@ -472,7 +465,7 @@ def _extract_zip_safely(source: Path, base: Path) -> None:
 def _extract_tar_safely(source: Path, base: Path) -> None:
     # bin/npm, npx, corepack are relative symlinks into lib/node_modules; resolve after files.
     pending_links: list[tuple[tarfile.TarInfo, Path]] = []
-    with tarfile.open(source, "r:gz") as archive:
+    with tarfile.open(source, "r:*") as archive:
         for member in archive.getmembers():
             target = _safe_extract_path(base, member.name)
             if member.isdir():
@@ -520,7 +513,7 @@ def extract_archive(archive_path: Path, destination: Path) -> None:
     destination.mkdir(parents = True, exist_ok = True)
     if archive_path.name.endswith(".zip"):
         _extract_zip_safely(archive_path, destination)
-    elif archive_path.name.endswith(".tar.gz"):
+    elif archive_path.name.endswith((".tar.gz", ".tar.xz")):
         _extract_tar_safely(archive_path, destination)
     else:
         raise PrebuiltFallback(f"unsupported archive format: {archive_path.name}")
@@ -933,6 +926,27 @@ def _record_runtime_verification_under_lock(
     return True
 
 
+def pin_to_keep(pins: dict, version: str, asset: str, install_dir: Path) -> str | None:
+    """Pin of the recorded archive when it is the same Node build in another format, so a format switch does not re-download."""
+    recorded = (load_metadata(install_dir) or {}).get("asset")
+    stem = gzip_alternative(asset)[: -len(".tar.gz")] if ".tar." in asset else None
+    if stem and recorded in (stem + ".tar.gz", stem + ".tar.xz"):
+        return pinned_sha256(pins, version, recorded) or pinned_sha256(pins, version, asset)
+    return pinned_sha256(pins, version, asset)
+
+
+def _download_asset(staging: Path, version: str, asset: str, expected_sha: str) -> Path:
+    archive_path = staging / asset
+    log(f"downloading {node_download_url(version, asset)}")
+    download_file_verified(
+        node_download_url(version, asset),
+        archive_path,
+        expected_sha256 = expected_sha,
+        label = asset,
+    )
+    return archive_path
+
+
 def existing_install_matches(
     install_dir: Path,
     host: HostInfo,
@@ -1118,7 +1132,7 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
     log(f"target Node v{version} ({asset})")
 
     # Keep an existing install only if it matches the pin (or pinning is opted out).
-    pin = pinned_sha256(pins, version, asset)
+    pin = pin_to_keep(pins, version, asset, install_dir)
     allow_unverified = allow_unverified_node()
     may_keep = pin is not None or allow_unverified
 
@@ -1131,6 +1145,9 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
         return EXIT_SUCCESS
 
     with install_lock(install_lock_path(install_dir)):
+        # Another installer may have switched archive format while we waited.
+        pin = pin_to_keep(pins, version, asset, install_dir)
+        may_keep = pin is not None or allow_unverified
         if (
             not force
             and may_keep
@@ -1150,14 +1167,18 @@ def install_prebuilt(install_dir: Path, *, channel: str, min_major: int, force: 
             staging_root.mkdir(parents = True, exist_ok = True)
             staging = make_staging_dir(staging_root, f"{install_dir.name}.staging-")
             try:
-                archive_path = staging / asset
-                log(f"downloading {node_download_url(version, asset)}")
-                download_file_verified(
-                    node_download_url(version, asset),
-                    archive_path,
-                    expected_sha256 = expected_sha,
-                    label = asset,
-                )
+                try:
+                    archive_path = _download_asset(staging, version, asset, expected_sha)
+                except Exception as exc:  # noqa: BLE001
+                    # A mirror may carry only .tar.gz.
+                    if gzip_alternative(asset) == asset:
+                        raise
+                    log(f"{asset} unavailable ({exc}); trying {gzip_alternative(asset)}")
+                    asset = gzip_alternative(asset)
+                    expected_sha = resolve_expected_sha256(
+                        pins, version, asset, allow_unverified = allow_unverified
+                    )
+                    archive_path = _download_asset(staging, version, asset, expected_sha)
                 extract_dir = staging / "extracted"
                 extract_archive(archive_path, extract_dir)
 

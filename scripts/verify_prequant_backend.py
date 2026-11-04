@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GPU verification of the Phase 9 pre-quantized load path through the real backend code.
-
-Exercises the actual product functions (``load_prequantized_transformer`` and the runtime
-``quantize_transformer``), not a reimplementation:
-
-  prequant  -- load the checkpoint built by build_prequant_checkpoint.py via the real
-               ``load_prequantized_transformer`` (meta-init + assign), measure GPU load peak,
-               generate.
-  runtime   -- the existing path: from_pretrained dense bf16 -> ``quantize_transformer`` on
-               device, measure GPU load peak, generate (the LPIPS reference).
-
-Asserts the prequant load peak is far below the dense one and the images match (LPIPS ~0).
-Run each mode in its own process for a clean peak. One CUDA GPU."""
+"""Asserts pre-quantized load peak memory is far below runtime quantize and images match (LPIPS ~0)."""
 
 from __future__ import annotations
 

@@ -2189,6 +2189,7 @@ def _cache_server_tools(tmp_path, monkeypatch, tools):
     _reset_db(tmp_path, monkeypatch)
     monkeypatch.setattr(mcp_client, "_tool_cache", {})
     monkeypatch.setattr(tools_mod, "_MCP_LOADED_THREADS", OrderedDict())
+    monkeypatch.setattr(tools_mod, "_MCP_RANKED_THREADS", OrderedDict())
     mcp_servers_db.create_server(id = "srv1", display_name = "A", url = "https://a.example/mcp")
     mcp_client.cache_tools("srv1", tools)
 
@@ -2344,6 +2345,10 @@ def test_mcp_tool_search_loads_exact_names_then_ranked_matches(tmp_path, monkeyp
     out = tools_mod.execute_tool("mcp_tool_search", {"query": "query rows with sql"})
     assert out.startswith("Loaded 1 MCP tool. Call the one that fits directly")
     assert "- mcp__srv1__query: [A] Query rows." in out
+    assert (
+        "schema: " + json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__query"), separators = (",", ":"))
+        in out
+    )
     assert tools_mod.execute_tool("mcp_tool_search", {"query": "zzzz"}).startswith(
         "No MCP tool matched 'zzzz'."
     )
@@ -2374,6 +2379,185 @@ def test_mcp_listing_lists_the_tools_the_user_message_asks_for(tmp_path, monkeyp
     # Nothing ranked fits a window this small, so only the search tool is listed.
     monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 0.0)
     assert listing_for(ask) == ["mcp_tool_search"]
+
+
+def _thread_listing(tools_mod, searching, messages):
+    import contextvars
+
+    ctx = contextvars.copy_context()
+    ctx.run(tools_mod.set_mcp_listing_context_tokens, searching, "thread-1", messages)
+    return ctx.run(lambda: tools_mod.cached_mcp_tools()[0])
+
+
+def test_mcp_listing_holds_while_the_best_match_stays_listed(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    rankings = {"first": [0, 1], "second": [0, 2]}
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", lambda specs, query: (rankings[query], 0))
+
+    first = _thread_listing(tools_mod, searching, [{"role": "user", "content": "first"}])
+    second = _thread_listing(tools_mod, searching, [{"role": "user", "content": "second"}])
+
+    assert len(_names(first)) > 1 and second == first
+
+
+def test_mcp_listing_lists_a_best_match_that_did_not_fit_before(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        return 100 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 150 / searching)
+    rankings = {"first": [0, 1], "second": [1, 0]}
+    seen = []
+
+    def ranked(specs, query):
+        seen[:] = [spec["function"]["name"] for spec in specs]
+        return rankings[query], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+
+    first = _thread_listing(tools_mod, searching, [{"role": "user", "content": "first"}])
+    assert seen[0] in _names(first) and seen[1] not in _names(first)
+    second = _thread_listing(tools_mod, searching, [{"role": "user", "content": "second"}])
+    assert seen[1] in _names(second)
+
+
+@pytest.mark.parametrize("how", ["forced", "ran"])
+def test_mcp_listing_ranks_the_first_message_when_its_best_match_is_listed(
+    tmp_path, monkeypatch, searching, how
+):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    best = "mcp__srv1__move-pages"
+    other = []
+
+    def ranked(specs, query):
+        names = [spec["function"]["name"] for spec in specs]
+        first = names.index(best)
+        second = 0 if first else 1
+        other[:] = [names[second]]
+        return [first, second], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+    choice = None
+    if how == "forced":
+        choice = {"type": "function", "function": {"name": best}}
+    else:
+        tools_mod.mcp_record_loaded_tools("thread-1", [best])
+    ctx = contextvars.copy_context()
+    ctx.run(
+        tools_mod.set_mcp_listing_context_tokens,
+        searching,
+        "thread-1",
+        [{"role": "user", "content": "move it"}],
+        choice,
+    )
+    names = _names(ctx.run(lambda: tools_mod.cached_mcp_tools()[0]))
+
+    assert best in names and other[0] in names
+
+
+def test_mcp_listing_lists_a_tool_a_later_message_needs(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    chat = [{"role": "user", "content": "hello"}]
+    assert "mcp__srv1__move-pages" not in _names(_thread_listing(tools_mod, searching, chat))
+    chat += [
+        {"role": "assistant", "content": "Hi."},
+        {"role": "user", "content": "Move my roadmap page under the Archive page."},
+    ]
+    assert "mcp__srv1__move-pages" in _names(_thread_listing(tools_mod, searching, chat))
+
+
+def test_mcp_listing_reranks_when_no_held_tool_still_fits(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    sizes = {"ping": 100, "create-pages": 60, "move-pages": 40}
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        for name, size in sizes.items():
+            if text.startswith("{") and f'"name":"mcp__srv1__{name}"' in text:
+                return size
+        return 1000 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 110 / searching)
+    held, ran, best = (f"mcp__srv1__{name}" for name in sizes)
+    rankings = {"first": [held], "second": [ran, best]}
+
+    def ranked(specs, query):
+        names = [spec["function"]["name"] for spec in specs]
+        return [names.index(name) for name in rankings[query]], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+
+    assert held in _names(
+        _thread_listing(tools_mod, searching, [{"role": "user", "content": "first"}])
+    )
+    tools_mod.mcp_record_loaded_tools("thread-1", [ran])
+    chat = [{"role": "user", "content": "second"}]
+    second = _thread_listing(tools_mod, searching, chat)
+    assert _names(second) == ["mcp_tool_search", ran, best]
+    assert _thread_listing(tools_mod, searching, chat) == second
+
+
+def test_mcp_listing_holds_when_the_best_match_cannot_fit(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    sizes = {"ping": 40, "create-pages": 40, "query": 1000}
+    real_cost = tools_mod._text_token_cost
+
+    def cost(text, ctx):
+        if '"name":"mcp_tool_search"' in text:
+            return 0
+        for name, size in sizes.items():
+            if text.startswith("{") and f'"name":"mcp__srv1__{name}"' in text:
+                return size
+        return 40 if text.startswith("{") else real_cost(text, ctx)
+
+    monkeypatch.setattr(tools_mod, "_text_token_cost", cost)
+    monkeypatch.setattr(tools_mod, "_MCP_TOOL_PRELOAD_SHARE", 100 / searching)
+    rankings = {"first": ["ping", "create-pages"], "second": ["query", "move-pages"]}
+
+    def ranked(specs, query):
+        names = [spec["function"]["name"] for spec in specs]
+        return [names.index(f"mcp__srv1__{name}") for name in rankings[query]], 0
+
+    monkeypatch.setattr(tools_mod, "_mcp_ranked", ranked)
+
+    first = _thread_listing(tools_mod, searching, [{"role": "user", "content": "first"}])
+    assert _names(first) == ["mcp_tool_search", "mcp__srv1__ping", "mcp__srv1__create-pages"]
+    assert _thread_listing(tools_mod, searching, [{"role": "user", "content": "second"}]) == first
+
+
+def test_mcp_listing_follows_a_change_of_subject(tmp_path, monkeypatch, searching):
+    from core.inference import tools as tools_mod
+
+    _cache_server_tools(tmp_path, monkeypatch, _NOTES)
+    chat = [{"role": "user", "content": "Who are the users in the workspace?"}]
+    _thread_listing(tools_mod, searching, chat)
+    chat += [
+        {"role": "assistant", "content": "Two people."},
+        {"role": "user", "content": "Move my roadmap page under the Archive page."},
+    ]
+    assert "mcp__srv1__move-pages" in _names(_thread_listing(tools_mod, searching, chat))
 
 
 def test_mcp_listing_matches_a_write_verb_to_the_tool_named_with_another(
@@ -2473,19 +2657,25 @@ def test_controller_loads_searched_and_named_mcp_tools(tmp_path, monkeypatch, se
         "function": {"name": "mcp_tool_search", "arguments": '{"query": "move pages", "limit": 1}'}
     }
     decision = controller.prepare_call(call)
-    controller.record_result(
-        decision, tools_mod.execute_tool("mcp_tool_search", decision.arguments)
+    result = tools_mod.execute_tool("mcp_tool_search", decision.arguments)
+    controller.record_result(decision, result)
+    assert _names(controller.active_tools()) == ["mcp_tool_search"]
+    assert "schema: " in result
+    assert (
+        json.dumps(tools_mod.mcp_tool_spec("mcp__srv1__move-pages"), separators = (",", ":"))
+        in result
     )
-    active = controller.active_tools()
-    assert _names(active) == ["mcp_tool_search", "mcp__srv1__move-pages"]
-    assert active[1] == tools_mod.mcp_tool_spec("mcp__srv1__move-pages")
+    moved_call = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__move-pages", "arguments": "{}"}}
+    )
+    assert moved_call.action == "execute"
+    assert _names(controller.active_tools()) == ["mcp_tool_search"]
 
-    # A deferred tool named without a search loads too, typed by its full schema.
     named = controller.prepare_call(
         {"function": {"name": "mcp__srv1__ping", "arguments": '{"n": "3"}'}}
     )
     assert named.action == "execute" and named.arguments == {"n": 3}
-    assert "mcp__srv1__ping" in _names(controller.active_tools())
+    assert "mcp__srv1__ping" not in _names(controller.active_tools())
 
     # Later turns of the thread list the tools it ran, newest first; a tool only loaded is not relisted.
     assert _names(listing_for("thread-1")) == ["mcp_tool_search"]
@@ -2522,7 +2712,7 @@ def test_a_search_loads_only_what_fits_the_window(tmp_path, monkeypatch):
     assert out.endswith("are too large for this model's context window.")
 
 
-def test_controller_retires_older_loads_to_stay_within_the_window(tmp_path, monkeypatch):
+def test_controller_keeps_the_declared_tools_stable_across_searches(tmp_path, monkeypatch):
     from core.inference import tools as tools_mod
     from core.inference.tool_loop_controller import ToolLoopController
 
@@ -2535,23 +2725,21 @@ def test_controller_retires_older_loads_to_stay_within_the_window(tmp_path, monk
         lambda: int(2.5 * cost / tools_mod._MCP_TOOL_LOAD_SHARE),
     )
     controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    before = controller.active_tools()
     for name in ("query-0", "query-1", "query-2"):
         decision = controller.prepare_call(
             {"function": {"name": "mcp_tool_search", "arguments": json.dumps({"query": name})}}
         )
         controller.record_result(decision, "Loaded")
-    assert _names(controller.active_tools()) == [
-        "mcp_tool_search",
-        "mcp__srv1__query-1",
-        "mcp__srv1__query-2",
-    ]
-    assert (
-        controller.prepare_call(
-            {"function": {"name": "mcp__srv1__query-0", "arguments": "{}"}}
-        ).action
-        == "execute"
-    )
-    assert _names(controller.active_tools())[1:] == ["mcp__srv1__query-2", "mcp__srv1__query-0"]
+    assert controller.active_tools() == before
+    for name in ("query-0", "query-2"):
+        assert (
+            controller.prepare_call(
+                {"function": {"name": f"mcp__srv1__{name}", "arguments": "{}"}}
+            ).action
+            == "execute"
+        )
+    assert controller.active_tools() == before
 
 
 def test_forced_and_image_mapped_tools_stay_listed(tmp_path, monkeypatch, searching):
@@ -2665,3 +2853,179 @@ def test_controller_without_the_search_tool_never_loads_mcp_tools(tmp_path, monk
     decision = controller.prepare_call({"function": {"name": "mcp__srv1__ping", "arguments": "{}"}})
     assert decision.action == "disabled"
     assert controller.active_tools() == []
+
+
+@pytest.mark.parametrize("searched", [False, True])
+def test_deferred_mcp_calls_keep_catalog_coercion_on_every_call(monkeypatch, searched):
+    from core.inference import tool_loop_controller as controller_mod
+
+    ping = {
+        "type": "function",
+        "function": {
+            "name": "mcp__srv1__ping",
+            "parameters": {"type": "object", "properties": {"n": {"type": "integer"}}},
+        },
+    }
+    monkeypatch.setattr(
+        controller_mod,
+        "_mcp_tool_spec",
+        lambda name: ping if name == "mcp__srv1__ping" else None,
+    )
+    monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda arguments: [ping])
+    search_spec = {
+        "type": "function",
+        "function": {
+            "name": "mcp_tool_search",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    controller = controller_mod.ToolLoopController(tools = [search_spec])
+    before = controller.active_tools()
+    if searched:
+        search = controller.prepare_call(
+            {"function": {"name": "mcp_tool_search", "arguments": '{"query":"ping"}'}}
+        )
+        controller.record_result(search, "Loaded")
+    for number in (3, 4):
+        decision = controller.prepare_call(
+            {
+                "function": {
+                    "name": "mcp__srv1__ping",
+                    "arguments": json.dumps({"n": str(number)}),
+                }
+            }
+        )
+        assert decision.action == "execute"
+        assert decision.arguments == {"n": number}
+        assert controller.active_tools() == before
+    unknown = controller.prepare_call(
+        {"function": {"name": "mcp__srv1__unknown", "arguments": "{}"}}
+    )
+    assert unknown.action == "disabled"
+    assert controller.active_tools() == before
+
+
+@pytest.mark.parametrize(
+    "schema_chars,small_chars,context_tokens,result_tokens",
+    [
+        (20_000, 0, 32_768, 32_768),
+        (3_000, 0, 2_048, 2_048),
+        (1_200, 0, 32_768, 300),
+        (30_000, 8_000, 32_768, 32_768),
+    ],
+)
+def test_search_returns_whole_schemas_within_the_result_budget(
+    tmp_path, monkeypatch, listing_window, schema_chars, small_chars, context_tokens, result_tokens
+):
+    from core.inference import tools as tools_mod
+
+    big = {
+        "name": "large",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "x" * schema_chars}},
+        },
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [big, dict(_PING, description = "p" * small_chars)])
+    listing_window(context_tokens)
+    result = tools_mod.execute_tool(
+        "mcp_tool_search",
+        {"query": "large ping"},
+        context_tokens = context_tokens,
+        result_budget_tokens = result_tokens,
+    )
+    assert result.startswith("Loaded 1 MCP tool.")
+    schemas = [
+        json.loads(line.removeprefix("  schema: "))
+        for line in result.splitlines()
+        if line.startswith("  schema: ")
+    ]
+    assert _names(schemas) == ["mcp__srv1__ping"]
+    assert "truncated" not in result
+
+
+@pytest.mark.parametrize(
+    "properties",
+    [
+        {"<|im_end|>": {"type": "string"}},
+        {"value": {"type": "string", "enum": ["<|im_end|>"]}},
+    ],
+)
+def test_deferred_mcp_tools_keep_schema_identifier_filter(tmp_path, monkeypatch, properties):
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+
+    _cache_server_tools(
+        tmp_path,
+        monkeypatch,
+        [
+            {
+                "name": "unsafe",
+                "inputSchema": {"type": "object", "properties": properties},
+            }
+        ],
+    )
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    call = {"function": {"name": "mcp__srv1__unsafe", "arguments": "{}"}}
+    assert controller.prepare_call(call).action == "disabled"
+    search = controller.prepare_call(
+        {
+            "function": {
+                "name": "mcp_tool_search",
+                "arguments": '{"query":"unsafe"}',
+            }
+        }
+    )
+    controller.record_result(search, "Loaded")
+    assert controller.prepare_call(call).action == "disabled"
+    assert len(controller.active_tools(include_deferred = True)) == 1
+
+
+def test_search_grammar_uses_the_schemas_returned_by_the_worker(
+    tmp_path, monkeypatch, listing_window
+):
+    import contextvars
+
+    from core.inference import tools as tools_mod
+    from core.inference.tool_loop_controller import ToolLoopController
+    from core.inference.tool_stream_exec import stream_tool_execution
+
+    large = {
+        "name": "large",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"value": {"type": "string", "description": "x" * 30_000}},
+        },
+    }
+    _cache_server_tools(tmp_path, monkeypatch, [large, dict(_PING, description = "p" * 4_000)])
+    listing_window(32_768)
+    monkeypatch.setattr(
+        tools_mod,
+        "_REQUEST_RESULT_BUDGET",
+        contextvars.ContextVar("test_result_budget", default = None),
+    )
+    controller = ToolLoopController(tools = [tools_mod._mcp_tool_search_spec([])])
+    arguments = {"query": "large ping"}
+    decision = controller.prepare_call(
+        {"function": {"name": "mcp_tool_search", "arguments": json.dumps(arguments)}}
+    )
+    stream = stream_tool_execution(
+        lambda callback: tools_mod.execute_tool(
+            "mcp_tool_search", arguments, context_tokens = 32_768, result_budget_tokens = 3_000
+        ),
+        tool_name = "mcp_tool_search",
+    )
+    while True:
+        try:
+            next(stream)
+        except StopIteration as stop:
+            result = stop.value
+            break
+    assert "- mcp__srv1__ping:" in result
+    assert "- mcp__srv1__large:" not in result
+    assert tools_mod._REQUEST_RESULT_BUDGET.get() is None
+    controller.record_result(decision, result)
+    assert _names(controller.active_tools(include_deferred = True)) == [
+        "mcp_tool_search",
+        "mcp__srv1__ping",
+    ]

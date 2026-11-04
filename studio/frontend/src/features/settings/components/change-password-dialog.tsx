@@ -14,15 +14,17 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
+  fetchAuthStatus,
   getAuthToken,
   refreshSession,
   setMustChangePassword,
   storeAuthTokens,
+  useIsAccountOwner,
 } from "@/features/auth";
 import { useT } from "@/i18n";
-import { apiUrl } from "@/lib/api-base";
+import { apiUrl, isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 
 const MIN_PASSWORD_LENGTH = 8;
 const WRONG_CURRENT_PASSWORD_DETAIL = "Current password is incorrect";
@@ -193,13 +195,22 @@ async function requestPasswordChange(
  */
 export function ChangePasswordDialog({
   initial = false,
+  forAccountCreation = false,
   onDone,
+  open: controlledOpen,
+  onOpenChange,
 }: {
   initial?: boolean;
+  forAccountCreation?: boolean;
   onDone?: () => void;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const t = useT();
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const controlled = controlledOpen !== undefined;
+  const open = controlled ? controlledOpen : ownOpen;
+  const setOpen = (next: boolean) => (controlled ? onOpenChange?.(next) : setOwnOpen(next));
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -271,11 +282,13 @@ export function ChangePasswordDialog({
         }
       }}
     >
-      <DialogTrigger asChild={true}>
-        <Button variant="outline" size="sm" >
-          {copy.trigger}
-        </Button>
-      </DialogTrigger>
+      {controlled ? null : (
+        <DialogTrigger asChild={true}>
+          <Button variant="outline" size="sm" >
+            {copy.trigger}
+          </Button>
+        </DialogTrigger>
+      )}
       <DialogContent
         className="sm:max-w-sm"
         showCloseButton={!submitting}
@@ -292,8 +305,10 @@ export function ChangePasswordDialog({
       >
         <form onSubmit={submit}>
           <DialogHeader>
-            <DialogTitle>{copy.title}</DialogTitle>
-            <DialogDescription>{copy.description}</DialogDescription>
+            <DialogTitle>{forAccountCreation ? copy.submit : copy.title}</DialogTitle>
+            <DialogDescription>
+              {forAccountCreation ? t("settings.accounts.ownerPasswordDescription") : copy.description}
+            </DialogDescription>
           </DialogHeader>
           <div className="mt-4 space-y-3">
             {initial ? null : (
@@ -373,4 +388,28 @@ export function ChangePasswordDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** A Desktop owner still on the seeded password has none to give, so sets a first one instead. */
+export function useOwnPasswordPending(): [boolean, () => void] {
+  const owner = useIsAccountOwner();
+  const [initial, setInitial] = useState(false);
+  useEffect(() => {
+    if (!(isTauri && owner)) return;
+    let live = true;
+    void fetchAuthStatus()
+      .then((status) => {
+        if (live) setInitial(status.requires_password_change);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [owner]);
+  return [initial, () => setInitial(false)];
+}
+
+export function AccountPasswordDialog() {
+  const [initial, settled] = useOwnPasswordPending();
+  return <ChangePasswordDialog initial={initial} onDone={settled} />;
 }

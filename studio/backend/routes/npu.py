@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""NPU detection, setup and model management.
-
-Loading and chat use the inference routes. All routes here except status are owner-only.
-"""
+"""NPU detection, setup and models; all routes but status are owner-only; chat uses inference routes."""
 
 from __future__ import annotations
 

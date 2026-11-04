@@ -29,6 +29,8 @@ export interface DiffusionResolvedControl {
 
 export interface DiffusionStatus {
   loaded: boolean;
+  // False when the resident model belongs to another account; the response then carries nothing else.
+  yours?: boolean;
   repo_id: string | null;
   display_repo_id?: string | null;
   resident_mib?: number | null;
@@ -53,6 +55,7 @@ export interface DiffusionStatus {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   speed_optims?: string[];
   attention_backend?: string | null;
@@ -75,6 +78,8 @@ export interface DiffusionStatus {
   lora_after_reload?: boolean;
   // Whether the loaded model + quantisation can apply LoRA adapters (drives the LoRA picker enabled state).
   supports_lora?: boolean;
+  // Why supports_lora is false, shown in the LoRA slot when no reload would turn LoRA on.
+  lora_unavailable_reason?: string | null;
   supports_controlnet?: boolean;
   supports_negative_prompt?: boolean;
   // Whether the loaded model's inpaint pipeline can crop to the mask (diffusers padding_mask_crop).
@@ -311,6 +316,8 @@ export interface GalleryImage {
   batch_seed?: number | null;
   batch_index: number;
   batch_size: number;
+  generation_seconds?: number | null;
+  generation_count?: number | null;
   model: string | null;
   // The load-time build. The repo id alone does not identify a pipeline (quant choice, torchao
   // scheme, baked adapters), so these are what a recipe needs once the model is unloaded.
@@ -322,6 +329,7 @@ export interface GalleryImage {
   text_encoder_quant?: string | null;
   memory_mode?: string | null;
   offload_policy?: string | null;
+  denoiser_offload?: string | null;
   speed_mode?: string | null;
   attention_backend?: string | null;
   transformer_cache?: string | null;
@@ -444,6 +452,7 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
     /** Only the planner knows: a gated pick is staged from an ungated mirror under another repo id. */
     checkpoint?: boolean;
+    hosted_denoiser?: boolean;
   }[];
   total_bytes: number;
   required_bytes?: number;
@@ -688,7 +697,15 @@ export interface DiffusionTrainingStatus {
   grad_norm?: number | null;
   num_images: number | null;
   in_model_load: boolean;
+  model_load_stage?: "conditioning" | "transformer" | "quantizing" | null;
+  model_load_progress?: {
+    done: number;
+    total: number;
+    unit: "tensors" | "components" | "shards";
+    label: string;
+  } | null;
   preparation?: { stage?: string | null; done?: number | null; total?: number | null } | null;
+  download_progress?: { bytes_done: number; bytes_total: number; label?: string; scope?: "active_files" } | null;
   output_dir: string | null;
   lora_path: string | null;
   ema_path?: string | null;
@@ -825,6 +842,7 @@ export interface DiffusionTrainableFamily {
   supports_checkpoints?: boolean;
   // Absent on an older backend: "Sample every" hidden.
   supports_samples?: boolean;
+  is_video?: boolean;
   // Undefined on an older backend (control hidden).
   supports_bucketing?: boolean;
   /** 1 for a family whose forward covers one packed sequence; null/absent means unrestricted. */
