@@ -7191,7 +7191,6 @@ class _PrefillProgressSignal:
         self._decode_started = False
 
     def compacting(self) -> None:
-        """The context fit is evicting turns; shown until this pass's context_truncated or prefill arrives."""
         if self._live:
             # Cleared first: a figure from the last pass sent after this report would clear the label on the client.
             self.round_ended()

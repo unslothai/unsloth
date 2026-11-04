@@ -386,7 +386,6 @@ def _once(on_compacting):
 
 
 def _compaction_reporter(perf_callback):
-    """The live stream's compaction hook, or None for callbacks that cannot show it (monitor-only, non-UI)."""
     report = getattr(perf_callback, "compacting", None)
     return report if callable(report) else None
 

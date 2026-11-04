@@ -1764,7 +1764,6 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
-              // The round boundary, as in the live adapter.
               if (
                 caughtUp(update.run) &&
                 (chunk as { _toolEvent?: { type?: unknown } })._toolEvent?.type === "tool_end"

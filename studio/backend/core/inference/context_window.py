@@ -901,8 +901,7 @@ def fit_rolling_context(
     replay_only: bool = False,
     on_evict: Optional[Callable[[], None]] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
-    """Drops oldest turns; reserve_tokens never affects trimming; sticky_dropped replays the boundary.
-    on_evict runs once, just before turns past the replayed boundary are dropped."""
+    """Drops oldest turns; reserve_tokens never affects trimming; sticky_dropped replays the boundary."""
     if context_length <= 1:
         return messages, None
 

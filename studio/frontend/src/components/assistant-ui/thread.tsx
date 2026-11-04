@@ -7710,8 +7710,7 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// Between tool rounds the reply already has content, so the indicator above is gone while the next pass fits the
-// context, compacts it and processes the prompt. Shown until that pass streams its first part.
+// GeneratingIndicator's status for the gap after a tool result, until the next pass streams its first part.
 const NextRoundIndicator: FC = () => {
   const show = useAuiState(({ message }) =>
     betweenToolRounds(message.status?.type === "running", message.content),
@@ -7726,8 +7725,7 @@ const NextRoundIndicator: FC = () => {
   );
 };
 
-// Mounted only under a running reply waiting on the model (empty, or between tool rounds), so the thread's other
-// messages subscribe to nothing new.
+// Mounted only under a running reply waiting on the model, so the thread's other messages subscribe to nothing new.
 const GeneratingStatus: FC = () => {
   // Keyed like DiffusionCanvas: a first turn reads "__default" until the thread persists.
   const threadKey =

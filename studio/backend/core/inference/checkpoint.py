@@ -391,7 +391,7 @@ def fit_checkpoint_context(
     on_evict: Optional[Callable[[], None]] = None,
 ) -> tuple[list[dict], Optional[dict[str, Any]]]:
     """can_reset=False blocks new epochs (unsearchable reset loses data) but still replays one in force.
-    on_evict runs once, just before a new epoch drops turns; replaying the epoch in force does not call it."""
+    on_evict runs only when a new epoch drops turns, never for a replay."""
     if context_length <= 1:
         return messages, None
 
