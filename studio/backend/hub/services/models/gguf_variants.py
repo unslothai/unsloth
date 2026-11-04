@@ -1607,8 +1607,10 @@ async def get_gguf_variants_answer(
     hf_token = account_access.account_hf_token(hf_token)
     from core.inference.audio_cpp_models import is_umbrella_id
 
-    # An umbrella folder row is never a directory: its On Device row sends the row id as local_path.
-    if not local_path or is_umbrella_id(repo_id):
+    # An umbrella folder row is never a directory: its On Device row sends the row id as local_path,
+    # and so does an audio.cpp package repo's (YuE2), which must list as its packages.
+    row_id = bool(local_path) and local_path.strip().lower() == (repo_id or "").strip().lower()
+    if not local_path or is_umbrella_id(repo_id) or row_id:
         audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)
         if audio_cpp_answer is not None:
             return audio_cpp_answer
