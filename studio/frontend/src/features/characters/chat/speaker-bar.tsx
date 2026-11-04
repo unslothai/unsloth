@@ -92,7 +92,7 @@ export function RoleplaySpeakerBar() {
   const solo = !thread.group ? thread.cast[0] : null;
   return (
     <div
-      className="mb-2 flex items-center gap-1.5 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none]"
+      className="roleplay-speaker-bar relative mb-2 flex items-center gap-1.5 px-1 pb-0.5"
       role="toolbar"
       aria-label={t("characters.chat.nextReply")}
       data-testid="speaker-bar"
@@ -112,6 +112,8 @@ export function RoleplaySpeakerBar() {
       ) : (
         <>
           <span className="mr-1 shrink-0 text-ui-12 font-medium text-muted-foreground">{t("characters.chat.nextReply")}</span>
+          {/* Only the chips scroll, so Write my reply stays in reach however long the names are. */}
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)] [scrollbar-width:none]">
           {thread.cast.map((character) => {
             const speaking = runningSpeakerId === character.id;
             const isMuted = muted.has(character.id);
@@ -147,6 +149,7 @@ export function RoleplaySpeakerBar() {
               </Tooltip>
             );
           })}
+          </div>
         </>
       )}
       {canWrite ? (
@@ -154,7 +157,7 @@ export function RoleplaySpeakerBar() {
           type="button"
           disabled={running}
           onClick={() => void write()}
-          className={cn(CHIP, "ml-auto px-3", writing && "bg-primary/12 text-foreground")}
+          className={cn(CHIP, "ml-auto shrink-0 px-3", writing && "bg-primary/12 text-foreground")}
           title={t("characters.chat.writeHint", { name: thread.persona.name })}
           data-testid="write-my-reply"
         >

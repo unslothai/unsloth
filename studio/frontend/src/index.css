@@ -6724,3 +6724,17 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
   .novel-figure { transition: none; }
   .novel-figure-speaking { animation: none; }
 }
+
+/* The composer's bottom fade turns clear just where the speaker bar sits, so the bar brings its own
+   backdrop: messages scrolled up behind it stay out of the chips' way. */
+.roleplay-speaker-bar::before {
+  content: "";
+  position: absolute;
+  inset: -0.75rem -0.5rem -0.5rem;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(to top, var(--background) 72%, transparent);
+}
+.novel-dialogue .roleplay-speaker-bar::before {
+  background: linear-gradient(to top, color-mix(in oklab, var(--background) 80%, transparent) 72%, transparent);
+}
