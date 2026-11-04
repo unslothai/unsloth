@@ -1440,6 +1440,13 @@ def test_html_skips_native_hidden_subtrees(tmp_path, body, expected):
             "Before | After",
         ),
         ("<ol><li>Before<span hidden>Obsolete</li><li>After</li></ol>", "1. Before\n2. After"),
+        ("<table><caption><p hidden>Obsolete<tr><td>Current</table>", "Current"),
+        ("<p>A<textarea hidden><p>Obsolete</p></textarea>B</p>", "AB"),
+        ("<p>A<textarea hidden/>B</p>", "AB"),
+        (
+            "<p>A<span hidden><svg><foreignObject><div>Obsolete</div></foreignObject></svg></span>B</p>",
+            "AB",
+        ),
     ],
 )
 def test_html_hidden_scope_releases_visible_siblings(tmp_path, body, expected):

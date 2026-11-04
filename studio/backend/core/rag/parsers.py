@@ -58,6 +58,7 @@ _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 # atomic inline boxes separate neighbouring text without breaking the line
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
 _HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
+_HTML_RAW_TEXT = frozenset("iframe noembed noframes textarea title xmp".split())
 _HTML_LIST_TAGS = frozenset(("dir", "menu", "ol", "ul"))
 _HTML_LIST_FORMATS = {
     "1": "decimal",
@@ -70,8 +71,10 @@ _HTML_TABLE_DEPTH = 32
 _HTML_VOID_TAGS = frozenset(
     "area base br col embed hr img input link meta param source track wbr".split()
 )
+# includes the SVG / MathML integration points, whose HTML children keep their own scope
 _HTML_P_SCOPE = frozenset(
-    "applet button caption html marquee object select table td template th".split()
+    "annotation-xml applet button caption desc foreignobject html marquee mi mn mo ms mtext"
+    " object select table td template th title".split()
 )
 _HTML_TABLE_SCOPE = frozenset(("table", "template"))
 _HTML_CELL_CLOSERS = frozenset(("td", "th", "tr")) | _HTML_ROW_GROUPS
@@ -94,6 +97,10 @@ _HTML_IMPLIED_END = {
     "thead": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
     "tbody": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
     "tfoot": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "caption": (
+        frozenset(("caption", "col", "colgroup", "td", "th", "tr")) | _HTML_ROW_GROUPS,
+        _HTML_TABLE_SCOPE,
+    ),
     "option": (
         frozenset(("option", "optgroup", "hr")),
         frozenset(("select", "datalist", "template")),
@@ -106,7 +113,7 @@ _HTML_IMPLIED_BY = {
     for tag in frozenset().union(*(closers for closers, _ in _HTML_IMPLIED_END.values()))
 }
 # other optional-end elements have no tracked end, so a hidden one would swallow the rest
-_HTML_HIDDEN_IGNORED = frozenset("body caption colgroup head html optgroup rb rp rt rtc".split())
+_HTML_HIDDEN_IGNORED = frozenset("body colgroup head html optgroup rb rp rt rtc".split())
 
 
 class _HtmlPre(str):
@@ -318,6 +325,9 @@ class _Stripper(HTMLParser):
             if hidden and self._hidden_at is None:
                 self._hidden_at = index
         if self._hidden_at is not None or hidden:
+            if tag in _HTML_RAW_TEXT:
+                # older HTMLParser versions parse these as markup, so hidden tags inside could end the scope
+                self.set_cdata_mode(tag)
             return
         if tag == "template":
             # declarative shadow roots render; other templates are inert
@@ -368,6 +378,8 @@ class _Stripper(HTMLParser):
 
     def handle_startendtag(self, tag, attrs):
         self.handle_starttag(tag, attrs)
+        if tag in _HTML_RAW_TEXT:
+            self.clear_cdata_mode()
         # no synthesized </br> or </input> end for a hidden void element
         if tag not in _HTML_VOID_TAGS or not _html_hidden(tag, attrs):
             self.handle_endtag(tag)
