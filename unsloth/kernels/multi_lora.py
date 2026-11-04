@@ -1470,6 +1470,10 @@ def set_multi_lora_batch(
         seg = layer.batch.seg_start
         present = (seg[1:] - seg[:-1]) > 0
         layer.seen = present if layer.seen is None else layer.seen | present
+        if isinstance(layer, MultiLoraExpertParam):
+            # MoE experts route by host-side token groups: build them now so a compiled forward only reads
+            # them (a .tolist() inside fullgraph cannot guard on the data-dependent split).
+            _adapter_groups(layer.batch)
     return next(iter(by_device.values()))
 
 
