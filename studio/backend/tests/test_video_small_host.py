@@ -415,3 +415,38 @@ def test_a_split_plan_whose_source_cast_fails_is_left_to_the_normal_load(pipe_di
     pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
     V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
     assert ("transformer", "cuda") not in calls and "transformer" not in pipe_kwargs
+
+
+def test_a_lone_dit_too_big_for_the_card_is_still_cast_from_its_shards(pipe_dir, monkeypatch):
+    """Nothing else staged: the plan is not engaged, but a skipped component too big for the card and the host still
+    takes the source cast, so the load maps it instead of converting it densely."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 20000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    _wire(monkeypatch, available = 3000, total = 13000)
+    monkeypatch.setattr(VS, "_STAGE_MIN_MIB", 512)
+    written = []
+    real = CC.save_from_source
+    monkeypatch.setattr(
+        CC,
+        "save_from_source",
+        lambda cand, **kw: written.append(cand.component) or real(cand, **kw),
+    )
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert written == ["transformer"] and "transformer" in pipe_kwargs
+
+
+def test_a_transformers_encoder_over_the_card_is_not_split_planned():
+    """Its cast cannot be written from the source shards (diffusers components only), so it is skipped and the
+    planner goes on to stage the DiT, as before the split path existed."""
+    plan = VS.plan_stage(
+        WAN13,
+        available_mib = 16000,
+        reserve_mib = 3000,
+        device_free_mib = 11000,
+        source_castable = {"transformer"},
+    )
+    assert "text_encoder" in plan.skipped and plan.split == {}
+    assert plan.stage == ("transformer",)

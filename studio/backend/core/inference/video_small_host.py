@@ -17,7 +17,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 SMALL_HOST_ENV = "UNSLOTH_VIDEO_SMALL_HOST"
 _MIB = 1024 * 1024
@@ -98,10 +98,13 @@ def plan_stage(
     forced: bool = False,
     disabled: bool = False,
     others_mib: int = 0,
+    source_castable: Optional[Iterable] = None,
 ) -> StagePlan:
     """``misses``: component -> loaded MiB. Stage largest first until the rest fits host RAM; ``others_mib`` is what
     the same load converts in host RAM besides them (it cannot be staged, so it is priced, not moved). A miss larger
-    than the card is staged split: the card holds what fits, host RAM the rest (when that rest fits)."""
+    than the card is staged split: the card holds what fits, host RAM the rest (when that rest fits). Only a
+    component in ``source_castable`` (None = every one) can be split, since its cast is written from the source
+    shards; any other one too big for the card is skipped and the planner moves on."""
     if disabled:
         return StagePlan(False, f"{SMALL_HOST_ENV}=0")
     sizes = {k: int(v) for k, v in misses.items() if v is not None}
@@ -149,6 +152,7 @@ def plan_stage(
         )
         if (
             card is not None
+            and (source_castable is None or name in source_castable)
             and card >= _STAGE_MIN_MIB
             and host_room is not None
             and mib - card <= host_room
@@ -325,6 +329,9 @@ def stage_misses(
             forced = stage_forced(),
             disabled = stage_disabled(),
             others_mib = others_mib,
+            source_castable = {
+                c.component for c in cands if getattr(c, "library", None) == "diffusers"
+            },
         )
         if logger is not None and (plan.engaged or plan.skipped or misses):
             logger.info(
@@ -358,11 +365,12 @@ def stage_misses(
                 continue
             if stage_on_device(by_name[name], device, logger = logger, cancel_check = cancel_check):
                 done.append(name)
-        if plan.engaged and plan.skipped and not stage_disabled():
+        if plan.skipped and not stage_disabled():
             # Neither the card nor a card / host split takes it: write its cast from the source shards one tensor at a
-            # time, so the load maps the cached file instead of converting the whole component in host RAM.
-            for name in plan.skipped:
-                if name not in by_name:
+            # time, so the load maps the cached file instead of converting the whole component in host RAM. This runs
+            # even when nothing else was staged (a lone DiT too big for the card is the case it is for).
+            for name, why in plan.skipped.items():
+                if name not in by_name or why == "small":
                     continue
                 if cancel_check is not None:
                     cancel_check()
