@@ -319,6 +319,11 @@ def _mlx_choice(
     return target
 
 
+def _local_folder(checkpoint: Checkpoint) -> Path:
+    root = Path(checkpoint.source).expanduser()
+    return root / checkpoint.subfolder if checkpoint.subfolder else root
+
+
 def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
     """The llama.cpp form of an entry: ggml-org's GGUF for a stock Clef, a current export for a Clef or Laya folder, a GGUF entry itself."""
     if checkpoint.layout == GGUF:
@@ -328,7 +333,7 @@ def _native_target(checkpoint: Checkpoint) -> Checkpoint | None:
     if checkpoint.is_local:
         from .gguf_export_contract import served_files
 
-        files = served_files(Path(checkpoint.source).expanduser(), checkpoint.layout)
+        files = served_files(_local_folder(checkpoint), checkpoint.layout)
         if files is None:
             return None
         return dataclasses.replace(
@@ -362,7 +367,7 @@ def _native_files(checkpoint: Checkpoint, local_only: bool) -> tuple[Path, Path 
     if checkpoint.is_local:
         from .gguf_export_contract import served_files
 
-        files = served_files(Path(checkpoint.source).expanduser(), checkpoint.layout)
+        files = served_files(_local_folder(checkpoint), checkpoint.layout)
         if files is None:
             raise FileNotFoundError(f"No current GGUF export in {checkpoint.source}")
         return files[1], files[2]
@@ -682,7 +687,7 @@ def input_modalities(checkpoint) -> list[str]:
 def _native_reads_images(native: Checkpoint) -> bool:
     if native.is_local:
         from .gguf_export_contract import served_files
-        files = served_files(Path(native.source).expanduser(), native.layout)
+        files = served_files(_local_folder(native), native.layout)
         return files is not None and files[2] is not None
     return bool(GGUF_COMPANIONS[native.name].mmproj)
 
@@ -1188,7 +1193,7 @@ def _stock_laya(checkpoint) -> bool:
 
 def _laya_config(checkpoint: Checkpoint) -> dict[str, Any]:
     import json
-    config = Path(checkpoint.source).expanduser() / "rl_agent_config.json"
+    config = _local_folder(checkpoint) / "rl_agent_config.json"
     return json.loads(config.read_text(encoding = "utf-8"))
 
 
@@ -1199,7 +1204,7 @@ def _export_counter(checkpoint: Checkpoint):
 
     from tokenizers import Tokenizer
 
-    folder = Path(checkpoint.source).expanduser() / "tokenizer"
+    folder = _local_folder(checkpoint) / "tokenizer"
     mask = json.loads((folder / "tokenizer_config.json").read_text(encoding = "utf-8"))["mask_token"]
     tokenizer = Tokenizer.from_file(str(folder / "tokenizer.json"))
 

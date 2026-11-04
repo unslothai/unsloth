@@ -1442,6 +1442,19 @@ def test_a_laya_fine_tune_stays_on_pytorch_without_a_usable_export(home, client,
     assert laya_runtime.select(stock, preference = "llama.cpp") == (stock, None)
 
 
+def test_a_local_laya_export_is_read_from_its_subfolder(home, client, stub):
+    root = _laya_fine_tune(home.outputs, "local_root")
+    inner = _laya_fine_tune(root, "inner")
+    laya = catalog.Checkpoint(catalog.LOCAL_NAME, str(root), "inner", "Local Laya checkpoint.")
+    native = laya_runtime.select(laya, preference = "llama.cpp")[0]
+    assert native.backend == "llama.cpp"
+    assert (
+        laya_runtime._native_files(native, local_only = True)[0] == inner / "gguf" / "model-Q8_0.gguf"
+    )
+    (inner / "gguf" / contract.EXPORT_FILE).unlink()
+    assert laya_runtime.select(laya, preference = "llama.cpp") == (laya, None)
+
+
 def test_a_laya_export_refuses_what_llama_cpp_cannot_take(home, client, stub, monkeypatch):
     laya = catalog.fine_tune(f"laya-ft:{_laya_fine_tune(home.outputs).name}")
     gap = {"q": {"type": "score", "instructions": "x", "criteria": ["only"]}}
