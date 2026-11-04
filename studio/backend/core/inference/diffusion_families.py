@@ -1223,7 +1223,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         comfy_flow_shift = 1.0,
         scheduler_overrides = (("use_beta_sigmas", True),),
         aliases = ("chroma1", "chroma1-hd", "chroma-hd"),
-        prompt_hint = "Natural-language prompts; describe what to avoid in the negative prompt.",
         fp16_incompatible = True,
     ),
     # Anima (CircleStone Labs): a Cosmos-Predict2 DiT driven by a Qwen3-0.6B encoder through an LLM adapter, on the
@@ -1236,7 +1235,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "CosmosTransformer3DModel",
         base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
         aliases = ("anima-base", "anima-2.9b"),
-        prompt_hint = "Booru tags or natural language; start with 'masterpiece, best quality'. No score tags.",
         gguf_loadable = False,
         fp16_incompatible = True,
     ),

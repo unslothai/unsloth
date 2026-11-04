@@ -61,7 +61,10 @@ EXPECTED_NODES = {
     "hunyuanimage-2.1": SHIFT_NODE_SD3,
     "hidream-i1": SHIFT_NODE_SD3,
     "moss-image": SHIFT_NODE_SD3,
-    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching.
+    "chroma": SHIFT_NODE_SD3,  # the template's ModelSamplingAuraFlow is the same time_snr_shift
+    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching, Anima runs its modular
+    # pipeline's scheduler (shift 3, as ComfyUI).
+    "anima": None,
     "ideogram-4": None,
     "sdxl": None,
 }
