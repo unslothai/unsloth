@@ -30,7 +30,7 @@ def _replacement(
     blocksize = None,
     quant_type = "fp4",
 ):
-    if not torch.compiler.is_compiling() or not _enabled() or not _UTILS._USE_NF4_KERNELS:
+    if not _enabled() or not _UTILS._USE_NF4_KERNELS:
         return _ORIGINAL(A, quant_state, absmax, out, blocksize, quant_type)
     s = quant_state
     valid = (
@@ -76,7 +76,9 @@ def _replacement(
                 tensors += (t.code, t.absmax, s.offset)
         else:
             valid = s.absmax.dtype == torch.float32 and s.absmax.numel() == blocks
-        valid = valid and all(v.device == A.device and v.is_contiguous() for v in tensors)
+        # Dynamo cannot inline generators inside an autograd.Function backward.
+        for v in tensors:
+            valid = valid and v.device == A.device and v.is_contiguous()
         if out is not None:
             valid = valid and (
                 isinstance(out, torch.Tensor)
@@ -113,13 +115,13 @@ def install_bnb_nf4_dequant():
         if not utils._USE_NF4_KERNELS:
             return False
         import bitsandbytes.functional as functional
-        from .nf4 import dequantize_nf4
+        from .bnb_nf4_ops import dequantize_nf4
 
         state_type = getattr(functional, "QuantState", None)
         if not isinstance(state_type, type):
             return False
         current = functional.dequantize_4bit
-        if current is _replacement:
+        if inspect.unwrap(current, stop = lambda fn: fn is _replacement) is _replacement:
             return True
         signature = inspect.signature(current)
         if tuple(signature.parameters) != _NAMES:

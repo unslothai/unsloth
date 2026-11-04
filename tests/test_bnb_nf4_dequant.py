@@ -66,13 +66,26 @@ with patch.object(torch.version, "hip", None):
     assert wrapped.__wrapped__ is original and inspect.signature(wrapped) == inspect.signature(original)
     assert M.install_bnb_nf4_dequant() and functional.dequantize_4bit is wrapped
     value = torch.ones(2, 4); state = functional.QuantState()
+    state.quant_type = "nf4"; state.nested = True
     assert torch.equal(wrapped(value, state, quant_type="nf4"), value + 7)
     assert calls[-1][0] is value and calls[-1][1:] == (state, None, None, None, "nf4")
+    import functools
+    for kind in ("wraps", "wrapped", "compile"):
+        def outer(*args, **kwargs):
+            return wrapped(*args, **kwargs)
+        if kind == "wraps": functools.update_wrapper(outer, wrapped)
+        elif kind == "wrapped": outer.__wrapped__ = wrapped
+        else: outer = torch.compile(wrapped, backend="eager", fullgraph=True)
+        functional.dequantize_4bit = outer
+        print("WRAPPED_REINSTALL_BEGIN", kind, flush=True)
+        assert M.install_bnb_nf4_dequant()
+        assert torch.equal(outer(value), value + 7), "WRAPPED_REINSTALL"
+        assert functional.dequantize_4bit is outer and M._ORIGINAL is original
+        functional.dequantize_4bit = wrapped
     os.environ["UNSLOTH_DECODE_FUSED_NF4"] = "force"; assert M.install_bnb_nf4_dequant()
     assert torch.equal(wrapped(value), value + 7)
     os.environ["UNSLOTH_DECODE_FUSED_NF4"] = "0"; assert torch.equal(wrapped(value), value + 7)
     M.uninstall_bnb_nf4_dequant(); assert functional.dequantize_4bit is original
-    import functools
     def legacy(A, quant_state=None, absmax=None, out=None, blocksize=64, quant_type="fp4"):
         if blocksize not in (64, 128, 256, 512, 1024, 2048, 4096):
             raise ValueError(blocksize)
@@ -98,6 +111,58 @@ with patch.object(torch.version, "hip", None):
     assert functional.dequantize_4bit is required
 assert not torch.cuda.is_initialized()
 print("PUBLIC DEQUANT CPU OK")
+""")
+_COMPILE_CPU = _SETUP + textwrap.dedent(r"""
+import ast
+from pathlib import Path
+try:
+    import bitsandbytes as bnb
+    import bitsandbytes.functional as BF
+    q, s = BF.quantize_4bit(torch.ones(2, 64), blocksize=64,
+        quant_type="nf4", compress_statistics=True)
+except (ImportError, NotImplementedError, RuntimeError) as exc:
+    print("PUBLIC DEQUANT COMPILE CPU UNAVAILABLE", repr(exc), flush=True)
+    sys.exit(77)
+source = ast.parse(Path(M.__file__).read_text())
+fn = next(n for n in source.body if isinstance(n, ast.FunctionDef) and n.name == "_replacement")
+class CPUDevice(ast.NodeTransformer):
+    def visit_Constant(self, node):
+        return ast.copy_location(ast.Constant("cpu"), node) if node.value == "cuda" else node
+# Retarget only the device predicate; trace the real eligibility code inside backward.
+exec(compile(ast.fix_missing_locations(CPUDevice().visit(ast.Module(body=[fn], type_ignores=[]))), M.__file__, "exec"), M.__dict__)
+M._STATE = BF.QuantState; M._UTILS = types.SimpleNamespace(_USE_NF4_KERNELS=True)
+def fallback(*args, **kwargs):
+    raise AssertionError("COMPILED_ELIGIBILITY_FELL_BACK")
+def fast(A, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, out=None):
+    # The CPU checkpoint is exactly ones; GPU arithmetic is checked separately.
+    return torch.ones(shape, dtype=dtype, device=A.device)
+M._ORIGINAL = fallback; M._FAST = fast
+os.environ["UNSLOTH_DECODE_FUSED_NF4"] = "1"
+os.environ["UNSLOTH_BNB_TRITON"] = "1"; os.environ["UNSLOTH_BNB_NF4_LINEAR"] = "auto"
+value = torch.ones(3, 64, requires_grad=True)
+def call(value):
+    return bnb.matmul_4bit(value, q.t(), quant_state=s)
+eager = call(value); eager.sum().backward()
+eager_y = eager.detach().clone(); eager_grad = value.grad.clone(); value.grad = None
+stock = torch.compile(call, backend="eager", fullgraph=True)(value)
+stock.sum().backward()
+stock_y = stock.detach().clone(); stock_grad = value.grad.clone(); value.grad = None
+assert torch.equal(stock_y, eager_y) and torch.equal(stock_grad, eager_grad)
+torch._dynamo.reset()
+BF.dequantize_4bit = M._replacement
+run = torch.compile(call, backend="eager", fullgraph=True)
+print("COMPILED_ELIGIBILITY_BEGIN", flush=True)
+actual = run(value); actual.sum().backward()
+assert torch.equal(actual, stock_y) and torch.equal(value.grad, stock_grad)
+assert torch.equal(actual, torch.full((3, 2), 64.))
+assert torch.equal(value.grad, torch.full_like(value, 2))
+assert not torch._dynamo.utils.counters["graph_break"], torch._dynamo.utils.counters["graph_break"]
+graphs = dict(torch._dynamo.utils.counters["stats"])
+value.grad = None; run(value).sum().backward()
+assert torch.equal(value.grad, stock_grad)
+assert dict(torch._dynamo.utils.counters["stats"]) == graphs
+assert not torch.cuda.is_initialized()
+print("PUBLIC DEQUANT COMPILE CPU OK")
 """)
 _GPU = _SETUP + textwrap.dedent(r"""
 os.environ["UNSLOTH_DECODE_FUSED_NF4"] = "1"
@@ -126,8 +191,10 @@ def check(q, s, eligible):
     fn = lambda value: BF.dequantize_4bit(value, s)
     reference_eager = original(q, s).clone()
     reference_compiled = torch.compile(lambda value: original(value, s), fullgraph=True)(q).clone()
-    with patch.object(M, "_FAST", side_effect=AssertionError("eager fast call")):
-        assert bits(fn(q), reference_eager), ("DEQUANT_EAGER_EXACT", s.code.dtype)
+    assert bits(fn(q), reference_eager), ("DEQUANT_EAGER_EXACT", s.code.dtype)
+    with patch.dict(os.environ, {"UNSLOTH_DECODE_FUSED_NF4": "0"}):
+        with patch.object(M, "_FAST", side_effect=AssertionError("disabled fast call")):
+            assert bits(fn(q), reference_eager), ("DEQUANT_DISABLED_EXACT", s.code.dtype)
     engaged = has_nf4(fn, q)
     run = torch.compile(fn, fullgraph=True)
     actual = run(q)
@@ -143,8 +210,9 @@ with torch.inference_mode():
     for dtype in (torch.float16, dtype2, torch.float32):
         q, s = quant(dtype)
         check(q, s, True); check(q.t(), s, True)
-        with patch.object(M, "_FAST", side_effect=AssertionError("eager fast call")):
+        with patch.object(M, "_FAST", wraps=M._FAST) as fast:
             assert bits(BF.dequantize_4bit(q, s), original(q, s))
+            assert fast.call_count == 1, "EAGER_DEQUANT_ENGAGEMENT"
     q, s = quant(torch.float32)
     previous = torch.get_default_dtype()
     try:
@@ -177,9 +245,10 @@ with torch.inference_mode():
         except torch._dynamo.exc.TorchRuntimeError as error:
             assert "bitsandbytes.dequantize_4bit.out" in str(error) and "Expected out.shape" in str(error), str(error)
             print("STOCK_COMPILED_OUT_SHAPE_ERROR", nested, flush=True)
-        with patch.object(M, "_FAST", side_effect=AssertionError("eager out fast call")):
+        with patch.object(M, "_FAST", wraps=M._FAST) as fast:
             eager = fn(q)
             assert eager.data_ptr() == out.data_ptr() and bits(eager, reference_eager)
+            assert fast.call_count == 1, "EAGER_OUT_ENGAGEMENT"
         print("COMPILED_OUT_BEGIN", nested, flush=True)
         assert has_nf4(fn, q), ("DEQUANT_OUT_ENGAGEMENT", nested)
         run = torch.compile(fn, fullgraph=True)
@@ -233,12 +302,15 @@ print("PUBLIC DEQUANT GPU EXACT OK")
 """)
 
 
-def _run(code):
+def _run(code, gpu = False):
+    env = dict(os.environ)
+    if not gpu:
+        env.update(CUDA_VISIBLE_DEVICES = "", HIP_VISIBLE_DEVICES = "", ROCR_VISIBLE_DEVICES = "")
     return subprocess.run(
         [sys.executable, "-c", code, str(REPO)],
         text = True,
         capture_output = True,
-        env = dict(os.environ),
+        env = env,
         timeout = 420,
     )
 
@@ -250,11 +322,96 @@ def test_bnb_dequant_installer_cpu():
     )
 
 
+def test_bnb_dequant_compiled_backward_eligibility_cpu():
+    proc = _run(_COMPILE_CPU)
+    if proc.returncode == 77 and "PUBLIC DEQUANT COMPILE CPU UNAVAILABLE" in proc.stdout:
+        pytest.skip(proc.stdout)
+    assert proc.returncode == 0 and "PUBLIC DEQUANT COMPILE CPU OK" in proc.stdout, (
+        proc.stdout + proc.stderr
+    )
+
+
 @pytest.mark.skipif(
     not has_real_cuda() or torch.version.hip is not None, reason = "needs NVIDIA CUDA"
 )
 def test_bnb_dequant_actual_backend_on_gpu():
-    proc = _run(_GPU)
+    proc = _run(_GPU, gpu = True)
     assert proc.returncode == 0 and "PUBLIC DEQUANT GPU EXACT OK" in proc.stdout, (
+        proc.stdout + proc.stderr
+    )
+
+
+_OPS_CPU = _SETUP + textwrap.dedent(r"""
+from torch._subclasses.fake_tensor import FakeTensorMode
+from torch.fx.experimental.proxy_tensor import make_fx
+raw_calls = []
+raw_forbidden = False
+def raw(W, absmax, code2, absmax2, offset, code, blocksize, blocksize2, shape, dtype, out=None):
+    if torch.compiler.is_compiling():
+        result = torch.full(shape, 7, dtype=dtype, device=W.device)
+        return result if out is None else out.copy_(result)
+    if raw_forbidden:
+        raise AssertionError("RAW_FAKE_PROXY_LAUNCH")
+    raw_calls.append((W.device, out))
+    if out is None:
+        out = torch.empty(shape, dtype=dtype, device=W.device)
+    out.fill_(7)
+    return out
+nf4 = types.ModuleType("bdq.nf4"); nf4.dequantize_nf4 = raw
+sys.modules["bdq.nf4"] = nf4
+O = importlib.import_module("bdq.bnb_nf4_ops")
+def inputs(device):
+    return (torch.empty((32, 1), dtype=torch.uint8, device=device),
+        torch.empty((1,), device=device), torch.empty((16,), device=device))
+def call(W, absmax, code, out=None):
+    return O.dequantize_nf4(W, absmax, None, None, None, code, 64, 0,
+        (2, 32), torch.float32, out=out)
+args = inputs("cpu")
+for context in (torch.no_grad, torch.inference_mode):
+    with context():
+        result = call(*args)
+        assert result.shape == (2, 32) and result.dtype == torch.float32
+        assert torch.equal(result, torch.full_like(result, 7))
+        out = torch.empty_like(result)
+        assert call(*args, out=out) is out and raw_calls[-1][1] is out
+        assert torch.equal(out, result)
+assert len(raw_calls) == 4
+raw_forbidden = True
+with FakeTensorMode():
+    fake_args = inputs("cuda:1")
+    fake_out = torch.empty((2, 32), device="cuda:1")
+    assert call(*fake_args, out=fake_out) is fake_out
+    result = call(*fake_args)
+    assert result.device == torch.device("cuda:1") and result.shape == (2, 32)
+    assert result.dtype == torch.float32
+assert len(raw_calls) == 4
+proxy_out = torch.empty((2, 32))
+traced = make_fx(lambda W, absmax, code, out: call(W, absmax, code, out),
+    tracing_mode="fake")(*args, proxy_out)
+assert any("unsloth.bnb_nf4_dequantize_out" in str(n.target) for n in traced.graph.nodes)
+assert len(raw_calls) == 4
+raw_forbidden = False
+assert traced(*args, proxy_out) is proxy_out
+assert torch.equal(proxy_out, torch.full_like(proxy_out, 7)) and len(raw_calls) == 5
+graphs = []
+def backend(graph, example_inputs):
+    graphs.append(graph)
+    return graph.forward
+run = torch.compile(lambda W, absmax, code: call(W, absmax, code),
+    backend=backend, fullgraph=True, dynamic=True)
+for _ in range(4):
+    assert torch.equal(run(*args), torch.full((2, 32), 7.))
+assert len(graphs) == 1
+assert not any("bnb_nf4_dequantize_out" in str(n.target) for n in graphs[0].graph.nodes)
+assert len(raw_calls) == 5
+assert not torch._dynamo.utils.counters["graph_break"]
+assert not torch.cuda.is_initialized()
+print("PUBLIC NF4 OPS CPU OK")
+""")
+
+
+def test_bnb_nf4_ops_dispatch_cpu():
+    proc = _run(_OPS_CPU)
+    assert proc.returncode == 0 and "PUBLIC NF4 OPS CPU OK" in proc.stdout, (
         proc.stdout + proc.stderr
     )
