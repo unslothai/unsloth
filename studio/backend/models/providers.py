@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import re
 from typing import Literal, Optional
+from urllib.parse import quote
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, field_validator
 
@@ -51,6 +52,7 @@ _MAX_HEADER_VALUE = 1024
 _HEADER_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 # httpx encodes header values as ASCII; anything else fails every request to the connection.
 _HEADER_VALUE_RE = re.compile(r"^[\t\x20-\x7e]*$")
+_HEADER_SAFE_CHARS = "".join(chr(c) for c in range(0x20, 0x7F) if chr(c) != "%")
 _HEADER_TEMPLATE_RE = re.compile(r"\{\{\s*([A-Z][A-Z0-9_]*)\s*\}\}")
 _FORBIDDEN_EXTRA_HEADERS = frozenset(
     {
@@ -95,7 +97,8 @@ def normalize_provider_extra_headers(value) -> dict[str, str]:
             raise ValueError(f"Header {name!r} must be printable ASCII on one line.")
         if len(raw_value) > _MAX_HEADER_VALUE:
             raise ValueError(f"Header {name!r} is too long.")
-        headers[name] = raw_value
+        # h11 refuses a value with surrounding whitespace.
+        headers[name] = raw_value.strip(" \t")
     return headers
 
 
@@ -108,9 +111,13 @@ def render_provider_extra_headers(
     values = variables or {}
 
     def replace(match: re.Match[str]) -> str:
-        return values.get(match.group(1), "")
+        # Substituted ids and model names are arbitrary text; percent-encode what httpx cannot send.
+        return quote(values.get(match.group(1), ""), safe = _HEADER_SAFE_CHARS)
 
-    return {name: _HEADER_TEMPLATE_RE.sub(replace, value) for name, value in headers.items()}
+    return {
+        name: _HEADER_TEMPLATE_RE.sub(replace, value).strip(" \t")
+        for name, value in headers.items()
+    }
 
 
 class ProviderRegistryEntry(BaseModel):

@@ -221,3 +221,38 @@ def test_saved_extra_headers_helper_honours_api_keys(monkeypatch):
     assert inf_mod._saved_extra_headers(row, object()) == row["extra_headers"]
     monkeypatch.setattr(inf_mod, "_request_has_api_key", lambda _r: True)
     assert inf_mod._saved_extra_headers(row, object()) == {}
+
+
+def test_values_are_trimmed_and_substitutions_stay_sendable():
+    assert normalize_provider_extra_headers({"X-Token": " secret "}) == {"X-Token": "secret"}
+    rendered = render_provider_extra_headers(
+        {"X-Session": "unsloth-{{CHAT_SESSION_ID}}", "X-Model": "{{MODEL}} "},
+        {"CHAT_SESSION_ID": "会話-1\r\n", "MODEL": ""},
+    )
+    assert rendered == {"X-Session": "unsloth-%E4%BC%9A%E8%A9%B1-1%0D%0A", "X-Model": ""}
+    httpx.Request("GET", "http://x", headers = rendered)
+
+
+@pytest.mark.parametrize("allow_saved_key", [True, False])
+def test_container_client_keeps_the_connection_scope(monkeypatch, allow_saved_key):
+    from models.inference import OpenAIContainerRequest
+    from routes import inference as inf_mod
+
+    row = {
+        "id": "openai-1",
+        "provider_type": "openai",
+        "display_name": "OpenAI",
+        "base_url": "https://api.openai.com/v1",
+        "is_enabled": True,
+        "extra_headers": {"OpenAI-Project": "proj_123"},
+    }
+    monkeypatch.setattr(inf_mod.providers_db, "get_provider", lambda _pid: dict(row))
+    monkeypatch.setattr(inf_mod, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test")
+    captured = {}
+    monkeypatch.setattr(inf_mod, "ExternalProviderClient", lambda **kw: captured.update(kw))
+    inf_mod._resolve_openai_cloud_client(
+        OpenAIContainerRequest(provider_id = "openai-1"), allow_saved_key = allow_saved_key
+    )
+    assert captured.get("extra_headers") == (
+        {"OpenAI-Project": "proj_123"} if allow_saved_key else None
+    )
