@@ -1806,3 +1806,38 @@ def test_a_job_that_starts_during_a_list_request_is_listed_once(queue, monkeypat
     job, page = _run(flow())
     assert [(j.id, j.status) for j in page.data] == [(job.id, "validating_files")]
     assert page.has_more is False
+
+
+def test_a_cursor_on_a_job_that_starts_during_the_request_still_pages(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+    status_read = training_routes.get_training_status
+
+    def history_row(run_id, started_at):
+        studio_db.create_run(
+            id = run_id,
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_name = "chats.jsonl",
+            config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+            started_at = started_at,
+            total_steps = 4,
+        )
+
+    async def start_mid_request(current_subject, via_api_key):
+        if openai_fine_tuning._QUEUE:
+            gpu["busy"] = False
+            await openai_fine_tuning._drain_once()
+            history_row("job_20261021_101500_ab12cd34", "2026-11-04T00:00:00+00:00")
+        return await status_read(current_subject = current_subject, via_api_key = via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        history_row("job_20261001_000000_old", "2026-10-01T00:00:00+00:00")
+        job = await _create(client, uploaded.id)
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        monkeypatch.setattr(training_routes, "get_training_status", start_mid_request)
+        second = await client.fine_tuning.jobs.list(after = job.id, limit = 1)
+        return job, first, second
+
+    job, first, second = _run(flow())
+    assert [j.id for j in first.data] == [job.id]
+    assert [j.id for j in second.data] == ["ftjob_20261001_000000_old"]

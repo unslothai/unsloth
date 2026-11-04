@@ -1156,13 +1156,14 @@ def _list_job_page(
 ) -> dict[str, Any]:
     jobs, seen = [], set()
     for row, is_run in _ordered_jobs(queued, terminal, live):
-        # A queued job can start while the page is built: list its public id once.
+        # A queued job can start while the page is built: list it once, and let its queue id
+        # still match the cursor.
         public_id = (_RUN_ALIAS.get(row["id"]) or _job_id(row["id"])) if is_run else row["id"]
         if public_id in seen:
             continue
         seen.add(public_id)
         if after:
-            if row["id"] == (after_run if is_run else after):
+            if public_id == after or (is_run and row["id"] == after_run):
                 after = None
             continue
         if len(jobs) == limit:
