@@ -146,6 +146,7 @@ export const nl = {
       scripts: "Scripts uitvoeren",
       scriptsDescription:
         "Kies of modellen scripts op pagina's mogen uitvoeren. Je ziet elk script voordat het wordt uitgevoerd",
+      scriptsAllowDescription: "Modellen voeren zonder te vragen scripts uit op elke pagina. Een script kan alles op de pagina lezen en wijzigen",
       cursor: "Cursor weergeven",
       cursorDescription:
         "Toon een aanwijzer waar modellen op de pagina klikken, typen en slepen",
@@ -160,6 +161,7 @@ export const nl = {
       actions: "Acties",
       downloads: "Downloads",
       unlabelled: "Klikken zonder label",
+      scriptsColumn: "Scripts",
       askNewSites: "Vragen bij nieuwe sites",
       requiresApproval: "Goedkeuring vereist",
       blocked: "Geblokkeerd",

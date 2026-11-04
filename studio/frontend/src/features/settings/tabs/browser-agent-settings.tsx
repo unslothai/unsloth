@@ -46,7 +46,7 @@ function RuleSelect({
           ["ask", t(isDefault ? "browser.agentSettings.askNewSites" : "browser.agentSettings.requiresApproval")],
           ["block", t("browser.agentSettings.blocked")],
         ]
-      : column === "actions" || column === "unlabelled"
+      : column === "actions" || column === "unlabelled" || column === "scripts"
         ? [
             ["ask", t("browser.agentSettings.requiresApproval")],
             ["allow", t("browser.agentSettings.alwaysAllow")],
@@ -72,8 +72,8 @@ function RuleSelect({
   );
 }
 
-// 2x2, not auto-fit: auto-fit left the fourth choice alone on its own row.
-const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2";
+// Fixed columns, not auto-fit: auto-fit left a choice alone on its own row at odd widths.
+const CHOICES = "grid grid-cols-1 gap-x-4 gap-y-3 @[30rem]/perms:grid-cols-2 @[44rem]/perms:grid-cols-3";
 
 function PermissionsTable() {
   const t = useT();
@@ -87,6 +87,7 @@ function PermissionsTable() {
     ["actions", t("browser.agentSettings.actions")],
     ["downloads", t("browser.agentSettings.downloads")],
     ["unlabelled", t("browser.agentSettings.unlabelled")],
+    ["scripts", t("browser.agentSettings.scriptsColumn")],
   ];
 
   const add = () => {
@@ -229,13 +230,17 @@ export function BrowserAgentSettings() {
             </SelectContent>
           </Select>
         </SettingsRow>
-        <SettingsRow label={t("browser.agentSettings.scripts")} description={t("browser.agentSettings.scriptsDescription")}>
+        <SettingsRow
+          label={t("browser.agentSettings.scripts")}
+          description={t(scriptAccess === "allow" ? "browser.agentSettings.scriptsAllowDescription" : "browser.agentSettings.scriptsDescription")}
+        >
           <Select value={scriptAccess} onValueChange={(value) => setScriptAccess(value as ScriptAccess)}>
             <SelectTrigger className="w-40" aria-label={t("browser.agentSettings.scripts")}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="ask">{t("browser.agentSettings.askEveryTime")}</SelectItem>
+              <SelectItem value="allow">{t("browser.agentSettings.alwaysAllow")}</SelectItem>
               <SelectItem value="never">{t("browser.agentSettings.never")}</SelectItem>
             </SelectContent>
           </Select>

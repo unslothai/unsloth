@@ -144,6 +144,7 @@ export const zhTW = {
       scripts: "執行指令碼",
       scriptsDescription:
         "選擇模型是否可在頁面上執行指令碼。每個指令碼執行前都會先讓您查看",
+      scriptsAllowDescription: "模型會在任何頁面上直接執行指令碼，不再詢問。指令碼可以讀取和變更頁面上的任何內容",
       cursor: "顯示游標",
       cursorDescription: "在模型於頁面上點按、輸入和拖曳的位置顯示指標",
       askEveryTime: "每次都詢問",
@@ -157,6 +158,7 @@ export const zhTW = {
       actions: "動作",
       downloads: "下載",
       unlabelled: "無標籤點按",
+      scriptsColumn: "指令碼",
       askNewSites: "新網站需詢問",
       requiresApproval: "需要核准",
       blocked: "已封鎖",
