@@ -134,6 +134,8 @@ function NoteFrameImpl({ data, selected }: NodeProps<RfNode>) {
           className="nodrag nowheel h-full min-h-0 w-full resize-none rounded-xl border-0 bg-transparent text-xs leading-snug shadow-none focus-visible:ring-0 dark:bg-transparent"
           placeholder="Write a note…"
           value={note.text}
+          // A new note's first keystroke gives it text; editing keeps the textarea up past it.
+          onFocus={() => setEditing(true)}
           onBlur={() => setEditing(false)}
           onChange={(e) =>
             upsertNote({ ...note, text: e.target.value }, `note:${note.id}`)

@@ -387,13 +387,51 @@ def _hub_model_revision(repo: str, token: Any) -> Optional[str]:
     return HfApi().model_info(repo, token = token).sha
 
 
-def _content_hash(path: str) -> str:
+# A cell naming an image, clip or sound file: training reads that file, which the rows' hash never sees.
+_MEDIA_PATH = re.compile(
+    rb"\.(?:png|jpe?g|webp|gif|bmp|tiff?|wav|mp3|flac|ogg|m4a|mp4|webm|mov)(?=[\"',\s\]})]|$)",
+    re.IGNORECASE,
+)
+
+
+def _names_media(file: str) -> bool:
+    if file.lower().endswith(".parquet"):
+        # Compressed pages hide the text: read the string columns.
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+
+        try:
+            table = pq.read_table(file)
+        except Exception:
+            table = None
+        if table is not None:
+            return any(
+                _MEDIA_PATH.search(v.encode())
+                for column in table.columns
+                if pa.types.is_string(column.type) or pa.types.is_large_string(column.type)
+                for v in column.to_pylist()
+                if isinstance(v, str)
+            )
+    with open(file, "rb") as fh:
+        # The overlap keeps a name split across two reads.
+        tail = b""
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            if _MEDIA_PATH.search(tail + chunk):
+                return True
+            tail = chunk[-16:]
+    return False
+
+
+def _content_hash(path: str) -> Optional[str]:
+    """The dataset files' digest; None when the rows name media files, whose content it cannot see."""
     import glob
     import hashlib
     import os
 
     digest = hashlib.sha256()
     for file in sorted(glob.glob(path)) if "*" in path else [path]:
+        if _names_media(file):
+            return None
         digest.update(os.path.basename(file).encode() + b"\0")
         with open(file, "rb") as fh:
             for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -561,7 +599,8 @@ async def dataset_material(ctx: NodeContext) -> Optional[dict]:
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset["ref"]):
         # A recipe job id names one run's rows and is never reused.
         return {"job": str(dataset["ref"])}
-    return {"sha256": await asyncio.to_thread(_content_hash, local_seed_path(dataset["ref"]))}
+    found = await asyncio.to_thread(_content_hash, local_seed_path(dataset["ref"]))
+    return {"sha256": found} if found else None
 
 
 async def finetune_cache_valid(ctx: NodeContext, outputs: dict) -> bool:

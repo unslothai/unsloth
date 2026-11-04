@@ -309,3 +309,18 @@ async def test_a_changed_module_in_a_local_models_subfolder_trains_again(world, 
     os.utime(base / "2_Dense" / "model.safetensors", ns = (1, 1))
     await _run(eng, _flow(base_model = str(base)))
     assert len(world["trained"]) == 2
+
+
+def test_rows_that_name_image_files_are_never_reused(tmp_path):
+    pd = pytest.importorskip("pandas")
+    rows = tmp_path / "vision.jsonl"
+    rows.write_text('{"image": "/data/cat.png", "text": "a cat"}\n')
+    # Training reads the PNG, which the rows' hash never sees: train again rather than reuse.
+    assert training._content_hash(str(rows)) is None
+    folder = tmp_path / "pq"
+    folder.mkdir()
+    pd.DataFrame([{"image": "photos/Cat.JPG", "text": "a cat"}]).to_parquet(folder / "a.parquet")
+    assert training._content_hash(f"{folder}/*.parquet") is None
+    plain = tmp_path / "plain.jsonl"
+    plain.write_text('{"q": "What is a png file?", "a": "An image format."}\n')
+    assert training._content_hash(str(plain))
