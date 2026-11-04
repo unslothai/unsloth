@@ -100,7 +100,13 @@ def test_a_third_party_lora_without_a_sidecar_is_listed(catalog, tmp_path):
 
 
 @pytest.mark.parametrize(
-    "drop", ["style.safetensors", "hub/style.safetensors", "loras/style.safetensors"]
+    "drop",
+    [
+        "style.safetensors",
+        "hub/style.safetensors",
+        "hub/loras/style.safetensors",
+        "loras/style.safetensors",
+    ],
 )
 def test_a_lora_dropped_in_the_models_folder_is_listed(catalog, tmp_path, monkeypatch, drop):
     import utils.hf_cache_settings as settings
@@ -119,6 +125,17 @@ def test_loras_under_a_comfyui_folder_are_listed(catalog, tmp_path, registered):
     (models / "checkpoints").mkdir(parents = True)
     lora = _safetensors(models / "loras" / "flux" / "style.safetensors")
     register(tmp_path / registered)
+    assert [e.local_path for e in _local().values()] == [str(lora)]
+
+
+def test_loras_listed_in_extra_model_paths_yaml_are_listed(catalog, tmp_path):
+    root = tmp_path / "ComfyUI"
+    (root / "models" / "checkpoints").mkdir(parents = True)
+    lora = _safetensors(tmp_path / "shared" / "Lora" / "style.safetensors")
+    (root / "extra_model_paths.yaml").write_text(
+        f"a111:\n  base_path: {tmp_path / 'shared'}\n  loras: Lora\n"
+    )
+    register(root)
     assert [e.local_path for e in _local().values()] == [str(lora)]
 
 

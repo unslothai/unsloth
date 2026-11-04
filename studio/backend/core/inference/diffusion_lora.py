@@ -26,6 +26,7 @@ _ALL_EXTS = (".safetensors", ".gguf")
 # ``kind`` in a ``<stem>.json`` sidecar marking the weight beside it as an image LoRA, not model weights.
 LORA_SIDECAR_KIND = "diffusion-lora"
 _MAX_SCAN_FOLDER_SUBDIRS = 200
+_HUB_REPO_PREFIXES = ("models--", "datasets--", "spaces--")
 _EXPORT_LOCK = threading.Lock()
 # ``<stem>.json`` with these stems marks a model or pipeline folder to the model scanners.
 _MODEL_SENTINEL_STEMS = frozenset(
@@ -135,8 +136,8 @@ def _is_dir(p: Path) -> bool:
 
 
 def _scan_folder_roots() -> list[Path]:
-    """The Models folder and registered custom model folders, each with its direct sub-folders (where
-    an export lands) and any ComfyUI ``models/loras`` tree, plus loose files in the hub cache."""
+    """The Models folder, its cache home and registered custom folders, each with its direct
+    sub-folders (where an export lands; hub repo folders skipped) and any ComfyUI ``loras`` folders."""
     from hub.utils.comfy_models import comfy_lora_scan_roots
     from utils.hf_cache_settings import get_hf_cache_paths
 
@@ -146,8 +147,12 @@ def _scan_folder_roots() -> list[Path]:
         folders = list_scan_folders()
     except Exception:  # noqa: BLE001 -- discovery never fails on the scan-folder table
         folders = []
-    roots: list[Path] = [cache.hub_cache]
-    for path in (cache.cache_home, *(folder.get("path") or "" for folder in folders)):
+    roots: list[Path] = []
+    for path in (
+        cache.hub_cache,
+        cache.cache_home,
+        *(folder.get("path") or "" for folder in folders),
+    ):
         root = Path(path)
         if not _is_dir(root):
             continue
@@ -155,7 +160,9 @@ def _scan_folder_roots() -> list[Path]:
             children = list(root.iterdir())
         except OSError:
             children = []
-        subdirs = sorted(c for c in children if not c.name.startswith(".") and _is_dir(c))
+        subdirs = sorted(
+            c for c in children if not c.name.startswith((".", *_HUB_REPO_PREFIXES)) and _is_dir(c)
+        )
         roots.append(root)
         roots.extend(subdirs[:_MAX_SCAN_FOLDER_SUBDIRS])
         roots.extend(comfy_lora_scan_roots(root))
@@ -301,10 +308,8 @@ def _has_lora_sidecar(path: Path) -> bool:
 
 
 def is_image_lora_file(path: Path) -> bool:
-    """A .safetensors/.gguf whose sidecar marks it as an image LoRA (``kind``, or a trainer sidecar
-    from before the marker), or a loose .safetensors whose header holds LoRA tensors. A file beside
-    a model marker is that folder's weights (a chat adapter has the same keys). Model scanners use
-    this to keep image LoRAs out of model listings."""
+    """Sidecar-marked image LoRA, or a .safetensors of LoRA tensors not beside a model marker (a chat
+    adapter has the same keys). Model scanners use this to keep image LoRAs out of model listings."""
     if path.suffix.lower() not in _ALL_EXTS:
         return False
     if _has_lora_sidecar(path):
