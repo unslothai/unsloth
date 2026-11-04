@@ -3584,7 +3584,7 @@ export const ko = {
         desktopAvailableDescription:
           "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
-          "이 앱이 시작하지 않은 포트 {port}의 Unsloth 서버(예: 터미널의 `unsloth studio`)에 연결되어 있습니다. 앱은 이 서버를 중지하거나 업데이트할 수 없습니다. 서버를 시작한 곳에서 중지한 다음 앱을 종료하고 다시 열어 업데이트하세요.",
+          "이 앱이 시작하지 않은 포트 {port}의 Unsloth 서버(예: 터미널의 `unsloth studio`)에 연결되어 있습니다. 서버를 시작한 곳에서 중지한 다음 앱을 종료하고 다시 열어 업데이트하세요.",
         desktopManualInstall:
           "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
         desktopCheckFailed: "업데이트를 확인하지 못했습니다",
@@ -5367,9 +5367,6 @@ export const ko = {
     nearlyDone: "거의 완료되었습니다...",
     finishingUpdate: "업데이트를 마무리하는 중...",
     serverStopped: "서버가 중지됨",
-    serverDisconnected: "포트 {port}의 서버에서 연결이 해제됨",
-    serverDisconnectedDescription:
-      "연결 해제로는 해당 서버가 중지되지 않았습니다. 서버를 시작한 곳(예: `unsloth studio`를 실행 중인 터미널)에서 중지한 다음 서버 시작을 클릭하세요.",
     startServer: "서버 시작",
     somethingWrong: "문제가 발생했습니다",
     diagnostics: {

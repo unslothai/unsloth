@@ -3594,7 +3594,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "متصل بخادم Unsloth على المنفذ {port} لم يشغّله هذا التطبيق، مثل `unsloth studio` في نافذة طرفية. لا يستطيع التطبيق إيقافه أو تحديثه. أوقفه من المكان الذي شُغّل منه، ثم أغلق التطبيق وأعد فتحه للتحديث.",
+          "متصل بخادم Unsloth على المنفذ {port} لم يشغّله هذا التطبيق، مثل `unsloth studio` في نافذة طرفية. أوقفه من المكان الذي شُغّل منه، ثم أغلق التطبيق وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
@@ -5376,9 +5376,6 @@ export const ar = {
     nearlyDone: "على وشك الانتهاء...",
     finishingUpdate: "جارٍ إنهاء التحديث...",
     serverStopped: "توقف الخادم",
-    serverDisconnected: "تم قطع الاتصال بالخادم على المنفذ {port}",
-    serverDisconnectedDescription:
-      "قطع الاتصال لم يوقف ذلك الخادم. أوقفه من المكان الذي شُغّل منه، مثل النافذة الطرفية التي يعمل فيها `unsloth studio`، ثم انقر على تشغيل الخادم.",
     startServer: "تشغيل الخادم",
     somethingWrong: "حدث خطأ ما",
     diagnostics: {

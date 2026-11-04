@@ -701,7 +701,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     installDiskFull,
     isExternalServer,
     externalServerPort,
-    disconnectedServerPort,
     currentStepIndex,
     progressDetail,
     startupMessage,
@@ -1013,7 +1012,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
             progressDetail={startupProgressDetail}
             startupMessage={startupMessage}
             elevationPackages={elevationPackages}
-            disconnectedServerPort={disconnectedServerPort}
             upgradingToFull={upgradingToFull}
             onInstall={startInstall}
             onRetry={retry}

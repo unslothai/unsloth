@@ -3636,7 +3636,7 @@ export const es = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en un terminal. La aplicación no puede detenerlo ni actualizarlo. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en un terminal. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudo buscar actualizaciones",
@@ -5449,9 +5449,6 @@ export const es = {
     nearlyDone: "Casi listo...",
     finishingUpdate: "Terminando la actualización...",
     serverStopped: "Servidor detenido",
-    serverDisconnected: "Desconectado del servidor en el puerto {port}",
-    serverDisconnectedDescription:
-      "Desconectarse no detuvo ese servidor. Detenlo donde se inició, como el terminal que ejecuta `unsloth studio`, y luego haz clic en Iniciar servidor.",
     startServer: "Iniciar servidor",
     somethingWrong: "Algo salió mal",
     diagnostics: {

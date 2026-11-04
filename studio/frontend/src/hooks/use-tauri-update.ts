@@ -109,7 +109,6 @@ function manualReleasePageUrl(
   return `${policy.releasePageBaseUrl}${policy.releaseTagPrefix}${normalized}`;
 }
 
-// externalServerPort: the attached server this app did not start; it blocks the update.
 export function useTauriUpdate(externalServerPort: number | null = null) {
   const isExternalServer = externalServerPort !== null;
   const [status, setStatus] = useState<UpdateStatus>("idle");

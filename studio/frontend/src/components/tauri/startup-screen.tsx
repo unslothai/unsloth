@@ -35,8 +35,6 @@ interface StartupScreenProps {
   progressDetail: string | null;
   startupMessage: StartupMessage;
   elevationPackages: string[];
-  // On "stopped": the server we only disconnected from, which the disconnect did not stop.
-  disconnectedServerPort?: number | null;
   upgradingToFull?: boolean;
   onInstall: (options?: InstallOptions) => void;
   onRetry: () => void;
@@ -462,30 +460,13 @@ function StartingContent({ message }: { message: StartupMessage }) {
   );
 }
 
-function StoppedContent({
-  disconnectedServerPort,
-  onStartServer,
-}: {
-  disconnectedServerPort: number | null;
-  onStartServer: () => void;
-}) {
+function StoppedContent({ onStartServer }: { onStartServer: () => void }) {
   const t = useT();
   return (
     <>
       <Logo />
       <div className="mt-8 flex flex-col items-center gap-2">
-        {disconnectedServerPort === null ? (
-          <p className="text-sm font-medium text-foreground">{t("desktopStartup.serverStopped")}</p>
-        ) : (
-          <>
-            <p className="text-sm font-medium text-foreground">
-              {t("desktopStartup.serverDisconnected", { port: disconnectedServerPort })}
-            </p>
-            <p className="max-w-sm text-xs text-muted-foreground">
-              {t("desktopStartup.serverDisconnectedDescription")}
-            </p>
-          </>
-        )}
+        <p className="text-sm font-medium text-foreground">{t("desktopStartup.serverStopped")}</p>
         <div className="mt-4">
           <Button variant="dark" size="hero" onClick={onStartServer}>
             {t("desktopStartup.startServer")}
@@ -535,7 +516,6 @@ export function StartupScreen({
   progressDetail,
   startupMessage,
   elevationPackages,
-  disconnectedServerPort = null,
   upgradingToFull = false,
   onInstall,
   onRetry,
@@ -597,12 +577,7 @@ export function StartupScreen({
       case "running":
         return null;
       case "stopped":
-        return (
-          <StoppedContent
-            disconnectedServerPort={disconnectedServerPort}
-            onStartServer={onStartServer}
-          />
-        );
+        return <StoppedContent onStartServer={onStartServer} />;
       case "error":
         return (
           <ErrorContent

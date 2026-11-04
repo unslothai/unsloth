@@ -3679,7 +3679,7 @@ export const he = {
         desktopAvailableDescription:
           "עדכן כעת ואפליקציית שולחן העבודה תופעל מחדש בסיום.",
         desktopExternalServer:
-          "מחובר לשרת Unsloth בפורט {port} שהאפליקציה הזו לא הפעילה, כמו `unsloth studio` בטרמינל. האפליקציה אינה יכולה לעצור או לעדכן אותו. עצור אותו במקום שבו הופעל, ואז צא מהאפליקציה ופתח אותה מחדש כדי לעדכן.",
+          "מחובר לשרת Unsloth בפורט {port} שהאפליקציה הזו לא הפעילה, כמו `unsloth studio` בטרמינל. עצור אותו במקום שבו הופעל, ואז צא מהאפליקציה ופתח אותה מחדש כדי לעדכן.",
         desktopManualInstall:
           "פתח את דף השחרור כדי להתקין את חבילת ה-Linux העדכנית ביותר.",
         desktopCheckFailed: "לא ניתן לבדוק עדכונים",
@@ -5474,9 +5474,6 @@ export const he = {
     nearlyDone: "כמעט סיימנו...",
     finishingUpdate: "מסיים את העדכון...",
     serverStopped: "השרת נעצר",
-    serverDisconnected: "החיבור לשרת בפורט {port} נותק",
-    serverDisconnectedDescription:
-      "הניתוק לא עצר את השרת הזה. עצור אותו במקום שבו הופעל, כמו הטרמינל שבו רץ `unsloth studio`, ואז לחץ על הפעל את השרת.",
     startServer: "הפעל את השרת",
     somethingWrong: "משהו השתבש",
     diagnostics: {

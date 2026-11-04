@@ -110,8 +110,6 @@ function harness(
       armed = null;
     },
     hasServerStopIntent: () => false,
-    stopIntentDisconnectedPort: () => null,
-    setDisconnectedServerPort: noop,
     setStartupMessage: (message: string) => messages.push(message),
     setStatus: (status: string) => statuses.push(status),
     syncTrayStatus: noop,

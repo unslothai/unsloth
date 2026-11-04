@@ -10,7 +10,6 @@ import {
   clearServerStopIntent,
   hasServerStopIntent,
   markServerStopIntent,
-  stopIntentDisconnectedPort,
 } from "../src/hooks/server-stop-intent.ts";
 
 import { readSrc } from "./helpers/kit.ts";
@@ -54,36 +53,6 @@ function uninstallSessionStorage(): void {
 test("a fresh session carries no stop intent", () => {
   installSessionStorage();
   assert.equal(hasServerStopIntent(), false);
-  uninstallSessionStorage();
-});
-
-test("a disconnect keeps its port, while a stop and a clear carry none", () => {
-  const store = installSessionStorage();
-  markServerStopIntent(8890);
-  assert.equal(hasServerStopIntent(), true);
-  assert.equal(stopIntentDisconnectedPort(), 8890);
-
-  markServerStopIntent();
-  assert.equal(hasServerStopIntent(), true);
-  assert.equal(stopIntentDisconnectedPort(), null);
-
-  markServerStopIntent(8888);
-  clearServerStopIntent();
-  assert.equal(stopIntentDisconnectedPort(), null);
-
-  // A value from an older build, or one edited by hand, is a plain stop.
-  for (const value of ["1", "disconnected:", "disconnected:0", "disconnected:70000", "disconnected:8a"]) {
-    store.set(USER_STOPPED_KEY, value);
-    assert.equal(hasServerStopIntent(), true, value);
-    assert.equal(stopIntentDisconnectedPort(), null, value);
-  }
-  uninstallSessionStorage();
-});
-
-test("an unreadable store reports no disconnected port", () => {
-  installThrowingSessionStorage();
-  assert.equal(stopIntentDisconnectedPort(), null);
-  assert.doesNotThrow(() => markServerStopIntent(8888));
   uninstallSessionStorage();
 });
 
@@ -172,7 +141,7 @@ test("the hook reaches storage only through the guarded helpers", async () => {
   );
   assert.match(
     hook,
-    /import \{\s*clearServerStopIntent,\s*hasServerStopIntent,\s*markServerStopIntent,\s*stopIntentDisconnectedPort,\s*\} from "\.\/server-stop-intent";/,
+    /import \{\s*clearServerStopIntent,\s*hasServerStopIntent,\s*markServerStopIntent,\s*\} from "\.\/server-stop-intent";/,
   );
 });
 
@@ -196,8 +165,8 @@ test("a persisted stop is honored before preflight runs", async () => {
   );
   assert.match(
     body.slice(guard, preflight),
-    /setDisconnectedServerPort\(stopIntentDisconnectedPort\(\)\);\s*setBackendStatus\("stopped"\);\s*return;/,
-    "the honored stop no longer parks the screen on stopped, or forgets the server it left running",
+    /setBackendStatus\("stopped"\);\s*return;/,
+    "the honored stop no longer parks the screen on stopped",
   );
 });
 
@@ -303,4 +272,54 @@ test("a tray stop that fails tells the user why", () => {
     /stopServer\(\)\.catch\(\(e\) => \{\s*toast\.error\([^)]*String\(e\)/,
     "the tray drops the reason a stop failed",
   );
+});
+
+// The tray listener is registered once at mount, so run the real runStopServer with that
+// render's state: not attached, whatever the app is attached to now.
+function stopFromMountTimeListener(port: number, stopError?: Error) {
+  const hook = USE_TAURI_BACKEND;
+  const start = hook.indexOf("  async function runStopServer()");
+  const body = hook.slice(start, hook.indexOf("\n  }\n", start) + 4);
+  const calls: string[] = [];
+  const scope: Record<string, unknown> = {
+    isExternalServer: false,
+    externalServerPort: null,
+    portRef: { current: port },
+    startingRef: { current: true },
+    importTauriCore: () =>
+      Promise.resolve({
+        invoke: (command: string, args: { port: number }) => {
+          calls.push(`${command}:${args.port}`);
+          return stopError ? Promise.reject(stopError) : Promise.resolve(null);
+        },
+      }),
+    setExternalServerPort: (next: number | null) => calls.push(`attached:${next}`),
+    stopExternalServerPoll: () => calls.push("stop-poll"),
+    markServerStopIntent: () => calls.push("mark-intent"),
+    clearServerStopIntent: () => calls.push("clear-intent"),
+    setBackendStatus: (status: string) => calls.push(`status:${status}`),
+  };
+  const source = `${body.replace('await import("@tauri-apps/api/core")', "await importTauriCore()")}
+    return runStopServer;`;
+  const keys = Object.keys(scope);
+  const run = new Function(...keys, source)(...keys.map((key) => scope[key])) as () => Promise<void>;
+  return { run, calls };
+}
+
+test("the tray's stop on an attached server stops it by port, then leaves attached mode", async () => {
+  const stop = stopFromMountTimeListener(8890);
+  await stop.run();
+  assert.deepEqual(stop.calls, [
+    "mark-intent",
+    "stop_server:8890",
+    "attached:null",
+    "stop-poll",
+    "status:stopped",
+  ]);
+});
+
+test("a stop the server refuses keeps the app attached and its health poll running", async () => {
+  const stop = stopFromMountTimeListener(8890, new Error("did not stop"));
+  await assert.rejects(stop.run(), /did not stop/);
+  assert.deepEqual(stop.calls, ["mark-intent", "stop_server:8890", "clear-intent"]);
 });

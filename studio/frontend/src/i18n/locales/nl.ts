@@ -3941,7 +3941,7 @@ export const nl = {
         desktopAvailableDescription:
           "Werk nu bij; de desktop-app start opnieuw wanneer dit klaar is.",
         desktopExternalServer:
-          "Verbonden met een Unsloth-server op poort {port} die deze app niet heeft gestart, zoals `unsloth studio` in een terminal. De app kan hem niet stoppen of bijwerken. Stop hem waar hij is gestart, sluit dan de app af en open hem opnieuw om bij te werken.",
+          "Verbonden met een Unsloth-server op poort {port} die deze app niet heeft gestart, zoals `unsloth studio` in een terminal. Stop hem waar hij is gestart, sluit dan de app af en open hem opnieuw om bij te werken.",
         desktopManualInstall:
           "Open de releasepagina om het nieuwste Linux-pakket te installeren.",
         desktopCheckFailed: "Kan niet controleren op updates",
@@ -5839,9 +5839,6 @@ export const nl = {
     nearlyDone: "Bijna klaar...",
     finishingUpdate: "Update voltooien...",
     serverStopped: "Server gestopt",
-    serverDisconnected: "Verbinding met de server op poort {port} verbroken",
-    serverDisconnectedDescription:
-      "Het verbreken van de verbinding heeft die server niet gestopt. Stop hem waar hij is gestart, zoals de terminal waarin `unsloth studio` draait, en klik dan op Server starten.",
     startServer: "Server starten",
     somethingWrong: "Er is iets misgegaan",
     diagnostics: {

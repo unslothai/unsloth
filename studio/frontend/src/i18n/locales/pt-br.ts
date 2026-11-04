@@ -3611,7 +3611,7 @@ export const ptBR = {
         desktopAvailableDescription:
           "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
         desktopExternalServer:
-          "Conectado a um servidor Unsloth na porta {port} que este aplicativo não iniciou, como o `unsloth studio` em um terminal. O aplicativo não pode pará-lo nem atualizá-lo. Pare-o onde ele foi iniciado e depois feche e reabra o aplicativo para atualizar.",
+          "Conectado a um servidor Unsloth na porta {port} que este aplicativo não iniciou, como o `unsloth studio` em um terminal. Pare-o onde ele foi iniciado e depois feche e reabra o aplicativo para atualizar.",
         desktopManualInstall:
           "Abra a página de lançamentos para instalar o pacote mais recente para Linux.",
         desktopCheckFailed: "Não foi possível verificar se há atualizações",
@@ -5405,9 +5405,6 @@ export const ptBR = {
     nearlyDone: "Quase pronto...",
     finishingUpdate: "Concluindo a atualização...",
     serverStopped: "Servidor parado",
-    serverDisconnected: "Desconectado do servidor na porta {port}",
-    serverDisconnectedDescription:
-      "Desconectar não parou esse servidor. Pare-o onde ele foi iniciado, como o terminal que executa o `unsloth studio`, e depois clique em Iniciar servidor.",
     startServer: "Iniciar servidor",
     somethingWrong: "Algo deu errado",
     diagnostics: {

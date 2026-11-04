@@ -3644,7 +3644,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "Connectée à un serveur Unsloth sur le port {port} que cette application n’a pas démarré, comme `unsloth studio` dans un terminal. L’application ne peut ni l’arrêter ni le mettre à jour. Arrêtez-le là où il a été démarré, puis quittez et rouvrez l’application pour effectuer la mise à jour.",
+          "Connectée à un serveur Unsloth sur le port {port} que cette application n’a pas démarré, comme `unsloth studio` dans un terminal. Arrêtez-le là où il a été démarré, puis quittez et rouvrez l’application pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",
@@ -5460,9 +5460,6 @@ export const fr = {
     nearlyDone: "Presque terminé...",
     finishingUpdate: "Finalisation de la mise à jour...",
     serverStopped: "Serveur arrêté",
-    serverDisconnected: "Déconnecté du serveur sur le port {port}",
-    serverDisconnectedDescription:
-      "La déconnexion n’a pas arrêté ce serveur. Arrêtez-le là où il a été démarré, comme le terminal qui exécute `unsloth studio`, puis cliquez sur Démarrer le serveur.",
     startServer: "Démarrer le serveur",
     somethingWrong: "Un problème est survenu",
     diagnostics: {
