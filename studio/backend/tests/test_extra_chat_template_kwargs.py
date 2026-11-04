@@ -286,7 +286,12 @@ def test_the_default_system_probe_renders_with_the_extra_keys(monkeypatch):
     backend._healthy = True
     monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
     payload = _chat_payload(
-        chat_template_kwargs = {"enable_thinking": True, "verification": True, "nested": {"a": 1}}
+        chat_template_kwargs = {
+            "enable_thinking": True,
+            "verification": True,
+            "nested": {"a": 1},
+            "documents": None,
+        }
     )
     _normalize_chat_reasoning_controls(payload)
 
@@ -298,3 +303,15 @@ def test_the_default_system_probe_renders_with_the_extra_keys(monkeypatch):
         "{% endif %}{% for m in messages %}<{{ m.role }}>{{ m.content }}</{{ m.role }}>{% endfor %}"
     )
     assert template_system_turn(template, date(2026, 1, 1), False, controls)[1] == "VERIFY"
+
+
+def test_in_process_backends_probe_without_the_extras(monkeypatch):
+    import routes.inference as inference_route
+
+    backend = _reasoning_backend()
+    backend._process = None
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    payload = _chat_payload(chat_template_kwargs = {"enable_thinking": True, "verification": True})
+    _normalize_chat_reasoning_controls(payload)
+
+    assert dict(inference_route._template_controls(payload)) == {"enable_thinking": True}

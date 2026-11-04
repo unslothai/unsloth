@@ -3735,6 +3735,7 @@ import zlib
 
 from utils.current_date_prompt_settings import (
     CURRENT_DATE_PROMPT_PREFIX,
+    PROBE_RENDER_KEYS,
     PROBE_TOOLS,
     contains_current_date_prompt_line,
     current_date_prompt_line,
@@ -6423,21 +6424,21 @@ def _template_controls(payload: Any) -> tuple:
     """The template kwargs this request's chat template is rendered with."""
     names = ("enable_thinking", "reasoning_effort", "preserve_thinking")
     values = [getattr(payload, name, None) for name in names]
-    # Scalar extras only: the probe result is lru-cached on these, so values must hash.
-    extras = {
-        key: value
-        for key, value in (_extra_chat_template_kwargs(payload) or {}).items()
-        if value is None or isinstance(value, (str, int, float, bool))
-    }
     try:
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
+            # Only llama-server receives the extras; scalars only, the probe is lru-cached on them.
+            extras = {
+                key: value
+                for key, value in (_extra_chat_template_kwargs(payload) or {}).items()
+                if key not in PROBE_RENDER_KEYS
+                and (value is None or isinstance(value, (str, int, float, bool)))
+            }
             kwargs = llama._request_reasoning_kwargs(*values) or {}
             return tuple(sorted({**extras, **kwargs}.items()))
     except Exception:
         pass
-    controls = tuple((name, value) for name, value in zip(names, values) if value is not None)
-    return tuple(sorted({**extras, **dict(controls)}.items())) if extras else controls
+    return tuple((name, value) for name, value in zip(names, values) if value is not None)
 
 
 def _apply_current_date_prompt(
