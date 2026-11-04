@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { classifyGgufFit } from "../../../../lib/gguf-fit.ts";
+import {
+  audioCppResidentFit,
+  classifyGgufFit,
+} from "../../../../lib/gguf-fit.ts";
 import {
   LOADING_OVERHEAD_GB,
   checkVramFit,
@@ -237,6 +240,8 @@ export function hfModelFitsDevice(
     id: string;
     totalParams?: number;
     estimatedSizeBytes?: number;
+    /** audio.cpp only: GiB of GPU memory the load check requires. */
+    estimatedResidentGb?: number;
     curatedSizeBytes?: number;
     isGguf?: boolean;
     quantMethod?: string;
@@ -261,6 +266,12 @@ export function hfModelFitsDevice(
     !gpu.budgetKnown
   )
     return true;
+  // audio.cpp loads whole on one card: its load-check estimate decides, as on the row badge and quants.
+  const resident = audioCppResidentFit(
+    model.estimatedResidentGb,
+    gpu.memoryTotalGb,
+  );
+  if (resident) return resident === "fits";
   const params = model.totalParams ?? paramsFromId(model.id);
   const isGguf = isGgufId(model.id, model.isGguf);
   if (

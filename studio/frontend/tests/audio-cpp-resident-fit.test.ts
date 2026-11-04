@@ -8,6 +8,7 @@ import {
   pickDefaultQuant,
   recommendedQuantForDevice,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import { hfModelFitsDevice } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import { parseMetaTokens } from "../src/features/model-picker/components/model-selector/row-meta.ts";
 import {
   classifyGgufFit,
@@ -65,6 +66,29 @@ test("without an estimate, or without a known GPU, the llama.cpp rule still deci
     classifyVariantFitOnCard(rule, aceQ8, 0),
     classifyGgufFit(aceQ8.size_bytes, card10),
   );
+});
+
+test("the fits-on-device filter judges an audio.cpp row on the estimate, as its quants are", () => {
+  // The YuE2 catalog row (Q8_0 package). RAM must not lift it onto a card its quants read as oom.
+  const row = {
+    id: "audio-cpp/YuE2-GGUF",
+    isGguf: true,
+    estimatedSizeBytes: yue2[1].size_bytes,
+    estimatedResidentGb: yue2[1].estimated_resident_gb,
+  };
+  const card = (gpuGb: number) => ({
+    memoryTotalGb: gpuGb,
+    systemRamAvailableGb: 32,
+  });
+  assert.equal(
+    classifyGgufVariantFit(yue2[1], { gpuGb: 6, systemRamGb: 32 }),
+    "oom",
+  );
+  assert.equal(hfModelFitsDevice(row, card(6)), false);
+  assert.equal(hfModelFitsDevice(row, card(10)), true);
+  // Without an estimate the size rule, which counts RAM, still decides.
+  const { estimatedResidentGb: _, ...plain } = row;
+  assert.equal(hfModelFitsDevice(plain, card(6)), true);
 });
 
 test("the recommended and default quant follow the estimate on a 10 GiB card", () => {

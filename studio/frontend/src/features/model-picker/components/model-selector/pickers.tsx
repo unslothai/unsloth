@@ -118,6 +118,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
+  audioCppResidentFit,
   classifyVariantFitOnCard,
   ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
@@ -4937,10 +4938,14 @@ export function HubModelPicker({
           (params ? estimateQuantBytes(params) : undefined);
         // audio.cpp: the backend's estimate against the card, the number its load check compares.
         const resident = r.estimatedResidentGb;
-        if (resident && rowInferenceGpu.memoryTotalGb > 0) {
+        const residentFit = audioCppResidentFit(
+          resident,
+          rowInferenceGpu.memoryTotalGb,
+        );
+        if (resident && residentFit) {
           map.set(r.id, {
             meta,
-            status: resident <= rowInferenceGpu.memoryTotalGb ? null : "oom",
+            status: residentFit === "fits" ? null : "oom",
             est: resident,
           });
           continue;

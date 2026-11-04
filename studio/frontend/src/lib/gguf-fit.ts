@@ -109,14 +109,14 @@ export interface GgufVariantSizes {
   estimated_resident_gb?: number | null;
 }
 
-/** The audio.cpp load check's verdict on one card, or null for any other GGUF (or no GPU known). */
+/** The audio.cpp load check's verdict on one card from its resident estimate, or null without an
+ *  estimate (any other GGUF) or a known GPU. */
 export function audioCppResidentFit(
-  variant: GgufVariantSizes,
+  residentGb: number | null | undefined,
   gpuGb: number,
 ): GgufFitClass | null {
-  const resident = variant.estimated_resident_gb;
-  if (resident == null || !(resident > 0) || !(gpuGb > 0)) return null;
-  return resident <= gpuGb ? "fits" : "oom";
+  if (residentGb == null || !(residentGb > 0) || !(gpuGb > 0)) return null;
+  return residentGb <= gpuGb ? "fits" : "oom";
 }
 
 /** A variant's fit: the audio.cpp estimate where the backend gave one, else the llama.cpp rule. */
@@ -126,7 +126,7 @@ export function classifyVariantFitOnCard(
   gpuGb: number,
 ): GgufFitClass {
   return (
-    audioCppResidentFit(variant, gpuGb) ??
+    audioCppResidentFit(variant.estimated_resident_gb, gpuGb) ??
     classifyGgufFitWithLookupTables(fitOf, variant)
   );
 }
