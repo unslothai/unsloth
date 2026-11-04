@@ -26979,9 +26979,8 @@ class LlamaCppBackend:
                         and not (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
                         and not str(os.environ.get("LLAMA_ARG_RPC", "")).strip()
                     ):
-                        # No GPU: -c is emitted, so llama.cpp's --fit cannot shrink it to host RAM.
-                        # An empty probe alone is not CPU-only (SYCL is never probed), and --rpc
-                        # puts weights and KV on remote devices, which host RAM does not bound.
+                        # -c is emitted, so --fit cannot shrink it to host RAM. An empty probe is not
+                        # CPU-only (SYCL is never probed), and --rpc places KV on remote devices.
                         effective_ctx = min(
                             effective_ctx,
                             _APPLE_AUTO_CTX if self._can_estimate_kv() else _FIT_MIN_CTX,
