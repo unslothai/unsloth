@@ -1049,7 +1049,7 @@ async def _upload_csv(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     import csv
     import io
 
-    from core.flows.nodes.data import upload_rows
+    from core.flows.nodes.data import upload_ref
 
     columns = list(dict.fromkeys(k for r in rows for k in r))
     out = io.StringIO()
@@ -1065,12 +1065,10 @@ async def _upload_csv(ctx: NodeContext, rows: list[dict], name: str) -> dict:
     stored = saved.get("stored_path") if isinstance(saved, dict) else None
     if not isinstance(stored, str) or not stored:
         raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    from hub.utils.host_paths import cache_reference
-
     return {
         "kind": "dataset",
         "source": "local",
-        "ref": cache_reference(stored),
+        "ref": upload_ref(stored),
         "rows": len(rows),
         "columns": sorted(columns),
     }

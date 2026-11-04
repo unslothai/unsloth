@@ -670,6 +670,19 @@ async def rows_to_dataset(ctx: NodeContext) -> dict:
     return {"dataset": await upload_rows(ctx, rows, name, made_by = "rows")}
 
 
+def upload_ref(stored: str) -> str:
+    """How a saved upload is named in a dataset value. The value is cached and saved with the flow, so
+    it names the upload by its place in the account's uploads folder: a `ref:` lives only in this
+    process's table and is gone after a restart."""
+    from hub.utils.host_paths import cache_reference
+    from utils.paths.storage_roots import dataset_uploads_root
+
+    try:
+        return f"uploads/{Path(stored).relative_to(dataset_uploads_root()).as_posix()}"
+    except ValueError:
+        return cache_reference(stored)
+
+
 async def upload_rows(
     ctx: NodeContext,
     rows: list[dict],
@@ -688,20 +701,10 @@ async def upload_rows(
     stored = saved.get("stored_path") if isinstance(saved, dict) else None
     if not isinstance(stored, str) or not stored:
         raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
-    from hub.utils.host_paths import cache_reference
-    from utils.paths.storage_roots import dataset_uploads_root
-
-    # The value is cached and saved with the flow, so it names the upload by its place in the account's
-    # uploads folder: a `ref:` lives only in this process's table and is gone after a restart.
-    path = Path(stored)
-    try:
-        ref = f"uploads/{path.relative_to(dataset_uploads_root()).as_posix()}"
-    except ValueError:
-        ref = cache_reference(stored)
     value = {
         "kind": "dataset",
         "source": "local",
-        "ref": ref,
+        "ref": upload_ref(stored),
         "rows": len(rows),
         "columns": lead_columns({k for r in rows for k in r}, first),
     }

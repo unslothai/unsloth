@@ -68,6 +68,17 @@ def test_preference_rows_without_a_prompt_column_use_the_shared_turns(objective)
     assert out[0]["prompt"] == [{"role": "user", "content": "What is 2 + 2?"}]
     assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
     assert out[0]["rejected"] == [{"role": "assistant", "content": "5"}]
+    # A conversation opening on an assistant greeting still shares its context (TRL's extract_prompt).
+    greeted = lambda reply: [
+        {"role": "assistant", "content": "Welcome!"},
+        {"role": "user", "content": "What is 2 + 2?"},
+        {"role": "assistant", "content": reply},
+    ]
+    out, _ = format_rl_dataset(
+        Dataset.from_list([{"chosen": greeted("4"), "rejected": greeted("5")}]), objective
+    )
+    assert [m["content"] for m in out[0]["prompt"]] == ["Welcome!", "What is 2 + 2?"]
+    assert out[0]["chosen"] == [{"role": "assistant", "content": "4"}]
     # Plain answers with no prompt anywhere are still refused.
     with pytest.raises(ValueError, match = "needs a prompt"):
         format_rl_dataset(Dataset.from_list([{"chosen": "4", "rejected": "5"}]), objective)

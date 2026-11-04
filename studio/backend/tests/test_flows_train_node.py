@@ -1274,3 +1274,24 @@ def test_a_slice_end_past_the_last_row_reads_only_the_rows_there(monkeypatch):
     from datasets import Dataset
     streamed = Dataset.from_list([{"q": i} for i in range(20)]).to_iterable_dataset()
     assert len(training._stream_rows(streamed, 0, 200000)) == 20
+
+
+def test_a_csv_hold_out_names_its_upload_by_a_path_that_survives_a_restart(tmp_path, monkeypatch):
+    root = tmp_path / "uploads"
+    monkeypatch.setattr("utils.paths.storage_roots.dataset_uploads_root", lambda: root)
+    monkeypatch.setattr(
+        "hub.utils.host_paths.cache_reference", lambda p: pytest.fail("a process-only ref")
+    )
+
+    class Ctx:
+        async def call(
+            self,
+            method,
+            path,
+            files = None,
+            **kw,
+        ):
+            return {"stored_path": str(root / "acct" / files["file"][0])}
+
+    value = asyncio.run(training._upload_csv(Ctx(), [{"q": "a"}], "notes-train"))
+    assert value["ref"] == "uploads/acct/notes-train.csv"

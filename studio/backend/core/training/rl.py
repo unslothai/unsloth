@@ -292,10 +292,12 @@ def format_rl_dataset(
             ) == _strip_nulls(mapped)
             if (
                 not repeats_prompt
+                and "prompt" in roles
                 and chosen[0]["role"] == "assistant"
                 and rejected[0]["role"] == "assistant"
             ):
-                # Completion-only lists (the prompt is its own column): every turn is the answer.
+                # Completion-only lists (the prompt is its own column): every turn is the answer. With no
+                # prompt column the shared turns are the prompt, even when they open on a greeting.
                 out["chosen"], out["rejected"] = chosen, rejected
             elif 0 < shared < min(len(chosen), len(rejected)) and any(
                 m["role"] != "assistant" for m in chosen[:shared]
