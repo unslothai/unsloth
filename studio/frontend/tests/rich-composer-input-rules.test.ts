@@ -9,6 +9,7 @@ import {
   parseMarkdown,
   serializeMarkdown,
 } from "../src/features/chat/rich-composer/markdown.ts";
+import { inputRules } from "../src/vendor/prosemirror-inputrules/index.js";
 import {
   EditorState,
   Selection,
@@ -82,5 +83,32 @@ test("a rule fires at the start of a line after a break", () => {
   assert.equal(
     type("first\n**second*", "*", "**"),
     "first\n**second** | first\nsecond",
+  );
+});
+
+test("markers typed inside inline code stay literal", () => {
+  const plugin = inputRules({
+    rules: [markerRule("**", bold), markerRule("*", italic)],
+  });
+  const doc = parseMarkdown("`a **b* c`");
+  const pos = 1 + "a **b*".length;
+  const state = EditorState.create({
+    doc,
+    selection: Selection.near(doc.resolve(pos)),
+    plugins: [plugin],
+  });
+  const view = { composing: false, state };
+  const handled = plugin.props.handleTextInput?.call(
+    plugin,
+    view as never,
+    pos,
+    pos,
+    "*",
+    () => state.tr.insertText("*"),
+  );
+  assert.equal(handled, false);
+  assert.equal(
+    serializeMarkdown(state.apply(state.tr.insertText("*")).doc),
+    "`a **b** c`",
   );
 });

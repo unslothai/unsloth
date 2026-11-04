@@ -53,6 +53,7 @@ export const composerSchema = new Schema({
     italic: { parseDOM: [{ tag: "em" }, { tag: "i" }], toDOM: () => ["em", 0] },
     strike: { parseDOM: [{ tag: "s" }, { tag: "del" }], toDOM: () => ["s", 0] },
     code: {
+      code: true,
       inclusive: false,
       parseDOM: [{ tag: "code" }],
       toDOM: () => ["code", 0],
