@@ -549,15 +549,33 @@ def _percent(score: Any) -> Optional[float]:
     return round(score * 100, 2)
 
 
+async def _settle_loads(ctx: NodeContext, timeout: float = 1800.0) -> None:
+    """Wait for this account's model loads still running (a stopped Benchmark's own among them), so the
+    eval slot it held is not freed while one could still swap Chat's model."""
+    from studio_mcp import loading
+
+    account = getattr(ctx.caller, "account_id", None)
+    tasks = {
+        job.task for job in loading.LOADS.running(account) if getattr(job, "task", None) is not None
+    }
+    if tasks:
+        with contextlib.suppress(Exception):
+            await asyncio.wait(tasks, timeout = timeout)
+
+
 @handler("train.benchmark")
 async def benchmark(ctx: NodeContext) -> dict:
     task = TASKS.get(str(ctx.params.get("task") or ""), RECIPE_TASK)
     max_rows = max(1, min(MAX_ROWS, int(ctx.params.get("max_rows") or 20)))
     # Stop cancels only the run this node starts, never another one of the account's.
     token = uuid.uuid4().hex
+    loaded = False
 
     async def cancel() -> None:
-        await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})
+        # While the model loads, Stop leaves the slot held: the load runs on as its own job and would
+        # swap the model under the next eval. The finally below frees it once that load has ended.
+        if loaded:
+            await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})
 
     # The eval slot is held before the model loads: loading while another eval runs would swap
     # the model that run is scoring.
@@ -565,11 +583,14 @@ async def benchmark(ctx: NodeContext) -> dict:
     ctx.on_cancel(cancel)
     try:
         label, is_lora = await _load_target(ctx)
+        loaded = True
         if task == RECIPE_TASK:
             found = await _recipe_heldout(ctx, label, is_lora, max_rows, token)
         else:
             found = await _lm_eval(ctx, task, label, is_lora, max_rows, token)
     finally:
+        if not loaded:
+            await _settle_loads(ctx)
         # Frees a reservation no run took over; a finished run's slot is already free.
         with contextlib.suppress(Exception):
             await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})

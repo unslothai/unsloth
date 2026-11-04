@@ -701,3 +701,49 @@ def test_a_checkpoint_resolved_to_a_handle_is_found_as_chats_main_model(monkeypa
     serving.reverse()
     with pytest.raises(FlowNodeError, match = "kept loaded beside"):
         asyncio.run(benchmark._load_target(ctx))
+
+
+def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeypatch):
+    from types import SimpleNamespace
+
+    from core.flows.registry import FlowCancelled
+    from studio_mcp import loading
+
+    events = []
+
+    async def scenario():
+        async def physical_load():
+            await asyncio.sleep(0.05)
+            events.append("load ended")
+
+        job = SimpleNamespace(task = asyncio.ensure_future(physical_load()))
+        monkeypatch.setattr(
+            loading.LOADS, "running", lambda account = None: [job] if not job.task.done() else []
+        )
+
+        async def stopped(ctx):
+            # Stop pressed mid-load: the hook runs, the waiter gives up, the load job runs on.
+            await ctx.cancel()
+            raise FlowCancelled()
+
+        monkeypatch.setattr(benchmark, "_load_target", stopped)
+        ctx = _Ctx(lambda *a: None)
+        original = ctx.call
+
+        async def call(
+            method,
+            path,
+            json = None,
+            params = None,
+            **kw,
+        ):
+            if path.endswith("/cancel"):
+                events.append("slot freed")
+            return await original(method, path, json = json, params = params, **kw)
+
+        ctx.call = call
+        with pytest.raises(FlowCancelled):
+            await benchmark.benchmark(ctx)
+
+    asyncio.run(scenario())
+    assert events == ["load ended", "slot freed"]

@@ -105,6 +105,23 @@ export interface ConnectionCheck {
   targetPort?: string;
 }
 
+/** Whether a node sits in a Loop's frame: one drawn as a Loop group, or any frame holding a Loop node
+ * (a Loop added to an ordinary frame), as the compiler finds a Loop's body. */
+export function inLoopFrame(
+  graph: {
+    nodes: Record<string, { type: string; group?: string | null }>;
+    groups: Record<string, { kind?: string | null }>;
+  },
+  nodeId: string,
+): boolean {
+  const group = graph.nodes[nodeId]?.group;
+  if (!group) return false;
+  if (graph.groups[group]?.kind === "loop") return true;
+  return Object.values(graph.nodes).some(
+    (node) => node.group === group && node.type === "logic.loop",
+  );
+}
+
 export function checkConnection(
   sourceId: string,
   sourceSpec: NodeSpec | undefined,

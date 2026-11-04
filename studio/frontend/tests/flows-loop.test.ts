@@ -9,7 +9,7 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
 
-const { checkConnection, wouldCreateCycle, inHandle, outHandle } = await import(
+const { checkConnection, inLoopFrame, wouldCreateCycle, inHandle, outHandle } = await import(
   "../src/features/flows/editor/connection-rules.ts"
 );
 const { loopView } = await import("../src/features/flows/editor/loop-status.ts");
@@ -65,8 +65,22 @@ test("a score step's failures into a dataset seed is a feedback wire, and never 
   // Both callers say whether the source sits in a Loop group.
   for (const file of ["editor/node-factory.ts", "editor/canvas.tsx"]) {
     const src = readFileSync(new URL(`../src/features/flows/${file}`, import.meta.url), "utf8");
-    assert.match(src, /groups\[(sourceNode|source)\.group \?\? ""\]\?\.kind === "loop",\s*\);/, file);
+    assert.match(src, /inLoopFrame\((doc\.graph|doc), (req\.source|connection\.source)\),\s*\);/, file);
   }
+  // A Loop dropped into an ordinary frame makes it the Loop's frame too.
+  const graph = {
+    nodes: {
+      loop: { type: "logic.loop", group: "f" },
+      bench: { type: "train.benchmark", group: "f" },
+      other: { type: "train.benchmark", group: "g" },
+      free: { type: "train.benchmark" },
+    },
+    groups: { f: {}, g: {}, l: { kind: "loop" } },
+  };
+  assert.equal(inLoopFrame(graph, "bench"), true);
+  assert.equal(inLoopFrame(graph, "other"), false);
+  assert.equal(inLoopFrame(graph, "free"), false);
+  assert.equal(inLoopFrame({ ...graph, nodes: { x: { type: "t", group: "l" } } }, "x"), true);
   // Without a score output, failures is just json and cannot go into a dataset.
   const plain = { ...bench, outputs: [bench.outputs[1]] };
   assert.equal(

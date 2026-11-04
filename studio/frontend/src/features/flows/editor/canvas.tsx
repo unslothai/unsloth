@@ -35,6 +35,7 @@ import type { FlowEdge, FlowGroup } from "../types";
 import { dragHasFiles } from "./canvas-rules";
 import {
   checkConnection,
+  inLoopFrame,
   parseHandle,
   wouldCreateCycle,
 } from "./connection-rules";
@@ -394,7 +395,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       connection.target,
       getSpec(target.type),
       connection.targetHandle,
-      doc.groups[source.group ?? ""]?.kind === "loop",
+      inLoopFrame(doc, connection.source),
     );
     if (!check.ok) return false;
     if (recipeConnectionError(doc, connection.source, connection.target))

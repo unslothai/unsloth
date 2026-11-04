@@ -19,6 +19,7 @@ import {
   FLOW_IN_HANDLE,
   FLOW_TARGET_PORT,
   checkConnection,
+  inLoopFrame,
   flowOutHandle,
   inHandle,
   outHandle,
@@ -57,7 +58,7 @@ export function tryConnect(req: ConnectRequest): string | null {
     req.target,
     targetSpec,
     req.targetHandle,
-    doc.graph.groups[sourceNode.group ?? ""]?.kind === "loop",
+    inLoopFrame(doc.graph, req.source),
   );
   if (!check.ok) return check.reason ?? "Cannot connect";
   if (
