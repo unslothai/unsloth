@@ -199,7 +199,11 @@ def make_room(model, input_ids, dtype, increment):
     the allocator cache. Measured: cudaMemGetInfo plus the allocator's reserved-but-free bytes, against
     ROOM_MARGIN x the call's estimated KV cache + prefill working set. Returns True when it released."""
     device = getattr(input_ids, "device", None)
-    if not hasattr(input_ids, "shape") or len(input_ids.shape) < 2 or getattr(device, "type", None) != "cuda":
+    if (
+        not hasattr(input_ids, "shape")
+        or len(input_ids.shape) < 2
+        or getattr(device, "type", None) != "cuda"
+    ):
         return False
     stores = [
         m.__dict__["_unsloth_graph_buffers"]
@@ -251,7 +255,6 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
     if not _OOM_WARNED:
         _OOM_WARNED = True
         import warnings
-
         warnings.warn(
             "Unsloth: generate() ran out of GPU memory with CUDA-graph decode; freed the decode graphs "
             "and buffers and decoded this call eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=0 always decodes eagerly).",

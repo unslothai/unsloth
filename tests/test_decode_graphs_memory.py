@@ -53,7 +53,12 @@ class _Model(torch.nn.Module):
         )  # fmt: skip
         self.attns = torch.nn.ModuleList(_Attn() for _ in range(layers))
 
-    def keep(self, bsz, rows, dtype = torch.float16):
+    def keep(
+        self,
+        bsz,
+        rows,
+        dtype = torch.float16,
+    ):
         # What a graphed generate() of batch `bsz` leaves behind (tiny stand-in tensors, real row count).
         for attn in self.attns:
             paged = torch.zeros((rows, 2, 1, 1, 1), dtype = dtype)
@@ -63,7 +68,9 @@ class _Model(torch.nn.Module):
 
     def held(self):
         # Batch sizes with a kept cache (any layer).
-        return len({key for a in self.attns for key in a.__dict__.get("_unsloth_graph_buffers", {})})
+        return len(
+            {key for a in self.attns for key in a.__dict__.get("_unsloth_graph_buffers", {})}
+        )
 
 
 def _ids(bsz, prompt):
@@ -156,7 +163,9 @@ def test_oom_warning_is_emitted_once_per_process(G):
             with warnings.catch_warnings(record = True) as caught:
                 warnings.simplefilter("always")
                 G.generate_with_fallback(model, _oom_while_graphed(G, []), True, (), {})
-            messages += [str(w.message) for w in caught if "ran out of GPU memory" in str(w.message)]
+            messages += [
+                str(w.message) for w in caught if "ran out of GPU memory" in str(w.message)
+            ]
     assert len(messages) == 1
 
 
@@ -219,7 +228,10 @@ def test_keep_only_drops_other_batch_sizes_and_keeps_this_ones_graphs(G):
     assert [k[0] for k in state.graphs] == [4] and state.pool is not None
     # The kept graphs still read valid buffers: no epoch bump, so the next call of this shape replays.
     assert G.BUFFER_EPOCH == epoch
-    assert all(a.paged_attention is a._unsloth_graph_buffers[(4, torch.float16, CUDA0)][0] for a in model.attns)
+    assert all(
+        a.paged_attention is a._unsloth_graph_buffers[(4, torch.float16, CUDA0)][0]
+        for a in model.attns
+    )
     assert G.keep_only(model, 4) is False
 
 
@@ -267,7 +279,9 @@ def test_causal_lm_forward_calls_the_training_release():
     source = (_SOURCE.parent / "llama.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)
     fwd = next(
-        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_CausalLM_fast_forward"
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_CausalLM_fast_forward"
     )
     hooks = [
         n for n in ast.walk(fwd)
@@ -275,6 +289,10 @@ def test_causal_lm_forward_calls_the_training_release():
         and "self.training" in ast.unparse(n.test) and "is_grad_enabled" in ast.unparse(n.test)
     ]  # fmt: skip
     assert hooks, "training forward does not free graphs a generate() kept"
-    gen = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate")
+    gen = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate"
+    )
     text = ast.unparse(gen)
     assert "keep_only" in text and "HELD" in text
