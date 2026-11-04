@@ -336,6 +336,28 @@ def test_a_module_index_shard_linking_outside_from_where_it_lands_is_flagged(tmp
 
 
 @symlinks
+def test_a_module_path_climbing_through_a_link_into_a_subfolder_is_judged_where_it_lands(tmp_path):
+    from utils.security.file_security import escaping_weight_references
+
+    victim = tmp_path / "victim"
+    (victim / "child").mkdir(parents = True)
+    folder = _write(
+        tmp_path / "m",
+        {"modules.json": [{"idx": 0, "name": "0", "path": "link/../x", "type": "x"}]},
+    )
+    (folder / "deep" / "child").mkdir(parents = True)
+    (folder / "deep" / "x").mkdir()
+    (folder / "link").symlink_to(folder / "deep" / "child", target_is_directory = True)
+    (folder / "deep" / "x" / "out").symlink_to(victim / "child", target_is_directory = True)
+    index = {"weight_map": {"w": "out/../s.safetensors"}}
+    _write(folder / "deep" / "x", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == ["link/../x/out/../s.safetensors"]
+    index = {"weight_map": {"w": "s.safetensors"}}
+    _write(folder / "deep" / "x", {"model.safetensors.index.json": index})
+    assert escaping_weight_references(folder) == []
+
+
+@symlinks
 def test_a_hub_cache_snapshot_with_blob_links_passes(tmp_path):
     from utils.security.file_security import escaping_weight_references
 
