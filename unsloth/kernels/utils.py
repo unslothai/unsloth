@@ -1853,12 +1853,15 @@ def fast_linear_forward(
             # Without out=, mv / mm follow a different autocast dtype; the in-place update does not.
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.view(out_dim).addmv_(B, temp_lora, alpha = lora_S)
+            res = out.view(out_dim).addmv_(B, temp_lora, alpha = lora_S)
         else:
             temp_lora = torch_mm(X.view(bsz, in_dim), A.t(), out = temp_lora)
             if temp_lora.dtype != dtype:
                 temp_lora = temp_lora.to(dtype)
-            out.view(bsz, out_dim).addmm_(temp_lora, B.t(), alpha = lora_S)
+            res = out.view(bsz, out_dim).addmm_(temp_lora, B.t(), alpha = lora_S)
+        # A subclass adapter makes the in-place method return its type (#16249): keep it on `out`'s strides.
+        if type(res) is not type(out):
+            out = out.as_subclass(type(res))
 
     if bias is not None:
         out += bias
