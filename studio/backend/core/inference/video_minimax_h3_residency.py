@@ -198,7 +198,12 @@ def _host_copy_of(tensor: Any) -> Any:
     return _pin_host_tensor(host)
 
 
-def rebuild_host_copy(group: Any, *, host_yield: Any = None, logger: Any = None) -> int:
+def rebuild_host_copy(
+    group: Any,
+    *,
+    host_yield: Any = None,
+    logger: Any = None,
+) -> int:
     """Re-create a released group's host copy from its device weights (an exact copy). ``host_yield(nbytes)`` is asked
     for RAM first when the copy would leave under ``H3_REBUILD_KEEP_MIB`` available. Returns bytes rebuilt."""
     need = released_host_bytes(group)
@@ -209,7 +214,6 @@ def rebuild_host_copy(group: Any, *, host_yield: Any = None, logger: Any = None)
     if host_yield is not None:
         try:
             from .diffusion_small_host import encoder_resident_keep_mib, host_ram_mib
-
             total, available = host_ram_mib()
             if available is not None:
                 keep = max(H3_REBUILD_KEEP_MIB, int(encoder_resident_keep_mib(total)))
@@ -218,7 +222,9 @@ def rebuild_host_copy(group: Any, *, host_yield: Any = None, logger: Any = None)
                     host_yield(deficit << 20)
         except Exception as exc:  # noqa: BLE001 -- rebuild anyway
             if logger is not None:
-                logger.warning("video.h3_residency: host RAM check before a rebuild failed: %s", exc)
+                logger.warning(
+                    "video.h3_residency: host RAM check before a rebuild failed: %s", exc
+                )
     if torch.cuda.is_available():
         torch.cuda.current_stream().synchronize()
     host = {}
@@ -258,7 +264,9 @@ def compact_host_slabs(groups: list, logger: Any = None) -> int:
                 storage = leaf.untyped_storage()
                 key = storage.data_ptr()
                 sizes[key] = int(storage.nbytes())
-                live.setdefault(key, []).append((group, tensor, host, int(leaf.numel()) * int(leaf.element_size())))
+                live.setdefault(key, []).append(
+                    (group, tensor, host, int(leaf.numel()) * int(leaf.element_size()))
+                )
     freed = moved = 0
     for key, entries in live.items():
         size = sizes[key]
@@ -322,7 +330,13 @@ def make_resident(group: Any) -> None:
     group._unsloth_resident = True
 
 
-def demote(group: Any, *, host_yield: Any = None, logger: Any = None, rebuild: bool = True) -> None:
+def demote(
+    group: Any,
+    *,
+    host_yield: Any = None,
+    logger: Any = None,
+    rebuild: bool = True,
+) -> None:
     """Undo ``make_resident``: restore the streaming onload / offload and move the weights back to the host copy.
     A released host copy is rebuilt from the device first; ``rebuild=False`` (unload) drops the weights instead."""
     import torch

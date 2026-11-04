@@ -16,7 +16,11 @@ torch = pytest.importorskip("torch")
 class _HostGroup:
     """A diffusers-style offload group: ``cpu_param_dict`` holds the host copy, onload gives the weight new storage."""
 
-    def __init__(self, seed: int, n: int = 64):
+    def __init__(
+        self,
+        seed: int,
+        n: int = 64,
+    ):
         g = torch.Generator().manual_seed(seed)
         lin = torch.nn.Linear(n, n, bias = True)
         with torch.no_grad():
@@ -89,7 +93,9 @@ def test_a_demoted_block_streams_from_an_exact_rebuilt_copy(caplog):
         assert g.where == "cpu" and len(g.cpu_param_dict) == 2
         for p, want in zip(g.modules[0].parameters(), ref):
             assert torch.equal(p.data, want)
-            assert p.data.data_ptr() == g.cpu_param_dict[p].data_ptr()  # offload re-pointed at the rebuilt copy
+            assert (
+                p.data.data_ptr() == g.cpu_param_dict[p].data_ptr()
+            )  # offload re-pointed at the rebuilt copy
         g.onload_()  # streams again from the rebuilt copy
         for p, want in zip(g.modules[0].parameters(), ref):
             assert torch.equal(p.data, want)
@@ -248,7 +254,10 @@ def test_a_well_used_slab_is_left_alone(monkeypatch):
         g.cpu_param_dict[p] = slab[off : off + p.numel()].view(p.shape)
         off += p.numel()
     assert res.compact_host_slabs([g]) == 0
-    assert all(h.untyped_storage().data_ptr() == slab.untyped_storage().data_ptr() for h in g.cpu_param_dict.values())
+    assert all(
+        h.untyped_storage().data_ptr() == slab.untyped_storage().data_ptr()
+        for h in g.cpu_param_dict.values()
+    )
 
 
 def test_a_rebuild_restores_the_load_reserve_not_just_the_floor(monkeypatch):

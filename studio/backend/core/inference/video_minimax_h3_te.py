@@ -717,11 +717,7 @@ def keep_h3_te_resident(
             return 0
         undo = _undo_list(target)  # marks the share as managed: later calls top it up
         copied_ids = {id(e[3]) for e in undo}
-        entries = [
-            e
-            for e in _streamed_host_tensors(target, groups)
-            if id(e[2]) not in copied_ids
-        ]
+        entries = [e for e in _streamed_host_tensors(target, groups) if id(e[2]) not in copied_ids]
         need = -(-sum(h.numel() * h.element_size() for _g, _t, h in entries) // (1 << 20))
         if need <= 0:
             return 0
@@ -793,7 +789,12 @@ def top_up_h3_te_resident(text_encoder: Any, *, logger: Any = None) -> int:
     return keep_h3_te_resident(text_encoder, logger = logger)
 
 
-def yield_h3_te_resident(text_encoder: Any, nbytes: int, *, logger: Any = None) -> int:
+def yield_h3_te_resident(
+    text_encoder: Any,
+    nbytes: int,
+    *,
+    logger: Any = None,
+) -> int:
     """Return up to ``nbytes`` of the conditioner's resident share to its memory mapping (last copied first: vision,
     then the deepest language layers), so the anonymous copies are freed. Returns bytes given back. Never raises."""
     try:
