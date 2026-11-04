@@ -17,6 +17,7 @@
 
 import importlib.metadata
 import importlib.util
+import os
 import pathlib
 import platform
 import subprocess
@@ -198,6 +199,7 @@ def test_dir_matches_the_eager_filter(lazy_all, dir_first):
 _needs_real_mlx = pytest.mark.skipif(
     platform.system() != "Darwin"
     or platform.machine() != "arm64"
+    or os.environ.get("UNSLOTH_FORCE_GPU_PATH", "0") == "1"
     or importlib.util.find_spec("mlx") is None
     or importlib.util.find_spec("trl") is None,
     reason = "the real MLX import path needs Apple Silicon with mlx and trl",
