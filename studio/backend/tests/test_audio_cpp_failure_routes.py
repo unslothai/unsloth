@@ -140,7 +140,10 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
     assert ri.audio_cpp_resident_gb is af.estimate_resident_gb
     assert raised.value.status_code == 400 and detail["code"] == "out_of_memory"
     assert [row["label"] for row in detail["smaller_variants"]] == ["Q2", "Q1"]
-    assert detail["message"].startswith("No single GPU has enough free memory for Model M.")
+    assert detail["message"].startswith(
+        "No single GPU has enough free memory for Model M. It needs about 21.5 GB of GPU memory "
+        "while running, and the most free on one GPU is 7.0 GB."
+    )
 
 
 @pytest.mark.parametrize(

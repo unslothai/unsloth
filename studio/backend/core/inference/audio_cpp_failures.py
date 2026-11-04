@@ -74,7 +74,7 @@ _MESSAGES = {
     "device to CPU.",
     "capacity_cpu": "This input does not fit in memory. Try a shorter input.",
     # Unsloth Studio's own refusal before launch.
-    "placement": "No single GPU has enough free memory for {name}. Free GPU memory, choose a "
+    "placement": "No single GPU has enough free memory for {name}.{need} Free GPU memory, choose a "
     "smaller variant, or set the audio device to CPU.",
 }
 
@@ -167,7 +167,9 @@ def smaller_variants(
     free_gb: Optional[float] = None,
     limit: int = 3,
 ) -> list[dict]:
-    """Variants smaller than the loaded one, largest first; only those that fit ``free_gb``."""
+    """Variants smaller than the loaded one, largest first; only those that fit ``free_gb``.
+    A variant whose estimate is no lower than the loaded one's (a sibling package a few bytes
+    smaller, such as ACE-Step base next to turbo) cannot fit where the loaded one did not."""
     if model is None:
         return []
     from core.inference.audio_cpp_models import quant_label, resolve
@@ -179,11 +181,15 @@ def smaller_variants(
         except Exception:  # noqa: BLE001 - an unknown companion counts as nothing
             found = None
         extra += found.size_bytes if found is not None else 0
+    family = getattr(model, "family", None)
+    current = estimate_resident_gb(model.size_bytes + extra, family)
     rows = []
     for variant in sorted(model.variants, key = lambda v: v.size_bytes, reverse = True):
-        estimate = estimate_resident_gb(variant.size_bytes + extra, getattr(model, "family", None))
-        if not 0 < variant.size_bytes < model.size_bytes or (
-            free_gb is not None and estimate > free_gb
+        estimate = estimate_resident_gb(variant.size_bytes + extra, family)
+        if (
+            not 0 < variant.size_bytes < model.size_bytes
+            or estimate >= current
+            or (free_gb is not None and estimate > free_gb)
         ):
             continue
         label = variant.label or quant_label(variant.main_file)
@@ -221,8 +227,10 @@ def classify_audio_cpp_failure(
     model = None,
     runtime_status: Optional[int] = None,
     free_gb: Optional[float] = None,
+    required_gb: Optional[float] = None,
 ) -> Optional[AudioCppFailure]:
-    """The known failure in ``text`` (a runtime log tail or error), or None."""
+    """The known failure in ``text`` (a runtime log tail or error), or None. ``required_gb`` is the
+    estimate a placement refusal compared against ``free_gb``; the message states both."""
     raw = str(text or "")
     lowered = raw.lower()
     for code, pattern in _PATTERNS:
@@ -239,7 +247,18 @@ def classify_audio_cpp_failure(
         on_cpu = code == "out_of_memory" and backend == "cpu"
         key = "placement" if placement else "capacity" if capacity else code
         key = f"{key}_cpu" if on_cpu and key in ("out_of_memory", "capacity") else key
-        message = _MESSAGES[key].format(name = getattr(model, "display_name", None) or "This model")
+        need = ""
+        if placement and required_gb is not None:
+            # The estimate, not the file size the model list shows, is what has to fit.
+            need = f" It needs about {required_gb:.1f} GB of GPU memory while running"
+            need += (
+                f", and the most free on one GPU is {free_gb:.1f} GB."
+                if free_gb is not None
+                else "."
+            )
+        message = _MESSAGES[key].format(
+            name = getattr(model, "display_name", None) or "This model", need = need
+        )
         # "device": the run was already on the CPU, so "set the audio device to CPU" can't help.
         extras: dict = {"device": "cpu"} if on_cpu else {}
         if code == "out_of_memory" and not capacity:
