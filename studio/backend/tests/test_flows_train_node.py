@@ -65,8 +65,17 @@ def _recipe_routes(started):
 
 
 def _uploads(ctx):
+    import io
+
+    import pyarrow.parquet as pq
+
+    def rows(name, body):
+        if name.endswith(".parquet"):
+            return pq.read_table(io.BytesIO(body)).to_pylist()
+        return [json.loads(line) for line in body.decode().splitlines()]
+
     return {
-        c[4]["file"][0]: [json.loads(line) for line in c[4]["file"][1].decode().splitlines()]
+        c[4]["file"][0]: rows(*c[4]["file"][:2])
         for c in ctx.calls
         if c[1] == "/api/hub/datasets/upload"
     }
@@ -190,7 +199,7 @@ def test_holdout_reads_hub_datasets_with_the_requests_token(monkeypatch):
         seen["token"] = token
         return ROWS
 
-    monkeypatch.setattr(training, "_load_rows", load_rows)
+    monkeypatch.setattr(training, "_load_table", _as_table(load_rows))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/gated"}}
@@ -668,7 +677,7 @@ def test_hub_eval_split_survives_the_hold_out(monkeypatch):
         splits.append(dataset.get("split"))
         return ROWS if dataset.get("split") == "train" else ROWS[:5]
 
-    monkeypatch.setattr(training, "_load_rows", load_rows)
+    monkeypatch.setattr(training, "_load_table", _as_table(load_rows))
     monkeypatch.setattr(
         training,
         "_eval_rows",
@@ -910,12 +919,15 @@ def test_the_checkpoint_carries_the_one_system_prompt_training_used():
         "custom_format_mapping": {"q": "user", "a": "assistant"},
     }
     # GRPO's prompt fills in for every prompt with no system message, as a new chat prompt is.
-    assert training.trained_system_prompt(grpo) == "Use <answer> tags."
-    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}) == (
+    assert training.trained_system_prompt(grpo, ["q", "a"]) == "Use <answer> tags."
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}, ["q"]) == (
         "Use <answer> tags."
     )
     # Emptied in the node: training added none.
-    assert training.trained_system_prompt({**grpo, "rl_system_prompt": None}) == ""
+    assert training.trained_system_prompt({**grpo, "rl_system_prompt": None}, ["q"]) == ""
+    # Columns unknown (a Hub schema that could not be read): a system column may have won.
+    assert training.trained_system_prompt(grpo) == ""
+    assert training._hub_columns({"ref": "/no/such/dataset"}, None) is None
     sft = {
         "custom_format_mapping": {
             "q": "user",
@@ -989,7 +1001,7 @@ def test_stop_gives_up_on_a_blocked_holdout_read(monkeypatch):
         release.wait(30)
         return ROWS
 
-    monkeypatch.setattr(training, "_load_rows", stuck)
+    monkeypatch.setattr(training, "_load_table", _as_table(stuck))
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/big"}}
@@ -1214,6 +1226,26 @@ def test_a_gguf_held_in_ram_is_put_back_in_ram(monkeypatch):
         training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
     )
     assert loads[0]["extra_body"] == {"chat_template_override": "{{ messages }}"}
+    # The GPUs it was asked for go back too; an older status names only the ones in use.
+    loads.clear()
+    status.update({"chat_template_override": None, "requested_gpu_ids": [0, 1], "gpu_ids": [0]})
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"gpu_ids": [0, 1]}
+    loads.clear()
+    del status["requested_gpu_ids"]
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"gpu_ids": [0]}
+    # Automatic placement sends none.
+    loads.clear()
+    status.update({"requested_gpu_ids": None, "gpu_ids": [1]})
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] is None
 
 
 def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monkeypatch):
@@ -1291,6 +1323,12 @@ def test_a_slice_end_past_the_last_row_reads_only_the_rows_there(monkeypatch):
     assert len(training._stream_rows(streamed, 0, 200000)) == 20
 
 
+def _as_table(load):
+    """A row loader stub as the typed table the hold-out reads."""
+    from datasets import Dataset
+    return lambda *a, **k: Dataset.from_list(load(*a, **k))
+
+
 def test_a_csv_hold_out_names_its_upload_by_a_path_that_survives_a_restart(tmp_path, monkeypatch):
     root = tmp_path / "uploads"
     monkeypatch.setattr("utils.paths.storage_roots.dataset_uploads_root", lambda: root)
@@ -1310,3 +1348,33 @@ def test_a_csv_hold_out_names_its_upload_by_a_path_that_survives_a_restart(tmp_p
 
     value = asyncio.run(training._upload_csv(Ctx(), [{"q": "a"}], "notes-train"))
     assert value["ref"] == "uploads/acct/notes-train.csv"
+
+
+def test_a_hold_out_keeps_the_source_column_types(monkeypatch):
+    import decimal
+    import io
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    from datasets import Dataset
+
+    table = pa.table(
+        {
+            "price": pa.array([decimal.Decimal(f"{i}.25") for i in range(20)], pa.decimal128(6, 2)),
+            "body": [f"hello {i}" for i in range(20)],
+        }
+    )
+    monkeypatch.setattr(training, "_load_table", lambda *a, **k: Dataset(table))
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/prices"}}
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    files = {
+        c[4]["file"][0]: c[4]["file"][1] for c in ctx.calls if c[1] == "/api/hub/datasets/upload"
+    }
+    train = pq.read_table(io.BytesIO(next(b for n, b in files.items() if "-train." in n)))
+    # The decimal stays a decimal, so a raw-text run still picks `body` as its text.
+    assert pa.types.is_decimal(train.schema.field("price").type)
+    assert train.num_rows == 18

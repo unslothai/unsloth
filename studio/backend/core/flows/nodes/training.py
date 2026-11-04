@@ -270,7 +270,14 @@ async def finetune(ctx: NodeContext) -> dict:
         metrics["train_rows"] = dataset.get("rows")
         metrics["holdout_rows"] = holdout["rows"]
     checkpoint = {"kind": "checkpoint", "name": run, "base_model": config["model_name"]}
-    system = trained_system_prompt(config, dataset.get("columns"))
+    columns = dataset.get("columns")
+    if columns is None and objective == "grpo" and dataset.get("source") == "hf":
+        from core.training.account_jobs import account_hf_token
+
+        # A Hub dataset's value names no columns: read them, as the formatter saw them.
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        columns = await asyncio.to_thread(_hub_columns, dataset, token)
+    system = trained_system_prompt(config, columns)
     if system:
         checkpoint["system_prompt"] = system
     return {
@@ -386,6 +393,9 @@ def trained_system_prompt(config: dict, columns: Any = None) -> str:
     if config.get("objective") == "grpo":
         from core.training.rl import _AUTO_ROLE_NAMES, _IGNORE_ROLE
 
+        if columns is None:
+            # Columns unknown: a `system` column the formatter found by name may have been used.
+            return ""
         roles = mapping if isinstance(mapping, dict) else {}
         named = [c for c in (columns or []) if isinstance(c, str)] + list(roles)
         if "system" in roles.values() or any(
@@ -905,6 +915,24 @@ def _compound_rows(
     return Dataset.from_list(rows)
 
 
+def _hub_columns(dataset: dict, token: Any) -> Optional[list[str]]:
+    """A Hub split's column names from its schema, or None when the Hub cannot say."""
+    from datasets import load_dataset
+
+    split = re.split(r"[\[+]", str(dataset.get("split") or "train").replace(" ", ""))[0]
+    try:
+        streamed = load_dataset(
+            str(dataset["ref"]),
+            dataset.get("subset") or None,
+            split = split,
+            token = token,
+            streaming = True,
+        )
+        return list(streamed.column_names) if streamed.column_names else None
+    except Exception:
+        return None
+
+
 def _hub_rows(dataset: dict, token: Any, start: int, end: Optional[int]) -> Any:
     """A Hub split, without downloading more than the hold-out can use: a slice streams just its
     rows, a split the Hub says is over the cap is refused before anything is fetched, and one of
@@ -951,6 +979,16 @@ def _load_rows(
     start: int = 0,
 ) -> list[dict]:
     """Rows start..end (inclusive) of the dataset, already sliced."""
+    return _jsonable(_load_table(dataset, token, end, start).to_list())
+
+
+def _load_table(
+    dataset: dict,
+    token: Any,
+    end: Optional[int],
+    start: int = 0,
+):
+    """The same rows as a ``datasets.Dataset``, keeping the source's column types."""
     from datasets import load_dataset
 
     from core.flows.nodes.data import local_seed_path
@@ -978,7 +1016,7 @@ def _load_rows(
         loaded = _stream_rows(streamed, start, end)
     if len(loaded) > HOLDOUT_MAX_ROWS:
         raise _too_many(len(loaded))
-    return _jsonable(loaded.to_list())
+    return loaded
 
 
 def _jsonable(rows: list[dict]) -> list[dict]:
@@ -1016,6 +1054,7 @@ async def holdout_split(
     end = None if end in (None, "") else int(end)
     start = ctx.params.get("dataset_slice_start")
     start = 0 if start in (None, "") else int(start)
+    table = None
     if dataset.get("source") == "recipe" and not recipe_artifact(dataset.get("ref")):
         rows = await recipe_rows(ctx, str(dataset["ref"]))
         rows = rows[start : None if end is None else end + 1]
@@ -1023,25 +1062,34 @@ async def holdout_split(
         # The request's own Hub token, as /api/train/start gets it; managed accounts never borrow the server's.
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         try:
-            rows = await _off_thread(ctx, _load_rows, dataset, token, end, start)
+            table = await _off_thread(ctx, _load_table, dataset, token, end, start)
         except (FlowNodeError, FlowCancelled):
             raise
         except Exception as exc:
             raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
-    held_ids = holdout_row_ids(len(rows), percent, seed)
+    count = len(rows) if table is None else len(table)
+    held_ids = holdout_row_ids(count, percent, seed)
     if not held_ids:
-        raise FlowNodeError(f"{len(rows)} row(s) is too few to hold any out; set Hold out % to 0")
+        raise FlowNodeError(f"{count} row(s) is too few to hold any out; set Hold out % to 0")
     held = set(held_ids)
+    kept = [i for i in range(count) if i not in held]
     name = str(dataset.get("ref") or "dataset").replace("/", "-")
     tag = f"{name}-holdout{percent}-seed{seed}"
-    save = upload_rows
-    if dataset.get("source") != "hf" and _is_csv(dataset):
+    if table is None:
+        train = await upload_rows(ctx, [rows[i] for i in kept], f"{tag}-train")
+        holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
+    elif dataset.get("source") != "hf" and _is_csv(dataset):
         # Saved as CSV again, so training reads it as it reads the source: a numeric id column stays
         # out of a raw-text run's text, which the JSONL's all-string rows would lose.
-        save = _upload_csv
-    train = await save(ctx, [r for i, r in enumerate(rows) if i not in held], f"{tag}-train")
-    holdout = await save(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
-    holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": len(rows)})
+        rows = _jsonable(table.to_list())
+        train = await _upload_csv(ctx, [rows[i] for i in kept], f"{tag}-train")
+        holdout = await _upload_csv(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")
+    else:
+        # Saved as Parquet with the source's column types: a decimal or date column stringified into
+        # JSONL would become the text column a raw-text run picks.
+        train = await _upload_parquet(ctx, table.select(kept), f"{tag}-train")
+        holdout = await _upload_parquet(ctx, table.select(held_ids), f"{tag}-holdout")
+    holdout.update({"percent": percent, "seed": seed, "row_ids": held_ids, "of_rows": count})
     return train, holdout
 
 
@@ -1051,6 +1099,31 @@ def _is_csv(dataset: dict) -> bool:
         return local_seed_path(dataset.get("ref")).lower().endswith(".csv")
     except FlowNodeError:
         return False
+
+
+async def _upload_parquet(ctx: NodeContext, table: Any, name: str) -> dict:
+    import io
+
+    from core.flows.nodes.data import upload_ref
+
+    out = io.BytesIO()
+    table.to_parquet(out)
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") or "flow-dataset"
+    saved = await ctx.call(
+        "POST",
+        "/api/hub/datasets/upload",
+        files = {"file": (f"{name}.parquet", out.getvalue(), "application/octet-stream")},
+    )
+    stored = saved.get("stored_path") if isinstance(saved, dict) else None
+    if not isinstance(stored, str) or not stored:
+        raise FlowNodeError("Unsloth Studio did not say where it saved the dataset")
+    return {
+        "kind": "dataset",
+        "source": "local",
+        "ref": upload_ref(stored),
+        "rows": len(table),
+        "columns": sorted(table.column_names),
+    }
 
 
 async def _upload_csv(ctx: NodeContext, rows: list[dict], name: str) -> dict:
@@ -1283,6 +1356,11 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
     # A GGUF placed by hand (all in RAM at gpu_layers 0, say) goes back where it was.
     if status.get("gpu_memory_mode") == "manual":
         extra.update({k: status[k] for k in PLACEMENT_FIELDS if status.get(k) is not None})
+    # The GPUs it was asked to use (tensor parallel over two, or pinned to another card); a status
+    # from before requested_gpu_ids reports only the effective ones. None means automatic.
+    gpus = status.get("requested_gpu_ids", status.get("gpu_ids"))
+    if isinstance(gpus, list) and gpus:
+        extra["gpu_ids"] = gpus
     template = status.get("chat_template_override")
     if isinstance(template, str) and template.strip():
         # A template the user set to fix the model's prompt format goes back with it.
