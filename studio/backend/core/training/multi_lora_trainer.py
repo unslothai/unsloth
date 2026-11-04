@@ -26,6 +26,20 @@ logger = get_logger(__name__)
 
 _DEFAULT_TARGETS = ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
 _OPTIMIZERS = ("adamw_8bit", "adamw_torch", "adamw_torch_fused")
+# The single job moves these into modules_to_save (unsloth.models._utils.EMBEDDING_MODULES); the batch
+# can only wrap linear layers, so it would skip embed_tokens and turn lm_head into a low-rank LoRA.
+_EMBEDDING_TARGETS = frozenset(("embed_tokens", "lm_head"))
+
+
+def embedding_targets(target_modules) -> list[str]:
+    """Requested targets whose leaf name is embed_tokens or lm_head, the same rule as the single job."""
+    if isinstance(target_modules, str):
+        target_modules = [target_modules]
+    return [
+        m
+        for m in target_modules or ()
+        if isinstance(m, str) and m.rsplit(".", 1)[-1] in _EMBEDDING_TARGETS
+    ]
 
 
 @dataclass
@@ -908,6 +922,12 @@ def _finish_stopped(event_queue, members, save: bool, export) -> None:
 
 
 def _run(event_queue, stop_queue, config: dict, members: list) -> None:
+    embedding = embedding_targets(config.get("target_modules"))
+    if embedding:
+        raise ValueError(
+            f"Batched LoRA training cannot train {embedding}: they train fully on their own, so run "
+            "these jobs one at a time."
+        )
     from core.import_guards import ensure_real_packages
 
     ensure_real_packages("unsloth_zoo", "unsloth")
