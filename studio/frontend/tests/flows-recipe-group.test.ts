@@ -826,7 +826,7 @@ test("clearing a block's name, column or setup card, keeps its form open until t
   // The blank shows in the form only; the recipe and the configs a rename starts from keep the
   // last name, so its links follow once the new one is typed.
   const blank = update.slice(0, update.indexOf("return;"));
-  assert.match(blank, /if \(typeof patch\.name === "string" && !patch\.name\.trim\(\)\)/);
+  assert.match(blank, /typeof patch\.name === "string" &&\s*\(!patch\.name\.trim\(\) \|\| nameTaken\(/);
   assert.match(blank, /setConfigs\(\{\s*\.\.\.latest\.current,/);
   assert.doesNotMatch(blank, /latest\.current =|commitConfigs|applyConfigPatch/);
 });
@@ -1330,4 +1330,10 @@ test("recipe blocks pasted outside a recipe frame are left out, and a shared too
   } as never) as Record<string, { mcp_providers: { id: string; endpoint: string }[] }>;
   assert.equal(next.t1.mcp_providers[0].endpoint, "https://b.example/mcp");
   assert.equal(next.t1.mcp_providers[0].id, "s1");
+});
+
+test("a name another block already has stays a draft in the form, so the recipe keeps opening", () => {
+  const forms = readFileSync(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), "utf8");
+  assert.match(forms, /\(!patch\.name\.trim\(\) \|\| nameTaken\(latest\.current, id, patch\.name\)\)/);
+  assert.match(forms, /isColumnConfig\(self\)\s*\?\s*isColumnConfig\(other\)\s*:\s*other\.kind === self\.kind/);
 });

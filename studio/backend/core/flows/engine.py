@@ -2069,7 +2069,19 @@ class FlowEngine:
     async def _model_key(self, ctx: NodeContextImpl, spec: dict, params: dict) -> Optional[dict]:
         kind = spec.get("model_kind")
         if not kind:
-            if _implicit_local_model(params.get(RECIPE_PARAM)):
+            compiled = params.get(RECIPE_PARAM)
+            recipe = compiled.get("recipe") if isinstance(compiled, dict) else None
+            from core.flows.nodes.data import local_model
+
+            named = local_model(recipe) if isinstance(recipe, dict) else None
+            if named:
+                # The step loads the generator the recipe names, so it is keyed like any picked model,
+                # not by whatever an earlier step left loaded.
+                key = dict(named)
+                if os.path.isabs(named["repo"]):
+                    key["files"] = await asyncio.to_thread(_local_fingerprint, named["repo"])
+                return key
+            if _implicit_local_model(compiled):
                 # The recipe runs on whatever Chat has loaded, so a different model or quant is a different dataset.
                 from core.flows.nodes._common import resident_identity
 

@@ -984,3 +984,39 @@ def test_the_dataset_viewer_reads_a_bare_hub_name_the_dataset_node_accepts():
     from core.flows.dataset_rows import dataset_source
     found = dataset_source({"kind": "dataset", "source": "hf", "ref": "imdb", "split": "train"})
     assert found["dataset_name"] == "imdb"
+
+
+def test_a_recipe_naming_a_local_model_loads_it_before_its_job(monkeypatch):
+    from storage import flows_db
+
+    monkeypatch.setattr(flows_db, "save_recipe_run", lambda flow, node, record: None)
+    monkeypatch.setattr(data, "POLL_S", 0)
+    payload = copy.deepcopy(SQL)
+    for provider in payload["recipe"]["model_providers"]:
+        provider["is_local"] = True
+    for preset in payload["recipe"]["model_configs"]:
+        preset["model"] = "unsloth/Qwen3-1.7B-GGUF"
+        preset["gguf_variant"] = "Q4_K_M"
+    doc = _flow(payload)
+    order = []
+    routes = _job_routes("completed")
+
+    def recording(method, path, params, body):
+        order.append(path)
+        return routes(method, path, params, body)
+
+    class Ctx(_FlowCtx):
+        async def ensure_model(
+            self,
+            kind,
+            choice,
+            options = None,
+        ):
+            order.append(("load", kind, choice["repo"], choice["variant"]))
+
+    ctx = Ctx(recording, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"})
+    ctx.doc = doc
+    asyncio.run(data.recipe_group(ctx))
+    assert order[0] == ("load", "chat", "unsloth/Qwen3-1.7B-GGUF", "Q4_K_M")
+    assert order.index("/api/data-recipe/jobs") > 0
+    assert data.local_model({"model_providers": [], "columns": []}) is None

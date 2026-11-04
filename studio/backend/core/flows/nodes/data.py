@@ -194,6 +194,10 @@ async def recipe_group(ctx: NodeContext) -> dict:
     for host in recipe_hosts(body):
         if refused := ctx.capability_refusal("http", host):
             raise FlowNodeError(refused)
+    local = local_model(body)
+    if local:
+        # The preset names a model: it is loaded here, under the GPU lease, as Recipe Studio's Run does.
+        await ctx.ensure_model("chat", local)
     # Validate against the seed it will run on: its columns are what the prompts read.
     await apply_seed(ctx, body)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})
@@ -347,6 +351,32 @@ class RunHistory:
             datasetTotal = total if isinstance(total, int) else len(rows),
             analysis = analysis if isinstance(analysis, dict) else None,
         )
+
+
+def local_model(recipe: dict) -> Optional[dict]:
+    """The one named model the recipe's local-provider columns use, if it names one."""
+    local = {
+        p.get("name")
+        for p in recipe.get("model_providers") or []
+        if isinstance(p, dict) and p.get("is_local") is True
+    }
+    used = {
+        c.get("model_alias")
+        for c in recipe.get("columns") or []
+        if isinstance(c, dict) and str(c.get("column_type") or "").startswith("llm-")
+    }
+    picks = {
+        (str(mc["model"]).strip(), str(mc.get("gguf_variant") or "").strip())
+        for mc in recipe.get("model_configs") or []
+        if isinstance(mc, dict)
+        and mc.get("provider") in local
+        and mc.get("alias") in used
+        and str(mc.get("model") or "").strip().lower() not in ("", "local")
+    }
+    if len(picks) != 1:
+        return None
+    repo, variant = picks.pop()
+    return {"repo": repo, "variant": variant or None}
 
 
 async def apply_seed(ctx: NodeContext, body: dict) -> None:

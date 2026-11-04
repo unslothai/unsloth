@@ -61,6 +61,26 @@ function DropRow({
   );
 }
 
+/** Whether another block of the same family (columns, or setup blocks of one kind) has this name. A
+ * recipe with two blocks of one name does not open again, so such a name stays a draft in the form. */
+function nameTaken(
+  configs: Record<string, NodeConfig>,
+  id: string,
+  name: string,
+): boolean {
+  const self = configs[id];
+  if (!self) return false;
+  const wanted = name.trim();
+  return Object.values(configs).some(
+    (other) =>
+      other.id !== id &&
+      other.name.trim() === wanted &&
+      (isColumnConfig(self)
+        ? isColumnConfig(other)
+        : other.kind === self.kind),
+  );
+}
+
 function BlockForm({
   groupId,
   find,
@@ -105,10 +125,14 @@ function BlockForm({
     );
   }
   const update = (id: string, patch: Partial<NodeConfig>) => {
-    if (typeof patch.name === "string" && !patch.name.trim()) {
+    if (
+      typeof patch.name === "string" &&
+      (!patch.name.trim() || nameTaken(latest.current, id, patch.name))
+    ) {
       // A block with no name drops out of the recipe (a setup card and its inspector) or blanks
-      // every reference to it (a column), so a cleared name shows in the form only: the recipe and
-      // its links keep the last name until the new one is typed, and the rename carries them across.
+      // every reference to it (a column), and one named like another stops the recipe opening, so
+      // such a name shows in the form only: the recipe and its links keep the last name until a
+      // usable one is typed, and the rename carries them across.
       setConfigs({
         ...latest.current,
         [id]: { ...latest.current[id], name: patch.name } as NodeConfig,
