@@ -784,7 +784,6 @@ let watchingBackground = false;
 // A panel is mounted (startNativeViews running), which prunes and closes hidden pages itself.
 let panelUp = false;
 
-/** Keeps `tabId`'s page open, and following its tab, while the panel shows another chat or none. */
 export function keepInBackground(tabId: string): void {
   background = [...background.filter((id) => id !== tabId), tabId];
   listenOnce();
@@ -795,13 +794,11 @@ export function keepInBackground(tabId: string): void {
   syncBackground();
 }
 
-/** The page can close with the panel again; with no panel up, it closes now. */
 export function releaseBackground(tabId: string): void {
   background = background.filter((id) => id !== tabId);
   if (!panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
 }
 
-/** Opens or moves each kept page its tab no longer matches; the panel owns the one it shows. */
 function syncBackground(): void {
   if (background.length === 0) return;
   const tabs = new Map(useBrowserStore.getState().tabs.map((tab) => [tab.id, tab]));
@@ -845,7 +842,6 @@ async function openInBackground(tabId: string, url: string, key: number): Promis
   } finally {
     openingInBackground.delete(tabId);
   }
-  // Let go (run over, tab closed, cap) while it opened: nothing owns it now.
   if (!background.includes(tabId) && !panelUp && tabId !== shownView && views.has(tabId)) closeView(tabId);
   syncBackground();
 }
