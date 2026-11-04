@@ -1257,9 +1257,18 @@ if _IS_MLX:
                 "logging_steps"
             ) == getattr(args, "_unsloth_mlx_initial_logging_steps", None):
                 values.pop("logging_steps", None)
-            # An untouched default norm must not outvote a clip the trainer sets below.
-            if not grad_clip_explicit and values.get("max_grad_norm") == getattr(
-                config_class, "max_grad_norm", None
+            # An untouched default norm must not outvote a clip the trainer sets below, and an SFT
+            # config with no clip set takes the TRL config's default norm, as SFT itself would.
+            if (
+                not grad_clip_explicit
+                and values.get("max_grad_norm") == getattr(config_class, "max_grad_norm", None)
+            ) or (
+                grad_clip_explicit is False
+                and hasattr(config_class, "_unsloth_mlx_trl_arguments")
+                and not any(
+                    _positive_mlx_training_number(values.get(name)) is not None
+                    for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm")
+                )
             ):
                 values.pop("max_grad_norm", None)
         for key, value in overrides.items():
@@ -1775,10 +1784,14 @@ if _IS_MLX:
                 args = ()
             fields = _dataclasses.fields(type(self))
             config_fields = {field.name for field in fields}
-            # HfArgumentParser passes every field: an untouched default is not the caller's choice.
+            # HfArgumentParser and dataclasses.replace pass every field: an untouched default is not
+            # the caller's choice, nor zoo's value that __init__ below fills in for a None default.
             if not kwargs.pop("_unsloth_mlx_config_copy", False) and config_fields <= set(kwargs):
                 for field in fields:
-                    if kwargs[field.name] == field.default:
+                    if kwargs[field.name] == field.default or (
+                        field.name in ("dataset_order", "max_seq_length")
+                        and kwargs[field.name] == getattr(MLXTrainingConfig, field.name)
+                    ):
                         del kwargs[field.name]
             # A value set on either other knob decides the clip, so TRL's default norm must stay out of it.
             if (
@@ -1839,13 +1852,12 @@ if _IS_MLX:
                         "Unsloth MLX: set every GRPO option on a GRPOConfig built after "
                         "`import unsloth`, not on an existing config or the trainer."
                     )
-            if not isinstance(args, self.config_class):
-                return _coerce_mlx_training_args(args, overrides, self._unsloth_mlx_config_class)
-            if not overrides:
+            if isinstance(args, self.config_class) and not overrides:
                 return args
             # A native zoo config with no clip set means zoo's leaf default, not TRL's "off".
             if (
-                not isinstance(args, _MLXTRLConfig)
+                isinstance(args, MLXTrainingConfig)
+                and not isinstance(args, (_MLXTRLConfig, UnslothTrainingArguments))
                 and (args.max_grad_norm or 0) <= 0
                 and args.max_grad_value is None
                 and args.max_grad_leaf_norm is None

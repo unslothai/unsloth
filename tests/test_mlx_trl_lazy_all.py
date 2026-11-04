@@ -289,6 +289,12 @@ long_model = nn.Linear(1, 1)
 long_model.max_seq_length = 4096
 b = trl.DPOTrainer(model=long_model, args=trl.DPOConfig(max_steps=1), train_dataset=[], max_length=48)
 assert (b.args.max_seq_length, b.args.max_length) == (4096, 48), "trainer budget leaves the context length implicit"
+import dataclasses
+swept = trl.DPOTrainer(model=long_model, args=dataclasses.replace(trl.DPOConfig(max_length=4096), beta=0.2), train_dataset=[]).args
+assert (swept.max_seq_length, swept.dataset_order, swept.beta) == (4096, "torch_randperm", 0.2), "a replaced config stays implicit"
+plain = trl.DPOTrainer(model=model, args=zoo.MLXTrainingConfig(max_steps=1), train_dataset=[]).args
+assert (plain.max_grad_norm, plain.max_grad_leaf_norm) == (0.0, 1.0), "zoo's leaf clip default survives conversion"
+assert trl.DPOTrainer(model=model, args=trl.SFTConfig(max_steps=1), train_dataset=[]).args.max_grad_norm == 1.0
 assert t.args.dataset_order == "torch_randperm" and t.args.max_grad_norm == 1.0
 assert t.args.append_eos is True, "TRL appends EOS to completions"
 assert t.tokenizer is tok and t.ref_model is None
