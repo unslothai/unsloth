@@ -112,6 +112,7 @@ import {
   useModelMemory,
 } from "@/hooks/use-model-memory";
 import type { GpuInfo } from "@/hooks/use-gpu-info";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -3723,6 +3724,7 @@ export type ModelPickerRowFilter = (row: {
 }) => boolean;
 
 export function HubModelPicker({
+  open,
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
@@ -3752,6 +3754,7 @@ export function HubModelPicker({
   rowFilter,
   moreModels,
 }: {
+  open: boolean;
   models: ModelOption[];
   /** Task-runtime downloads whose cache layout the shared Hub inventory cannot represent. */
   additionalOnDeviceModels?: ModelOption[];
@@ -3817,6 +3820,10 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  useEffect(() => {
+    // Capabilities import optional media libraries, so ask only when this picker is open.
+    if (open && diffusionLoad) void fetchSystemInfo({ probeMedia: true });
+  }, [open, diffusionLoad]);
   // Run settings is the chat load form, which the Images and Video pages never read.
   const onConfigure = diffusionLoad ? undefined : onConfigureProp;
   const audioTaskPicker = taskFilterHasAudio(task);

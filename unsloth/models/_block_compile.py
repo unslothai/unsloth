@@ -1406,8 +1406,10 @@ def _wrap(
     cls,
     compile_options,
     kinds = 1,
+    *,
+    install = True,
 ):
-    original = cls.forward
+    original = getattr(cls.forward, "_unsloth_block_original", cls.forward)
     # Host-read packed lengths / PrefixGrouper segments stay stock.
     unsloth_forward = getattr(original, "__module__", "").startswith("unsloth.models.")
     try:
@@ -1662,7 +1664,9 @@ def _wrap(
     forward._unsloth_block_original = original
     forward._unsloth_block_state = state
     setattr(forward, _MARK, True)
-    cls.forward = forward
+    if install:
+        cls.forward = forward
+    return forward
 
 
 _TOWER_SEGMENTS = (
@@ -1971,10 +1975,28 @@ def patch_block_compile(model):
             continue
         _wrap(cls, _COMPILE_OPTIONS, len(kinds.get(cls, ())) or 1)
         wrapped.append(cls.__name__)
+    for layer in compiled_layers:
+        if not any(m.__dict__.get("_unsloth_fp8_lora") is not None for m in layer.modules()):
+            continue
+        default = type(layer).forward
+        precise = getattr(default, "_unsloth_fp8_block_forward", None)
+        if precise is None:
+            # FP8 dgrad amplifies elided BF16 rounding; other instances of this class keep their options.
+            precise = _wrap(
+                type(layer),
+                {**_COMPILE_OPTIONS, "emulate_precision_casts": True},
+                len(kinds.get(type(layer), ())) or 1,
+                install = False,
+            )
+            default._unsloth_fp8_block_forward = precise
+        if getattr(layer.forward, "__func__", None) is not precise:
+            layer.forward = types.MethodType(precise, layer)
+            layer.__dict__.pop("_unsloth_block_checked", None)
     if _COMPILE_OPTIONS.get("triton.cudagraphs") or (
         _CUDAGRAPH_MODE == "auto" and _auto_platform_reason() is None
     ):
         _watch_hidden_states(model)
+    model.__dict__["_unsloth_block_compile_installed"] = True
     if _CUDAGRAPH_MODE == "auto":
         # A new model decides again: a launch-bound model loaded first must not turn graphs on for
         # a GPU-bound one. Graphs that went off for shape churn stay off.
