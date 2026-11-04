@@ -85,3 +85,15 @@ def test_a_shorter_native_window_keeps_its_own_length(tmp_path, monkeypatch):
 def test_an_explicit_context_is_launched_as_asked(tmp_path, monkeypatch, available_mib):
     _backend, ctx = _cpu_load(tmp_path, monkeypatch, available_mib = available_mib, n_ctx = 131072)
     assert ctx == 131072
+
+
+@pytest.mark.parametrize("via_env", [False, True])
+def test_rpc_offload_is_not_sized_against_coordinator_ram(tmp_path, monkeypatch, via_env):
+    if via_env:
+        monkeypatch.setenv("LLAMA_ARG_RPC", "10.0.0.2:50052")
+        extra = {}
+    else:
+        monkeypatch.delenv("LLAMA_ARG_RPC", raising = False)
+        extra = {"extra_args": ["--rpc", "10.0.0.2:50052"]}
+    _backend, ctx = _cpu_load(tmp_path, monkeypatch, available_mib = 8 * 1024, n_ctx = 0, **extra)
+    assert ctx == NATIVE
