@@ -492,8 +492,7 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
         if (reply && !reply.installed) reply = await call(fresh(), pageAgentSource());
       }
     } else {
-      // A preview just switched on from Source drops what reaches its frame before the shell listens,
-      // and a file tab is never marked loading: short tries, but only for reads, which can run twice.
+      // A mounting preview drops calls and is never marked loading: short tries, for reads only (safe twice).
       const wait = currentEntry(tab).kind === "file" && READ_OPS.has(String(request.op)) ? FILE_FRAME_TRY_MS : undefined;
       reply = await requestFrameAgent(tab.id, command, undefined, wait);
       if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource(), wait);

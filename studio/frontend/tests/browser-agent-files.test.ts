@@ -130,7 +130,6 @@ test("a preview that misses the first call, as one just switched on from Source 
   endBrowserAgentRun(RUN);
   let calls = 0;
   globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>, _code: string, timeoutMs: number) => {
-    // Lost before the shell listens: the panel hears nothing until its wait runs out.
     if (calls++ === 0) return new Promise((resolve) => setTimeout(() => resolve(null), timeoutMs));
     if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000 } };
     return { installed: true, result: { ok: true, text: "ready", links: [] } };
