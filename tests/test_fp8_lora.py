@@ -23,13 +23,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _cpu_scaled_mm_works():
+def _cpu_scaled_mm_works(rowwise = False):
     if not hasattr(torch, "float8_e4m3fn") or not hasattr(torch, "_scaled_mm"):
         return False
     try:
         a = torch.zeros(16, 16).to(torch.float8_e4m3fn)
-        one = torch.ones((), dtype = torch.float32)
-        torch._scaled_mm(a, a.t(), scale_a = one, scale_b = one, out_dtype = torch.bfloat16)
+        scale_a = torch.ones((16, 1) if rowwise else (), dtype = torch.float32)
+        scale_b = torch.ones((1, 16) if rowwise else (), dtype = torch.float32)
+        torch._scaled_mm(a, a.t(), scale_a = scale_a, scale_b = scale_b, out_dtype = torch.bfloat16)
         return True
     except (NotImplementedError, RuntimeError):
         return False
@@ -678,6 +679,8 @@ def test_registry_row():
 
 @pytest.fixture
 def rowwise(monkeypatch):
+    if not _cpu_scaled_mm_works(rowwise = True):
+        pytest.skip("this torch build has no CPU rowwise torch._scaled_mm kernel")
     monkeypatch.setattr(FL, "_SCALING", "row")
     monkeypatch.setattr(FL, "_DGRAD_DTYPE", FL.E4M3)
     yield

@@ -110,10 +110,28 @@ if triton is not None:
         tag_compile_cache(__file__)
 
 
-def _launch(kernel, grid, args, n_tensors, constexprs, device_index, **options):
+def _launch(
+    kernel,
+    grid,
+    args,
+    n_tensors,
+    constexprs,
+    device_index,
+    enable_fp_fusion = True,
+    **options,
+):
     if _fast_launch is not None and not _compiling():
-        return _fast_launch(kernel, grid, args, n_tensors, constexprs, device_index, **options)
-    kernel[grid](*args, **constexprs, **options)
+        return _fast_launch(
+            kernel,
+            grid,
+            args,
+            n_tensors,
+            constexprs,
+            device_index,
+            enable_fp_fusion = enable_fp_fusion,
+            **options,
+        )
+    kernel[grid](*args, **constexprs, enable_fp_fusion = enable_fp_fusion, **options)
 
 
 # Read once: device_count() inside a compiled region graph-breaks.

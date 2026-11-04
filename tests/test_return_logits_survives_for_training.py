@@ -77,7 +77,11 @@ def _fast_base_model():
     helpers = {n.name: n for n in utils.body if isinstance(n, ast.FunctionDef)}
     # Helpers that import a sibling module (a relative import has no package in this namespace): stubbed with what
     # they return for these fakes. A model split by hand (apply_pipeline_parallel) keeps no UNSLOTH_PP_SIZE replica.
-    stubbed = {"_pipeline_keeps_replica": lambda model: False}
+    stubbed = {
+        "_pipeline_keeps_replica": lambda model: False,
+        "enable_fp8_lora": lambda model: [],
+        "restore_fp8_lora_for_inference": lambda model: None,
+    }
     lifted = {n.name for n in wanted} | set(stubbed)
     todo = list(wanted)
     while todo:
@@ -174,6 +178,7 @@ def _fast_llama_for_training():
         arm_gradient_checkpointing = lambda model, checkpointing = None: False,
         set_module_gradient_checkpointing = lambda module, flag: None,
         _tensor_parallel_for_training = lambda model: None,  # tp_replica.py: no tp model here
+        enable_fp8_lora = lambda model: [],
     )
     module = ast.fix_missing_locations(ast.Module(body = [fn], type_ignores = []))
     exec(compile(module, str(MODELS / "llama.py"), "exec"), namespace)
