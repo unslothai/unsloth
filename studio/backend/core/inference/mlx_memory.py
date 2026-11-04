@@ -53,8 +53,7 @@ _COMPUTE_BASE_BYTES = int(0.64 * 1024**3)
 
 _RECURRENT_DTYPE_SIZE = 4
 
-# Score copies an unfused call holds at the queries' width; Metal measured 1.01 to 1.13 (mlx 0.32.4);
-# NAX head_dim 512 tails reach 1.32, within the fixed compute charge.
+# Score copies an unfused call holds; Metal measured 1.01-1.13 (mlx 0.32.4), NAX d512 tails 1.32 (in the fixed charge).
 _SCORE_LIVE = 1.13
 # A TurboQuant prefill holds the whole cache dequantized to float32 and cast to the query dtype; measured.
 _TURBOQUANT_DEQUANT_BYTES = 10
@@ -1000,7 +999,7 @@ def _dequantized_row_bytes(widths, dtype_size: int, kv_bits, kv_group_size, pref
         return None
     try:
         dtype = mx.float32 if dtype_size == 4 else mx.bfloat16
-        # Ask at a long context: chunks never fuse over fewer keys than queries; forced routes start at a key count (#15935).
+        # Long context: chunks never fuse over fewer keys than queries, and forced routes start at a key count (#15935).
         cached = max(prefill_chunk + 1, 1 << 16)
 
         def rows(width):
