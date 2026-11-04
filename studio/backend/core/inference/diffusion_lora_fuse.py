@@ -68,6 +68,24 @@ def _plan(denoisers: list) -> Optional[list]:
     return plan or None
 
 
+def _delta_fp32(layer: Any, adapter: str) -> Any:
+    """``scale * (B @ A)`` computed in fp32. PEFT's ``get_delta_weight`` multiplies in the adapter dtype on the GPU
+    (one bf16 rounding before the add); here its own math runs on fp32 copies of A and B, which are put back as they
+    were, so the layout rules (fan_in_fan_out, conv kernels) stay PEFT's."""
+    import torch
+
+    mods = [m for m in (layer.lora_A[adapter], layer.lora_B[adapter]) if getattr(m, "weight", None) is not None]
+    saved = [m.weight.data for m in mods]
+    try:
+        for m in mods:
+            m.weight.data = m.weight.data.float()
+        with torch.no_grad():
+            return layer.get_delta_weight(adapter).float()
+    finally:
+        for m, w in zip(mods, saved):
+            m.weight.data = w
+
+
 def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
     """Fold the active adapters into ``denoisers``' weights; True when they are folded (now or already)."""
     if fused(pipe):
@@ -112,9 +130,10 @@ def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
             backup.copy_(weight.detach())
             delta = None
             for adapter in active:
-                d = layer.get_delta_weight(adapter).float()
+                d = _delta_fp32(layer, adapter)
                 delta = d if delta is None else delta + d
             with torch.no_grad():
+                # W + scale * (B @ A) in fp32, rounded to the weight dtype once (as a weight-patching loader does)
                 weight.copy_((weight.float() + delta).to(weight.dtype))
             layer.merged_adapters = list(active)
             entries.append((layer, weight, backup))
