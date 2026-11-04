@@ -143,6 +143,39 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(10090406336, "ace_step") == 15.8 > 14.7
 
 
+# YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16. Their peaks on an RTX
+# 3090 / RTX 6000 Ada with 20,000 characters of lyrics at the 360 s cap: 6.6 / 8.1 / 11.0 GiB and
+# 6.8 / 8.3 / 11.2 GiB.
+YUE2_BYTES = (2933424181, 4531978293, 7529267253)
+
+
+@pytest.mark.parametrize(
+    "capability, expected",
+    [
+        ((8, 6), (7.83, 9.32, 12.11)),
+        ((8, 9), (7.83, 9.32, 12.11)),
+        ((12, 0), (7.83, 9.32, 12.11)),
+        # Below Ampere, or no NVIDIA card nvidia-smi can read: the generic formula.
+        ((7, 5), (8.33, 12.05, 19.03)),
+        (None, (8.33, 12.05, 19.03)),
+    ],
+)
+def test_yue2_uses_its_profile_only_on_ampere_or_newer(monkeypatch, capability, expected):
+    monkeypatch.setattr(af, "_lowest_cuda_capability", lambda: capability)
+    assert tuple(af.estimate_resident_gb(size, "yue2") for size in YUE2_BYTES) == expected
+    assert af.estimate_resident_gb(YUE2_BYTES[2], "yue2") > (11.2 if capability else 0)
+
+
+def test_the_least_capable_card_decides(monkeypatch):
+    from utils.hardware import nvidia
+
+    for found, lowest in (({0: (8, 9), 1: (7, 5)}, (7, 5)), ({0: (8, 6)}, (8, 6)), ({}, None)):
+        monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda found = found: found)
+        af._lowest_cuda_capability.cache_clear()
+        assert af._lowest_cuda_capability() == lowest
+    af._lowest_cuda_capability.cache_clear()
+
+
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():
     gb = 1024**3
     # A bigger model of a family measured low: the generic formula.

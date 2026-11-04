@@ -183,6 +183,27 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
     assert placement.native_required_gb == af.estimate_resident_gb(size, family) < free_gb
 
 
+@pytest.mark.parametrize("capability, fits", [((8, 6), True), ((7, 5), False), (None, False)])
+def test_yue2_q8_on_a_10gb_ampere_card(monkeypatch, capability, fits):
+    # #16627: an RTX 3080 10 GB has about 9.5 GiB free. YuE2 Q8_0 peaks at 8.3 GiB at worst.
+    monkeypatch.setattr(af, "offload_options", lambda model: [])
+    monkeypatch.setattr(af, "_lowest_cuda_capability", lambda: capability)
+    base = _model(sizes = (3,))
+    variant = dataclasses.replace(
+        base.variant, files = (dataclasses.replace(base.variant.files[0], size = 4531978293),)
+    )
+    model = dataclasses.replace(base, family = "yue2", variant = variant, variants = (variant,))
+    availability = ri._NativeAudioAvailability({0: 9.5}, {0: 0.0})
+    prepared = ([0], {"selection_mode": "fallback_all"})
+    if not fits:
+        with pytest.raises(HTTPException) as raised:
+            _preflight(None, availability = availability, prepared = prepared, model = model)
+        assert "It needs about 12.1 GB" in raised.value.detail["message"]
+        return
+    placement = _preflight(None, availability = availability, prepared = prepared, model = model)
+    assert placement.resolved_gpu_ids == [0] and placement.native_required_gb == 9.32
+
+
 def test_generation_crash_oom_maps_to_out_of_memory(monkeypatch):
     tail = "ggml_gallocr_reserve_n: failed to allocate CUDA0 buffer of size 9663676416"
     crash = af.attach_failure(

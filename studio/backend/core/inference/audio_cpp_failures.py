@@ -6,6 +6,7 @@ never returned, and details go through sanitize_runtime_tail."""
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
@@ -146,7 +147,21 @@ _MEASURED_PROFILES = {
     "kokoro_tts": (1.0, 3.5, 0.2),
     "voxcpm2": (2.2, 4.7, 4.5),
     "voxtral_tts": (1.0, 2.0, 4.4),
+    # Peak is 20,000 characters of lyrics run to the 9000-token (360 s) cap.
+    "yue2": (1.0, 5.1, 7.1),
 }
+# family -> lowest NVIDIA compute capability its profile holds on. Lower cards, and machines whose
+# cards nvidia-smi cannot read, keep the generic formula: YuE2 peaks 2-4.5 GiB higher on a T4.
+_PROFILE_MIN_CAPABILITY = {"yue2": (8, 0)}
+
+
+@functools.lru_cache(maxsize = 1)
+def _lowest_cuda_capability() -> Optional[tuple[int, int]]:
+    """The least capable NVIDIA card on the machine: a load may land on any of them."""
+    from utils.hardware import nvidia
+
+    capabilities = nvidia.get_compute_capabilities()
+    return min(capabilities.values()) if capabilities else None
 
 
 def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
@@ -156,7 +171,8 @@ def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float
     weights_gb = size_bytes / (1024**3)
     generic = weights_gb * _GENERIC_PROFILE[0] + _GENERIC_PROFILE[1]
     profile = _MEASURED_PROFILES.get(family or "")
-    if profile is None:
+    needed = _PROFILE_MIN_CAPABILITY.get(family or "")
+    if profile is None or (needed and not (_lowest_cuda_capability() or (0, 0)) >= needed):
         return round(generic, 2)
     per_weight, fixed, measured_up_to_gb = profile
     measured = weights_gb * per_weight + fixed
