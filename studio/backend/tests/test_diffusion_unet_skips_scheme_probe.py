@@ -13,7 +13,6 @@ pytest.importorskip("torch")
 
 def _fam(name):
     from core.inference.diffusion_families import _FAMILIES
-
     return next(f for f in _FAMILIES if f.name == name)
 
 
@@ -28,7 +27,9 @@ def test_sdxl_plans_no_seed_without_probing(monkeypatch):
         return None
 
     monkeypatch.setattr(D, "_planned_quant_scheme", boom)
-    monkeypatch.setattr(D, "dense_transformer_supported", lambda *a, **k: probed.append(True) or True)
+    monkeypatch.setattr(
+        D, "dense_transformer_supported", lambda *a, **k: probed.append(True) or True
+    )
     monkeypatch.setattr(D, "_pipeline_quant_uncompilable_reason", lambda *a, **k: None)
     monkeypatch.setattr(D, "_auto_keeps_bf16_reason", lambda *a, **k: None)
     backend = D.DiffusionBackend.__new__(D.DiffusionBackend)

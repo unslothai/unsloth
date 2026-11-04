@@ -905,10 +905,21 @@ def test_the_root_headers_are_read_side_by_side_in_name_order(hub_cache, monkeyp
     active, peak = [0], [0]
     lock = threading.Lock()
 
-    def files(self, repo_id, token = None, **kw):
+    def files(
+        self,
+        repo_id,
+        token = None,
+        **kw,
+    ):
         return ["model_index.json", *names]
 
-    def parse(self, repo_id, filename, token = None, **kw):
+    def parse(
+        self,
+        repo_id,
+        filename,
+        token = None,
+        **kw,
+    ):
         with lock:
             active[0] += 1
             peak[0] = max(peak[0], active[0])
@@ -989,7 +1000,8 @@ def test_the_load_starts_the_marker_read_before_the_weights():
     applies = [
         c
         for c in ast.walk(tree)
-        if isinstance(c, ast.Call) and getattr(c.func, "id", None) == "apply_pipeline_prediction_type"
+        if isinstance(c, ast.Call)
+        and getattr(c.func, "id", None) == "apply_pipeline_prediction_type"
     ]
     assert len(starts) == 1 and any(starts[0] < line < starts[0] + 20 for line in loads)
     assert "marks_future" in {k.arg for k in applies[0].keywords}

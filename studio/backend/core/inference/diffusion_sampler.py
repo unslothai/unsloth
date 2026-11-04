@@ -383,7 +383,6 @@ def _root_single_marks(
             if "/" not in f and f.lower().endswith(".safetensors")
         )
 
-
         def _read(name: str) -> list[str]:
             return sorted(
                 k
@@ -396,7 +395,6 @@ def _root_single_marks(
         # One header per root file, each two round trips: read them side by side, in name order.
         if len(names) > 1:
             from concurrent.futures import ThreadPoolExecutor
-
             with ThreadPoolExecutor(max_workers = min(8, len(names))) as pool:
                 markers = list(pool.map(_read, names))
         else:
