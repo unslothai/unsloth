@@ -83,8 +83,7 @@ def _uses_fsdp1(trainer, model):
 
 
 def _global_module_hooks():
-    # torch.nn.modules.module.register_module_forward_(pre_)hook and
-    # register_module_full_backward_(pre_)hook apply to every module, the head included.
+    # torch's register_module_{forward,full_backward}(_pre)_hook tables apply to the head too.
     from torch.nn.modules import module as _module
     return bool(
         getattr(_module, "_global_forward_hooks", None)

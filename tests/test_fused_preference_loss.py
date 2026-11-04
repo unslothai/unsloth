@@ -736,8 +736,7 @@ def test_rl_replacement_injects_dispatch_only_when_enabled(monkeypatch):
     ["forward_hook", "pre_hook", "global_forward_hook", "global_pre_hook", "hf_hook", "subclass"],
 )
 def test_hooked_or_custom_head_falls_back(dpo_module, monkeypatch, request, kind):
-    """The kernel reads the head's weight directly, so a head whose forward does more is left to TRL.
-    Global forward hooks fire on the head too, and the kernel never calls it."""
+    """The kernel reads the head's weight directly, so a head whose forward does more is left to TRL."""
     monkeypatch.setattr(dpo_module, "_logit_transforms", lambda unwrapped: (0.0, 0.0, 0.0))
     batch = _orpo_batch(seed = 4)
     model = _model(0)
