@@ -1743,4 +1743,8 @@ test("a duplicated reader gets the wire to the column it reads, and a Jinja test
   const names = new Set(["value", "string", "number"]);
   assert.deepEqual(columnReferences(col("{{ value is string }}"), names), ["value"]);
   assert.deepEqual(columnReferences(col("{{ value is not number }}"), names), ["value"]);
+  const kw = new Set(["words", "reverse"]);
+  assert.deepEqual(columnReferences(col("{{ words | sort(reverse=true) }}"), kw), ["words"]);
+  assert.deepEqual(columnReferences(col("{{ words | sort(attribute=reverse) }}"), kw), ["words", "reverse"]);
+  assert.deepEqual(columnReferences(col("{{ reverse == words }}"), kw), ["reverse", "words"]);
 });
