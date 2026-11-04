@@ -64,6 +64,7 @@ class Query:
     hybrid: bool = False  # linear attention / state space layers beside attention
     multimodal: bool = False
     windowed: bool = False  # sliding window, chunked attention or logit softcapping
+    direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
     mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
@@ -258,6 +259,14 @@ RULES = (
         "reads the local tensors would orthogonalize the shards",
         "torch.optim.Muon (it steps DTensor shards as whole matrices), adamw_torch / adamw_8bit, or DDP "
         "(dp without fsdp) for another Muon",
+    ),
+    Rule(
+        "tp x model",
+        "tensor parallel on attention / MLP blocks that own a parameter directly (gpt-oss attention sinks)",
+        lambda q: q.tp > 1 and q.direct_params,
+        "tensor parallel shards the projections inside a block; a parameter the block owns itself (not inside a "
+        "projection) has no sharding rule (models/tp_native.py refuses it)",
+        "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
     Rule(
         "pp / tp x vLLM",
@@ -730,8 +739,14 @@ _MOE_EVIDENCE = {
 }
 
 
+# Cells table only; a real model is read by structure (_direct_params).
+_DIRECT_PARAM_FAMILIES = ("gpt_oss",)
+
+
 def _moe_note(family, precision, aux, mode):
     if mode == "tp":
+        if family in _DIRECT_PARAM_FAMILIES:
+            return "refused by the tp x model rule (its attention owns the sinks parameter)"
         return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
@@ -949,6 +964,30 @@ def _model_traits(model):
         or bool(getattr(text, "attn_logit_softcapping", None))
     )
     return family, hybrid, multimodal, windowed
+
+
+def _direct_params(model) -> bool:
+    """An attention / MLP block owns a parameter itself (attention sinks), as tp_native.derive_tp_plan refuses.
+    MoE blocks are skipped as tp_native skips them (replicated). Meta-device safe."""
+    if not callable(getattr(model, "named_modules", None)):
+        return False
+    try:
+        from .models import tp_native
+        _, layers = tp_native._decoder_layers(model)
+    except Exception:
+        return False
+    for layer in layers:
+        for child_name, child in layer.named_children():
+            attention = child_name in tp_native._ATTN_NAMES
+            if not attention and child_name not in tp_native._MLP_NAMES:
+                continue
+            if not tp_native._has_params(child) or (
+                not attention and tp_native._is_moe_block(child)
+            ):
+                continue
+            if next(child.named_parameters(recurse = False), None) is not None:
+                return True
+    return False
 
 
 def _low_precision(model) -> Optional[str]:
@@ -1173,6 +1212,7 @@ def query_from(
         hybrid = hybrid,
         multimodal = multimodal,
         windowed = windowed,
+        direct_params = _direct_params(model),
         mode = mode,
         packing = packing,
         cp_backend = backend,
