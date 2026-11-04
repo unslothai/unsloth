@@ -256,3 +256,17 @@ def test_container_client_keeps_the_connection_scope(monkeypatch, allow_saved_ke
     assert captured.get("extra_headers") == (
         {"OpenAI-Project": "proj_123"} if allow_saved_key else None
     )
+
+
+def test_served_metadata_cache_identity_includes_headers():
+    import hashlib
+
+    plain = ep.ExternalProviderClient("custom", "https://gw.example/v1", "sk")
+    assert plain._credential_digest() == hashlib.sha256(b"sk").hexdigest()
+    a = ep.ExternalProviderClient(
+        "custom", "https://gw.example/v1", "sk", extra_headers = {"X-Tenant": "a"}
+    )
+    b = ep.ExternalProviderClient(
+        "custom", "https://gw.example/v1", "sk", extra_headers = {"X-Tenant": "b"}
+    )
+    assert len({plain._credential_digest(), a._credential_digest(), b._credential_digest()}) == 3

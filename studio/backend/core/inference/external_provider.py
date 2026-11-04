@@ -1529,6 +1529,14 @@ class ExternalProviderClient:
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
 
+    def _credential_digest(self) -> str:
+        """Served-metadata cache identity: the key, plus routing headers when there are any."""
+        material = self.api_key or ""
+        headers = getattr(self, "extra_headers", None)
+        if headers:
+            material = _json.dumps([material, headers], sort_keys = True)
+        return hashlib.sha256(material.encode()).hexdigest()
+
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
         from core.inference.providers import get_provider_info
@@ -7335,7 +7343,7 @@ class ExternalProviderClient:
         if self.provider_type != "vllm":
             return False
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest())
+        key = (self.base_url, self._credential_digest())
         cached = _served_versions.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7364,7 +7372,7 @@ class ExternalProviderClient:
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7390,7 +7398,7 @@ class ExternalProviderClient:
         if self.provider_type != "llama_cpp":
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_templates.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
