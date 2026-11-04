@@ -632,12 +632,13 @@ def _adapter_setup_block():
 def _run_adapter_setup(
     lora_modules,
     training_type = "LoRA/QLoRA",
+    modules = (),
     **config,
 ):
     """Lifts the real adapter setup out of _run_mlx_training, which only runs on Apple Silicon."""
     block = compile(ast.Module(body = _adapter_setup_block(), type_ignores = []), "<peft>", "exec")
     events, wraps = [], []
-    model = types.SimpleNamespace(lora_modules = lora_modules)
+    model = types.SimpleNamespace(lora_modules = lora_modules, named_modules = lambda: modules)
 
     def get_peft_model(wrapped, **kwargs):
         wraps.append(kwargs)
@@ -1047,3 +1048,59 @@ def test_mlx_vision_layers_train_only_on_image_rows(is_dataset_image, is_dataset
     }
     exec(compile(ast.Module(body = nodes, type_ignores = []), "<vision>", "exec"), namespace)
     assert namespace["finetune_vision"] is expected
+
+
+class _Module:
+    def __init__(
+        self,
+        quantized = False,
+        children = (),
+    ):
+        if quantized:
+            self.scales = object()
+        self._children = list(children)
+
+    def named_modules(self):
+        yield "", self
+        for name, child in self._children:
+            for sub, module in child.named_modules():
+                yield f"{name}.{sub}" if sub else name, module
+
+
+def test_mlx_cpt_leaves_quantized_embeddings_frozen_with_a_warning():
+    modules = [
+        ("model.embed_tokens", _Module(quantized = True)),
+        ("lm_head", _Module(children = [("linear", _Module(quantized = True))])),
+    ]
+    events, wraps = _run_adapter_setup(
+        [],
+        training_type = "Continued Pretraining",
+        modules = modules,
+        target_modules = ["q_proj", "embed_tokens", "lm_head"],
+    )
+
+    assert wraps[0]["target_modules"] == ["q_proj"]
+    assert wraps[0]["modules_to_save"] is None
+    warnings = [kw["message"] for kind, kw in events if kind == "warning"]
+    assert len(warnings) == 1 and "embed_tokens and lm_head" in warnings[0]
+
+
+def test_mlx_cpt_trains_unquantized_embeddings_in_full():
+    modules = [("model.embed_tokens", _Module()), ("lm_head", _Module())]
+    events, wraps = _run_adapter_setup(
+        [],
+        training_type = "Continued Pretraining",
+        modules = modules,
+        target_modules = ["q_proj", "embed_tokens", "lm_head"],
+    )
+
+    assert wraps[0]["modules_to_save"] == ["embed_tokens", "lm_head"]
+    assert not [kw for kind, kw in events if kind == "warning"]
+
+
+def test_mlx_cpt_drops_a_tied_head_with_its_quantized_embedding():
+    quantized = _Module(quantized = True)
+    assert _worker._mlx_quantized_cpt_modules(
+        types.SimpleNamespace(named_modules = lambda: [("model.embed_tokens", quantized)]),
+        {"embed_tokens", "lm_head"},
+    ) == {"embed_tokens", "lm_head"}

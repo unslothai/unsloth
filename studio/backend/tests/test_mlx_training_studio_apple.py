@@ -92,7 +92,7 @@ def _train(tmp_path, name, **overrides):
     return events, complete[-1]["output_dir"]
 
 
-def test_mlx_continued_pretraining_trains_embeddings(tmp_path):
+def test_mlx_continued_pretraining_on_a_4bit_checkpoint(tmp_path):
     events, _ = _train(
         tmp_path,
         "cpt",
@@ -100,6 +100,8 @@ def test_mlx_continued_pretraining_trains_embeddings(tmp_path):
         target_modules = ["q_proj", "v_proj", "embed_tokens", "lm_head"],
     )
     assert any("continued pretraining" in s for s in events.statuses())
+    # The quantized embedding cannot train in full; the run says so instead of failing in zoo.
+    assert any("embed_tokens" in e.get("message", "") for e in events.of("warning"))
 
 
 def test_mlx_lora_continues_from_its_saved_adapter(tmp_path):

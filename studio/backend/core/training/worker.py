@@ -971,6 +971,21 @@ def _trains_embedding_modules(trainable_names, full_module_keys = ()) -> bool:
     return False
 
 
+def _mlx_quantized_cpt_modules(model, names) -> set:
+    """The requested embed_tokens / lm_head this load quantized (a 4-bit checkpoint or load), which zoo cannot
+    train in full. A tied head is the embedding, so it goes with it."""
+    quantized, found = set(), set()
+    for path, module in model.named_modules():
+        leaf = path.rsplit(".", 1)[-1]
+        if leaf in names:
+            found.add(leaf)
+            if any(hasattr(child, "scales") for _, child in module.named_modules()):
+                quantized.add(leaf)
+    if "embed_tokens" in quantized and "lm_head" in names and "lm_head" not in found:
+        quantized.add("lm_head")
+    return quantized
+
+
 def _mlx_cpt_embedding_learning_rate(requested, lr_value, *, trains_embeddings):
     """The CUDA CPT rule: lr/10 unless set, and dropped when no embedding module trains."""
     if not trains_embeddings:
@@ -3331,6 +3346,18 @@ def _run_mlx_training(event_queue, stop_queue, config):
         # As on CUDA, embed_tokens / lm_head train as full modules rather than through LoRA.
         user_modules = config.get("target_modules") or []
         leaf = lambda module: str(module).rsplit(".", 1)[-1]  # noqa: E731
+        full_modules = {leaf(m) for m in user_modules} & _CPT_TARGET_NAMES
+        quantized = _mlx_quantized_cpt_modules(model, full_modules)
+        if quantized:
+            _send(
+                "warning",
+                message = (
+                    f"This 4-bit load quantized {' and '.join(sorted(quantized))}, which cannot "
+                    "train in full, so continued pretraining leaves them frozen. Load the 16-bit "
+                    "model to train them."
+                ),
+            )
+            full_modules -= quantized
         peft_kwargs = dict(
             r = config.get("lora_r", 128),
             lora_alpha = config.get("lora_alpha", 32),
@@ -3339,7 +3366,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             random_state = lora_random_state,
             target_modules = [m for m in user_modules if leaf(m) not in _CPT_TARGET_NAMES]
             or list(_MLX_DEFAULT_LORA_TARGETS),
-            modules_to_save = sorted({leaf(m) for m in user_modules} & _CPT_TARGET_NAMES) or None,
+            modules_to_save = sorted(full_modules) or None,
             use_gradient_checkpointing = use_grad_checkpoint,
         )
     elif use_lora:
