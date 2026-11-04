@@ -10589,9 +10589,9 @@ class VideoBackend:
             # a render-time replica failure hands the denoiser to CFG batching from the next render
             set_cfg_parallel_fallback(
                 pipe,
+                # called with the pipeline: capturing it here would keep a rolled-back load alive
                 functools.partial(
                     install_cfg_batch,
-                    pipe,
                     offload_policy = offload_policy,
                     speed_mode = speed_mode,
                     transformer_quant = transformer_quant_engaged,
