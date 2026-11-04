@@ -1691,3 +1691,15 @@ test("a rename reaches a transform's Jinja but not a quoted key, and a paste ren
   assert.equal(aq.expr, "{{ topic }}");
   assert.equal(bq.expr, "{{ topic_2 }}");
 });
+
+test("Jinja whitespace control still closes a loop, and a recipe's model presets are in the download check", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{% for topic in items -%}{{ topic | upper }}{%- endfor %}{{ topic }}", "topic", "subject"),
+    "{% for topic in items -%}{{ topic | upper }}{%- endfor %}{{ subject }}",
+  );
+  const { modelSignature } = await import("../src/features/flows/ux-rules.ts");
+  const groups = { r: { config: { model_configs: [{ model: "unsloth/Gemma-GGUF", gguf_variant: "Q4_K_M" }] } } };
+  assert.equal(modelSignature({}, groups), "unsloth/gemma-gguf:q4_k_m");
+  assert.equal(modelSignature({}), "");
+});

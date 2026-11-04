@@ -1215,3 +1215,72 @@ def test_a_seed_file_edited_in_place_is_a_new_dataset(tmp_path, monkeypatch):
     assert before and before["seed_files"] and key() != before
     # No local seed: the key is what it was.
     assert key(Ctx()) is not None and data.seed_files({}, None) is None
+
+
+def test_a_primary_load_of_a_model_kept_alongside_unloads_it_there_first(monkeypatch):
+    from core.flows.nodes import _common
+    from studio_mcp import loading
+
+    state = {"main": "org/model-a", "llm": ["org/model-a", "org/model-b"]}
+    calls = []
+
+    async def resident(caller):
+        return {"llm": list(state["llm"])}, {"model_identifier": state["main"]}
+
+    async def load_llm(*a, model, **k):
+        calls.append(("load", model))
+        state["main"] = model
+
+    monkeypatch.setattr(loading, "_resident", resident)
+    monkeypatch.setattr(loading, "load_llm", load_llm)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+        chat_model = None
+        gpu_shared = False
+
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+            **k,
+        ):
+            calls.append((path, json))
+            state["llm"] = [n for n in state["llm"] if n != json["model_path"]]
+
+        def set_status(self, *a, **k):
+            pass
+
+    found = asyncio.run(
+        _common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None, primary = True)
+    )
+    assert found == {"repo": "org/model-b", "variant": None}
+    assert calls == [
+        ("/api/inference/unload", {"model_path": "org/model-b"}),
+        ("load", "org/model-b"),
+    ]
+
+    # A load that lands somewhere else is a failure, not a model the recipe job will refuse.
+    async def stays(*a, model, **k):
+        calls.append(("load", model))
+
+    state.update(main = "org/model-a", llm = ["org/model-a"])
+    monkeypatch.setattr(loading, "load_llm", stays)
+    with pytest.raises(FlowNodeError, match = "main slot"):
+        asyncio.run(
+            _common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None, primary = True)
+        )
+
+
+def test_a_recipes_named_local_model_is_in_the_flows_download_plan():
+    from core.flows.compiler import compile_flow, model_needs
+
+    payload = copy.deepcopy(SQL)
+    payload["recipe"]["model_providers"] = [{"name": "local", "is_local": True}]
+    for mc in payload["recipe"]["model_configs"]:
+        mc.update(provider = "local", model = "unsloth/gemma-4-E2B-it-GGUF", gguf_variant = "Q4_K_M")
+    doc, _ = flow_from_recipe(payload, name = "SQL")
+    needs = model_needs(compile_flow(doc))
+    assert {"kind": "chat", "repo": "unsloth/gemma-4-E2B-it-GGUF", "variant": "Q4_K_M"} in needs

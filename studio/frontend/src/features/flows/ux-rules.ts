@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-
 import type { PlanModel } from "./api";
 
 export type GalleryCategory =
@@ -132,7 +131,8 @@ export function planCheck(
   askedFor: { flowId: string; models: string },
   current: { flowId: string | null | undefined; models: string },
 ): "stale" | "download" | "clear" | "unchecked" {
-  if (current.flowId !== askedFor.flowId || current.models !== askedFor.models) return "stale";
+  if (current.flowId !== askedFor.flowId || current.models !== askedFor.models)
+    return "stale";
   if (modelsToDownload(plan.models).length > 0) return "download";
   return plan.errors && plan.errors.length > 0 ? "unchecked" : "clear";
 }
@@ -151,8 +151,23 @@ export function modelSignature(
     string,
     { params?: Record<string, unknown> | null; disabled?: boolean } | undefined
   >,
+  groups: Record<
+    string,
+    { config?: Record<string, unknown> | null } | undefined
+  > = {},
 ): string {
   const picks: string[] = [];
+  // A recipe's model presets name the model its Recipe Dataset step loads.
+  for (const group of Object.values(groups)) {
+    const presets = group?.config?.model_configs;
+    for (const preset of Array.isArray(presets) ? presets : []) {
+      const p = preset as { model?: unknown; gguf_variant?: unknown };
+      if (typeof p?.model === "string" && p.model)
+        picks.push(
+          `${p.model.toLowerCase()}:${String(p.gguf_variant ?? "").toLowerCase()}`,
+        );
+    }
+  }
   for (const node of Object.values(nodes)) {
     if (node?.disabled) continue;
     for (const value of Object.values(node?.params ?? {})) {

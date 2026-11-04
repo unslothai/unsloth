@@ -317,7 +317,10 @@ export function DownloadRunDialog() {
               const options = pending?.options ?? {};
               const same =
                 pending?.models ===
-                modelSignature(useDocStore.getState().graph.nodes);
+                modelSignature(
+                  useDocStore.getState().graph.nodes,
+                  useDocStore.getState().graph.groups,
+                );
               close();
               void runFlow({ ...options, downloadsConfirmed: same });
             }}

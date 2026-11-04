@@ -530,6 +530,9 @@ async def _ensure_model(
     if slot == "llm":
         ctx.chat_model = None
     resident = await resident_name(ctx, model_kind)
+    if primary and slot == "llm":
+        # Chat's main slot, not just any slot: a recipe job reads the model from there.
+        resident = await _into_primary(ctx, repo)
     if (
         slot == "llm"
         and not primary
@@ -594,6 +597,10 @@ async def _ensure_model(
         raise
     except Exception as exc:
         raise FlowNodeError(f"Could not load {repo}: {exc}") from None
+    if primary and slot == "llm" and not loading._same_id(await _primary_name(ctx) or "", repo):
+        raise FlowNodeError(
+            f"{repo} did not load into Chat's main slot; unload the other models and run again"
+        )
     ctx.resident.clear()
     ctx.resident[slot] = repo
     _alongside_loaded(before)
@@ -605,6 +612,35 @@ async def _ensure_model(
         _LOADED_OPTIONS[slot] = (repo.lower(), settings, gpu_arbiter.load_count(gpu_arbiter.CHAT))
     ctx.set_status("running")
     return {"repo": repo, "variant": variant}
+
+
+async def _primary_name(ctx: Any) -> Optional[str]:
+    from studio_mcp import loading
+
+    try:
+        _, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    name = status.get("model_identifier")
+    return name if isinstance(name, str) and name.strip() else None
+
+
+async def _into_primary(ctx: Any, repo: str) -> Optional[str]:
+    """Chat's main model; ``repo`` kept in an extra slot is unloaded there first, since a load of a
+    model a slot already serves stays in that slot."""
+    from studio_mcp import loading
+
+    try:
+        slots, status = await loading._resident(_caller(ctx))
+    except Exception:
+        return None
+    main = status.get("model_identifier")
+    main = main if isinstance(main, str) and main.strip() else None
+    if main and loading._same_id(main, repo):
+        return main
+    if any(loading._same_id(name, repo) for name in slots.get("llm") or []):
+        await ctx.call("POST", "/api/inference/unload", json = {"model_path": repo})
+    return main
 
 
 def _load_context(options: Optional[dict]) -> int:

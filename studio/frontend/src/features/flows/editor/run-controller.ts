@@ -98,7 +98,7 @@ async function heldForDownloads(
 ): Promise<boolean> {
   if (options.downloadsConfirmed) return false;
   const docState = useDocStore.getState();
-  const signature = modelSignature(docState.graph.nodes);
+  const signature = modelSignature(docState.graph.nodes, docState.graph.groups);
   if (checkedModels.get(flowId) === signature) return false;
   const session = editorSession;
   const plan = await Promise.race([
@@ -111,13 +111,18 @@ async function heldForDownloads(
   const verdict = planCheck(
     plan ?? { models: [], errors: [{ message: "no plan" }] },
     { flowId, models: signature },
-    { flowId: now.flowId, models: modelSignature(now.graph.nodes) },
+    {
+      flowId: now.flowId,
+      models: modelSignature(now.graph.nodes, now.graph.groups),
+    },
   );
   if (verdict === "stale" || session !== editorSession) return true;
   if (!plan) return false;
   if (verdict === "clear") checkedModels.set(flowId, signature);
   if (verdict !== "download") return false;
-  useUiStore.getState().setPendingRun({ options: { ...options }, plan, models: signature });
+  useUiStore
+    .getState()
+    .setPendingRun({ options: { ...options }, plan, models: signature });
   return true;
 }
 
@@ -211,6 +216,5 @@ export async function hydrateRuntime(flowId: string): Promise<void> {
       useRuntimeStore.getState().startRun(active.id);
       attachRun(active.id, 0);
     }
-  } catch {
-  }
+  } catch {}
 }

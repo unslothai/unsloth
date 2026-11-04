@@ -95,7 +95,7 @@ export function jinjaScopes(text: string): JinjaScope[] {
   };
   for (const block of text.matchAll(JINJA_TAG_RE)) {
     if (block[2] === undefined) continue;
-    const tag = block[2].replace(QUOTED_RE, '""').trim();
+    const tag = unmarked(block[2].replace(QUOTED_RE, '""'));
     const at = block.index ?? 0;
     const after = at + block[0].length;
     const loop = LOOP_RE.exec(tag);
@@ -130,14 +130,19 @@ export function boundAt(
 /** The parts of a `{% %}` tag that read: a loop's iterable and a `set`'s right side, not the names
  * they bind (``head`` comes before them). A loop's filter (`for x in items if x > 0`) is ``filter``:
  * its own variables are bound there (``bound``). */
+/** A tag's inside without Jinja's whitespace control (`{%- endfor %}`, `{% for x in y -%}`). */
+function unmarked(body: string): string {
+  return body.trim().replace(/^[-+]\s*/, "").replace(/\s*[-+]$/, "");
+}
+
 export function tagReadPart(body: string): {
   head: string;
   read: string;
   filter: string;
   bound: string[];
 } {
-  const loop = LOOP_RE.exec(body.trim());
-  const set = loop ? null : SET_RE.exec(body.trim());
+  const loop = LOOP_RE.exec(unmarked(body));
+  const set = loop ? null : SET_RE.exec(unmarked(body));
   const read = loop?.[2] ?? set?.[2];
   if (read === undefined)
     return { head: "", read: body, filter: "", bound: [] };
