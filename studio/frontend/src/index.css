@@ -6118,7 +6118,9 @@ html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-back
   .wallpaper-preview-composer { background: var(--background); }
 }
 
-:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {
+/* Keep both wallpaper paths child-only so typing in the chat does not invalidate the whole workspace. */
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade,
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] > .chat-wallpaper-frame > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {
   display: none;
 }
 

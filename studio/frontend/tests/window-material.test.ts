@@ -44,10 +44,13 @@ test("glass menus only apply on top of an applied material", () => {
 
 test("turning the wallpaper fade off drops the band behind the composer", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(
-		css,
-		/\.chat-wallpaper-image\[data-fade="false"\]\) \.thread-bottom-fade \{\n  display: none;/,
-	);
+	const workspace = ":is([data-wallpaper-workspace], [data-chat-content-root])";
+	const wallpaper = "> .chat-wallpaper[data-ready] > ";
+	const image = '.chat-wallpaper-image[data-fade="false"]';
+	const paths = [wallpaper + image, wallpaper + ".chat-wallpaper-frame > " + image];
+	const selectors = paths.map(path => `${workspace}:has(${path}) .thread-bottom-fade`);
+	assert.ok(css.includes(selectors.join(",\n") + " {\n  display: none;"));
+	assert.doesNotMatch(css, /:has\(> \.chat-wallpaper\[data-ready\] \.chat-wallpaper-image/);
 });
 
 test("glass strength repairs malformed persisted data", () => {
