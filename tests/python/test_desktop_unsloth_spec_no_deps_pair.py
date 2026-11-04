@@ -20,6 +20,7 @@ STUDIO_DIR = Path(__file__).resolve().parents[2] / "studio"
 sys.path.insert(0, str(STUDIO_DIR))
 
 import install_python_stack as ips  # noqa: E402
+from unsloth_pwsh_runner import run_pwsh  # noqa: E402
 
 pytestmark = pytest.mark.skipif(shutil.which("uv") is None, reason = "needs uv")
 
@@ -172,7 +173,8 @@ def installer_pair(request, tmp_path, monkeypatch):
             )
             argv = [shell, "-NoProfile", "-File", str(script)]
         env = dict(os.environ, PATH = str(tmp_path / "empty-path")) if selected_uv else None
-        result = subprocess.run(argv, capture_output = True, text = True, timeout = 180, env = env)
+        run = run_pwsh if request.param == "powershell" else subprocess.run
+        result = run(argv, capture_output = True, text = True, timeout = 180, env = env)
         if result.returncode:
             raise RuntimeError(result.stderr)
         return tuple(result.stdout.strip().splitlines()[-2:])

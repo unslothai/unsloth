@@ -30,6 +30,12 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.previewSharing.revokeLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",
+    "settings.general.mlWarmup.sectionTitle",
+    "settings.general.mlWarmup.hardwareLabel",
+    "settings.general.mlWarmup.textLabel",
+    "settings.general.mlWarmup.datasetsLabel",
+    "settings.general.mlWarmup.mediaLabel",
+    "settings.general.mlWarmup.quantizationLabel",
     "settings.general.helperLlm.sectionTitle",
     "settings.general.helperLlm.preloadOnStartup",
     "settings.general.hub.sectionTitle",
@@ -430,6 +436,12 @@ const FULL_INSTALL_ENTRY: TranslationKey = "settings.general.fullInstall.label";
 
 // owner-only rows on tabs visible to every account.
 const OWNER_ONLY_ENTRIES: ReadonlySet<TranslationKey> = new Set([
+  "settings.general.mlWarmup.sectionTitle",
+  "settings.general.mlWarmup.hardwareLabel",
+  "settings.general.mlWarmup.textLabel",
+  "settings.general.mlWarmup.datasetsLabel",
+  "settings.general.mlWarmup.mediaLabel",
+  "settings.general.mlWarmup.quantizationLabel",
   "settings.sandbox.toolsSection",
   "settings.sandbox.python",
   "settings.sandbox.terminal",

@@ -2062,6 +2062,26 @@ export const pl = {
       autoTitleNewChats: "Automatyczne tytuły nowych czatów",
       autoTitleNewChatsDescription:
         "Generuj tytuł na podstawie pierwszej wiadomości.",
+      mlWarmup: {
+        sectionTitle: "Wydajność przy uruchamianiu",
+        description: "Przygotuj wybrane funkcje, aby przyspieszyć ich pierwsze użycie. Wszystkie opcje są domyślnie wyłączone. Mogą one wczytywać współdzielone zależności i zwiększać zużycie RAM w stanie bezczynności.",
+        restartRequired: "Zmiany zostaną zastosowane po ponownym uruchomieniu Unsloth.",
+        hardwareLabel: "Wykrywanie sprzętu",
+        hardwareDescription: "Wykryj GPU i przygotuj PyTorch.",
+        textLabel: "Modele tekstowe",
+        textDescription: "Przygotuj obsługę modeli tekstowych Transformers.",
+        datasetsLabel: "Przygotowanie zbiorów danych",
+        datasetsDescription: "Przygotuj Datasets i jego zależności do podglądu i przetwarzania.",
+        mediaLabel: "Modele obrazu i wideo",
+        mediaDescription: "Przygotuj Diffusers i współdzielone zależności modeli.",
+        advanced: "Zaawansowane",
+        quantizationLabel: "Wstępne kontrole kwantyzacji obrazów",
+        quantizationDescription: "Sprawdź obsługę przed pierwszym wczytaniem skwantyzowanego modelu obrazu. Może to na krótko zwiększyć zużycie RAM.",
+        requiredBySelections: "Wymagane przez wybrane opcje.",
+        disabledByEnv: "Wyłączone przez UNSLOTH_STUDIO_DISABLE_TORCH_WARM w środowisku backendu.",
+        loadError: "Nie udało się wczytać ustawień wstępnego przygotowania przy uruchamianiu.",
+        saveError: "Nie udało się zapisać ustawień wstępnego przygotowania przy uruchamianiu.",
+      },
       helperLlm: {
         sectionTitle: "Pomocniczy LLM",
         preloadOnStartup: "Wstępnie pobieraj pomocniczy LLM przy uruchamianiu",
@@ -2131,6 +2151,7 @@ export const pl = {
           "Nie udało się zapisać ustawień automatycznego przełączania modelu.",
         idleError:
           "Wpisz 0, aby utrzymać model wczytany, lub co najmniej 60 sekund.",
+        idleUnsaved: "Jeszcze nie zapisano.",
         keepKv: "Zachowuj kontekst czatu po zwolnieniu",
         keepKvDescription:
           "Zapisuj pamięć podręczną KV przed zwolnieniem z powodu bezczynności lub przed zajęciem GPU przez model obrazów lub wideo, aby wznowione czaty nie musiały ponownie wczytywać historii. Do 10 GB na dysku.",

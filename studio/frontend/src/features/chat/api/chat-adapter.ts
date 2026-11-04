@@ -2936,8 +2936,8 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every other local format there. */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
-  // chatOnly is a BROWSER guess until the backend reports it; fail open, since validation refuses an ineligible pick.
-  if (!platform.fetched || !platform.isChatOnly()) return true;
+  // chatOnly is a guess until the backend measures it (deferred detection included); fail open, since validation refuses an ineligible pick.
+  if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
     return true;
   }
@@ -2952,7 +2952,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
 /** The picker hides cached non-GGUF rows outright on a chat-only install; same wait-for-the-server rule as above. */
 function cachedModelsRunOnThisPlatform(): boolean {
   const platform = usePlatformStore.getState();
-  return !platform.fetched || !platform.isChatOnly();
+  return platform.capabilitiesUnknown() || !platform.isChatOnly();
 }
 
 /** One loadable thing on this device; `listVariants` is lazy, so only the repos the cascade reaches are scanned. */

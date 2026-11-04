@@ -1878,6 +1878,29 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a title from the first message.",
+      mlWarmup: {
+        sectionTitle: "Startup performance",
+        description:
+          "Prepare selected features for faster first use. All off by default. Options may load shared dependencies and use more RAM while idle.",
+        restartRequired: "Changes apply after restarting Unsloth.",
+        hardwareLabel: "Hardware detection",
+        hardwareDescription: "Detect GPUs and prepare PyTorch.",
+        textLabel: "Text models",
+        textDescription: "Prepare Transformers text-model support.",
+        datasetsLabel: "Dataset preparation",
+        datasetsDescription: "Prepare Datasets and its dependencies for previews and processing.",
+        mediaLabel: "Image and video models",
+        mediaDescription: "Prepare Diffusers and shared model dependencies.",
+        advanced: "Advanced",
+        quantizationLabel: "Image quantization prechecks",
+        quantizationDescription:
+          "Check support before the first quantized image model load. Can briefly increase RAM use.",
+        requiredBySelections: "Required by your selections.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_STUDIO_DISABLE_TORCH_WARM in the backend environment.",
+        loadError: "Failed to load startup warmup settings.",
+        saveError: "Failed to save startup warmup settings.",
+      },
       helperLlm: {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
@@ -1939,6 +1962,7 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        idleUnsaved: "Not saved yet.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
           "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",

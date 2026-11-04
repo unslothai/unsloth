@@ -132,11 +132,12 @@ def _fusion_modules(model, modules):
 # Plain-function helpers zoo's generate.py imports; the neutral scope cannot stand in for them.
 PLAIN_HELPERS = {
     "_fusion_modules": _fusion_modules,
-    # Private names zoo's speculative.py imports (unsloth_zoo #2330); only their presence matters here.
+    # Private names zoo's speculative.py imports (unsloth_zoo #2330, #2365); only their presence matters here.
     "_SparseDrafter": type(
         "_SparseDrafter", (), {"__init__": lambda self, *_args, **_kwargs: None}
     ),
     "_VERIFY_GDN_MAX_ROWS": 16,
+    "_FIRST_USE_WORK": [0],
 }
 
 
@@ -413,6 +414,8 @@ def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, o
             ("warm", True, active),
             "/int8",
             "/rng",
+            # The resident batch warms in its own block, unless the first warm-up lost the queue.
+            *["rng", "/rng"] * (outcome != "dead_queue"),
         ]
     )
     assert events == ["gate_up", *warmed]

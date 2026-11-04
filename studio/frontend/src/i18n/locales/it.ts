@@ -1782,6 +1782,26 @@ export const it = {
       autoTitleNewChats: "Titola automaticamente le nuove chat",
       autoTitleNewChatsDescription:
         "Genera un titolo breve a partire dal primo messaggio.",
+      mlWarmup: {
+        sectionTitle: "Prestazioni all'avvio",
+        description: "Prepara le funzionalità selezionate per velocizzarne il primo utilizzo. Sono tutte disattivate per impostazione predefinita. Queste opzioni possono caricare dipendenze condivise e aumentare l'uso di RAM quando l'applicazione è inattiva.",
+        restartRequired: "Le modifiche si applicano dopo il riavvio di Unsloth.",
+        hardwareLabel: "Rilevamento hardware",
+        hardwareDescription: "Rilevare le GPU e preparare PyTorch.",
+        textLabel: "Modelli di testo",
+        textDescription: "Preparare il supporto di Transformers per i modelli di testo.",
+        datasetsLabel: "Preparazione dei dataset",
+        datasetsDescription: "Preparare Datasets e le sue dipendenze per le anteprime e l'elaborazione.",
+        mediaLabel: "Modelli di immagini e video",
+        mediaDescription: "Preparare Diffusers e le dipendenze condivise dei modelli.",
+        advanced: "Avanzate",
+        quantizationLabel: "Controlli preliminari della quantizzazione delle immagini",
+        quantizationDescription: "Verificare la compatibilità prima del primo caricamento di un modello di immagini quantizzato. Può aumentare brevemente l'uso di RAM.",
+        requiredBySelections: "Richiesto dalle opzioni selezionate.",
+        disabledByEnv: "Disattivato da UNSLOTH_STUDIO_DISABLE_TORCH_WARM nell'ambiente del backend.",
+        loadError: "Caricamento delle impostazioni di preparazione all'avvio non riuscito.",
+        saveError: "Salvataggio delle impostazioni di preparazione all'avvio non riuscito.",
+      },
       helperLlm: {
         sectionTitle: "LLM di supporto",
         preloadOnStartup: "Scarica in anticipo l'LLM di supporto all'avvio",
@@ -1844,6 +1864,7 @@ export const it = {
           "Salvataggio delle impostazioni di cambio automatico del modello non riuscito.",
         idleError:
           "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
+        idleUnsaved: "Non ancora salvato.",
         keepKv:
           "Mantieni il contesto della chat tra gli scaricamenti",
         keepKvDescription:

@@ -1284,18 +1284,15 @@ def _sync_replicated_grads(
     dist,
     mesh = None,
     buffers = None,
+    pending = None,
 ):
-    """Average gradients over `mesh` (DDP-style), one all_reduce per (device, reduce dtype), entered
-    by every rank: a missing local gradient counts as zeros, and a "has a gradient" flag keeps grad
-    None for a parameter no rank used. Sums in float32 (fp16 sums overflow). The summed flags are
-    read (a host sync) only when some local gradient is None. `buffers` caches one flat buffer per
-    (device, dtype); gradients never alias it."""
+    """Average in float32; absent ranks contribute zero, globally unused grads stay None."""
     groups = {}
     for p in params:
         dtype = torch.float64 if p.dtype == torch.float64 else torch.float32
         groups.setdefault((str(p.device), dtype), []).append(p)
     for (device, dtype), group in groups.items():
-        # A TP DTensor outside FSDP2: dp ranks hold the same tp slice, so average the local shard.
+        # Across dp, an external TP DTensor represents matching local slices.
         sizes = [_local_tensor(p).numel() for p in group]
         total = sum(sizes)
         key = tuple((id(p), n) for p, n in zip(group, sizes))
@@ -1307,18 +1304,24 @@ def _sync_replicated_grads(
             if buffers is not None:
                 buffers[(device, dtype)] = (key, flat)
         grads = [_local_tensor(p.grad) for p in group]
-        local_all = all(g is not None for g in grads)
+        extra = [pending.get(id(p)) if pending else None for p in group]
+        local_all = all(g is not None or e is not None for g, e in zip(grads, extra))
         flags = flat[total:]
         if local_all:
             flags.fill_(1)
         else:
             flags.zero_()
         offset = 0
-        for i, (g, n) in enumerate(zip(grads, sizes)):
-            if g is not None:
-                flat[offset : offset + n].copy_(g.detach().reshape(-1))
+        for i, (g, e, n) in enumerate(zip(grads, extra, sizes)):
+            if g is not None or e is not None:
+                if g is None:
+                    flat[offset : offset + n].copy_(e.reshape(-1))
+                else:
+                    flat[offset : offset + n].copy_(g.detach().reshape(-1))
+                    if e is not None:
+                        flat[offset : offset + n].add_(e.reshape(-1))
                 if not local_all:
-                    # Not flags[i] = 1: that is a host sync on CUDA.
+                    # Python scalar assignment would synchronize CUDA.
                     flags[i].fill_(1)
             else:
                 flat[offset : offset + n].zero_()
@@ -1327,8 +1330,8 @@ def _sync_replicated_grads(
         flat[:total].div_(world)
         used = None if local_all else flags.tolist()
         offset = 0
-        for i, (p, g, n) in enumerate(zip(group, grads, sizes)):
-            if g is not None or used[i] > 0:
+        for i, (p, g, e, n) in enumerate(zip(group, grads, extra, sizes)):
+            if g is not None or e is not None or used[i] > 0:
                 value = flat[offset : offset + n].view(_local_tensor(p).shape)
                 if g is None:
                     p.grad = _like_param(p, value.to(p.dtype, copy = True))
@@ -1427,11 +1430,7 @@ def _fsdp_grad_sync_deferred(model, cache):
 
 
 def reduce_unsharded_trainable_grads(model):
-    """Average gradients of trainable params FSDP2 does not manage (e.g. `ignored_modules`) over the
-    mesh, else replicas drift. Runs once per backward as an autograd engine callback on every rank;
-    a per-parameter hook would hang when a rank skips the parameter (branch, routed MoE expert).
-    Skipped while FSDP2 grad sync is off (GA); the first synced backward averages the accumulated
-    sum. Returns the names."""
+    """Queue one fixed-order reduction per backward on every rank; per-param hooks can deadlock."""
     dist = _dist()
     DTensor = _dtensor_class()
     if dist is None or DTensor is None:
@@ -1447,10 +1446,11 @@ def reduce_unsharded_trainable_grads(model):
 
     def _sync():
         state["queued"] = False
-        # Every rank enters the same branch: the GA flag is set alike on all ranks.
+
         if _fsdp_grad_sync_deferred(model, state):
+            _stash_fp16_grads(params, state)
             return
-        _sync_replicated_grads(params, dist, mesh, buffers)
+        _sync_replicated_grads(params, dist, mesh, buffers, state.pop("pending", None))
 
     def _queue(*_):
         if not state["queued"]:
@@ -1462,7 +1462,6 @@ def reduce_unsharded_trainable_grads(model):
         if id(param) in seen or not param.requires_grad:
             continue
         if isinstance(param, DTensor):
-            # FSDP2 does not reduce TP DTensors in ignored_params; average them here.
             if managed is False:
                 managed = _fsdp_managed_param_ids(model)
             if managed is None or id(param) in managed or not _tp_shard_outside(param, mesh, dist):
@@ -1478,7 +1477,7 @@ def reduce_unsharded_trainable_grads(model):
 
         def _pre_forward(module, args):
             if not _in_backward():
-                state["queued"] = False  # a backward that raised never ran its callback
+                state["queued"] = False  # Failed backwards never ran their queued callback.
 
         def _post_forward(module, args, output):
             if not torch.is_grad_enabled():
@@ -1495,4 +1494,35 @@ def reduce_unsharded_trainable_grads(model):
         model.register_forward_pre_hook(_pre_forward)
         model.register_forward_hook(_post_forward)
         model.__dict__["_unsloth_replicated_grad_hooked"] = True
+    _install_replicated_grad_reset(model)
     return names
+
+
+def _stash_fp16_grads(params, state):
+    pending = state.setdefault("pending", {})
+    for p in params:
+        if p.dtype != torch.float16 or p.grad is None or p.grad.dtype != torch.float16:
+            continue
+        g = _local_tensor(p.grad).detach().float()
+        prev = pending.get(id(p))
+        pending[id(p)] = g if prev is None else prev.add_(g)
+        p.grad = None
+
+
+def _install_replicated_grad_reset(model):
+    reset = getattr(model, "reset_iter_state", None)
+    if reset is None or getattr(reset, "_unsloth_replicated_reset", False):
+        return
+
+    @functools.wraps(reset)
+    def reset_replicas(*args, **kwargs):
+        result = reset(*args, **kwargs)
+        for module in model.modules():
+            state = module.__dict__.get("_unsloth_replicated_grad_state")
+            if state is not None:
+                state.pop("pending", None)
+                state["queued"] = False
+        return result
+
+    reset_replicas._unsloth_replicated_reset = True
+    model.reset_iter_state = reset_replicas

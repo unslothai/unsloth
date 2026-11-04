@@ -31,6 +31,7 @@ from .utils import (
     torch_amp_custom_bwd,
 )
 from . import rms_layernorm as _rms_layernorm
+from .fp8_lora import has_fp8_dgrad
 
 
 def _dequantize_t(W, quant_state, dtype):
@@ -679,11 +680,17 @@ class LoRA_MLP(torch.autograd.Function):
                 gateS,
                 X if ctx.inplace and not _is_compiling() else None,
             )
-            upW = _dequantize_t(upW, upW_quant, df.dtype)
-            addmm_(dX, df, upW.t())
+            if has_fp8_dgrad(upW_quant):
+                dX = upW_quant.dgrad_accum(df, upW, dX)
+            else:
+                upW = _dequantize_t(upW, upW_quant, df.dtype)
+                addmm_(dX, df, upW.t())
             del upW
-            gateW = _dequantize_t(gateW, gateW_quant, de.dtype)
-            addmm_(dX, de, gateW.t())
+            if has_fp8_dgrad(gateW_quant):
+                dX = gateW_quant.dgrad_accum(de, gateW, dX)
+            else:
+                gateW = _dequantize_t(gateW, gateW_quant, de.dtype)
+                addmm_(dX, de, gateW.t())
             del gateW
             d_gateBias = d_upBias = None
             d_downBias = _lora_bias_grad(dY, downS) if ctx.biases[2] else None
@@ -742,14 +749,20 @@ class LoRA_MLP(torch.autograd.Function):
         d_downBias = _lora_bias_grad(dY, downS) if down_has_bias else None
 
         # dX = matmul_lora(df, upW.t(), ...) + matmul_lora(de, gateW.t(), ...), expanded below.
-        upW = _dequantize_t(upW, upW_quant, df.dtype)
-        # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
-        dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
+        if has_fp8_dgrad(upW_quant):
+            dX = upW_quant.dgrad(df, upW)
+        else:
+            upW = _dequantize_t(upW, upW_quant, df.dtype)
+            # Eager only: AOT autograd rejects a backward mutating a forward input that requires grad.
+            dX = torch.matmul(df, upW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del upW
         _add_lora_dX(dX, up_dB, upA, upS, up_mask, up_p)
 
-        gateW = _dequantize_t(gateW, gateW_quant, de.dtype)
-        addmm_(dX, de, gateW.t())
+        if has_fp8_dgrad(gateW_quant):
+            dX.add_(gateW_quant.dgrad(de, gateW))
+        else:
+            gateW = _dequantize_t(gateW, gateW_quant, de.dtype)
+            addmm_(dX, de, gateW.t())
         del gateW
         _add_lora_dX(dX, gate_dB, gateA, gateS, gate_mask, gate_p)
 
@@ -1119,8 +1132,15 @@ class LoRA_QKV(torch.autograd.Function):
                 X if ctx.inplace and not _is_compiling() else None,
             )
             for W_, W_quant_, dY_ in ((QW, QW_quant, dQ), (KW, KW_quant, dK), (VW, VW_quant, dV)):
-                W_ = W_.t() if W_quant_ is None else _dequantize_t(W_, W_quant_, dY_.dtype)
-                addmm_(dX, dY_, W_.t())
+                if has_fp8_dgrad(W_quant_):
+                    dX = W_quant_.dgrad_accum(dY_, W_, dX)
+                else:
+                    W_ = (
+                        W_.t()
+                        if W_quant_ is None
+                        else _dequantize_t(W_, W_quant_, dY_.dtype)
+                    )
+                    addmm_(dX, dY_, W_.t())
                 del W_
             return (
                 dX.view(batch, seq_len, hd),
@@ -1181,18 +1201,27 @@ class LoRA_QKV(torch.autograd.Function):
         d_VBias = _lora_bias_grad(dV, VS) if V_has_bias else None
 
         # Combine the per-projection derivatives into dX.
-        QW = _dequantize_t(QW, QW_quant, dQ.dtype)
-        dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
+        if has_fp8_dgrad(QW_quant):
+            dX = QW_quant.dgrad(dQ, QW)
+        else:
+            QW = _dequantize_t(QW, QW_quant, dQ.dtype)
+            dX = torch.matmul(dQ, QW.t(), out = X if ctx.inplace and not _is_compiling() else None)
         del QW
         _add_lora_dX(dX, q_dB, QA, QS, Q_mask, Q_p)
 
-        KW = _dequantize_t(KW, KW_quant, dK.dtype)
-        addmm_(dX, dK, KW.t())
+        if has_fp8_dgrad(KW_quant):
+            dX.add_(KW_quant.dgrad(dK, KW))
+        else:
+            KW = _dequantize_t(KW, KW_quant, dK.dtype)
+            addmm_(dX, dK, KW.t())
         del KW
         _add_lora_dX(dX, k_dB, KA, KS, K_mask, K_p)
 
-        VW = _dequantize_t(VW, VW_quant, dV.dtype)
-        addmm_(dX, dV, VW.t())
+        if has_fp8_dgrad(VW_quant):
+            dX.add_(VW_quant.dgrad(dV, VW))
+        else:
+            VW = _dequantize_t(VW, VW_quant, dV.dtype)
+            addmm_(dX, dV, VW.t())
         del VW
         _add_lora_dX(dX, v_dB, VA, VS, V_mask, V_p)
 
@@ -1371,12 +1400,18 @@ class LoRA_W(torch.autograd.Function):
                 dX = y_dB.new_empty((y_dB.shape[0], A.shape[0])).addmm_(
                     y_dB, A.t(), beta = 0, alpha = S
                 )
-            W = _dequantize_t(W, W_quant, dY.dtype)
-            addmm_(dX, dY, W.t())
+            if has_fp8_dgrad(W_quant):
+                dX = W_quant.dgrad_accum(dY, W, dX)
+            else:
+                W = _dequantize_t(W, W_quant, dY.dtype)
+                addmm_(dX, dY, W.t())
             del W
         else:
-            W = _dequantize_t(W, W_quant, dY.dtype)
-            dX = dY @ W.t()
+            if has_fp8_dgrad(W_quant):
+                dX = W_quant.dgrad(dY, W)
+            else:
+                W = _dequantize_t(W, W_quant, dY.dtype)
+                dX = dY @ W.t()
             del W
             _add_lora_dX(dX, y_dB, A, S, mask, ctx.dropout_p)
 

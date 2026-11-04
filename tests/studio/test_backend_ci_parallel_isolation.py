@@ -187,6 +187,10 @@ BENIGN_TIMING = {
     ),
     # A poll deadline with a 30s budget.
     ("test_gpu_query_cache.py", "wait_for_call"),
+    # 10 to 20 s poll deadlines for a child to reach its transfer barrier: descheduling only delays the poll.
+    ("test_hf_download_fallback_and_kill.py", "_wait_for_transfer"),
+    ("test_hf_download_reclaim_race.py", "test_gguf_reclaim_preserves_publication_and_active_peer"),
+    ("test_hf_download_ref_concurrency.py", "test_peer_completion_survives_an_older_process"),
 }
 
 

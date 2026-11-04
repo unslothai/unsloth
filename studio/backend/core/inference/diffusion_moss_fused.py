@@ -174,8 +174,8 @@ def _qk_rope_kernel() -> Any:
         c2,
         s2,
         mask,
-        EPS: tl.constexpr,
-        D: tl.constexpr,
+        EPS: tl.constexpr,  # norm epsilon, per model
+        D: tl.constexpr,  # hd
     ):
         # rotate(x) = [-x2, x1]; each product and sum rounded to bf16 like eager
         x1 = tl.load(x_ptr + base + h * D + j, mask = mask, other = 0.0).to(tl.float32)
@@ -211,9 +211,9 @@ def _qk_rope_kernel() -> Any:
         svb,
         svs,
         scs,
-        EPS: tl.constexpr,
-        D: tl.constexpr,
-        HB: tl.constexpr,
+        EPS: tl.constexpr,  # norm epsilon, per model
+        D: tl.constexpr,  # hd
+        HB: tl.constexpr,  # heads per program
     ):
         row = tl.program_id(0)
         b = row // S

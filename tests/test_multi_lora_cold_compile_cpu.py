@@ -30,7 +30,7 @@ def _load_experts():
         "_warn_once",
         "_is_quantized",
     }
-    tree = ast.parse(path.read_text(), filename = str(path))
+    tree = ast.parse(path.read_text(encoding = "utf-8"), filename = str(path))
     tree.body = [
         n for n in tree.body if isinstance(n, (ast.ClassDef, ast.FunctionDef)) and n.name in names
     ]

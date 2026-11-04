@@ -2068,6 +2068,26 @@ export const nl = {
       autoTitleNewChats: "Nieuwe chats automatisch een titel geven",
       autoTitleNewChatsDescription:
         "Een titel genereren op basis van het eerste bericht.",
+      mlWarmup: {
+        sectionTitle: "Prestaties bij het opstarten",
+        description: "Bereid geselecteerde functies voor om ze bij het eerste gebruik sneller beschikbaar te maken. Alles staat standaard uit. Deze opties kunnen gedeelde afhankelijkheden laden en meer RAM gebruiken wanneer de app inactief is.",
+        restartRequired: "Wijzigingen worden toegepast nadat Unsloth opnieuw is gestart.",
+        hardwareLabel: "Hardwaredetectie",
+        hardwareDescription: "GPU's detecteren en PyTorch voorbereiden.",
+        textLabel: "Tekstmodellen",
+        textDescription: "Ondersteuning voor tekstmodellen in Transformers voorbereiden.",
+        datasetsLabel: "Datasetvoorbereiding",
+        datasetsDescription: "Datasets en de bijbehorende afhankelijkheden voorbereiden voor voorvertoningen en verwerking.",
+        mediaLabel: "Afbeeldings- en videomodellen",
+        mediaDescription: "Diffusers en gedeelde modelafhankelijkheden voorbereiden.",
+        advanced: "Geavanceerd",
+        quantizationLabel: "Voorafgaande controles voor afbeeldingskwantisatie",
+        quantizationDescription: "De ondersteuning controleren voordat een gekwantiseerd afbeeldingsmodel voor het eerst wordt geladen. Kan het RAM-gebruik kort verhogen.",
+        requiredBySelections: "Vereist voor je geselecteerde opties.",
+        disabledByEnv: "Uitgeschakeld door UNSLOTH_STUDIO_DISABLE_TORCH_WARM in de backendomgeving.",
+        loadError: "Kan de instellingen voor voorbereiding bij het opstarten niet laden.",
+        saveError: "Kan de instellingen voor voorbereiding bij het opstarten niet opslaan.",
+      },
       helperLlm: {
         sectionTitle: "Helper-LLM",
         preloadOnStartup: "Helper-LLM vooraf cachen bij opstarten",
@@ -2137,6 +2157,7 @@ export const nl = {
           "Kan de instellingen voor automatisch van model wisselen niet opslaan.",
         idleError:
           "Voer 0 in om het model geladen te houden, of minimaal 60 seconden.",
+        idleUnsaved: "Nog niet opgeslagen.",
         keepKv: "Chatcontext behouden bij ontladen",
         keepKvDescription:
           "De KV-cache opslaan vóór het ontladen bij inactiviteit, of voordat een afbeeldings- of videomodel de GPU overneemt, zodat hervatte chats de geschiedenis niet opnieuw hoeven te lezen. Tot 10 GB op schijf.",

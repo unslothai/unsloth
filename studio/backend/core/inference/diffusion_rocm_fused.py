@@ -239,7 +239,20 @@ def _adaln_kernel() -> Optional[Callable]:
 
     @triton.jit
     def _adaln_fwd(
-        X, SCALE, SHIFT, OUT, S, D, sxb, sxs, scb, shb, sob, sos, eps, BLOCK: tl.constexpr
+        X,
+        SCALE,
+        SHIFT,
+        OUT,
+        S,
+        D,
+        sxb,
+        sxs,
+        scb,
+        shb,
+        sob,
+        sos,
+        eps,
+        BLOCK: tl.constexpr,  # block size along hidden
     ):
         row = tl.program_id(0)
         b = row // S
