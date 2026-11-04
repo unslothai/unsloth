@@ -1576,3 +1576,22 @@ test("editing a sampler keeps the settings its form does not show, and a rename 
   const after = renamed.nodes.find((n) => n.id === "price")?.params.column as Record<string, unknown>;
   assert.deepEqual(Object.keys(after.conditional_params as object), ["plan == 'premium'"]);
 });
+
+test("a loop's filter reads its own variable: a rename or a reference never reaches it", async () => {
+  const { replaceRef } = await import("../src/features/recipe-studio/utils/refs.ts");
+  const { columnReferences } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const expr = "{% for topic in [0, 1] if topic > 0 %}x{% endfor %}|{{ topic }}";
+  assert.equal(
+    replaceRef(expr, "topic", "subject"),
+    "{% for topic in [0, 1] if topic > 0 %}x{% endfor %}|{{ subject }}",
+  );
+  // A filter on another column is that column's read.
+  assert.equal(
+    replaceRef("{% for t in items if t > limit %}{% endfor %}", "limit", "cap"),
+    "{% for t in items if t > cap %}{% endfor %}",
+  );
+  const names = new Set(["topic", "limit", "items"]);
+  const col = (e: string) => ({ name: "f", column_type: "expression", expr: e }) as never;
+  assert.deepEqual(columnReferences(col("{% for topic in [0, 1] if topic > 0 %}x{% endfor %}"), names), []);
+  assert.deepEqual(columnReferences(col("{% for t in items if t > limit %}{% endfor %}"), names), ["items", "limit"]);
+});

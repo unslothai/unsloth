@@ -66,14 +66,20 @@ function tagNames(
   scopes: JinjaScope[],
 ): string[] {
   // A quoted string is text, not a column: `{{ "topic" }}` reads nothing.
-  const body = (
-    statement === undefined ? (output ?? "") : tagReadPart(statement).read
-  ).replace(QUOTED, '""');
+  const part = statement === undefined ? null : tagReadPart(statement);
+  const body = (part ? `${part.read} ${part.filter}` : (output ?? "")).replace(
+    QUOTED,
+    '""',
+  );
+  const filterAt = part ? part.read.replace(QUOTED, '""').length : Infinity;
   const names: string[] = [];
   for (const match of body.matchAll(NAME)) {
     const before = body.slice(0, match.index).trimEnd();
     if (before.endsWith(".") || before.endsWith("|")) continue;
     if (boundAt(scopes, match[0], at)) continue;
+    // A loop's filter reads its own variables: `for x in items if x > 0`.
+    if (part?.bound.includes(match[0]) && (match.index ?? 0) >= filterAt)
+      continue;
     // `{{gross-discount}}` subtracts two columns unless one column has that hyphenated name: both
     // readings count, as `recipe_import._template_names` reads them.
     names.push(

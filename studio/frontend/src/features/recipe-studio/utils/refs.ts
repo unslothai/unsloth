@@ -117,15 +117,31 @@ export function boundAt(
   return scopes.some((s) => s.name === name && s.from <= at && at <= s.to);
 }
 
-/** The part of a `{% %}` tag that reads: a loop's iterable and a `set`'s right side, not the names
- * they bind (``head`` is what comes before it). */
-export function tagReadPart(body: string): { head: string; read: string } {
+/** The parts of a `{% %}` tag that read: a loop's iterable and a `set`'s right side, not the names
+ * they bind (``head`` comes before them). A loop's filter (`for x in items if x > 0`) is ``filter``:
+ * its own variables are bound there (``bound``). */
+export function tagReadPart(body: string): {
+  head: string;
+  read: string;
+  filter: string;
+  bound: string[];
+} {
   const loop = LOOP_RE.exec(body.trim());
   const set = loop ? null : SET_RE.exec(body.trim());
   const read = loop?.[2] ?? set?.[2];
-  if (read === undefined) return { head: "", read: body };
+  if (read === undefined)
+    return { head: "", read: body, filter: "", bound: [] };
   const cut = body.lastIndexOf(read);
-  return { head: body.slice(0, cut), read: body.slice(cut) };
+  const rest = body.slice(cut);
+  // The filter starts at a top-level `if` (outside quotes); `recursive` ends a loop header too.
+  const masked = rest.replace(QUOTED_RE, (q) => " ".repeat(q.length));
+  const split = loop ? masked.search(/\s(if|recursive)\b/) : -1;
+  return {
+    head: body.slice(0, cut),
+    read: split < 0 ? rest : rest.slice(0, split),
+    filter: split < 0 ? "" : rest.slice(split),
+    bound: loop ? (loop[1].match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) : [],
+  };
 }
 
 export function replaceRef(template: string, from: string, to: string): string {
@@ -144,8 +160,9 @@ export function replaceRef(template: string, from: string, to: string): string {
         return exact.test(output)
           ? `{{ ${to} }}`
           : `{{${renameRoot(output, from, to)}}}`;
-      const { head, read } = tagReadPart(statement);
-      return `{%${head}${renameRoot(read, from, to)}%}`;
+      const { head, read, filter, bound } = tagReadPart(statement);
+      const kept = bound.includes(from) ? filter : renameRoot(filter, from, to);
+      return `{%${head}${renameRoot(read, from, to)}${kept}%}`;
     },
   );
 }
