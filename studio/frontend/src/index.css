@@ -6280,7 +6280,8 @@ html.dark[data-glass="liquid-3d"] {
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
   background-image: var(--glass-sheen);
-  box-shadow: inset -14px 0 24px -16px rgb(255 255 255 / .18);
+  /* A divider only: an inner glow here reads as a shadow around the scrollbar. */
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
 }
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
   box-shadow: inset -1px 0 0 rgb(255 255 255 / .08);
@@ -6362,7 +6363,7 @@ html[data-glass="macos"] [data-slot="chat-settings-panel"] .bg-panel-surface {
 }
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   background-image: var(--glass-sheen);
-  box-shadow: inset 14px 0 24px -16px rgb(255 255 255 / .18);
+  box-shadow: inset 1px 0 0 color-mix(in srgb, var(--foreground) 9%, transparent);
 }
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"] {
   box-shadow: inset 1px 0 0 rgb(255 255 255 / .08);
@@ -6414,16 +6415,31 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
 }
-/* Frost the buttons, not their row, so the glass is the hover's box; the hover layers over it. */
+/* Frost the buttons, not their row, so the glass is the hover's box; same glass as the composer. */
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
-  background-color: color-mix(in srgb, color-mix(in srgb, var(--glass-sidebar-fill), var(--foreground) 14%) min(96%, calc((max(var(--glass-tint), var(--glass-pane-floor)) + 26%) * var(--glass-opacity, 1))), transparent) !important;
-  box-shadow: var(--glass-button-lift);
-  -webkit-backdrop-filter: blur(max(var(--glass-blur), 14px)) saturate(var(--glass-saturate));
-  backdrop-filter: blur(max(var(--glass-blur), 14px)) saturate(var(--glass-saturate));
+  position: relative;
+  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent) !important;
+  background-image: var(--glass-sheen, none);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   text-shadow: none;
 }
+html[data-glass^="liquid"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
+  box-shadow: var(--glass-rim);
+}
+html[data-glass="liquid-3d"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice])::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--glass-edge);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
+}
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]):is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]) {
-  background-image: linear-gradient(var(--glass-hover), var(--glass-hover));
+  background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
 }
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
 html[data-glass="macos"] .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
@@ -6483,6 +6499,11 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
 }
 html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   background-image: var(--glass-sheen);
+}
+/* The browser menu pins its fill to a surface resolved on <html> (layered !important), so point that surface at the glass. */
+html[data-glass][data-glass-menus] .browser-menu[data-slot] {
+  --browser-menu-surface: var(--glass-menu-fill);
+  --accent: var(--glass-hover);
 }
 /* The base dropdown shadows are !important inside @layer utilities, which beats any unlayered !important; only a more specific rule in that layer wins. */
 @layer utilities {

@@ -176,11 +176,11 @@ test("glass frosts the chat model controls and gives the account row the row hov
 	// The glass sits on the buttons themselves, so it is exactly the hover's box; the hover layers over it.
 	const model = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
 	const glass = new RegExp(`${model} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
-	assert.match(glass, /backdrop-filter: blur\(max\(var\(--glass-blur\), 14px\)\)/);
-	// A lift reads as a button; no outline ring and no padding around the hover box.
-	assert.match(glass, /box-shadow: var\(--glass-button-lift\);/);
-	assert.doesNotMatch(glass, /padding|0 0 0 1px/);
-	assert.match(css, new RegExp(`${model}:is\\(:hover[^{]*\\{\\n  background-image: linear-gradient\\(var\\(--glass-hover\\), var\\(--glass-hover\\)\\);`));
+	// The composer's glass: its fill formula and blur, with no padding around the hover box.
+	assert.match(glass, /var\(--glass-composer-fill\) min\(96%, calc\(max\(calc\(var\(--glass-tint\) \+ 14%\)/);
+	assert.match(glass, /backdrop-filter: blur\(var\(--glass-blur\)\) saturate/);
+	assert.doesNotMatch(glass, /padding/);
+	assert.match(css, new RegExp(`${model}:is\\(:hover[^{]*\\{\\n  background-image: linear-gradient\\(var\\(--glass-hover\\), var\\(--glass-hover\\)\\), var\\(--glass-sheen`));
 	assert.match(css, /\[data-slot="sidebar-inner"\] \.app-user-trigger:is\(:hover, \[data-state="open"\]\)[^{]*\{\n  background-color: var\(--glass-hover\);\n  box-shadow: var\(--glass-hover-rim\);/);
 	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
 	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-model-controls=""/);
@@ -205,4 +205,9 @@ test("glass surfaces holding a frosted child move their own blur behind their co
 test("glass frosts the wallpaper slightly unless the user set an image blur", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /\.chat-wallpaper-artwork:not\(\[style\*="filter"\]\) \{\n  filter: blur\(1\.5px\);/);
+});
+
+test("the browser menu takes the glass fill instead of its pinned dark surface", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\]\[data-glass-menus\] \.browser-menu\[data-slot\] \{\n  --browser-menu-surface: var\(--glass-menu-fill\);/);
 });
