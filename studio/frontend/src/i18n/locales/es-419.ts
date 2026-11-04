@@ -207,6 +207,9 @@ export const es419 = {
         history: "Leyendo tu historial de navegación",
         move: "Moviendo el mouse",
         drag: "Arrastrando",
+        tabs: "Revisando las pestañas",
+        readFile: "Leyendo el archivo",
+        editFile: "Editando el archivo",
       },
     },
     title: "Navegador",
@@ -363,6 +366,8 @@ export const es419 = {
     askBeforeDownloadingSetting: "Preguntar antes de descargar",
     askBeforeDownloadingSettingDescription:
       "Confirma los archivos de sitios web antes de guardarlos.",
+    askBeforeProgramDownloadsSetting: "Preguntar antes de descargar programas",
+    askBeforeProgramDownloadsSettingDescription: "Confirma los archivos que pueden ejecutar programas, como .exe o .dmg, aunque las demás descargas no pregunten.",
     downloadSitesSetting: "Permisos de descarga por sitio",
     downloadSitesSettingDescription:
       "Sitios cuyas descargas elegiste permitir o bloquear siempre.",
@@ -371,6 +376,7 @@ export const es419 = {
     downloadSitesFor: "Descargas de {host}",
     downloadSitesRemove: "Olvidar {host}",
     downloadSiteAllow: "Permitir siempre",
+    downloadSiteAllowAll: "Permitir también programas",
     downloadSiteBlock: "Bloquear siempre",
     downloadPrompt: {
       title: "¿Descargar este archivo?",
@@ -378,6 +384,9 @@ export const es419 = {
       dangerous:
         "Los archivos como este pueden ejecutar programas en tu computadora. Descárgalo solo si confías en {host}.",
       remember: "Recordar para la próxima vez",
+      once: "Preguntar la próxima vez",
+      site: "Siempre para {host}",
+      all: "Descargar siempre, desde cualquier sitio",
       cancel: "Cancelar",
       download: "Descargar",
       blocked: "Se bloqueó una descarga de {host}.",
@@ -4301,8 +4310,6 @@ export const es419 = {
             "Este conjunto de datos parece contener imágenes, que no se pueden transmitir.",
           audioDataset:
             "Este conjunto de datos parece contener audio, que no se puede transmitir.",
-          appleSilicon:
-            "El streaming todavía no es compatible con Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo respuestas del asistente",

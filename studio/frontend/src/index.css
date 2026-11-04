@@ -6715,7 +6715,8 @@ html[data-glass^="liquid"] [data-auth-wallpaper]:has(> .chat-wallpaper[data-read
 .glass-backdrop { background: var(--background); }
 
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
-  background-color: color-mix(in srgb, var(--glass-page-bg) min(96%, calc((max(var(--glass-tint), var(--glass-pane-floor)) + 6%) * var(--glass-opacity, 1))), transparent);
+  --glass-page-wash: color-mix(in srgb, var(--glass-page-bg) min(96%, calc((max(var(--glass-tint), var(--glass-pane-floor)) + 6%) * var(--glass-opacity, 1))), transparent);
+  background-color: var(--glass-page-wash);
   background-image: var(--glass-sheen, none);
   --background: color-mix(in srgb, var(--glass-page-bg) 35%, transparent);
   --card: color-mix(in srgb, var(--glass-page-card) 55%, transparent);
@@ -6736,7 +6737,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   --color-chat-icon-bg-hover: var(--glass-hover);
 }
 /* No backdrop-filter on the pane: sticky headers inside a backdrop root re-tint it into bands. */
-html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper::after {
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"]:not([data-windows-wallpaper-page]) > .chat-wallpaper::after {
   content: none;
 }
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky {
@@ -6744,6 +6745,33 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
 }
+/* Follow the actual sidebar edge during resize. The decorative layer stays
+   behind the scrolling pane and below the Windows caption. */
+[data-windows-wallpaper-page] > [data-slot="sidebar"] {
+  anchor-name: --windows-page-sidebar;
+}
+[data-slot="page-wallpaper-blur"] {
+  display: none;
+}
+html[data-glass] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]:not([data-glass-backdrop])) > [data-slot="page-wallpaper-blur"] {
+  display: block;
+  position: absolute;
+  inset: var(--studio-custom-titlebar-height) 0 0 anchor(--windows-page-sidebar right, 0px);
+  pointer-events: none;
+  backdrop-filter: blur(max(22px, var(--glass-blur)));
+}
+[data-windows-wallpaper-page]:has([data-windows-glass-frame]) > [data-slot="page-wallpaper-blur"] {
+  border-top-left-radius: 4px;
+}
+/* A full-height page may extend under the Windows caption. Start its reading
+   tint below the controls, even when the content scrolls. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]:not([data-glass-backdrop])) > [data-slot="sidebar-inset"] {
+  background: linear-gradient(to bottom, transparent var(--studio-custom-titlebar-height), var(--glass-page-wash) 0) fixed;
+}
+html[data-glass] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]:not([data-glass-backdrop])) [data-slot="api-toolbar-fade"] {
+  display: none;
+}
+
 /* A user image blur (inline filter) wins. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallpaper .chat-wallpaper-artwork:not([style*="filter"]) {
   filter: blur(1.5px);

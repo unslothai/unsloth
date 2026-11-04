@@ -66,6 +66,7 @@ from .loader_utils import (
     _exclude_rope_inv_freq_from_ddp,
     _get_fp8_mode_and_check_settings,
     _restore_dropped_fp8_scales,
+    backfill_fp8_modules_to_convert,
     _prepare_compressed_tensors_model,
     fsdp_will_wrap,
     fsdp2_keeps_fused_lora,
@@ -3774,6 +3775,16 @@ class FastLlamaModel:
                 revision = revision,
             )
         model_config.model_name = model_name
+        _fp8_backfilled = backfill_fp8_modules_to_convert(
+            model_config,
+            model_name,
+            token,
+            revision,
+            local_files_only = kwargs.get("local_files_only", False),
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            variant = kwargs.get("variant"),
+        )
         model_max_seq_length = model_config.max_position_embeddings
 
         verify_fp8_support_if_applicable(
@@ -4252,6 +4263,8 @@ class FastLlamaModel:
                     or _ct_requant
                     or _fp8_to_nf4
                     or _block_swap_saved is not None
+                    # Backfilled modules_to_convert lives only on model_config.
+                    or _fp8_backfilled
                 ):
                     # Transformers 5.x @strict init rejects extra kwargs alongside config=, so set overrides on the config instead.
                     if max_position_embeddings is not None:
@@ -4259,7 +4272,9 @@ class FastLlamaModel:
                     _rope_scaling = kwargs.pop("rope_scaling", None)
                     if _rope_scaling is not None:
                         model_config.rope_scaling = _rope_scaling
-                    if (_modelopt_rewritten or _fp8_to_nf4) and user_config is None:
+                    if (
+                        _modelopt_rewritten or _fp8_to_nf4 or _fp8_backfilled
+                    ) and user_config is None:
                         move_config_overrides_onto_config(model_config, kwargs)
                     try:
                         with sync_load_when_quantizing(

@@ -202,6 +202,9 @@ export const zhTW = {
         history: "正在讀取您的瀏覽記錄",
         move: "正在移動滑鼠",
         drag: "正在拖曳",
+        tabs: "正在查看分頁",
+        readFile: "正在讀取檔案",
+        editFile: "正在編輯檔案",
       },
     },
     title: "瀏覽器",
@@ -343,6 +346,8 @@ export const zhTW = {
     downloadLocationReset: "重設",
     askBeforeDownloadingSetting: "下載前詢問",
     askBeforeDownloadingSettingDescription: "儲存來自網站的檔案前先確認。",
+    askBeforeProgramDownloadsSetting: "下載程式前詢問",
+    askBeforeProgramDownloadsSettingDescription: "對可執行程式的檔案（例如 .exe 或 .dmg）進行確認，即使其他下載不詢問。",
     downloadSitesSetting: "網站下載權限",
     downloadSitesSettingDescription: "您選擇一律允許或一律封鎖下載的網站。",
     downloadSitesNone:
@@ -350,6 +355,7 @@ export const zhTW = {
     downloadSitesFor: "來自 {host} 的下載",
     downloadSitesRemove: "忘記 {host}",
     downloadSiteAllow: "一律允許",
+    downloadSiteAllowAll: "也允許程式",
     downloadSiteBlock: "一律封鎖",
     downloadPrompt: {
       title: "要下載這個檔案嗎？",
@@ -357,6 +363,9 @@ export const zhTW = {
       dangerous:
         "這類檔案可以在您的電腦上執行程式。只有在您信任 {host} 時才下載。",
       remember: "下次記住這個選擇",
+      once: "下次再詢問",
+      site: "對 {host} 一律如此",
+      all: "一律下載，適用於所有網站",
       cancel: "取消",
       download: "下載",
       blocked: "已封鎖來自 {host} 的下載。",
@@ -4013,7 +4022,6 @@ export const zhTW = {
           embeddingModel: "嵌入模型不支援串流（訓練需要完整的資料集）。",
           imageDataset: "此資料集看起來是圖片，無法串流。",
           audioDataset: "此資料集看起來是音訊，無法串流。",
-          appleSilicon: "Apple Silicon（MLX）目前尚不支援串流。",
         },
         options: {
           trainOnCompletions: "僅訓練助理回覆",
