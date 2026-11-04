@@ -17,6 +17,8 @@ export type DownloadRequest = {
   label: string;
   name: string;
   dangerous: boolean;
+  /** From the browser agent's tab: asked under its own rules, so another file's answer never settles it. */
+  agent: boolean;
   resolve: (allow: boolean) => void;
 };
 
@@ -57,20 +59,20 @@ export function approveDownload(
     : agentRule === "allow" ||
       (agentRule !== "ask" && (remembered === "allow" || remembered === "allowAll" || !prefs.askBeforeDownloading));
   if (allowed) return Promise.resolve(true);
-  return ask(origin, label, shown, dangerous);
+  return ask(origin, label, shown, dangerous, agentRule != null);
 }
 
-/** Picked from the context menu: no site answer applies, and only a file that runs code asks (with nothing to remember). */
+/** Picked from the context menu: no site answer applies, and only a file that runs code asks, unless those were allowed everywhere. */
 export function approveChosenDownload(url: string, name: string): Promise<boolean> {
   const shown = safeDownloadName(name);
-  if (!isDangerousDownload(shown)) return Promise.resolve(true);
+  if (!isDangerousDownload(shown) || !useBrowserPrefsStore.getState().askBeforeProgramDownloads) return Promise.resolve(true);
   return ask("", hostOf(url) || url.slice(0, 80), shown, true);
 }
 
-function ask(origin: string, label: string, name: string, dangerous: boolean): Promise<boolean> {
+function ask(origin: string, label: string, name: string, dangerous: boolean, agent = false): Promise<boolean> {
   return new Promise((resolve) =>
     useApprovalStore.setState((state) => ({
-      queue: [...state.queue, { origin, label, name, dangerous, resolve }],
+      queue: [...state.queue, { origin, label, name, dangerous, agent, resolve }],
     })),
   );
 }
@@ -92,7 +94,7 @@ export function answerDownload(request: DownloadRequest, allow: boolean, remembe
     prefs.setAskBeforeDownloading(false);
     if (programs) prefs.setAskBeforeProgramDownloads(false);
   }
-  const covered = (other: DownloadRequest) => !(allow && other.dangerous && !programs);
+  const covered = (other: DownloadRequest) => !other.agent && !(allow && other.dangerous && !programs);
   const answered = everywhere
     ? queue.filter((other) => other === request || covered(other))
     : site

@@ -1033,6 +1033,9 @@ test("a file that runs code can be remembered for its site, or for every site", 
     assert.equal(await exe, true);
     assert.equal(useBrowserPrefsStore.getState().askBeforeProgramDownloads, false);
     assert.equal(await approveDownload("https://j.example/d.msi", "d.msi"), true);
+    // A program saved from the context menu follows the every-site choice too.
+    const { approveChosenDownload } = await import("../src/features/browser/download-approval-queue.ts");
+    assert.equal(await approveChosenDownload("https://k.example/f.exe", "f.exe"), true);
     // The agent's downloads of programs still ask whatever the user chose.
     const agent = approveDownload("https://j.example/e.msi", "e.msi", undefined, "allow");
     assert.equal(useApprovalStore.getState().queue.length, 1);
@@ -1042,6 +1045,30 @@ test("a file that runs code can be remembered for its site, or for every site", 
     useBrowserPrefsStore.getState().setAskBeforeDownloading(true);
     useBrowserPrefsStore.getState().setAskBeforeProgramDownloads(true);
     useDownloadSitesStore.getState().setSite("https://f.example", null);
+  }
+});
+
+test("an answer remembered for other files never settles one the browser agent is waiting on", async () => {
+  const { approveDownload, answerDownload, useApprovalStore } = await import(
+    "../src/features/browser/download-approval-queue.ts"
+  );
+  const { useDownloadSitesStore } = await import("../src/features/browser/download-sites-store.ts");
+  try {
+    const mine = approveDownload("https://m.example/App.dmg", "App.dmg");
+    const agents = approveDownload("https://m.example/Tool.dmg", "Tool.dmg", undefined, "allow");
+    const agentZip = approveDownload("https://m.example/a.zip", "a.zip", undefined, "ask");
+    answerDownload(useApprovalStore.getState().queue[0], true, "all");
+    assert.equal(await mine, true);
+    assert.deepEqual(useApprovalStore.getState().queue.map(({ name }) => name), ["Tool.dmg", "a.zip"]);
+    answerDownload(useApprovalStore.getState().queue[0], true, true);
+    assert.equal(await agents, true);
+    assert.deepEqual(useApprovalStore.getState().queue.map(({ name }) => name), ["a.zip"]);
+    answerDownload(useApprovalStore.getState().queue[0], false, false);
+    assert.equal(await agentZip, false);
+  } finally {
+    useBrowserPrefsStore.getState().setAskBeforeDownloading(true);
+    useBrowserPrefsStore.getState().setAskBeforeProgramDownloads(true);
+    useDownloadSitesStore.getState().setSite("https://m.example", null);
   }
 });
 
