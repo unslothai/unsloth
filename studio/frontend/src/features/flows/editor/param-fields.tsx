@@ -18,7 +18,9 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { memo, useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import { uploadAsset } from "../api";
-import type { MediaValue, ModelChoice, ParamSpec } from "../types";
+import type { MediaValue, ParamSpec } from "../types";
+import { modelChoiceOf } from "./model-choice";
+import { FlowModelPicker, FlowTrainModelPicker } from "./model-picker-field";
 import { DiceIcon, Upload01Icon } from "./icon-data";
 import { MediaThumb, isMediaValue } from "./media";
 import { pickOptions } from "./remote-options";
@@ -29,6 +31,8 @@ export interface FieldProps {
   spec: ParamSpec;
   value: unknown;
   onChange: (value: unknown) => void;
+  /** Sets this param with others in one edit (Fine-tune's base model and its picked copy). */
+  onPatch?: (patch: Record<string, unknown>) => void;
 }
 
 function JsonField({
@@ -86,38 +90,8 @@ function JsonField({
   );
 }
 
-let modelSuggestions: Promise<string[]> | null = null;
-function loadModelSuggestions(): Promise<string[]> {
-  modelSuggestions ??= authFetch("/api/models/list")
-    .then(async (response) => {
-      if (!response.ok) return [];
-      const body = (await response.json()) as {
-        models?: { id?: string; name?: string }[];
-        default_models?: string[];
-      };
-      const ids = new Set<string>();
-      for (const model of body.models ?? []) {
-        const id = model.id ?? model.name;
-        if (id && !id.startsWith("/")) ids.add(id);
-      }
-      for (const id of body.default_models ?? []) ids.add(id);
-      return [...ids].slice(0, 400);
-    })
-    .catch(() => []);
-  return modelSuggestions;
-}
-
 function ModelField({ spec, value, onChange }: FieldProps) {
-  const choice = (value ?? null) as ModelChoice | null;
-  const listId = useId();
-  const [suggestions, setSuggestions] = useState<string[]>([]);
-  useEffect(() => {
-    let alive = true;
-    void loadModelSuggestions().then((ids) => alive && setSuggestions(ids));
-    return () => {
-      alive = false;
-    };
-  }, []);
+  const choice = modelChoiceOf(value);
   return (
     <div className="flex flex-col gap-1.5">
       <label className="flex items-center gap-2 text-ui-12 text-muted-foreground">
@@ -130,28 +104,11 @@ function ModelField({ spec, value, onChange }: FieldProps) {
         Use the loaded {spec.model_kind ?? ""} model
       </label>
       {choice !== null && (
-        <>
-          <Input
-            value={choice.repo}
-            list={listId}
-            placeholder="org/model (Hugging Face repo)"
-            onChange={(e) => onChange({ ...choice, repo: e.target.value })}
-            className={FIELD}
-          />
-          <datalist id={listId}>
-            {suggestions.map((id) => (
-              <option key={id} value={id} />
-            ))}
-          </datalist>
-          <Input
-            value={choice.variant ?? ""}
-            placeholder="Variant / quant (optional, e.g. Q4_K_M)"
-            onChange={(e) =>
-              onChange({ ...choice, variant: e.target.value || null })
-            }
-            className={FIELD}
-          />
-        </>
+        <FlowModelPicker
+          kind={spec.model_kind ?? "chat"}
+          choice={choice}
+          onChange={onChange}
+        />
       )}
     </div>
   );
@@ -385,11 +342,23 @@ function LoraListField({ spec, value, onChange }: FieldProps) {
   );
 }
 
-function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
+function ParamFieldImpl({ spec, value, onChange, onPatch }: FieldProps) {
   if (spec.options_from && (spec.kind === "text" || spec.kind === "select"))
     return <RemoteOptionsField spec={spec} value={value} onChange={onChange} />;
   switch (spec.kind) {
     case "text":
+      // Fine-tune's base model is a plain repo string, picked the way the Train page picks it.
+      if (spec.id === "base_model")
+        return (
+          <FlowTrainModelPicker
+            value={String(value ?? "")}
+            onChange={(model, cache) =>
+              onPatch
+                ? onPatch({ base_model: model, base_model_cache: cache })
+                : onChange(model)
+            }
+          />
+        );
       return <TextField spec={spec} value={value} onChange={onChange} />;
     case "lora_list":
       return <LoraListField spec={spec} value={value} onChange={onChange} />;
@@ -419,7 +388,10 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       return (
         <Input
           type="number"
-          value={value === null || value === undefined ? "" : String(value)}
+          // Unset shows the default the run will use; null stays empty only where the default is null.
+          value={String(
+            (value === undefined || value === null ? spec.default : value) ?? "",
+          )}
           min={spec.min}
           max={spec.max}
           step={spec.step ?? (spec.kind === "int" ? 1 : "any")}
@@ -438,12 +410,20 @@ function ParamFieldImpl({ spec, value, onChange }: FieldProps) {
       );
     case "bool":
       return (
-        <Switch checked={!!value} onCheckedChange={() => onChange(!value)} />
+        <Switch
+          checked={value === undefined || value === null ? !!spec.default : !!value}
+          onCheckedChange={(checked) => onChange(checked)}
+        />
       );
     case "select":
       return (
         <Select
-          value={String(value ?? "")}
+          // A param the doc never stored shows its default, as the run uses it, not an empty box.
+          value={String(
+            value === null || value === undefined || value === ""
+              ? (spec.default ?? spec.options?.[0] ?? "")
+              : value,
+          )}
           onValueChange={(next) => onChange(next)}
         >
           <SelectTrigger className={`${FIELD} w-full`}>

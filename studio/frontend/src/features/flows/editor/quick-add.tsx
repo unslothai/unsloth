@@ -19,7 +19,9 @@ import { compatibleSpecs } from "./connection-rules";
 import { nodeIcon } from "./icons";
 import { NodeIconTile } from "./node-card";
 import { addNodeConnected } from "./node-factory";
+import { snapPoint } from "./placement";
 import { CATEGORY_TONES } from "./node-tones";
+import { REROUTE_TYPE, rerouteCanFeed, rerouteTakes } from "./reroutes";
 
 export function QuickAdd() {
   const quickAdd = useUiStore((s) => s.quickAdd);
@@ -30,9 +32,22 @@ export function QuickAdd() {
 
   const options = useMemo((): { spec: NodeSpec; port?: string }[] => {
     if (!catalog || !quickAdd) return [];
+    // Design-only blocks (a recipe's columns) are added inside their own editor, not here.
     const addable = catalog.nodes.filter((spec) => !spec.design);
     if (!quickAdd.from) return addable.map((spec) => ({ spec }));
-    const matches = compatibleSpecs(addable, quickAdd.from);
+    const { from } = quickAdd;
+    const graph = useDocStore.getState().graph;
+    // Off a reroute, check against the whole chain, not just its first input's type.
+    const matches =
+      from.kind === "data" && graph.reroutes[from.nodeId]
+        ? addable.flatMap((spec) => {
+            const port =
+              from.side === "out"
+                ? spec.inputs.find((p) => rerouteCanFeed(graph, from.nodeId, p))
+                : spec.outputs.find((p) => rerouteTakes(graph, from.nodeId, p));
+            return port ? [{ spec, port: port.id }] : [];
+          })
+        : compatibleSpecs(addable, from);
     const exactType = quickAdd.from.port?.type;
     return matches.sort((a, b) => {
       const score = (m: { spec: NodeSpec; port: string }) => {
@@ -93,7 +108,10 @@ export function QuickAdd() {
               onSelect={() => {
                 addNodeConnected(
                   spec.type,
-                  [quickAdd.flow.x, quickAdd.flow.y],
+                  snapPoint(
+                    [quickAdd.flow.x, quickAdd.flow.y],
+                    useUiStore.getState().snapToGrid,
+                  ),
                   quickAdd.from,
                   port,
                 );
@@ -112,6 +130,27 @@ export function QuickAdd() {
               </CommandShortcut>
             </CommandItem>
           ))}
+          {quickAdd.from?.kind !== "flow" && (
+            <CommandItem
+              value="Reroute wire waypoint"
+              onSelect={() => {
+                const { flow, from } = quickAdd;
+                // Centre the reroute where the wire was dropped.
+                const x = from?.side === "in" ? flow.x + 260 : flow.x;
+                const y = from ? flow.y + 20 : flow.y;
+                addNodeConnected(REROUTE_TYPE, [x - 130, y - 20], from, "in");
+                setQuickAdd(null);
+              }}
+              className="cursor-pointer px-2 py-1.5"
+              data-testid="flows-quick-add-reroute"
+            >
+              <span className="flex size-7 shrink-0 items-center justify-center">
+                <span className="h-2 w-3.5 rounded-full border border-muted-foreground" />
+              </span>
+              <span className="flex-1 truncate">Reroute</span>
+              <CommandShortcut className="tracking-normal">Wire</CommandShortcut>
+            </CommandItem>
+          )}
         </CommandList>
       </Command>
     </div>

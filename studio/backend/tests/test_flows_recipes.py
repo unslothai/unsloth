@@ -315,3 +315,32 @@ def test_a_recipe_group_with_an_env_key_says_how_to_run_it():
         data.runnable_recipe(recipe)
     recipe["model_providers"][0] = {"name": "openai", "api_key": "sk-live"}
     assert data.runnable_recipe(recipe)["model_providers"][0]["api_key"] == "sk-live"
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_a_base_model_picked_on_device_trains_on_that_copy(tmp_path, exists):
+    copy = tmp_path / "models--unsloth--tiny"
+    if exists:
+        copy.mkdir()
+    sent = {}
+
+    def train_routes(method, path, params, body):
+        if path == "/api/train/start":
+            sent.update(body)
+            raise RuntimeError("started")
+        raise AssertionError(path)
+
+    dataset = {"kind": "dataset", "source": "local", "ref": "recipes/recipe_one/parquet-files"}
+    params = {
+        "base_model": "unsloth/tiny",
+        "base_model_cache": {"known_cached": True, "local_path": str(copy)},
+    }
+    ctx = _Ctx(train_routes, params = params, inputs = {"dataset": dataset})
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    assert sent["model_name"] == "unsloth/tiny"
+    if exists:
+        assert sent["model_known_cached"] is True and sent["model_local_path"] == str(copy)
+    else:
+        # A flow from another machine: that copy is not here, so the repo trains as typed.
+        assert "model_known_cached" not in sent and "model_local_path" not in sent

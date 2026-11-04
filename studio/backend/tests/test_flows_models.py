@@ -253,3 +253,70 @@ def test_a_media_variant_reloaded_outside_flows_is_not_reused(monkeypatch):
 
     asyncio.run(run())
     assert loads == ["Q4_K_M", "Q4_K_M"]
+
+
+class _ImageCtx(_Ctx):
+    def __init__(self, status):
+        super().__init__()
+        self.status = status
+
+    async def call(
+        self,
+        method,
+        path,
+        json = None,
+    ):
+        if path == _common.IMAGE_STATUS:
+            return self.status
+        if path == "/api/inference/images/generate":
+            return {"images": [{"id": "out1"}]}
+        return {}
+
+    def on_cancel(self, fn):
+        pass
+
+    def progress(self, *args, **kwargs):
+        pass
+
+    def log(
+        self,
+        message,
+        level = "info",
+    ):
+        pass
+
+
+def test_flows_own_lora_bake_reload_keeps_the_variant_record(monkeypatch):
+    from core.inference import gpu_arbiter
+
+    repo = "unsloth/FLUX.2-klein-4B-GGUF"
+    loads = []
+    counts = {"diffusion": 0}
+
+    async def fake_load_media(caller, ctx, **kwargs):
+        loads.append(kwargs.get("knobs"))
+        counts["diffusion"] += 1
+
+    async def fake_slots(caller):
+        return {"image": [repo]}
+
+    monkeypatch.setattr(loading, "load_media", fake_load_media)
+    monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_BAKED_LORAS", {})
+    monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: counts.get(owner, 0))
+    # An auto GGUF pick served as an int8 build: LoRAs are baked in by a second load.
+    status = {"loaded": True, "repo_id": repo, "resolved": {"transformer_quant": {"value": "int8"}}}
+    model = {"repo": repo, "variant": "Q4_K_M"}
+    loras = [{"id": "someone/flux2-lora", "weight": 1.0}]
+    per_node = []
+    for _ in range(3):
+        before = len(loads)
+        asyncio.run(
+            _common.generate_image(
+                _ImageCtx(status), model = model, prompt = "a fox", options = {"loras": loras}
+            )
+        )
+        per_node.append(len(loads) - before)
+    assert per_node == [2, 0, 0], per_node

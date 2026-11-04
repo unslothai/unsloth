@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import secrets
 import time
 from typing import Any, Optional
@@ -33,6 +34,19 @@ OPTIONAL_INTS = (
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
+def _picked_cache(cache: Any) -> dict:
+    """The On device copy the base model was picked from: train on those weights, as the Train page
+    does. A path missing here (a flow from another machine) falls back to the plain repo."""
+    if not isinstance(cache, dict) or cache.get("known_cached") is not True:
+        return {}
+    path = cache.get("local_path")
+    if isinstance(path, str) and path:
+        return (
+            {"model_known_cached": True, "model_local_path": path} if os.path.exists(path) else {}
+        )
+    return {"model_known_cached": True}
+
+
 @handler("train.finetune")
 async def finetune(ctx: NodeContext) -> dict:
     from studio_mcp.tools.jobs import TRAINING_STATUS, _run_folder
@@ -54,6 +68,7 @@ async def finetune(ctx: NodeContext) -> dict:
     }
     if not config["model_name"]:
         raise FlowNodeError("Name the base model to fine-tune")
+    config.update(_picked_cache(ctx.params.get("base_model_cache")))
     config.update(TASK_FLAGS.get(str(ctx.params.get("task") or "text"), {}))
     if ctx.params.get("num_epochs") not in (None, ""):
         config["num_epochs"] = int(ctx.params["num_epochs"])

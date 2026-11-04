@@ -28,7 +28,7 @@ import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
 const RUN_STATUS_STYLE: Record<string, string> = {
   queued: "text-muted-foreground",
-  running: "border-sky-500/25 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  running: "border-border bg-muted text-foreground",
   cancelling:
     "border-amber-500/25 bg-amber-500/10 text-amber-700 dark:text-amber-300",
   cancelled: "text-muted-foreground",
@@ -154,7 +154,7 @@ const TimelineRow = memo(function TimelineRow({
             className="h-1 w-24"
           />
         )}
-        <span className="w-14 text-right font-mono text-ui-11 text-muted-foreground">
+        <span className="w-14 text-right text-ui-11 text-muted-foreground tabular-nums">
           {duration(rt, now)}
         </span>
       </button>
@@ -286,7 +286,7 @@ function Outputs() {
       ))}
       {structured.map((item) => (
         <section key={item.key} className="flex flex-col gap-1">
-          <h4 className="font-mono text-ui-11 text-muted-foreground">{item.label}</h4>
+          <h4 className="text-ui-11 text-muted-foreground">{item.label}</h4>
           <StructuredOutput value={item.value} />
         </section>
       ))}

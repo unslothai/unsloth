@@ -95,16 +95,16 @@ function FieldInput({
     case "select":
       return (
         <Select
-          value={String(value ?? "")}
-          onValueChange={(next) => onChange(next)}
+          value={toSelectValue(String(value ?? ""))}
+          onValueChange={(next) => onChange(fromSelectValue(next))}
         >
           <SelectTrigger className="w-full">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {(field.options ?? []).filter(Boolean).map((option) => (
-              <SelectItem key={option} value={option}>
-                {option}
+            {(field.options ?? []).map((option) => (
+              <SelectItem key={option} value={toSelectValue(option)}>
+                {option || "(none)"}
               </SelectItem>
             ))}
           </SelectContent>
@@ -414,3 +414,8 @@ export function FlowAppPage({ flowId }: { flowId: string }): ReactElement {
     </div>
   );
 }
+
+// Radix Select takes no empty value, so a configured "" option travels under this stand-in.
+const EMPTY_OPTION = "__flows_empty_option__";
+const toSelectValue = (v: string) => (v === "" ? EMPTY_OPTION : v);
+const fromSelectValue = (v: string) => (v === EMPTY_OPTION ? "" : v);
