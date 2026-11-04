@@ -270,7 +270,7 @@ async def finetune(ctx: NodeContext) -> dict:
         metrics["train_rows"] = dataset.get("rows")
         metrics["holdout_rows"] = holdout["rows"]
     checkpoint = {"kind": "checkpoint", "name": run, "base_model": config["model_name"]}
-    system = trained_system_prompt(config)
+    system = trained_system_prompt(config, dataset.get("columns"))
     if system:
         checkpoint["system_prompt"] = system
     return {
@@ -378,14 +378,22 @@ def drafter_request(params: dict) -> dict:
     }
 
 
-def trained_system_prompt(config: dict) -> str:
-    """The one system message every training row got, when the run set one: the SFT mapping's
-    system prompt. A per-row system column has no single value to reuse."""
+def trained_system_prompt(config: dict, columns: Any = None) -> str:
+    """The system message a new prompt would have got in training: the SFT mapping's system prompt,
+    or GRPO's, which fills in for every prompt with no system message of its own. A per-row system
+    column (mapped, or one the formatter finds by name) has no single value to reuse."""
     mapping = config.get("custom_format_mapping")
     if config.get("objective") == "grpo":
-        # GRPO's prompt is only a fallback: a `system` column the formatter finds by name, or a
-        # conversation's own system message, wins row by row, so no single prompt is claimed.
-        return ""
+        from core.training.rl import _AUTO_ROLE_NAMES, _IGNORE_ROLE
+
+        roles = mapping if isinstance(mapping, dict) else {}
+        named = [c for c in (columns or []) if isinstance(c, str)] + list(roles)
+        if "system" in roles.values() or any(
+            str(c).lower() in _AUTO_ROLE_NAMES["system"] and roles.get(c) != _IGNORE_ROLE
+            for c in named
+        ):
+            return ""
+        return str(config.get("rl_system_prompt") or "").strip()
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
         return mapping["__system_prompt"].strip()
     return ""
@@ -1275,6 +1283,10 @@ async def active_chat_model(ctx: NodeContext) -> Optional[dict]:
     # A GGUF placed by hand (all in RAM at gpu_layers 0, say) goes back where it was.
     if status.get("gpu_memory_mode") == "manual":
         extra.update({k: status[k] for k in PLACEMENT_FIELDS if status.get(k) is not None})
+    template = status.get("chat_template_override")
+    if isinstance(template, str) and template.strip():
+        # A template the user set to fix the model's prompt format goes back with it.
+        extra["chat_template_override"] = template
     if extra:
         found["extra"] = extra
     return found

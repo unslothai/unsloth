@@ -909,10 +909,13 @@ def test_the_checkpoint_carries_the_one_system_prompt_training_used():
         "rl_system_prompt": "Use <answer> tags.",
         "custom_format_mapping": {"q": "user", "a": "assistant"},
     }
-    # GRPO's prompt is a fallback a `system` column found by name or a conversation's own system
-    # message overrides row by row: no single prompt, mapped or not.
-    assert training.trained_system_prompt(grpo) == ""
-    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}) == ""
+    # GRPO's prompt fills in for every prompt with no system message, as a new chat prompt is.
+    assert training.trained_system_prompt(grpo) == "Use <answer> tags."
+    assert training.trained_system_prompt({**grpo, "custom_format_mapping": None}) == (
+        "Use <answer> tags."
+    )
+    # Emptied in the node: training added none.
+    assert training.trained_system_prompt({**grpo, "rl_system_prompt": None}) == ""
     sft = {
         "custom_format_mapping": {
             "q": "user",
@@ -1204,6 +1207,13 @@ def test_a_gguf_held_in_ram_is_put_back_in_ram(monkeypatch):
         training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
     )
     assert loads[0]["extra_body"] == {"gpu_memory_mode": "manual", "gpu_layers": 0}
+    # A chat template set to fix its prompt format goes back with it.
+    loads.clear()
+    status.update({"gpu_memory_mode": "auto", "chat_template_override": "{{ messages }}"})
+    asyncio.run(
+        training.restore_chat_model(ctx, asyncio.run(training.active_chat_model(ctx)), "run-1")
+    )
+    assert loads[0]["extra_body"] == {"chat_template_override": "{{ messages }}"}
 
 
 def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monkeypatch):
@@ -1232,7 +1242,12 @@ def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
     assert training.trained_system_prompt(config) == ""
     # A prompt/answer mapping still lets the formatter pick up a `system` column by name.
     config["custom_format_mapping"] = {"q": "prompt", "gold": "answer"}
-    assert training.trained_system_prompt(config) == ""
+    assert training.trained_system_prompt(config, ["q", "gold", "System"]) == ""
+    # GSM8K: question and answer only, so every prompt got the fallback.
+    assert training.trained_system_prompt(config, ["q", "gold"]) == "Reason, then answer."
+    # A system column set to Ignore is not read.
+    config["custom_format_mapping"] = {"q": "prompt", "system": "ignore"}
+    assert training.trained_system_prompt(config, ["q", "system"]) == "Reason, then answer."
 
 
 def test_a_small_whole_split_is_streamed_too(monkeypatch):
