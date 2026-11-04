@@ -1337,6 +1337,7 @@ def test_a_relative_seed_file_is_fingerprinted_where_studio_runs(tmp_path, monke
     (tmp_path / "seed.jsonl").write_text('{"w": "changed seed contents"}\n')
     assert data.seed_files(recipe, None) != first
 
+
 def test_a_recipe_naming_its_generator_is_keyed_by_that_pick_not_by_what_chat_holds(monkeypatch):
     from core.flows import engine as engine_mod
     from studio_mcp import loading

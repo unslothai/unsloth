@@ -1141,7 +1141,9 @@ def test_a_loops_frozen_test_questions_never_reach_a_later_rounds_training(monke
 
     rows = [{"prompt": f"question number {i}", "response": f"a{i}"} for i in range(10)]
     monkeypatch.setattr(
-        training, "_load_table", _as_table(lambda dataset, token, end, start = 0: list(reversed(rows)))
+        training,
+        "_load_table",
+        _as_table(lambda dataset, token, end, start = 0: list(reversed(rows))),
     )
     monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
     ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
