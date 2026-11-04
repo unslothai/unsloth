@@ -2719,11 +2719,14 @@ export function useChatModelRuntime() {
               reasoningAlwaysOn,
               supportsReasoning,
               supportsReasoningOff: reasoningStyle !== "reasoning_effort",
-              // Status sync re-keys the checkpoint to the load path, so a pin may sit under either.
               pinned:
                 pinnedReasoningEnabled(loadPath) ??
                 pinnedReasoningEnabled(modelId),
-              reloadingSameModel,
+              // Status sync may have re-keyed the resident to the load path.
+              reloadingSameModel:
+                reloadingSameModel ||
+                (previousCheckpoint === loadPath &&
+                  (ggufVariant ?? null) === (previousVariant ?? null)),
               previousEnabled: stateBeforeUnload.reasoningEnabled,
               reasoningDefault,
             });

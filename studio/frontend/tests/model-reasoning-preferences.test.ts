@@ -425,6 +425,17 @@ test("a load reads the thinking pin under the load path as well as the catalog i
   );
 });
 
+test("a reload of the resident load path counts as a same-model reload for thinking", () => {
+  const source = readFileSync(
+    new URL("../src/features/chat/hooks/use-chat-model-runtime.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /reloadingSameModel:\s*reloadingSameModel \|\|\s*\(previousCheckpoint === loadPath &&/,
+  );
+});
+
 test("turning thinking off pins the loaded checkpoint; persist false does not", async () => {
   const runtime = await boot("thinking-pin");
   const store = runtime.useChatRuntimeStore;
