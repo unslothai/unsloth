@@ -747,3 +747,34 @@ def test_a_stop_during_the_load_keeps_the_slot_until_that_load_has_ended(monkeyp
 
     asyncio.run(scenario())
     assert events == ["load ended", "slot freed"]
+
+
+def test_a_stopped_benchmark_still_frees_its_slot_past_the_runs_cancel_check(monkeypatch):
+    from core.flows import engine
+    from core.flows.registry import FlowCancelled
+
+    sent = []
+
+    async def stopped(ctx):
+        raise FlowCancelled()
+
+    monkeypatch.setattr(benchmark, "_load_target", stopped)
+    ctx = _Ctx(lambda *a: None)
+
+    async def call(
+        method,
+        path,
+        json = None,
+        params = None,
+        **_,
+    ):
+        # As the engine's context: once the run is stopped, only a cancel hook's calls go through.
+        if path.endswith("/cancel") and not engine._IN_CANCEL_HOOK.get():
+            raise FlowCancelled()
+        sent.append(path)
+        return {"success": True}
+
+    ctx.call = call
+    with pytest.raises(FlowCancelled):
+        asyncio.run(benchmark.benchmark(ctx))
+    assert sent == ["/api/benchmarks/evals/reserve", "/api/benchmarks/evals/cancel"]

@@ -591,9 +591,10 @@ async def benchmark(ctx: NodeContext) -> dict:
     finally:
         if not loaded:
             await _settle_loads(ctx)
-        # Frees a reservation no run took over; a finished run's slot is already free.
-        with contextlib.suppress(Exception):
-            await ctx.call("POST", f"{EVALS}/cancel", params = {"token": token})
+        # Frees a reservation no run took over; a finished run's slot is already free. Sent as a cancel
+        # hook's call, which a stopped run still lets through.
+        from core.flows.engine import _run_cancel_hook
+        await _run_cancel_hook(lambda: ctx.call("POST", f"{EVALS}/cancel", params = {"token": token}))
     tag = f"benchmark-{task}-{found.get('run_id') or int(time.time())}"
     results = await _as_dataset(ctx, found["results"], f"{tag}-results")
     results.update(
