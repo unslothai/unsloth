@@ -206,6 +206,9 @@ export const nl = {
         history: "Je browsegeschiedenis lezen",
         move: "Muis verplaatsen",
         drag: "Slepen",
+        tabs: "Tabbladen bekijken",
+        readFile: "Bestand lezen",
+        editFile: "Bestand bewerken",
       },
     },
     title: "Browser",
@@ -362,6 +365,8 @@ export const nl = {
     askBeforeDownloadingSetting: "Vragen voor het downloaden",
     askBeforeDownloadingSettingDescription:
       "Bevestig bestanden van websites voordat ze worden opgeslagen.",
+    askBeforeProgramDownloadsSetting: "Vragen voor het downloaden van programma's",
+    askBeforeProgramDownloadsSettingDescription: "Bevestig bestanden die programma's kunnen uitvoeren, zoals .exe of .dmg, ook als andere downloads niets vragen.",
     downloadSitesSetting: "Downloadtoestemmingen per site",
     downloadSitesSettingDescription:
       "Sites waarvan je downloads altijd wilt toestaan of blokkeren.",
@@ -370,6 +375,7 @@ export const nl = {
     downloadSitesFor: "Downloads van {host}",
     downloadSitesRemove: "{host} vergeten",
     downloadSiteAllow: "Altijd toestaan",
+    downloadSiteAllowAll: "Ook programma's toestaan",
     downloadSiteBlock: "Altijd blokkeren",
     downloadPrompt: {
       title: "Dit bestand downloaden?",
@@ -377,6 +383,9 @@ export const nl = {
       dangerous:
         "Bestanden zoals dit kunnen programma's op je computer uitvoeren. Download het alleen als je {host} vertrouwt.",
       remember: "Onthouden voor de volgende keer",
+      once: "Volgende keer vragen",
+      site: "Altijd voor {host}",
+      all: "Altijd downloaden, van elke site",
       cancel: "Annuleren",
       download: "Downloaden",
       blocked: "Een download van {host} is geblokkeerd.",
@@ -3279,9 +3288,8 @@ export const nl = {
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
       turnNavigation: "Beurtnavigatie",
       turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
-      composerAtBottom: "Invoerveld onderaan",
-      composerAtBottomDescription:
-        "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",
+      composerPosition: "Positie van het invoerveld",
+      composerPositionDescription: "Waar het invoerveld staat bij het starten van een nieuwe chat, van de bovenkant van de pagina tot onderaan.",
       projectAttachments: "Bestanden delen binnen een project",
       projectAttachmentsDescription:
         "Nieuwe chatbijlagen beschikbaar maken voor elke chat in het project.",
@@ -4283,8 +4291,6 @@ export const nl = {
             "Deze dataset lijkt uit afbeeldingen te bestaan, die niet kunnen worden gestreamd.",
           audioDataset:
             "Deze dataset lijkt uit audio te bestaan, die niet kan worden gestreamd.",
-          appleSilicon:
-            "Streamen wordt nog niet ondersteund op Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "alleen assistentaanvullingen",

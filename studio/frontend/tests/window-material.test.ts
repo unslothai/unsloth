@@ -92,12 +92,14 @@ test("glass adds no outer shadows, only inset light", () => {
 	}
 });
 
-test("other pages under glass read over one tinted pane with a readable floor", () => {
+test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  background-color: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(max\(clamp\(var\(--glass-page-floor\)/);
+	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  --glass-page-wash: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \+ 6%\)/);
 	const pane = /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
 	assert.doesNotMatch(pane, /backdrop-filter/);
-	assert.match(css, /\[data-wallpaper-route="page"\] > \.chat-wallpaper\[data-ready\] \.chat-wallpaper-artwork \{\n  filter: blur\(/);
+	assert.ok(pane.includes("background-color: var(--glass-page-wash)"));
+	assert.ok(css.includes("inset: var(--studio-custom-titlebar-height) 0 0 anchor(--windows-page-sidebar right, 0px)"));
+	assert.doesNotMatch(css, /\[data-wallpaper-route="page"\][^{]*\.chat-wallpaper-artwork \{/);
 });
 
 test("glass lens modes repair malformed data and scale the right way", () => {
@@ -159,4 +161,61 @@ test("the glass preference survives an account switch, and sign-in waits for the
 	}
 	const client = readFileSync(new URL("../src/features/auth/login-client.ts", import.meta.url), "utf8");
 	assert.match(client, /getConfirmedLoginMode = \(\): LoginMode \| null =>\n\s*statusKnown \? loginMode : null;/);
+});
+
+test("glass over an open conversation dims the image and thickens only that composer", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const conversation = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\):not\(:has\(\.aui-thread-welcome-center\)\)`;
+	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
+	assert.match(css, new RegExp(`${conversation} \\.unsloth-composer-surface,[^{]*\\{\\n  --glass-composer-boost: 9%;`));
+	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
+});
+
+test("glass frosts the chat model controls and gives the account row the row hover", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const model = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
+	const glass = new RegExp(`${model} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+	assert.match(glass, /var\(--glass-composer-fill\) min\(96%, calc\(max\(calc\(var\(--glass-tint\) \+ 14%\)/);
+	assert.match(glass, /backdrop-filter: blur\(var\(--glass-blur\)\) saturate/);
+	assert.doesNotMatch(glass, /padding/);
+	assert.match(css, new RegExp(`${model}:is\\(:hover[^{]*\\{\\n  background-image: linear-gradient\\(var\\(--glass-hover\\), var\\(--glass-hover\\)\\), var\\(--glass-sheen`));
+	assert.match(css, /\[data-slot="sidebar-inner"\] \.app-user-trigger:is\(:hover, \[data-state="open"\]\)[^{]*\{\n  background-color: var\(--glass-hover\);\n  box-shadow: var\(--glass-hover-rim\);/);
+	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
+	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-model-controls=""/);
+});
+
+test("glass frosts sticky bars in panels and popups, floating buttons, and softens shared shadows", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\] :is\(\[data-slot="chat-settings-panel"\], \[data-slot\$="popover-content"\][^)]*\) \.sticky \{\n  -webkit-backdrop-filter: blur\(12px\)/);
+	assert.match(css, /html\[data-glass\] :is\(\[data-glass-float\], \.aui-thread-scroll-to-bottom\) \{\n  -webkit-backdrop-filter: blur\(8px\);/);
+	assert.match(css, /html\.dark\[data-glass\] \{\n  --popup-shadow: 0 16px 40px -12px rgb\(0 0 0 \/ \.52\);/);
+	const pickers = readFileSync(new URL("../src/features/model-picker/components/model-selector/pickers.tsx", import.meta.url), "utf8");
+	assert.match(pickers, /data-glass-float=""\n\s*onClick=\{\(\) => \(ejectsAll/);
+});
+
+test("glass surfaces holding a frosted child move their own blur behind their content", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\[data-slot="dialog-content"\]\):has\(\.sticky, \[data-glass-float\]\),\n[^{]*\{\n  -webkit-backdrop-filter: none !important;\n  backdrop-filter: none !important;\n  isolation: isolate;/);
+	assert.match(css, /:has\(\.sticky, \[data-glass-float\]\)::before \{\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
+});
+
+test("glass frosts the wallpaper slightly unless the user set an image blur", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\.chat-wallpaper-artwork:not\(\[style\*="filter"\]\) \{\n  filter: blur\(1\.5px\);/);
+});
+
+test("the browser menu takes the glass fill instead of its pinned dark surface", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\]\[data-glass-menus\] \.browser-menu\[data-slot\] \{\n  --browser-menu-surface: var\(--glass-menu-fill\);/);
+});
+
+test("menus, popovers and dialogs point every hover token at the glass hover", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const at = css.indexOf('[data-slot="alert-dialog-content"], [data-slot="sheet-content"]) {\n  --nav-surface-hover');
+	assert.notEqual(at, -1);
+	const rule = css.slice(at, css.indexOf("}", at));
+	for (const token of ["nav-surface-hover", "panel-surface-hover", "chat-icon-bg-hover", "panel-input-surface-hover"]) {
+		assert.match(rule, new RegExp(`--${token}: var\\(--glass-hover\\);`));
+		assert.match(rule, new RegExp(`--color-${token}: var\\(--glass-hover\\);`));
+	}
 });

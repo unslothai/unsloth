@@ -206,6 +206,9 @@ export const uk = {
         history: "Читання вашої історії переглядів",
         move: "Переміщення миші",
         drag: "Перетягування",
+        tabs: "Перегляд вкладок",
+        readFile: "Читання файлу",
+        editFile: "Редагування файлу",
       },
     },
     title: "Браузер",
@@ -361,6 +364,8 @@ export const uk = {
     askBeforeDownloadingSetting: "Питати перед завантаженням",
     askBeforeDownloadingSettingDescription:
       "Підтверджувати файли з вебсайтів перед їх збереженням.",
+    askBeforeProgramDownloadsSetting: "Питати перед завантаженням програм",
+    askBeforeProgramDownloadsSettingDescription: "Підтверджувати файли, які можуть запускати програми, як-от .exe або .dmg, навіть якщо для інших завантажень питання не ставиться.",
     downloadSitesSetting: "Дозволи сайтів на завантаження",
     downloadSitesSettingDescription:
       "Сайти, для яких ви вирішили завжди дозволяти або блокувати завантаження.",
@@ -369,6 +374,7 @@ export const uk = {
     downloadSitesFor: "Завантаження з {host}",
     downloadSitesRemove: "Забути {host}",
     downloadSiteAllow: "Завжди дозволяти",
+    downloadSiteAllowAll: "Дозволяти й програми",
     downloadSiteBlock: "Завжди блокувати",
     downloadPrompt: {
       title: "Завантажити цей файл?",
@@ -376,6 +382,9 @@ export const uk = {
       dangerous:
         "Такі файли можуть запускати програми на вашому комп’ютері. Завантажуйте його, лише якщо довіряєте {host}.",
       remember: "Запам’ятати на наступний раз",
+      once: "Запитати наступного разу",
+      site: "Завжди для {host}",
+      all: "Завжди завантажувати, з будь-якого сайту",
       cancel: "Скасувати",
       download: "Завантажити",
       blocked: "Заблоковано завантаження з {host}.",
@@ -3264,9 +3273,8 @@ export const uk = {
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
       turnNavigation: "Навігація ходами",
       turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
-      composerAtBottom: "Поле введення внизу",
-      composerAtBottomDescription:
-        "Починати нові чати з полем введення внизу сторінки, а не посередині.",
+      composerPosition: "Розташування поля введення",
+      composerPositionDescription: "Де розташоване поле введення в новому чаті: від верху сторінки до самого низу.",
       projectAttachments: "Спільні файли в проєкті",
       projectAttachmentsDescription:
         "Робити нові вкладення чату доступними для всіх чатів проєкту.",
@@ -4271,8 +4279,6 @@ export const uk = {
             "Схоже, цей набір даних містить зображення, які не можна передавати потоком.",
           audioDataset:
             "Схоже, цей набір даних містить аудіо, яке не можна передавати потоком.",
-          appleSilicon:
-            "Потокове передавання ще не підтримується на Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "лише відповіді асистента",

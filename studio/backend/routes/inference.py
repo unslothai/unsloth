@@ -2337,6 +2337,7 @@ def _count_gguf_admission_prompt(
                 payload.reasoning_effort,
                 _replay_preserve_thinking(llama_backend, payload, messages),
             )
+            template_kwargs = _with_extra_chat_template_kwargs(payload, template_kwargs)
             continue_final = (
                 _continue_final_message(payload, thought = True)
                 and trailing_assistant_resume_kind(messages) is not None
@@ -3734,6 +3735,7 @@ import zlib
 
 from utils.current_date_prompt_settings import (
     CURRENT_DATE_PROMPT_PREFIX,
+    PROBE_RENDER_KEYS,
     PROBE_TOOLS,
     contains_current_date_prompt_line,
     current_date_prompt_line,
@@ -3942,6 +3944,35 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
         const annotationFactory = (post) => {
           /* ANNOTATE_JS */
         };
+        // No eval under this CSP: the page agent arrives as an inline script, on a one-time key.
+        const buildAgent = (() => {
+          let apply, create, root, setText, append, detach, random, join, Words;
+          try {
+            apply = Reflect.apply;
+            create = Document.prototype.createElement;
+            root = Object.getOwnPropertyDescriptor(Document.prototype, "documentElement").get;
+            setText = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, "text").set;
+            append = Node.prototype.appendChild;
+            detach = Element.prototype.remove;
+            random = Crypto.prototype.getRandomValues;
+            join = Array.prototype.join;
+            Words = Uint32Array;
+          } catch {
+            return () => null;
+          }
+          return (code) => {
+            const parent = apply(root, document, []);
+            if (!parent) return null;
+            const key = "unslothAgent" + apply(join, apply(random, crypto, [new Words(4)]), ["_"]);
+            const script = apply(create, document, ["script"]);
+            apply(setText, script, ["window." + key + " = " + code]);
+            apply(append, parent, [script]);
+            apply(detach, script, []);
+            const agent = window[key];
+            delete window[key];
+            return agent && typeof agent.run === "function" ? agent : null;
+          };
+        })();
         // Named for canvasStack() in the frontend, which trims from this frame down.
         const unslothRenderArtifact = (html) => {
           installStorageFallbacks();
@@ -3955,6 +3986,7 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
           document.close();
           // Instantiate only on a parent command; the factory predates the page's meta CSP.
           let annotation = null;
+          let agent = null;
           const postAnnotation = (message) => parent.postMessage({ source: "unsloth-browser", ...message }, "*");
           window.addEventListener("message", (event) => {
             if (event.source !== parent) return;
@@ -3967,6 +3999,10 @@ _ARTIFACT_PREVIEW_FRAME_HTML = """<!doctype html>
               else annotation?.stop();
             } else if (data.command === "annotateForget") annotation?.forget(Number(data.id));
             else if (data.command === "annotateNumbers") annotation?.number(data.numbers);
+            else if (data.command === "agent" && typeof data.id === "string") {
+              if (!agent && typeof data.code === "string" && data.code.length <= 262144) agent = buildAgent(data.code);
+              postAnnotation({ type: "agent", id: data.id, installed: Boolean(agent), result: agent ? agent.run(data.op || {}) : null });
+            }
           });
           postAnnotation({ type: "annotate", event: "ready" });
           // document.open() drops listeners bound before it, so rebind here.
@@ -6385,13 +6421,21 @@ def _local_template_system_turn(
 
 
 def _template_controls(payload: Any) -> tuple:
-    """The reasoning controls this request's chat template is rendered with."""
+    """The template kwargs this request's chat template is rendered with."""
     names = ("enable_thinking", "reasoning_effort", "preserve_thinking")
     values = [getattr(payload, name, None) for name in names]
     try:
         llama = get_llama_cpp_backend()
         if llama.is_loaded:
-            return tuple(sorted((llama._request_reasoning_kwargs(*values) or {}).items()))
+            # Only llama-server receives the extras; scalars only, the probe is lru-cached on them.
+            extras = {
+                key: value
+                for key, value in (_extra_chat_template_kwargs(payload) or {}).items()
+                if key not in PROBE_RENDER_KEYS
+                and (value is None or isinstance(value, (str, int, float, bool)))
+            }
+            kwargs = llama._request_reasoning_kwargs(*values) or {}
+            return tuple(sorted({**extras, **kwargs}.items()))
     except Exception:
         pass
     return tuple((name, value) for name, value in zip(names, values) if value is not None)
@@ -30196,6 +30240,26 @@ def _consume_chat_template_reasoning_kwargs(payload) -> None:
     }
 
 
+def _extra_chat_template_kwargs(payload) -> Optional[dict]:
+    """Non-reasoning ``chat_template_kwargs`` (e.g. ``verification``), forwarded to llama-server as sent (#16545)."""
+    extra = getattr(payload, "model_extra", None)
+    template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
+    if not isinstance(template_kwargs, dict):
+        return None
+    extras = {
+        key: value
+        for key, value in template_kwargs.items()
+        if isinstance(key, str) and key not in _CHAT_TEMPLATE_REASONING_KEYS
+    }
+    return extras or None
+
+
+def _with_extra_chat_template_kwargs(payload, template_kwargs: Optional[dict]) -> Optional[dict]:
+    """Studio's resolved reasoning keys win over same-named caller extras."""
+    extras = _extra_chat_template_kwargs(payload)
+    return {**extras, **(template_kwargs or {})} if extras else template_kwargs
+
+
 def _resolve_reasoning_controls(
     enable_thinking: Optional[bool], reasoning_effort: Optional[str]
 ) -> tuple[Optional[bool], Optional[str]]:
@@ -32161,6 +32225,7 @@ async def produce_openai_chat_completions(
                     sandbox_level = payload.sandbox_level,
                     perf_callback = _gguf_perf_callback,
                     on_conversation_grew = _gguf_recost,
+                    chat_template_kwargs = _extra_chat_template_kwargs(payload),
                     # Only streams park and reclaim; an MCP image forces the approval wait in any mode.
                     on_decode_slot = _gguf_record_decode_slot
                     if payload.stream
@@ -33016,6 +33081,7 @@ async def produce_openai_chat_completions(
                 thread_id = payload.thread_id,
                 # Tell the epoch gate tools are withheld; it cannot see that from process policy.
                 tools_withheld = _tool_loop_unusable,
+                chat_template_kwargs = _extra_chat_template_kwargs(payload),
             )
 
         _gguf_sentinel = object()
@@ -39240,6 +39306,10 @@ def _build_chat_request(
     if response_format is not None:
         chat_kwargs["response_format"] = response_format
 
+    _template_extras = _extra_chat_template_kwargs(payload)
+    if _template_extras:
+        chat_kwargs["chat_template_kwargs"] = _template_extras
+
     chat_request = ChatCompletionRequest(**chat_kwargs)
     _normalize_chat_reasoning_controls(chat_request)
     return chat_request
@@ -42349,6 +42419,7 @@ async def chat_count_tokens(
         # Off the loop: first use probes the template.
         await asyncio.to_thread(_replay_preserve_thinking, llama_backend, payload, openai_messages),
     )
+    _template_kwargs = _with_extra_chat_template_kwargs(payload, _template_kwargs)
 
     # Another tab's load can swap the tokenizer unseen by the caller's guard, so report the id.
     _tokenizer_model = _llama_status_checkpoint_id(llama_backend)
@@ -46379,6 +46450,7 @@ def _build_openai_passthrough_body(
         if llama_backend is not None
         else None
     )
+    tpl_kwargs = _with_extra_chat_template_kwargs(payload, tpl_kwargs)
     response_format = _response_format_for_llama_server(
         _response_format_beside_tools(payload, tools)
     )

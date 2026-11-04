@@ -20,6 +20,8 @@ import {
   pinnedReasoningEffort,
   useModelReasoningEffortStore,
 } from "@/features/model-picker/components/model-selector/model-reasoning-effort";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import { persistReasoningEnabled } from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   loadedContextFields,
   type MlxKvQuant,
@@ -2612,7 +2614,7 @@ type ChatRuntimeStore = {
       fromModelDefaults?: boolean;
       maxTokensCap?: number;
       migrateOwnedGlobalQwenDefaults?: boolean;
-      /** A preset pick: not an edit of the loaded model, so its remembered params are dropped
+      /** A preset pick or save: not an edit of the loaded model, so its remembered params are dropped
        *  instead of overwritten, and its recommendation applies again on the next load. */
       fromPreset?: boolean;
     },
@@ -5297,6 +5299,14 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
     set((state) => {
       if (options?.persist !== false) {
         saveBool(CHAT_REASONING_ENABLED_KEY, reasoningEnabled);
+        if (
+          state.params.checkpoint &&
+          state.supportsReasoning &&
+          !state.reasoningAlwaysOn &&
+          state.supportsReasoningOff
+        ) {
+          persistReasoningEnabled(state.params.checkpoint, reasoningEnabled);
+        }
       } else {
         noteConstraintSuppressedThreadField("reasoningEnabled");
       }
