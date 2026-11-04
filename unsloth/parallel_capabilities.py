@@ -952,10 +952,7 @@ def _model_traits(model):
 
 
 def _low_precision(model) -> Optional[str]:
-    """fp8 when float8_training is on: fp8 LoRA requested at load (models/float8_training.mark_fp8_lora) or
-    attached to the LoRA bases (kernels/fp8_lora.attach_fp8_lora_base), or torchao Float8Linear layers from
-    full finetuning (convert_model_to_float8_training). None otherwise. NVFP4 / MXFP8 training has no
-    converter yet (precision/recipes.py lists them as planned), so nothing marks those modes."""
+    """Return "fp8" if fp8 LoRA is requested / attached or torchao Float8Linear layers exist, else None."""
     stack, seen = [model], set()
     while stack and len(seen) < 8:
         m = stack.pop()
