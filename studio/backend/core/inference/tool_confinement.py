@@ -549,6 +549,8 @@ def macos_profile(
         # Network, mach, sysctl and shm grants filtered exactly as the owner's profile filters them.
         *_macos_system_rules(writable_roots),
         "(allow file-read-metadata)",
+        # dyld reads the root directory at launch and aborts the child if denied.
+        '(allow file-read-data (literal "/"))',
         # Pseudo-devices only; the rest of /dev (other sessions' ttys, disks) stays denied.
         '(allow file-read* file-write* (literal "/dev/null") (literal "/dev/zero") (literal "/dev/random")'
         ' (literal "/dev/urandom") (literal "/dev/tty") (literal "/dev/dtracehelper"))',

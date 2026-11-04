@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { prefersReducedMotion } from "@/features/settings";
+import { prefersReducedMotion } from "@/features/settings/stores/appearance-custom-store";
 
 // Transform-only Web Animations so the compositor runs the slide off the main thread (clip-path
 // resize would repaint there); geometry read once in the first ResizeObserver callback, with no

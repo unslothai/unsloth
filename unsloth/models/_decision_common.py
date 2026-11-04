@@ -261,7 +261,7 @@ def _row_images(row: dict) -> list:
     return found
 
 
-def _internal(question) -> dict:
+def _internal(question, name = "") -> dict:
     if not isinstance(question, dict) or question.get("type") not in QUESTION_TYPES:
         raise DecisionDataError("is not a valid question")
     kind, criteria = question["type"], question.get("criteria")
@@ -275,7 +275,12 @@ def _internal(question) -> dict:
         raise DecisionDataError("needs a list of criteria levels")
     if kind == "noul" and criteria is not None and not isinstance(criteria, dict):
         raise DecisionDataError('criteria may only have "true" and "false"')
-    laya_question = {"type": kind, "instructions": question.get("instructions") or ""}
+    instructions = question.get("instructions")
+    if instructions in (None, ""):
+        instructions = str(name)
+    elif not isinstance(instructions, str):
+        instructions = json.dumps(instructions, ensure_ascii = False)
+    laya_question = {"type": kind, "instructions": instructions}
     if criteria is not None:
         laya_question["criteria"] = criteria
     return _laya().agent.Agent._to_internal(laya_question)

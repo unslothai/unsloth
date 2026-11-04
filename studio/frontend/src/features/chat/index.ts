@@ -91,7 +91,9 @@ export {
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export type { PlacementPool } from "./lib/partial-offload";
 export {
+  betweenToolRounds,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
@@ -424,6 +426,7 @@ export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
 export { readIncompleteInfo } from "./utils/continuation";
+export { priorPassTiming } from "./utils/continued-timing";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -458,6 +461,8 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+export { useBookmarkedTurnsStore } from "./stores/bookmarked-turns-store";
 export {
   type DocumentAnnotation,
   type DocumentAnnotations,

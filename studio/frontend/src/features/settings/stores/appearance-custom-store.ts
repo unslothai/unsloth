@@ -230,6 +230,8 @@ export type AppearanceCustomization = {
   codeFontSize: number | null;
   /** 0–100; 50 is neutral. */
   contrast: number;
+  /** 0–100; null = the background image's own outline, or none without one. */
+  composerOutline: number | null;
   pointerCursors: boolean;
   reduceMotion: ReduceMotionSetting;
   /** true = the app default (antialiased). */
@@ -261,6 +263,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   uiFontSize: null,
   codeFontSize: null,
   contrast: 50,
+  composerOutline: null,
   pointerCursors: false,
   reduceMotion: "system",
   fontSmoothing: true,
@@ -465,6 +468,11 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
     uiFontSize: sanitizeSize(source.uiFontSize, UI_FONT_SIZE_RANGE),
     codeFontSize: sanitizeSize(source.codeFontSize, CODE_FONT_SIZE_RANGE),
     contrast,
+    composerOutline:
+      typeof source.composerOutline === "number" &&
+      Number.isFinite(source.composerOutline)
+        ? Math.min(100, Math.max(0, Math.round(source.composerOutline)))
+        : null,
     pointerCursors: source.pointerCursors === true,
     reduceMotion:
       source.reduceMotion === "on" || source.reduceMotion === "off"
@@ -619,9 +627,20 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
   ),
 );
 
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (
+      event.key === useAppearanceCustomStore.persist.getOptions().name &&
+      event.newValue !== null
+    ) {
+      void useAppearanceCustomStore.persist.rehydrate();
+    }
+  });
+}
+
 /* ------------------------------ DOM applier ------------------------------ */
-const DEFAULT_SANS_STACK =
-  '"Inter Variable", ui-sans-serif, sans-serif, system-ui';
+// Platform default from index.css: Inter, or the system font on macOS.
+const DEFAULT_SANS_STACK = "var(--font-sans-default)";
 const DEFAULT_HEADING_STACK =
   '"Hellix", "Space Grotesk Variable", var(--font-sans)';
 const DEFAULT_MONO_STACK = "JetBrains Mono, monospace";
@@ -1023,6 +1042,10 @@ export function applyCustomizationToDocument(
     setVar(CONTRAST_SEAM_GAIN_VAR, null);
   }
 
+  setVar(
+    "--composer-outline",
+    c.composerOutline === null ? null : `${c.composerOutline}%`,
+  );
   el.classList.toggle("pointer-cursors", c.pointerCursors);
   el.classList.toggle("force-reduced-motion", c.reduceMotion === "on");
   // "off" overrides OS reduced motion; index.css media rules skip html.force-motion.
@@ -1032,6 +1055,7 @@ export function applyCustomizationToDocument(
     ["data-code-line-numbers", c.codeLineNumbers],
     ["data-code-wrap", c.codeWordWrap],
     ["data-code-no-ligatures", !c.codeLigatures],
+    ["data-composer-outline", (c.composerOutline ?? 0) > 0],
   ] as const) {
     if (on) el.setAttribute(name, "");
     else el.removeAttribute(name);

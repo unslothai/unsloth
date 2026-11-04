@@ -8,7 +8,8 @@ import type {
   ApiMonitorResponse,
 } from "@/features/chat/types/api";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
-import { useMonitorFrameStore, useShortcut } from "@/features/settings";
+import { useMonitorFrameStore } from "@/features/settings/stores/monitor-frame-store";
+import { useShortcut } from "@/features/settings/hooks/use-shortcut";
 import { FLOATING_PANEL_POSITION_KEYS } from "@/hooks/floating-panel-position";
 import { useFloatingPanelLayout } from "@/hooks/use-floating-panel-layout";
 import {

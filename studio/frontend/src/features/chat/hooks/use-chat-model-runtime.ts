@@ -58,11 +58,9 @@ import {
 } from "@/features/settings/lib/view-logs-action";
 import { loadModelMemorySettings } from "@/features/settings/api/model-memory";
 import { loadVramBudgetSettings } from "@/features/settings/api/vram-budget";
-import {
-  listOpenAIModels,
-  loadMultiModelEnabled,
-  loadOpenAIAutoSwitchSettings,
-} from "@/features/settings";
+import { listOpenAIModels } from "@/features/settings/api/openai-models";
+import { loadMultiModelEnabled } from "@/features/settings/api/multi-model";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings/api/openai-auto-switch";
 import {
   confirmTransformersUpgradeIfNeeded,
   useTransformersUpgradeDialogStore,
@@ -180,9 +178,6 @@ import { isExternalModelId } from "../external-providers";
 import {
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
-  applyPerModelConfigToRuntime,
-  confirmManagedEngineIfNeeded,
-  currentRuntimePerModelConfig,
   isServedByMlx,
   normalizeMaxSeqLength,
   residentIsServedByMlx,
@@ -190,7 +185,12 @@ import {
   savedContextPin,
   type PerModelConfig,
   loadedContextFields,
-} from "@/features/model-picker";
+} from "@/features/model-picker/model-config/per-model-config";
+import {
+  applyPerModelConfigToRuntime,
+  currentRuntimePerModelConfig,
+} from "@/features/model-picker/model-config/apply-per-model-config";
+import { confirmManagedEngineIfNeeded } from "@/features/model-picker/hooks/managed-engine-offer";
 import {
   invalidateLlamaFlagCatalog,
   loadManagedLlamaFlags,
@@ -236,6 +236,7 @@ type ActiveModelLoadRun = {
   rollbackLoadedState: ReturnType<typeof useChatRuntimeStore.getState>;
   /** Set once the preliminary unload removed the prior resident; cancel must then reconcile. */
   residentModelUnloaded: boolean;
+  downloadKeepsResident: boolean;
   forceCancelActive: boolean;
   /** Resolves when the owning coroutine unwinds; cancellation holds the slot until then. */
   settledPromise: Promise<void>;
@@ -1076,7 +1077,11 @@ export function useChatModelRuntime() {
           if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
             // Hold the slot until the aborted coroutine unwinds from its unabortable awaits.
             await run.settledPromise;
-            if (run.loadAttemptPath && run.forceCancelActive && !run.residentModelUnloaded) {
+            if (
+              run.loadAttemptPath &&
+              (run.forceCancelActive || run.downloadKeepsResident) &&
+              !run.residentModelUnloaded
+            ) {
               try {
                 const status = await getInferenceStatus(undefined, run.rollbackCheckpoint ?? undefined);
                 if ((status.loading?.length ?? 0) === 0) {
@@ -1092,7 +1097,9 @@ export function useChatModelRuntime() {
             }
             if (
               (!run.loadAttemptPath && run.residentModelUnloaded) ||
-              (run.loadAttemptPath && run.forceCancelActive && run.residentModelUnloaded)
+              (run.loadAttemptPath &&
+                (run.forceCancelActive || run.downloadKeepsResident) &&
+                run.residentModelUnloaded)
             ) {
               try {
                 // The store names the former resident but holds the cancelled target's settings.
@@ -1876,6 +1883,7 @@ export function useChatModelRuntime() {
           : currentRollbackState.activeNativePathExpiresAtMs ?? null,
         rollbackLoadedState: inheritedPendingRollback?.loadedState ?? currentRollbackState,
         residentModelUnloaded: inheritedPendingRollback?.residentUnloaded === true,
+        downloadKeepsResident: false,
         forceCancelActive,
         settledPromise: loadRunSettled,
         markSettled: markLoadRunSettled,
@@ -1974,6 +1982,9 @@ export function useChatModelRuntime() {
           const previousMlxAnePrefill = rollbackConfig
             ? (rollbackConfig.mlxAnePrefill ?? false)
             : useChatRuntimeStore.getState().mlxAnePrefill;
+          const previousMlxFastVerify = rollbackConfig
+            ? (rollbackConfig.mlxFastVerify ?? false)
+            : useChatRuntimeStore.getState().mlxFastVerify;
           const previousMlxPleOffload = rollbackConfig
             ? (rollbackConfig.mlxPleOffload ?? null)
             : useChatRuntimeStore.getState().mlxPleOffload;
@@ -2068,6 +2079,9 @@ export function useChatModelRuntime() {
           let loadMlxAnePrefill = pendingLoadConfig
             ? (pendingLoadConfig.mlxAnePrefill ?? false)
             : stateBeforeUnload.mlxAnePrefill;
+          let loadMlxFastVerify = pendingLoadConfig
+            ? (pendingLoadConfig.mlxFastVerify ?? false)
+            : stateBeforeUnload.mlxFastVerify;
           let loadMlxPleOffload = pendingLoadConfig
             ? (pendingLoadConfig.mlxPleOffload ?? null)
             : stateBeforeUnload.mlxPleOffload;
@@ -2242,6 +2256,7 @@ export function useChatModelRuntime() {
               loadMlxKvQuant = pendingLoadConfig?.mlxKvQuant ?? null;
               loadMlxInt8Prefill = pendingLoadConfig?.mlxInt8Prefill ?? false;
               loadMlxAnePrefill = pendingLoadConfig?.mlxAnePrefill ?? false;
+              loadMlxFastVerify = pendingLoadConfig?.mlxFastVerify ?? false;
               loadMlxPleOffload = pendingLoadConfig?.mlxPleOffload ?? null;
               loadMlxExpertOffload = pendingLoadConfig?.mlxExpertOffload ?? null;
               loadChatTemplateOverride =
@@ -2346,6 +2361,7 @@ export function useChatModelRuntime() {
               mlx_kv_quant: loadMlxKvQuant ?? null,
               mlx_int8_prefill: loadMlxInt8Prefill,
               mlx_ane_prefill: loadMlxAnePrefill,
+              mlx_fast_verify: loadMlxFastVerify,
               mlx_ple_offload: loadMlxPleOffload,
               mlx_expert_offload: loadMlxExpertOffload,
               speculative_type: loadSpeculativeType,
@@ -2534,8 +2550,10 @@ export function useChatModelRuntime() {
 
             stopQueuedRuns(stopDecision, keepsOthers || touchesOnlySelected);
             if (currentCheckpoint && !keepsOthers) {
+              // /load fetches a missing GGUF before stopping the resident, so a failed download keeps it.
+              loadRun.downloadKeepsResident = isGguf && !downloadComplete;
               // With chats generating, skip the preliminary unload so a rejected target truncates nothing.
-              if (!forceCancelActive && !touchesOnlySelected) {
+              if (!forceCancelActive && !touchesOnlySelected && !loadRun.downloadKeepsResident) {
                 await unloadModel({ model_path: currentCheckpoint });
                 // Only a real /unload removes the resident; the forced path leaves it to /load.
                 loadRun.residentModelUnloaded = true;
@@ -2929,6 +2947,7 @@ export function useChatModelRuntime() {
                   mlx_kv_quant: rollbackState.loadedMlxKvQuantRequested,
                   mlx_int8_prefill: rollbackState.loadedMlxInt8PrefillRequested,
                   mlx_ane_prefill: rollbackState.loadedMlxAnePrefillRequested,
+                  mlx_fast_verify: rollbackState.loadedMlxFastVerifyRequested,
                   mlx_ple_offload: rollbackState.loadedMlxPleOffloadRequested,
                   mlx_expert_offload: rollbackState.loadedMlxExpertOffloadRequested,
                   speculative_type:
@@ -3027,6 +3046,7 @@ export function useChatModelRuntime() {
                   mlxKvQuant: previousMlxKvQuant,
                   mlxInt8Prefill: previousMlxInt8Prefill,
                   mlxAnePrefill: previousMlxAnePrefill,
+                  mlxFastVerify: previousMlxFastVerify,
                   mlxPleOffload: previousMlxPleOffload,
                   mlxExpertOffload: previousMlxExpertOffload,
                   loadedChatTemplateOverride:
@@ -3556,6 +3576,7 @@ export function useChatModelRuntime() {
           previous.activeNativePathExpiresAtMs ?? null,
         rollbackLoadedState: previous,
         residentModelUnloaded: false,
+        downloadKeepsResident: false,
         forceCancelActive: false,
         settledPromise,
         markSettled: markLoadRunSettled,

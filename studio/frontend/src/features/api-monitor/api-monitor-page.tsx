@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { apiMonitorTourSteps } from "./tour";
@@ -34,6 +35,7 @@ import {
   loadLanAccess,
   loadMultiModelEnabled,
   publishLanUrls,
+  useKeylessExampleAccess,
   useSettingsDialogStore,
 } from "@/features/settings";
 // Not through the barrel: these pull in chat, which every barrel importer would then load.
@@ -57,7 +59,6 @@ import {
   Clock01Icon,
   CodeIcon,
   ComputerTerminal01Icon,
-  Delete02Icon,
   FileSearchIcon,
   PlusSignIcon,
   Refresh01Icon,
@@ -67,7 +68,7 @@ import {
 import { Copy01Icon } from "@/lib/copy-icon";
 import { PauseIcon } from "@/lib/media-control-icons";
 import { ReloadIcon } from "@/lib/reload-icon";
-import { Settings01Icon, SpeedMeterIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, SpeedMeterIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import {
   type CSSProperties,
@@ -152,14 +153,14 @@ const INSET_OPAQUE =
   "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
 function formatTime(value: number): string {
-  return new Date(value * 1000).toLocaleTimeString([], {
-    hour: "numeric",
-    minute: "2-digit",
-  });
+  return new Date(value * 1000).toLocaleTimeString(
+    [],
+    withTimeFormat({ hour: "numeric", minute: "2-digit" }),
+  );
 }
 
 function formatFullTime(value: number): string {
-  return new Date(value * 1000).toLocaleString();
+  return new Date(value * 1000).toLocaleString(undefined, withTimeFormat());
 }
 
 function formatAgo(value: number, now: number): string {
@@ -549,6 +550,7 @@ const RequestRow = memo(function RequestRow({
   onSelect: (id: string) => void;
   now: number;
 }): ReactElement {
+  useTimeFormat();
   const age = (
     <span title={formatFullTime(entry.started_at)}>
       {formatAgo(entry.started_at, now)}
@@ -801,6 +803,7 @@ function RequestDetail({
   detail?: ApiMonitorEntry;
   loading: boolean;
 }): ReactElement {
+  useTimeFormat();
   // Prefer the detail only once it is as fresh as the list row, or the panel rewinds.
   const detailIsCurrent =
     detail != null &&
@@ -917,6 +920,12 @@ function QuickStart({
   const [useTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<ApiExampleKind>("chat");
   const freshKey = useFreshApiKeyStore((s) => s.key);
+  const isOwner = useIsAccountOwner();
+  const keylessAccess = useKeylessExampleAccess(isOwner);
+  const keyless = {
+    keylessScope: keylessAccess.scope,
+    keylessExposure: keylessAccess.exposure,
+  };
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -959,15 +968,22 @@ function QuickStart({
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
+              {...keyless}
             />
           ) : kind === "audio" ? (
             <AudioApiExamples
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
+              {...keyless}
             />
           ) : (
-            <DecisionApiSection showHeading={false} />
+            <DecisionApiSection
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
           )}
         </div>
       )}
@@ -1907,7 +1923,7 @@ export function ApiMonitorPage(): ReactElement {
                   className="rounded-full text-red-500/80 hover:text-red-500 dark:text-red-400/80 dark:hover:text-red-400"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />

@@ -91,6 +91,8 @@ class CloneSpec:
     language_names: bool = False
     speed: bool = False
     instructions: bool = False
+    # Reads a free voice or style description beside the reference (Breeze, VoxCPM2).
+    description: bool = False
 
 
 @dataclass(frozen = True)
@@ -556,9 +558,10 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
             instructions = True,
         ),
     ),
-    AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional")),
+    AudioCppFamily("voxcpm2", "tts", clone = CloneSpec("optional", description = True)),
     AudioCppFamily("fish_audio", "tts", clone = CloneSpec("required")),
-    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required")),
+    AudioCppFamily("breeze_tts", "tts", clone = CloneSpec("required", description = True)),
+    # Its clone instruction takes only fixed attribute words; free text fails the run.
     AudioCppFamily("omnivoice", "tts", clone = CloneSpec("required")),
     AudioCppFamily("voxcpm1", "tts", clone = CloneSpec("required")),
     AudioCppFamily("dots_tts", "tts", clone = CloneSpec("optional")),
@@ -566,6 +569,7 @@ _CLONE_FAMILIES: tuple[AudioCppFamily, ...] = (
     # MOSS ignores a transcript; Irodori refuses one ("unknown Irodori-TTS request option").
     AudioCppFamily("moss_tts_local", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("moss_tts_nano", "tts", clone = CloneSpec("unused")),
+    # No description: the 500M v3 checkpoint refuses one (no caption conditioning weights).
     AudioCppFamily("irodori_tts", "tts", clone = CloneSpec("unused")),
     AudioCppFamily("echo_tts", "tts", server_task = "clon", speaks = False, clone = CloneSpec("unused")),
     AudioCppFamily(
@@ -1572,8 +1576,11 @@ def list_files(
 
 
 _QUANT_RE = re.compile(
-    r"(?:^|[-_.])((?:i?q\d(?:_[a-z0-9]+)*)|bf16|f16|f32|fp16|fp32|orig)(?=$|[-_.])", re.IGNORECASE
+    r"(?:^|[-_.])((?:[it]?q\d(?:_[a-z0-9]+)*)|bf16|f16|f32|fp16|fp32|orig)(?=$|[-_.])",
+    re.IGNORECASE,
 )
+# Ternary TQ2_1 (GGUF type 44) has only a CPU kernel; CUDA aborts on it (kitten_tts2 docs).
+CPU_ONLY_QUANTS = frozenset(("TQ2_1",))
 # K and IQ quants come after F32 so the established order stays as it was.
 _QUANT_PREFERENCE = (
     *("Q8_0", "F16", "BF16", "ORIG", "Q6_K", "Q5_K_M", "Q4_K_M", "Q4_0", "F32"),
@@ -2149,6 +2156,11 @@ class AudioCppModel:
     @property
     def size_bytes(self) -> int:
         return self.variant.size_bytes
+
+    @property
+    def cpu_only(self) -> bool:
+        """The variant's weights have no GPU kernel in audio.cpp, so it runs on the CPU backend."""
+        return quant_label(self.gguf_file) in CPU_ONLY_QUANTS
 
     @property
     def audio_type(self) -> Optional[str]:
