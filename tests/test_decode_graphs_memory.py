@@ -631,3 +631,14 @@ def test_decode_step_skips_only_a_new_capture():
     assert guards and all("step is None" in ast.unparse(g.test) for g in guards)
     text = ast.unparse(fn)
     assert text.index("worth_capturing") < text.index("_capture(")
+
+
+def test_an_eager_short_call_gets_no_credit_for_a_kept_graph_cache(G):
+    model = _Model()
+    model.keep(16, 8192)
+    rows, kv, work = G._call_bytes(model.config, 16, 64, torch.float16, 512, 66)
+    # A long earlier call's kept cache, larger than this call's whole estimate (stand-in tensors are tiny).
+    G._kept_buffers = lambda model, key, rows: (True, int(4 * (kv + work)))
+    G._free_bytes = lambda device: int(0.5 * G.CALIB_WORK * (kv + work))
+    assert G.plan_call(model, _ids(16, 64), torch.float16, 512, 66, eager = True) == ("eager", None)
+    assert model.held() == 0 and G.emptied == 1 and G.EAGER_UNFIT == 0

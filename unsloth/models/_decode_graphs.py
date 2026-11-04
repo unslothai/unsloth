@@ -312,9 +312,11 @@ def plan_call(
     # A measurement can only raise the estimate; it includes a reused cache, so reuse is subtracted once.
     estimate = CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
     full = estimate if measured is None else max(estimate, MEASURED_MARGIN * measured)
-    need = full
     kept, reused = _kept_buffers(model, (bsz, dtype, device), rows)
-    need -= reused
+    if eager:
+        # Eager decode allocates fresh buffers: no graph extra and no credit for a kept graph cache.
+        full, reused = CALIB_WORK * (kv + work), 0
+    need = full - reused
     free = _free_bytes(device)
     if free < need and (kept or any(state.graphs for state in _states(model))):
         release(model)
