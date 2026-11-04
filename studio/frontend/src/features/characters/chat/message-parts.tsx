@@ -63,14 +63,14 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   const character = speaker.character;
   return (
     <RoleplaySpeakerNameContext.Provider value={speaker.name}>
-      <div className="roleplay-reply relative pl-[calc(2.75rem*var(--ui-space-scale,1))] [&_.aui-assistant-message-content_em]:text-[color-mix(in_oklab,currentColor_62%,transparent)]" data-speaker={speaker.id}>
+      <div className="roleplay-reply relative pl-[calc(3.75rem*var(--ui-space-scale,1))] max-sm:pl-[calc(3.25rem*var(--ui-space-scale,1))] [&_.aui-assistant-message-content_em]:text-[color-mix(in_oklab,currentColor_62%,transparent)]" data-speaker={speaker.id}>
         <Portrait
           id={character?.id ?? speaker.id}
           name={speaker.name}
           hasImage={Boolean(character?.hasAvatar)}
           rev={character?.avatarRev ?? 0}
           label={speaker.name}
-          className="absolute left-0 top-0.5 size-[calc(2.125rem*var(--ui-space-scale,1))] rounded-[11px] text-[0.95rem] shadow-[0_1px_2px_rgb(0_0_0/0.12)]"
+          className="absolute left-0 top-0 size-[calc(3rem*var(--ui-space-scale,1))] rounded-[14px] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:size-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[12px]"
           onClick={
             character && threadId
               ? () => showOnStage(threadId, character.id, aui.thread().getState().messages.length)
