@@ -465,8 +465,10 @@ export const BUDGET = {
   // into their own startup chunks (2,173 B raw / 2,046 B transfer), and the lazy recipe forms split index.min the
   // same way (904 B raw / 184 B transfer). Raised by that growth.
   // Merged onto #15604 (4cc2a30280): this PR's budget plus that growth.
-  transferBytes: 2_115_130,
-  rawBytes: 7_002_423,
+  // Benchmark and Loop on top of #15611 (42e5f7afd) measure 6,843.0 KB raw / 2,068.1 KB transfer
+  // (Node 26, 123 chunks): the Benchmark card look and Loop frame join the eager editor. Raised to that.
+  transferBytes: 2_118_400,
+  rawBytes: 7_008_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the
