@@ -59,3 +59,75 @@ def test_account_endpoint_requires_authentication(account_client, key):
     response = client.get("/api/auth/account", headers = headers)
     assert response.status_code == 401
     assert "account_id" not in response.json()
+
+
+@pytest.mark.parametrize(
+    "restriction", ["allowlist", "private-repo", "none-cached-allowed", "unrestricted"]
+)
+def test_model_access_uses_the_authenticated_account_policy(
+    account_client, monkeypatch, restriction
+):
+    from hub.services.models import account_access
+
+    client, keys, alice_id = account_client
+    if restriction in ("allowlist", "none-cached-allowed"):
+        storage.set_account_model_allowlist(
+            alice_id, ["org/NotCached"] if restriction == "none-cached-allowed" else ["org/Allowed"]
+        )
+    if restriction == "unrestricted":
+        storage.set_account_model_allowlist(alice_id, [])
+    monkeypatch.setattr(
+        account_access,
+        "repo_is_public",
+        lambda repo, *args, **kwargs: restriction in ("allowlist", "unrestricted")
+        or repo.lower() == "org/allowed",
+    )
+    response = client.post(
+        "/api/auth/model-access",
+        json = ["org/Denied", "org/Allowed"],
+        headers = {"Authorization": f"Bearer {keys['alice']}"},
+    )
+    assert response.status_code == 200
+    expected = ["org/Allowed"]
+    if restriction == "none-cached-allowed":
+        expected = []
+    elif restriction == "unrestricted":
+        expected = ["org/Denied", "org/Allowed"]
+    assert response.json() == {"allowed": expected}
+
+
+def test_model_access_preserves_owner_access(account_client):
+    client, keys, _ = account_client
+    models = ["org/Private", "org/Other", r"\\server\share\model.gguf"]
+    response = client.post(
+        "/api/auth/model-access",
+        json = models,
+        headers = {"Authorization": f"Bearer {keys['owner']}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"allowed": models}
+
+
+def test_model_access_does_not_probe_network_paths(account_client, monkeypatch):
+    from hub.services.models import account_access
+
+    def no_filesystem_probe(*args, **kwargs):
+        pytest.fail("network paths must be refused before a filesystem probe")
+
+    monkeypatch.setattr(account_access, "Path", no_filesystem_probe)
+    client, keys, _ = account_client
+    response = client.post(
+        "/api/auth/model-access",
+        json = [r"\\server\share\model.gguf"],
+        headers = {"Authorization": f"Bearer {keys['alice']}"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"allowed": []}
+
+
+@pytest.mark.parametrize("key", [None, "sk-unsloth-invalid"])
+def test_model_access_requires_authentication(account_client, key):
+    client, _, _ = account_client
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    response = client.post("/api/auth/model-access", json = ["org/Allowed"], headers = headers)
+    assert response.status_code == 401

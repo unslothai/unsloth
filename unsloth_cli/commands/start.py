@@ -5019,6 +5019,8 @@ def _ask_for_local_model(
     gguf_only: bool,
     reason: str,
     account: Optional[dict] = None,
+    base: Optional[str] = None,
+    key: Optional[str] = None,
 ) -> str:
     """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
     from rich.console import Console
@@ -5046,7 +5048,35 @@ def _ask_for_local_model(
         account["role"],
         via_api_key = account.get("via_api_key", True),
     )
-    return run_as(context, picker, Console(), prompt = "Load", empty_hint = hint)
+    if context.is_owner:
+        return run_as(context, picker, Console(), prompt = "Load", empty_hint = hint)
+
+    def choose_allowed():
+        from unsloth_cli._model_catalog import list_chat_models
+
+        entries = list_chat_models()
+        try:
+            response = _http_json(
+                "POST",
+                f"{base}/api/auth/model-access",
+                key,
+                [entry.model for entry in entries],
+            )
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            _fail_request(
+                exc, "Couldn't check account model access; pass --model to select one explicitly"
+            )
+        if not isinstance(response, dict) or not isinstance(response.get("allowed"), list):
+            _fail("Couldn't check account model access. Pass --model to select one explicitly.")
+        allowed = set(response["allowed"])
+        return picker(
+            Console(),
+            prompt = "Load",
+            empty_hint = f"No {kind} available to this account. Pass an allowed model with --model <hf-id-or-path>.",
+            entries = [entry for entry in entries if entry.model in allowed],
+        )
+
+    return run_as(context, choose_allowed)
 
 
 def _pick_model_to_auto_start(serve: bool, launch: bool, gguf_only: bool) -> Optional[str]:
@@ -5092,6 +5122,8 @@ def _pick_model_for_idle_server(base: str, key: str, gguf_only: bool) -> Optiona
         gguf_only,
         "No model is loaded in Unsloth. Pick one on this device to load:",
         account = account,
+        base = base,
+        key = key,
     )
 
 

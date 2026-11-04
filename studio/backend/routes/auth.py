@@ -414,6 +414,26 @@ async def authenticated_account(current_subject: str = Depends(get_current_subje
     }
 
 
+@router.post("/model-access")
+async def allowed_model_references(
+    models: list[str], current_subject: str = Depends(get_current_subject)
+) -> dict:
+    from starlette.concurrency import run_in_threadpool
+    def visible_models():
+        from hub.services.models.account_access import filter_model_rows, managed_account
+        from utils.paths.path_utils import is_network_or_device_path
+
+        if not managed_account():
+            return models
+        rows = [
+            {"id": reference} for reference in models if not is_network_or_device_path(reference)
+        ]
+        return [row["id"] for row in filter_model_rows(rows)]
+
+    # Echo only caller-provided references, using the same visibility policy as model loads.
+    return {"allowed": await run_in_threadpool(visible_models)}
+
+
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/status", response_model = AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:

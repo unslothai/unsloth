@@ -53,6 +53,8 @@ def account_catalog(tmp_path, monkeypatch, picker, fake_studio):
     fake_studio.state["picker_account"] = ALICE
 
     def http(method, url, key, *args, **kwargs):
+        if url.endswith("/api/auth/model-access"):
+            return {"allowed": args[0]}
         if url.endswith("/api/auth/account"):
             assert key == KEY
             code = fake_studio.state.get("account_error")

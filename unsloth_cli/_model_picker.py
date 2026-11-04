@@ -55,6 +55,7 @@ def pick_local_model(
     prompt: str = "Chat with",
     empty_hint: str = "No local models found. Pass a model id or path: `unsloth chat <model>`.",
     keep: Optional[Callable[[object], bool]] = None,
+    entries: Optional[List] = None,
 ) -> str:
     """Print the device's chat models with numbers and return the chosen one's load target.
 
@@ -63,7 +64,8 @@ def pick_local_model(
     """
     from unsloth_cli._model_catalog import list_chat_models
 
-    entries: List = list_chat_models()
+    if entries is None:
+        entries = list_chat_models()
     if keep is not None:
         entries = [entry for entry in entries if keep(entry)]
     if not entries:
@@ -93,5 +95,13 @@ def pick_local_model(
         console.print(f"Pick a number between 1 and {len(entries)}.", style = "yellow")
 
 
-def pick_gguf_model(console, *, prompt: str, empty_hint: str) -> str:
-    return pick_local_model(console, prompt = prompt, empty_hint = empty_hint, keep = _is_gguf_entry)
+def pick_gguf_model(
+    console,
+    *,
+    prompt: str,
+    empty_hint: str,
+    entries: Optional[List] = None,
+) -> str:
+    return pick_local_model(
+        console, prompt = prompt, empty_hint = empty_hint, keep = _is_gguf_entry, entries = entries
+    )
