@@ -1135,11 +1135,7 @@ class LoRA_QKV(torch.autograd.Function):
                 if has_fp8_dgrad(W_quant_):
                     dX = W_quant_.dgrad_accum(dY_, W_, dX)
                 else:
-                    W_ = (
-                        W_.t()
-                        if W_quant_ is None
-                        else _dequantize_t(W_, W_quant_, dY_.dtype)
-                    )
+                    W_ = W_.t() if W_quant_ is None else _dequantize_t(W_, W_quant_, dY_.dtype)
                     addmm_(dX, dY_, W_.t())
                 del W_
             return (
