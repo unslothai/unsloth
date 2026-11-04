@@ -1783,6 +1783,11 @@ function scheduleGenerationRecovery(
                   } else if (progress?.phase === "compacting") {
                     store.setLiveCompacting(threadId, true);
                   }
+                  // A frame can end the replay: show what it rebuilt, or a replayed tool result stays hidden.
+                  if (update.run.status !== lastPublishedStatus) {
+                    lastPublishedStatus = update.run.status;
+                    await publish(update.run);
+                  }
                 }
                 continue;
               }
