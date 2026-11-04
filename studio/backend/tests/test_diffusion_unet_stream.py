@@ -282,7 +282,9 @@ def test_release_for_decode_streams_the_unet_shortfall(monkeypatch):
     monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 0)
     asked = []
     monkeypatch.setattr(
-        dm, "release_resident_groups", lambda p, need, logger = None, **kw: asked.append(need) or (lambda: None)
+        dm,
+        "release_resident_groups",
+        lambda p, need, logger = None, **kw: asked.append(need) or (lambda: None),
     )
     restore = dm.release_for_decode(pipe, width = 1024, height = 1024, device = "cuda")
     assert callable(restore)

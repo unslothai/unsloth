@@ -6104,7 +6104,9 @@ def _stream_unet_instead_of_model_offload(
         vae = getattr(pipe, "vae", None)
         fp32_decode = vae is not None and _vae_decodes_in_fp32(vae)
         lend = unet_stream_lends_decode()
-        room = unet_stream_room_mib(free_mib, unet_mib, _mib(vae), fp32_decode = fp32_decode, lend = lend)
+        room = unet_stream_room_mib(
+            free_mib, unet_mib, _mib(vae), fp32_decode = fp32_decode, lend = lend
+        )
         if room is None:
             return False
     except Exception:  # noqa: BLE001
@@ -6126,7 +6128,9 @@ def _stream_unet_instead_of_model_offload(
             pass
         try:
             # the leaves were sized from the denoise peak: the decode borrows its shortfall (release_for_decode)
-            setattr(pipe, DECODE_LEND_ATTR, unet_decode_lend(fp32_decode) if lend and room else None)
+            setattr(
+                pipe, DECODE_LEND_ATTR, unet_decode_lend(fp32_decode) if lend and room else None
+            )
         except Exception:  # noqa: BLE001
             pass
     if logger is not None:
