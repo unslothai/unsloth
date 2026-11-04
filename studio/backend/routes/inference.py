@@ -3604,6 +3604,18 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
 
 # A UI session, the Deep Research key, or the key `unsloth start` minted for the owner's coding
 # agents. Every other API key, keyless caller and data-recipe key still gets nothing.
+def _saved_extra_headers(row: Optional[dict], request: Any) -> dict:
+    """A saved row's headers, under the same API-key gate as its saved key."""
+    if not row or _request_has_api_key(request):
+        return {}
+    return row.get("extra_headers") or {}
+
+
+def _saved_extra_headers_kwarg(row: Optional[dict], request: Any) -> dict:
+    headers = _saved_extra_headers(row, request)
+    return {"extra_headers": headers} if headers else {}
+
+
 def _request_may_use_saved_provider_key(request: Any) -> bool:
     if not _request_has_api_key(request) or _request_is_saved_credential_workflow(request):
         return True
@@ -24463,6 +24475,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        **_saved_extra_headers_kwarg(current, request),
     )
     # FastAPI does not cancel non-streaming handlers on disconnect; paid synthesis would continue.
     speech_task = asyncio.create_task(
@@ -24746,6 +24759,7 @@ async def _external_stt_transcription(
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        **_saved_extra_headers_kwarg(current, request),
     )
     transcription_task = asyncio.create_task(
         client.create_transcription(
@@ -28535,6 +28549,7 @@ async def _proxy_to_external_provider(
     base_url = payload.provider_base_url
     api_type = payload.provider_api_type
     reasoning_config = normalize_provider_reasoning_config(payload.provider_reasoning_config)
+    extra_headers: Optional[dict] = None
     saved_provider_snapshot: Optional[dict] = None
 
     if managed is not None:
@@ -28566,6 +28581,11 @@ async def _proxy_to_external_provider(
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
         reasoning_config = normalize_provider_reasoning_config(config.get("reasoning_config"))
+        extra_headers = config.get("extra_headers")
+
+    # An explicit key keeps the edited target: headers come from the request, not the saved row.
+    if managed is None and payload.encrypted_api_key:
+        extra_headers = payload.extra_headers
 
     if not provider_type:
         raise HTTPException(
@@ -29081,12 +29101,16 @@ async def _proxy_to_external_provider(
             account_access.require_connection_model_allowed(
                 current, payload.external_model or payload.model
             )
+            may_use_saved = _request_may_use_saved_provider_key(request)
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
                 payload.encrypted_api_key,
-                allow_saved_key = _request_may_use_saved_provider_key(request),
+                allow_saved_key = may_use_saved,
             )
+            if not payload.encrypted_api_key:
+                # Saved headers can carry credentials: same gate as the saved key.
+                extra_headers = current.get("extra_headers") if may_use_saved else None
     else:
         api_key = resolve_provider_api_key_or_400(
             payload.provider_id,
@@ -29145,8 +29169,12 @@ async def _proxy_to_external_provider(
         api_key = api_key,
         api_type = api_type,
         **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
+        **({"extra_headers": extra_headers} if extra_headers else {}),
         **({"managed_loopback": True} if managed is not None else {}),
     )
+    # Metadata preflights (served context window, template) run before streaming starts.
+    if extra_headers:
+        client.set_header_context(payload.thread_id, model)
     _non_stream_custom_responses = (
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
@@ -29998,7 +30026,9 @@ def _resolve_openai_cloud_client(
 ) -> ExternalProviderClient:
     """Needs an OpenAI cloud base URL (shell tool exists only there); runs on the loop for one snapshot."""
     base_url = body.provider_base_url or get_base_url("openai")
-    if body.provider_id and not body.encrypted_api_key:
+    config: dict = {}
+    saved_config = bool(body.provider_id and not body.encrypted_api_key)
+    if saved_config:
         config = providers_db.get_provider(body.provider_id)
         if config is None:
             raise HTTPException(
@@ -30041,10 +30071,13 @@ def _resolve_openai_cloud_client(
     )
     if not api_key:
         raise HTTPException(status_code = 400, detail = "No OpenAI API key is saved.")
+    # Same project / organization scope as chat on this connection.
+    headers = config.get("extra_headers") if saved_config and allow_saved_key else None
     return ExternalProviderClient(
         provider_type = "openai",
         base_url = base_url,
         api_key = api_key,
+        **({"extra_headers": headers} if headers else {}),
     )
 
 
@@ -49138,6 +49171,7 @@ async def _external_image_generation(
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        **_saved_extra_headers_kwarg(current, request),
         timeout = 600.0,
     )
     owner = current_account_id()
