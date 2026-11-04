@@ -189,3 +189,26 @@ def test_backup_lands_on_the_card_only_with_ample_room(monkeypatch, free_gib, to
         monkeypatch.setenv(lf.BACKUP_ENV, mode)
     assert lf._backup_on_device(torch.device("cuda", 0), int(4.4 * gib)) is expected
     assert lf._backup_on_device(torch.device("cpu"), int(4.4 * gib)) is False
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a GPU (CUDA or ROCm)")
+@pytest.mark.parametrize("backup", ["device", "host"])
+def test_fold_and_restore_on_the_gpu_in_bf16(engine, monkeypatch, backup):
+    # the real placement: bf16 weights on the card, the backup on the card or in pinned host memory
+    from core.inference import diffusion_lora_fuse as lf
+
+    monkeypatch.setenv(lf.BACKUP_ENV, backup)
+    engine.unet.to("cuda", torch.bfloat16)
+    x = tuple(t.to("cuda") if t.is_floating_point() is False else t.to("cuda", torch.bfloat16) for t in _inputs())
+    before = _base_weights(engine.unet)
+    with torch.no_grad():
+        unfused = engine.unet(*x).sample.float()
+    engine.apply(1.0)
+    assert _merged_layers(engine.unet) > 0
+    with torch.no_grad():
+        folded = engine.unet(*x).sample.float()
+    assert (folded - unfused).abs().max().item() < 0.05 * max(1.0, unfused.abs().max().item())
+    engine.apply(0.5)
+    assert _merged_layers(engine.unet) == 0
+    after = _base_weights(engine.unet)
+    assert all(torch.equal(before[k], after[k]) for k in before)
