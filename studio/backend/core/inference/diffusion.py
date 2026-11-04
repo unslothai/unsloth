@@ -3091,6 +3091,23 @@ def _note_deferred_eager_peak(state: Any) -> None:
         pass
 
 
+def _open_deferred_peak_window(state: Any) -> None:
+    """Reset the device peak counters at the start of a deferred load's eager render when no learned-peak probe did
+    (``UNSLOTH_DIFFUSION_LEARNED_PEAKS=0`` or an unkeyed render): otherwise the reading at its end could be an earlier
+    model's peak and decline the profile for good."""
+    try:
+        dev = _cuda_device_of(state)
+        if dev is None:
+            return
+        import torch
+        from .diffusion_stable_arena import reset_peak_mapped
+
+        torch.cuda.reset_peak_memory_stats(dev)
+        reset_peak_mapped(dev.index)
+    except Exception:  # noqa: BLE001 - measurement only
+        pass
+
+
 def _deferred_profile_headroom_short(state: Any) -> Optional[str]:
     """Why the deferred profile would not fit on the card, else None. The eager renders' measured peak plus the bytes
     the profile adds to the denoiser (the U-Net QKV fuse keeps the unfused projections) must leave a margin inside
@@ -14550,6 +14567,8 @@ class DiffusionBackend:
 
                 # a whole-denoiser call's peak is not the streamed placement's
                 peak_probe = None if whole_tier is not None else _start_peak_probe(state)
+                if peak_probe is None and state.speed_deferred:
+                    _open_deferred_peak_window(state)
                 decode_restores: list = []
                 try:
                     previewer = _start_previewer()

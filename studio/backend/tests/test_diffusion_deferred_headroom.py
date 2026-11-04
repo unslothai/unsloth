@@ -155,3 +155,22 @@ def test_eager_peak_read_at_render_end_survives_a_counter_reset(card, engage):
     card["peak"] = 10
     _state, engaged = engage(state = state)
     assert not engaged
+
+
+def test_render_start_opens_a_fresh_peak_window_without_the_learned_probe(
+    card, engage, monkeypatch
+):
+    # a previous model left a 23 GiB peak in the counters and no learned-peak probe reset them (LEARNED_PEAKS=0)
+    from core.inference import diffusion_stable_arena as arena
+
+    resets = []
+    monkeypatch.setattr(torch.cuda, "reset_peak_memory_stats", lambda dev = None: card.update(peak = 0))
+    monkeypatch.setattr(arena, "reset_peak_mapped", lambda index: resets.append(index))
+    state = engage.make()
+    card.update(peak = 23 * 1024, free = 16384, reserved = 1024)
+    dmod._open_deferred_peak_window(state)
+    assert card["peak"] == 0 and resets == [0]
+    card["peak"] = 5232  # this load's own eager render
+    dmod._note_deferred_eager_peak(state)
+    _state, engaged = engage(state = state)
+    assert engaged
