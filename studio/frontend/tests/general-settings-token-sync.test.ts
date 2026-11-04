@@ -213,6 +213,7 @@ function generalTab(initialToken: string) {
     "../components/developer-mode-section": componentStub,
     "../components/engine-versions-section": componentStub,
     "../components/hub-settings-section": componentStub,
+    "../components/ml-warmup-section": componentStub,
     "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,
     "../components/settings-section": componentStub,

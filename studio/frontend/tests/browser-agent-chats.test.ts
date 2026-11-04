@@ -288,3 +288,38 @@ test("a run's temporary flag comes from its own thread, not a chat shown later",
     /const browserTemporary = resolvedThreadId\s*\?\s*isThreadIncognito\(resolvedThreadId\) \|\|\s*\(resolvedThreadId === runtime\.activeThreadId && runtime\.incognito\)\s*:\s*runtime\.incognito;/,
   );
 });
+
+test("native background input stays virtual while the selected page keeps normal input", async () => {
+  globals.__native = true;
+  const store = useBrowserStore.getState();
+  const away = chatKeyOfThread("virtual-away");
+  const shown = chatKeyOfThread("virtual-shown");
+  store.showChat(shown);
+  const a = store.openTabIn(away, "https://away.example/")!;
+  const b = store.openTabIn(shown, "https://here.example/")!;
+  store.updateTab(a, { loading: false });
+  store.updateTab(b, { loading: false });
+  patchAgentChat(away, { tabId: a, enabled: true, runKey: null });
+  patchAgentChat(shown, { tabId: b, enabled: true, runKey: null });
+  const commands: { tabId: string; command: { op: Record<string, unknown> } }[] = [];
+  const previous = globals.__callNative;
+  globals.__callNative = async (name: string, args: typeof commands[number]) => {
+    if (name !== "browser_view_agent") return null;
+    commands.push(args);
+    return { installed: true, result: answer(args.command.op) };
+  };
+  try {
+    for (const [chat, id] of [[away, a], [shown, b]]) {
+      await runBrowserAction({ id: `virtual-${id}`, sessionId: chat, op: "snapshot", policy }, { runKey: `virtual-${id}`, chat, fullAccess: true, userText: "Read the page" });
+      assert.equal(resultOf(`virtual-${id}`)?.ok, true);
+    }
+    assert.ok(commands.some((call) => call.tabId === a));
+    assert.ok(commands.some((call) => call.tabId === b));
+    assert.ok(commands.filter((call) => call.tabId === a).every((call) => call.command.op.virtualInput === true));
+    assert.ok(commands.filter((call) => call.tabId === b).every((call) => call.command.op.virtualInput !== true));
+  } finally {
+    globals.__callNative = previous;
+    endBrowserAgentRun(`virtual-${a}`);
+    endBrowserAgentRun(`virtual-${b}`);
+  }
+});

@@ -416,9 +416,14 @@ jobs:
           # file, native tensor parallel plus pipeline parallel are about 51% of it, everything
           # else about 49%. A *gloo* file named test_t[!p]* or test_tp[!_]* would match neither
           # shard; tests/test_ci_repo_cpu_shards.py reports it as dropped.
-          - shard: gloo-tp-pp
+          # Pipeline parallel then kept growing (#15655, #15656, #16167, #16417): by 2026-11-04 the
+          # combined shard ran 31 to 36 minutes per job and one run was interrupted at the 2100 s
+          # cap with 174 tests passed, so tensor and pipeline parallel run in separate shards.
+          - shard: gloo-tp
             selection: >-
               tests/test_tp_n*gloo*.py
+          - shard: gloo-pp
+            selection: >-
               tests/test_pp*gloo*.py
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

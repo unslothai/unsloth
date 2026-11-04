@@ -25,10 +25,10 @@ def _add_rms_layernorm_inference(
     W,
     X_row_stride,
     R_row_stride,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    HAS_RESIDUAL: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    n_cols: tl.constexpr,  # hidden size
+    eps: tl.constexpr,  # norm epsilon, per model
+    HAS_RESIDUAL: tl.constexpr,  # add residual before norm
+    BLOCK_SIZE: tl.constexpr,  # block size, next pow2 of row width
 ):
     row = tl.program_id(0).to(tl.int64)
     cols = tl.arange(0, BLOCK_SIZE)

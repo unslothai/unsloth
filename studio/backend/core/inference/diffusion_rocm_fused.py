@@ -237,9 +237,22 @@ def _adaln_kernel() -> Optional[Callable]:
     except Exception:  # noqa: BLE001
         return None
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["S"])
     def _adaln_fwd(
-        X, SCALE, SHIFT, OUT, S, D, sxb, sxs, scb, shb, sob, sos, eps, BLOCK: tl.constexpr
+        X,
+        SCALE,
+        SHIFT,
+        OUT,
+        S,
+        D,
+        sxb,
+        sxs,
+        scb,
+        shb,
+        sob,
+        sos,
+        eps,
+        BLOCK: tl.constexpr,  # block size along hidden
     ):
         row = tl.program_id(0)
         b = row // S

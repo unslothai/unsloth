@@ -2044,6 +2044,26 @@ export const fa = {
       chatDefaults: "پیش‌فرض‌های گفتگو",
       autoTitleNewChats: "عنوان‌گذاری خودکار گفتگوهای جدید",
       autoTitleNewChatsDescription: "از اولین پیام یک عنوان تولید می‌شود.",
+      mlWarmup: {
+        sectionTitle: "کارایی هنگام راه‌اندازی",
+        description: "قابلیت‌های انتخاب‌شده را برای استفادهٔ اولیهٔ سریع‌تر آماده کنید. همهٔ گزینه‌ها به‌طور پیش‌فرض خاموش هستند. گزینه‌ها ممکن است وابستگی‌های مشترک را بارگذاری کنند و در حالت بیکار RAM بیشتری مصرف کنند.",
+        restartRequired: "تغییرات پس از راه‌اندازی مجدد Unsloth اعمال می‌شوند.",
+        hardwareLabel: "شناسایی سخت‌افزار",
+        hardwareDescription: "GPUها را شناسایی و PyTorch را آماده کنید.",
+        textLabel: "مدل‌های متنی",
+        textDescription: "پشتیبانی از مدل‌های متنی در Transformers را آماده کنید.",
+        datasetsLabel: "آماده‌سازی مجموعه‌داده‌ها",
+        datasetsDescription: "Datasets و وابستگی‌های آن را برای پیش‌نمایش و پردازش آماده کنید.",
+        mediaLabel: "مدل‌های تصویر و ویدیو",
+        mediaDescription: "Diffusers و وابستگی‌های مشترک مدل‌ها را آماده کنید.",
+        advanced: "پیشرفته",
+        quantizationLabel: "بررسی‌های اولیهٔ کوانتیزه‌سازی تصویر",
+        quantizationDescription: "پیش از نخستین بارگذاری مدل تصویر کوانتیزه‌شده، پشتیبانی را بررسی کنید. ممکن است مصرف RAM را برای مدت کوتاهی افزایش دهد.",
+        requiredBySelections: "برای گزینه‌های انتخاب‌شدهٔ شما ضروری است.",
+        disabledByEnv: "با UNSLOTH_STUDIO_DISABLE_TORCH_WARM در محیط بک‌اند غیرفعال شده است.",
+        loadError: "بارگذاری تنظیمات آماده‌سازی اولیه هنگام راه‌اندازی ناموفق بود.",
+        saveError: "ذخیرهٔ تنظیمات آماده‌سازی اولیه هنگام راه‌اندازی ناموفق بود.",
+      },
       helperLlm: {
         sectionTitle: "LLM کمکی",
         preloadOnStartup: "پیش‌دانلود LLM کمکی هنگام راه‌اندازی",
@@ -3216,9 +3236,8 @@ export const fa = {
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
       turnNavigation: "پیمایش نوبت‌ها",
       turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
-      composerAtBottom: "کادر نوشتن در پایین",
-      composerAtBottomDescription:
-        "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
+      composerPosition: "جای کادر نوشتن",
+      composerPositionDescription: "جای کادر نوشتن هنگام شروع گفتگوی تازه، از بالای صفحه تا پایین آن.",
       projectAttachments: "اشتراک فایل‌ها در سراسر پروژه",
       projectAttachmentsDescription:
         "پیوست‌های جدید گفتگو در دسترس همهٔ گفتگوهای پروژه قرار گیرند.",
@@ -3731,6 +3750,9 @@ export const fa = {
         docsLabel: "باز کردن مستندات API تصمیم‌گیری",
         description:
           "با یک مدل روی این دستگاه یا یک مدل تصمیم‌گیری از «اتصال‌ها»، به پرسش‌های بله/خیر، چندگزینه‌ای و امتیازدهی دربارهٔ متن پاسخ دهید. با TypeSafe SDK کار می‌کند.",
+        codeTitle: "فراخوانی از کد",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "سایر کلاینت‌های MCP با همان توکن به اینجا وصل می‌شوند.",
         enable: "پاسخ به درخواست‌ها",
         enableDescription:
           "/v1/systemone را ارائه می‌دهد. روشن کردن آن مدل را دانلود می‌کند.",
@@ -3892,7 +3914,7 @@ export const fa = {
         desktopAvailableDescription:
           "اکنون به‌روزرسانی کنید؛ برنامهٔ دسکتاپ پس از پایان کار دوباره راه‌اندازی می‌شود.",
         desktopExternalServer:
-          "برنامه به سرور Unsloth که از قبل در حال اجرا بود متصل شده است و نمی‌تواند آن را به‌روزرسانی کند. آن سرور را متوقف کنید، سپس برای به‌روزرسانی، برنامهٔ دسکتاپ را ببندید و دوباره باز کنید.",
+          "به سرور Unsloth روی پورت {port} متصل است که این برنامه آن را اجرا نکرده است، مانند `unsloth studio` در ترمینال. آن را از همان جایی که اجرا شده متوقف کنید، سپس برای به‌روزرسانی، برنامه را ببندید و دوباره باز کنید.",
         desktopManualInstall:
           "برای نصب آخرین بستهٔ Linux، صفحهٔ انتشار را باز کنید.",
         desktopCheckFailed: "بررسی به‌روزرسانی‌ها ممکن نشد",
@@ -5452,6 +5474,8 @@ export const fa = {
     removeLevel: "حذف سطح {n}",
     addLevel: "افزودن سطح",
     jsonHelp: "بدنهٔ درخواست. «اجرا» آن را همان‌طور که نوشته شده ارسال می‌کند.",
+    copyBody: "کپی بدنه",
+    copyCurl: "کپی به‌صورت cURL",
     examples: "نمونه‌ها",
     presetToolApproval: "تأیید فراخوانی‌های ابزار عامل",
     presetPromptInjection: "شناسایی تزریق پرامپت",
@@ -5852,6 +5876,7 @@ export const fa = {
   generationStats: {
     working: "در حال انجام...",
     processingPrompt: "پردازش پرامپت {percent}%",
+    compactingContext: "در حال فشرده‌سازی زمینه...",
     timeLeft: "{eta} مانده",
     tokensOne: "{count} توکن",
     tokens: "{count} توکن",
