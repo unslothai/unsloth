@@ -876,3 +876,12 @@ def test_the_hold_out_is_scored_against_the_label_names_training_used(monkeypatc
     except Exception:
         pass
     assert [r["answer"] for r in sent[0]["recipe"]["rows"]] == ["positive", "negative"]
+
+
+def test_an_alpaca_input_of_zero_is_part_of_the_question():
+    # Training reads the cells with cell_text: 0 and False are values, not blanks.
+    assert benchmark._alpaca_question({"instruction": "Add one", "input": 0}) == "Add one\n\n0"
+    assert (
+        benchmark._alpaca_question({"instruction": "Negate", "input": False}) == "Negate\n\nFalse"
+    )
+    assert benchmark._alpaca_question({"instruction": "Say hi", "input": None}) == "Say hi"

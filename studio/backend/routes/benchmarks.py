@@ -200,6 +200,12 @@ def scoring_hold():
             _scorings -= 1
 
 
+def scoring_active() -> bool:
+    """A held-out scoring is running: no model may be switched in under it, by any path."""
+    with _lease_lock:
+        return _scorings > 0
+
+
 def load_refused(holder: Optional[str]) -> bool:
     """A load reloads the one llama-server, so mid-sweep it would run the next rows under other settings."""
     with _lease_lock:

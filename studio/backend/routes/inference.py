@@ -20077,7 +20077,15 @@ async def _load_model_impl(
     speech_codec_path: Optional[str] = None,
 ):
     from core.inference.npu_backend import is_npu_model_path
+    from routes.benchmarks import scoring_active
 
+    if scoring_active():
+        # Every load comes through here, a chat request's automatic model switch included: a
+        # held-out scoring answers with the loaded model, so a switch mid-run would mix models.
+        raise HTTPException(
+            status_code = 409,
+            detail = "A benchmark is scoring the loaded model. Stop it or let it finish, then try again.",
+        )
     if is_npu_model_path(request.model_path):
         return await _load_npu_model(
             request,

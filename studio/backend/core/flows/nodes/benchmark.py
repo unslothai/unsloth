@@ -333,8 +333,11 @@ ALPACA_PROMPT = "__instruction_and_input"
 
 
 def _alpaca_question(row: dict) -> Any:
-    extra = str(row.get("input") or "").strip()
-    return f"{row.get('instruction') or ''}\n\n{extra}" if extra else row.get("instruction")
+    from utils.datasets.cells import cell_text
+
+    # As training reads the cells: an input of 0 or False is part of the question, not a blank.
+    extra = cell_text(row.get("input")).strip()
+    return f"{cell_text(row.get('instruction'))}\n\n{extra}" if extra else row.get("instruction")
 
 
 def _system_prompt(ctx: NodeContext) -> str:

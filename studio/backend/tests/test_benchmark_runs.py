@@ -300,3 +300,18 @@ def test_the_recipe_scoring_worker_holds_the_model_while_it_runs(monkeypatch):
     monkeypatch.setattr(benchmark_recipe, "_restore_adapter", lambda *a: None)
     benchmark_recipe._recipe_task({"targets": {}, "spec": {}, "is_cancelled": lambda: False})
     assert seen == [True] and not benchmarks_routes.load_refused(None)
+
+
+def test_a_held_out_scoring_refuses_every_load_path_a_chat_switch_included():
+    import asyncio
+
+    import pytest
+    from fastapi import HTTPException
+
+    from routes import inference
+
+    # A chat request naming another model switches through _load_model_impl, not the load route.
+    with benchmarks_routes.scoring_hold():
+        with pytest.raises(HTTPException) as refused:
+            asyncio.run(inference._load_model_impl(object(), None, "unsloth"))
+    assert refused.value.status_code == 409
