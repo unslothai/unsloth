@@ -250,3 +250,20 @@ test("a full run is named after its group unless it has a name, like the Run but
   );
   assert.match(editor, /useState\(\(\) => fullRunName\(group\)\)/);
 });
+
+test("a tool server whose endpoint is cleared to retype keeps the profile and its settings as saved", () => {
+  const { group: g, nodes } = group(withTools());
+  const view = studioView(g, nodes);
+  const tool = Object.values(view.configs).find((c) => c.kind === "tool_config") as never as {
+    id: string;
+    mcp_providers: Record<string, unknown>[];
+  };
+  assert.ok(tool);
+  const cleared = tool.mcp_providers.map((p) => ({ ...p, url: "", endpoint: "" }));
+  const edit = commitStudioEdit(g, nodes, view, applyConfigPatch(view.configs, tool.id, { mcp_providers: cleared } as never));
+  const config = edit.group?.config as Record<string, unknown>;
+  assert.deepEqual(config.tool_configs, (g.config as Record<string, unknown>).tool_configs);
+  assert.deepEqual(config.mcp_providers, (g.config as Record<string, unknown>).mcp_providers);
+  const reopened = studioView({ ...g, ...edit.group } as never, nodes);
+  assert.ok(Object.values(reopened.configs).some((c) => c.kind === "tool_config" && c.name === "web"));
+});

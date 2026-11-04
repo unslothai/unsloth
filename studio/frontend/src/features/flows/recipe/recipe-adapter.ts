@@ -16,6 +16,7 @@ import type {
 import { makeToolProfileConfig } from "@/features/recipe-studio/utils/config-factories";
 import { importRecipePayload } from "@/features/recipe-studio/utils/import/importer";
 import { buildRecipePayload } from "@/features/recipe-studio/utils/payload/build-payload";
+import { buildToolProfilePayload } from "@/features/recipe-studio/utils/payload/builders-llm";
 import {
   buildExpressionColumn,
   buildLlmColumn,
@@ -582,6 +583,7 @@ export function commitStudioEdit(
       ...(Array.isArray(config.processors) ? config.processors : []),
       ...others,
     ];
+  keepIncompleteTools(config, group.config ?? {}, configs);
   const seed = Object.values(configs).find((c) => c.kind === "seed");
   if (seed?.kind === "seed" && config.seed_config === undefined) {
     // A seed whose form is mid-edit (an End cleared to retype) builds nothing: keep its last
@@ -608,6 +610,36 @@ export function commitStudioEdit(
   if (toolNodes.length > 0) ui.nodes = toolNodes;
   else delete ui.nodes;
   return { nodes, group: { ...group, config, ui } };
+}
+
+/** A tool profile whose form is mid-edit (a server's endpoint cleared to retype) builds without
+ * that server, or not at all: it keeps its last saved profile and servers, so the card and its
+ * settings stay. Only removing the profile or a server deletes them. */
+function keepIncompleteTools(
+  config: Record<string, unknown>,
+  saved: Record<string, unknown>,
+  configs: Record<string, NodeConfig>,
+): void {
+  const list = (value: unknown) =>
+    (Array.isArray(value) ? value : []) as Record<string, unknown>[];
+  for (const tool of Object.values(configs)) {
+    if (tool.kind !== "tool_config") continue;
+    const errors: string[] = [];
+    buildToolProfilePayload(tool, errors);
+    if (!errors.length) continue;
+    const kept = list(saved.tool_configs).find((t) => t.tool_alias === tool.name);
+    if (!kept) continue;
+    const tools = list(config.tool_configs).filter((t) => t.tool_alias !== tool.name);
+    // biome-ignore lint/style/useNamingConvention: api schema
+    config.tool_configs = [...tools, kept];
+    const names = list(config.mcp_providers).map((p) => p.name);
+    const uses = Array.isArray(kept.providers) ? (kept.providers as unknown[]) : [];
+    const servers = list(saved.mcp_providers).filter(
+      (p) => uses.includes(p.name) && !names.includes(p.name),
+    );
+    // biome-ignore lint/style/useNamingConvention: api schema
+    if (servers.length) config.mcp_providers = [...list(config.mcp_providers), ...servers];
+  }
 }
 
 /** A new column node for a config made by a Recipe Studio block factory. */
