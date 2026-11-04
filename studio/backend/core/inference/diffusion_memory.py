@@ -6659,8 +6659,7 @@ def _streamed_pin_leftover_mib(
 
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
 
-# Where the denoiser's weights live under group offload, which decides per-step speed. "group" alone covers both
-# the near-resident tier (only the text encoders stream) and the per-step streamed one.
+# "group" covers both a near-resident tier (only the text encoders stream) and a per-step streamed one.
 DENOISER_RESIDENT = "resident"
 DENOISER_PARTIAL = "partial"
 DENOISER_STREAMED = "streamed"

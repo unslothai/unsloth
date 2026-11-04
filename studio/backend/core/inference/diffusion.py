@@ -14443,7 +14443,6 @@ class DiffusionBackend:
                         )
                         whole_tier = None
                 whole_release: list = []
-                # per finished chunk under a whole-tier pricing: the live placement it denoised with
                 chunk_placements: list = []
 
                 def _release_whole_denoiser() -> None:
@@ -14520,7 +14519,7 @@ class DiffusionBackend:
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
-                        # recorded only once this chunk succeeds: an OOM attempt is split and retried
+                        # appended only if the chunk succeeds: an OOM attempt is split and retried
                         chunk_placement = [None]
 
                         def _enter_denoise_phase(gen = gen, chunk_placement = chunk_placement) -> None:
@@ -14769,7 +14768,6 @@ class DiffusionBackend:
                     "text_encoder_quant": state.text_encoder_quant,
                     "memory_mode": state.memory_mode,
                     "offload_policy": state.offload_policy,
-                    # How this generation's denoiser ran: a streamed load can run a request whole.
                     "denoiser_offload": (
                         chunk_placements[0]
                         if len(set(chunk_placements)) == 1 and chunk_placements[0] is not None

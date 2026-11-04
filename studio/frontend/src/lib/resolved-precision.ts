@@ -177,7 +177,6 @@ export function denseTextEncoderBuildLabel(status: { dtype?: string | null }): s
   return status.dtype === "gguf" ? "As in checkpoint" : denseDtypeLabel(status.dtype);
 }
 
-/** Where group offload keeps the transformer: "group" alone covers both a near-resident and a per-step streamed run. */
 const DENOISER_PLACEMENTS: Record<string, { label: string; detail: string }> = {
   resident: {
     label: "Transformer on GPU",
@@ -196,7 +195,6 @@ const DENOISER_PLACEMENTS: Record<string, { label: string; detail: string }> = {
   },
 };
 
-/** Group offload placement for its own row; null for other policies and for records without the field. */
 export function denoiserPlacement(
   denoiserOffload: string | null | undefined,
 ): { label: string; detail: string } | null {

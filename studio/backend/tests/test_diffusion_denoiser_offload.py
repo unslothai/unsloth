@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Group offload covers a near-resident tier (only the text encoders stream) and a per-step streamed one; the
-denoiser placement read off the live diffusers hooks is what tells the user which one ran."""
-
 from __future__ import annotations
 
 import types

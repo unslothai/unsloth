@@ -1589,7 +1589,6 @@ def test_upscale_default_strength_keeps_one_step_and_hires_refine_is_untouched()
         ("resident", ["streamed", "streamed"], None),
         ("resident", ["resident", "streamed"], None),
         ("streamed", ["streamed", "streamed"], "streamed"),
-        # engines that report no placement
         (None, [None, None], None),
     ],
 )
