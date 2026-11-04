@@ -132,7 +132,30 @@ def wanted(model):
     if not _FULL_LAYERS:
         return False
     device = getattr(model, "device", None)
-    return getattr(device, "type", None) == "cuda" and "forward" not in model.__dict__
+    return getattr(device, "type", None) == "cuda" and _plain_forward(model)
+
+
+def _plain_forward(model):
+    """No instance forward; the class forward bound on the instance, bare or under functools.wraps
+    wrappers (accelerate's mixed-precision autocast / fp32-output wrappers, which eager decode runs too);
+    or Unsloth's GRPO hidden-states wrapper, which passes straight through while generating. Accelerate
+    device hooks (offload, device maps) stay eager."""
+    forward = model.__dict__.get("forward")
+    if forward is None:
+        return True
+    func = getattr(forward, "__func__", forward)
+    if getattr(func, "_unsloth_grpo_hidden_states_forward_wrapped", False):
+        return True
+    if getattr(forward, "__self__", None) is not model or hasattr(model, "_hf_hook"):
+        return False
+    target = getattr(type(model), "forward", None)
+    for _ in range(4):
+        if func is target:
+            return True
+        func = getattr(func, "__wrapped__", None)
+        if func is None:
+            return False
+    return False
 
 
 class _Entry:

@@ -720,3 +720,40 @@ def test_capture_setup_failure_runs_eagerly(host, llama, monkeypatch):
     assert torch.equal(eager, graphed)
     s = GG.stats(llama)
     assert s["replays"] == 0 and any("capture setup failed" in r for r in s["refusals"]), s
+
+
+def test_grpo_hidden_states_wrapper_keeps_graphs_eligible():
+    import types
+
+    class M(torch.nn.Module):
+        def forward(self, x):
+            return x
+
+    m = M()
+    assert GG._plain_forward(m)
+    m.forward = types.MethodType(M.forward, m)  # the class forward re-bound on the instance
+    assert GG._plain_forward(m)
+    m.forward = types.MethodType(M.forward, M())  # bound to another module: not plain
+    assert not GG._plain_forward(m)
+    import functools
+
+    @functools.wraps(M.forward)
+    def autocast_forward(self, *args, **kwargs):  # accelerate's mixed-precision wrapper shape
+        return M.forward(self, *args, **kwargs)
+
+    m.forward = types.MethodType(autocast_forward, m)
+    assert GG._plain_forward(m)
+    m._hf_hook = object()  # accelerate device hook on the module: stays eager
+    assert not GG._plain_forward(m)
+    del m._hf_hook
+
+    def wrapped_forward(*args, **kwargs):
+        return M.forward(m, *args, **kwargs)
+
+    wrapped_forward._unsloth_grpo_hidden_states_forward_wrapped = True
+    m.forward = wrapped_forward
+    assert GG._plain_forward(m)
+    m.forward = types.MethodType(wrapped_forward, m)  # accelerate rebinds it as a bound method
+    assert GG._plain_forward(m)
+    m.forward = lambda *a, **k: None  # e.g. an accelerate device hook: stays eager
+    assert not GG._plain_forward(m)
