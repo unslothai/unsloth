@@ -3342,8 +3342,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
             modules_to_save = sorted({leaf(m) for m in user_modules} & _CPT_TARGET_NAMES) or None,
             use_gradient_checkpointing = use_grad_checkpoint,
         )
-        peft_kwargs.update(mlx_dora_kwargs)
-        model = FastMLXModel.get_peft_model(model, **peft_kwargs)
     elif use_lora:
         _send("status", status_message = "Configuring LoRA adapters...")
         peft_kwargs = dict(
@@ -3356,7 +3354,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
             target_modules = config.get("target_modules") or list(_MLX_DEFAULT_LORA_TARGETS),
             use_gradient_checkpointing = use_grad_checkpoint,
         )
-        peft_kwargs.update(mlx_dora_kwargs)
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
@@ -3381,6 +3378,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         peft_kwargs["finetune_mlp_modules"] = finetune_mlp
         if is_vlm:
             peft_kwargs["finetune_vision_layers"] = finetune_vision
+    if use_lora and not continues_adapter:
+        peft_kwargs.update(mlx_dora_kwargs)
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
     _send("status", status_message = "Loading dataset...")

@@ -79,6 +79,7 @@ def _load_worker_module():
             "flash_attn_wheel_url",
             "install_wheel",
             "is_windows_wheel_env",
+            "mamba_ssm_pure_wheel_url",
             "pinned_source_build_supported",
             "probe_torch_wheel_env",
             "url_exists",
@@ -617,7 +618,7 @@ def test_mlx_single_process_finalization_keeps_prior_contract():
 
 
 def _adapter_setup_block():
-    """The `continues_adapter = ...` line and the LoRA setup `if` after it in _run_mlx_training."""
+    """The `continues_adapter = ...` line, the LoRA setup `if` and the wrap after it in _run_mlx_training."""
     body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
     starts = [
         i
@@ -625,7 +626,7 @@ def _adapter_setup_block():
         if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "continues_adapter"
     ]
     assert len(starts) == 1, "expected one continues_adapter assignment"
-    return body[starts[0] : starts[0] + 2]
+    return body[starts[0] : starts[0] + 3]
 
 
 def _run_adapter_setup(
