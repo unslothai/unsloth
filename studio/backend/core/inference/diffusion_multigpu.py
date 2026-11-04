@@ -1069,7 +1069,6 @@ def _execution_device(module: Any) -> Any:
         return device
     try:
         from .diffusion_memory import _offload_groups
-
         for group in _offload_groups(module):
             onload = getattr(group, "onload_device", None)
             if onload is not None and getattr(onload, "type", None) == "cuda":
