@@ -6,6 +6,7 @@ dequantize when compiled. CPU tensors; torch._scaled_mm and the dequant GEMM run
 
 import pytest
 import torch
+from real_accelerator import has_real_cuda
 import torch._dynamo
 from torch._subclasses.fake_tensor import FakeTensorMode
 
@@ -270,7 +271,7 @@ def test_compiled_fp16_zero_bias_adds_no_graphs_or_breaks(monkeypatch):
     assert F8._SCALED_MM_FP16_ZERO_BIAS_CACHE == {}
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_fp16_zero_bias_is_not_shared_across_cuda_streams(monkeypatch):
     # The zeros fill is asynchronous on the stream that made it: another stream must get its own bias.
     _fp16_mode(monkeypatch, "bias")
@@ -285,7 +286,7 @@ def test_fp16_zero_bias_is_not_shared_across_cuda_streams(monkeypatch):
     assert F8._scaled_mm_fp16_bias(x, w) is bias
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
+@pytest.mark.skipif(not has_real_cuda(), reason = "needs a CUDA device")
 def test_fp16_zero_bias_is_graph_private_during_cuda_graph_capture(monkeypatch):
     # Capture must get its own bias, not the evictable cached one.
     _fp16_mode(monkeypatch, "bias")
