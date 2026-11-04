@@ -218,7 +218,9 @@ export function DataTab({ searchEntry }: { searchEntry?: string }) {
   const [openingRecipe, setOpeningRecipe] = useState(false);
   const [loadingTraining, setLoadingTraining] = useState(false);
   // Hosts that cannot train redirect /studio, so a Train-tab load would strand the user.
-  const trainUnavailable = usePlatformStore((s) => s.isTrainUnavailable());
+  const trainUnavailable = usePlatformStore(
+    (s) => s.isTrainUnavailable() && !s.capabilitiesUnknown(),
+  );
   const ragUnavailable = useRagAvailabilityStore((s) => s.isUnavailable());
   const ragAvailabilityUnknown = useRagAvailabilityStore((s) =>
     s.availabilityUnknown(),

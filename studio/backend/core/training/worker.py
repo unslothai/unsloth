@@ -3930,6 +3930,13 @@ def run_mlx_training_process(
                 "ts": time.time(),
             }
         )
+    _end_abandoned_decision_download(event_queue)
+
+
+def _end_abandoned_decision_download(event_queue: Any) -> None:
+    trainer = sys.modules.get("core.training.decision_trainer")
+    if trainer is not None:
+        trainer.end_abandoned_download(event_queue)
 
 
 def _training_job_is_local(config) -> bool:
@@ -4768,6 +4775,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "ts": time.time(),
                 }
             )
+        _end_abandoned_decision_download(event_queue)
         return
 
     if config.get("batch_members"):

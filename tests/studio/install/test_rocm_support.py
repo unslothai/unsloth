@@ -5711,7 +5711,7 @@ class TestProgressStepCountMatchesTotal:
                 _no_torch_pair = MagicMock(return_value = ("2026.11.1", "2026.11.1", 0)),
             ),
             patch.object(stack_mod, "_rocm_windows_torch_installed", False),
-            patch.object(stack_mod, "_bootstrap_uv", return_value = False),
+            patch.object(stack_mod, "_bootstrap_uv", return_value = True),
             patch.object(stack_mod, "_installed_torch_is_windows_rocm", return_value = False),
             patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = True),
             patch.object(stack_mod, "_repair_bad_anyio"),

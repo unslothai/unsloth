@@ -30,6 +30,8 @@ from hub.utils.hf_tokens import (
     cache_reads_authorized,
     call_with_anonymous_retry,
     collecting_hub_token_rejections,
+    note_saved_token_rejected,
+    saved_token_rejected,
     HUB_TOKEN_REJECTED_ERROR,
     hf_token_arg,
     is_rejected_credential_error,
@@ -57,7 +59,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 import functools
 import os
 import platform
@@ -1295,8 +1297,9 @@ _GGUF_LISTING_TIMEOUTS = (_HUB_MODEL_INFO_TIMEOUT, 30.0, 60.0)
 
 @_contextlib.contextmanager
 def shared_hub_model_info():
-    """Share a ``model_info`` response between the Hub probes here, per repo and credential."""
-    token = _hub_model_info_scope.set({})
+    """Share a ``model_info`` response between the Hub probes here, per repo and credential. A nested block joins the open one."""
+    open_scope = _hub_model_info_scope.get()
+    token = _hub_model_info_scope.set({} if open_scope is None else open_scope)
     try:
         yield
     finally:
@@ -1318,7 +1321,11 @@ def _hub_model_info(
     key = (repo_id, _token_fingerprint(hf_token))
     if scope is not None:
         if key in scope:
-            return scope[key]
+            info, rejected = scope[key]
+            if rejected:
+                # The read may have run before the caller's rejection scope opened.
+                note_saved_token_rejected(hf_token)
+            return info
         # Asked unconditionally so one response serves every probe; the listing needs sizes.
         files_metadata = True
 
@@ -1328,13 +1335,31 @@ def _hub_model_info(
         # Shared, so whichever probe reads first fixes the bound the rest inherit.
         "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
     }
-    info = call_with_anonymous_retry(
-        lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
-    )
+    with collecting_hub_token_rejections():
+        info = call_with_anonymous_retry(
+            lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
+        )
+        rejected = saved_token_rejected(hf_token)
 
     if scope is not None:
-        scope[key] = info
+        scope[key] = (info, rejected)
     return info
+
+
+def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> Optional[threading.Thread]:
+    """Fill the open scope from a thread. Join it before the first probe; a failed read leaves the answer to that probe."""
+    if is_local_path(repo_id):
+        return None
+
+    def read():
+        try:
+            _hub_model_info(repo_id, hf_token)
+        except Exception as exc:
+            logger.debug("model_info read ahead failed for %s: %s", repo_id, exc)
+
+    thread = threading.Thread(target = copy_context().run, args = (read,), daemon = True)
+    thread.start()
+    return thread
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -3639,8 +3664,25 @@ def clef_files_kind(has) -> Optional[str]:
     return None
 
 
+def is_d1_folder(folder: Path) -> bool:
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    # Markers unsloth-zoo's d1 loader reads: d1-3B only in auto_map, d1-omni by model_type.
+    automodel = str((config.get("auto_map") or {}).get("AutoModel", ""))
+    return (
+        config.get("model_type") == "d1_omni"
+        or "D1Model" in (config.get("architectures") or ())
+        or automodel.endswith("D1Model")
+    )
+
+
 def clef_folder_kind(folder: Path) -> Optional[str]:
-    return clef_files_kind(lambda name: (folder / name).is_file())
+    kind = clef_files_kind(lambda name: (folder / name).is_file())
+    return kind or ("merged" if is_d1_folder(folder) else None)
 
 
 def _folder_decision_layout(folder: Path) -> Optional[str]:

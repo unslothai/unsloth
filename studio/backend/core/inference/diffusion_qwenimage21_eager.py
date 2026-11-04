@@ -87,7 +87,8 @@ def _kernel() -> Any:
     global _rsqrt, _mul, _add
     _rsqrt, _mul, _add = libdevice.rsqrt, libdevice.mul_rn, libdevice.add_rn
 
-    @triton.jit
+    # n_rows keeps its % 16 hint: runtime it was 2.5% slower at even token counts on A100.
+    @triton.jit(do_not_specialize = ["n_seq"])
     def _norm_rope_kernel(
         x_ptr,
         w_ptr,
@@ -101,10 +102,10 @@ def _kernel() -> Any:
         stride_h,
         f_stride,
         eps,
-        HALF: tl.constexpr,
-        ROWS: tl.constexpr,
-        REAL_FMA_X: tl.constexpr,
-        IMAG_FMA_X: tl.constexpr,
+        HALF: tl.constexpr,  # hd // 2
+        ROWS: tl.constexpr,  # rows per program
+        REAL_FMA_X: tl.constexpr,  # fma pairing of real part
+        IMAG_FMA_X: tl.constexpr,  # fma pairing of imag part
     ):
         pid = tl.program_id(0).to(tl.int64)
         rows = pid * ROWS + tl.arange(0, ROWS).to(tl.int64)

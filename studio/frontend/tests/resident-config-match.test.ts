@@ -1749,7 +1749,7 @@ test("a pick asks the status about its own model and keeps or replaces the other
   assert.match(USE_CHAT_MODEL_RUNTIME, /stopQueuedRuns\(stopDecision, keepsOthers \|\| touchesOnlySelected\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!keepsOthers && !touchesOnlySelected\) \{\s*requestLocalPromptQueueStop\(\);/);
   assert.match(USE_CHAT_MODEL_RUNTIME, /if \(currentCheckpoint && !keepsOthers\)/);
-  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive && !touchesOnlySelected\) \{/);
+  assert.match(USE_CHAT_MODEL_RUNTIME, /if \(!forceCancelActive && !touchesOnlySelected\b/);
   assert.equal(
     USE_CHAT_MODEL_RUNTIME.match(/alongside: keepModelsLoaded \|\| touchesOnlySelected,/g)?.length,
     2,

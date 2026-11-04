@@ -2366,6 +2366,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   return (
     <section
       ref={sectionRef}
+      data-slot="browser-panel"
+      data-browser-document={documentShown || undefined}
       aria-label={t("browser.title")}
       // The chat's find skips the browser's chrome; the page is searched as its own target.
       {...{ [FIND_SKIP_ATTRIBUTE]: "" }}

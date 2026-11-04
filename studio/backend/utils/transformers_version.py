@@ -38,6 +38,7 @@ from loggers import get_logger
 import errno
 import contextlib
 import os
+from concurrent.futures import Future
 import re
 import shutil
 import stat
@@ -129,7 +130,37 @@ def _hf_proxy_opener(url: str):
     return None
 
 
+_hf_json_ahead: dict[tuple[str, str | None], Future] = {}
+
+
+def read_activation_files_ahead(model_name: str, hf_token: str | None) -> None:
+    """Start activation's raw Hub reads together so TLS handshakes overlap; each answer serves one read."""
+    if not _is_canonical_repo_id(model_name) or _env_offline():
+        return
+    from utils.paths import is_local_path
+
+    if is_local_path(model_name):
+        return
+
+    def fill(future: Future, url: str) -> None:
+        try:
+            future.set_result(_read_hf_json(url, hf_token))
+        except BaseException as exc:
+            future.set_exception(exc)
+
+    for filename in ("adapter_config.json", "tokenizer_config.json", "config.json"):
+        url = _hf_raw_url(model_name, filename)
+        future = Future()
+        _hf_json_ahead[(url, hf_token)] = future
+        threading.Thread(target = fill, args = (future, url), daemon = True).start()
+
+
 def _hf_json(url: str, hf_token: str | None):
+    ahead = _hf_json_ahead.pop((url, hf_token), None)
+    return _read_hf_json(url, hf_token) if ahead is None else ahead.result()
+
+
+def _read_hf_json(url: str, hf_token: str | None):
     """GET a JSON file from the Hub, once more without the token if the Hub refuses it (#11551)."""
     import urllib.request
 

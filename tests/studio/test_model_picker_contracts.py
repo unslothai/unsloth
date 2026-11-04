@@ -3597,7 +3597,7 @@ def test_format_gates_wait_for_the_server_reported_platform():
     Linux Unsloth would hide every local safetensors model."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate
+    assert "if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;" in gate
 
 
 def test_the_default_is_preflighted_before_the_managed_download():
@@ -3617,7 +3617,7 @@ def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
     """The picker hides them outright there (visibleCachedModelRows)."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "return !platform.fetched || !platform.isChatOnly();" in gate
+    assert "return platform.capabilitiesUnknown() || !platform.isChatOnly();" in gate
     assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 
