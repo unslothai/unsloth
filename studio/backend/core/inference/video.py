@@ -11329,6 +11329,21 @@ class VideoBackend:
                             try:
                                 residency = H3Residency(denoiser, device, logger = logger)
                                 if residency.usable:
+                                    from .video_minimax_h3_te import yield_h3_te_resident
+
+                                    _te_for_yield = getattr(pipe, "text_encoder", None)
+                                    residency.host_yield = (
+                                        lambda nbytes, _te = _te_for_yield: yield_h3_te_resident(
+                                            _te, nbytes, logger = logger
+                                        )
+                                    )
+                                    from .video_minimax_h3_te import top_up_h3_te_resident
+
+                                    residency.host_top_up = (
+                                        lambda _te = _te_for_yield: top_up_h3_te_resident(
+                                            _te, logger = logger
+                                        )
+                                    )
                                     big_w, big_h = max(
                                         fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
                                     )
