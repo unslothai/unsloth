@@ -130,7 +130,8 @@ def is_resident(group: Any) -> bool:
 # rebuilt from the device copy (bit-exact) on demote: the H3 L4 load gives those ~11 GB to the conditioner instead.
 H3_RESIDENT_UNPIN_ENV = "UNSLOTH_H3_RESIDENT_UNPIN"
 _RELEASED_ATTR = "_unsloth_host_released"
-# MiB of available host RAM a rebuild leaves; below it the host-yield callback is asked to give RAM back first.
+# Floor (MiB) of the available host RAM a rebuild leaves; the load's own reserve (``encoder_resident_keep_mib``, what
+# the conditioner share was sized to leave) applies when larger. Below it the host-yield callback gives RAM back first.
 H3_REBUILD_KEEP_MIB = 2048
 
 
@@ -207,11 +208,12 @@ def rebuild_host_copy(group: Any, *, host_yield: Any = None, logger: Any = None)
 
     if host_yield is not None:
         try:
-            from .diffusion_small_host import host_ram_mib
+            from .diffusion_small_host import encoder_resident_keep_mib, host_ram_mib
 
-            _total, available = host_ram_mib()
+            total, available = host_ram_mib()
             if available is not None:
-                deficit = (need >> 20) + H3_REBUILD_KEEP_MIB - int(available)
+                keep = max(H3_REBUILD_KEEP_MIB, int(encoder_resident_keep_mib(total)))
+                deficit = (need >> 20) + keep - int(available)
                 if deficit > 0:
                     host_yield(deficit << 20)
         except Exception as exc:  # noqa: BLE001 -- rebuild anyway

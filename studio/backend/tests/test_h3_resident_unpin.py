@@ -249,3 +249,19 @@ def test_a_well_used_slab_is_left_alone(monkeypatch):
         off += p.numel()
     assert res.compact_host_slabs([g]) == 0
     assert all(h.untyped_storage().data_ptr() == slab.untyped_storage().data_ptr() for h in g.cpu_param_dict.values())
+
+
+def test_a_rebuild_restores_the_load_reserve_not_just_the_floor(monkeypatch):
+    """A demote after the conditioner share was topped up must give back enough for the load's own reserve (an L4
+    renderer was OOM-killed when only a 2 GiB floor was restored)."""
+    from core.inference import diffusion_small_host
+
+    monkeypatch.setattr(diffusion_small_host, "host_ram_mib", lambda: (53000, 5000))
+    monkeypatch.setattr(diffusion_small_host, "encoder_resident_keep_mib", lambda total: 7982)
+    asked = []
+    r = _residency(1)
+    r.host_yield = lambda nbytes: asked.append(nbytes) or nbytes
+    r.fit(sum(r.block_bytes), initial = True)
+    r.fit(0)
+    need_mib = r.block_bytes[0] >> 20
+    assert asked == [(need_mib + 7982 - 5000) << 20]  # the 2 GiB floor alone would ask for nothing
