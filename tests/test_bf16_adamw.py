@@ -3,6 +3,9 @@
 
 import copy
 import importlib.util
+import sys
+import gc
+import weakref
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,7 @@ def api():
     path = Path(__file__).resolve().parents[1] / "unsloth/optimizers/bf16_adamw.py"
     spec = importlib.util.spec_from_file_location("_test_bf16_adamw", path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -168,6 +172,35 @@ def test_persistent_storage_has_no_master_weight(api):
             assert key in ("exp_avg", "exp_avg_sq")
 
 
+def test_optimizer_does_not_retain_gradients(api):
+    p = torch.nn.Parameter(torch.ones(32, dtype = torch.bfloat16))
+    optimizer = api.AdamWBF16([p])
+    p.sum().backward()
+    gradient = weakref.ref(p.grad)
+    optimizer.step()
+    optimizer.zero_grad(set_to_none = True)
+    gc.collect()
+    assert gradient() is None
+
+
+def test_frozen_parameters_have_no_moments_and_can_be_unfrozen(api):
+    frozen = torch.nn.Parameter(torch.ones(65536), requires_grad = False)
+    packed = torch.nn.Parameter(torch.ones(65536, dtype = torch.uint8), requires_grad = False)
+    p = torch.nn.Parameter(torch.ones(32, dtype = torch.bfloat16))
+    optimizer = api.AdamWBF16([frozen, packed, p])
+    assert frozen not in optimizer.state and packed not in optimizer.state
+    p.sum().backward()
+    optimizer.step()
+    assert frozen not in optimizer.state and packed not in optimizer.state
+    frozen.data = frozen.data.bfloat16()
+    frozen.requires_grad_(True)
+    frozen.grad = torch.ones_like(frozen)
+    optimizer.step()
+    assert int(optimizer.state[frozen]["step"]) == 1
+    assert torch.any(frozen != 1)
+    assert packed not in optimizer.state
+
+
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float64, torch.complex64])
 def test_unsupported_parameter_dtype_is_rejected(api, dtype):
     p = torch.nn.Parameter(torch.ones(8, dtype = dtype))
@@ -247,3 +280,26 @@ def test_cuda_graph_replay_advances_stochastic_updates(api):
         graph.replay()
         _assert_optimizer_equal(params, optimizers)
     assert int(optimizers[1].state[params[1]]["step"]) == 6
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires real CUDA")
+def test_batched_updates_match_separate_groups_and_new_gradients(api):
+    shapes = [0, 1, 17, 255, 256, 257, 1025, 4096, 8193, 33, 65537]
+    params = [
+        torch.nn.Parameter(torch.ones(n, device = "cuda", dtype = torch.bfloat16)) for n in shapes
+    ]
+    reference = [torch.nn.Parameter(p.detach().clone()) for p in params]
+    optimizer = api.AdamWBF16(params, lr = 0.0001)
+    control = api.AdamWBF16([{"params": [p]} for p in reference], lr = 0.0001)
+    for step in range(4):
+        for i, (p, q) in enumerate(zip(params, reference)):
+            gradient = (torch.arange(p.numel(), device = "cuda").float().sin() + step / 10).bfloat16()
+            p.grad = None if i == step else gradient.clone()
+            q.grad = None if i == step else gradient.clone()
+        optimizer.step()
+        control.step()
+        assert all(torch.equal(p, q) for p, q in zip(params, reference))
+        for p, q in zip(params, reference):
+            for key in ("step", "exp_avg", "exp_avg_sq"):
+                assert torch.equal(optimizer.state[p][key], control.state[q][key])

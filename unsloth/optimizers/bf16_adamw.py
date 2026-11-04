@@ -4,6 +4,7 @@
 import math
 import torch
 from torch import Tensor
+from typing import List
 
 try:
     import triton
@@ -12,9 +13,10 @@ except ImportError:
     triton = None
 
 if triton is not None:
+    _BATCHED_ARGUMENTS = tuple(int(x) for x in triton.__version__.split(".")[:2]) >= (3, 3)
 
     @triton.jit(do_not_specialize = ["N"])
-    def _adamw_kernel(
+    def _adamw_tile(
         P,
         G,
         M,
@@ -23,13 +25,14 @@ if triton is not None:
         LR,
         N,
         SEED,
+        TILE,
         B1: tl.constexpr,
         B2: tl.constexpr,
         EPS: tl.constexpr,
         WD: tl.constexpr,
         BLOCK: tl.constexpr,
     ):
-        i = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
+        i = TILE.to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
         valid = i < N
         p = tl.load(P + i, valid, 0).to(tl.float32)
         g = tl.load(G + i, valid, 0).to(tl.float32)
@@ -56,29 +59,111 @@ if triton is not None:
         tl.store(M + i, m, valid)
         tl.store(V + i, v, valid)
 
+    @triton.jit(do_not_specialize = ["sizes"])
+    def _adamw_batched(
+        P,
+        G,
+        M,
+        V,
+        STEP,
+        SEED,
+        LR,
+        sizes,
+        B1: tl.constexpr,
+        B2: tl.constexpr,
+        EPS: tl.constexpr,
+        WD: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        pid = tl.program_id(0).to(tl.int64)
+        start = tl.full((), 0, tl.int64)
+        for j in tl.static_range(len(sizes)):
+            n = tl.cast(sizes[j], tl.int64)
+            stop = start + (n + BLOCK - 1) // BLOCK
+            if (pid >= start) & (pid < stop):
+                _adamw_tile(
+                    P[j],
+                    G[j],
+                    M[j],
+                    V[j],
+                    STEP[j],
+                    LR,
+                    n,
+                    SEED[j],
+                    pid - start,
+                    B1,
+                    B2,
+                    EPS,
+                    WD,
+                    BLOCK,
+                )
+            start = stop
+
+    @triton.jit(do_not_specialize = ["N"])
+    def _adamw_single(
+        P,
+        G,
+        M,
+        V,
+        STEP,
+        LR,
+        N,
+        SEED,
+        B1: tl.constexpr,
+        B2: tl.constexpr,
+        EPS: tl.constexpr,
+        WD: tl.constexpr,
+        BLOCK: tl.constexpr,
+    ):
+        _adamw_tile(P, G, M, V, STEP, LR, N, SEED, tl.program_id(0), B1, B2, EPS, WD, BLOCK)
+
     def _launch(
-        p: Tensor,
-        g: Tensor,
-        m: Tensor,
-        v: Tensor,
-        step: Tensor,
+        p: List[Tensor],
+        g: List[Tensor],
+        m: List[Tensor],
+        v: List[Tensor],
+        step: List[Tensor],
         lr: Tensor,
-        seed: Tensor,
+        seed: List[Tensor],
         beta1: float,
         beta2: float,
         eps: float,
         weight_decay: float,
     ) -> None:
-        with torch.cuda.device(p.device):
-            _adamw_kernel[((p.numel() + 255) // 256,)](
-                p,
-                g,
-                m,
-                v,
-                step,
+        sizes = tuple(x.numel() for x in p)
+        tiles = sum((n + 255) // 256 for n in sizes)
+        if not tiles:
+            return
+        with torch.cuda.device(p[0].device):
+            if not _BATCHED_ARGUMENTS:
+                for pi, gi, mi, vi, si, seedi, n in zip(p, g, m, v, step, seed, sizes):
+                    if n:
+                        _adamw_single[((n + 255) // 256,)](
+                            pi,
+                            gi,
+                            mi,
+                            vi,
+                            si,
+                            lr,
+                            n,
+                            seedi,
+                            beta1,
+                            beta2,
+                            eps,
+                            weight_decay,
+                            256,
+                            enable_fp_fusion = False,
+                        )
+                return
+            _adamw_batched[(tiles,)](
+                tuple(p),
+                tuple(g),
+                tuple(m),
+                tuple(v),
+                tuple(step),
+                tuple(seed),
                 lr,
-                p.numel(),
-                seed,
+                sizes,
                 beta1,
                 beta2,
                 eps,
@@ -87,7 +172,7 @@ if triton is not None:
                 enable_fp_fusion = False,
             )
 
-    # Keep this already-fused update opaque so Inductor cannot change its rounding.
+    # Keep this fused update opaque so Inductor cannot change its rounding.
     _cuda_update = torch.library.custom_op(
         "unsloth::adamw_bf16_update", mutates_args = {"p", "m", "v"}
     )(_launch)
@@ -165,6 +250,8 @@ class AdamWBF16(torch.optim.Optimizer):
         values = [values] if isinstance(values, Tensor) else list(values)
         param_group["params"] = values
         for p in values:
+            if isinstance(p, Tensor) and not p.requires_grad and p.grad is None:
+                continue
             if (
                 not isinstance(p, Tensor)
                 or not _plain_parameter(p)
@@ -191,7 +278,12 @@ class AdamWBF16(torch.optim.Optimizer):
             self._initialize()
 
     def _initialize(self):
-        params = [p for group in self.param_groups for p in group["params"]]
+        params = [
+            p
+            for group in self.param_groups
+            for p in group["params"]
+            if p.requires_grad or p.grad is not None
+        ]
         for p in params:
             if not _plain_parameter(p) or p.dtype != torch.bfloat16 or not p.is_contiguous():
                 raise ValueError("AdamWBF16 requires contiguous plain BF16 parameters")
@@ -201,9 +293,15 @@ class AdamWBF16(torch.optim.Optimizer):
                 raise RuntimeError("CUDA AdamWBF16 requires Triton")
         index = 0
         for group in self.param_groups:
-            device = group["params"][0].device if group["params"] else torch.device("cpu")
+            device = next(
+                (p.device for p in group["params"] if p.requires_grad or p.grad is not None),
+                torch.device("cpu"),
+            )
             group["lr"] = torch.as_tensor(group["lr"], dtype = torch.float32, device = device)
             for p in group["params"]:
+                if not p.requires_grad and p.grad is None:
+                    index += 1
+                    continue
                 state = self.state[p]
                 if not state:
                     state.update(
@@ -215,7 +313,7 @@ class AdamWBF16(torch.optim.Optimizer):
                             device = p.device,
                             dtype = torch.int64,
                         ),
-                        lr_tensor = torch.tensor(float(group["lr"]), device = p.device),
+                        lr_tensor = group["lr"].to(device = p.device).clone(),
                     )
                 index += 1
 
@@ -228,42 +326,62 @@ class AdamWBF16(torch.optim.Optimizer):
         for group in self.param_groups:
             for p in group["params"]:
                 g = p.grad
+                if not p.requires_grad and g is None:
+                    continue
                 if not _plain_parameter(p) or p.dtype != torch.bfloat16 or not p.is_contiguous():
                     raise ValueError("AdamWBF16 requires contiguous plain BF16 parameters")
                 if g is not None and (
                     not _plain_parameter(g) or g.dtype != torch.bfloat16 or not g.is_contiguous()
                 ):
                     raise ValueError("AdamWBF16 requires dense contiguous BF16 gradients")
+        if any(
+            p.grad is not None and not self.state.get(p)
+            for group in self.param_groups
+            for p in group["params"]
+        ):
+            self._initialize()
         for group in self.param_groups:
+            by_device = {}
             for p in group["params"]:
-                if p.grad is None:
+                if p.grad is not None:
+                    by_device.setdefault(p.device, []).append(p)
+            for device, params in by_device.items():
+                lr = torch.as_tensor(group["lr"], dtype = torch.float32, device = device)
+                torch._foreach_add_([self.state[p]["step"] for p in params], 1)
+                if device.type == "cpu":
+                    for p in params:
+                        state = self.state[p]
+                        _cpu_update(
+                            p,
+                            p.grad,
+                            state["exp_avg"],
+                            state["exp_avg_sq"],
+                            state["step"],
+                            lr,
+                            state["sr_seed"],
+                            *group["betas"],
+                            group["eps"],
+                            group["weight_decay"],
+                        )
                     continue
-                state = self.state[p]
-                state["lr_tensor"].copy_(
-                    torch.as_tensor(group["lr"], dtype = torch.float32, device = p.device)
-                )
-                state["step"].add_(1)
-                update = (
-                    _cpu_update
-                    if p.device.type == "cpu"
-                    else _cuda_update
-                    if torch.compiler.is_compiling()
-                    else _launch
-                )
-                update(
-                    p,
-                    p.grad,
-                    state["exp_avg"],
-                    state["exp_avg_sq"],
-                    state["step"],
-                    state["lr_tensor"],
-                    state["sr_seed"],
-                    *group["betas"],
-                    group["eps"],
-                    group["weight_decay"],
-                )
-                if p.device.type == "cuda" and not torch.compiler.is_compiling():
-                    torch.autograd.graph.increment_version(p)
+                for start in range(0, len(params), 8):
+                    batch = params[start : start + 8]
+                    states = [self.state[p] for p in batch]
+                    update = _cuda_update if torch.compiler.is_compiling() else _launch
+                    update(
+                        batch,
+                        [p.grad for p in batch],
+                        [state["exp_avg"] for state in states],
+                        [state["exp_avg_sq"] for state in states],
+                        [state["step"] for state in states],
+                        lr,
+                        [state["sr_seed"] for state in states],
+                        *group["betas"],
+                        group["eps"],
+                        group["weight_decay"],
+                    )
+                    if not torch.compiler.is_compiling():
+                        torch.autograd.graph.increment_version(batch)
         return loss
 
     def load_state_dict(self, state_dict):
