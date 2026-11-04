@@ -3079,9 +3079,13 @@ def unsloth_fast_generate(self, *args, **kwargs):
         if graphs:
             max_len = _generation_max_len(self, args, kwargs)
             try:
+                ids = _generation_input_ids(args, kwargs)
                 plan, token = _decode_graphs.plan_call(
-                    self, _generation_input_ids(args, kwargs), dtype, KV_CACHE_INCREMENT, max_len
-                )
+                    self, ids, dtype, KV_CACHE_INCREMENT, max_len,
+                    bsz = _decode_graphs.decode_batch(
+                        int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+                    ),
+                )  # fmt: skip
             except Exception:
                 plan, token = "graph", None
             if plan == "eager":
@@ -3113,9 +3117,14 @@ def unsloth_fast_generate(self, *args, **kwargs):
         # generate() allocates its own instead of overwriting a cache the caller kept.
         _decode_graphs.release(self)
     elif graphs:
+        # Keeps the batch size decode ran at (beams / num_return_sequences expand the prompts).
         ids = _generation_input_ids(args, kwargs)
+        expected = None
         if hasattr(ids, "shape") and len(ids.shape) >= 2:
-            _decode_graphs.keep_only(self, int(ids.shape[0]))
+            expected = _decode_graphs.decode_batch(
+                int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+            )
+        _decode_graphs.keep_only(self, expected)
         self.__dict__[_decode_graphs.HELD] = True
 
     if restore_training_mode:

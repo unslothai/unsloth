@@ -42,6 +42,8 @@ __all__ = [
     "eager_scope",
     "plan_call",
     "record_need",
+    "decode_batch",
+    "decode_batch_used",
     "EAGER_UNFIT",
     "generate_with_fallback",
     "keep_only",
@@ -230,9 +232,11 @@ def plan_call(
     dtype,
     increment,
     max_len = 0,
+    bsz = None,
 ):
     """("graph", token) or ("eager", None). Releases kept graphs / buffers first if the call would not
-    fit beside them; still too big runs eagerly up front rather than relying on the OOM redo."""
+    fit beside them; still too big runs eagerly up front rather than relying on the OOM redo. `bsz` is
+    the batch size decode runs at (decode_batch(): beams / num_return_sequences expand the prompts)."""
     global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
@@ -241,12 +245,14 @@ def plan_call(
         or getattr(device, "type", None) != "cuda"
     ):
         return "graph", None
-    bsz, prompt = int(input_ids.shape[0]), int(input_ids.shape[1])
+    bsz, prompt = int(bsz or input_ids.shape[0]), int(input_ids.shape[1])
     rows, kv, work = _call_bytes(model.config, bsz, prompt, dtype, increment, max_len)
     if rows is None:
         return "graph", None
     key = _shape_key(bsz, prompt, max_len)
     measured = model.__dict__.get(NEEDS, {}).get(key)
+    # A measurement is the call's whole footprint (record_need adds back a cache it reused), so the
+    # cache kept for this shape now is subtracted exactly once.
     if measured is not None:
         need = MEASURED_MARGIN * measured
     else:
@@ -258,6 +264,7 @@ def plan_call(
         release(model)
         _empty_cache()
         free = _free_bytes(device)
+        reused = 0
         need = (
             MEASURED_MARGIN * measured
             if measured is not None
@@ -266,18 +273,55 @@ def plan_call(
     if free < need:
         EAGER_UNFIT += 1
         return "eager", None
-    return "graph", (key, device, *_alloc_stats(device))
+    return "graph", (key, device, *_alloc_stats(device), reused)
 
 
 def record_need(model, token):
-    """Store the first graphed call's peak per shape. The peak is never reset (not ours to reset), so a
-    call that did not raise it has no exact reading and is skipped."""
+    """Store the first graphed call's footprint per shape: its peak above the start plus the kept cache it
+    reused (already allocated at the start, so not in the peak delta). The peak is never reset (not ours
+    to reset), so a call that did not raise it has no exact reading and is skipped."""
     if token is None:
         return
-    key, device, start, peak_before = token
+    key, device, start, peak_before, reused = token
     peak = _alloc_stats(device)[1]
     if peak > peak_before:
-        model.__dict__.setdefault(NEEDS, {}).setdefault(key, peak - start)
+        model.__dict__.setdefault(NEEDS, {}).setdefault(key, peak - start + reused)
+
+
+def decode_batch(
+    bsz,
+    kwargs,
+    generation_config = None,
+):
+    """The batch size generate() decodes at: HF expands the prompts num_beams times for beam search,
+    else num_return_sequences times. kwargs win over the generation config, as in generate()."""
+    config = kwargs.get("generation_config", None) or generation_config
+
+    def get(name):
+        value = kwargs.get(name, None)
+        if value is None:
+            value = getattr(config, name, None)
+        try:
+            return max(1, int(value or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    beams = get("num_beams")
+    return bsz * (beams if beams > 1 else get("num_return_sequences"))
+
+
+def decode_batch_used(model):
+    """Batch size of the cache the last graph-mode decode ran on (its attention's current buffer), or
+    None when no graph-mode cache is current."""
+    for module in model.modules():
+        d = module.__dict__
+        store = d.get("_unsloth_graph_buffers")
+        paged = d.get("paged_attention")
+        if store and paged is not None:
+            for key, bufs in store.items():
+                if bufs[0] is paged:
+                    return key[0]
+    return None
 
 
 _OOM_WARNED = False
@@ -313,8 +357,14 @@ def generate_with_fallback(model, generate, graphs, args, kwargs):
         return generate(*args, **kwargs)
 
 
-def keep_only(model, bsz):
-    """Drop decode buffers and graphs of every other batch size; this one's graphs stay valid."""
+def keep_only(model, bsz = None):
+    """Drop decode buffers and graphs of every other batch size; this one's graphs stay valid. The batch
+    size the decode actually ran at (decode_batch_used) wins over `bsz`, the caller's expectation."""
+    used = decode_batch_used(model)
+    if used is not None:
+        bsz = used
+    if bsz is None:
+        return False
     dropped = False
     for module in model.modules():
         store = module.__dict__.get("_unsloth_graph_buffers")
