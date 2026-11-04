@@ -138,9 +138,10 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.68 > 2.7
     assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
     assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
-    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): 240 s cover peaks at 11.2 GB / 14.7 GB.
-    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.16 > 11.2
-    assert af.estimate_resident_gb(10090406336, "ace_step") == 15.8 > 14.7
+    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): a 240 s cover peaks at 11.2 / 14.7 GiB on CUDA,
+    # 11.2 GiB on a Radeon 8060S and 15.3 GiB for BF16 on Vulkan.
+    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.17 > 11.22 + 0.9
+    assert af.estimate_resident_gb(10090406336, "ace_step") == 16.36 > 15.31 + 0.9
 
 
 # YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16. Their highest peaks with

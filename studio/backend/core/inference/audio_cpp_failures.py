@@ -139,8 +139,8 @@ _GENERIC_PROFILE = (2.5, 1.5)
 # family -> (per_weight, fixed, largest package measured): audio.cpp v0.9.3 peak plus at least
 # 0.9 GiB. Families whose peak grows with the input (VibeVoice) must stay on the generic formula.
 _MEASURED_PROFILES = {
-    # Peak is a 240 s cover (the longest edit), above a 240 s song.
-    "ace_step": (1.0, 6.4, 9.4),
+    # Peak is a 240 s cover (the longest edit), above a 240 s song; BF16 highest on Vulkan.
+    "ace_step": (1.15, 5.55, 9.4),
     "chatterbox": (1.0, 3.5, 3.5),
     "higgs_audio_tts": (1.0, 2.0, 4.8),
     "kokoro_tts": (1.0, 3.5, 0.2),
