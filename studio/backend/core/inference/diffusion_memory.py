@@ -6705,7 +6705,7 @@ def denoiser_offload(pipe: Any, offload_policy: Any) -> Optional[str]:
 
 
 def agreed_placement(placements: Iterable[Optional[str]]) -> Optional[str]:
-    """The placement every denoise of one image ran with; None when they differ (no one placement describes it)."""
+    """The placement every denoise of one image ran with; None when they differ."""
     distinct = set(placements)
     return distinct.pop() if len(distinct) == 1 else None
 

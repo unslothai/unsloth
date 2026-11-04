@@ -14543,8 +14543,7 @@ def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
 
 
 class _PinProbePipe(_FakePipe):
-    """Enters the denoise loop and the decoder like diffusers (progress_bar, vae.decode), and runs out of memory on
-    its first attempt."""
+    """Enters the denoise loop and decoder like diffusers, and runs out of memory on its first attempt."""
 
     def __init__(self, fail_first: bool) -> None:
         super().__init__()

@@ -1417,7 +1417,6 @@ def test_a_template_inheriting_the_negative_saves_it_resolved(
     "crop, expected",
     [
         ("resident", "resident"),
-        # crops skip the per-request whole tier: no one placement describes the kept image
         ("streamed", None),
         # a failed pass keeps the render, so its crop does not count
         (RuntimeError("CUDA out of memory"), "resident"),
