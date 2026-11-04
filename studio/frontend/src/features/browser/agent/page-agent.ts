@@ -376,7 +376,8 @@ export function installPageAgent(): PageAgent {
     };
     const flush = () => {
       const text = clean(buffer, 400);
-      if (text && bufferShown && text.length > 1) push(text);
+      // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
+      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) push(text);
       buffer = "";
       bufferShown = false;
     };

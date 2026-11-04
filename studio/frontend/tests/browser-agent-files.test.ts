@@ -1,0 +1,150 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import { test } from "node:test";
+
+register("./helpers/browser-executor-resolver.mjs", import.meta.url);
+const { runBrowserAction } = await import("../src/features/browser/agent/executor.ts");
+const { agentChat, answerQuestion, endBrowserAgentRun } = await import("../src/features/browser/agent/agent-store.ts");
+const { applyFileEdit, numberedLines } = await import("../src/features/browser/agent/file-tab.ts");
+const { browserFile, currentEntry, useBrowserStore } = await import("../src/features/browser/store.ts");
+
+const globals = globalThis as Record<string, unknown>;
+const policy = { allowedDomains: [], blockedDomains: [] };
+const RUN = "r";
+type Result = { ok: boolean; error?: string; text?: string; note?: string; file?: string };
+
+let next = 0;
+async function act(op: string, fields: Record<string, unknown> = {}): Promise<Result> {
+  const posted: { result: Result }[] = [];
+  globals.__authFetch = async (_url: string, init: { body: string }) => {
+    posted.push(JSON.parse(init.body));
+    return new Response(null, { status: 200 });
+  };
+  await runBrowserAction({ id: `f${next++}`, sessionId: "s", op, direction: "down", policy, ...fields }, { runKey: RUN, userText: "" });
+  assert.equal(posted.length, 1);
+  return posted[0].result;
+}
+
+function shownText(): Promise<string> {
+  const store = useBrowserStore.getState();
+  const tab = store.tabs.find((candidate) => candidate.id === store.activeTabId);
+  const entry = tab && currentEntry(tab);
+  assert.equal(entry?.kind, "file");
+  return browserFile(entry.kind === "file" ? entry.fileId : "")?.text() ?? Promise.resolve("");
+}
+
+test("numbered lines page through a file and say where to go on", () => {
+  const text = Array.from({ length: 3000 }, (_, i) => `line ${i + 1}`).join("\n");
+  const first = numberedLines(text, 1);
+  assert.match(first.text, /^1\tline 1\n2\tline 2/);
+  const end = Number(/Lines 1-(\d+) of 3000/.exec(first.note)?.[1]);
+  assert.ok(end > 100 && end < 3000);
+  assert.match(first.note, new RegExp(`start_line ${end + 1}`));
+  assert.equal(numberedLines(text, 2999).note, "Lines 2999-3000 of 3000.");
+  assert.equal(numberedLines("a\n", 5).note, "The file has 1 line.");
+});
+
+test("an edit replaces text found once, refuses ambiguous or missing text, and keeps CRLF", () => {
+  assert.deepEqual(applyFileEdit("a\nb\nc", { oldText: "b", newText: "B" }), { text: "a\nB\nc", line: 2 });
+  assert.match((applyFileEdit("x x", { oldText: "x", newText: "y" }) as { error: string }).error, /appears 2 times/);
+  assert.deepEqual(applyFileEdit("x x", { oldText: "x", newText: "y", replaceAll: true }), { text: "y y", line: 1 });
+  assert.match((applyFileEdit("abc", { oldText: "z", newText: "y" }) as { error: string }).error, /not in the file/);
+  assert.deepEqual(applyFileEdit("a\r\nb\r\nc", { oldText: "a\nb", newText: "a\nB" }), { text: "a\r\nB\r\nc", line: 1 });
+  // A replacement with $& is the text itself, not a pattern.
+  assert.deepEqual(applyFileEdit("price", { oldText: "price", newText: "$&5" }), { text: "$&5", line: 1 });
+  assert.deepEqual(applyFileEdit("old", { content: "new" }), { text: "new", line: 1 });
+});
+
+test("the agent reads and edits the HTML file in front, and Back shows the version before", async () => {
+  endBrowserAgentRun(RUN);
+  const html = "<!doctype html>\n<h1>Hello</h1>\n<button>Go</button>\n";
+  useBrowserStore.getState().openFile({ blob: new Blob([html], { type: "text/html" }), name: "page.html", contentType: "text/html", key: "html:a1" });
+  const read = await act("read_file", { startLine: 1 });
+  assert.equal(read.ok, true);
+  assert.equal(read.file, "page.html");
+  assert.match(read.text ?? "", /^1\t<!doctype html>\n2\t<h1>Hello<\/h1>/);
+
+  const edited = await act("edit_file", { oldText: "<h1>Hello</h1>", newText: "<h1>Hi there</h1>" });
+  assert.equal(edited.ok, true, edited.error);
+  assert.match(edited.text ?? "", /2\t<h1>Hi there<\/h1>/);
+  assert.equal(await shownText(), html.replace("Hello", "Hi there"));
+
+  const missing = await act("edit_file", { oldText: "<h1>Hello</h1>", newText: "x" });
+  assert.equal(missing.ok, false);
+  assert.match(missing.error ?? "", /not in the file/);
+
+  const store = useBrowserStore.getState();
+  store.goBack(store.activeTabId ?? "");
+  assert.equal(await shownText(), html);
+});
+
+test("a file's preview is read through its frame, and its links are not taken as the user's", async () => {
+  endBrowserAgentRun(RUN);
+  useBrowserStore.getState().openFile({ blob: new Blob(["<a href='https://example.com/'>x</a>"], { type: "text/html" }), name: "links.html", contentType: "text/html", key: "html:a2" });
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000 } };
+    return { installed: true, result: { ok: true, text: "link r1 x", links: ["https://example.com/"] } };
+  };
+  const snapshot = await act("snapshot");
+  assert.equal(snapshot.ok, true, snapshot.error);
+  assert.equal(snapshot.file, "links.html");
+  assert.equal(snapshot.text, "link r1 x");
+  assert.match(snapshot.note ?? "", /browser_edit_file/);
+
+  // The agent could have written that link itself, so following it asks as a made-up address does.
+  let navigate = "https://example.com/";
+  globals.__frameAgent = async (_tabId: string, op: Record<string, unknown>) => {
+    if (op.op === "status") return { installed: true, result: { ok: true, quietMs: 1000 } };
+    if (op.op === "describe") return { installed: true, result: { ok: true, info: { role: "link", name: "x", tag: "a", href: navigate } } };
+    return { installed: true, result: { ok: true, navigate } };
+  };
+  const pending = act("click", { ref: "r1" });
+  let question = agentChat("new").question;
+  for (let i = 0; !question && i < 200; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    question = agentChat("new").question;
+  }
+  assert.equal(question?.ask, "open");
+  assert.equal(question?.host, "example.com");
+  answerQuestion(question.id, false);
+  assert.match((await pending).error ?? "", /declined opening a page/);
+
+  navigate = "http://localhost/api/inference/other.html";
+  const beside = await act("click", { ref: "r1" });
+  assert.match(beside.error ?? "", /beside this one/);
+});
+
+test("a PDF is read as text but not edited, and a text file has nothing to click", async () => {
+  endBrowserAgentRun(RUN);
+  useBrowserStore.getState().openFile({ blob: new Blob(["report body"], { type: "application/pdf" }), name: "report.pdf", contentType: "application/pdf", key: "f:pdf" });
+  const read = await act("read_file");
+  assert.equal(read.text, "1\treport body");
+  const edit = await act("edit_file", { content: "x" });
+  assert.equal(edit.ok, false);
+  assert.match(edit.error ?? "", /not PDFs/);
+
+  useBrowserStore.getState().openFile({ blob: new Blob(["alpha\nbeta\n"], { type: "text/plain" }), name: "notes.txt", contentType: "text/plain", key: "f:txt" });
+  await act("tabs", { tab: useBrowserStore.getState().tabs.filter((tab) => tab.chat === useBrowserStore.getState().chat).length });
+  const found = await act("find", { query: "BETA" });
+  assert.equal(found.text, "2\tbeta");
+  const click = await act("click", { ref: "r1" });
+  assert.equal(click.ok, false);
+  assert.match(click.error ?? "", /no page to act on/);
+});
+
+test("browser_tabs lists files by name and web pages by site, and switches by number", async () => {
+  endBrowserAgentRun(RUN);
+  const listed = await act("tabs");
+  assert.equal(listed.ok, true);
+  assert.match(listed.text ?? "", /File: page\.html \(HTML or React, with a preview\)/);
+  assert.match(listed.text ?? "", /File: report\.pdf \(document\)/);
+  assert.match(listed.text ?? "", /\(the agent's tab, in front\)/);
+  const missing = await act("tabs", { tab: 99 });
+  assert.equal(missing.ok, false);
+  const switched = await act("tabs", { tab: 2 });
+  assert.equal(switched.ok, true);
+  assert.equal(switched.file, "links.html");
+});
