@@ -1572,6 +1572,8 @@ def fake_studio(tmp_path, monkeypatch):
             return {"object": "list", "data": state["models"]}
         if url.split("?")[0].endswith("/api/inference/status"):
             return {"is_gguf": True, "model_identifier": state["models"][0]["id"]}
+        if url.endswith("/api/auth/account"):
+            return {"account_id": "owner", "username": "unsloth", "role": "owner"}
         if url.endswith("/api/auth/api-keys"):
             if method == "GET":
                 return {"api_keys": [{"key_prefix": "feedface"}]}

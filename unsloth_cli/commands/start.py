@@ -5015,7 +5015,11 @@ def _check_picked_gguf_variant(model: Optional[str], variant: Optional[str]) -> 
     )
 
 
-def _ask_for_local_model(gguf_only: bool, reason: str) -> str:
+def _ask_for_local_model(
+    gguf_only: bool,
+    reason: str,
+    account: Optional[dict] = None,
+) -> str:
     """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
     from rich.console import Console
 
@@ -5032,7 +5036,17 @@ def _ask_for_local_model(gguf_only: bool, reason: str) -> str:
     )
     typer.echo(reason)
     picker = pick_gguf_model if gguf_only else pick_local_model
-    return picker(Console(), prompt = "Load", empty_hint = hint)
+    if account is None:
+        return picker(Console(), prompt = "Load", empty_hint = hint)
+    from utils.account_context import AccountContext, run_as
+
+    context = AccountContext(
+        account["account_id"],
+        account["username"],
+        account["role"],
+        via_api_key = account.get("via_api_key", True),
+    )
+    return run_as(context, picker, Console(), prompt = "Load", empty_hint = hint)
 
 
 def _pick_model_to_auto_start(serve: bool, launch: bool, gguf_only: bool) -> Optional[str]:
@@ -5063,8 +5077,21 @@ def _pick_model_for_idle_server(base: str, key: str, gguf_only: bool) -> Optiona
     # Another account's resident is not listed to this key; a pick would evict it unasked, so keep the error that says so.
     if _inference_status(base, key).get("yours") is False:
         return None
+    try:
+        account = _http_json("GET", f"{base}/api/auth/account", key)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+            return None
+        _fail_request(exc, "Couldn't determine the account for the model picker")
+    # Older servers can answer missing API routes with error JSON and HTTP 200.
+    if not isinstance(account, dict) or not all(
+        account.get(field) for field in ("account_id", "username", "role")
+    ):
+        return None
     return _ask_for_local_model(
-        gguf_only, "No model is loaded in Unsloth. Pick one on this device to load:"
+        gguf_only,
+        "No model is loaded in Unsloth. Pick one on this device to load:",
+        account = account,
     )
 
 

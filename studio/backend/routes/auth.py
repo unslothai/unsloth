@@ -402,6 +402,18 @@ def identity(nonce: str, request: Request) -> dict:
     return {"proof": storage.compute_identity_proof(raw, host, port)}
 
 
+@router.get("/account")
+async def authenticated_account(current_subject: str = Depends(get_current_subject)) -> dict:
+    from utils.account_context import current_account
+    account = current_account()
+    return {
+        "account_id": account.account_id,
+        "username": account.username,
+        "role": account.role,
+        "via_api_key": account.via_api_key,
+    }
+
+
 # FastAPI offloads sync reads; mutations stay on-loop to preserve atomic sequences.
 @router.get("/status", response_model = AuthStatusResponse)
 def auth_status() -> AuthStatusResponse:
