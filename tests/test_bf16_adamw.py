@@ -10,7 +10,7 @@ import torch
 from real_accelerator import has_real_cuda
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def api():
     path = Path(__file__).resolve().parents[1] / "unsloth/optimizers/bf16_adamw.py"
     spec = importlib.util.spec_from_file_location("_test_bf16_adamw", path)
@@ -22,9 +22,9 @@ def api():
 def test_prepare_preserves_identity_ties_and_frozen_parameters(api):
     model = torch.nn.Module()
     model.first = torch.nn.Linear(4, 4)
-    model.second = torch.nn.Linear(4, 4, bias=False)
+    model.second = torch.nn.Linear(4, 4, bias = False)
     model.second.weight = model.first.weight
-    model.frozen = torch.nn.Parameter(torch.arange(4.0), requires_grad=False)
+    model.frozen = torch.nn.Parameter(torch.arange(4.0), requires_grad = False)
     model.register_buffer("statistics", torch.ones(4))
     before = {name: id(p) for name, p in model.named_parameters()}
     frozen = model.frozen.detach().clone()
@@ -45,7 +45,7 @@ def test_prepare_preflight_does_not_partially_cast(api, invalid):
     model = torch.nn.Module()
     model.first = torch.nn.Parameter(torch.ones(4))
     model.last = torch.nn.Parameter(
-        torch.ones(4, dtype=torch.float64 if invalid == "dtype" else torch.float32)
+        torch.ones(4, dtype = torch.float64 if invalid == "dtype" else torch.float32)
     )
     if invalid == "gradient":
         model.last.grad = torch.ones_like(model.last)
@@ -58,11 +58,11 @@ def test_prepare_preflight_does_not_partially_cast(api, invalid):
 
 
 def test_moments_match_independent_fp32_adamw(api):
-    p = torch.nn.Parameter(torch.linspace(-2, 2, 65, dtype=torch.bfloat16))
+    p = torch.nn.Parameter(torch.linspace(-2, 2, 65, dtype = torch.bfloat16))
     reference = torch.nn.Parameter(p.detach().float())
-    kwargs = dict(lr=0.003, betas=(0.7, 0.95), eps=1e-6, weight_decay=0.03)
-    optimizer = api.AdamWBF16([p], seed=57, **kwargs)
-    control = torch.optim.AdamW([reference], foreach=False, fused=False, **kwargs)
+    kwargs = dict(lr = 0.003, betas = (0.7, 0.95), eps = 1e-6, weight_decay = 0.03)
+    optimizer = api.AdamWBF16([p], seed = 57, **kwargs)
+    control = torch.optim.AdamW([reference], foreach = False, fused = False, **kwargs)
     for step in range(1, 5):
         gradient = (torch.arange(65).float().sin() * step / 7).bfloat16()
         p.grad = gradient.clone()
@@ -72,19 +72,19 @@ def test_moments_match_independent_fp32_adamw(api):
         for key in ("exp_avg", "exp_avg_sq"):
             assert optimizer.state[p][key].dtype == torch.float32
             torch.testing.assert_close(
-                optimizer.state[p][key], control.state[reference][key], atol=2e-8, rtol=2e-6
+                optimizer.state[p][key], control.state[reference][key], atol = 2e-8, rtol = 2e-6
             )
         assert int(optimizer.state[p]["step"]) == step
 
 
 def test_sub_ulp_update_moves_correct_fraction_and_preserves_rng(api):
-    p = torch.nn.Parameter(torch.ones(65536, dtype=torch.bfloat16))
-    optimizer = api.AdamWBF16([p], lr=2**-10, betas=(0.0, 0.0), eps=0.0, weight_decay=0.0, seed=71)
+    p = torch.nn.Parameter(torch.ones(65536, dtype = torch.bfloat16))
+    optimizer = api.AdamWBF16([p], lr = 2**-10, betas = (0.0, 0.0), eps = 0.0, weight_decay = 0.0, seed = 71)
     p.grad = torch.ones_like(p)
     global_rng = torch.random.get_rng_state().clone()
     optimizer.step()
     assert torch.equal(torch.random.get_rng_state(), global_rng)
-    lower = torch.tensor(1 - 2**-8, dtype=torch.bfloat16)
+    lower = torch.tensor(1 - 2**-8, dtype = torch.bfloat16)
     assert torch.all((p == 1) | (p == lower))
     moved = (p == lower).sum().item()
     assert abs(moved - p.numel() / 4) < 6 * (p.numel() * 0.25 * 0.75) ** 0.5
@@ -92,14 +92,14 @@ def test_sub_ulp_update_moves_correct_fraction_and_preserves_rng(api):
 
 
 def test_checkpoint_restores_fp32_moments_and_next_random_update(api):
-    p = torch.nn.Parameter(torch.linspace(0.5, 1.5, 4096, dtype=torch.bfloat16))
-    optimizer = api.AdamWBF16([p], lr=0.0009, weight_decay=0.01, seed=81)
+    p = torch.nn.Parameter(torch.linspace(0.5, 1.5, 4096, dtype = torch.bfloat16))
+    optimizer = api.AdamWBF16([p], lr = 0.0009, weight_decay = 0.01, seed = 81)
     for step in range(3):
         p.grad = (torch.arange(p.numel()).float().cos() + step / 10).bfloat16()
         optimizer.step()
     state = copy.deepcopy(optimizer.state_dict())
     restored_p = torch.nn.Parameter(p.detach().clone())
-    restored = api.AdamWBF16([restored_p], lr=0.2, seed=999)
+    restored = api.AdamWBF16([restored_p], lr = 0.2, seed = 999)
     restored.load_state_dict(state)
     for key in ("exp_avg", "exp_avg_sq"):
         assert restored.state[restored_p][key].dtype == torch.float32
@@ -119,9 +119,9 @@ def test_checkpoint_restores_fp32_moments_and_next_random_update(api):
 
 
 def test_none_gradient_is_skipped_and_groups_keep_own_steps(api):
-    p = torch.nn.Parameter(torch.ones(64, dtype=torch.bfloat16))
-    q = torch.nn.Parameter(torch.full((64,), 2.0, dtype=torch.bfloat16))
-    optimizer = api.AdamWBF16([p], lr=0.01, weight_decay=0.1)
+    p = torch.nn.Parameter(torch.ones(64, dtype = torch.bfloat16))
+    q = torch.nn.Parameter(torch.full((64,), 2.0, dtype = torch.bfloat16))
+    optimizer = api.AdamWBF16([p], lr = 0.01, weight_decay = 0.1)
     optimizer.add_param_group({"params": [q], "lr": 0.0})
     p.grad = torch.ones_like(p)
     optimizer.step()
@@ -155,7 +155,7 @@ def _tensor_bytes(value):
 
 
 def test_persistent_storage_has_no_master_weight(api):
-    p = torch.nn.Parameter(torch.ones(4096, dtype=torch.bfloat16))
+    p = torch.nn.Parameter(torch.ones(4096, dtype = torch.bfloat16))
     optimizer = api.AdamWBF16([p])
     p.sum().backward()
     optimizer.step()
@@ -170,7 +170,7 @@ def test_persistent_storage_has_no_master_weight(api):
 
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float64, torch.complex64])
 def test_unsupported_parameter_dtype_is_rejected(api, dtype):
-    p = torch.nn.Parameter(torch.ones(8, dtype=dtype))
+    p = torch.nn.Parameter(torch.ones(8, dtype = dtype))
     with pytest.raises((ValueError, RuntimeError, TypeError)):
         optimizer = api.AdamWBF16([p])
         p.grad = torch.ones_like(p)
@@ -178,10 +178,10 @@ def test_unsupported_parameter_dtype_is_rejected(api, dtype):
 
 
 def test_sparse_gradient_is_rejected_without_updating_parameter(api):
-    p = torch.nn.Parameter(torch.ones(8, dtype=torch.bfloat16))
+    p = torch.nn.Parameter(torch.ones(8, dtype = torch.bfloat16))
     optimizer = api.AdamWBF16([p])
     p.grad = torch.sparse_coo_tensor(
-        [[1, 3]], torch.ones(2, dtype=p.dtype), (8,), check_invariants=True
+        [[1, 3]], torch.ones(2, dtype = p.dtype), (8,), check_invariants = True
     )
     before = p.detach().clone()
     with pytest.raises((ValueError, RuntimeError, TypeError)):
@@ -190,9 +190,9 @@ def test_sparse_gradient_is_rejected_without_updating_parameter(api):
 
 
 def _cuda_pair(api):
-    initial = torch.linspace(0.5, 1.5, 4096, device="cuda", dtype=torch.bfloat16)
+    initial = torch.linspace(0.5, 1.5, 4096, device = "cuda", dtype = torch.bfloat16)
     params = [torch.nn.Parameter(initial.clone()) for _ in range(2)]
-    optimizers = [api.AdamWBF16([p], lr=0.0009, seed=73) for p in params]
+    optimizers = [api.AdamWBF16([p], lr = 0.0009, seed = 73) for p in params]
     for p in params:
         p.grad = torch.ones_like(p)
     return params, optimizers
@@ -205,17 +205,17 @@ def _assert_optimizer_equal(params, optimizers):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason="requires real CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires real CUDA")
 def test_compiled_optimizer_matches_eager_without_graph_breaks(api):
     from torch._dynamo.utils import counters
 
     params, optimizers = _cuda_pair(api)
     torch._dynamo.reset()
     counters.clear()
-    compiled = torch.compile(optimizers[1].step, fullgraph=True)
+    compiled = torch.compile(optimizers[1].step, fullgraph = True)
     try:
         for index in range(4):
-            gradient = (torch.arange(4096, device="cuda").float().sin() + index / 10).bfloat16()
+            gradient = (torch.arange(4096, device = "cuda").float().sin() + index / 10).bfloat16()
             for p in params:
                 p.grad.copy_(gradient)
             optimizers[0].step()
@@ -229,7 +229,7 @@ def test_compiled_optimizer_matches_eager_without_graph_breaks(api):
 
 
 @pytest.mark.gpu
-@pytest.mark.skipif(not has_real_cuda(), reason="requires real CUDA")
+@pytest.mark.skipif(not has_real_cuda(), reason = "requires real CUDA")
 def test_cuda_graph_replay_advances_stochastic_updates(api):
     params, optimizers = _cuda_pair(api)
     stream = torch.cuda.Stream()
