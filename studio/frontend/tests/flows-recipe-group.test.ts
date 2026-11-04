@@ -1462,3 +1462,33 @@ test("a formula subtracting two columns reads both, as the backend's import does
   // A column whose name has a hyphen is still read whole.
   assert.deepEqual(columnReferences(net as never, new Set(["gross-discount"])), ["gross-discount"]);
 });
+
+test("a loop's own variable is not a column, inside its loop only", async () => {
+  const { columnReferences, templateStillReads } = await import("../src/features/flows/recipe/recipe-columns.ts");
+  const names = new Set(["topic", "topics"]);
+  const loop = { name: "f", column_type: "expression", expr: "{% for topic in ['math', 'science'] %}{{ topic }} {% endfor %}" };
+  assert.deepEqual(columnReferences(loop as never, names), []);
+  assert.equal(templateStillReads(loop as never, "topic"), false);
+  const outside = { ...loop, expr: "{{ topic }} {% for topic in topics %}{{ topic }}{% endfor %}" };
+  assert.deepEqual(columnReferences(outside as never, names), ["topic", "topics"]);
+  const set = { ...loop, expr: "{{ topic }}{% set topic = 'x' %}{{ topic }}" };
+  assert.deepEqual(columnReferences(set as never, names), ["topic"]);
+});
+
+test("resizing a recipe frame or grouping its blocks never takes them out of their recipe", async () => {
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({
+    ...doc([...nodes, { id: "free", type: "input.text", v: 1, params: {}, pos: [5000, 5000] }] as never, []),
+    groups: [{ ...group, rect: [-100, -100, 4000, 1000] }],
+  });
+  const store = useDocStore.getState();
+  store.resizeGroup({ ...useDocStore.getState().graph.groups.recipe, rect: [-100, -100, 400, 200] });
+  let graph = useDocStore.getState().graph;
+  assert.ok(nodes.every((n) => graph.nodes[n.id].group === "recipe"));
+  store.groupNodes({ id: "plain", label: "Group", rect: [0, 0, 10, 10] }, [nodes[0].id, "free"]);
+  graph = useDocStore.getState().graph;
+  assert.equal(graph.nodes[nodes[0].id].group, "recipe");
+  assert.equal(graph.nodes.free.group, "plain");
+});

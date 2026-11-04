@@ -53,18 +53,48 @@ const NAME = /[A-Za-z_][A-Za-z0-9_-]*/g;
 const BLOCK = /\{\{([\s\S]*?)\}\}|\{%([\s\S]*?)%\}/g;
 const QUOTED = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
 
+/** Where a template's own variables are in scope: a `{% for %}` loop's up to its `{% endfor %}`, a
+ * `{% set %}`'s from there on. Inside them the name is that variable, not a column. */
+function localScopes(text: string): { name: string; from: number; to: number }[] {
+  const scopes: { name: string; from: number; to: number }[] = [];
+  const open: { names: string[]; from: number }[] = [];
+  const ident = /[A-Za-z_][A-Za-z0-9_]*/g;
+  for (const block of text.matchAll(BLOCK)) {
+    if (block[2] === undefined) continue;
+    const tag = block[2].replace(QUOTED, '""').trim();
+    const at = block.index ?? 0;
+    const loop = /^for\s+(.+?)\s+in\b/.exec(tag);
+    if (loop) open.push({ names: loop[1].match(ident) ?? [], from: at });
+    else if (/^endfor\b/.test(tag)) {
+      const scope = open.pop();
+      for (const name of scope?.names ?? [])
+        scopes.push({ name, from: scope?.from ?? 0, to: at });
+    } else {
+      const set = /^set\s+([^=]+?)\s*=/.exec(tag);
+      for (const name of set?.[1].match(ident) ?? [])
+        scopes.push({ name, from: at, to: text.length });
+    }
+  }
+  // An unclosed loop runs to the end.
+  for (const scope of open)
+    for (const name of scope.names) scopes.push({ name, from: scope.from, to: text.length });
+  return scopes;
+}
+
 function templateNames(text: string): string[] {
   const names: string[] = [];
+  const scopes = localScopes(text);
   for (const block of text.matchAll(BLOCK)) {
     // A quoted string is text, not a column: `{{ "topic" }}` reads nothing.
     const body = (block[1] ?? block[2] ?? "").replace(QUOTED, '""');
-    const loopVars = new Set(
-      [...body.matchAll(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]),
+    const at = block.index ?? 0;
+    const local = new Set(
+      scopes.filter((s) => s.from <= at && at <= s.to).map((s) => s.name),
     );
     for (const match of body.matchAll(NAME)) {
       const before = body.slice(0, match.index).trimEnd();
       if (before.endsWith(".") || before.endsWith("|")) continue;
-      if (loopVars.has(match[0])) continue;
+      if (local.has(match[0])) continue;
       // `{{gross-discount}}` subtracts two columns unless one column has that hyphenated name: both
       // readings count, as `recipe_import._template_names` reads them.
       names.push(match[0], ...(match[0].includes("-") ? match[0].split("-").filter(Boolean) : []));

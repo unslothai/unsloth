@@ -29,6 +29,15 @@ const RECIPE_DATASET = "recipe.generate";
 /** recipe-columns.ts COLUMN_TYPE. */
 const RECIPE_COLUMN = "recipe.column";
 
+/** A column or Recipe Dataset step that runs only in its recipe: framing or grouping never moves it out. */
+function recipeOwned(node: FlowNode, groups: Record<string, FlowGroup>): boolean {
+  return (
+    (node.type === RECIPE_COLUMN || node.type === RECIPE_DATASET) &&
+    !!node.group &&
+    groups[node.group]?.kind === "recipe"
+  );
+}
+
 /** A recipe column's name, from its params. */
 function columnNameOf(node: FlowNode): string | null {
   const column = (node.params as { column?: { name?: unknown } } | undefined)?.column;
@@ -907,6 +916,7 @@ export const useDocStore = create<DocState>((set, get) => {
           const node = nodes[id];
           const before = node.group ?? null;
           if (hidden.has(id) || (before && folded.has(before))) continue;
+          if (recipeOwned(node, s.graph.groups)) continue;
           const after = frameAt(graph, node.pos, folded);
           if (before === after) continue;
           if (before !== group.id && after !== group.id) continue;
@@ -919,7 +929,8 @@ export const useDocStore = create<DocState>((set, get) => {
       commit((s) => {
         const nodes = { ...s.graph.nodes };
         for (const id of nodeIds)
-          if (nodes[id]) nodes[id] = { ...nodes[id], group: group.id };
+          if (nodes[id] && !recipeOwned(nodes[id], s.graph.groups))
+            nodes[id] = { ...nodes[id], group: group.id };
         return withGraph(s, {
           nodes,
           groups: { ...s.graph.groups, [group.id]: group },
