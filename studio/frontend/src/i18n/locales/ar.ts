@@ -2989,8 +2989,8 @@ export const ar = {
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       turnNavigation: "التنقل بين الجولات",
       turnNavigationDescription: "اعرض رسائلك كشريط على الحافة اليسرى للمحادثات الطويلة. مرّر المؤشر لمعاينة جولة، وانقر للانتقال إليها، وأضف إشارات مرجعية للعثور عليها لاحقًا.",
-      composerAtBottom: "حقل الكتابة في الأسفل",
-      composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
+      composerPosition: "موضع حقل الكتابة",
+      composerPositionDescription: "مكان حقل الكتابة عند بدء محادثة جديدة، من أعلى الصفحة إلى أسفلها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
         "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",

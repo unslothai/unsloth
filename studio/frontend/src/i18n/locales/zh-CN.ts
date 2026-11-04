@@ -2946,8 +2946,8 @@ export const zhCN = {
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       turnNavigation: "轮次导航",
       turnNavigationDescription: "在长对话的左边缘以导轨形式显示你的消息。悬停可预览某一轮，点击可跳转，并可加书签以便再次找到。",
-      composerAtBottom: "输入框置底",
-      composerAtBottomDescription: "新聊天时将输入框放在页面底部，而不是中间。",
+      composerPosition: "输入框位置",
+      composerPositionDescription: "新聊天时输入框的位置，可从页面顶部调到底部。",
       projectAttachments: "在项目内共享文件",
       projectAttachmentsDescription:
         "让项目内的所有聊天都能使用新添加的聊天附件。",

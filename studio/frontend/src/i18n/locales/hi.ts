@@ -2998,8 +2998,8 @@ export const hi = {
       inlineEditResponseDescription: "जवाब संपादित करें को “और” मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       turnNavigation: "टर्न नेविगेशन",
       turnNavigationDescription: "लंबी चैट के बाएँ किनारे पर आपके संदेशों की एक पट्टी दिखाएँ। किसी टर्न का प्रीव्यू देखने के लिए होवर करें, उस पर जाने के लिए क्लिक करें, और बाद में ढूँढने के लिए बुकमार्क करें।",
-      composerAtBottom: "कंपोज़र नीचे",
-      composerAtBottomDescription: "नई चैट में कंपोज़र को पेज के बीच के बजाय नीचे दिखाएँ।",
+      composerPosition: "कंपोज़र की जगह",
+      composerPositionDescription: "नई चैट शुरू होने पर कंपोज़र कहाँ दिखे, पेज के ऊपर से लेकर नीचे तक।",
       projectAttachments: "प्रोजेक्ट भर में फ़ाइलें साझा करें",
       projectAttachmentsDescription:
         "नए चैट अटैचमेंट प्रोजेक्ट की हर चैट में उपलब्ध कराएँ।",

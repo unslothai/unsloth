@@ -2982,8 +2982,8 @@ export const ko = {
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       turnNavigation: "턴 탐색",
       turnNavigationDescription: "긴 채팅의 왼쪽 가장자리에 내 메시지를 레일로 표시합니다. 마우스를 올리면 미리보기, 클릭하면 해당 턴으로 이동하고, 북마크로 다시 찾을 수 있습니다.",
-      composerAtBottom: "입력창을 아래에",
-      composerAtBottomDescription: "새 채팅에서 입력창을 가운데가 아닌 페이지 아래쪽에 표시합니다.",
+      composerPosition: "입력창 위치",
+      composerPositionDescription: "새 채팅을 시작할 때 입력창이 놓일 위치를 페이지 위쪽부터 아래쪽까지 조절합니다.",
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
         "새 채팅 첨부 파일을 프로젝트의 모든 채팅에서 사용할 수 있게 합니다.",

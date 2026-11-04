@@ -3030,8 +3030,8 @@ export const de = {
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       turnNavigation: "Rundennavigation",
       turnNavigationDescription: "Zeigt deine Eingaben als Leiste am linken Rand langer Chats. Zeige auf eine Runde für eine Vorschau, klicke, um hinzuspringen, und setze Lesezeichen, um Runden wiederzufinden.",
-      composerAtBottom: "Eingabefeld unten",
-      composerAtBottomDescription: "Neue Chats mit dem Eingabefeld unten auf der Seite statt in der Mitte beginnen.",
+      composerPosition: "Position des Eingabefelds",
+      composerPositionDescription: "Wo das Eingabefeld beim Start eines neuen Chats sitzt, vom oberen Seitenrand bis ganz nach unten.",
       projectAttachments: "Dateien projektweit teilen",
       projectAttachmentsDescription:
         "Stellt neue Chat-Anhänge allen Chats im Projekt zur Verfügung.",

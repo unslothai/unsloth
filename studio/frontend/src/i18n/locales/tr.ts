@@ -3236,9 +3236,8 @@ export const tr = {
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",
       turnNavigation: "Tur gezinmesi",
       turnNavigationDescription: "Uzun sohbetlerin sol kenarında mesajlarınızı bir şerit olarak gösterir. Önizlemek için üzerine gelin, gitmek için tıklayın ve yeniden bulmak için yer imi ekleyin.",
-      composerAtBottom: "Yazma alanı altta",
-      composerAtBottomDescription:
-        "Yeni sohbetleri, yazma alanı sayfanın ortası yerine altında olacak şekilde başlatın.",
+      composerPosition: "Yazma alanının konumu",
+      composerPositionDescription: "Yeni bir sohbet başlarken yazma alanının nerede duracağı, sayfanın üstünden en altına kadar.",
       projectAttachments: "Dosyaları proje genelinde paylaş",
       projectAttachmentsDescription:
         "Yeni sohbet eklerini projedeki her sohbet için kullanılabilir yapın.",

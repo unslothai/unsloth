@@ -3006,8 +3006,8 @@ export const en = {
         "Keep Edit response on every response, instead of in the More menu.",
       turnNavigation: "Turn navigation",
       turnNavigationDescription: "Show your prompts as a rail at the left edge of long chats. Hover to preview a turn, click to jump to it, and bookmark turns to find them again.",
-      composerAtBottom: "Composer at the bottom",
-      composerAtBottomDescription: "Start new chats with the composer at the bottom of the page instead of the middle.",
+      composerPosition: "Composer position",
+      composerPositionDescription: "Where the composer sits when a new chat starts, from the top of the page down to the bottom.",
       projectAttachments: "Share files across a project",
       projectAttachmentsDescription:
         "Make new chat attachments available to every chat in the project.",

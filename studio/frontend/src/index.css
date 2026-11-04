@@ -6234,10 +6234,20 @@ html[data-glass="macos"] [data-slot="sidebar-inner"]:has([data-slot="sidebar-foo
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
 html[data-glass] .wallpaper-preview-composer,
 html[data-glass="macos"] .unsloth-composer-surface {
-  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent);
+  background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc((max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) + var(--glass-composer-boost, 0%)) * var(--glass-opacity, 1))), transparent);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .1);
+}
+/* Over an open conversation (not the welcome view) glass dims the image and thickens the composer, so replies stay readable. */
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
+html[data-glass] .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper {
+  opacity: calc(.7 * (.4 + .6 * var(--wallpaper-conversation, 0)));
+}
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) .unsloth-composer-surface,
+html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-preview-composer {
+  --glass-composer-boost: 12%;
+  --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1) + 6px + var(--glass-repaint, 0) * .01px);
 }
 html[data-glass="frosted"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"],
 html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface,
@@ -6404,10 +6414,23 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
 }
+/* Replies scroll under the transparent chat header, so glass gives the model controls their own frosted pill. */
+html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls]:not(:empty) {
+  border-radius: 14px;
+  padding: 2px;
+  background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * var(--glass-opacity, 1))), transparent);
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 12px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 12px)) saturate(var(--glass-saturate));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 8%, transparent);
+  text-shadow: none;
+}
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
 html[data-glass="macos"] .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]),
-html[data-glass="macos"] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]) {
+html[data-glass="macos"] [data-slot="sidebar-inner"] [data-slot="sidebar-menu-button"]:is(:hover, [data-active="true"]),
+/* The account row is a menu trigger, which takes over its data-slot. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] .app-user-trigger:is(:hover, [data-state="open"]),
+html[data-glass="macos"] [data-slot="sidebar-inner"] .app-user-trigger:is(:hover, [data-state="open"]) {
   background-color: var(--glass-hover);
   box-shadow: var(--glass-hover-rim);
 }

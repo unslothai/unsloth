@@ -3070,8 +3070,8 @@ export const he = {
         "הצג את 'עריכת תגובה' בכל תגובה, במקום בתפריט 'עוד'.",
       turnNavigation: "ניווט בין סבבים",
       turnNavigationDescription: "הצגת ההודעות שלך כפס בקצה השמאלי של צ׳אטים ארוכים. רחפו לתצוגה מקדימה של סבב, לחצו כדי לקפוץ אליו וסמנו סבבים כדי למצוא אותם שוב.",
-      composerAtBottom: "תיבת הכתיבה למטה",
-      composerAtBottomDescription: "התחלת צ'אטים חדשים עם תיבת הכתיבה בתחתית הדף במקום באמצע.",
+      composerPosition: "מיקום תיבת הכתיבה",
+      composerPositionDescription: "היכן תיבת הכתיבה מופיעה כשמתחילים צ'אט חדש, מראש הדף ועד תחתיתו.",
       projectAttachments: "שתף קבצים בכל הפרויקט",
       projectAttachmentsDescription:
         "הפוך קבצים מצורפים חדשים לזמינים לכל צ'אט בפרויקט.",

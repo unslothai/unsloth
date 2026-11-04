@@ -161,3 +161,21 @@ test("the glass preference survives an account switch, and sign-in waits for the
 	const client = readFileSync(new URL("../src/features/auth/login-client.ts", import.meta.url), "utf8");
 	assert.match(client, /getConfirmedLoginMode = \(\): LoginMode \| null =>\n\s*statusKnown \? loginMode : null;/);
 });
+
+test("glass over an open conversation dims the image and thickens only that composer", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const conversation = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\):not\(:has\(\.aui-thread-welcome-center\)\)`;
+	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
+	assert.match(css, new RegExp(`${conversation} \\.unsloth-composer-surface,[^{]*\\{\\n  --glass-composer-boost: 12%;`));
+	// The boost sits outside the max(), so a high readability floor cannot swallow it.
+	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
+});
+
+test("glass frosts the chat model controls and gives the account row the row hover", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const pill = /html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\]:not\(:empty\) \{([^}]*)\}/.exec(css)?.[1] ?? "";
+	assert.match(pill, /backdrop-filter: blur\(max\(var\(--glass-blur\), 12px\)\)/);
+	assert.match(css, /\[data-slot="sidebar-inner"\] \.app-user-trigger:is\(:hover, \[data-state="open"\]\)[^{]*\{\n  background-color: var\(--glass-hover\);\n  box-shadow: var\(--glass-hover-rim\);/);
+	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
+	assert.match(page, /data-wallpaper-chrome-controls="" data-chat-model-controls=""/);
+});

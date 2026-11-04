@@ -3238,9 +3238,8 @@ export const vi = {
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
       turnNavigation: "Điều hướng lượt",
       turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
-      composerAtBottom: "Khung soạn thảo ở dưới cùng",
-      composerAtBottomDescription:
-        "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",
+      composerPosition: "Vị trí khung soạn thảo",
+      composerPositionDescription: "Vị trí của khung soạn thảo khi bắt đầu cuộc trò chuyện mới, từ đầu trang xuống tận cuối trang.",
       projectAttachments: "Chia sẻ tệp trong cả dự án",
       projectAttachmentsDescription:
         "Cho phép mọi cuộc trò chuyện trong dự án dùng các tệp đính kèm mới.",

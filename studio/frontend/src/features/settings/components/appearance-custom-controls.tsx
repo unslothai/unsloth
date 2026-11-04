@@ -25,6 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { useChatPreferencesStore } from "@/features/chat";
 import { Switch } from "@/components/ui/switch";
 import { NumericValueInput } from "@/features/model-picker/components/numeric-value-input";
 import { type TranslationKey, useT } from "@/i18n";
@@ -1009,6 +1010,35 @@ export function ComposerOutlineSliderRow() {
         step={1}
         onChange={set}
         ariaLabel={t("chatBackground.outline")}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
+export function ComposerPositionSliderRow() {
+  const t = useT();
+  const value = useChatPreferencesStore((s) => s.newChatComposerPosition);
+  const set = useChatPreferencesStore((s) => s.setNewChatComposerPosition);
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={t("settings.chat.composerPosition")}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={t("settings.chat.composerPosition")}
         className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
         fixedWidth={true}
         size={4}
