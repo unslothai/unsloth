@@ -174,3 +174,19 @@ def test_render_start_opens_a_fresh_peak_window_without_the_learned_probe(
     dmod._note_deferred_eager_peak(state)
     _state, engaged = engage(state = state)
     assert engaged
+
+
+def test_hires_refinement_peaks_are_noted_too():
+    # The refinement pass does not count as a generation, but its (larger) peak must still be noted before the next
+    # pass resets the counters, so the note may not sit under the generation-count branch.
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(dmod))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and "generation_count" in ast.unparse(node.body[0]):
+            assert "_note_deferred_eager_peak" not in ast.unparse(node), ast.unparse(node)[:200]
+            break
+    else:
+        pytest.fail("generation_count branch not found")
+    assert "_note_deferred_eager_peak(state)" in inspect.getsource(dmod)

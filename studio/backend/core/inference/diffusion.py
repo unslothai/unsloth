@@ -14857,8 +14857,9 @@ class DiffusionBackend:
                 # Count the finished generation (drives deferred speed); a batch is one generation.
                 if (_hires_pass is None or not _hires_pass.refine) and not aux_pass:
                     object.__setattr__(state, "generation_count", state.generation_count + 1)
-                    if state.speed_deferred:
-                        _note_deferred_eager_peak(state)
+                if state.speed_deferred:
+                    # every eager pass, hires refinements included: the next pass resets the counters
+                    _note_deferred_eager_peak(state)
                 result = {
                     "images": list(images),
                     "seed": int(seed),
