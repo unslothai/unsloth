@@ -4,12 +4,14 @@
 // Live prefill / decode figures, the Generation details setting, and the loaded placement readout.
 
 import assert from "node:assert/strict";
+import { register } from "node:module";
 import test from "node:test";
 
 import type { LiveDecodeProgress, LivePrefillProgress } from "../src/features/chat/stores/chat-runtime-store.ts";
 import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
+register("./thread-sampling-resolver.mjs", import.meta.url);
 const {
   formatLiveDecode,
   formatPrefillDetails,
@@ -197,11 +199,23 @@ test("a compaction frame reads as its own phase and survives a persisted run", (
   assert.equal(generationChunkCountsTowardTiming(normalized), false);
 });
 
-test("compaction shows until the pass's context_truncated or first prefill sample, live or followed", () => {
-  const store = readSrc("features/chat/stores/chat-runtime-store.ts");
-  // A prefill or decode sample rebuilds the entry without the flag, so the label gives way to the prompt line.
-  assert.match(store, /\[key\]: \{ prefill, prefillShown, decode: null \}/);
-  assert.match(store, /\{ prefill: null, prefillShown: false, decode: null, compacting: true \}/);
+test("compaction shows until the pass's context_truncated or first prefill sample, live or followed", async () => {
+  await import("./helpers/store-stubs/settings-http.ts");
+  await import("./helpers/store-stubs/chat-history-storage.ts");
+  const { useChatRuntimeStore } = await import("../src/features/chat/stores/chat-runtime-store.ts");
+  const runtime = useChatRuntimeStore.getState();
+  const live = () => useChatRuntimeStore.getState().liveGenerationByThreadId.t;
+  runtime.setLiveDecode("t", { tokens: 5, tokPerS: 9 } as LiveDecodeProgress);
+  runtime.setLiveCompacting("t", true);
+  assert.deepEqual(live(), { prefill: null, prefillShown: false, decode: null, compacting: true });
+  runtime.setLiveCompacting("t", false);
+  assert.equal(live()?.compacting, false);
+  runtime.setLiveCompacting("t", true);
+  runtime.setLivePrefill("t", { processed: 1, total: 10 } as LivePrefillProgress);
+  assert.notEqual(live()?.compacting, true);
+  runtime.setLiveCompacting("t", true);
+  runtime.setLiveDecode("t", { tokens: 6, tokPerS: 9 } as LiveDecodeProgress);
+  assert.notEqual(live()?.compacting, true);
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
   assert.match(adapter, /update\?\.phase === "compacting"\) \{\s*runtime\.setLiveCompacting\(liveThreadKey\(serverCancel\), true\);/);
   assert.match(adapter, /if \(chunk\.context_truncated\) \{\s*runtime\.setLiveCompacting\(liveThreadKey\(serverCancel\), false\);/);

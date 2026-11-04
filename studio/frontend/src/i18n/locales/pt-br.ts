@@ -5492,7 +5492,7 @@ export const ptBR = {
   generationStats: {
     working: "Processando...",
     processingPrompt: "Processando prompt {percent}%",
-    compactingContext: "Compacting context...",
+    compactingContext: "Compactando o contexto...",
     timeLeft: "faltam {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",
