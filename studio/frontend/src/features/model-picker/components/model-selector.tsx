@@ -707,6 +707,7 @@ function ModelSelectorContent({
         ) : (
           <>
             <HubModelPicker
+              open={open}
               models={models}
               additionalOnDeviceModels={additionalOnDeviceModels}
               loadedModelIdOverride={loadedModelIdOverride}

@@ -2206,6 +2206,12 @@ def test_video_gguf_status_reports_selected_quant_instead_of_only_compute_dtype(
 
 
 def test_video_status_family_capabilities_are_probed_once(monkeypatch):
+    from utils.hardware import hardware as hw
+
+    detection = threading.Event()
+    detection.set()
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", detection)
+    monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CPU)
     calls = []
     available = (
         types.SimpleNamespace(name = "ltx-2", modular_workflow = False),

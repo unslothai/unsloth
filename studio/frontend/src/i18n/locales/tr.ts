@@ -2038,6 +2038,26 @@ export const tr = {
       chatDefaults: "Sohbet varsayılanları",
       autoTitleNewChats: "Yeni sohbetlere otomatik başlık ver",
       autoTitleNewChatsDescription: "İlk mesajdan bir başlık oluşturun.",
+      mlWarmup: {
+        sectionTitle: "Başlangıç performansı",
+        description: "Seçilen özellikleri ilk kullanımın daha hızlı olması için hazırlayın. Tüm seçenekler varsayılan olarak kapalıdır. Seçenekler ortak bağımlılıkları yükleyebilir ve boşta daha fazla RAM kullanabilir.",
+        restartRequired: "Değişiklikler Unsloth yeniden başlatıldıktan sonra uygulanır.",
+        hardwareLabel: "Donanım algılama",
+        hardwareDescription: "GPU'ları algılayın ve PyTorch'u hazırlayın.",
+        textLabel: "Metin modelleri",
+        textDescription: "Transformers metin modeli desteğini hazırlayın.",
+        datasetsLabel: "Veri kümesi hazırlığı",
+        datasetsDescription: "Önizleme ve işleme için Datasets'i ve bağımlılıklarını hazırlayın.",
+        mediaLabel: "Görüntü ve video modelleri",
+        mediaDescription: "Diffusers'ı ve ortak model bağımlılıklarını hazırlayın.",
+        advanced: "Gelişmiş",
+        quantizationLabel: "Görüntü kuantizasyonu ön kontrolleri",
+        quantizationDescription: "Kuantize edilmiş bir görüntü modeli ilk kez yüklenmeden önce desteği kontrol edin. RAM kullanımını kısa süreliğine artırabilir.",
+        requiredBySelections: "Seçimleriniz için gereklidir.",
+        disabledByEnv: "Arka uç ortamındaki UNSLOTH_STUDIO_DISABLE_TORCH_WARM tarafından devre dışı bırakıldı.",
+        loadError: "Başlangıçta ön hazırlık ayarları yüklenemedi.",
+        saveError: "Başlangıçta ön hazırlık ayarları kaydedilemedi.",
+      },
       helperLlm: {
         sectionTitle: "Yardımcı LLM",
         preloadOnStartup: "Yardımcı LLM'yi başlangıçta önbelleğe al",
@@ -3733,6 +3753,9 @@ export const tr = {
         docsLabel: "Karar API'si belgelerini aç",
         description:
           "Bu makinedeki bir modelle veya Bağlantılar'daki bir karar modeliyle metin hakkında evet/hayır, çoktan seçmeli ve puanlama sorularını yanıtlayın. TypeSafe SDK ile çalışır.",
+        codeTitle: "Koddan çağır",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Diğer MCP istemcileri buraya aynı belirteçle bağlanır.",
         enable: "İstekleri sun",
         enableDescription:
           "/v1/systemone uç noktasını sunar. Açıldığında model indirilir.",
@@ -3893,7 +3916,7 @@ export const tr = {
         desktopAvailableDescription:
           "Şimdi güncelleyin; işlem bittiğinde masaüstü uygulaması yeniden başlar.",
         desktopExternalServer:
-          "Uygulama zaten çalışan bir Unsloth sunucusuna bağlandı ve bu sunucuyu güncelleyemez. Güncellemek için o sunucuyu durdurun, ardından masaüstü uygulamasından çıkıp yeniden açın.",
+          "Bu uygulamanın başlatmadığı, {port} numaralı bağlantı noktasındaki bir Unsloth sunucusuna bağlı; örneğin bir terminaldeki `unsloth studio`. Güncellemek için sunucuyu başlatıldığı yerden durdurun, ardından uygulamadan çıkıp yeniden açın.",
         desktopManualInstall:
           "En son Linux paketini kurmak için sürüm sayfasını açın.",
         desktopCheckFailed: "Güncellemeler denetlenemedi",
@@ -5469,6 +5492,8 @@ export const tr = {
     removeLevel: "Düzey {n} öğesini kaldır",
     addLevel: "Düzey ekle",
     jsonHelp: "İstek gövdesi. Çalıştır, onu yazıldığı gibi gönderir.",
+    copyBody: "Gövdeyi kopyala",
+    copyCurl: "cURL olarak kopyala",
     examples: "Örnekler",
     presetToolApproval: "Ajan araç çağrılarını onayla",
     presetPromptInjection: "İstem enjeksiyonunu yakala",
@@ -5871,6 +5896,7 @@ export const tr = {
   generationStats: {
     working: "İşleniyor...",
     processingPrompt: "İstem işleniyor %{percent}",
+    compactingContext: "Bağlam sıkıştırılıyor...",
     timeLeft: "{eta} kaldı",
     tokensOne: "{count} token",
     tokens: "{count} token",

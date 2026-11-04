@@ -96,6 +96,14 @@ from utils.chat_preferences_settings import (
     migrate_show_model_disclaimer,
     set_show_model_disclaimer,
 )
+from utils.ml_warmup_settings import (
+    ML_WARMUP_FEATURES,
+    MlWarmupFeature,
+    effective_ml_warmup_features,
+    get_ml_warmup_features,
+    ml_warmup_disabled_by_env,
+    set_ml_warmup_features,
+)
 from utils.helper_precache_settings import (
     DEFAULT_HELPER_PRECACHE_ENABLED,
     get_helper_precache_enabled,
@@ -740,6 +748,7 @@ class SystemOneSettingsResponse(BaseModel):
     input_modalities: list[str] = ["text"]
     # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
     layout: Optional[str] = None
+    has_gguf_form: bool = False
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -758,6 +767,16 @@ class SystemOneDownloadPlan(BaseModel):
     size_bytes: int
     cached: bool
     error: Optional[str] = None
+
+
+class MlWarmupPayload(BaseModel):
+    features: list[MlWarmupFeature]
+
+
+class MlWarmupResponse(BaseModel):
+    features: list[MlWarmupFeature]
+    effective_features: list[MlWarmupFeature]
+    disabled_by_env: bool
 
 
 class HelperPrecachePayload(BaseModel):
@@ -1188,6 +1207,16 @@ def _upload_limit_response(limit_mb: int) -> UploadLimitResponse:
     )
 
 
+def _ml_warmup_response(features: frozenset[str] | None = None) -> MlWarmupResponse:
+    selected = get_ml_warmup_features() if features is None else features
+    effective = effective_ml_warmup_features(selected)
+    return MlWarmupResponse(
+        features = [feature for feature in ML_WARMUP_FEATURES if feature in selected],
+        effective_features = [feature for feature in ML_WARMUP_FEATURES if feature in effective],
+        disabled_by_env = ml_warmup_disabled_by_env(),
+    )
+
+
 def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResponse:
     return HelperPrecacheResponse(
         enabled = get_helper_precache_enabled() if enabled is None else enabled,
@@ -1612,6 +1641,19 @@ def update_tool_result_limit(
     return _tool_result_limit_response()
 
 
+@_shared_settings_router.get("/ml-warmup", response_model = MlWarmupResponse)
+def get_ml_warmup(current_subject: str = Depends(get_current_subject)) -> MlWarmupResponse:
+    return _ml_warmup_response()
+
+
+@_owner_settings_router.put("/ml-warmup", response_model = MlWarmupResponse)
+def update_ml_warmup(
+    payload: MlWarmupPayload, current_subject: str = Depends(get_current_subject)
+) -> MlWarmupResponse:
+    """Save the selected ML warmup features for the next Unsloth startup."""
+    return _ml_warmup_response(set_ml_warmup_features(payload.features))
+
+
 @_shared_settings_router.get("/helper-precache", response_model = HelperPrecacheResponse)
 def get_helper_precache(
     current_subject: str = Depends(get_current_subject),
@@ -1677,7 +1719,8 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
     only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
     if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
-        only = {} if only_mlx else {"llama_cpp_only": True}
+        # A non-Clef MLX-only entry (Decider) is flagged too, so its runtime row stays reachable.
+        only = {} if only_mlx and checkpoint.layout == "clef" else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
@@ -1768,6 +1811,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         fallback_reason = fallback if effective == "pytorch" or effective is None else None,
         input_modalities = laya_runtime.input_modalities(configured),
         layout = getattr(configured, "layout", None),
+        has_gguf_form = laya_runtime.has_native_form(configured),
     )
 
 

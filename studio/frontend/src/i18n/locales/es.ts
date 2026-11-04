@@ -1883,6 +1883,26 @@ export const es = {
       autoTitleNewChats: "Titular automáticamente los chats nuevos",
       autoTitleNewChatsDescription:
         "Genera un título breve a partir del primer mensaje.",
+      mlWarmup: {
+        sectionTitle: "Rendimiento al iniciar",
+        description: "Prepara las funciones seleccionadas para acelerar su primer uso. Todas están desactivadas por defecto. Estas opciones pueden cargar dependencias compartidas y aumentar el uso de RAM en reposo.",
+        restartRequired: "Los cambios se aplican después de reiniciar Unsloth.",
+        hardwareLabel: "Detección de hardware",
+        hardwareDescription: "Detectar las GPU y preparar PyTorch.",
+        textLabel: "Modelos de texto",
+        textDescription: "Preparar el soporte de Transformers para modelos de texto.",
+        datasetsLabel: "Preparación de conjuntos de datos",
+        datasetsDescription: "Preparar Datasets y sus dependencias para las vistas previas y el procesamiento.",
+        mediaLabel: "Modelos de imagen y vídeo",
+        mediaDescription: "Preparar Diffusers y las dependencias compartidas de los modelos.",
+        advanced: "Avanzado",
+        quantizationLabel: "Comprobaciones previas de cuantización de imagen",
+        quantizationDescription: "Comprobar la compatibilidad antes de cargar por primera vez un modelo de imagen cuantizado. Puede aumentar brevemente el uso de RAM.",
+        requiredBySelections: "Necesario para las opciones seleccionadas.",
+        disabledByEnv: "Desactivado por UNSLOTH_STUDIO_DISABLE_TORCH_WARM en el entorno del backend.",
+        loadError: "No se pudo cargar la configuración de preparación al iniciar.",
+        saveError: "No se pudo guardar la configuración de preparación al iniciar.",
+      },
       helperLlm: {
         sectionTitle: "LLM auxiliar",
         preloadOnStartup: "Precargar el LLM auxiliar al iniciar",
@@ -3483,6 +3503,9 @@ export const es = {
         docs: "Documentación",
         docsLabel: "Abrir la documentación de la API de decisiones",
         description: "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en este equipo o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
+        codeTitle: "Llámalo desde código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Otros clientes MCP se conectan aquí con el mismo token.",
         enable: "Atender solicitudes",
         enableDescription: "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
         enableRemoteDescription: "Atiende /v1/systemone.",
@@ -3638,7 +3661,7 @@ export const es = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación se conectó a un servidor de Unsloth que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en un terminal. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudo buscar actualizaciones",
@@ -5153,6 +5176,8 @@ export const es = {
     removeLevel: "Quitar el nivel {n}",
     addLevel: "Añadir nivel",
     jsonHelp: "El cuerpo de la solicitud. Ejecutar lo envía tal cual.",
+    copyBody: "Copiar cuerpo",
+    copyCurl: "Copiar como cURL",
     examples: "Ejemplos",
     presetToolApproval: "Aprobar llamadas a herramientas de agentes",
     presetPromptInjection: "Detectar inyección de prompts",
@@ -5538,6 +5563,7 @@ export const es = {
   generationStats: {
     working: "Procesando...",
     processingPrompt: "Procesando el prompt {percent}%",
+    compactingContext: "Compactando el contexto...",
     timeLeft: "quedan {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",

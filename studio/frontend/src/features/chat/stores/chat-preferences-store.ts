@@ -3,6 +3,7 @@
 
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { syncAcrossWindows } from "../../../lib/sync-across-windows.ts";
 import {
   type ComposerSendShortcut,
   type ComposerFollowUpBehavior,
@@ -186,3 +187,5 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
     },
   ),
 );
+
+syncAcrossWindows(useChatPreferencesStore);

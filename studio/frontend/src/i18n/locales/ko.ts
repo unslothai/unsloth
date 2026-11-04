@@ -1871,6 +1871,26 @@ export const ko = {
       autoTitleNewChats: "새 채팅 제목 자동 생성",
       autoTitleNewChatsDescription:
         "첫 메시지를 기반으로 짧은 제목을 생성합니다.",
+      mlWarmup: {
+        sectionTitle: "시작 성능",
+        description: "선택한 기능을 미리 준비하여 처음 사용할 때 더 빠르게 실행되도록 합니다. 기본값은 모두 꺼짐입니다. 공유 의존성이 로드되어 유휴 상태의 RAM 사용량이 늘어날 수 있습니다.",
+        restartRequired: "변경 사항은 Unsloth를 다시 시작한 후 적용됩니다.",
+        hardwareLabel: "하드웨어 감지",
+        hardwareDescription: "GPU를 감지하고 PyTorch를 준비합니다.",
+        textLabel: "텍스트 모델",
+        textDescription: "Transformers의 텍스트 모델 지원을 준비합니다.",
+        datasetsLabel: "데이터셋 준비",
+        datasetsDescription: "미리보기와 처리에 사용할 Datasets 및 관련 의존성을 준비합니다.",
+        mediaLabel: "이미지 및 동영상 모델",
+        mediaDescription: "Diffusers와 모델 간 공유 의존성을 준비합니다.",
+        advanced: "고급",
+        quantizationLabel: "이미지 양자화 사전 검사",
+        quantizationDescription: "양자화된 이미지 모델을 처음 로드하기 전에 지원 여부를 확인합니다. RAM 사용량이 잠시 늘어날 수 있습니다.",
+        requiredBySelections: "선택한 항목에 필요합니다.",
+        disabledByEnv: "백엔드 환경의 UNSLOTH_STUDIO_DISABLE_TORCH_WARM에 의해 비활성화되었습니다.",
+        loadError: "시작 시 사전 준비 설정을 불러오지 못했습니다.",
+        saveError: "시작 시 사전 준비 설정을 저장하지 못했습니다.",
+      },
       helperLlm: {
         sectionTitle: "보조 LLM",
         preloadOnStartup: "시작 시 보조 LLM 미리 캐시",
@@ -3433,6 +3453,9 @@ export const ko = {
         docs: "문서",
         docsLabel: "판단 API 문서 열기",
         description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
+        codeTitle: "코드에서 호출",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "다른 MCP 클라이언트는 같은 토큰으로 여기에 연결합니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
         enableRemoteDescription: "/v1/systemone을 제공합니다.",
@@ -3586,7 +3609,7 @@ export const ko = {
         desktopAvailableDescription:
           "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
-          "앱이 이미 실행 중인 Unsloth 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
+          "이 앱이 시작하지 않은 포트 {port}의 Unsloth 서버(예: 터미널의 `unsloth studio`)에 연결되어 있습니다. 서버를 시작한 곳에서 중지한 다음 앱을 종료하고 다시 열어 업데이트하세요.",
         desktopManualInstall:
           "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
         desktopCheckFailed: "업데이트를 확인하지 못했습니다",
@@ -5071,6 +5094,8 @@ export const ko = {
     removeLevel: "수준 {n} 삭제",
     addLevel: "수준 추가",
     jsonHelp: "요청 본문입니다. 실행하면 그대로 전송됩니다.",
+    copyBody: "본문 복사",
+    copyCurl: "cURL로 복사",
     examples: "예시",
     presetToolApproval: "에이전트 도구 호출 승인",
     presetPromptInjection: "프롬프트 인젝션 탐지",
@@ -5456,6 +5481,7 @@ export const ko = {
   generationStats: {
     working: "처리 중...",
     processingPrompt: "프롬프트 처리 중 {percent}%",
+    compactingContext: "컨텍스트 압축 중...",
     timeLeft: "{eta} 남음",
     tokensOne: "토큰 {count}개",
     tokens: "토큰 {count}개",

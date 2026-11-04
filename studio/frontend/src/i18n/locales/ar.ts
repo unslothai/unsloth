@@ -1873,6 +1873,26 @@ export const ar = {
       autoTitleNewChats: "عنونة المحادثات الجديدة تلقائيًا",
       autoTitleNewChatsDescription:
         "إنشاء عنوان قصير من الرسالة الأولى.",
+      mlWarmup: {
+        sectionTitle: "أداء بدء التشغيل",
+        description: "جهّز الميزات المحددة لتسريع استخدامها لأول مرة. جميع الخيارات معطّلة افتراضيًا. قد تؤدي الخيارات إلى تحميل تبعيات مشتركة واستخدام المزيد من RAM أثناء الخمول.",
+        restartRequired: "تُطبّق التغييرات بعد إعادة تشغيل Unsloth.",
+        hardwareLabel: "اكتشاف العتاد",
+        hardwareDescription: "اكتشف وحدات GPU وجهّز PyTorch.",
+        textLabel: "النماذج النصية",
+        textDescription: "جهّز دعم النماذج النصية في Transformers.",
+        datasetsLabel: "إعداد مجموعات البيانات",
+        datasetsDescription: "جهّز Datasets وتبعياتها للمعاينة والمعالجة.",
+        mediaLabel: "نماذج الصور والفيديو",
+        mediaDescription: "جهّز Diffusers وتبعيات النماذج المشتركة.",
+        advanced: "خيارات متقدمة",
+        quantizationLabel: "فحوصات أولية لتكميم الصور",
+        quantizationDescription: "تحقّق من الدعم قبل تحميل نموذج صور مكمّم لأول مرة. قد يزيد ذلك استخدام RAM لفترة وجيزة.",
+        requiredBySelections: "مطلوب للخيارات التي حددتها.",
+        disabledByEnv: "مُعطّل بواسطة UNSLOTH_STUDIO_DISABLE_TORCH_WARM في بيئة الخادم.",
+        loadError: "فشل تحميل إعدادات التهيئة المسبقة عند بدء التشغيل.",
+        saveError: "فشل حفظ إعدادات التهيئة المسبقة عند بدء التشغيل.",
+      },
       helperLlm: {
         sectionTitle: "نموذج LLM المساعد",
         preloadOnStartup: "تحميل نموذج LLM المساعد مسبقًا عند بدء التشغيل",
@@ -3443,6 +3463,9 @@ export const ar = {
         docs: "التوثيق",
         docsLabel: "فتح توثيق واجهة القرارات البرمجية",
         description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج على هذا الجهاز أو نموذج قرارات من الاتصالات. يعمل مع حزمة TypeSafe.",
+        codeTitle: "استدعِه من الشيفرة",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "تتصل عملاء MCP الأخرى هنا باستخدام الرمز نفسه.",
         enable: "خدمة الطلبات",
         enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
         enableRemoteDescription: "يقدّم /v1/systemone.",
@@ -3596,7 +3619,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "اتصل التطبيق بخادم Unsloth يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
+          "متصل بخادم Unsloth على المنفذ {port} لم يشغّله هذا التطبيق، مثل `unsloth studio` في نافذة طرفية. أوقفه من المكان الذي شُغّل منه، ثم أغلق التطبيق وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
@@ -5080,6 +5103,8 @@ export const ar = {
     removeLevel: "إزالة المستوى {n}",
     addLevel: "إضافة مستوى",
     jsonHelp: "نص الطلب. التشغيل يرسله كما هو.",
+    copyBody: "نسخ النص الأساسي",
+    copyCurl: "نسخ كـ cURL",
     examples: "أمثلة",
     presetToolApproval: "الموافقة على استدعاءات أدوات الوكيل",
     presetPromptInjection: "كشف حقن الأوامر",
@@ -5465,6 +5490,7 @@ export const ar = {
   generationStats: {
     working: "جارٍ التنفيذ...",
     processingPrompt: "جارٍ معالجة الطلب {percent}%",
+    compactingContext: "جارٍ ضغط السياق...",
     timeLeft: "يتبقى {eta}",
     tokensOne: "التوكنات: {count}",
     tokens: "التوكنات: {count}",

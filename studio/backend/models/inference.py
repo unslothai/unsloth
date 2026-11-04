@@ -5561,6 +5561,13 @@ class GalleryImage(BaseModel):
     batch_size: int = Field(
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
+    generation_seconds: Optional[float] = Field(
+        None,
+        description = "Elapsed generation seconds until images are ready to save, shared by the request",
+    )
+    generation_count: Optional[int] = Field(
+        None, description = "Number of images in the timed request; absent on older records"
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
     engine: Optional[str] = Field(
@@ -5591,6 +5598,11 @@ class GalleryImage(BaseModel):
         None,
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where this generation's denoiser ran: resident | partial | "
+        "streamed (streamed blocks move from CPU on every step). Null for other policies and older records.",
     )
     speed_mode: Optional[str] = Field(
         None,
@@ -6067,6 +6079,11 @@ class DiffusionStatusResponse(BaseModel):
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | streaming | sequential"
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where the denoiser lives now: resident (only the text encoders "
+        "stream) | partial | streamed (blocks move from CPU on every step). Null for other policies.",
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")

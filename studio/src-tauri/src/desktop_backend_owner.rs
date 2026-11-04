@@ -23,8 +23,6 @@ const STUDIO_INSTALL_ID_HEX_LEN: usize = 64;
 const STUDIO_INSTALL_ID_BYTES: usize = STUDIO_INSTALL_ID_HEX_LEN / 2;
 const STUDIO_INSTALL_ID_LOCK_FILE: &str = ".studio_install_id.lock";
 const OWNER_TOKEN_BYTES: usize = 32;
-const DESKTOP_PORT_START: u16 = 8888;
-const DESKTOP_PORT_END: u16 = 8908;
 const LOCAL_HTTP_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug)]
@@ -177,8 +175,13 @@ fn probe_credential(body: &[u8], secret: &str) -> Result<ProbeCredential, String
     }
 }
 
-pub(crate) fn desktop_candidate_ports() -> std::ops::RangeInclusive<u16> {
-    DESKTOP_PORT_START..=DESKTOP_PORT_END
+pub(crate) fn desktop_candidate_ports() -> std::vec::IntoIter<u16> {
+    let configured = crate::desktop_port::configured_port(
+        std::env::var_os(crate::desktop_port::PORT_ENV).as_deref(),
+    )
+    .ok()
+    .flatten();
+    crate::desktop_port::discovery_ports(configured).into_iter()
 }
 
 pub(crate) fn is_valid_studio_root_id(value: &str) -> bool {
@@ -1027,7 +1030,7 @@ pub(crate) async fn probe_owned_backend_state_with_timeout(
 ) -> OwnedBackendProbe {
     let ports: Vec<u16> = match port {
         Some(port) => vec![port],
-        None => desktop_candidate_ports().collect(),
+        None => crate::desktop_port::fallback_ports(owner.requested_port()).collect(),
     };
     probe_owned_backend_state_on_ports(owner, ports, require_desktop_secret, timeout).await
 }

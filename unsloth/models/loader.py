@@ -36,7 +36,12 @@ from peft import PeftConfig, PeftModel
 from .grouped_linear_lora import register_grouped_linear_lora_for_adapter
 from .fp8_to_nf4 import track_explicit_4bit_request
 from .fsdp2_load import sharded_load_env as fsdp2_sharded_load_env
-from .float8_training import convert_model_to_float8_training, resolve_float8_training
+from .float8_training import (
+    convert_model_to_float8_training,
+    mark_fp8_lora,
+    resolve_float8_training,
+    resolve_fp8_lora,
+)
 from .mistral_format import (
     MistralFormatRedirect,
     is_mistral_format_view,
@@ -187,6 +192,7 @@ from ._utils import (
     _mark_forced_float32,
     _drop_float16_overflowing_attention_dropout,
     _ignore_block_swap_params_for_ddp,
+    block_swap_shaped,
     _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
@@ -1340,10 +1346,16 @@ class FastLanguageModel(FastLlamaModel):
                 device_map = distributed_device_map
 
         # @_offline_aware_load already forced offline when needed; delegations inherit it.
+        fp8_lora = None
+        fp8_request = kwargs.get("float8_training", None)
         if kwargs.get("float8_training", None) not in (None, False) and not full_finetuning:
-            raise ValueError(
-                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
-                "their base weights frozen, so there is no fp8 training step to take."
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
             )
         if kwargs.get("float8_training", None) not in (None, False) and qat_scheme is not None:
             raise ValueError(
@@ -1925,6 +1937,7 @@ class FastLanguageModel(FastLlamaModel):
                 unsloth_tiled_mlp = unsloth_tiled_mlp,
                 text_only = text_only,
                 *args,
+                **({"float8_training": fp8_request} if fp8_lora is not None else {}),
                 **kwargs,
             )
             return _mark_requested_float32(delegated, user_float32), tokenizer
@@ -2112,7 +2125,16 @@ class FastLanguageModel(FastLlamaModel):
                 local_files_only = local_files_only,
                 cache_dir = kwargs.get("cache_dir"),
             )
-            with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+            load_config = peft_load_kwargs.get("config", peft_config)
+            with (
+                fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                block_swap_shaped(
+                    model,
+                    getattr(load_config, "init_lora_weights", True),
+                    lora_config = load_config,
+                    loading_adapter = True,
+                ),
+            ):
                 model = PeftModel.from_pretrained(
                     model,
                     old_model_name,
@@ -2158,6 +2180,7 @@ class FastLanguageModel(FastLlamaModel):
         model = _mark_forced_float32(model, False)
         # Full finetuning delegates to FastModel above, so this path is always LoRA.
         model = _mark_full_finetuning(model, False)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
@@ -2271,12 +2294,17 @@ class FastModel(FastBaseModel):
     ):
         rope_scaling = _fold_rope_parameters(rope_scaling, kwargs)
         user_config = kwargs.pop("config", None)
-        float8_training = resolve_float8_training(kwargs.pop("float8_training", None), dtype = dtype)
-        if float8_training is not None and not full_finetuning:
-            raise ValueError(
-                "Unsloth: `float8_training` is for `full_finetuning = True` only; LoRA / QLoRA keep "
-                "their base weights frozen, so there is no fp8 training step to take."
+        fp8_lora = None
+        if not full_finetuning and kwargs.get("float8_training", None) not in (None, False):
+            fp8_lora = resolve_fp8_lora(
+                kwargs.pop("float8_training"),
+                dtype = dtype,
+                load_in_4bit = load_in_4bit,
+                load_in_8bit = load_in_8bit,
+                load_in_fp8 = load_in_fp8,
+                qat_scheme = qat_scheme,
             )
+        float8_training = resolve_float8_training(kwargs.pop("float8_training", None), dtype = dtype)
         if float8_training is not None and qat_scheme is not None:
             raise ValueError(
                 "Unsloth: `float8_training` and `qat_scheme` cannot be combined. QAT swaps the Linear "
@@ -2546,6 +2574,12 @@ class FastModel(FastBaseModel):
 
         # Text-diffusion slow-path dispatch, factored so the normal route and the legacy-config fallback share one call site.
         def _dispatch_diffusion():
+            if fp8_lora is not None:
+                raise NotImplementedError(
+                    f"Unsloth: float8_training = {fp8_lora!r} (fp8 LoRA) is not supported for text-diffusion "
+                    "models yet. Instead: drop float8_training for LoRA, or float8_training with "
+                    "full_finetuning = True."
+                )
             model, tokenizer = FastDiffusionModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
@@ -3594,7 +3628,16 @@ class FastModel(FastBaseModel):
                 cache_dir = kwargs.get("cache_dir"),
             )
             try:
-                with fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext():
+                load_config = peft_load_kwargs.get("config", peft_config)
+                with (
+                    fast_lora_init(force = True) if fast_pissa else contextlib.nullcontext(),
+                    block_swap_shaped(
+                        model,
+                        getattr(load_config, "init_lora_weights", True),
+                        lora_config = load_config,
+                        loading_adapter = True,
+                    ),
+                ):
                     model = PeftModel.from_pretrained(
                         model,
                         old_model_name,
@@ -3653,6 +3696,7 @@ class FastModel(FastBaseModel):
             print(f"Unsloth: float8 training on {len(converted)} Linear layers.")
         model = _mark_forced_float32(model, do_forced_float32)
         model = _mark_full_finetuning(model, full_finetuning)
+        model = mark_fp8_lora(model, fp8_lora)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 

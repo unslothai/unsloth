@@ -127,6 +127,8 @@ export type Scenario = {
   tokenDecision: string | null;
   /** false = the backend platform probe has not landed yet. */
   platformFetched: boolean;
+  /** true = the backend answered but deferred hardware detection. */
+  detectionDeferred: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -598,6 +600,8 @@ const usePlatformStore = {
     // Server-reported unless a scenario says the probe has not landed.
     fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
+    capabilitiesUnknown: () =>
+      SCENARIO.platformFetched === false || SCENARIO.detectionDeferred === true,
   }),
 };
 function isMlxId(value: string) {
@@ -1689,6 +1693,15 @@ def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
     """Before the probe lands the chatOnly flag is a browser guess."""
     out = _run(
         "scenario({ chatOnly: true, platformFetched: false,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_deferred_hardware_verdict_does_not_hide_cached_non_gguf_rows():
+    """Deferred detection reports a provisional chat_only, not a measurement."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true,"
         " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
     )
     assert _loaded_paths(out) == ["org/st"]
