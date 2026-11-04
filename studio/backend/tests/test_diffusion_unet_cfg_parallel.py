@@ -329,3 +329,14 @@ def test_group_offloaded_denoiser_runs_cfg_parallel_from_its_onload_card(monkeyp
     assert mg.cfg_parallel_decline(Pipe(), offload_policy = "group", selection = sel) is None
     monkeypatch.setattr(dm, "_offload_groups", lambda module: [])
     assert mg.cfg_parallel_decline(Pipe(), offload_policy = "group", selection = sel) == "denoiser is not on a CUDA card"
+
+
+def test_group_offloaded_onto_bare_cuda_names_the_current_card(monkeypatch):
+    from core.inference import diffusion_memory as dm
+
+    class Group:
+        onload_device = torch.device("cuda")
+
+    monkeypatch.setattr(dm, "_offload_groups", lambda module: [Group()])
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    assert mg._execution_device(_Dit()) == torch.device("cuda", 0)

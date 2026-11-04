@@ -1073,6 +1073,11 @@ def _execution_device(module: Any) -> Any:
         for group in _offload_groups(module):
             onload = getattr(group, "onload_device", None)
             if onload is not None and getattr(onload, "type", None) == "cuda":
+                onload = _torch().device(onload)
+                if onload.index is None:
+                    # an automatic load on the current card onloads to bare "cuda": name the card, so the replica
+                    # search compares it with the secondaries by ordinal
+                    onload = _torch().device("cuda", _torch().cuda.current_device())
                 return onload
     except Exception:  # noqa: BLE001 - unknown: the parameter device stands
         pass
