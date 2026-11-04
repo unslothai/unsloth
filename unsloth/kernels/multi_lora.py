@@ -572,6 +572,20 @@ def multi_lora_linear(X, W, W_quant, bias, A, B, scales, batch: Optional[MultiLo
     return Y
 
 
+def _refuse_int8_base(name: str, base: nn.Module) -> None:
+    """An 8-bit bitsandbytes weight would be read as a dense int8 matrix with its scales dropped."""
+    W = getattr(base, "weight", None)
+    if (
+        any(cls.__name__ == "Linear8bitLt" for cls in type(base).__mro__)
+        or any(cls.__name__ == "Int8Params" for cls in type(W).__mro__)
+        or getattr(W, "SCB", None) is not None
+    ):
+        raise NotImplementedError(
+            f"Multi-LoRA does not support 8-bit bitsandbytes base layers ({name!r} is "
+            f"{type(base).__name__}). Load the base model in 4-bit or in 16-bit instead."
+        )
+
+
 class MultiLoraLinear(nn.Module):
     """Frozen base linear with ``num_adapters`` LoRA adapters, separate (A, B) params each (PEFT init).
 
@@ -587,6 +601,7 @@ class MultiLoraLinear(nn.Module):
         use_rslora: bool = False,
         dtype: torch.dtype = torch.float32,
     ):
+        _refuse_int8_base(type(base).__name__, base)
         super().__init__()
         self.base_layer = base
         for p in base.parameters():
@@ -669,6 +684,8 @@ def inject_multi_lora(
     ]
     if not found:
         raise ValueError(f"No linear layers named {targets} found.")
+    for name, module in found:
+        _refuse_int8_base(name, module)
     _freeze_all_but_adapters(model)
     for name, module in found:
         parent_name, _, child = name.rpartition(".")
