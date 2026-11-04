@@ -17,7 +17,7 @@ class _Tokenizer:
     eos_token_id = 0
 
     def __call__(self, text, **kwargs):
-        # One token per word, ids start at 1 so the EOS id (0) stays distinct.
+        # ids from 1: EOS is 0.
         ids = torch.arange(1, len(text.split()) + 1)
         return {"input_ids": ids.unsqueeze(0)}
 
@@ -123,8 +123,7 @@ def test_dataset_text_file_honours_chunk_size_and_stride(tmp_path, monkeypatch):
     path = tmp_path / "corpus.txt"
     path.write_text(" ".join(f"w{i}" for i in range(100)), encoding = "utf-8")
     dataset = _run_cli(monkeypatch, dataset = str(path), chunk_size = 32, stride = 8)
-    # 100 tokens + EOS at chunk_size 32 / stride 8 is 4 windows (step 24) of at most 32 tokens;
-    # the default 2048 would put all 101 in one row.
+    # 101 tokens at chunk 32 / step 24 = 4 windows; the ignored-flag default (2048) gives 1.
     assert len(dataset["input_ids"]) == 4
     assert _longest_row(dataset) <= 32
 
