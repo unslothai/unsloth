@@ -38,6 +38,10 @@ test("the API Monitor's examples follow the keyless policy, as the Settings tab'
     assert.match(monitor, new RegExp(`<${section}[^>]*\\{\\.\\.\\.keyless\\}`), section);
   }
   assert.match(readSrc("features/settings/tabs/api-keys-tab.tsx"), /useKeylessExampleAccess\(isOwner\)/);
+  assert.match(
+    readSrc("features/settings/hooks/use-keyless-example-access.ts"),
+    /\}, \[isOwner, cloudflareUrl, settingsOpen\]\);/,
+  );
 });
 
 test("the section shows examples and the MCP URL on the host in use", () => {

@@ -8,6 +8,7 @@ import {
   type KeylessApiAccessScope,
   loadKeylessApiAccess,
 } from "../api/keyless-api-access";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export type KeylessExampleAccess = {
   scope: KeylessApiAccessScope;
@@ -22,9 +23,10 @@ export function useKeylessExampleAccess(isOwner: boolean): KeylessExampleAccess 
     tools: false,
     exposure: null,
   });
-  // A tunnel coming or going changes exposure.
+  // Tunnel changes exposure; Settings edits the policy while the API Monitor stays mounted behind it.
   const cloudflareUrl = usePlatformStore((state) => state.cloudflareUrl);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl is a trigger, not an input
+  const settingsOpen = useSettingsDialogStore((state) => state.open);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cloudflareUrl and settingsOpen are triggers, not inputs
   useEffect(() => {
     if (!isOwner) {
       return;
@@ -44,6 +46,6 @@ export function useKeylessExampleAccess(isOwner: boolean): KeylessExampleAccess 
     return () => {
       cancelled = true;
     };
-  }, [isOwner, cloudflareUrl]);
+  }, [isOwner, cloudflareUrl, settingsOpen]);
   return keyless;
 }
