@@ -201,7 +201,36 @@ def test_model_loaded_once_and_questions_forwarded(client, runtime):
     assert runtime == ["laya-multilingual"]
     state, questions = laya_runtime._agent.calls[-1]
     assert state == {"subject": "Charged twice"}
-    assert questions == {"q": {"type": "noul", "instructions": ""}}
+    assert questions == {"q": {"type": "noul", "instructions": "q"}}
+
+
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_question_without_instructions_is_asked_by_its_id(client, runtime, instructions):
+    _post(
+        client,
+        questions = {
+            "refund": {"type": "noul", "instructions": instructions},
+            "team": {"type": "choice", "criteria": {"a": "first"}},
+            "late": {"type": "noul", "instructions": "Is it late?"},
+        },
+    )
+    _, questions = laya_runtime._agent.calls[-1]
+    assert {name: q["instructions"] for name, q in questions.items()} == {
+        "refund": "refund",
+        "team": "team",
+        "late": "Is it late?",
+    }
+
+
+@pytest.mark.parametrize("instructions", [{}, [], {"prompt": "Refund?"}, ["Refund?"]])
+def test_structured_question_instructions_are_forwarded_unchanged(client, instructions):
+    response = _post(
+        client,
+        questions = {"refund": {"type": "noul", "instructions": instructions}},
+    )
+    assert response.status_code == 200, response.text
+    _, questions = laya_runtime._agent.calls[-1]
+    assert questions["refund"]["instructions"] == instructions
 
 
 def test_named_checkpoint_swaps_the_resident_model(client, runtime):
