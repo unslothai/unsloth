@@ -398,6 +398,7 @@ def test_all_invalid_rows_are_an_error_and_save_nothing(base, studio_home):
     events = _train(_config(base, _dataset(studio_home, rows)))
 
     assert "No usable decisions" in _of(events, "error")[0]["error"]
+    assert "Loading decision model..." not in [e["message"] for e in _of(events, "status")]
     assert not _of(events, "complete")
     assert not outputs_root().exists() or not any(outputs_root().iterdir())
 

@@ -35,6 +35,7 @@ __all__ = [
     "_target",
     "_target_for",
     "_clef_question",
+    "_rows_problem",
     "_predicted",
     "_metrics",
     "_fit_temperature",
@@ -50,7 +51,7 @@ import json
 import math
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 TRAIN_MAX_LEN, TRAIN_HEAD_MAX_LEN = 1024, 256
 HOLDOUT_MAX = 400
@@ -358,6 +359,53 @@ def _clef_question(question) -> dict:
     if criteria is not None:
         clef_question["criteria"] = criteria
     return clef_question
+
+
+def _rows_problem(
+    rows,
+    clef: bool,
+    validate: Optional[Callable] = None,
+) -> Optional[str]:
+    # None at the first decision that can train, else why none can ("" when there are no rows).
+    skips = {}
+
+    def skip(
+        index,
+        reason,
+        name = None,
+    ):
+        where = f"row {index + 1}" if name is None else f'row {index + 1}: "{name}"'
+        skips.setdefault(reason, [0, f"{where} {reason}"])[0] += 1
+
+    for index, row in enumerate(rows):
+        row = row if isinstance(row, dict) else {}
+        state = _parsed(row.get("state"))
+        questions = _parsed(row.get("questions"))
+        gold = _parsed(row["gold"] if row.get("gold") is not None else row.get("answers"))
+        if state is None or not isinstance(questions, dict) or not isinstance(gold, dict):
+            skip(index, "needs state, questions and gold")
+            continue
+        for name, question in questions.items():
+            if name not in gold:
+                skip(index, "has no gold", name)
+                continue
+            try:
+                if validate is not None:
+                    validate(name, question)
+                if clef:
+                    parsed = _clef_question(question)
+                    internal = {"t": parsed["type"], "crit": parsed.get("criteria")}
+                else:
+                    internal = _internal(question)
+                _target(internal, _parsed(gold[name]))
+            except (TypeError, ValueError, KeyError) as exc:
+                skip(index, str(exc) or "is not a valid question", name)
+                continue
+            return None
+    if not skips:
+        return ""
+    count, example = max(skips.values(), key = lambda skipped: skipped[0])
+    return example if count == 1 else f"{example} (and {count - 1:,} more like it)"
 
 
 def _predicted(question: dict, answer: dict, probabilities: dict) -> dict:
