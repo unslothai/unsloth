@@ -1072,3 +1072,44 @@ def test_diffusers_weight_change_falls_back_to_reload_when_set_adapters_fails(
     assert pipe.unloaded == 1
     assert pipe.active == (["styleA"], [0.5])
     assert [(n, w) for n, _p, w in pipe._unsloth_loras] == [("styleA", 0.5)]
+
+
+@pytest.mark.parametrize("baked", [True, False])
+def test_a_lokr_only_weight_change_keeps_the_cuda_graphs(monkeypatch, tmp_path, baked):
+    """LoKR scales are device tensors read at run time, so a LoKR-only strength change (disabling it included) writes
+    them in place and leaves the captured graphs alone; the CFG-parallel replica, which holds copies, is dropped."""
+    import threading
+
+    from core.inference import diffusion as diffusion_mod
+    from core.inference import diffusion_lora_files as lf
+
+    _real_file_specs(monkeypatch, tmp_path)
+    resets: list = []
+    invalidated: list = []
+    monkeypatch.setattr(
+        diffusion_mod.cuda_graph, "reset_all", lambda handles: resets.append(handles)
+    )
+    monkeypatch.setattr(
+        diffusion_mod, "invalidate_cfg_replica", lambda pipe, why, log = None: invalidated.append(why)
+    )
+    torch = pytest.importorskip("torch")
+    block = torch.nn.ModuleDict({"q": torch.nn.Linear(24, 36, bias = False)})
+    adapter = lf.KronAdapter(block, block["q"], torch.randn(4, 3), torch.randn(9, 8), 1.0)
+    pipe = _FakePipe()
+    pipe.__dict__[lf.KRON_ATTR] = {"styleA": [adapter]}
+    pipe.__dict__[lf.KRON_ONLY_ATTR] = {"styleA"}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8" if baked else None)
+    pipe._unsloth_loras = b._resolve_lora_set([("styleA", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = baked
+    if not baked:
+        monkeypatch.setattr(diffusion_mod, "_lora_weights_only_change", lambda *a: True)
+        monkeypatch.setattr(diffusion_mod, "_lora_load_block_reason", lambda pipe: None)
+
+    b._apply_loras(state, [("styleA", 0.4)], threading.Event())
+    assert float(getattr(block["q"], adapter.prefix + "_scale")) == pytest.approx(0.4)
+    if baked:
+        b._apply_loras(state, [], threading.Event())  # disabling every adapter
+        assert float(getattr(block["q"], adapter.prefix + "_scale")) == 0.0
+    assert resets == []
+    assert invalidated

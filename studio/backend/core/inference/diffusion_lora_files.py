@@ -437,6 +437,13 @@ def set_adapter_weights(pipe: Any, names: list, weights: list) -> None:
         pipe.set_adapters([n for n, _w in pairs], adapter_weights = [w for _n, w in pairs])
 
 
+def kron_only_selection(pipe: Any) -> bool:
+    """Whether every adapter in ``pipe._unsloth_loras`` is LoKR-only, so every scale is a tensor read at run time."""
+    names = [entry[0] for entry in getattr(pipe, "_unsloth_loras", ()) or ()]
+    kron_only = pipe.__dict__.get(KRON_ONLY_ATTR, set())
+    return bool(names) and all(name in kron_only for name in names)
+
+
 def set_kron_weights(pipe: Any, weights: dict) -> None:
     """Every LoKR adapter's weight (name -> weight; an omitted name is 0, as a pinned PEFT scale is)."""
     for adapter_name, adapters in pipe.__dict__.get(KRON_ATTR, {}).items():

@@ -988,6 +988,12 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     weights): the caller then takes the set_adapters + graph reset path."""
     pinned = getattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
     if not pinned:
+        if lora_files.kron_only_selection(pipe):
+            # LoKR scales are device tensors already, so a LoKR-only bake keeps its graphs with no PEFT pin. A
+            # CFG-parallel replica holds copies of them, so it is rebuilt.
+            lora_files.set_kron_weights(pipe, weights)
+            invalidate_cfg_replica(pipe, "the LoKR weights changed")
+            return True
         return False
     import torch
 
@@ -13325,8 +13331,9 @@ class DiffusionBackend:
                 pass
             else:
                 pipe._unsloth_loras = desired
-                # A captured graph bakes the scales in.
-                cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
+                # A captured graph bakes PEFT's float scales in; LoKR scales are tensors it reads at run time.
+                if not lora_files.kron_only_selection(pipe):
+                    cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
                 invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
                 return
         # Read before loading, so a file rewritten during the load reads as changed next time.
