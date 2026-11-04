@@ -28,8 +28,8 @@ FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
 FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
-# A new capture costs about 3 eager decode steps on a T4 (Qwen3-0.6B; 3-4 new tokens with alternating
-# batch sizes ran 32-58% slower than eager, 8 tokens 1.2x faster): only capture with this many steps left.
+# A new capture costs about 3 eager decode steps on a T4 (Qwen3-0.6B; 3-6 new tokens with alternating
+# batch sizes ran 5-58% slower than eager, 8 tokens 1.25x faster): only capture with this many steps left.
 CAPTURE_MIN_STEPS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_CAPTURE_MIN_STEPS", "6"))
 # Captured steps (one per batch size / autocast state) kept per model.
 MAX_GRAPHS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_MAX", "8"))
@@ -45,6 +45,8 @@ __all__ = [
     "eager_scope",
     "graphable",
     "can_replay",
+    "short_call",
+    "kept_graph",
     "plan_call",
     "record_need",
     "decode_batch",
@@ -258,6 +260,22 @@ def can_replay(max_len, prompt):
     return not max_len or max_len - prompt > 2
 
 
+def kept_graph(model, bsz):
+    """Whether a captured decode step for batch size bsz is kept (a call can replay it, no capture)."""
+    return any(key[0] == bsz for state in _states(model) for key in state.graphs)
+
+
+def short_call(model, max_len, prompt, bsz):
+    """Whether graph mode only costs this generate() call (planning, graph-sized buffers, per-step
+    checks): it cannot replay a step, or nothing is kept for its decode batch and a capture would have
+    fewer than CAPTURE_MIN_STEPS steps left (worth_capturing() at the first graphed step). Such a call
+    decodes eagerly. An unknown length (0) is never short."""
+    if not max_len:
+        return False
+    left = max_len - prompt - 1
+    return left < 2 or (left < CAPTURE_MIN_STEPS and not kept_graph(model, bsz))
+
+
 def graphable(model):
     """Whether this model type can take the graphed decode step; others decode eagerly in graph mode."""
     return getattr(getattr(model, "config", None), "model_type", None) in _SUPPORTED_MODEL_TYPES
@@ -270,10 +288,12 @@ def plan_call(
     increment,
     max_len = 0,
     bsz = None,
+    eager = False,
 ):
     """("graph", token) or ("eager", None). Releases kept graphs / buffers first if the call would not
     fit beside them; still too big runs eagerly up front rather than relying on the OOM redo. `bsz` is
-    the expanded decode batch (decode_batch())."""
+    the expanded decode batch (decode_batch()). eager: a call that runs eagerly anyway (short_call())
+    only makes room, uncounted."""
     global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
@@ -302,6 +322,8 @@ def plan_call(
         free = _free_bytes(device)
         reused = 0
         need = full
+    if eager:
+        return "eager", None
     if free < need:
         EAGER_UNFIT += 1
         return "eager", None

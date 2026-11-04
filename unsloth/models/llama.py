@@ -3080,18 +3080,20 @@ def unsloth_fast_generate(self, *args, **kwargs):
             max_len = _generation_max_len(self, args, kwargs)
             try:
                 ids = _generation_input_ids(args, kwargs)
-                # Too short to replay a step and nothing kept to reuse: graph mode would only add cost.
-                if _decode_graphs.HELD not in self.__dict__ and not _decode_graphs.can_replay(
-                    max_len, int(ids.shape[1])
-                ):
+                bsz = _decode_graphs.decode_batch(
+                    int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
+                )
+                short = _decode_graphs.short_call(self, max_len, int(ids.shape[1]), bsz)
+                if short and _decode_graphs.HELD not in self.__dict__:
+                    # Too short to win back graph mode: decode eagerly, as before, without planning.
                     plan, token = "eager", None
                 else:
+                    # A short call beside kept graphs only makes room for itself.
                     plan, token = _decode_graphs.plan_call(
-                        self, ids, dtype, KV_CACHE_INCREMENT, max_len,
-                        bsz = _decode_graphs.decode_batch(
-                            int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
-                        ),
+                        self, ids, dtype, KV_CACHE_INCREMENT, max_len, bsz = bsz, eager = short,
                     )  # fmt: skip
+                    if short:
+                        plan, token = "eager", None
             except Exception:
                 plan, token = "graph", None
             if plan == "eager":

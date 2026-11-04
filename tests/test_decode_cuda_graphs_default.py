@@ -278,3 +278,51 @@ def test_training_forward_without_for_training_frees_generate_memory(runtime):
     out.loss.backward()
     assert _graph_buffers(model) == 0 and _decode_buffers(model) == 0
     assert _Stats(model)()["graphs"] == 0
+
+
+def _gen_batch(model, tok, prompts, new):
+    enc = tok(prompts, return_tensors = "pt", padding = True).to("cuda")
+    out = model.generate(
+        **enc, max_new_tokens = new, min_new_tokens = new, do_sample = False,
+        pad_token_id = tok.pad_token_id, output_logits = True, return_dict_in_generate = True,
+    )  # fmt: skip
+    return out.sequences.cpu(), torch.stack(out.logits).cpu()
+
+
+@rl_default
+def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
+    """Alternating batch sizes with few new tokens: a call too short to win back a capture
+    (short_call()) decodes eagerly without graph buffers for its batch; a short call of the kept
+    batch replays it; the kept graph stays valid across the eager calls. All bitwise equal to eager."""
+    if not G._STUDIO_DEFAULT_OK:
+        pytest.skip("the plain generate() default stays eager on native Windows")
+    model, tok = _load()
+    FastLanguageModel.for_inference(model)
+    one, two = PROMPTS[:1], PROMPTS
+    runtime.setenv(ENV, "0")
+    eager = {
+        (p, n): _gen_batch(model, tok, ps, n)
+        for p, ps in (("one", one), ("two", two))
+        for n in (4, 24)
+    }
+    runtime.delenv(ENV)
+
+    def check(p, ps, n):
+        got = _gen_batch(model, tok, ps, n)
+        assert torch.equal(got[0], eager[(p, n)][0]) and torch.equal(got[1], eager[(p, n)][1])
+
+    def batches():
+        return {k[0] for m in model.modules() for k in m.__dict__.get("_unsloth_graph_buffers", {})}
+
+    check("two", two, 24)
+    before = _Stats(model)()
+    assert before["captures"] > 0 and batches() == {2}
+    check("one", one, 4)  # nothing kept for batch 1, 3 steps left: eager
+    after = _Stats(model)()
+    assert after["captures"] == before["captures"] and after["replays"] == before["replays"]
+    assert batches() == {2}
+    check("two", two, 4)  # batch 2 is kept: replays without a capture
+    short = _Stats(model)()
+    assert short["captures"] == before["captures"] and short["replays"] > before["replays"]
+    check("two", two, 24)
+    assert _Stats(model)()["captures"] == before["captures"]

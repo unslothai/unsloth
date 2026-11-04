@@ -516,25 +516,87 @@ def test_a_call_too_short_to_replay_a_step_is_known(G, max_len, prompt, replays)
     assert G.can_replay(max_len, prompt) is replays
 
 
+def _generate_fn():
+    import ast
+    tree = ast.parse((_SOURCE.parent / "llama.py").read_text(encoding = "utf-8"))
+    return next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate"
+    )
+
+
 def test_generate_runs_a_short_call_eagerly_when_nothing_is_kept():
     """Graph mode only costs a short call (plan, graph-sized buffers): with no kept graphs it decodes
     eagerly, as before, without planning. Reads llama.py (importing unsloth needs an accelerator)."""
     import ast
 
-    tree = ast.parse((_SOURCE.parent / "llama.py").read_text(encoding = "utf-8"))
-    gen = next(
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate"
-    )
+    gen = _generate_fn()
+    assert "short_call" in ast.unparse(gen)
     guards = [
         n for n in ast.walk(gen)
-        if isinstance(n, ast.If) and "can_replay" in ast.unparse(n.test) and "HELD" in ast.unparse(n.test)
+        if isinstance(n, ast.If) and "short" in ast.unparse(n.test) and "HELD" in ast.unparse(n.test)
     ]  # fmt: skip
     assert guards, "a short call is not routed eagerly"
     body = ast.unparse(guards[0].body[0]) if guards[0].body else ""
     assert "'eager'" in body or '"eager"' in body
     assert "plan_call" not in ast.unparse(guards[0].body[0])
+
+
+def test_generate_runs_a_short_call_beside_kept_graphs_eagerly():
+    """Beside kept graphs a short call only makes room (plan_call(eager=short)) and still decodes eagerly."""
+    import ast
+
+    text = ast.unparse(_generate_fn())
+    assert "eager=short" in text
+    assert "if short:\n" in text and text.index("eager=short") < text.index("if short:\n")
+
+
+def _keep_graph(model, bsz):
+    state = model.__dict__.setdefault("_unsloth_decode_graphs", types.SimpleNamespace(graphs = {}))
+    state.graphs[(bsz, CUDA0, None, True, None)] = object()
+
+
+@pytest.mark.parametrize(
+    "new, kept, short",
+    [
+        (1, None, True), (2, None, True), (2, 1, True), (3, None, True), (6, None, True),
+        (6, 4, True), (7, None, False), (8, None, False), (32, None, False), (3, 1, False),
+        (6, 1, False),
+    ],
+)  # fmt: skip
+def test_a_short_call_decodes_eagerly_unless_a_graph_of_its_batch_is_kept(G, new, kept, short):
+    """3-6 new tokens with alternating batch sizes ran 5-58% slower in graph mode on a T4: a call with
+    fewer than CAPTURE_MIN_STEPS steps left at its first graphed step decodes eagerly, unless a captured
+    step of its decode batch is kept (replayed, no capture). At most 2 new tokens never replay."""
+    model = _Model()
+    if kept is not None:
+        _keep_graph(model, kept)
+    assert G.CAPTURE_MIN_STEPS == 6
+    assert G.short_call(model, 32 + new, 32, 1) is short
+    assert G.short_call(model, 0, 32, 1) is False
+
+
+def test_a_short_call_matches_the_capture_break_even(G):
+    """short_call() and worth_capturing() agree at the first graphed step (cache length prompt + 2)."""
+    model = _Model()
+    for new in range(3, 40):
+        G.start_generation(32 + new)
+        try:
+            assert G.short_call(model, 32 + new, 32, 1) is (not G.worth_capturing(32 + 2))
+        finally:
+            G.end_generation()
+
+
+def test_a_short_call_beside_kept_graphs_only_makes_room(G):
+    model = _Model()
+    model.keep(4, 2816)
+    G._free_bytes = lambda device: 100 * GB
+    assert G.plan_call(model, _ids(1, 32), torch.float16, 512, 36, eager = True) == ("eager", None)
+    assert model.held() == 1 and G.EAGER_UNFIT == 0
+    G._free_bytes = lambda device: 0
+    assert G.plan_call(model, _ids(1, 32), torch.float16, 512, 36, eager = True) == ("eager", None)
+    assert model.held() == 0 and G.emptied == 1 and G.EAGER_UNFIT == 0
 
 
 def test_capture_only_when_enough_steps_are_left(G):
