@@ -64,7 +64,7 @@ class Query:
     hybrid: bool = False  # linear attention / state space layers beside attention
     multimodal: bool = False
     windowed: bool = False  # sliding window, chunked attention or logit softcapping
-    mode: str = "lora"  # lora, qlora, full
+    mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
     torch: tuple = (0, 0)
@@ -951,9 +951,40 @@ def _model_traits(model):
     return family, hybrid, multimodal, windowed
 
 
+def _low_precision(model) -> Optional[str]:
+    """fp8 when float8_training is on: fp8 LoRA requested at load (models/float8_training.mark_fp8_lora) or
+    attached to the LoRA bases (kernels/fp8_lora.attach_fp8_lora_base), or torchao Float8Linear layers from
+    full finetuning (convert_model_to_float8_training). None otherwise. NVFP4 / MXFP8 training has no
+    converter yet (precision/recipes.py lists them as planned), so nothing marks those modes."""
+    stack, seen = [model], set()
+    while stack and len(seen) < 8:
+        m = stack.pop()
+        if m is None or id(m) in seen:
+            continue
+        seen.add(id(m))
+        if isinstance(getattr(m, "_unsloth_fp8_lora_recipe", None), str) or getattr(
+            m, "_unsloth_float8_linears", None
+        ):
+            return "fp8"
+        stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
+    try:
+        for m in model.modules():
+            if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
+                return "fp8"
+            cls = type(m)
+            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+                return "fp8"
+    except Exception:
+        pass
+    return None
+
+
 def _mode(model):
     if model is None or isinstance(model, str):
         return "lora"
+    low_precision = _low_precision(model)
+    if low_precision is not None:
+        return low_precision
     if getattr(model, "is_loaded_in_4bit", False) or getattr(
         getattr(model, "config", None), "quantization_config", None
     ):
