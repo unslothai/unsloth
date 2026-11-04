@@ -185,6 +185,9 @@ def test_image_paths_are_found_anywhere_in_a_text_column():
         ("https://example.com/a/cat.JPG?size=2", True),
         ("Save the chart you draw as output.png", False),
         ("Describe the steps.\nThen save it as plot.png", False),
+        ("Save the chart to /tmp/output.png", False),
+        ("Write it to C:\\out\\plot.png", False),
+        ("/tmp/output.png", True),
     ],
 )
 def test_only_a_path_like_cell_marks_an_image_column(cell, image):
