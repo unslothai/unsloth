@@ -446,11 +446,39 @@ async def _model_material(ctx: NodeContext, base: str) -> Optional[dict]:
                     return None
             if loaded:
                 found["loader_revisions"] = loaded
+            if not found["base_model_revision"]:
+                return None
+            under = await asyncio.to_thread(
+                _hub_adapter_base, base, found["base_model_revision"], token
+            )
         except Exception:
             return None
-        if not found["base_model_revision"]:
-            return None
+        if under and under != base:
+            # A Hub LoRA loads its base too, unpinned: a changed base must train again.
+            inner = await _model_material(ctx, under)
+            if inner is None:
+                return None
+            found["adapter_base"] = inner
     return found
+
+
+def _hub_adapter_base(repo: str, revision: str, token: Any) -> Optional[str]:
+    """The base a Hub LoRA repo names in its adapter_config.json at ``revision``; None when the repo is
+    not an adapter. Any other failure raises, so the caller trains again rather than guess."""
+    import json
+
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import EntryNotFoundError, LocalEntryNotFoundError
+
+    try:
+        path = hf_hub_download(repo, "adapter_config.json", revision = revision, token = token)
+    except LocalEntryNotFoundError:
+        raise  # offline and not cached: cannot tell
+    except EntryNotFoundError:
+        return None
+    with open(path, encoding = "utf-8") as fh:
+        named = json.load(fh).get("base_model_name_or_path")
+    return named.strip() if isinstance(named, str) and named.strip() else None
 
 
 def _loads_4bit(params: dict, base: str) -> bool:

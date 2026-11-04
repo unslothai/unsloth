@@ -36,6 +36,7 @@ def world(monkeypatch):
 
     monkeypatch.setattr(training, "_hub_revision", revision)
     monkeypatch.setattr(training, "_hub_model_revision", model_revision)
+    monkeypatch.setattr(training, "_hub_adapter_base", lambda repo, revision, token: None)
     monkeypatch.setattr(checkpoints, "resolve", resolve)
     return state
 
@@ -235,3 +236,21 @@ async def test_a_new_revision_of_the_4bit_mirror_the_loader_fetches_trains_again
     revisions["unsloth/Qwen3-0.6B-unsloth-bnb-4bit"] = "q3"
     await _run(eng, _flow(load_in_4bit = False))
     assert len(world["trained"]) == 3
+
+
+@run_async
+async def test_a_hub_lora_trains_again_when_the_base_it_names_changes(world, monkeypatch):
+    revisions = {"me/my-lora": "a1", "org/base": "b1"}
+    monkeypatch.setattr(training, "_hub_model_revision", lambda repo, token: revisions[repo])
+    monkeypatch.setattr(
+        training,
+        "_hub_adapter_base",
+        lambda repo, revision, token: "org/base" if repo == "me/my-lora" else None,
+    )
+    eng = _engine(world)
+    await _run(eng, _flow(base_model = "me/my-lora"))
+    await _run(eng, _flow(base_model = "me/my-lora"))
+    assert len(world["trained"]) == 1
+    revisions["org/base"] = "b2"
+    await _run(eng, _flow(base_model = "me/my-lora"))
+    assert len(world["trained"]) == 2
