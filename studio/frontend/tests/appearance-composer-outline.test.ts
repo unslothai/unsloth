@@ -51,10 +51,10 @@ test("a set outline reaches every composer, and 0 keeps the theme shadow", () =>
 test("the composer rows have their own Composer section", () => {
   const tab = readSrc("features/settings/tabs/appearance-tab.tsx");
   const section = tab.slice(tab.indexOf('t("settings.appearance.composer.title")'));
-  assert.ok(section.indexOf("composerAtBottom") < section.indexOf("settings.appearance.code.title"));
+  assert.ok(section.indexOf("<ComposerPositionSliderRow />") < section.indexOf("settings.appearance.code.title"));
   assert.ok(section.indexOf("<ComposerOutlineSliderRow />") < section.indexOf("settings.appearance.code.title"));
   assert.ok(section.indexOf("<ChatWidthSelect />") < section.indexOf("settings.appearance.code.title"));
   assert.ok(section.indexOf("<SentAttachmentsSelect />") < section.indexOf("settings.appearance.code.title"));
   const preferences = tab.slice(tab.indexOf("preferencesTitle"), tab.indexOf('t("settings.appearance.composer.title")'));
-  assert.doesNotMatch(preferences, /composerAtBottom|ComposerOutlineSliderRow|ChatWidthSelect|SentAttachmentsSelect/);
+  assert.doesNotMatch(preferences, /ComposerPositionSliderRow|ComposerOutlineSliderRow|ChatWidthSelect|SentAttachmentsSelect/);
 });

@@ -86,7 +86,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     # Triton <= 3.2 resolves string annotations against module globals, not this function's locals
     globals().update(triton = triton, tl = tl, libdevice = libdevice)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["T", "HW", "W", "n_chunks"])
     def _gn_partials(
         x_ptr,
         bias_ptr,
@@ -139,7 +139,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(pm2_ptr + slot * G + g, m2)
         tl.store(pn_ptr + slot, n_pix * CPG)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_chunks"])
     def _gn_combine(
         pn_ptr,
         pmean_ptr,
@@ -177,7 +177,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(mean_ptr + row, mean)
         tl.store(rstd_ptr + row, 1.0 / tl.sqrt(acc_m2 / acc_n + eps))
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["T", "H", "W", "To", "Ho", "Wo"])
     def _gn_silu_pad(
         x_ptr,
         out_ptr,
@@ -248,7 +248,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         v = tl.where(t_ok, v, 0.0)
         tl.store(out_base + (wo[:, None] * C + c[None, :]), v.to(out_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["P", "T", "H", "W"])
     def _add_residual(
         o_ptr,
         ob_ptr,
@@ -327,7 +327,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         y = h * (1.0 / tl.sqrt(ms + eps)) * w
         tl.store(n_ptr + row * N + cols, y.to(n_ptr.dtype.element_ty), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_head_rows"])
     def _qk_norm_rope(
         x_ptr,
         cos_ptr,

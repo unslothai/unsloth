@@ -748,6 +748,7 @@ class SystemOneSettingsResponse(BaseModel):
     input_modalities: list[str] = ["text"]
     # "laya", "clef" or "gguf" for the configured model, so env-configured local checkpoints get runtime controls.
     layout: Optional[str] = None
+    has_gguf_form: bool = False
 
 
 class SystemOneSettingsPayload(BaseModel):
@@ -1718,7 +1719,8 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
     only_mlx = getattr(checkpoint, "backend", None) == laya_runtime.MLX
     if only_mlx or getattr(checkpoint, "layout", "laya") == laya_runtime.GGUF:
-        only = {} if only_mlx else {"llama_cpp_only": True}
+        # A non-Clef MLX-only entry (Decider) is flagged too, so its runtime row stays reachable.
+        only = {} if only_mlx and checkpoint.layout == "clef" else {"llama_cpp_only": True}
         # Selectable under a PyTorch runtime: the runtime row then says to switch it.
         try:
             laya_runtime.select(checkpoint, preference = "auto")
@@ -1809,6 +1811,7 @@ def _systemone_response(request: Request) -> SystemOneSettingsResponse:
         fallback_reason = fallback if effective == "pytorch" or effective is None else None,
         input_modalities = laya_runtime.input_modalities(configured),
         layout = getattr(configured, "layout", None),
+        has_gguf_form = laya_runtime.has_native_form(configured),
     )
 
 

@@ -535,9 +535,9 @@ export function toExternalBackendProviderType(
     : providerType;
 }
 
-const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
+export const EXTERNAL_PROVIDERS_KEY = "unsloth_chat_external_providers";
 const EXTERNAL_PROVIDER_KEYS_KEY = "unsloth_chat_external_provider_keys";
-const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
+export const CONNECTIONS_ENABLED_KEY = "unsloth_chat_connections_enabled";
 const EXTERNAL_MODEL_PREFIX = "external::";
 
 function canUseStorage(): boolean {

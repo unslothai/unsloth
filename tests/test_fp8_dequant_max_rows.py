@@ -141,14 +141,14 @@ def test_autograd_function_uses_the_same_gate(monkeypatch, shape, scaled, dtype,
 
 
 def test_scaled_mm_asks_for_bf16_when_activations_are_fp16(monkeypatch):
-    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", True)
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_DEQUANT_ONLY", True)
     assert F8._scaled_mm_out_dtype(torch.float16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
 
 
 def test_scaled_mm_keeps_fp16_output_where_torch_writes_fp16(monkeypatch):
-    monkeypatch.setattr(F8, "_SCALED_MM_FP16_OUT_BROKEN", False)
+    monkeypatch.setattr(F8, "_SCALED_MM_FP16_DEQUANT_ONLY", False)
     assert F8._scaled_mm_out_dtype(torch.float16) is torch.float16
     assert F8._scaled_mm_out_dtype(torch.bfloat16) is torch.bfloat16
     assert F8._scaled_mm_out_dtype(torch.float32) is torch.float32
@@ -158,8 +158,11 @@ def test_scaled_mm_fp16_workaround_follows_the_installed_torch():
     from torch.torch_version import TorchVersion
 
     broken = torch.__version__ < "2.14.0"
+    detour = broken and not F8._SCALED_MM_FP16_BIAS_OUT
     assert F8._SCALED_MM_FP16_OUT_BROKEN is broken
-    assert F8._scaled_mm_out_dtype(torch.float16) is (torch.bfloat16 if broken else torch.float16)
+    assert F8._SCALED_MM_FP16_DEQUANT_ONLY is detour
+    assert F8._SCALED_MM_FP16_ZERO_BIAS is (broken and F8._SCALED_MM_FP16_BIAS_OUT)
+    assert F8._scaled_mm_out_dtype(torch.float16) is (torch.bfloat16 if detour else torch.float16)
     assert TorchVersion("2.13.9+cu130") < "2.14.0"
     assert TorchVersion("2.14.0a0+git0") < "2.14.0"
     assert not TorchVersion("2.14.0+cu130") < "2.14.0"
@@ -179,15 +182,19 @@ def test_every_rowwise_scaled_mm_call_uses_the_out_dtype_helper():
         and node.func.attr == "_scaled_mm"
     ]
     out = {}
+    bias = {}
     for node in calls:
         for kw in node.keywords:
             if kw.arg == "out_dtype":
                 out[node.lineno] = ast.unparse(kw.value)
+            if kw.arg == "bias":
+                bias[node.lineno] = ast.unparse(kw.value)
     data_calls = {
         line: v for line, v in out.items() if v not in ("torch.bfloat16", "torch.float32")
     }
     assert len(data_calls) >= 2, out
     assert all(v.startswith("_scaled_mm_out_dtype(") for v in data_calls.values()), out
+    assert all(bias.get(line, "").startswith("_scaled_mm_fp16_bias(") for line in data_calls), bias
 
 
 @pytest.mark.parametrize("float32_out, expected", [(True, "scaled_mm"), (False, "dequant")])

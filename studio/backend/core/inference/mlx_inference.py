@@ -3293,7 +3293,8 @@ def _fitted_context(
         logger.debug("MLX snapshot unavailable for %s: %s", model_name, exc)
         return None, None
     verdict = eligibility
-    if verdict is None and kv_bits is not None:
+    # TurboQuant is converted by the estimator's own probe, as mlx-vlm does.
+    if verdict is None and isinstance(kv_bits, int):
         verdict = _kv_quant_eligibility(model, is_vlm, kv_bits)
     fitted = mlx_fit_to_memory(
         model_dir,
@@ -5940,6 +5941,7 @@ class MLXInferenceBackend:
         served,
         fitted = False,
         eligibility = None,
+        turboquant = None,
     ):
         """With kv_bits, only an enforceable pin or fitted window becomes a budget, since a rotating cache cannot be quantized"""
         pinned = _positive_int(max_seq_length) is not None or fitted
@@ -5947,7 +5949,7 @@ class MLXInferenceBackend:
         confirmed = self._kv_cache_window_enforceable(served)
         enforceable = confirmed is True
         if getattr(self, "_turboquant", False) and kv_bits is not None:
-            quant = _turboquant_status(
+            quant = turboquant or _turboquant_status(
                 self._model, kv_bits, getattr(self, "_turboquant_refusal", "")
             )
         else:
@@ -6335,9 +6337,20 @@ class MLXInferenceBackend:
         self._fast_verify = _settle_fast_verify(
             self._fast_verify, self._model, getattr(self._speculative_draft, "drafter", None)
         )
-        # TurboQuant's layout is not one the planner prices, and a refused one stays full width:
-        # fit either at full width, which only ever under-promises.
-        _requested_bits = None if self._turboquant else _normalize_mlx_kv_bits(kv_bits)
+        _requested_bits = _normalize_mlx_kv_bits(kv_bits)
+        _turboquant = None
+        if self._turboquant:
+            from core.inference.mlx_memory import MlxTurboQuant
+
+            if kv_bits is not None:
+                _turboquant = _turboquant_status(self._model, kv_bits, self._turboquant_refusal)
+            _requested_bits = (
+                MlxTurboQuant(kv_bits)
+                if _turboquant is not None and _turboquant["kv_bits"] is not None
+                else None
+            )
+            # Only mlx-vlm's caches convert, so a text load is priced on the route it takes.
+            _vlm_route = _vlm_route or (_requested_bits is not None and not is_vision)
         _fitted_ctx, _eligibility = (
             (_drafter_ctx, _eligibility)
             if _drafter_ctx is not None
@@ -6392,6 +6405,7 @@ class MLXInferenceBackend:
             _served_ctx,
             fitted = _fitted_ctx is not None,
             eligibility = _eligibility,
+            turboquant = _turboquant,
         )
         if self._kv_quant["kv_bits"] is not None:
             logger.info(

@@ -3279,9 +3279,8 @@ export const nl = {
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
       turnNavigation: "Beurtnavigatie",
       turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
-      composerAtBottom: "Invoerveld onderaan",
-      composerAtBottomDescription:
-        "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",
+      composerPosition: "Positie van het invoerveld",
+      composerPositionDescription: "Waar het invoerveld staat bij het starten van een nieuwe chat, van de bovenkant van de pagina tot onderaan.",
       projectAttachments: "Bestanden delen binnen een project",
       projectAttachmentsDescription:
         "Nieuwe chatbijlagen beschikbaar maken voor elke chat in het project.",
@@ -3798,6 +3797,9 @@ export const nl = {
         docsLabel: "Documentatie van de Decision API openen",
         description:
           "Beantwoord ja/nee-, meerkeuze- en scorevragen over tekst met een model op deze computer of een beslissingsmodel uit Verbindingen. Werkt met de TypeSafe SDK.",
+        codeTitle: "Aanroepen vanuit code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andere MCP-clients maken hier verbinding met hetzelfde token.",
         enable: "Verzoeken verwerken",
         enableDescription:
           "Biedt /v1/systemone aan. Bij inschakelen wordt het model gedownload.",
@@ -3961,7 +3963,7 @@ export const nl = {
         desktopAvailableDescription:
           "Werk nu bij; de desktop-app start opnieuw wanneer dit klaar is.",
         desktopExternalServer:
-          "De app is verbonden met een Unsloth-server die al draaide en kan deze niet bijwerken. Stop die server, sluit de desktop-app af en open hem opnieuw om bij te werken.",
+          "Verbonden met een Unsloth-server op poort {port} die deze app niet heeft gestart, zoals `unsloth studio` in een terminal. Stop hem waar hij is gestart, sluit dan de app af en open hem opnieuw om bij te werken.",
         desktopManualInstall:
           "Open de releasepagina om het nieuwste Linux-pakket te installeren.",
         desktopCheckFailed: "Kan niet controleren op updates",
@@ -5544,6 +5546,8 @@ export const nl = {
     removeLevel: "Niveau {n} verwijderen",
     addLevel: "Niveau toevoegen",
     jsonHelp: "De request body. Uitvoeren verstuurt deze zoals geschreven.",
+    copyBody: "Body kopiëren",
+    copyCurl: "Kopiëren als cURL",
     examples: "Voorbeelden",
     presetToolApproval: "Toolaanroepen van agents goedkeuren",
     presetPromptInjection: "Promptinjectie detecteren",
@@ -5948,6 +5952,7 @@ export const nl = {
   generationStats: {
     working: "Bezig...",
     processingPrompt: "Prompt verwerken {percent}%",
+    compactingContext: "Context comprimeren...",
     timeLeft: "nog {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",

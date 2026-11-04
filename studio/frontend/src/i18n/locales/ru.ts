@@ -3002,8 +3002,8 @@ export const ru = {
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       turnNavigation: "Навигация по ходам",
       turnNavigationDescription: "Показывает ваши сообщения полосой у левого края длинных чатов. Наведите, чтобы увидеть ход, нажмите, чтобы перейти к нему, и добавляйте закладки, чтобы быстро находить ходы.",
-      composerAtBottom: "Поле ввода внизу",
-      composerAtBottomDescription: "Начинать новые чаты с полем ввода внизу страницы, а не посередине.",
+      composerPosition: "Положение поля ввода",
+      composerPositionDescription: "Где находится поле ввода в новом чате: от верха страницы до самого низа.",
       projectAttachments: "Общий доступ к файлам в проекте",
       projectAttachmentsDescription:
         "Делает новые вложения доступными во всех чатах проекта.",
@@ -3473,6 +3473,9 @@ export const ru = {
         docs: "Документация",
         docsLabel: "Открыть документацию по API решений",
         description: "Отвечайте на вопросы «да/нет», с выбором и с оценкой о тексте с помощью модели на этом компьютере или модели решений из подключений. Работает с SDK TypeSafe.",
+        codeTitle: "Вызов из кода",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Другие клиенты MCP подключаются сюда с тем же токеном.",
         enable: "Обрабатывать запросы",
         enableDescription: "Обслуживает /v1/systemone. При включении модель скачивается.",
         enableRemoteDescription: "Обслуживает /v1/systemone.",
@@ -3629,7 +3632,7 @@ export const ru = {
         desktopAvailableDescription:
           "Установите обновление сейчас. После установки настольное приложение перезапустится.",
         desktopExternalServer:
-          "Приложение подключилось к уже запущенному серверу Unsloth и не может его обновить. Остановите этот сервер, затем закройте и снова откройте настольное приложение для обновления.",
+          "Подключено к серверу Unsloth на порту {port}, который это приложение не запускало, например к `unsloth studio` в терминале. Остановите его там, где он был запущен, затем закройте и снова откройте приложение для обновления.",
         desktopManualInstall:
           "Откройте страницу выпуска, чтобы установить последнюю версию пакета для Linux.",
         desktopCheckFailed: "Не удалось проверить наличие обновлений",
@@ -5124,6 +5127,8 @@ export const ru = {
     removeLevel: "Удалить уровень {n}",
     addLevel: "Добавить уровень",
     jsonHelp: "Тело запроса. Запуск отправляет его как есть.",
+    copyBody: "Копировать тело",
+    copyCurl: "Копировать как cURL",
     examples: "Примеры",
     presetToolApproval: "Одобрять вызовы инструментов агентом",
     presetPromptInjection: "Ловить prompt injection",
@@ -5509,6 +5514,7 @@ export const ru = {
   generationStats: {
     working: "Обработка...",
     processingPrompt: "Обработка промпта {percent}%",
+    compactingContext: "Сжатие контекста...",
     timeLeft: "осталось {eta}",
     tokensOne: "токены: {count}",
     tokens: "токены: {count}",

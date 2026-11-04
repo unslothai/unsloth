@@ -2982,8 +2982,8 @@ export const ko = {
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       turnNavigation: "턴 탐색",
       turnNavigationDescription: "긴 채팅의 왼쪽 가장자리에 내 메시지를 레일로 표시합니다. 마우스를 올리면 미리보기, 클릭하면 해당 턴으로 이동하고, 북마크로 다시 찾을 수 있습니다.",
-      composerAtBottom: "입력창을 아래에",
-      composerAtBottomDescription: "새 채팅에서 입력창을 가운데가 아닌 페이지 아래쪽에 표시합니다.",
+      composerPosition: "입력창 위치",
+      composerPositionDescription: "새 채팅을 시작할 때 입력창이 놓일 위치를 페이지 위쪽부터 아래쪽까지 조절합니다.",
       projectAttachments: "프로젝트 전체에서 파일 공유",
       projectAttachmentsDescription:
         "새 채팅 첨부 파일을 프로젝트의 모든 채팅에서 사용할 수 있게 합니다.",
@@ -3451,6 +3451,9 @@ export const ko = {
         docs: "문서",
         docsLabel: "판단 API 문서 열기",
         description: "이 컴퓨터의 모델이나 연결의 판단 모델로 텍스트에 대한 예/아니오, 객관식, 점수 질문에 답합니다. TypeSafe SDK와 함께 사용할 수 있습니다.",
+        codeTitle: "코드에서 호출",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "다른 MCP 클라이언트는 같은 토큰으로 여기에 연결합니다.",
         enable: "요청 처리",
         enableDescription: "/v1/systemone을 제공합니다. 켜면 모델을 다운로드합니다.",
         enableRemoteDescription: "/v1/systemone을 제공합니다.",
@@ -3604,7 +3607,7 @@ export const ko = {
         desktopAvailableDescription:
           "지금 업데이트하면 완료 후 데스크톱 앱이 다시 시작됩니다.",
         desktopExternalServer:
-          "앱이 이미 실행 중인 Unsloth 서버에 연결되어 있어 업데이트할 수 없습니다. 해당 서버를 중지한 다음 데스크톱 앱을 종료하고 다시 열어 업데이트하세요.",
+          "이 앱이 시작하지 않은 포트 {port}의 Unsloth 서버(예: 터미널의 `unsloth studio`)에 연결되어 있습니다. 서버를 시작한 곳에서 중지한 다음 앱을 종료하고 다시 열어 업데이트하세요.",
         desktopManualInstall:
           "릴리스 페이지를 열어 최신 Linux 패키지를 설치하세요.",
         desktopCheckFailed: "업데이트를 확인하지 못했습니다",
@@ -5087,6 +5090,8 @@ export const ko = {
     removeLevel: "수준 {n} 삭제",
     addLevel: "수준 추가",
     jsonHelp: "요청 본문입니다. 실행하면 그대로 전송됩니다.",
+    copyBody: "본문 복사",
+    copyCurl: "cURL로 복사",
     examples: "예시",
     presetToolApproval: "에이전트 도구 호출 승인",
     presetPromptInjection: "프롬프트 인젝션 탐지",
@@ -5472,6 +5477,7 @@ export const ko = {
   generationStats: {
     working: "처리 중...",
     processingPrompt: "프롬프트 처리 중 {percent}%",
+    compactingContext: "컨텍스트 압축 중...",
     timeLeft: "{eta} 남음",
     tokensOne: "토큰 {count}개",
     tokens: "토큰 {count}개",

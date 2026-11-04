@@ -3152,8 +3152,8 @@ export const sv = {
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
       turnNavigation: "Turnavigering",
       turnNavigationDescription: "Visar dina meddelanden som en list vid vänsterkanten i långa chattar. Hovra för att förhandsgranska en tur, klicka för att hoppa dit och bokmärk turer för att hitta dem igen.",
-      composerAtBottom: "Inmatningsfält längst ned",
-      composerAtBottomDescription: "Starta nya chattar med inmatningsfältet längst ned på sidan i stället för i mitten.",
+      composerPosition: "Inmatningsfältets placering",
+      composerPositionDescription: "Var inmatningsfältet hamnar när en ny chatt startar, från sidans överkant ända ned till botten.",
       projectAttachments: "Dela filer i ett projekt",
       projectAttachmentsDescription:
         "Gör nya chattbilagor tillgängliga för alla chattar i projektet.",
@@ -3646,6 +3646,9 @@ export const sv = {
         docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
+        codeTitle: "Anropa från kod",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andra MCP-klienter ansluter hit med samma token.",
         enable: "Hantera begäranden",
         enableDescription:
           "Hanterar /v1/systemone. När du aktiverar det hämtas modellen.",
@@ -3802,7 +3805,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Ansluten till en Unsloth-server på port {port} som den här appen inte har startat, till exempel `unsloth studio` i en terminal. Stoppa den där den startades, avsluta sedan appen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -5340,6 +5343,8 @@ export const sv = {
     removeLevel: "Ta bort nivå {n}",
     addLevel: "Lägg till nivå",
     jsonHelp: "Begärans body. Kör skickar den precis som den är.",
+    copyBody: "Kopiera brödtext",
+    copyCurl: "Kopiera som cURL",
     examples: "Exempel",
     presetToolApproval: "Godkänna agentens verktygsanrop",
     presetPromptInjection: "Upptäcka promptinjektion",
@@ -5725,6 +5730,7 @@ export const sv = {
   generationStats: {
     working: "Arbetar...",
     processingPrompt: "Bearbetar prompt {percent}%",
+    compactingContext: "Komprimerar kontext...",
     timeLeft: "{eta} kvar",
     tokensOne: "{count} token",
     tokens: "{count} token",

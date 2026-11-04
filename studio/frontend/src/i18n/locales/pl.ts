@@ -3274,9 +3274,8 @@ export const pl = {
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
       turnNavigation: "Nawigacja po turach",
       turnNavigationDescription: "Pokazuje Twoje wiadomości jako pasek przy lewej krawędzi długich czatów. Najedź, aby zobaczyć podgląd tury, kliknij, aby do niej przejść, i dodaj zakładkę, aby łatwo ją znaleźć.",
-      composerAtBottom: "Pole wiadomości na dole",
-      composerAtBottomDescription:
-        "Rozpoczynaj nowe czaty z polem wiadomości na dole strony zamiast na środku.",
+      composerPosition: "Położenie pola wiadomości",
+      composerPositionDescription: "Gdzie znajduje się pole wiadomości po rozpoczęciu nowego czatu, od góry strony aż do dołu.",
       projectAttachments: "Udostępniaj pliki w całym projekcie",
       projectAttachmentsDescription:
         "Udostępniaj nowe załączniki czatu wszystkim czatom w projekcie.",
@@ -3799,6 +3798,9 @@ export const pl = {
         docsLabel: "Otwórz dokumentację Decision API",
         description:
           "Odpowiadaj na pytania tak/nie, wielokrotnego wyboru i punktowe dotyczące tekstu za pomocą modelu na tym komputerze lub modelu decyzyjnego z Połączeń. Działa z TypeSafe SDK.",
+        codeTitle: "Wywołaj z kodu",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Inni klienci MCP łączą się tutaj tym samym tokenem.",
         enable: "Obsługuj żądania",
         enableDescription:
           "Udostępnia /v1/systemone. Włączenie powoduje pobranie modelu.",
@@ -3962,7 +3964,7 @@ export const pl = {
         desktopAvailableDescription:
           "Zaktualizuj teraz, a aplikacja komputerowa uruchomi się ponownie po zakończeniu.",
         desktopExternalServer:
-          "Aplikacja połączyła się z już działającym serwerem Unsloth i nie może go zaktualizować. Zatrzymaj ten serwer, a następnie zamknij i ponownie otwórz aplikację komputerową, aby ją zaktualizować.",
+          "Połączono z serwerem Unsloth na porcie {port}, którego ta aplikacja nie uruchomiła, na przykład `unsloth studio` w terminalu. Zatrzymaj go tam, gdzie został uruchomiony, a następnie zamknij i ponownie otwórz aplikację, aby ją zaktualizować.",
         desktopManualInstall:
           "Otwórz stronę wydania, aby zainstalować najnowszy pakiet dla systemu Linux.",
         desktopCheckFailed: "Nie udało się sprawdzić aktualizacji",
@@ -5541,6 +5543,8 @@ export const pl = {
     removeLevel: "Usuń poziom {n}",
     addLevel: "Dodaj poziom",
     jsonHelp: "Treść żądania. Uruchomienie wysyła ją w niezmienionej postaci.",
+    copyBody: "Kopiuj treść",
+    copyCurl: "Kopiuj jako cURL",
     examples: "Przykłady",
     presetToolApproval: "Zatwierdzanie wywołań narzędzi agenta",
     presetPromptInjection: "Wykrywanie wstrzykiwania promptów",
@@ -5943,6 +5947,7 @@ export const pl = {
   generationStats: {
     working: "Przetwarzanie...",
     processingPrompt: "Przetwarzanie promptu {percent}%",
+    compactingContext: "Kompaktowanie kontekstu...",
     timeLeft: "zostało {eta}",
     tokensOne: "tokeny: {count}",
     tokens: "tokeny: {count}",

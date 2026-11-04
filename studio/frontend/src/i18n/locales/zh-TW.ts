@@ -3085,9 +3085,8 @@ export const zhTW = {
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
       turnNavigation: "輪次導覽",
       turnNavigationDescription: "在長對話的左側邊緣以導軌形式顯示你的訊息。懸停可預覽某一輪，點擊可跳轉，並可加書籤以便再次找到。",
-      composerAtBottom: "輸入框置於底部",
-      composerAtBottomDescription:
-        "開始新聊天時，將輸入框放在頁面底部而非中間。",
+      composerPosition: "輸入框位置",
+      composerPositionDescription: "新聊天時輸入框的位置，可從頁面頂端調到底部。",
       projectAttachments: "在專案中共用檔案",
       projectAttachmentsDescription: "讓新的聊天附件可供專案中的每個聊天使用。",
       rememberParamsPerModel: "依模型記住設定",
@@ -3571,6 +3570,9 @@ export const zhTW = {
         docsLabel: "開啟決策 API 文件",
         description:
           "使用此電腦上的模型或「連線」中的決策模型，回答與文字相關的是非題、選擇題和評分題。可搭配 TypeSafe SDK 使用。",
+        codeTitle: "透過程式碼呼叫",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "其他 MCP 用戶端使用同一權杖連線到此處。",
         enable: "處理請求",
         enableDescription: "提供 /v1/systemone 服務。開啟後會下載模型。",
         enableRemoteDescription: "提供 /v1/systemone 服務。",
@@ -3722,7 +3724,7 @@ export const zhTW = {
         desktopAvailable: "桌面應用程式 {version} 已推出",
         desktopAvailableDescription: "立即更新，完成後桌面應用程式將重新啟動。",
         desktopExternalServer:
-          "此應用程式連線到已在執行中的 Unsloth 伺服器，因此無法更新該伺服器。請停止該伺服器，然後結束並重新開啟桌面應用程式以進行更新。",
+          "已連線到連接埠 {port} 上並非由此應用程式啟動的 Unsloth 伺服器，例如在終端機中執行的 `unsloth studio`。請在啟動它的地方停止它，然後結束並重新開啟應用程式以進行更新。",
         desktopManualInstall: "開啟發行頁面以安裝最新的 Linux 套件。",
         desktopCheckFailed: "無法檢查更新",
         desktopCheckFailedDescription: "請檢查您的網路連線，然後再試一次。",
@@ -5184,6 +5186,8 @@ export const zhTW = {
     removeLevel: "移除等級 {n}",
     addLevel: "新增等級",
     jsonHelp: "請求本文。執行時會依原樣傳送。",
+    copyBody: "複製請求內容",
+    copyCurl: "複製為 cURL",
     examples: "範例",
     presetToolApproval: "核准代理程式工具呼叫",
     presetPromptInjection: "偵測提示詞注入",
@@ -5563,6 +5567,7 @@ export const zhTW = {
   generationStats: {
     working: "處理中...",
     processingPrompt: "正在處理提示詞 {percent}%",
+    compactingContext: "正在壓縮上下文...",
     timeLeft: "剩餘 {eta}",
     tokensOne: "{count} 個 token",
     tokens: "{count} 個 token",

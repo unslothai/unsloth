@@ -3003,8 +3003,8 @@ export const ptBR = {
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       turnNavigation: "Navegação por turnos",
       turnNavigationDescription: "Mostra suas mensagens como uma barra na borda esquerda de chats longos. Passe o cursor para ver um turno, clique para ir até ele e marque turnos para encontrá-los depois.",
-      composerAtBottom: "Caixa de texto embaixo",
-      composerAtBottomDescription: "Comece novas conversas com a caixa de texto na parte de baixo da página, não no meio.",
+      composerPosition: "Posição da caixa de texto",
+      composerPositionDescription: "Onde a caixa de texto fica ao começar uma nova conversa, do topo da página até embaixo.",
       projectAttachments: "Compartilhar arquivos em todo o projeto",
       projectAttachmentsDescription:
         "Disponibiliza novos anexos para todos os chats do projeto.",
@@ -3475,6 +3475,9 @@ export const ptBR = {
         docs: "Documentação",
         docsLabel: "Abrir a documentação da API de decisões",
         description: "Responda a perguntas de sim/não, múltipla escolha e pontuação sobre texto com um modelo neste computador ou um modelo de decisões das Conexões. Funciona com o SDK da TypeSafe.",
+        codeTitle: "Chame pelo código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Outros clientes MCP se conectam aqui com o mesmo token.",
         enable: "Atender solicitações",
         enableDescription: "Atende /v1/systemone. Ao ativar, o modelo é baixado.",
         enableRemoteDescription: "Atende /v1/systemone.",
@@ -3631,7 +3634,7 @@ export const ptBR = {
         desktopAvailableDescription:
           "Atualize agora. O aplicativo de desktop será reiniciado quando a atualização terminar.",
         desktopExternalServer:
-          "O aplicativo se conectou a um servidor Unsloth que já estava em execução e não pode atualizá-lo. Pare esse servidor, feche e reabra o aplicativo desktop para atualizar.",
+          "Conectado a um servidor Unsloth na porta {port} que este aplicativo não iniciou, como o `unsloth studio` em um terminal. Pare-o onde ele foi iniciado e depois feche e reabra o aplicativo para atualizar.",
         desktopManualInstall:
           "Abra a página de lançamentos para instalar o pacote mais recente para Linux.",
         desktopCheckFailed: "Não foi possível verificar se há atualizações",
@@ -5125,6 +5128,8 @@ export const ptBR = {
     removeLevel: "Remover o nível {n}",
     addLevel: "Adicionar nível",
     jsonHelp: "O corpo da solicitação. Executar envia exatamente como está.",
+    copyBody: "Copiar corpo",
+    copyCurl: "Copiar como cURL",
     examples: "Exemplos",
     presetToolApproval: "Aprovar chamadas de ferramentas de agentes",
     presetPromptInjection: "Detectar injeção de prompt",
@@ -5510,6 +5515,7 @@ export const ptBR = {
   generationStats: {
     working: "Processando...",
     processingPrompt: "Processando prompt {percent}%",
+    compactingContext: "Compactando o contexto...",
     timeLeft: "faltam {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",

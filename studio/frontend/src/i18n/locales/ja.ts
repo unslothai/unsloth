@@ -2975,8 +2975,8 @@ export const ja = {
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       turnNavigation: "ターンナビゲーション",
       turnNavigationDescription: "長いチャットの左端に自分のメッセージをレールとして表示します。ホバーでプレビュー、クリックでそのターンへ移動し、ブックマークで後から見つけられます。",
-      composerAtBottom: "入力欄を下に表示",
-      composerAtBottomDescription: "新しいチャットで入力欄を中央ではなくページ下部に表示します。",
+      composerPosition: "入力欄の位置",
+      composerPositionDescription: "新しいチャットを始めるときの入力欄の位置を、ページ上部から下部まで調整します。",
       projectAttachments: "プロジェクト全体でファイルを共有",
       projectAttachmentsDescription:
         "新しく添付したファイルをプロジェクト内のすべてのチャットで利用できるようにします。",
@@ -3434,6 +3434,9 @@ export const ja = {
         docs: "ドキュメント",
         docsLabel: "判定 API のドキュメントを開く",
         description: "このマシン上のモデル、または接続の判定モデルで、テキストに関するはい/いいえ・選択式・スコアの質問に答えます。TypeSafe SDK で使えます。",
+        codeTitle: "コードから呼び出す",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "他の MCP クライアントは同じトークンでここに接続します。",
         enable: "リクエストに応答",
         enableDescription: "/v1/systemone を提供します。オンにするとモデルをダウンロードします。",
         enableRemoteDescription: "/v1/systemone を提供します。",
@@ -3583,7 +3586,7 @@ export const ja = {
         desktopAvailableDescription:
           "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
         desktopExternalServer:
-          "アプリはすでに実行中の Unsloth サーバーに接続しているため、更新できません。そのサーバーを停止し、デスクトップアプリを終了してから再度開き、更新してください。",
+          "このアプリが起動していないポート {port} の Unsloth サーバー（ターミナルで実行した `unsloth studio` など）に接続しています。起動した場所で停止してから、アプリを終了して再度開き、更新してください。",
         desktopManualInstall:
           "リリースページを開き、最新の Linux パッケージをインストールしてください。",
         desktopCheckFailed: "アップデートを確認できませんでした",
@@ -5047,6 +5050,8 @@ export const ja = {
     removeLevel: "レベル {n} を削除",
     addLevel: "レベルを追加",
     jsonHelp: "リクエストの本文。実行するとこのまま送信されます。",
+    copyBody: "本文をコピー",
+    copyCurl: "cURL としてコピー",
     examples: "例",
     presetToolApproval: "エージェントのツール呼び出しを承認",
     presetPromptInjection: "プロンプトインジェクションの検出",
@@ -5432,6 +5437,7 @@ export const ja = {
   generationStats: {
     working: "処理中...",
     processingPrompt: "プロンプトを処理中 {percent}%",
+    compactingContext: "コンテキストを圧縮中...",
     timeLeft: "残り {eta}",
     tokensOne: "{count} トークン",
     tokens: "{count} トークン",

@@ -2989,8 +2989,8 @@ export const ar = {
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       turnNavigation: "التنقل بين الجولات",
       turnNavigationDescription: "اعرض رسائلك كشريط على الحافة اليسرى للمحادثات الطويلة. مرّر المؤشر لمعاينة جولة، وانقر للانتقال إليها، وأضف إشارات مرجعية للعثور عليها لاحقًا.",
-      composerAtBottom: "حقل الكتابة في الأسفل",
-      composerAtBottomDescription: "ابدأ المحادثات الجديدة وحقل الكتابة أسفل الصفحة بدلًا من منتصفها.",
+      composerPosition: "موضع حقل الكتابة",
+      composerPositionDescription: "مكان حقل الكتابة عند بدء محادثة جديدة، من أعلى الصفحة إلى أسفلها.",
       projectAttachments: "مشاركة الملفات عبر المشروع",
       projectAttachmentsDescription:
         "أتِح مرفقات الدردشة الجديدة لكل دردشة في المشروع.",
@@ -3461,6 +3461,9 @@ export const ar = {
         docs: "التوثيق",
         docsLabel: "فتح توثيق واجهة القرارات البرمجية",
         description: "أجب عن أسئلة نعم/لا والاختيار من متعدد والتقييم حول النص باستخدام نموذج على هذا الجهاز أو نموذج قرارات من الاتصالات. يعمل مع حزمة TypeSafe.",
+        codeTitle: "استدعِه من الشيفرة",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "تتصل عملاء MCP الأخرى هنا باستخدام الرمز نفسه.",
         enable: "خدمة الطلبات",
         enableDescription: "يقدّم /v1/systemone. عند التشغيل يُنزَّل النموذج.",
         enableRemoteDescription: "يقدّم /v1/systemone.",
@@ -3614,7 +3617,7 @@ export const ar = {
         desktopAvailableDescription:
           "حدّث الآن، وسيُعاد تشغيل تطبيق سطح المكتب عند اكتمال التحديث.",
         desktopExternalServer:
-          "اتصل التطبيق بخادم Unsloth يعمل مسبقًا ولا يمكنه تحديثه. أوقف ذلك الخادم، ثم أغلق تطبيق سطح المكتب وأعد فتحه للتحديث.",
+          "متصل بخادم Unsloth على المنفذ {port} لم يشغّله هذا التطبيق، مثل `unsloth studio` في نافذة طرفية. أوقفه من المكان الذي شُغّل منه، ثم أغلق التطبيق وأعد فتحه للتحديث.",
         desktopManualInstall:
           "افتح صفحة الإصدار لتثبيت أحدث حزمة لنظام Linux.",
         desktopCheckFailed: "تعذّر التحقق من وجود تحديثات",
@@ -5096,6 +5099,8 @@ export const ar = {
     removeLevel: "إزالة المستوى {n}",
     addLevel: "إضافة مستوى",
     jsonHelp: "نص الطلب. التشغيل يرسله كما هو.",
+    copyBody: "نسخ النص الأساسي",
+    copyCurl: "نسخ كـ cURL",
     examples: "أمثلة",
     presetToolApproval: "الموافقة على استدعاءات أدوات الوكيل",
     presetPromptInjection: "كشف حقن الأوامر",
@@ -5481,6 +5486,7 @@ export const ar = {
   generationStats: {
     working: "جارٍ التنفيذ...",
     processingPrompt: "جارٍ معالجة الطلب {percent}%",
+    compactingContext: "جارٍ ضغط السياق...",
     timeLeft: "يتبقى {eta}",
     tokensOne: "التوكنات: {count}",
     tokens: "التوكنات: {count}",

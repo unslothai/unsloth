@@ -3238,9 +3238,8 @@ export const vi = {
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
       turnNavigation: "Điều hướng lượt",
       turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
-      composerAtBottom: "Khung soạn thảo ở dưới cùng",
-      composerAtBottomDescription:
-        "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",
+      composerPosition: "Vị trí khung soạn thảo",
+      composerPositionDescription: "Vị trí của khung soạn thảo khi bắt đầu cuộc trò chuyện mới, từ đầu trang xuống tận cuối trang.",
       projectAttachments: "Chia sẻ tệp trong cả dự án",
       projectAttachmentsDescription:
         "Cho phép mọi cuộc trò chuyện trong dự án dùng các tệp đính kèm mới.",
@@ -3754,6 +3753,9 @@ export const vi = {
         docsLabel: "Mở tài liệu API quyết định",
         description:
           "Trả lời các câu hỏi có/không, trắc nghiệm và chấm điểm về văn bản bằng một mô hình trên máy này hoặc một mô hình quyết định từ Kết nối. Hoạt động với TypeSafe SDK.",
+        codeTitle: "Gọi từ mã",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Các ứng dụng MCP khác kết nối tại đây bằng cùng một token.",
         enable: "Phục vụ yêu cầu",
         enableDescription:
           "Phục vụ /v1/systemone. Khi bật, mô hình sẽ được tải xuống.",
@@ -3916,7 +3918,7 @@ export const vi = {
         desktopAvailableDescription:
           "Cập nhật ngay, ứng dụng máy tính sẽ khởi động lại khi hoàn tất.",
         desktopExternalServer:
-          "Ứng dụng đã kết nối với một máy chủ Unsloth đang chạy sẵn và không thể cập nhật máy chủ đó. Hãy dừng máy chủ đó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
+          "Đang kết nối với một máy chủ Unsloth trên cổng {port} mà ứng dụng này không khởi động, ví dụ `unsloth studio` trong terminal. Hãy dừng máy chủ tại nơi đã khởi động nó, rồi thoát và mở lại ứng dụng để cập nhật.",
         desktopManualInstall:
           "Mở trang phát hành để cài đặt gói Linux mới nhất.",
         desktopCheckFailed: "Không thể kiểm tra bản cập nhật",
@@ -5489,6 +5491,8 @@ export const vi = {
     removeLevel: "Xóa mức {n}",
     addLevel: "Thêm mức",
     jsonHelp: "Nội dung yêu cầu. Nút Chạy sẽ gửi đúng như những gì đã viết.",
+    copyBody: "Sao chép nội dung",
+    copyCurl: "Sao chép dưới dạng cURL",
     examples: "Ví dụ",
     presetToolApproval: "Phê duyệt lệnh gọi công cụ của tác tử",
     presetPromptInjection: "Phát hiện tấn công chèn lời nhắc",
@@ -5890,6 +5894,7 @@ export const vi = {
   generationStats: {
     working: "Đang xử lý...",
     processingPrompt: "Đang xử lý lời nhắc {percent}%",
+    compactingContext: "Đang thu gọn ngữ cảnh...",
     timeLeft: "còn {eta}",
     tokensOne: "{count} token",
     tokens: "{count} token",

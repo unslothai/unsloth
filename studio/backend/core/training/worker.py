@@ -3206,7 +3206,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
     lr_scheduler_type = _normalize_mlx_studio_scheduler(config.get("lr_scheduler_type", "linear"))
 
     # Force text-only for non-image datasets even on vision-capable models (e.g. Qwen3.5-VL on alpaca).
-    _send("status", status_message = f"Loading {model_name}...")
     # Forward resume_from_checkpoint to MLXTrainer.train(); else Resume silently restarts from step 0.
     resume_from_checkpoint = config.get("resume_from_checkpoint") or None
     training_type = config.get("training_type", "LoRA/QLoRA")
@@ -3236,6 +3235,79 @@ def _run_mlx_training(event_queue, stop_queue, config):
         _send("error", **security_error)
         return
 
+    # Fetch the dataset before the model so a dataset error does not wait on the model download.
+    _send("status", status_message = "Loading dataset...")
+    if config.get("is_dataset_audio"):
+        # Raw-text runs still read rows carrying the Audio column, so install the decoder for them too.
+        from utils.datasets.audio_decode import ensure_audio_decoding
+        ensure_audio_decoding()
+    hf_dataset = config.get("hf_dataset", "")
+    dataset_streaming = bool(hf_dataset and config.get("dataset_streaming"))
+    config["_dataset_loaded_from_exact_snapshot"] = False
+
+    def _load_local(file_paths):
+        from utils.datasets.saved import load_saved_dataset
+
+        if len(file_paths) == 1:
+            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
+            if saved is not None:
+                return saved
+        all_files = _resolve_mlx_local_dataset_files(file_paths)
+        if not all_files:
+            raise ValueError("No local dataset files found")
+        from utils.datasets.cells import csv_as_text_kwargs
+
+        loader = _mlx_local_dataset_loader_for_files(all_files)
+        return load_dataset(
+            loader,
+            data_files = all_files,
+            split = "train",
+            **csv_as_text_kwargs(all_files),
+        )
+
+    eval_dataset = None
+    if hf_dataset:
+        dataset, eval_dataset = _load_hf_train_and_eval_datasets(
+            config,
+            hf_token,
+            load_dataset,
+            lambda message: _send("status", status_message = message),
+            lambda message: _send("warning", message = message),
+        )
+    elif config.get("local_datasets"):
+        dataset = _load_local(config["local_datasets"])
+    elif config.get("s3_config"):
+        from core.training.s3_dataset import (
+            S3DownloadCancelled,
+            prepare_s3_dataset_download,
+        )
+        _send("status", status_message = "Downloading dataset from S3...")
+        try:
+            s3_download = prepare_s3_dataset_download(
+                config["s3_config"],
+                cancel_callback = _is_stop_requested,
+            )
+            try:
+                dataset = _load_local(s3_download.files)
+            finally:
+                s3_download.cleanup()
+        except S3DownloadCancelled:
+            _send("complete", output_dir = None, status_message = "Training cancelled")
+            return
+    else:
+        raise ValueError("No dataset specified")
+
+    from core.training.eval_dataset import evaluation_enabled
+
+    eval_enabled = evaluation_enabled(config.get("eval_steps"))
+    if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
+        eval_dataset = _load_local(config["local_eval_datasets"])
+
+    if _is_stop_requested():
+        _send("complete", output_dir = None, status_message = "Training cancelled")
+        return
+
+    _send("status", status_message = f"Loading {model_name}...")
     try:
         model, tokenizer = FastMLXModel.from_pretrained(
             model_load_name,
@@ -3409,16 +3481,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
         peft_kwargs.update(mlx_dora_kwargs)
         model = FastMLXModel.get_peft_model(model, **peft_kwargs)
 
-    _send("status", status_message = "Loading dataset...")
-    if config.get("is_dataset_audio"):
-        # Raw-text runs still read rows carrying the Audio column, so install the decoder for them too.
-        from utils.datasets.audio_decode import ensure_audio_decoding
-        ensure_audio_decoding()
-    hf_dataset = config.get("hf_dataset", "")
     slice_start = config.get("dataset_slice_start")
     slice_end = config.get("dataset_slice_end")
-    dataset_streaming = bool(hf_dataset and config.get("dataset_streaming"))
-    config["_dataset_loaded_from_exact_snapshot"] = False
 
     # max_steps runs cannot reach the whole dataset; bound rows before mapping.
     mlx_raw_text_mode = (
@@ -3463,61 +3527,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             on_bound = _on_bound,
         )
 
-    def _load_local(file_paths):
-        from utils.datasets.saved import load_saved_dataset
-
-        if len(file_paths) == 1:
-            saved = load_saved_dataset(_resolve_mlx_local_dataset_path(file_paths[0]))
-            if saved is not None:
-                return saved
-        all_files = _resolve_mlx_local_dataset_files(file_paths)
-        if not all_files:
-            raise ValueError("No local dataset files found")
-        from utils.datasets.cells import csv_as_text_kwargs
-
-        loader = _mlx_local_dataset_loader_for_files(all_files)
-        return load_dataset(
-            loader,
-            data_files = all_files,
-            split = "train",
-            **csv_as_text_kwargs(all_files),
-        )
-
-    eval_dataset = None
-    if hf_dataset:
-        dataset, eval_dataset = _load_hf_train_and_eval_datasets(
-            config,
-            hf_token,
-            load_dataset,
-            lambda message: _send("status", status_message = message),
-            lambda message: _send("warning", message = message),
-        )
-        dataset = _slice(dataset)
-    elif config.get("local_datasets"):
-        dataset = _load_local(config["local_datasets"])
-        dataset = _slice(dataset)
-    elif config.get("s3_config"):
-        from core.training.s3_dataset import (
-            S3DownloadCancelled,
-            prepare_s3_dataset_download,
-        )
-
-        _send("status", status_message = "Downloading dataset from S3...")
-        try:
-            s3_download = prepare_s3_dataset_download(
-                config["s3_config"],
-                cancel_callback = _is_stop_requested,
-            )
-            try:
-                dataset = _load_local(s3_download.files)
-            finally:
-                s3_download.cleanup()
-        except S3DownloadCancelled:
-            _send("complete", output_dir = None, status_message = "Training cancelled")
-            return
-        dataset = _slice(dataset)
-    else:
-        raise ValueError("No dataset specified")
+    dataset = _slice(dataset)
 
     if not _emit_resource_provenance(
         event_queue,
@@ -3528,12 +3538,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         dataset_loaded_from_exact_snapshot = bool(config.get("_dataset_loaded_from_exact_snapshot")),
     ):
         return
-
-    from core.training.eval_dataset import evaluation_enabled
-
-    eval_enabled = evaluation_enabled(config.get("eval_steps"))
-    if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
-        eval_dataset = _load_local(config["local_eval_datasets"])
 
     # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
     # As on CUDA, CPT always trains on raw text whatever format was requested.
@@ -4137,6 +4141,13 @@ def run_mlx_training_process(
                 "ts": time.time(),
             }
         )
+    _end_abandoned_decision_download(event_queue)
+
+
+def _end_abandoned_decision_download(event_queue: Any) -> None:
+    trainer = sys.modules.get("core.training.decision_trainer")
+    if trainer is not None:
+        trainer.end_abandoned_download(event_queue)
 
 
 def _training_job_is_local(config) -> bool:
@@ -4975,6 +4986,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     "ts": time.time(),
                 }
             )
+        _end_abandoned_decision_download(event_queue)
         return
 
     if config.get("batch_members"):

@@ -3283,9 +3283,8 @@ export const es419 = {
         "Mantén Editar respuesta en cada respuesta, en lugar de en el menú Más.",
       turnNavigation: "Navegación por turnos",
       turnNavigationDescription: "Muestra tus mensajes como una barra en el borde izquierdo de los chats largos. Pasa el cursor para ver un turno, haz clic para ir a él y márcalo para encontrarlo después.",
-      composerAtBottom: "Cuadro de mensaje abajo",
-      composerAtBottomDescription:
-        "Empieza los chats nuevos con el cuadro de mensaje en la parte inferior de la página en lugar del centro.",
+      composerPosition: "Posición del cuadro de mensaje",
+      composerPositionDescription: "Dónde aparece el cuadro de mensaje al iniciar un chat nuevo, desde arriba de la página hasta abajo.",
       projectAttachments: "Compartir archivos en todo el proyecto",
       projectAttachmentsDescription:
         "Haz que los nuevos archivos adjuntos del chat estén disponibles para todos los chats del proyecto.",
@@ -3811,6 +3810,9 @@ export const es419 = {
         docsLabel: "Abrir la documentación de la API de decisiones",
         description:
           "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en esta computadora o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
+        codeTitle: "Llámalo desde código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Otros clientes MCP se conectan aquí con el mismo token.",
         enable: "Atender solicitudes",
         enableDescription:
           "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
@@ -3977,7 +3979,7 @@ export const es419 = {
         desktopAvailableDescription:
           "Actualiza ahora y la app de escritorio se reiniciará cuando termine.",
         desktopExternalServer:
-          "La aplicación se conectó a un servidor de Unsloth que ya estaba en ejecución y no puede actualizarlo. Detén ese servidor, cierra la aplicación de escritorio y vuelve a abrirla para actualizar.",
+          "Conectada a un servidor de Unsloth en el puerto {port} que esta aplicación no inició, como `unsloth studio` en una terminal. Detenlo donde se inició y luego cierra y vuelve a abrir la aplicación para actualizar.",
         desktopManualInstall:
           "Abre la página de versiones para instalar el paquete más reciente para Linux.",
         desktopCheckFailed: "No se pudieron buscar actualizaciones",
@@ -5574,6 +5576,8 @@ export const es419 = {
     removeLevel: "Quitar el nivel {n}",
     addLevel: "Agregar nivel",
     jsonHelp: "El cuerpo de la solicitud. Ejecutar lo envía tal cual.",
+    copyBody: "Copiar cuerpo",
+    copyCurl: "Copiar como cURL",
     examples: "Ejemplos",
     presetToolApproval: "Aprobar llamadas a herramientas de agentes",
     presetPromptInjection: "Detectar inyección de prompts",
@@ -5978,6 +5982,7 @@ export const es419 = {
   generationStats: {
     working: "Procesando...",
     processingPrompt: "Procesando el prompt {percent}%",
+    compactingContext: "Compactando el contexto...",
     timeLeft: "quedan {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",
