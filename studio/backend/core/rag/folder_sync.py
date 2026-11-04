@@ -1847,6 +1847,8 @@ def _reconcile_folder(job_id: str) -> None:
                     try:
                         _check_running()
                         metadata = current[rel]
+                        # Also here, not only inside _snapshot: nothing between this call and the copy holds a handle.
+                        rag_db.release_reused()
                         snapshot = _snapshot(folder["path"], metadata)
                         content_hash = _hash_file(snapshot)
                         _check_running()

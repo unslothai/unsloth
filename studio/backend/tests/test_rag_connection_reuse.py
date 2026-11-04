@@ -322,7 +322,14 @@ def test_folder_sync_holds_no_handle_while_waiting_statting_or_copying(
         )
 
     # Probes sit inside the file work (after each helper's release), counting this thread's open handles.
-    seen = {"wait": [], "reappeared": [], "snapshot": [], "identity": [], "uploads": []}
+    seen = {
+        "wait": [],
+        "reappeared": [],
+        "snapshot_call": [],
+        "snapshot": [],
+        "identity": [],
+        "uploads": [],
+    }
 
     def probe(name, real):
         def wrapper(*args, **kwargs):
@@ -333,6 +340,8 @@ def test_folder_sync_holds_no_handle_while_waiting_statting_or_copying(
 
     probe("wait", folder_sync.wait)
     probe("reappeared", folder_sync.PurePosixPath)
+    # A wrapper around _snapshot runs before the helper's own release, as a slow copy start would.
+    probe("snapshot_call", folder_sync._snapshot)
     probe("snapshot", folder_sync._copy_exact)
     probe("identity", folder_sync._root_identity)
     probe("uploads", folder_sync.rag_uploads_root)
@@ -346,6 +355,7 @@ def test_folder_sync_holds_no_handle_while_waiting_statting_or_copying(
     assert _run(folder["id"])["status"] == "completed"
     assert seen["wait"] and set(seen["wait"]) == {0}
     assert len(seen["reappeared"]) == 3 and set(seen["reappeared"]) == {0}
+    assert len(seen["snapshot_call"]) == 12 and set(seen["snapshot_call"]) == {0}
     assert len(seen["snapshot"]) == 12 and set(seen["snapshot"]) == {0}
     assert len(seen["identity"]) >= 6 + 6 + 3 * 2 and set(seen["identity"]) == {0}
     # twelve snapshot targets, six touch-pass removals, three removals after _delete_mapping commits
