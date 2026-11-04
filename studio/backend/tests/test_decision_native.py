@@ -25,9 +25,6 @@ from routes import systemone
 from utils import systemone_settings
 from utils.account_context import OWNER, run_as
 from utils.paths import outputs_root
-from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
-from tokenizers.pre_tokenizers import Whitespace
 
 _REAL_LOAD = laya_runtime._load_checkpoint
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -1348,11 +1345,13 @@ def _laya_fine_tune(
     name = "laya_run",
     exported = True,
 ) -> Path:
+    # Every Studio install ships tokenizers; the export path reads the tokenizer with it.
+    tokenizers = pytest.importorskip("tokenizers")
     folder = root / name
     (folder / "encoder").mkdir(parents = True)
     (folder / "tokenizer").mkdir()
-    tokenizer = Tokenizer(WordLevel({"[UNK]": 0}, unk_token = "[UNK]"))
-    tokenizer.pre_tokenizer = Whitespace()
+    tokenizer = tokenizers.Tokenizer(tokenizers.models.WordLevel({"[UNK]": 0}, unk_token = "[UNK]"))
+    tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Whitespace()
     tokenizer.save(str(folder / "tokenizer" / "tokenizer.json"))
     (folder / "tokenizer" / "tokenizer_config.json").write_text(
         '{"mask_token": "[MASK]"}', encoding = "utf-8"
