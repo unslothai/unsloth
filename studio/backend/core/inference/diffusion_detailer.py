@@ -643,6 +643,7 @@ def detail_result(
     if not images:
         return
     renders = list(images)
+    placement = result.get("denoiser_offload")
     stop_event = threading.Event()
     with _active_lock:
         _active[stop_event] = account
@@ -668,6 +669,7 @@ def detail_result(
             stopped = stop_event.is_set()
     if finished and stopped:
         result["images"] = renders
+        result["denoiser_offload"] = placement
         result["detailer"] = [
             record
             if record and record.get("error")
@@ -693,6 +695,8 @@ def _detail_images(
 
     seeds = result.get("seeds") or []
     records: list[Optional[dict]] = [None] * len(images)
+    # crop inpaints skip the per-request whole tier, so a kept crop can stream where the base ran resident
+    placements = {result.get("denoiser_offload")}
     try:
         found, info = detect(images, settings, stop = stop_event.is_set)
     except Exception as exc:  # noqa: BLE001 -- the render stands; the recipe says why it was not detailed
@@ -716,6 +720,7 @@ def _detail_images(
             continue
 
         inherited: dict = {}
+        crop_placements: list = []
 
         def _inpaint(crop, mask, seed, det_prompt, det_negative):
             from core.inference import diffusion_bg_compile
@@ -738,6 +743,7 @@ def _detail_images(
                 )
             if not same_build(result, out):
                 raise ValueError("the model changed")
+            crop_placements.append(out.get("denoiser_offload"))
             if det_negative and out.get("negative_prompt") and not result.get("negative_prompt"):
                 # Negative prompt engaged only at the Detailer's CFG: record it.
                 if not settings.negative_prompt:
@@ -770,6 +776,7 @@ def _detail_images(
             }
             continue
         images[index] = detailed.image
+        placements.update(crop_placements)
         records[index] = {
             **detailed.record,
             **inherited,
@@ -788,6 +795,7 @@ def _detail_images(
             records[index]["detect_ms"] = info.get("detect_ms")
     result["images"] = images
     result["detailer"] = records
+    result["denoiser_offload"] = placements.pop() if len(placements) == 1 else None
 
 
 __all__ = [

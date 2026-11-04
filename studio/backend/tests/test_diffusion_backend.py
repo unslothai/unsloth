@@ -14605,3 +14605,39 @@ def test_saved_placement_counts_only_chunks_that_finished(
     assert pipe.attempts == 3 and not outcomes
     assert len(out["images"]) == 2
     assert out["denoiser_offload"] == expected
+
+
+class _DecodeUnpinsPipe(_PinProbePipe):
+    """A VAE OOM recovery that unpins the resident groups for the decode and defers their return."""
+
+    def __init__(self) -> None:
+        super().__init__(fail_first = False)
+        self.decoded = False
+
+    def __call__(self, **kwargs):
+        out = super().__call__(**kwargs)
+        self.decoded = True
+        return out
+
+
+def test_saved_placement_is_read_while_denoising_not_after_the_decode(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _DecodeUnpinsPipe()
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(
+        diffusion,
+        "denoiser_offload",
+        lambda pipe, policy: "streamed" if pipe.decoded else "resident",
+    )
+
+    out = backend.generate(prompt = "p", steps = 4)
+
+    assert pipe.decoded
+    assert out["denoiser_offload"] == "resident"

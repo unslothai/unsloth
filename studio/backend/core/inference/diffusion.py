@@ -14545,11 +14545,9 @@ class DiffusionBackend:
                                         whole_tier[0],
                                         whole_tier[1],
                                     )
-                            if whole_tier is not None:
-                                # read off the hooks while the pin holds: it pins only pipe.transformer
-                                chunk_placement[0] = denoiser_offload(
-                                    state.pipe, state.offload_policy
-                                )
+                            # read while denoising: the pin covers only pipe.transformer, and a VAE OOM
+                            # recovery can unpin resident groups for the decode
+                            chunk_placement[0] = denoiser_offload(state.pipe, state.offload_policy)
 
                         chunk_ticker[0] = _CompletedStepTicker(progress_steps)
 
@@ -14665,8 +14663,7 @@ class DiffusionBackend:
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
-                        if whole_tier is not None:
-                            chunk_placements.append(chunk_placement[0])
+                        chunk_placements.append(chunk_placement[0])
                         steps_done[0] += progress_steps
                 except BaseException:
                     if previewer is not None:
