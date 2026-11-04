@@ -178,7 +178,6 @@ def _dense_per_adapter_loss(
     num_adapters,
     ignore_index = -100,
 ):
-    # The loss before chunking: one cross_entropy over the full fp32 copy of the logits.
     shift = logits[:, :-1].float()
     token = torch.nn.functional.cross_entropy(
         shift.reshape(-1, shift.shape[-1]),
@@ -196,8 +195,7 @@ def _dense_per_adapter_loss(
     return losses.sum(), losses.detach()
 
 
-# Backward forms softmax - onehot from the saved logsumexp instead of autograd through cross_entropy: fp32
-# agrees to rounding, bf16 to one rounding of the gradient into the logits dtype.
+# Gradients: fp32 agrees to rounding, bf16 to one rounding into the logits dtype.
 _CHUNKED_TOL = {
     torch.float32: dict(rtol = 1e-6, atol = 1e-7),
     torch.bfloat16: dict(rtol = 2**-7, atol = 1e-6),
@@ -243,7 +241,6 @@ def test_chunked_per_adapter_loss_matches_the_dense_loss(
 ):
     monkeypatch.setattr(ml, "_CE_CHUNK_ELEMENTS", chunk_elements)
     new, old = _chunked_vs_dense(dtype, per_token_ids)
-    # The losses still come from cross_entropy itself: identical, not just close.
     assert torch.equal(new[0], old[0]) and torch.equal(new[1], old[1])
     _assert_chunked_matches(new, old, dtype)
     err = (new[2].float() - old[2].float()).abs().max().item()
@@ -290,7 +287,6 @@ def test_chunked_per_adapter_loss_saves_no_full_vocab_fp32_copy(monkeypatch):
         with torch.autograd.graph.saved_tensors_hooks(pack, lambda t: t):
             fn(logits, labels, ids, U)
         own = logits.untyped_storage().data_ptr()
-        # The logits themselves are the model's output and alive anyway: count only what the loss adds.
         return sum(
             t.numel() * t.element_size() for t in saved if t.untyped_storage().data_ptr() != own
         )

@@ -1520,18 +1520,13 @@ def adapter_token_counts(
     )
 
 
-# fp32 logits the batch loss materializes at once: a full-vocab fp32 copy of B x T logits (plus what
-# cross_entropy saves for backward) is several times the bf16 logits, and an OOM fails every member.
+# fp32 logits per chunk: a full fp32 copy of B x T logits is several times the bf16 logits and OOMs.
 _CE_CHUNK_ELEMENTS = 1 << 25
 
 
 class _ChunkedTokenCrossEntropy(torch.autograd.Function):
-    """Per-token cross entropy of ``logits[:, :-1]`` against (B, T - 1) labels, a few tokens at a time.
-
-    Each chunk is cast to fp32 on its own, so only one chunk's fp32 copy is alive. Forward saves the logits,
-    the labels and the fp32 logsumexp per token; backward forms ``softmax - onehot`` from them in one pass,
-    without running cross_entropy again. Losses match one ``F.cross_entropy`` over ``logits[:, :-1].float()``.
-    """
+    """Chunked per-token cross entropy of ``logits[:, :-1]``; saves only logits, labels and per-token
+    fp32 logsumexp (no fp32 logits copy) and backward forms ``softmax - onehot`` from them."""
 
     @staticmethod
     def forward(ctx, logits, labels, ignore_index, chunk):
