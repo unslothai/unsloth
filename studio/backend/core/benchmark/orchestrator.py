@@ -172,6 +172,9 @@ class BenchmarkOrchestrator:
         # Set while the slot is reserved for a run that has not started yet (a Flows Benchmark
         # loading its model): monotonic expiry, so a caller that never runs cannot hold the slot.
         self._reserved_until: Optional[float] = None
+        # Stop (with no token, from the Evals page) on a reservation: its run may not start, but the
+        # slot stays held until its owner, done loading its model, frees it.
+        self._reservation_stopped = False
 
         # Cancellation is best-effort in-process: set to signal the run loop to
         # stop waiting on the worker thread.
@@ -292,7 +295,7 @@ class BenchmarkOrchestrator:
         if self._reserved_until is None:
             return True
         if token and token == self._run_token:
-            return False
+            return self._reservation_stopped
         return time.monotonic() < self._reserved_until
 
     def reserve(
@@ -313,6 +316,7 @@ class BenchmarkOrchestrator:
                 return False
             self._active = True
             self._reserved_until = time.monotonic() + ttl
+            self._reservation_stopped = False
             self._run_token = token
             self._result_account = account if account is not None else current_account()
             return True
@@ -331,7 +335,11 @@ class BenchmarkOrchestrator:
             if not self._active or (token is not None and token != self._run_token):
                 return False
             if self._reserved_until is not None:
-                # Only reserved: no run to stop, the slot is just freed.
+                if token is None:
+                    # Its owner may still be loading a model: the run is refused, the slot kept.
+                    self._reservation_stopped = True
+                    return True
+                # The owner's own release: no run to stop, the slot is just freed.
                 self._reserved_until = None
                 self._active = False
                 return True

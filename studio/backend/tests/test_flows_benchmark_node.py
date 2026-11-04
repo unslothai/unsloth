@@ -778,3 +778,19 @@ def test_a_stopped_benchmark_still_frees_its_slot_past_the_runs_cancel_check(mon
     with pytest.raises(FlowCancelled):
         asyncio.run(benchmark.benchmark(ctx))
     assert sent == ["/api/benchmarks/evals/reserve", "/api/benchmarks/evals/cancel"]
+
+
+def test_a_stop_from_the_evals_page_refuses_the_reserved_run_but_keeps_the_slot_until_its_owner_frees_it():
+    from core.benchmark.orchestrator import BenchmarkOrchestrator
+
+    slot = BenchmarkOrchestrator()
+    assert slot.reserve(None, "node-a")
+    # The Evals page's Stop carries no token.
+    assert slot.cancel(None)
+    # The stopped node's run may not start, and nothing else takes the slot while its load may run.
+    assert slot.try_begin(None, "node-a") is None
+    assert slot.try_begin(None, "someone") is None
+    assert slot.is_active()
+    # The node frees it once its load has ended.
+    assert slot.cancel("node-a")
+    assert slot.try_begin(None, "someone") is not None
