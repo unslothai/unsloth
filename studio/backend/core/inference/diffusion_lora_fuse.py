@@ -1,0 +1,144 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Folds an unchanged LoRA set into a resident dense denoiser's weights, and restores them bit-exactly before a change.
+
+PEFT runs every adapted layer as ``base(x) + B(A(x)) * scale``: two extra GEMMs per layer on every step. Once the
+same set renders twice, the second render folds ``B @ A * scale`` into the base weights (fp32 add, one rounding to the
+weight dtype) and marks each layer merged, so PEFT's forward runs the base layer alone. The original weights are kept
+in one pinned host slab and copied back before any change, so the weights-only fast path (``set_adapters``) runs on
+exactly the weights it would have seen unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0."""
+
+from __future__ import annotations
+
+import os
+from typing import Any, Optional
+
+LORA_FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
+_FUSED_ATTR = "_unsloth_lora_fused"
+_ALIGN = 64
+
+
+def enabled() -> bool:
+    return (os.environ.get(LORA_FUSE_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
+def fused(pipe: Any) -> bool:
+    return bool(getattr(pipe, _FUSED_ATTR, None))
+
+
+def _lora_layers(module: Any) -> list:
+    return [
+        m
+        for m in module.modules()
+        if hasattr(m, "lora_A") and hasattr(m, "get_base_layer") and callable(getattr(m, "get_delta_weight", None))
+    ]
+
+
+def _plan(denoisers: list) -> Optional[list]:
+    """(layer, active adapters, base weight) per adapted layer, or None when any layer cannot fold exactly."""
+    import torch
+
+    plan = []
+    for denoiser in denoisers:
+        for layer in _lora_layers(denoiser):
+            if getattr(layer, "merged", False) or getattr(layer, "disable_adapters", False):
+                return None
+            active = [a for a in (getattr(layer, "active_adapters", None) or ()) if a in layer.lora_A]
+            if not active:
+                continue
+            if any(
+                (getattr(layer, "use_dora", {}) or {}).get(a) or (getattr(layer, "lora_bias", {}) or {}).get(a)
+                for a in active
+            ):
+                return None  # DoRA / LoRA bias change more than the weight
+            weight = getattr(layer.get_base_layer(), "weight", None)
+            if (
+                not isinstance(weight, torch.Tensor)
+                or type(weight.data) is not torch.Tensor  # quantised / GGUF / torchao subclasses
+                or not weight.is_floating_point()
+                or weight.device.type == "meta"
+            ):
+                return None
+            plan.append((layer, active, weight))
+    return plan or None
+
+
+def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
+    """Fold the active adapters into ``denoisers``' weights; True when they are folded (now or already)."""
+    if fused(pipe):
+        return True
+    plan = _plan(denoisers)
+    if plan is None:
+        return False
+    import torch
+
+    offsets, total = [], 0
+    for _layer, _active, weight in plan:
+        offsets.append(total)
+        total += -(-weight.numel() * weight.element_size() // _ALIGN) * _ALIGN
+    device = plan[0][2].device
+    if any(w.device != device for _l, _a, w in plan):
+        return False
+    try:
+        slab = torch.empty(total, dtype = torch.uint8, pin_memory = device.type == "cuda")
+    except Exception:  # noqa: BLE001 - no pinned host memory: stay unfused
+        return False
+    entries = []
+    try:
+        for (layer, active, weight), off in zip(plan, offsets):
+            nbytes = weight.numel() * weight.element_size()
+            backup = slab[off : off + nbytes].view(weight.dtype).view(weight.shape)
+            backup.copy_(weight.detach())
+            delta = None
+            for adapter in active:
+                d = layer.get_delta_weight(adapter).float()
+                delta = d if delta is None else delta + d
+            with torch.no_grad():
+                weight.copy_((weight.float() + delta).to(weight.dtype))
+            layer.merged_adapters = list(active)
+            entries.append((layer, weight, backup))
+        _sync(device)
+    except Exception as exc:  # noqa: BLE001 - put back what was folded, stay unfused
+        _restore(entries)
+        if logger is not None:
+            logger.warning("diffusion.lora_fuse: fold failed, staying unfused: %s", exc)
+        return False
+    setattr(pipe, _FUSED_ATTR, {"entries": entries, "slab": slab})
+    if logger is not None:
+        logger.info(
+            "diffusion.lora_fuse: folded the unchanged LoRA set into %d layers (%d MiB kept on the host to restore)",
+            len(entries),
+            total >> 20,
+        )
+    return True
+
+
+def _restore(entries: list) -> None:
+    import torch
+
+    with torch.no_grad():
+        for layer, weight, backup in entries:
+            weight.copy_(backup)
+            layer.merged_adapters = []
+    if entries:
+        _sync(entries[0][1].device)
+
+
+def _sync(device: Any) -> None:
+    if device.type == "cuda":
+        import torch
+
+        torch.cuda.synchronize(device)
+
+
+def unfuse(pipe: Any) -> bool:
+    """Copy the original weights back (bit-exact) and run the adapters unfused again; True when anything was folded."""
+    state = getattr(pipe, _FUSED_ATTR, None)
+    if not state:
+        return False
+    try:
+        _restore(state["entries"])
+    finally:
+        setattr(pipe, _FUSED_ATTR, None)
+    return True
