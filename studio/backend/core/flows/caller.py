@@ -302,7 +302,6 @@ class RouteError(Exception):
         super().__init__(detail)
         self.status = status
         self.detail = detail
-        # The route's X-Unsloth-Refusal tag, when it sent one.
         self.refusal = refusal
 
 

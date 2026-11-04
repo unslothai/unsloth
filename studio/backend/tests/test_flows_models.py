@@ -333,8 +333,7 @@ class _BakedPipe:
 
 
 def _run_baked_nodes(monkeypatch, sets, placement):
-    """Real generate_image and DiffusionBackend._apply_loras on an int8 load placed with ``placement``; the load is
-    stubbed, and the generate call maps errors the way /images/generate does. Returns each node's media loads."""
+    """Run real generate_image + _apply_loras on a stubbed int8 load; returns each node's media loads."""
     import threading
     from types import SimpleNamespace
 

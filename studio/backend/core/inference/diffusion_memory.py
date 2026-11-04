@@ -7249,9 +7249,7 @@ DEFAULT_VAE_TILE_SIDE = 1024
 
 
 class StreamedLoraWeightsFixedError(ValueError):
-    """A block-streamed load cannot change its baked LoRA weights at generate time; a reload with the new
-    weights can. A ValueError subclass so ``/images/generate`` still answers 400; the route tags the 400 so a
-    caller (Flows) can reload and retry instead of parsing the message."""
+    """A block-streamed load cannot change baked LoRA weights; ValueError so the route still answers 400."""
 
 
 class ImageActivationShortfallError(ValueError):

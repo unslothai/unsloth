@@ -53262,7 +53262,6 @@ async def _generate_diffusion_image_run(
                 headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
             )
         except StreamedLoraWeightsFixedError as exc:
-            # Tagged so Flows can reload the model with the new weights and retry.
             raise HTTPException(
                 status_code = 400,
                 detail = str(exc),

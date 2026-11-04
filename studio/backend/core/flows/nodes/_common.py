@@ -1029,7 +1029,7 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
 # slot -> (repo, adapter ids, diffusion load count) Flows baked into a quantized build.
 _BAKED_LORAS: dict[str, tuple[str, frozenset, int]] = {}
 QUANT_BUILDS = ("int8", "fp8", "nvfp4", "mxfp8")
-# The /images/generate refusal tag for a block-streamed load asked to change its baked LoRA weights.
+# Copy of diffusion_memory.IMAGE_REFUSAL_STREAMED_LORA so Flows avoids importing diffusion_memory.
 STREAMED_LORA_REFUSAL = "streamed-lora-weights"
 
 
@@ -1081,9 +1081,7 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
 
 
 async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[list[dict]]) -> bool:
-    """Studio refused a LoRA weight change (or removal) because the load streams its transformer through GPU
-    memory and its baked weights are fixed. Reload with the requested set baked in, or plain when none is
-    requested, so the render can be retried. Other loads adjust the bake in place and never get here."""
+    """Reload a block-streamed load with the requested LoRAs baked in (plain when none) so the render can retry."""
     from core.inference import gpu_arbiter
     from studio_mcp import loading
 
@@ -1244,7 +1242,7 @@ async def generate_image(
     try:
         payload = await render()
     except FlowNodeError as exc:
-        # Only a block-streamed load refuses this; one reload with the requested set, then one retry.
+        # Only block-streamed loads refuse (others re-bake in place): one reload, one retry.
         if getattr(exc, "refusal", None) != STREAMED_LORA_REFUSAL or control is not None:
             raise
         if not await _reload_with_loras(ctx, model, lora_body):
