@@ -373,6 +373,11 @@ def _util_pct(ordinal: int) -> Optional[float]:
     selection = _SELECTION.get()
     if selection is None or not selection.automatic or int(ordinal) == selection.primary:
         return None
+    return _smi_util_pct(ordinal)
+
+
+def _smi_util_pct(ordinal: int) -> Optional[float]:
+    """nvidia-smi utilisation of ``ordinal`` (no CUDA context), read outside any load scope; None when unknown."""
     try:
         from .diffusion_device import smi_util_pct
         return smi_util_pct(int(ordinal))
@@ -3058,7 +3063,8 @@ class CfgParallelRouter:
             ) // (1 << 20)
             free, total = self._secondary_free_total_mib()
             if getattr(self, "automatic_idle_only", False):
-                util = _util_pct(self.secondary.index)
+                # Built lazily during generation, after the load's selection scope ended: read the card directly.
+                util = _smi_util_pct(self.secondary.index)
                 if not _idle_card(
                     DeviceProbe(
                         ordinal = self.secondary.index,

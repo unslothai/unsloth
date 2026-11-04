@@ -318,7 +318,9 @@ def test_automatic_replica_is_not_built_on_a_card_another_job_keeps_busy(monkeyp
     router, replicas = _router(unet)
     router.automatic_idle_only = True
     monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (15000, 15360))
-    monkeypatch.setattr(mg, "_util_pct", lambda _o: 80.0)
+    # read at render time, outside the load's selection scope (where _util_pct answers None)
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda _o: 80.0)
+    assert mg._SELECTION.get() is None
     lat = torch.randn(1, 4, 8, 8)
     _sdxl_loop(unet, lat, steps = 2)
     assert replicas == [] and "no longer idle" in (router.disabled_reason or "")
