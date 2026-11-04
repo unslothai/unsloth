@@ -60,11 +60,19 @@ def test_stages_largest_first_until_the_rest_fits():
     assert plan.stage == ("text_encoder", "transformer")
 
 
-def test_card_too_small_for_the_encoder_keeps_the_dense_load():
+def test_card_too_small_for_the_encoder_stages_it_split():
     plan = VS.plan_stage(WAN13, available_mib = 10100, reserve_mib = 3072, device_free_mib = 11000)
-    # the encoder does not fit the card; the DiT alone does but cannot rescue the load: staged anyway, logged
+    # the encoder does not fit the card: the card takes what fits, host RAM the 2.5 GB rest, and the DiT then
+    # converts densely beside it
+    assert plan.stage == ("text_encoder",)
+    assert plan.split == {"text_encoder": 11000 - VS._DEVICE_MARGIN_MIB}
+
+
+def test_a_split_whose_host_share_does_not_fit_keeps_the_dense_load():
+    plan = VS.plan_stage(WAN13, available_mib = 10100, reserve_mib = 3072, device_free_mib = 4000)
+    # 9.5 GB of the encoder would stay in host RAM beside the DiT: no split; the DiT alone is staged, logged
     assert "text_encoder" in plan.skipped
-    assert plan.stage == ("transformer",)
+    assert plan.stage == ("transformer",) and plan.split == {}
 
 
 def test_kill_switch_and_force(monkeypatch):
@@ -265,3 +273,57 @@ def test_non_cuda_device_never_stages(pipe_dir, monkeypatch):
     calls = _wire(monkeypatch, available = 10)
     assert VS.stage_misses(list(_cands(pipe_dir).values()), "cpu") == []
     assert calls == []
+
+
+# HunyuanVideo-1.5 on a Kaggle T4 (31 GB host, 15 GB card): the fp32 DiT converts to fp16 (18.4 GiB, a cast-cache
+# miss) while the bf16 Qwen2.5-VL-7B converts to fp16 beside it (15.6 GiB, not a cast candidate). Pricing the DiT
+# alone let every load through and the host ran out of RAM (rc -9).
+HV15_T4 = {"transformer": 18827}
+HV15_TE_MIB = 15600
+
+
+def test_the_encoder_converted_beside_the_dit_is_priced():
+    old = VS.plan_stage(HV15_T4, available_mib = 29238, reserve_mib = 3174, device_free_mib = 14600)
+    assert not old.engaged  # the DiT alone "fits"
+    plan = VS.plan_stage(
+        HV15_T4, available_mib = 29238, reserve_mib = 3174, device_free_mib = 14600, others_mib = HV15_TE_MIB
+    )
+    assert plan.engaged and plan.stage == ("transformer",)
+    # 15 GB card: split, 13.8 GB on the card and 4.9 GB in host RAM beside the encoder's 15.6
+    assert plan.split == {"transformer": 14600 - VS._DEVICE_MARGIN_MIB}
+    assert plan.others_mib == HV15_TE_MIB and "other converted components" in plan.reason
+
+
+def test_others_that_fit_change_nothing():
+    plan = VS.plan_stage(HV15_T4, available_mib = 60000, reserve_mib = 6000, device_free_mib = 14600, others_mib = HV15_TE_MIB)
+    assert not plan.engaged and "fits" in plan.reason
+
+
+def test_converted_others_counts_only_a_half_dtype_change(pipe_dir):
+    import safetensors.torch as st
+
+    te = pipe_dir / "text_encoder"
+    for f in te.glob("*.safetensors"):
+        f.unlink()
+    st.save_file({"w": torch.zeros(1024, 512, dtype = torch.bfloat16)}, str(te / "model.safetensors"))
+    cands = [c for c in CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT)]
+    assert {c.component for c in cands} == {"transformer"}  # the bf16 encoder is not a cast candidate
+    fp16 = VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT)
+    assert fp16 == 1  # 1 MiB of bf16 converted to fp16 in host RAM
+    bf16 = VS.converted_others_mib(pipe_dir, cands, torch_dtype = {"default": torch.bfloat16, "vae": torch.float32})
+    assert bf16 == 0  # same dtype: memory-mapped, nothing converted
+    assert VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT, skip = ("text_encoder",)) == 0
+
+
+def test_split_load_kwargs_cap_the_card():
+    import types
+    from unittest import mock
+
+    cand = types.SimpleNamespace()
+
+    with mock.patch.object(CC, "_load_kwargs", lambda c: {"torch_dtype": torch.float16, "output_loading_info": True}):
+        whole = VS._device_load_kwargs(cand, "cuda:0")
+        split = VS._device_load_kwargs(cand, "cuda:0", card_mib = 13832)
+    assert whole["device_map"] == {"": "cuda:0"} and "max_memory" not in whole
+    assert split["device_map"] == "auto" and split["max_memory"][0] == "13832MiB"
+    assert "output_loading_info" not in split

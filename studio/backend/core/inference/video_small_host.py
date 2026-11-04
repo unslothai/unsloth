@@ -83,6 +83,10 @@ class StagePlan:
     available_mib: Optional[int] = None
     reserve_mib: int = 0
     skipped: dict = field(default_factory = dict)
+    # component -> MiB of it placed on the card when it is staged split across the card and host RAM
+    split: dict = field(default_factory = dict)
+    # MiB the same load converts in host RAM outside the cast cache (a bf16 encoder cast to fp16)
+    others_mib: int = 0
 
 
 def plan_stage(
@@ -93,60 +97,100 @@ def plan_stage(
     device_free_mib: Optional[int],
     forced: bool = False,
     disabled: bool = False,
+    others_mib: int = 0,
 ) -> StagePlan:
-    """``misses``: component -> loaded MiB. Stage largest first (each must fit the card) until the rest fits host RAM."""
+    """``misses``: component -> loaded MiB. Stage largest first until the rest fits host RAM; ``others_mib`` is what
+    the same load converts in host RAM besides them (it cannot be staged, so it is priced, not moved). A miss larger
+    than the card is staged split: the card holds what fits, host RAM the rest (when that rest fits)."""
     if disabled:
         return StagePlan(False, f"{SMALL_HOST_ENV}=0")
     sizes = {k: int(v) for k, v in misses.items() if v is not None}
     dense = sum(sizes.values())
+    others = max(0, int(others_mib or 0))
     if not sizes:
-        return StagePlan(False, "no cast-cache miss to convert", dense_mib = 0)
+        return StagePlan(False, "no cast-cache miss to convert", dense_mib = 0, others_mib = others)
     if available_mib is None and not forced:
-        return StagePlan(False, "host RAM unreadable", dense_mib = dense)
-    fits = available_mib is not None and dense + reserve_mib <= int(available_mib)
+        return StagePlan(False, "host RAM unreadable", dense_mib = dense, others_mib = others)
+    beside = f" + {others} MiB of other converted components" if others else ""
+    fits = available_mib is not None and dense + others + reserve_mib <= int(available_mib)
     if fits and not forced:
         return StagePlan(
             False,
-            f"dense conversion ({dense} MiB) fits {available_mib} MiB available host RAM",
+            f"dense conversion ({dense} MiB{beside}) fits {available_mib} MiB available host RAM",
             dense_mib = dense,
             available_mib = available_mib,
             reserve_mib = reserve_mib,
+            others_mib = others,
         )
     stage = []
     skipped = {}
+    split = {}
     left = dense
     for name, mib in sorted(sizes.items(), key = lambda kv: (-kv[1], kv[0])):
-        if not forced and available_mib is not None and left + reserve_mib <= int(available_mib):
+        if (
+            not forced
+            and available_mib is not None
+            and left + others + reserve_mib <= int(available_mib)
+        ):
             break
         if mib < _STAGE_MIN_MIB:
             skipped[name] = "small"
             continue
-        if device_free_mib is None or mib + _DEVICE_MARGIN_MIB > int(device_free_mib):
-            skipped[name] = (
-                f"needs {mib + _DEVICE_MARGIN_MIB} MiB of the card, {device_free_mib} MiB free"
-            )
+        card = None if device_free_mib is None else int(device_free_mib) - _DEVICE_MARGIN_MIB
+        if card is not None and mib <= card:
+            stage.append(name)
+            left -= mib
             continue
-        stage.append(name)
-        left -= mib
+        # Split: the card's share plus a host share that fits beside the rest of the load's conversions.
+        host_room = (
+            None
+            if available_mib is None
+            else int(available_mib) - reserve_mib - others - (left - mib)
+        )
+        if (
+            card is not None
+            and card >= _STAGE_MIN_MIB
+            and host_room is not None
+            and mib - card <= host_room
+        ):
+            stage.append(name)
+            split[name] = card
+            left -= mib
+            continue
+        skipped[name] = (
+            f"needs {mib + _DEVICE_MARGIN_MIB} MiB of the card, {device_free_mib} MiB free, and its host share "
+            f"does not fit {host_room} MiB"
+        )
     why = (
         f"{SMALL_HOST_ENV}=1"
         if forced
-        else f"dense conversion needs ~{dense} MiB + {reserve_mib} MiB reserve of host RAM, "
+        else f"dense conversion needs ~{dense} MiB{beside} + {reserve_mib} MiB reserve of host RAM, "
         f"{available_mib} MiB available"
     )
-    return StagePlan(bool(stage), why, tuple(stage), dense, available_mib, reserve_mib, skipped)
+    return StagePlan(
+        bool(stage), why, tuple(stage), dense, available_mib, reserve_mib, skipped, split, others
+    )
 
 
 def _component_dir(cand: Any) -> str:
     return str(Path(cand.config_path).parent)
 
 
-def _device_load_kwargs(cand: Any, device: Any) -> dict:
+def _device_load_kwargs(cand: Any, device: Any, card_mib: Optional[int] = None) -> dict:
     from .diffusion_cast_cache import _load_kwargs
 
     kwargs = _load_kwargs(cand)
     kwargs.pop("output_loading_info", None)
-    kwargs["device_map"] = {"": str(device)}
+    if card_mib is None:
+        kwargs["device_map"] = {"": str(device)}
+        return kwargs
+    import torch
+
+    # Split: accelerate fills the card up to ``card_mib`` block by block, the rest lands in host RAM.
+    dev = torch.device(device)
+    index = dev.index if dev.index is not None else torch.cuda.current_device()
+    kwargs["device_map"] = "auto"
+    kwargs["max_memory"] = {index: f"{int(card_mib)}MiB", "cpu": "1024GiB"}
     return kwargs
 
 
@@ -156,8 +200,10 @@ def stage_on_device(
     *,
     logger: Any = None,
     cancel_check: Optional[Callable[[], None]] = None,
+    card_mib: Optional[int] = None,
 ) -> bool:
-    """Load ``cand`` alone onto ``device``, write its cast-cache entry from the device tensors, free it."""
+    """Load ``cand`` alone onto ``device`` (split with host RAM past ``card_mib``), write its cast-cache entry from
+    the loaded tensors, free it."""
     import torch
 
     from .diffusion_cast_cache import _state_names, save
@@ -165,7 +211,9 @@ def stage_on_device(
     t0 = time.perf_counter()
     module = None
     try:
-        module = cand.cls.from_pretrained(_component_dir(cand), **_device_load_kwargs(cand, device))
+        module = cand.cls.from_pretrained(
+            _component_dir(cand), **_device_load_kwargs(cand, device, card_mib)
+        )
         module.eval()
         if cancel_check is not None:
             cancel_check()
@@ -176,9 +224,10 @@ def stage_on_device(
         path = save(cand, module, logger = logger, check = cancel_check)
         if logger is not None:
             logger.info(
-                "video.small_host: %s staged on %s in %.1f s (%s)",
+                "video.small_host: %s staged on %s%s in %.1f s (%s)",
                 cand.component,
                 device,
+                f" (split: {card_mib} MiB on the card, the rest in host RAM)" if card_mib else "",
                 time.perf_counter() - t0,
                 "cast cache written" if path else "not written",
             )
@@ -206,12 +255,58 @@ def _device_free_mib(device: Any) -> Optional[int]:
         return None
 
 
+def converted_others_mib(
+    source: Any,
+    cands: list,
+    *,
+    torch_dtype: Any,
+    cache_dir: Optional[str] = None,
+    revision: Optional[str] = None,
+    skip: Any = (),
+) -> int:
+    """MiB the pipeline load converts in host RAM outside the cast cache: half-precision shards of a component that
+    is not a cast candidate but loads at the other half dtype (bf16 -> fp16 on a float16 card), which become anonymous
+    memory beside the cast-cache misses. 0 when unreadable."""
+    try:
+        import torch
+
+        from . import diffusion_cast_cache as cc
+
+        index = cc._read_json(cc._cache._local_file(str(source), "model_index.json", cache_dir, revision))
+        if not isinstance(index, dict):
+            return 0
+        names = {c.component for c in cands}
+        skip = set(skip or ())
+        total = 0
+        for component, spec in index.items():
+            if component.startswith("_") or component in skip or component in names:
+                continue
+            if not isinstance(spec, (list, tuple)) or len(spec) != 2 or spec[0] not in cc._LIBRARIES:
+                continue
+            dtype = cc._component_dtype(torch_dtype, component)
+            if not cc._is_half(dtype):
+                continue
+            want = "F16" if dtype == torch.float16 else "BF16"
+            for shard in cc._shards_of(str(source), component, cc._STEMS[spec[0]], cache_dir, revision) or ():
+                header = cc._shard_header(shard) or {}
+                for name, entry in header.items():
+                    if name == "__metadata__" or not isinstance(entry, dict):
+                        continue
+                    if entry.get("dtype") in ("F16", "BF16") and entry.get("dtype") != want:
+                        begin, end = (int(v) for v in entry.get("data_offsets") or (0, 0))
+                        total += end - begin
+        return -(-total // _MIB)
+    except Exception:  # noqa: BLE001 - unpriced, as before
+        return 0
+
+
 def stage_misses(
     cands: list,
     device: Any,
     *,
     logger: Any = None,
     cancel_check: Optional[Callable[[], None]] = None,
+    others_mib: int = 0,
 ) -> list:
     """Stage the misses of ``cands`` a dense load would not fit; returns the staged components. Never raises except
     a cancel."""
@@ -235,6 +330,7 @@ def stage_misses(
             device_free_mib = _device_free_mib(device),
             forced = stage_forced(),
             disabled = stage_disabled(),
+            others_mib = others_mib,
         )
         if logger is not None and (plan.engaged or plan.skipped or misses):
             logger.info(
@@ -249,7 +345,13 @@ def stage_misses(
         for name in plan.stage:
             if cancel_check is not None:
                 cancel_check()
-            if stage_on_device(by_name[name], device, logger = logger, cancel_check = cancel_check):
+            if stage_on_device(
+                by_name[name],
+                device,
+                logger = logger,
+                cancel_check = cancel_check,
+                card_mib = plan.split.get(name),
+            ):
                 done.append(name)
         return done
     except Exception as exc:  # noqa: BLE001 - the dense load still runs
