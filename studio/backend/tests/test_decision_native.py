@@ -223,7 +223,7 @@ def home(tmp_path, monkeypatch):
     ):
         monkeypatch.setattr(laya_runtime, name, None)
     monkeypatch.setattr(laya_runtime, "_incapable", set())
-    monkeypatch.setattr(laya_runtime, "_unloadable", set())
+    monkeypatch.setattr(laya_runtime, "_unloadable", set(), raising = False)
     monkeypatch.setattr(gpu_arbiter, "_owner", None)
     monkeypatch.setattr(systemone_settings, "runtime_unavailable_reason", lambda: None)
     monkeypatch.setattr(systemone_settings, "gpu_available", lambda: False)
@@ -1520,7 +1520,10 @@ def test_a_laya_export_without_a_readable_tokenizer_is_refused(home, client, stu
     folder = _laya_fine_tune(home.outputs)
     (folder / "tokenizer" / "tokenizer.json").unlink()
     _put(client, enabled = True, model = "laya-ft:laya_run", backend = "llama.cpp")
-    assert _post(client, questions = NOUL).status_code == 503
+    response = _post(client, questions = NOUL)
+    assert response.status_code == 503
+    assert response.json()["detail"]["message"].startswith("Could not read the tokenizer")
+    assert stub.records("start") == []
 
 
 @pytest.mark.parametrize(
