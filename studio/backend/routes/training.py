@@ -1628,8 +1628,7 @@ def _prepare_resume_resource_provenance(
     overrides: dict[str, Any] = {}
     stream_revision = streamed_dataset_revision(stored)
     if stream_revision is not None:
-        # The commit the run streamed, replayed even when it never attested (a resume that died
-        # before loading), instead of the moving branch.
+        # Replay the streamed commit even if the run never attested, not the moving branch.
         overrides["dataset_revision"] = stream_revision
     expected_model = local_model_resume_expectation(stored)
     if expected_model is not None:

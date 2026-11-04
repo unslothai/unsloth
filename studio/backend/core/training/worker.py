@@ -638,8 +638,7 @@ def _load_hf_train_and_eval_datasets(
         return load_dataset(hf_dataset, **kwargs)
 
     if config.get("dataset_streaming"):
-        # Read lazily from the Hub as on CUDA, at the pinned commit when there is one. Evaluation
-        # needs a separate split there, capped so each pass ends.
+        # As on CUDA: eval needs its own split, capped so each pass ends.
         status_callback(f"Streaming dataset: {hf_dataset}")
         dataset = load_remote(train_split, streaming = True)
         eval_dataset = None
@@ -3405,8 +3404,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         use_grad_checkpoint = gc_setting
 
-    # A saved adapter folder reloads with only its LoRA (and saved full modules) trainable; do not
-    # stack a second adapter on it (#13140).
+    # A reloaded adapter stays trainable; never stack a second one on it (#13140).
     continues_adapter = use_lora and next(iter_mlx_lora_modules(model), None) is not None
     if continues_adapter:
         _send(
@@ -3456,8 +3454,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         finetune_language = config.get("finetune_language_layers", True)
         finetune_attention = config.get("finetune_attention_modules", True)
         finetune_mlp = config.get("finetune_mlp_modules", True)
-        # Audio-only rows carry no image, so vision LoRA would get no gradient; zoo also refuses a
-        # vision tower with no linear layer to adapt (Gemma 3n's).
+        # Audio-only rows give vision LoRA no gradient, and zoo refuses Gemma 3n's linear-free vision tower.
         finetune_vision = (
             config.get("finetune_vision_layers", False) if is_vlm and is_dataset_image else False
         )
@@ -3540,7 +3537,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         return
 
     # Reuse the GPU format pipeline for VLM (OCR/caption/llava/sharegpt+images) and text.
-    # As on CUDA, CPT always trains on raw text whatever format was requested.
     format_type = "raw" if is_cpt else config.get("format_type", "")
     custom_format_mapping = config.get("custom_format_mapping")
     dataset_final_format = ""
@@ -3558,7 +3554,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
                     eval_dataset, tokenizer, custom_format_mapping, audio_image_col
                 )
             if audio_image_col:
-                # Lift and resize the images as the VLM path does; the audio stays in the turns.
                 image_layout = (
                     _mlx_vlm_resized_image_layout(tokenizer)
                     if vision_image_size is not None
@@ -3783,8 +3778,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
     weight_decay = config.get("weight_decay", 0.001)
     weight_decay = 0.001 if weight_decay is None else float(weight_decay)
 
-    # `streaming` only for a stream: without a pass length zoo cannot end an epoch on an optimizer step or report a
-    # real epoch, so a sized dataset keeps the eager path.
+    # A sized dataset stays eager: without a pass length zoo cannot end an epoch on an optimizer step.
     mlx_config_kwargs = dict(
         per_device_train_batch_size = batch_size,
         gradient_accumulation_steps = grad_accum,
@@ -5685,8 +5679,7 @@ def _emit_resource_provenance(
     expected = config.get("resume_expected_model")
     mismatch = resumed_model_mismatch(expected, event) if expected else None
     if mismatch:
-        # Only the dataset is recorded, so the next resume keeps this run's expectation, not the
-        # base it loaded by mistake.
+        # Record only the dataset, so the next resume still checks this run's expected base.
         event_queue.put({**event, "model": incomplete_worker_provenance_event()["model"]})
         event_queue.put({"type": "error", "error": mismatch, "stack": "", "ts": time.time()})
         return False
