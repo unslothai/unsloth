@@ -176,8 +176,10 @@ test("glass frosts the chat model controls and gives the account row the row hov
 	// The glass sits on the buttons themselves, so it is exactly the hover's box; the hover layers over it.
 	const model = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
 	const glass = new RegExp(`${model} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
-	assert.match(glass, /backdrop-filter: blur\(max\(var\(--glass-blur\), 10px\)\)/);
-	assert.doesNotMatch(glass, /box-shadow|padding/);
+	assert.match(glass, /backdrop-filter: blur\(max\(var\(--glass-blur\), 14px\)\)/);
+	// A lift reads as a button; no outline ring and no padding around the hover box.
+	assert.match(glass, /box-shadow: var\(--glass-button-lift\);/);
+	assert.doesNotMatch(glass, /padding|0 0 0 1px/);
 	assert.match(css, new RegExp(`${model}:is\\(:hover[^{]*\\{\\n  background-image: linear-gradient\\(var\\(--glass-hover\\), var\\(--glass-hover\\)\\);`));
 	assert.match(css, /\[data-slot="sidebar-inner"\] \.app-user-trigger:is\(:hover, \[data-state="open"\]\)[^{]*\{\n  background-color: var\(--glass-hover\);\n  box-shadow: var\(--glass-hover-rim\);/);
 	const page = readFileSync(new URL("../src/features/chat/chat-page.tsx", import.meta.url), "utf8");
@@ -191,4 +193,16 @@ test("glass frosts sticky bars in panels and popups, floating buttons, and softe
 	assert.match(css, /html\.dark\[data-glass\] \{\n  --popup-shadow: 0 16px 40px -12px rgb\(0 0 0 \/ \.52\);/);
 	const pickers = readFileSync(new URL("../src/features/model-picker/components/model-selector/pickers.tsx", import.meta.url), "utf8");
 	assert.match(pickers, /data-glass-float=""\n\s*onClick=\{\(\) => \(ejectsAll/);
+});
+
+test("glass surfaces holding a frosted child move their own blur behind their content", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	// A backdrop-filter on the surface makes it a backdrop root, and then the child's frost cannot reach the text beneath it.
+	assert.match(css, /\[data-slot="dialog-content"\]\):has\(\.sticky, \[data-glass-float\]\),\n[^{]*\{\n  -webkit-backdrop-filter: none !important;\n  backdrop-filter: none !important;\n  isolation: isolate;/);
+	assert.match(css, /:has\(\.sticky, \[data-glass-float\]\)::before \{\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
+});
+
+test("glass frosts the wallpaper slightly unless the user set an image blur", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\.chat-wallpaper-artwork:not\(\[style\*="filter"\]\) \{\n  filter: blur\(1\.5px\);/);
 });

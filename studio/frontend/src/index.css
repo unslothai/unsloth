@@ -6416,9 +6416,10 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
 }
 /* Frost the buttons, not their row, so the glass is the hover's box; the hover layers over it. */
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
-  background-color: color-mix(in srgb, var(--glass-sidebar-fill) min(96%, calc(max(var(--glass-tint), var(--glass-pane-floor)) * .8 * var(--glass-opacity, 1))), transparent) !important;
-  -webkit-backdrop-filter: blur(max(var(--glass-blur), 10px)) saturate(var(--glass-saturate));
-  backdrop-filter: blur(max(var(--glass-blur), 10px)) saturate(var(--glass-saturate));
+  background-color: color-mix(in srgb, color-mix(in srgb, var(--glass-sidebar-fill), var(--foreground) 14%) min(96%, calc((max(var(--glass-tint), var(--glass-pane-floor)) + 26%) * var(--glass-opacity, 1))), transparent) !important;
+  box-shadow: var(--glass-button-lift);
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 14px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 14px)) saturate(var(--glass-saturate));
   text-shadow: none;
 }
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]):is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]) {
@@ -6639,6 +6640,40 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
 }
+/* A hint of frost on the wallpaper itself; an image blur the user set (an inline filter) wins. */
+html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallpaper .chat-wallpaper-artwork:not([style*="filter"]) {
+  filter: blur(1.5px);
+}
+/* A surface with its own backdrop-filter is a backdrop root, so a frosted child cannot see the text scrolling
+   beneath it; surfaces holding one carry their blur on a layer behind their content instead. */
+html[data-glass][data-glass-menus] :is([data-slot$="popover-content"], [data-slot$="menu-content"], [data-slot="dialog-content"]):has(.sticky, [data-glass-float]),
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"]:has(.sticky, [data-glass-float]) {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+  isolation: isolate;
+}
+html[data-glass][data-glass-menus] :is([data-slot$="popover-content"], [data-slot$="menu-content"]):has(.sticky, [data-glass-float]) {
+  position: relative;
+}
+html[data-glass][data-glass-menus] :is([data-slot$="popover-content"], [data-slot$="menu-content"], [data-slot="dialog-content"]):has(.sticky, [data-glass-float])::before,
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"]:has(.sticky, [data-glass-float])::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
+}
+html[data-glass][data-glass-menus] [data-slot="dialog-content"]:has(.sticky, [data-glass-float])::before {
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"]:has(.sticky, [data-glass-float])::before {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
+}
 /* Not on the chat canvas: a wide sticky wrapper there would blur a band of the wallpaper. */
 html[data-glass] :is([data-slot="chat-settings-panel"], [data-slot$="popover-content"], [data-slot="dialog-content"], [data-slot="sheet-content"], [data-slot$="menu-content"]) .sticky {
   -webkit-backdrop-filter: blur(12px) saturate(var(--glass-saturate, 100%));
@@ -6648,8 +6683,18 @@ html[data-glass] :is([data-glass-float], .aui-thread-scroll-to-bottom) {
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
-html[data-glass] [data-glass-float]:not(:hover) {
-  background-color: color-mix(in srgb, var(--popover) 55%, transparent);
+html[data-glass] [data-glass-float] {
+  background-color: color-mix(in srgb, color-mix(in srgb, var(--popover), var(--foreground) 12%) 82%, transparent) !important;
+  box-shadow: var(--glass-button-lift) !important;
+}
+html[data-glass] [data-glass-float]:hover {
+  background-color: color-mix(in srgb, color-mix(in srgb, var(--popover), var(--foreground) 18%) 88%, transparent) !important;
+}
+html[data-glass] {
+  --glass-button-lift: inset 0 1px 0 rgb(255 255 255 / .1), 0 1px 3px rgb(0 0 0 / .14), 0 4px 12px -6px rgb(0 0 0 / .18);
+}
+html:not(.dark)[data-glass] {
+  --glass-button-lift: inset 0 1px 0 rgb(255 255 255 / .5), 0 1px 3px rgb(0 0 0 / .08), 0 4px 12px -6px rgb(0 0 0 / .12);
 }
 html[data-glass] {
   --popup-shadow: 0 12px 32px -12px rgb(0 0 0 / .12), 0 2px 6px -2px rgb(0 0 0 / .045);
