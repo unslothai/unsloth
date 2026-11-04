@@ -1777,6 +1777,12 @@ function scheduleGenerationRecovery(
                 context_truncated?: OpenAIChatChunk["context_truncated"];
                 quote_cut?: boolean;
               };
+              if (
+                caughtUp(update.run) &&
+                (chunk as { _toolEvent?: { type?: unknown } })._toolEvent?.type === "tool_end"
+              ) {
+                useChatRuntimeStore.getState().clearLiveGenerationForThread(threadId);
+              }
               // Live figures only once caught up: a replayed backlog would flash every old sample.
               if ("_generationProgress" in chunk) {
                 if (caughtUp(update.run)) {
@@ -1786,6 +1792,13 @@ function scheduleGenerationRecovery(
                     store.setLivePrefill(threadId, progress.prefill);
                   } else if (progress?.phase === "decode") {
                     store.setLiveDecode(threadId, progress.decode);
+                  } else if (progress?.phase === "compacting") {
+                    store.setLiveCompacting(threadId, true);
+                  }
+                  // A frame can end the replay: show what it rebuilt, or a replayed tool result stays hidden.
+                  if (update.run.status !== lastPublishedStatus) {
+                    lastPublishedStatus = update.run.status;
+                    await publish(update.run);
                   }
                 }
                 continue;
@@ -1808,6 +1821,7 @@ function scheduleGenerationRecovery(
                 firstChunkAt ??= update.event.createdAt;
               }
               if (chunk.context_truncated) {
+                useChatRuntimeStore.getState().setLiveCompacting(threadId, false);
                 const toolCalls = carried
                   .map((entry) => entry.part as { type?: unknown } | null)
                   .filter((part) => part?.type === "tool-call") as Array<{

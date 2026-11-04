@@ -5,10 +5,10 @@
 the same script in one process: losses, per-parameter gradients of the first optimizer step and the adapters
 after the run.
 
-CPU ranks cannot run Unsloth's fast Llama attention (it needs CUDA), so the attention is the Hugging Face one with
-the Ulysses wrapper hybrids use (utils/ulysses_hybrid.install_hf_attention_wrapper), and the model support check is
-opened for it. Everything else (the env layout, the mesh, tensor parallel, the CP sharding, the token count and
-the gradient reduction) is the production path."""
+CPU ranks cannot run Unsloth's fast Llama attention (it needs CUDA), so the attention is the Hugging Face one, which
+the production support check accepts and the trainer routes through generic Ulysses (ALL_ATTENTION_FUNCTIONS). The
+env layout, the mesh, tensor parallel, the CP sharding, the token count and the gradient reduction are all the
+production path; nothing is patched open."""
 
 import multiprocessing
 import os
@@ -196,7 +196,6 @@ def _case_train(
     from unsloth import context_parallel as cpm
     from unsloth.models import pp_native, tp_env, tp_native
     from unsloth.models._utils import patch_gradient_accumulation_fix
-    from unsloth.utils.ulysses_hybrid import install_hf_attention_wrapper
 
     patch_gradient_accumulation_fix(transformers.Trainer)
     cpm.patch_sft_trainer()
@@ -220,8 +219,6 @@ def _case_train(
         torch.backends.cuda.enable_mem_efficient_sdp(False)
         torch.backends.cuda.enable_cudnn_sdp(False)
         torch.use_deterministic_algorithms(True, warn_only = True)
-    # The test seam: CPU ranks run the Hugging Face attention through the Ulysses wrapper.
-    cpm._supports_context_parallel = lambda model, backend = "ring": True
     if bypass_pre or bypass_post:
         # Evidence runs only: switch off the aux-loss guards to show what each one catches.
         from unsloth import parallel_capabilities
@@ -283,9 +280,6 @@ def _case_train(
     moe_calls = _count_moe_backend_calls() if count else None
     if router_aux:
         model.config.output_router_logits = True
-    for name, module in model.named_modules():
-        if name.endswith("self_attn"):
-            install_hf_attention_wrapper(module, "sdpa", cpm.get_cp_manager)
     compiled = _block_compile_on_cpu(model) if compile else []
 
     # Data parallel replicas read different rows; cp / tp / pp peers share theirs.

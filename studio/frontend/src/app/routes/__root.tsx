@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
 import {
   ChatBackground,
   WindowMaterialMount,
@@ -14,7 +15,7 @@ import { Navbar } from "@/components/navbar";
 import { SidebarEdgeTrigger } from "@/components/sidebar-edge-trigger";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
-import { videoNavHint } from "@/config/hardware-verdict";
+import { routeNeedsHardware, videoNavHint } from "@/config/hardware-verdict";
 import { ApiMonitorOverlay } from "@/features/api-monitor/api-monitor-overlay";
 import { DownloadApprovalDialog } from "@/features/browser";
 import {
@@ -378,14 +379,19 @@ function isChatOnlyAllowed(pathname: string, trainAvailable: boolean): boolean {
 }
 
 export const Route = createRootRoute({
-  beforeLoad: async ({ location }) => {
-    await fetchDeviceType();
-    const { isChatOnly, isTrainUnavailable, capabilitiesUnknown } = usePlatformStore.getState();
+  beforeLoad: async ({ location, preload }) => {
+    await fetchDeviceType({
+      // Hover preloads must leave an idle session cold.
+      detectHardware: !preload && routeNeedsHardware(location.pathname),
+    });
+    const { isChatOnly, isTrainUnavailable, capabilitiesUnknown, detectionDeferred } =
+      usePlatformStore.getState();
     const unmeasured = capabilitiesUnknown();
     if (
       isChatOnly() &&
       !isChatOnlyAllowed(location.pathname, !isTrainUnavailable()) &&
-      !(unmeasured && waitsOutUnknownVerdict(location.pathname))
+      // A deferred chat_only is provisional; hardware routes requested detection above.
+      !(unmeasured && (detectionDeferred || waitsOutUnknownVerdict(location.pathname)))
     ) {
       throw redirect({ to: "/chat" });
     }
@@ -426,6 +432,7 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
+  const windowsWallpaperPage = !isChatRoute && usesWindowsTitlebar();
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();
 
@@ -711,12 +718,14 @@ function RootLayout() {
           setPinned={setPinned}
           togglePinned={togglePinned}
           data-wallpaper-workspace=""
+          data-windows-wallpaper-page={windowsWallpaperPage || undefined}
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
+          {windowsWallpaperPage && <div data-slot="page-wallpaper-blur" aria-hidden="true" />}
           <SidebarInset
             className={
               isChatLike

@@ -64,7 +64,8 @@ class Query:
     hybrid: bool = False  # linear attention / state space layers beside attention
     multimodal: bool = False
     windowed: bool = False  # sliding window, chunked attention or logit softcapping
-    mode: str = "lora"  # lora, qlora, full
+    direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
+    mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
     torch: tuple = (0, 0)
@@ -180,10 +181,10 @@ RULES = (
     ),
     Rule(
         "cp x attention",
-        "context parallel on sliding window / chunked / softcapped attention",
-        lambda q: q.cp > 1 and q.windowed,
-        "Unsloth's context parallel attention drops the window / chunk / softcap",
-        "drop cp for this model",
+        "ring context parallel on sliding window / chunked / softcapped attention",
+        lambda q: q.cp > 1 and q.windowed and q.cp_backend == "ring",
+        "ring attention drops the window / chunk / softcap (Ulysses runs the model's own attention function)",
+        "cp_backend=ulysses (or auto), or drop cp for this model",
     ),
     Rule(
         "cp x torch",
@@ -260,6 +261,14 @@ RULES = (
         "(dp without fsdp) for another Muon",
     ),
     Rule(
+        "tp x model",
+        "tensor parallel on attention / MLP blocks that own a parameter directly (gpt-oss attention sinks)",
+        lambda q: q.tp > 1 and q.direct_params,
+        "tensor parallel shards the projections inside a block; a parameter the block owns itself (not inside a "
+        "projection) has no sharding rule (models/tp_native.py refuses it)",
+        "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
+    ),
+    Rule(
         "pp / tp x vLLM",
         "pipeline / tensor parallel with vLLM (fast_inference)",
         lambda q: (q.pp > 1 or q.tp > 1) and q.vllm,
@@ -291,8 +300,10 @@ HOOKS = (
     "from_pretrained",
     "get_peft_model",
     "Trainer.__init__",
-    "Trainer.training_step",
-    "Trainer.prediction_step",
+    # Lower case: bound on one trainer instance (types.MethodType), never on the class. pp_env and the CP
+    # managers both bind these, so two of them on one trainer still cannot compose.
+    "trainer.training_step",
+    "trainer.prediction_step",
     "Trainer.save_model",
     "Accelerator.prepare_model",
     "Accelerator.prepare_data_loader",
@@ -382,7 +393,7 @@ FEATURES = (
             "Accelerator.clip_grad_norm_",
             "Trainer.save_model",
         ),
-        exclusive = ("Trainer.training_step", "Trainer.prediction_step"),
+        exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     Feature(
         "cp.ulysses",
@@ -394,8 +405,7 @@ FEATURES = (
         uses = ("packed_seq_lengths",),
         produces = ("seq_shard", "shift_labels", "position_ids"),
         hooks = ("Trainer.__init__", "attention_function"),
-        exclusive = ("Trainer.training_step", "Trainer.prediction_step"),
-        scope = "class",
+        exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     Feature(
         "cp.ring",
@@ -406,8 +416,7 @@ FEATURES = (
         consumes = ("input_ids", "labels", "position_ids", "num_items_in_batch"),
         produces = ("seq_shard", "shift_labels", "cp_permutation", "position_ids"),
         hooks = ("Trainer.__init__", "attention_function"),
-        exclusive = ("Trainer.training_step", "Trainer.prediction_step"),
-        scope = "class",
+        exclusive = ("trainer.training_step", "trainer.prediction_step"),
     ),
     # Precision.
     Feature(
@@ -730,8 +739,14 @@ _MOE_EVIDENCE = {
 }
 
 
+# Cells table only; a real model is read by structure (_direct_params).
+_DIRECT_PARAM_FAMILIES = ("gpt_oss",)
+
+
 def _moe_note(family, precision, aux, mode):
     if mode == "tp":
+        if family in _DIRECT_PARAM_FAMILIES:
+            return "refused by the tp x model rule (its attention owns the sinks parameter)"
         return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
@@ -951,9 +966,64 @@ def _model_traits(model):
     return family, hybrid, multimodal, windowed
 
 
+def _direct_params(model) -> bool:
+    """An attention / MLP block owns a parameter itself (attention sinks), as tp_native.derive_tp_plan refuses.
+    MoE blocks are skipped as tp_native skips them (replicated). Meta-device safe."""
+    if not callable(getattr(model, "named_modules", None)):
+        return False
+    try:
+        from .models import tp_native
+        _, layers = tp_native._decoder_layers(model)
+    except Exception:
+        return False
+    for layer in layers:
+        for child_name, child in layer.named_children():
+            attention = child_name in tp_native._ATTN_NAMES
+            if not attention and child_name not in tp_native._MLP_NAMES:
+                continue
+            if not tp_native._has_params(child) or (
+                not attention and tp_native._is_moe_block(child)
+            ):
+                continue
+            if next(child.named_parameters(recurse = False), None) is not None:
+                return True
+    return False
+
+
+def _low_precision(model) -> Optional[str]:
+    """Return "fp8" if fp8 LoRA is requested / attached or torchao Float8Linear layers exist, else None."""
+    stack, seen = [model], set()
+    while stack and len(seen) < 8:
+        m = stack.pop()
+        if m is None or id(m) in seen:
+            continue
+        seen.add(id(m))
+        # enable_fp8_lora leaves an empty bases tuple when it converted nothing: that run trains in 16 bit.
+        requested = isinstance(getattr(m, "_unsloth_fp8_lora_recipe", None), str) and (
+            getattr(m, "_unsloth_fp8_lora_bases", None) != ()
+        )
+        linears = getattr(m, "_unsloth_float8_linears", None)
+        if requested or (isinstance(linears, (list, tuple)) and len(linears) > 0):
+            return "fp8"
+        stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
+    try:
+        for m in model.modules():
+            if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
+                return "fp8"
+            cls = type(m)
+            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+                return "fp8"
+    except Exception:
+        pass
+    return None
+
+
 def _mode(model):
     if model is None or isinstance(model, str):
         return "lora"
+    low_precision = _low_precision(model)
+    if low_precision is not None:
+        return low_precision
     if getattr(model, "is_loaded_in_4bit", False) or getattr(
         getattr(model, "config", None), "quantization_config", None
     ):
@@ -1142,6 +1212,7 @@ def query_from(
         hybrid = hybrid,
         multimodal = multimodal,
         windowed = windowed,
+        direct_params = _direct_params(model),
         mode = mode,
         packing = packing,
         cp_backend = backend,

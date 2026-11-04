@@ -206,6 +206,9 @@ export const fa = {
         history: "در حال خواندن سابقهٔ مرور شما",
         move: "در حال حرکت دادن ماوس",
         drag: "در حال کشیدن",
+        tabs: "در حال بررسی زبانه‌ها",
+        readFile: "در حال خواندن فایل",
+        editFile: "در حال ویرایش فایل",
       },
     },
     title: "مرورگر",
@@ -359,6 +362,8 @@ export const fa = {
     askBeforeDownloadingSetting: "پرسیدن پیش از دانلود",
     askBeforeDownloadingSettingDescription:
       "تأیید فایل‌های وب‌سایت‌ها پیش از ذخیره شدن.",
+    askBeforeProgramDownloadsSetting: "پرسیدن پیش از دانلود برنامه‌ها",
+    askBeforeProgramDownloadsSettingDescription: "تأیید فایل‌هایی که می‌توانند برنامه اجرا کنند، مانند .exe یا .dmg، حتی وقتی دانلودهای دیگر نمی‌پرسند.",
     downloadSitesSetting: "مجوزهای دانلود سایت‌ها",
     downloadSitesSettingDescription:
       "سایت‌هایی که انتخاب کرده‌اید دانلود از آن‌ها همیشه مجاز یا مسدود باشد.",
@@ -367,6 +372,7 @@ export const fa = {
     downloadSitesFor: "دانلودها از {host}",
     downloadSitesRemove: "فراموش کردن {host}",
     downloadSiteAllow: "همیشه اجازه بده",
+    downloadSiteAllowAll: "اجازه به برنامه‌ها هم",
     downloadSiteBlock: "همیشه مسدود کن",
     downloadPrompt: {
       title: "این فایل دانلود شود؟",
@@ -374,6 +380,9 @@ export const fa = {
       dangerous:
         "فایل‌هایی از این نوع می‌توانند برنامه‌هایی را روی رایانهٔ شما اجرا کنند. فقط در صورتی دانلود کنید که به {host} اعتماد دارید.",
       remember: "به خاطر سپردن برای دفعهٔ بعد",
+      once: "دفعهٔ بعد بپرس",
+      site: "همیشه برای {host}",
+      all: "همیشه دانلود کن، از همهٔ سایت‌ها",
       cancel: "لغو",
       download: "دانلود",
       blocked: "یک دانلود از {host} مسدود شد.",
@@ -2033,6 +2042,26 @@ export const fa = {
       chatDefaults: "پیش‌فرض‌های گفتگو",
       autoTitleNewChats: "عنوان‌گذاری خودکار گفتگوهای جدید",
       autoTitleNewChatsDescription: "از اولین پیام یک عنوان تولید می‌شود.",
+      mlWarmup: {
+        sectionTitle: "کارایی هنگام راه‌اندازی",
+        description: "قابلیت‌های انتخاب‌شده را برای استفادهٔ اولیهٔ سریع‌تر آماده کنید. همهٔ گزینه‌ها به‌طور پیش‌فرض خاموش هستند. گزینه‌ها ممکن است وابستگی‌های مشترک را بارگذاری کنند و در حالت بیکار RAM بیشتری مصرف کنند.",
+        restartRequired: "تغییرات پس از راه‌اندازی مجدد Unsloth اعمال می‌شوند.",
+        hardwareLabel: "شناسایی سخت‌افزار",
+        hardwareDescription: "GPUها را شناسایی و PyTorch را آماده کنید.",
+        textLabel: "مدل‌های متنی",
+        textDescription: "پشتیبانی از مدل‌های متنی در Transformers را آماده کنید.",
+        datasetsLabel: "آماده‌سازی مجموعه‌داده‌ها",
+        datasetsDescription: "Datasets و وابستگی‌های آن را برای پیش‌نمایش و پردازش آماده کنید.",
+        mediaLabel: "مدل‌های تصویر و ویدیو",
+        mediaDescription: "Diffusers و وابستگی‌های مشترک مدل‌ها را آماده کنید.",
+        advanced: "پیشرفته",
+        quantizationLabel: "بررسی‌های اولیهٔ کوانتیزه‌سازی تصویر",
+        quantizationDescription: "پیش از نخستین بارگذاری مدل تصویر کوانتیزه‌شده، پشتیبانی را بررسی کنید. ممکن است مصرف RAM را برای مدت کوتاهی افزایش دهد.",
+        requiredBySelections: "برای گزینه‌های انتخاب‌شدهٔ شما ضروری است.",
+        disabledByEnv: "با UNSLOTH_STUDIO_DISABLE_TORCH_WARM در محیط بک‌اند غیرفعال شده است.",
+        loadError: "بارگذاری تنظیمات آماده‌سازی اولیه هنگام راه‌اندازی ناموفق بود.",
+        saveError: "ذخیرهٔ تنظیمات آماده‌سازی اولیه هنگام راه‌اندازی ناموفق بود.",
+      },
       helperLlm: {
         sectionTitle: "LLM کمکی",
         preloadOnStartup: "پیش‌دانلود LLM کمکی هنگام راه‌اندازی",
@@ -3205,9 +3234,8 @@ export const fa = {
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",
       turnNavigation: "پیمایش نوبت‌ها",
       turnNavigationDescription: "پیام‌هایتان را به‌صورت نواری در لبهٔ چپ گفتگوهای طولانی نشان می‌دهد. برای پیش‌نمایش یک نوبت نشانگر را روی آن ببرید، برای رفتن به آن کلیک کنید و برای یافتن دوباره نشانکش بگذارید.",
-      composerAtBottom: "کادر نوشتن در پایین",
-      composerAtBottomDescription:
-        "گفتگوهای جدید با کادر نوشتن در پایین صفحه آغاز شوند، نه در وسط.",
+      composerPosition: "جای کادر نوشتن",
+      composerPositionDescription: "جای کادر نوشتن هنگام شروع گفتگوی تازه، از بالای صفحه تا پایین آن.",
       projectAttachments: "اشتراک فایل‌ها در سراسر پروژه",
       projectAttachmentsDescription:
         "پیوست‌های جدید گفتگو در دسترس همهٔ گفتگوهای پروژه قرار گیرند.",
@@ -3720,6 +3748,9 @@ export const fa = {
         docsLabel: "باز کردن مستندات API تصمیم‌گیری",
         description:
           "با یک مدل روی این دستگاه یا یک مدل تصمیم‌گیری از «اتصال‌ها»، به پرسش‌های بله/خیر، چندگزینه‌ای و امتیازدهی دربارهٔ متن پاسخ دهید. با TypeSafe SDK کار می‌کند.",
+        codeTitle: "فراخوانی از کد",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "سایر کلاینت‌های MCP با همان توکن به اینجا وصل می‌شوند.",
         enable: "پاسخ به درخواست‌ها",
         enableDescription:
           "/v1/systemone را ارائه می‌دهد. روشن کردن آن مدل را دانلود می‌کند.",
@@ -3881,7 +3912,7 @@ export const fa = {
         desktopAvailableDescription:
           "اکنون به‌روزرسانی کنید؛ برنامهٔ دسکتاپ پس از پایان کار دوباره راه‌اندازی می‌شود.",
         desktopExternalServer:
-          "برنامه به سرور Unsloth که از قبل در حال اجرا بود متصل شده است و نمی‌تواند آن را به‌روزرسانی کند. آن سرور را متوقف کنید، سپس برای به‌روزرسانی، برنامهٔ دسکتاپ را ببندید و دوباره باز کنید.",
+          "به سرور Unsloth روی پورت {port} متصل است که این برنامه آن را اجرا نکرده است، مانند `unsloth studio` در ترمینال. آن را از همان جایی که اجرا شده متوقف کنید، سپس برای به‌روزرسانی، برنامه را ببندید و دوباره باز کنید.",
         desktopManualInstall:
           "برای نصب آخرین بستهٔ Linux، صفحهٔ انتشار را باز کنید.",
         desktopCheckFailed: "بررسی به‌روزرسانی‌ها ممکن نشد",
@@ -4195,8 +4226,6 @@ export const fa = {
             "به نظر می‌رسد این مجموعه‌داده شامل تصویر است که قابل جریان‌دهی نیست.",
           audioDataset:
             "به نظر می‌رسد این مجموعه‌داده شامل صدا است که قابل جریان‌دهی نیست.",
-          appleSilicon:
-            "جریان‌دهی هنوز روی Apple Silicon (MLX) پشتیبانی نمی‌شود.",
         },
         options: {
           trainOnCompletions: "فقط تکمیل‌های دستیار",
@@ -5441,6 +5470,8 @@ export const fa = {
     removeLevel: "حذف سطح {n}",
     addLevel: "افزودن سطح",
     jsonHelp: "بدنهٔ درخواست. «اجرا» آن را همان‌طور که نوشته شده ارسال می‌کند.",
+    copyBody: "کپی بدنه",
+    copyCurl: "کپی به‌صورت cURL",
     examples: "نمونه‌ها",
     presetToolApproval: "تأیید فراخوانی‌های ابزار عامل",
     presetPromptInjection: "شناسایی تزریق پرامپت",
@@ -5841,6 +5872,7 @@ export const fa = {
   generationStats: {
     working: "در حال انجام...",
     processingPrompt: "پردازش پرامپت {percent}%",
+    compactingContext: "در حال فشرده‌سازی زمینه...",
     timeLeft: "{eta} مانده",
     tokensOne: "{count} توکن",
     tokens: "{count} توکن",

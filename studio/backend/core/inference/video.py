@@ -2302,6 +2302,45 @@ def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
     return mirror
 
 
+def _video_offline_pinned_snapshot(
+    base: Optional[str], fetch_repo: Optional[str] = None
+) -> Optional[tuple[str, str]]:
+    """``(repo, commit)`` of the one cached pipeline snapshot of ``base``'s mirror pair (``fetch_repo`` first) when
+    that repo has no ``refs/main``: a fetch pinned to a commit writes only ``snapshots/<commit>``, which an unpinned
+    offline lookup cannot resolve. None when a repo has ``refs/main`` (it resolves as is), when no or several
+    snapshots hold a pipeline index (ambiguous), or for a local path."""
+    from .diffusion_families import _is_local_path, mirror_repo
+
+    repos: list[str] = []
+    for repo in (fetch_repo, base, mirror_repo(base)):
+        if repo and not _is_local_path(repo) and repo.lower() not in [r.lower() for r in repos]:
+            repos.append(repo)
+    root = Path(hub_cache_dir())
+    found: list[tuple[str, str]] = []
+    for repo in repos:
+        folder = root / ("models--" + repo.replace("/", "--"))
+        if not folder.is_dir():
+            continue
+        if (folder / "refs" / "main").is_file():
+            return None
+        snaps = folder / "snapshots"
+        if not snaps.is_dir():
+            continue
+        holding = [
+            d.name
+            for d in snaps.iterdir()
+            if d.is_dir()
+            and any(
+                (d / name).is_file() for name in ("model_index.json", "modular_model_index.json")
+            )
+        ]
+        if len(holding) > 1:
+            return None
+        if holding:
+            found.append((repo, holding[0]))
+    return found[0] if len(found) == 1 else None
+
+
 def _video_offline_cache_miss(exc: BaseException) -> bool:
     return isinstance(exc, OSError) or bool(getattr(exc, "cache_miss", False))
 
@@ -3413,8 +3452,18 @@ def _read_cast_cache(
         if not cands:
             return []
         if device is not None:
-            from .video_small_host import stage_misses
-            stage_misses(cands, device, logger = logger, cancel_check = cancel_check)
+            from .video_small_host import converted_others_mib, stage_misses
+            others = converted_others_mib(
+                source,
+                cands,
+                torch_dtype = pipe_kwargs.get("torch_dtype"),
+                cache_dir = None
+                if source and os.path.isdir(str(source))
+                else pipe_kwargs.get("cache_dir"),
+                revision = revision,
+                skip = tuple(pipe_kwargs),
+            )
+            stage_misses(cands, device, logger = logger, cancel_check = cancel_check, others_mib = others)
         hits = read_all(cands, logger = logger, cancel_check = cancel_check)
         pipe_kwargs.update(hits)
         if hits:
@@ -4870,9 +4919,13 @@ def _probe_target(request_shape: dict[str, Any]) -> Any:
 
 
 @functools.cache
-def _video_family_capabilities() -> tuple[tuple[str, ...], tuple[str, ...]]:
-    # Once per process: on Metal the device probe allocates and syncs, which a status poll must not repeat.
-    available = pipeline_available_video_families(device = resolve_diffusion_device_target().device)
+def _video_family_capabilities(
+    *, detect_device: bool = True
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    # Cache provisional and measured catalogs separately: idle status must not import torch,
+    # and on Metal the actual device probe allocates and syncs, so later polls reuse its answer.
+    device = resolve_diffusion_device_target().device if detect_device else None
+    available = pipeline_available_video_families(device = device)
     return (
         tuple(fam.name for fam in available),
         tuple(fam.name for fam in available if fam.modular_workflow),
@@ -5856,6 +5909,26 @@ class VideoBackend:
                 if base_fetch_choice
                 else (base_plan.revision if base_plan is not None else None)
             )
+            if (
+                kwargs["_base_fetch_revision"] is None
+                and base_local is None
+                and not local_files_only
+                and kind == "pipeline"
+                and hub_reachability.hub_unreachable()
+            ):
+                # A plan-pinned fetch writes snapshots/<commit> and no refs/main, so with no plan (the Hub is down)
+                # neither the cached check nor from_pretrained could find the snapshot by "main". Pin the one cached
+                # snapshot instead; the checks below still refuse it when it is incomplete.
+                pinned_snapshot = _video_offline_pinned_snapshot(
+                    base, kwargs.get("_base_fetch_repo")
+                )
+                if pinned_snapshot is not None:
+                    kwargs["_base_fetch_repo"], kwargs["_base_fetch_revision"] = pinned_snapshot
+                    logger.info(
+                        "video.hub_unreachable: %s has one cached snapshot (%s) and no refs/main; pinning it",
+                        pinned_snapshot[0],
+                        pinned_snapshot[1][:12],
+                    )
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
@@ -11325,6 +11398,21 @@ class VideoBackend:
                             try:
                                 residency = H3Residency(denoiser, device, logger = logger)
                                 if residency.usable:
+                                    from .video_minimax_h3_te import yield_h3_te_resident
+
+                                    _te_for_yield = getattr(pipe, "text_encoder", None)
+                                    residency.host_yield = (
+                                        lambda nbytes, _te = _te_for_yield: yield_h3_te_resident(
+                                            _te, nbytes, logger = logger
+                                        )
+                                    )
+                                    from .video_minimax_h3_te import top_up_h3_te_resident
+
+                                    residency.host_top_up = (
+                                        lambda _te = _te_for_yield: top_up_h3_te_resident(
+                                            _te, logger = logger
+                                        )
+                                    )
                                     big_w, big_h = max(
                                         fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
                                     )
@@ -14062,8 +14150,13 @@ class VideoBackend:
         return self.status()
 
     def status(self) -> dict[str, Any]:
+        from utils.hardware import hardware as hw
+
         state = self._state
-        supported, modular = _video_family_capabilities()
+        supported, modular = _video_family_capabilities(
+            detect_device = state is not None
+            or (hw.DEVICE is not None and hw.DETECTION_COMPLETE.is_set())
+        )
         if state is None:
             return {
                 "loaded": False,

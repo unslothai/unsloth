@@ -28,6 +28,7 @@ import {
   CUSTOM_PROVIDER_PRESETS,
   connectionApiFields,
   type ExternalProviderConfig,
+  extraHeadersFromSaved,
   getExternalProviderApiKey,
   isPromptCacheTtl,
   LEGACY_CUSTOM_PROVIDER_TYPE,
@@ -306,6 +307,7 @@ export async function syncExternalProvidersFromBackend(
         diffusionStreaming: supportsDiffusionStreaming(uiProviderType)
           ? config.diffusion_streaming === true
           : undefined,
+        extraHeaders: extraHeadersFromSaved(config.extra_headers),
         reasoningConfig:
           config.provider_type === "custom" &&
           config.api_type !== "responses" && config.api_type !== "systemone"
