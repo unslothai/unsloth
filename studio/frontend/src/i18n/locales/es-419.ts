@@ -3811,6 +3811,9 @@ export const es419 = {
         docsLabel: "Abrir la documentación de la API de decisiones",
         description:
           "Responde preguntas de sí/no, de opción múltiple y de puntuación sobre texto con un modelo en esta computadora o un modelo de decisiones de Conexiones. Funciona con el SDK de TypeSafe.",
+        codeTitle: "Llámalo desde código",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Otros clientes MCP se conectan aquí con el mismo token.",
         enable: "Atender solicitudes",
         enableDescription:
           "Atiende /v1/systemone. Al activarlo se descarga el modelo.",
@@ -5576,6 +5579,8 @@ export const es419 = {
     removeLevel: "Quitar el nivel {n}",
     addLevel: "Agregar nivel",
     jsonHelp: "El cuerpo de la solicitud. Ejecutar lo envía tal cual.",
+    copyBody: "Copiar cuerpo",
+    copyCurl: "Copiar como cURL",
     examples: "Ejemplos",
     presetToolApproval: "Aprobar llamadas a herramientas de agentes",
     presetPromptInjection: "Detectar inyección de prompts",

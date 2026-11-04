@@ -3753,6 +3753,9 @@ export const id = {
         docsLabel: "Buka dokumentasi API Keputusan",
         description:
           "Jawab pertanyaan ya/tidak, pilihan ganda, dan skor tentang teks dengan model di mesin ini atau model keputusan dari Koneksi. Berfungsi dengan SDK TypeSafe.",
+        codeTitle: "Panggil dari kode",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Klien MCP lain terhubung ke sini dengan token yang sama.",
         enable: "Layani permintaan",
         enableDescription:
           "Melayani /v1/systemone. Mengaktifkannya akan mengunduh model.",
@@ -5492,6 +5495,8 @@ export const id = {
     removeLevel: "Hapus tingkat {n}",
     addLevel: "Tambah tingkat",
     jsonHelp: "Isi permintaan. Jalankan akan mengirimnya apa adanya.",
+    copyBody: "Salin body",
+    copyCurl: "Salin sebagai cURL",
     examples: "Contoh",
     presetToolApproval: "Setujui panggilan alat agen",
     presetPromptInjection: "Deteksi injeksi prompt",

@@ -3594,6 +3594,9 @@ export const th = {
         docsLabel: "เปิดเอกสาร Decision API",
         description:
           "ตอบคำถามแบบใช่/ไม่ใช่ แบบหลายตัวเลือก และแบบให้คะแนนเกี่ยวกับข้อความ ด้วยโมเดลบนเครื่องนี้หรือโมเดลการตัดสินใจจากการเชื่อมต่อ ใช้งานร่วมกับ TypeSafe SDK ได้",
+        codeTitle: "เรียกใช้จากโค้ด",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "ไคลเอนต์ MCP อื่นเชื่อมต่อที่นี่ด้วยโทเค็นเดียวกัน",
         enable: "ให้บริการคำขอ",
         enableDescription: "ให้บริการ /v1/systemone การเปิดตัวเลือกนี้จะดาวน์โหลดโมเดล",
         enableRemoteDescription: "ให้บริการ /v1/systemone",
@@ -5228,6 +5231,8 @@ export const th = {
     removeLevel: "นำระดับ {n} ออก",
     addLevel: "เพิ่มระดับ",
     jsonHelp: "เนื้อหาคำขอ ปุ่ม “รันการตัดสินใจ” จะส่งเนื้อหานี้ตามที่เขียนไว้",
+    copyBody: "คัดลอกเนื้อหา",
+    copyCurl: "คัดลอกเป็น cURL",
     examples: "ตัวอย่าง",
     presetToolApproval: "อนุมัติการเรียกใช้เครื่องมือของเอเจนต์",
     presetPromptInjection: "ตรวจจับ Prompt Injection",

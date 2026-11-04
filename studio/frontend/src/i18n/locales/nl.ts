@@ -3798,6 +3798,9 @@ export const nl = {
         docsLabel: "Documentatie van de Decision API openen",
         description:
           "Beantwoord ja/nee-, meerkeuze- en scorevragen over tekst met een model op deze computer of een beslissingsmodel uit Verbindingen. Werkt met de TypeSafe SDK.",
+        codeTitle: "Aanroepen vanuit code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andere MCP-clients maken hier verbinding met hetzelfde token.",
         enable: "Verzoeken verwerken",
         enableDescription:
           "Biedt /v1/systemone aan. Bij inschakelen wordt het model gedownload.",
@@ -5546,6 +5549,8 @@ export const nl = {
     removeLevel: "Niveau {n} verwijderen",
     addLevel: "Niveau toevoegen",
     jsonHelp: "De request body. Uitvoeren verstuurt deze zoals geschreven.",
+    copyBody: "Body kopiëren",
+    copyCurl: "Kopiëren als cURL",
     examples: "Voorbeelden",
     presetToolApproval: "Toolaanroepen van agents goedkeuren",
     presetPromptInjection: "Promptinjectie detecteren",
