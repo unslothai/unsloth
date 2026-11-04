@@ -6682,3 +6682,45 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens::after {
   display: none;
 }
+
+/* Character chats, visual novel view: figures fade into the dialogue panel and breathe while speaking. */
+.novel-figure {
+  transition: transform 600ms cubic-bezier(.2,.8,.2,1), opacity 400ms ease, filter 400ms ease;
+  filter: drop-shadow(0 26px 34px rgb(0 0 0 / .32));
+}
+.novel-figure-picture {
+  -webkit-mask-image: linear-gradient(to bottom, #000 58%, transparent 97%), linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+  -webkit-mask-composite: source-in;
+  mask-image: linear-gradient(to bottom, #000 58%, transparent 97%), linear-gradient(to right, transparent, #000 7%, #000 93%, transparent);
+  mask-composite: intersect;
+}
+/* Waiting characters stand a step back, shaded rather than see-through. */
+.novel-figure-waiting {
+  filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.78) saturate(.75);
+}
+.novel-figure-waiting:hover {
+  filter: drop-shadow(0 20px 26px rgb(0 0 0 / .28)) brightness(.95) saturate(1);
+}
+/* The dialogue panel: messages fade in under its top edge, and the composer sits on the panel itself. */
+.novel-dialogue .aui-thread-viewport {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 2.75rem);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 2.75rem);
+}
+.novel-dialogue .thread-bottom-fade {
+  display: none;
+}
+.novel-figure:focus-visible .novel-figure-picture {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+.novel-figure-speaking {
+  animation: novel-figure-breathe 3.2s ease-in-out infinite;
+}
+@keyframes novel-figure-breathe {
+  0%, 100% { transform: translateY(0) scale(1); }
+  50% { transform: translateY(-5px) scale(1.006); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .novel-figure { transition: none; }
+  .novel-figure-speaking { animation: none; }
+}

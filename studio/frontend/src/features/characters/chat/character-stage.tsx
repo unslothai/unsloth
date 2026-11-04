@@ -9,7 +9,7 @@ import { Portrait } from "../components/portrait";
 import { viewPicture } from "../images";
 import { chatViewOf, useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
-import { NovelScene, SpeakingDots } from "./novel-scene";
+import { NovelNameplate, NovelScene, SpeakingDots } from "./novel-scene";
 import { useAskToReply } from "./speaker-bar";
 import { RoleplayController } from "./roleplay-controller";
 import { useThreadScene } from "./use-thread-scene";
@@ -41,10 +41,11 @@ export function CharacterStage({ threadId, children }: { threadId: string | null
         className={cn(
           "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
           novel &&
-            "novel-dialogue relative z-10 mx-auto w-full max-w-[min(100%,1080px)] flex-none basis-auto h-[min(54%,640px)] min-h-[300px] rounded-t-[28px] bg-background/85 shadow-[0_-24px_70px_-34px_rgb(0_0_0/0.55)] ring-1 ring-border/60 backdrop-blur-xl max-md:h-[62%] [--studio-chat-header-height:calc(1.25rem*var(--ui-space-scale,1))] [--studio-chat-scroller-top:0px] [--studio-content-top-inset:0px]",
+            "novel-dialogue relative z-10 mx-auto mt-auto w-[calc(100%-2rem)] max-w-[calc(920px*var(--ui-space-scale,1))] flex-none basis-auto h-[40%] min-h-[calc(290px*var(--ui-space-scale,1))] overflow-visible rounded-t-[30px] bg-background/75 shadow-[0_-30px_80px_-40px_rgb(0_0_0/0.6)] ring-1 ring-white/25 backdrop-blur-2xl dark:bg-background/70 dark:ring-white/10 max-md:h-[58%] max-md:w-full [--studio-chat-header-height:calc(1.75rem*var(--ui-space-scale,1))] [--studio-chat-scroller-top:0px] [--studio-content-top-inset:0px]",
         )}
       >
         {children}
+        {novel && thread ? <NovelNameplate threadId={id} cast={thread.cast} /> : null}
       </div>
     </div>
   );
