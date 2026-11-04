@@ -1659,3 +1659,35 @@ test("a seed is not added while another block holds the name seed, which every s
   const view = studioView(graph.groups.recipe, Object.values(graph.nodes).filter((n) => n.group === "recipe"));
   assert.deepEqual(view.errors, []);
 });
+
+test("a rename reaches a transform's Jinja but not a quoted key, and a paste renames readers only after their own recipe's copies", async () => {
+  const { group, nodes } = sqlGroup();
+  const template = { text: "{{ domain }}", detail: '{{ record["domain"] }}' };
+  const withTransform = {
+    ...group,
+    config: { ...group.config, processors: [{ processor_type: "schema_transform", name: "t", template }] },
+  };
+  const view = studioView(withTransform, nodes);
+  const domain = Object.values(view.configs).find((c) => c.name === "domain");
+  assert.ok(domain);
+  const edit = commitStudioEdit(withTransform, nodes, view, applyConfigPatch(view.configs, domain.id, { name: "area" }));
+  const processors = (edit.group?.config as { processors: { template: unknown }[] }).processors;
+  assert.deepEqual(processors[0].template, { text: "{{ area }}", detail: '{{ record["domain"] }}' });
+
+  const { useDocStore, cloneFragment } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const make = (g: string, value: string): FlowNode[] => [
+    { id: `${g}_t`, type: COLUMN_TYPE, v: 1, group: g, pos: [0, g === "a" ? 0 : 400], params: { column: { name: "topic", column_type: "sampler", sampler_type: "category", params: { values: [value] } } } },
+    { id: `${g}_q`, type: COLUMN_TYPE, v: 1, group: g, pos: [320, g === "a" ? 0 : 400], params: { column: { name: "question", column_type: "expression", expr: "{{ topic }}", dtype: "str" } } },
+  ];
+  const frame = (id: string, y: number) => ({ ...group, id, rect: [-100, y - 100, 900, 300] as [number, number, number, number] });
+  const dest = { ...frame("dest", 1600), rect: [-100, 1400, 4000, 1000] as [number, number, number, number] };
+  useDocStore.getState().load({ ...doc([...make("a", "science"), ...make("b", "history")]), groups: [frame("a", 0), frame("b", 400), dest] });
+  const store = useDocStore.getState();
+  const fragment = cloneFragment(store.graph, ["a_t", "a_q", "b_t", "b_q"], [0, 1600]);
+  store.insertFragment(fragment);
+  const graph = useDocStore.getState().graph;
+  const [, aq, , bq] = fragment.nodes.map((n) => graph.nodes[n.id].params.column as Record<string, unknown>);
+  assert.equal(aq.expr, "{{ topic }}");
+  assert.equal(bq.expr, "{{ topic_2 }}");
+});

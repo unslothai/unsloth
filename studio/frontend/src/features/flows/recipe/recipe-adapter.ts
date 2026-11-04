@@ -218,6 +218,31 @@ function columnRenames(
   });
 }
 
+/** A schema transform's template (JSON text) with a column renamed in its Jinja strings: read as
+ * JSON first, so a quoted key in an expression (`record["topic"]`) is not escaped out of reach. */
+function renamedTemplate(template: string, from: string, to: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(template);
+  } catch {
+    return replaceRef(template, from, to);
+  }
+  let changed = false;
+  const walk = (value: unknown): unknown => {
+    if (typeof value === "string") {
+      const next = replaceRef(value, from, to);
+      if (next !== value) changed = true;
+      return next;
+    }
+    if (Array.isArray(value)) return value.map(walk);
+    if (value && typeof value === "object")
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v)]));
+    return value;
+  };
+  const next = walk(parsed);
+  return changed ? JSON.stringify(next, null, 2) : template;
+}
+
 function renamedProcessors(
   before: StudioView,
   configs: Record<string, NodeConfig>,
@@ -225,7 +250,7 @@ function renamedProcessors(
   let processors = before.processors;
   for (const [from, to] of columnRenames(before, configs)) {
     const next = processors.map((processor) => {
-      const template = replaceRef(processor.template, from, to);
+      const template = renamedTemplate(processor.template, from, to);
       return template === processor.template ? processor : { ...processor, template };
     });
     if (next.some((processor, i) => processor !== processors[i])) processors = next;

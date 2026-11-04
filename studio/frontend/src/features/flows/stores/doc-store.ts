@@ -148,6 +148,9 @@ interface Snapshot {
 export interface GraphFragment {
   nodes: FlowNode[];
   edges: FlowEdge[];
+  /** Each copied node's frame where it was copied from: a pasted reader is renamed only after
+   * copies from its own recipe. */
+  from?: Record<string, string | null>;
 }
 
 export interface GraphPatch {
@@ -831,6 +834,7 @@ export const useDocStore = create<DocState>((set, get) => {
         const folded = foldedGroups(s.meta.editor, s.graph);
         // A copied column renamed to stay unique is renamed in the other copies that read it too.
         const renames = new Map<string, [string, string][]>();
+        const scopes = new Map<string, string>();
         const added: string[] = [];
         for (const node of fragment.nodes) {
           if (nodes[node.id]) continue;
@@ -862,15 +866,18 @@ export const useDocStore = create<DocState>((set, get) => {
           );
           const from = columnNameOf(node);
           const to = columnNameOf(unique);
+          const scope = `${fragment.from?.[node.id] ?? ""}>${group}`;
           if (group && from && to && from !== to)
-            renames.set(group, [...(renames.get(group) ?? []), [from, to]]);
+            renames.set(scope, [...(renames.get(scope) ?? []), [from, to]]);
+          scopes.set(node.id, scope);
           nodes[node.id] = { ...unique, group, ...(extra ? { disabled: true } : {}) };
           nodeOrder.push(node.id);
           added.push(node.id);
         }
         for (const id of added) {
           const node = nodes[id];
-          const pairs = node.group ? renames.get(node.group) : undefined;
+          const scope = scopes.get(id);
+          const pairs = node.group && scope ? renames.get(scope) : undefined;
           if (node.type !== RECIPE_COLUMN || !pairs) continue;
           const own = columnNameOf(node);
           let column = (node.params as { column: Record<string, unknown> }).column;
@@ -1130,11 +1137,13 @@ export function cloneFragment(
 ): GraphFragment {
   const idMap = new Map<string, string>();
   const nodes: FlowNode[] = [];
+  const from: Record<string, string | null> = {};
   for (const id of nodeIds) {
     const node = graph.nodes[id];
     if (!node) continue;
     const nextId = newId("n");
     idMap.set(id, nextId);
+    from[nextId] = node.group ?? null;
     nodes.push({
       ...node,
       id: nextId,
@@ -1154,5 +1163,5 @@ export function cloneFragment(
     if (source && target)
       edges.push({ ...edge, id: newId("e"), source, target });
   }
-  return { nodes, edges };
+  return { nodes, edges, from };
 }
