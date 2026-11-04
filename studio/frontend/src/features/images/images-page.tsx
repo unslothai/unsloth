@@ -25,10 +25,10 @@ import {
 import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Image01Icon,
+  HistoryIcon,
+  ImageIcon,
   ImageAdd02Icon,
   ImageCropIcon,
   InformationCircleIcon,
@@ -39,8 +39,8 @@ import {
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { History as HistoryIcon, Shuffle } from "lucide-react";
-import { MessageCircleIcon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { Shuffle } from "lucide-react";
+import { MessageCircleIcon, TestTubeOutlineIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { MediaViewer } from "@/components/media-viewer";
 import { shortPrompt } from "@/lib/prompt-text";
 
@@ -214,6 +214,7 @@ import {
   formatResolvedValue,
   isDenseQuantKind,
   isPrecisionRefusal,
+  denoiserPlacement,
   memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
@@ -1293,16 +1294,19 @@ function RecipeRow({
   value,
   wrap,
   mono,
+  title,
 }: {
   label: string;
   value: string;
   wrap?: boolean;
   mono?: boolean;
+  title?: string;
 }) {
   return (
     <div className={cn("grid grid-cols-[72px_1fr] gap-2", wrap ? "items-start" : "items-center")}>
       <span className="text-muted-foreground">{label}</span>
       <span
+        title={title}
         className={cn(
           "min-w-0 text-foreground",
           wrap ? "whitespace-pre-wrap break-words" : "truncate",
@@ -1326,6 +1330,8 @@ function RecipePopover({
 }) {
   // PopoverContent portals to body, so the inert page wrapper cannot contain it.
   const [open, setOpen] = useState(false);
+  const recipePlacement =
+    image.offload_policy === "group" ? denoiserPlacement(image.denoiser_offload) : null;
   useEffect(() => {
     if (!active) setOpen(false);
   }, [active]);
@@ -1369,6 +1375,13 @@ function RecipePopover({
             <RecipeRow
               label="Memory"
               value={memoryRecipeValue(image.memory_mode, image.offload_policy)}
+            />
+          ) : null}
+          {recipePlacement ? (
+            <RecipeRow
+              label="Placement"
+              value={recipePlacement.label}
+              title={recipePlacement.detail}
             />
           ) : null}
           {image.speed_mode ? (
@@ -1427,6 +1440,13 @@ function RecipePopover({
             />
           ) : null}
           <RecipeRow label="Size" value={`${image.width} × ${image.height}`} />
+          {image.generation_seconds != null ? (
+            <RecipeRow
+              label="Time"
+              value={`${image.generation_seconds.toFixed(image.generation_seconds < 1 ? 2 : 1)} s${(image.generation_count ?? 1) > 1 ? ` (batch of ${image.generation_count})` : ""}`}
+              title="Elapsed time until images are ready to save; may include waiting and processing"
+            />
+          ) : null}
           {!viaConnection && <RecipeRow label="Steps" value={String(image.steps)} />}
           {!viaConnection && <RecipeRow label="Guidance" value={String(image.guidance)} />}
           {samplerRecipeLabel(image.sampler, image.schedule_type) ? (
@@ -1481,6 +1501,7 @@ function BuildRow({ label, value, badge }: { label: string; value: string; badge
 function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
   if (!status?.loaded) return null;
   const offload = status.offload_policy ?? "none";
+  const placement = offload === "group" ? denoiserPlacement(status.denoiser_offload) : null;
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border/60 px-2.5 py-2 text-ui-11">
       <div className="flex items-center gap-1 pb-0.5 text-xs font-medium text-muted-foreground">
@@ -1525,6 +1546,13 @@ function LoadedBuildSummary({ status }: { status: DiffusionStatus | null }) {
             : `${status.memory_mode ?? "auto"} · ${offload} offload`
         }
       />
+      {placement ? (
+        <BuildRow
+          label="Placement"
+          value={placement.label}
+          badge={<InfoHint>{placement.detail}</InfoHint>}
+        />
+      ) : null}
       <BuildRow
         label="Attention"
         value={
@@ -4999,7 +5027,7 @@ export function ImagesPage({
               className="w-full"
               onClick={() => setReferenceImages((prev) => prev.filter((_, j) => j !== i))}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+              <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
               Remove image {numberOf(i)}
             </Button>
           </div>
@@ -5574,12 +5602,13 @@ export function ImagesPage({
         })),
       sdControls: compareSdControls,
       hiresEngagesNegative: hiresEngagesNegative(hires, hiresCapability, workflow, negativeMinGuidance),
+      detailerEngagesNegative: detailerEngagesNegative(detailerOn, detailerReady, detailerOptions, negativeMinGuidance),
       // The predicate the request uses (strength 0 runs plain text-to-image, where CFG rescale applies).
       controlnetEngaged,
     }),
     // samplerChoice is rebuilt every render; its two fields are what matter.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow],
+    [prompt, negativePrompt, negativeCapable, negativeMinGuidance, guidanceFixed, effectiveGuidance, samplerOptions, samplerChoice.sampler, samplerChoice.scheduleType, shiftControl, loraCapable, loras, availableLoras, compareSdControls, controlnetEngaged, hires, hiresCapability, workflow, detailerOn, detailerReady, detailerOptions],
   );
 
   const handleGenerateWithRecall = useCallback(async () => {
@@ -6260,7 +6289,7 @@ export function ImagesPage({
                           setMaskResetKey((k) => k + 1);
                         }}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Clear mask
                       </Button>
                       <Button
@@ -6489,7 +6518,7 @@ export function ImagesPage({
                         className="w-full"
                         onClick={() => handleInitChange(null)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                        <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         Remove source image
                       </Button>
                     </div>
@@ -6743,7 +6772,7 @@ export function ImagesPage({
             {loraCapable && (
               <Field
                 label="LoRAs"
-                hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id (or pick a suggestion) and set the strength (1.0 = full effect, 0 disables). Stack several."
+                hint="Style or character adapters applied on top of the model. Enter a Hugging Face repo id, pick a suggestion, or add a folder of LoRA files, then set the strength (1.0 = full effect, 0 disables). Stack several."
               >
                 <div className="space-y-2">
                   {availableLoras.length > 0 && (
@@ -6785,7 +6814,7 @@ export function ImagesPage({
                           aria-label={`Remove LoRA ${i + 1}`}
                           onClick={() => setLoras((prev) => prev.filter((_, j) => j !== i))}
                         >
-                          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+                          <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
                         </Button>
                       </div>
                       <SliderField
@@ -6825,7 +6854,7 @@ export function ImagesPage({
                       type="button"
                       variant="ghost"
                       size="sm"
-                      title="Add a custom models folder. Image LoRAs exported from Unsloth in it show up here."
+                      title="Add a custom models folder. Image LoRA .safetensors files in it show up here."
                       onClick={() => setLoraFoldersOpen(true)}
                     >
                       <HugeiconsIcon icon={FolderAddIcon} className="size-3.5" />
@@ -7041,7 +7070,7 @@ export function ImagesPage({
                         if (lastSeed !== null) setSeed(String(lastSeed));
                       }}
                     >
-                      <HistoryIcon className="size-4" strokeWidth={1.5} />
+                      <HugeiconsIcon icon={HistoryIcon} className="size-4" strokeWidth={1.5} />
                     </Button>
                     </div>
                   </div>
@@ -7333,7 +7362,7 @@ export function ImagesPage({
               </>
             ) : busy === "generating" ? null : (
               <div className="flex flex-col items-center gap-3 text-muted-foreground">
-                <HugeiconsIcon icon={Image01Icon} className="size-12" strokeWidth={1.5} />
+                <HugeiconsIcon icon={ImageIcon} className="size-12" strokeWidth={1.5} />
                 <p className="text-sm">
                   {status?.loaded || external
                     ? "Enter a prompt and hit Generate."

@@ -11,3 +11,5 @@ export const usePlatformStore = {
 };
 
 export async function fetchDeviceType(_options?: { force?: boolean }): Promise<void> {}
+
+export function refreshDeviceTypeAfterSystemInfo(): void {}

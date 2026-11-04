@@ -29,6 +29,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePlatformStore } from "@/config/env";
 import {
   DOWNLOAD_KIND,
   downloadManager,
@@ -38,13 +39,22 @@ import {
   useDownloadManagerStore,
 } from "@/features/hub";
 import { translate, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
+import {
+  ApiExampleBox,
+  useApiExampleChoices,
+} from "../../api-monitor/components/api-example-box";
 import { scrollIntoPane } from "../lib/scroll-into-pane";
 import { ArrowUpRight01Icon, TaskDone01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useEffect, useRef, useState } from "react";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import type {
+  KeylessApiAccessExposure,
+  KeylessApiAccessScope,
+} from "../api/keyless-api-access";
 import {
   type SystemOneBackend,
   decisionRuntimeLabel,
@@ -63,8 +73,14 @@ import {
   DECISION_MODEL_LABELS,
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
+import {
+  buildDecisionApiSnippet,
+  decisionApiKey,
+  decisionMcpUrl,
+} from "./decision-api-snippets";
 import { DecisionTryDialog } from "./decision-try-dialog";
 import { SettingsRow } from "./settings-row";
+import { UrlPill } from "./url-pill";
 import { PlayIcon } from "lucide-react";
 
 const DOWNLOAD_SCOPE = "systemone";
@@ -85,10 +101,34 @@ function errorMessage(error: unknown): string | null {
 
 export function DecisionApiSection({
   showHeading = true,
+  apiKey,
+  useTunnel = false,
+  keylessScope = "off",
+  keylessExposure = null,
 }: {
   showHeading?: boolean;
+  apiKey?: string | null;
+  useTunnel?: boolean;
+  keylessScope?: KeylessApiAccessScope;
+  keylessExposure?: KeylessApiAccessExposure | null;
 } = {}): ReactElement | null {
   const t = useT();
+  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const serverUrl = usePlatformStore((s) => s.serverUrl);
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const base =
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
+  const exampleKey = decisionApiKey(apiKey, {
+    base,
+    tunnel: useTunnel && !!cloudflareUrl,
+    scope: keylessScope,
+    exposure: keylessExposure,
+  });
+  const choices = useApiExampleChoices(base, "curl");
   const [settings, setSettings] = useState<SystemOneSettings | null>(null);
   const [connections, setConnections] = useState<SystemOneConnection[] | null>(
     null,
@@ -443,10 +483,11 @@ export function DecisionApiSection({
   const remote = connections?.find((c) => c.name === settings.model);
   const knownModel = current !== undefined || isRemote;
   const longLabel = isRemote || current?.kind === "fine_tune";
-  // Laya is PyTorch only; Clef runs on any runtime, a GGUF-only model on llama.cpp or MLX.
+  // Laya is PyTorch only unless exported; Clef runs on any runtime, a GGUF-only model on llama.cpp or MLX.
   const runtimeChoice =
     isClefDecisionModel(settings.model) ||
     settings.layout === "clef" ||
+    settings.hasGgufForm ||
     !!current?.llamaCppOnly;
   const connectionGroups = [
     ...new Set(connections?.map((c) => c.providerId)),
@@ -775,12 +816,43 @@ export function DecisionApiSection({
         </div>
       </div>
 
+      <div className="flex min-w-0 flex-col gap-3">
+        <h3 className="text-ui-13 font-medium text-foreground">
+          {t("settings.apiKeys.decisionApi.codeTitle")}
+        </h3>
+        {enabled ? null : (
+          <p className="text-xs text-muted-foreground">
+            {t("decisions.tryItOff")}
+          </p>
+        )}
+        <ApiExampleBox
+          choices={choices}
+          hasRealKey={Boolean(apiKey)}
+          code={buildDecisionApiSnippet({
+            base,
+            apiKey: exampleKey,
+            language: choices.language,
+            os: choices.os,
+          })}
+        />
+        <div className="flex min-w-0 flex-col gap-1.5">
+          <span className="text-xs font-medium text-foreground">
+            {t("settings.apiKeys.decisionApi.mcpUrl")}
+          </span>
+          <UrlPill url={decisionMcpUrl(base, settings.mcpUrl)} />
+          <p className="text-xs text-muted-foreground">
+            {t("settings.apiKeys.decisionApi.mcpUrlDescription")}
+          </p>
+        </div>
+      </div>
+
       <DecisionTryDialog
         open={tryOpen && enabled}
         onOpenChange={setTryOpen}
         initialModel={tryModel}
         settings={settings}
         connections={connections ?? []}
+        curlTarget={{ base, apiKey: exampleKey, os: choices.os }}
         onRun={() => {
           loadSystemOneSettings().then(setSettings, () => undefined);
         }}

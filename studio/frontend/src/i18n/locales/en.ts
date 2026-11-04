@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const en = {
+  turns: {
+    label: "Turn {number}",
+    bookmarkedLabel: "Turn {number}, bookmarked",
+    bookmark: "Bookmark turn",
+    removeBookmark: "Remove bookmark",
+    navigator: "Turns",
+  },
   chatBackground: {
     noBackground: "No background",
     sizing: "Image sizing",
@@ -28,6 +35,7 @@ export const en = {
     halftone: "Halftone",
     scanlines: "Scanlines",
     visibility: "Visibility",
+    conversationVisibility: "Visibility in conversations",
     blur: "Image blur",
     position: "Position",
     horizontal: "Horizontal position",
@@ -37,8 +45,8 @@ export const en = {
     scopeChats: "Chats",
     scopeAll: "All pages",
     positionValue: "Horizontal {x}%, vertical {y}%",
-    newChat: "New chat",
-    conversation: "Conversation",
+    newChat: "New chat preview",
+    conversation: "Conversation preview",
     prompt: "What would you like to explore?",
     response: "Your conversation stays clear over the background.",
     storageError: "Could not save the background. Check available browser storage.",
@@ -46,6 +54,26 @@ export const en = {
     dimensionsError: "Choose an image smaller than 40 megapixels.",
     decodeError: "Could not decode this image. Try another file.",
     effectError: "Could not render the effect. Try None or choose another image.",
+    material: "Glass",
+    materialSolid: "Off",
+    materialTransparent: "Transparent",
+    materialFrosted: "Frosted",
+    materialBlurred: "Blurred",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS system glass",
+    materialMacosNote: "Uses the macOS translucent window material, so your desktop shows through.",
+    materialNativeFailed: "This version of Unsloth Desktop cannot use the macOS material. Update the app to turn it on.",
+    glassTheme: "Glass theme",
+    materialStyle: "Style",
+    materialMenus: "Glass menus",
+    materialMenusDescription: "Dropdowns, menus and pickers use the glass too.",
+    materialStrength: "Glass strength",
+    lens: "Glass lens",
+    lensDescription: "Bends the image under the composer like real glass.",
+    lensOff: "Off",
+    lensMagnify: "Magnify",
+    lensShrink: "Shrink",
   },
 
   linkMenu: {
@@ -621,6 +649,8 @@ export const en = {
     title: "Composer",
     plainText: "Plain text composer",
     plainTextDescription: "Keep code, Markdown, and links as literal text. Turn off to show a formatted preview.",
+    richPaste: "Rich text paste",
+    richPasteDescription: "Pastes links, tables and formatting as Markdown. {shortcut} pastes plain text. Full rich text composer coming soon.",
     showContext: "Context window usage",
     sendShortcut: "Send shortcut",
     sendMultiline: "{mod} + Enter for multiline prompts",
@@ -727,38 +757,6 @@ export const en = {
     compactQueued: "Compaction requested for the next message",
     compactEmpty: "Nothing to compact yet",
     compactUnsupported: "Compaction requires a GGUF or MLX model with tool support",
-  },
-  // The sidebar's October "Trick or treat" row, its dialog, and the spooky chat greetings.
-  halloween: {
-    navLabel: "Trick or treat…",
-    title: "Trick or Treat?!",
-    description:
-      "We’ve been brewing a few frights for Unsloth, here for the rest of October.",
-    chooseTheme: "Choose a frightful theme",
-    spookyGreetings: "Spooky greetings",
-    spookyGreetingsDescription: "The sloth greets new chats with a scare.",
-    decorations: "Spiders and bats",
-    decorationsDescription:
-      "Webs, plus the odd spider or bat.",
-    surprise: "Trick or treat!",
-    surpriseDescription: "Let the sloth pick a theme for you.",
-    themesTitle: "Frightful themes",
-    back: "Back",
-    footer: "Unsloth returns to normal at midnight on November 1.",
-    removeNow: "Remove now",
-    hideFromSidebar: "Hide from sidebar",
-    greeting: {
-      pumpkins: "The pumpkins are carved. What’s next?",
-      brewing: "Let’s get brewing",
-      trickOrTreat: "Trick or treat?",
-      manor: "Welcome to the manor",
-      manorName: "Welcome to the manor, {name}",
-      happyHalloween: "Happy Halloween",
-      happyHalloweenName: "Happy Halloween, {name}",
-      spirits: "The spirits are listening…",
-      mysteries: "What mysteries shall we uncover tonight?",
-      conjure: "What can I conjure up for you?",
-    },
   },
   // The empty chat's greeting; {name} is the user's nickname or first name.
   welcome: {
@@ -1071,6 +1069,7 @@ export const en = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Choose the owner's password before adding another account. You will use it to sign in once this installation has multiple accounts.",
       signsInAs: "Signs in as {username}",
       signsInAsOwner: "Signs in as {alias} or {username}",
       signInName: "Your sign-in name",
@@ -1879,6 +1878,29 @@ export const en = {
       autoTitleNewChats: "Auto-title new chats",
       autoTitleNewChatsDescription:
         "Generate a title from the first message.",
+      mlWarmup: {
+        sectionTitle: "Startup performance",
+        description:
+          "Prepare selected features for faster first use. All off by default. Options may load shared dependencies and use more RAM while idle.",
+        restartRequired: "Changes apply after restarting Unsloth.",
+        hardwareLabel: "Hardware detection",
+        hardwareDescription: "Detect GPUs and prepare PyTorch.",
+        textLabel: "Text models",
+        textDescription: "Prepare Transformers text-model support.",
+        datasetsLabel: "Dataset preparation",
+        datasetsDescription: "Prepare Datasets and its dependencies for previews and processing.",
+        mediaLabel: "Image and video models",
+        mediaDescription: "Prepare Diffusers and shared model dependencies.",
+        advanced: "Advanced",
+        quantizationLabel: "Image quantization prechecks",
+        quantizationDescription:
+          "Check support before the first quantized image model load. Can briefly increase RAM use.",
+        requiredBySelections: "Required by your selections.",
+        disabledByEnv:
+          "Disabled by UNSLOTH_STUDIO_DISABLE_TORCH_WARM in the backend environment.",
+        loadError: "Failed to load startup warmup settings.",
+        saveError: "Failed to save startup warmup settings.",
+      },
       helperLlm: {
         sectionTitle: "Helper LLM",
         preloadOnStartup: "Pre-cache Helper LLM on startup",
@@ -1940,9 +1962,10 @@ export const en = {
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
+        idleUnsaved: "Not saved yet.",
         keepKv: "Keep chat context across unloads",
         keepKvDescription:
-          "Save the KV cache before an idle unload, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
+          "Save the KV cache before a model is unloaded or switched, or before an image or video model takes the GPU, so resumed chats skip re-reading history. Up to 10 GB on disk.",
         keepKvKeywords: "kv cache context swap resume image video",
         apiOnly: "Only unload models loaded by the API",
         apiOnlyDescription:
@@ -2008,6 +2031,14 @@ export const en = {
           full:
             "Runs every tool call without asking and turns off the code sandbox, so Python and terminal code can read and change any file your account can access.",
         },
+      },
+      display: {
+        title: "Display",
+        timeFormat: "Time format",
+        timeFormatDescription: "Show times on a 12-hour or 24-hour clock.",
+        timeFormatSystem: "System default",
+        timeFormat12: "12-hour",
+        timeFormat24: "24-hour",
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -2232,6 +2263,13 @@ export const en = {
       avatarShapeRounded: "Rounded",
       greetingSloth: "Greeting",
       greetingSlothDescription: "Show the greeting on new chats.",
+      greetingDefault: "Default",
+      greetingCustom: "Custom",
+      greetingImage: "Image",
+      greetingText: "Greeting text",
+      greetingTextDescription: "Leave blank to use the built-in greetings.",
+      greetingFileError: "Choose a PNG, JPEG, WebP or GIF under 10 MB.",
+      greetingImageError: "This image couldn't be used. Try a smaller one.",
       chooseSloth: "Or pick a sloth",
       noPicture: "No profile picture",
       noneLabel: "None",
@@ -2349,15 +2387,10 @@ export const en = {
         label: "Theme",
         description: "Colors used across Unsloth, in light and dark mode.",
         standard: "Standard",
-        classic: "Classic",
-        minimal: "Minimal",
         moreThemes: "More themes",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Trick or treat",
-        description:
-          "Halloween themes and spooky greetings, until November 1.",
+      composer: {
+        title: "Composer",
       },
       code: {
         title: "Code",
@@ -2379,7 +2412,7 @@ export const en = {
         chatWidth: {
           label: "Chat width",
           description: "Width of messages and the composer.",
-          standard: "Standard",
+          standard: "Default",
           wide: "Wide",
           full: "Full width",
         },
@@ -2954,6 +2987,8 @@ export const en = {
         "Notifications are blocked. Allow them for Unsloth in your browser or system settings, then try again.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Link previews",
+      showLinkPreviewsDescription: "Show previews when hovering over source links.",
       showResponseModel: "Response model",
       showResponseModelDescription:
         "Show model details in assistant responses.",
@@ -2969,6 +3004,8 @@ export const en = {
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",
+      turnNavigation: "Turn navigation",
+      turnNavigationDescription: "Show your prompts as a rail at the left edge of long chats. Hover to preview a turn, click to jump to it, and bookmark turns to find them again.",
       composerAtBottom: "Composer at the bottom",
       composerAtBottomDescription: "Start new chats with the composer at the bottom of the page instead of the middle.",
       projectAttachments: "Share files across a project",
@@ -3441,6 +3478,9 @@ export const en = {
         docs: "Docs",
         docsLabel: "Open the Decision API docs",
         description: "Answer yes/no, multiple choice and score questions about text with a model on this machine or a decision model from Connections. Works with the TypeSafe SDK.",
+        codeTitle: "Call it from code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Other MCP clients connect here with the same token.",
         enable: "Serve requests",
         enableDescription: "Serves /v1/systemone. Turning it on downloads the model.",
         enableRemoteDescription: "Serves /v1/systemone.",
@@ -3460,7 +3500,7 @@ export const en = {
         backend: "Runtime",
         backendAuto: "Auto",
         backendDescription:
-          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. llama.cpp also reads images.",
+          "Auto serves Clef through llama.cpp when the model has a GGUF build and falls back to PyTorch otherwise. Exported Laya fine-tunes use llama.cpp when it is chosen here. llama.cpp also reads images.",
         backendDescriptionMlx:
           "Auto serves Clef through MLX on Apple Silicon and through llama.cpp when only the model's GGUF build is loaded or downloaded. MLX reads images for Clef models only. llama.cpp also reads images.",
         backendStatus: "Runtime: {backend}",
@@ -3583,8 +3623,6 @@ export const en = {
         repoCheckoutFallback:
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
-        desktopManaged:
-          "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
         desktopReady: "Desktop app updates",
         desktopReadyDescription:
           "Check whether a newer desktop app version is available.",
@@ -3594,7 +3632,7 @@ export const en = {
         desktopAvailableDescription:
           "Update now and the desktop app will restart when it finishes.",
         desktopExternalServer:
-          "The app connected to an already-running Unsloth server and cannot update it. Stop that server, then quit and reopen the desktop app to update.",
+          "Connected to an Unsloth server on port {port} that this app did not start, such as `unsloth studio` in a terminal. Stop it where it was started, then quit and reopen the app to update.",
         desktopManualInstall:
           "Open the release page to install the latest Linux package.",
         desktopCheckFailed: "Could not check for updates",
@@ -5097,6 +5135,8 @@ export const en = {
     removeLevel: "Remove level {n}",
     addLevel: "Add level",
     jsonHelp: "The request body. Run sends it as written.",
+    copyBody: "Copy body",
+    copyCurl: "Copy as cURL",
     examples: "Examples",
     presetToolApproval: "Approve agent tool calls",
     presetPromptInjection: "Catch prompt injection",
@@ -5486,5 +5526,66 @@ export const en = {
     later: "Later",
     update: "Update",
     undo: "Undo",
+  },
+  // The live prompt and reply figures (Settings > Chat > Display > Generation details), the reply's
+  // timing tooltip and the Run settings "Weight placement" row. Keep GPU, CPU, RAM and VRAM.
+  generationStats: {
+    working: "Working...",
+    processingPrompt: "Processing prompt {percent}%",
+    compactingContext: "Compacting context...",
+    // {eta}: a short duration such as "12s" or "2m 10s".
+    timeLeft: "{eta} left",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    // Speculative decoding: of {drafted} drafted tokens, the model kept {accepted}.
+    draftAccepted: "draft {accepted}/{drafted} accepted ({percent}%)",
+    timing: {
+      trigger: "Message timing",
+      firstToken: "First token",
+      speedInStep: "Speed (in-step)",
+      effective: "Effective",
+      output: "Output",
+      denoising: "Denoising",
+      stepsOne: "{count} step",
+      steps: "{count} steps",
+      blocksOne: "{count} block",
+      blocks: "{count} blocks",
+      canvas: "Canvas",
+      generation: "Generation",
+      answerTokens: "Answer tokens",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Chunks",
+      promptEval: "Prompt eval",
+      promptSpeed: "Prompt speed",
+      speed: "Speed",
+      tokens: "Tokens",
+      draftAccepted: "Draft accepted",
+      denoisingSteps: "Denoising steps",
+      blocksLabel: "Blocks",
+      cacheHits: "Cache hits",
+      cacheWrites: "Cache writes",
+      stopReason: "Stop reason",
+      stoppedByYou: "Stopped by you",
+      endOfTurn: "End of turn",
+      lengthLimit: "Length limit",
+      toolCall: "Tool call",
+      contentFilter: "Content filter",
+    },
+    placement: {
+      title: "Weight placement",
+      allOnCpu: "All {total} layers on the CPU",
+      split: "{gpu} of {total} layers on the GPU, {cpu} on the CPU",
+      allOnGpu: "All {total} layers on the GPU",
+      // A MoE with every routed expert in RAM and a GPU cache of the busiest ones; {amount} is like "18 GiB".
+      expertCache: "All {total} layers on the GPU, all experts in RAM ({amount} expert cache on the GPU)",
+      expertSpillOne: "All {total} layers on the GPU, expert weights of {count} layer in RAM",
+      expertSpill: "All {total} layers on the GPU, expert weights of {count} layers in RAM",
+      inUnifiedMemory: "{amount} in unified memory",
+      inSharedMemory: "{amount} in shared memory",
+      inVram: "{amount} in VRAM",
+      inRam: "{amount} in RAM",
+    },
   },
 } as const;

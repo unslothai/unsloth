@@ -680,7 +680,15 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert "loadPickerGgufVariants(" in picker
     sole = re.search(r"async function readSoleQuant\(.*?\n}", picker, re.S)
     assert sole and "localOnly: true," in sole.group(0)
-    assert "soleQuantNeedsExpander(" in picker and "hubWithdrawsSoleQuant(" in picker
+    # Collapsed rows read disk only; the expander asks the Hub.
+    assert "hubWithdrawsSoleQuant(" not in picker
+    assert "soleQuantNeedsExpander(" not in picker
+    sole_reader = re.search(r"function useSoleDownloadedQuants\(.*?\n}\n", picker, re.S)
+    assert sole_reader, "the sole-quant reader was renamed"
+    assert "listGgufVariantsCached(" not in sole_reader.group(0), (
+        "the collapsed rows list variants directly instead of through readSoleQuant, "
+        "which is the only caller that pins offline=true"
+    )
     assert "cachePath={c.cache_path}" in picker
 
     page = _read("features/chat/chat-page.tsx")
@@ -3144,7 +3152,7 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
     # The parent row is the memoized DownloadedGgufDeviceRow that renderDownloadedGgufRow mounts.
     start = pickers.index("const DownloadedGgufDeviceRow = memo(")
     parent = pickers[start : pickers.index("\n});", start)]
-    parent_row = parent[: parent.index("{expanderOpen && (")]
+    parent_row = parent[: parent.index("{expanderOpen &&")]
     # A partial repo puts a row menu in the gutter instead; the gear invariant is about the
     # branch that expands, so read that one when the row splits on it.
     split = parent_row.find("isPartialRepo ?")
@@ -3165,6 +3173,18 @@ def test_a_multi_quant_parent_row_still_has_no_gear():
         "the multi-quant parent row grew a gear, so the driver's 'no gear means "
         "this row expands rather than loads' inference is now wrong"
     )
+
+
+def test_a_sole_quant_row_keeps_its_gear_and_reaches_the_expander_from_its_menu():
+    """Playwright drivers open run settings from a sole-quant row's gear, and Enter on the row
+    loads, so the expander (Hub-only state: updates, pending companions) opens from the menu."""
+    pickers = _read("features/model-picker/components/model-selector/pickers.tsx")
+    start = pickers.index("const SoleQuantGgufDeviceRow = memo(")
+    sole = pickers[start : pickers.index("\n});", start)]
+    assert "<ModelLoadSettingsAction" in sole and "Inference settings for" in sole
+    assert 'key: "quantizations"' in sole
+    assert "actions.get().toggleGgufExpanded(c.repo_id, expanderOpen)" in sole
+    assert "{expanderOpen &&\n        renderDeviceGgufExpander({" in sole
 
 
 def test_run_settings_page_keeps_its_identifying_controls():
@@ -3537,7 +3557,7 @@ def test_format_gates_wait_for_the_server_reported_platform():
     Linux Unsloth would hide every local safetensors model."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function runsOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "if (!platform.fetched || !platform.isChatOnly()) return true;" in gate
+    assert "if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;" in gate
 
 
 def test_the_default_is_preflighted_before_the_managed_download():
@@ -3557,7 +3577,7 @@ def test_cached_non_gguf_rows_get_the_chat_only_platform_gate():
     """The picker hides them outright there (visibleCachedModelRows)."""
     src = _read("features/chat/api/chat-adapter.ts")
     gate = src.split("function cachedModelsRunOnThisPlatform", 1)[1].split("\n}", 1)[0]
-    assert "return !platform.fetched || !platform.isChatOnly();" in gate
+    assert "return platform.capabilitiesUnknown() || !platform.isChatOnly();" in gate
     assert "cachedModelsRunOnThisPlatform()\n          ? allModelRepos.filter(" in src
     assert "allGgufRepos.filter(isChattableCachedRepo)," in src
 

@@ -59,12 +59,12 @@ def _cross_entropy_forward(
     loss_ptr,
     logsumexp_ptr,
     labels_ptr,
-    VOCAB_SIZE: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    DO_SOFTCAPPING: tl.constexpr,
-    SOFTCAP: tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE: tl.constexpr,
+    VOCAB_SIZE: tl.constexpr,  # vocab size
+    BLOCK_SIZE: tl.constexpr,  # vocab block size
+    DO_SOFTCAPPING: tl.constexpr,  # logit softcapping on
+    SOFTCAP: tl.constexpr,  # softcap value
+    DO_LOGIT_SCALING: tl.constexpr,  # logit scaling on
+    LOGIT_SCALE: tl.constexpr,  # logit scale value
 ):
     """Cross entropy is logsumexp(x) - x for the label; logsumexp is kept stable by shifting with c
     = max(x), so exp(x - c) never exceeds 1."""
@@ -166,19 +166,19 @@ def _chunked_forward_config(device, vocab_size):
 
 def _chunked_cross_entropy_forward(
     logits_ptr,
-    logits_row_stride: tl.constexpr,
+    logits_row_stride: tl.constexpr,  # logits row stride (vocab)
     loss_ptr,
     logsumexp_ptr,
     logsumexp_others_ptr,
     labels_ptr,
-    VOCAB_SIZE: tl.constexpr,
-    N_CHUNKS: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    DO_SOFTCAPPING: tl.constexpr,
-    SOFTCAP: tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE: tl.constexpr,
-    EVICT: tl.constexpr,
+    VOCAB_SIZE: tl.constexpr,  # vocab size
+    N_CHUNKS: tl.constexpr,  # vocab chunks per row
+    BLOCK_SIZE: tl.constexpr,  # vocab block size
+    DO_SOFTCAPPING: tl.constexpr,  # logit softcapping on
+    SOFTCAP: tl.constexpr,  # softcap value
+    DO_LOGIT_SCALING: tl.constexpr,  # logit scaling on
+    LOGIT_SCALE: tl.constexpr,  # logit scale value
+    EVICT: tl.constexpr,  # logits load eviction policy
 ):
     """Each vocab chunk computes its own logsumexp, combined by a final logsumexp; the label loss is
     softplus(logsumexp of non-label entries - x), so confident labels do not round to 0."""
@@ -253,19 +253,19 @@ _chunked_cross_entropy_forward = triton.heuristics(
 
 def _cross_entropy_backward(
     logits_ptr,
-    logits_row_stride: tl.constexpr,
+    logits_row_stride: tl.constexpr,  # logits row stride (vocab)
     dlogits_ptr,
     dloss_ptr,
-    dloss_row_stride: tl.constexpr,
+    dloss_row_stride: tl.constexpr,  # dloss row stride
     logsumexp_ptr,
     loss_ptr,
     labels_ptr,
-    VOCAB_SIZE: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    DO_SOFTCAPPING: tl.constexpr,
-    SOFTCAP: tl.constexpr,
-    DO_LOGIT_SCALING: tl.constexpr,
-    LOGIT_SCALE: tl.constexpr,
+    VOCAB_SIZE: tl.constexpr,  # vocab size
+    BLOCK_SIZE: tl.constexpr,  # vocab block size
+    DO_SOFTCAPPING: tl.constexpr,  # logit softcapping on
+    SOFTCAP: tl.constexpr,  # softcap value
+    DO_LOGIT_SCALING: tl.constexpr,  # logit scaling on
+    LOGIT_SCALE: tl.constexpr,  # logit scale value
 ):
     """The gradient is softmax(x) minus 1 at the label; for confident labels exp(x - logsumexp) - 1
     rounds to 0, so the label term uses expm1(-loss) from the accurate forward loss."""

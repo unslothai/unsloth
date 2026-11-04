@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionBox } from "@/components/section-box";
 import { SegmentedControl } from "@/components/segmented-control";
@@ -56,7 +57,7 @@ import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
-  AlertCircleIcon,
+  Alert02Icon,
   InformationCircleIcon,
   Key01Icon,
   PackageIcon,
@@ -206,6 +207,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 
 export function ExportPage() {
   const t = useT();
+  useTimeFormat();
   const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
@@ -1199,7 +1201,7 @@ export function ExportPage() {
 
         {checkpointError && (
           <div className="flex items-center gap-3 rounded-2xl border border-border/60 p-8 text-sm text-destructive">
-            <HugeiconsIcon icon={AlertCircleIcon} className="size-4 shrink-0" />
+            <HugeiconsIcon icon={Alert02Icon} className="size-4 shrink-0" />
             {checkpointError}
           </div>
         )}
@@ -1261,10 +1263,13 @@ export function ExportPage() {
                                 const timeStr = tsMatch
                                   ? new Date(
                                       Number(tsMatch[1]) * 1000,
-                                    ).toLocaleString(undefined, {
-                                      dateStyle: "medium",
-                                      timeStyle: "short",
-                                    })
+                                    ).toLocaleString(
+                                      undefined,
+                                      withTimeFormat({
+                                        dateStyle: "medium",
+                                        timeStyle: "short",
+                                      }),
+                                    )
                                   : null;
                                 return (
                                   <SelectItem key={m.name} value={m.name}>
@@ -1591,7 +1596,7 @@ export function ExportPage() {
                     {exportUnsupported && (
                       <Alert variant="destructive">
                         <HugeiconsIcon
-                          icon={AlertCircleIcon}
+                          icon={Alert02Icon}
                           className="size-4"
                         />
                         <AlertTitle>Export unavailable</AlertTitle>
@@ -1933,7 +1938,7 @@ export function ExportPage() {
                           {decisionIneligible ? (
                             <Alert variant="destructive">
                               <HugeiconsIcon
-                                icon={AlertCircleIcon}
+                                icon={Alert02Icon}
                                 className="size-4"
                               />
                               <AlertTitle>

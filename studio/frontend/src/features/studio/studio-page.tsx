@@ -21,7 +21,7 @@ import { MediaPageLink } from "@/components/media-page-link";
 // eslint-disable-next-line no-restricted-imports -- the Images barrel would pull ImagesPage out of its lazy chunk.
 import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import {
-  Image03Icon,
+  ImageIcon,
   LibrariesIcon,
 } from "@hugeicons/core-free-icons";
 import { useNavigate } from "@tanstack/react-router";
@@ -218,7 +218,7 @@ export function StudioPage(): ReactElement {
                     to="/images"
                     label={t("studio.imageTraining")}
                     tooltip={t("studio.goToImageTraining")}
-                    icon={Image03Icon}
+                    icon={ImageIcon}
                     onNavigate={() => setImagesPageMode("train")}
                     labelClassName="max-sm:hidden"
                     arrowClassName="max-sm:hidden"
