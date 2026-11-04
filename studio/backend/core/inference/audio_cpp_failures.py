@@ -249,7 +249,6 @@ def classify_audio_cpp_failure(
         key = f"{key}_cpu" if on_cpu and key in ("out_of_memory", "capacity") else key
         need = ""
         if placement and required_gb is not None:
-            # The estimate, not the file size the model list shows, is what has to fit.
             need = f" It needs about {required_gb:.1f} GB of GPU memory while running"
             need += (
                 f", and the most free on one GPU is {free_gb:.1f} GB."

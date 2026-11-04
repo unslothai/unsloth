@@ -199,7 +199,6 @@ def test_placement_refusal_states_the_estimate_and_the_free_memory(monkeypatch):
     assert refusal.message.endswith("Smaller variants: Q1 (~4.0 GB).")
     unknown = af.classify_audio_cpp_failure(text, model = model, required_gb = required)
     assert "It needs about 11.5 GB of GPU memory while running. Free GPU memory," in unknown.message
-    # Without an estimate the message reads as before.
     bare = af.classify_audio_cpp_failure(text, model = model)
     assert bare.message.startswith("No single GPU has enough free memory for Model M. Free GPU")
 
