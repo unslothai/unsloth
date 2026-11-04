@@ -85,13 +85,13 @@ export function replaceRef(
 }
 
 /** Rename a variable in a Jinja expression (a tag's inside, or a sampler condition such as
- * `topic == 'science'`) where it is a root: outside string literals, not after a dot or inside a
+ * `topic == 'science'`) where it is a root: outside string literals, not after a dot (spaced or not) or inside a
  * longer name. A filter (`| length`), test (`is defined`) or keyword argument (`length=10`) of the
  * same name is not the column. */
 export function renameRoot(expression: string, from: string, to: string): string {
   if (!expression || !from || from === to) return expression;
   const root = new RegExp(
-    `(?<![\\w.])(?<!\\|\\s*)(?<!\\bis\\s+(?:not\\s+)?)${escapeRegExp(from)}(?!\\w)(?!\\s*=(?!=))`,
+    `(?<![\\w.])(?<!\\.\\s*)(?<!\\|\\s*)(?<!\\bis\\s+(?:not\\s+)?)${escapeRegExp(from)}(?!\\w)(?!\\s*=(?!=))`,
     "g",
   );
   return expression

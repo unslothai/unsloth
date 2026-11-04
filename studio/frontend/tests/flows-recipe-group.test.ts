@@ -1254,3 +1254,12 @@ test("an edit to another block keeps the seed exactly as saved, an HF seed's spl
   );
   assert.deepEqual((edited.group?.config as Record<string, unknown>).seed_config, seed);
 });
+
+test("a rename leaves an attribute of the same name alone, even after a spaced dot", async () => {
+  const { replaceRef, renameRoot } = await import("../src/features/recipe-studio/utils/refs.ts");
+  assert.equal(
+    replaceRef("{{ first_name }} / {{ user . first_name }} / {{ user.first_name }}", "first_name", "given_name"),
+    "{{ given_name }} / {{ user . first_name }} / {{ user.first_name }}",
+  );
+  assert.equal(renameRoot("user .\n first_name == first_name", "first_name", "x"), "user .\n first_name == x");
+});

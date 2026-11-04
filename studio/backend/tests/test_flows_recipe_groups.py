@@ -899,3 +899,52 @@ def test_a_preview_over_100k_rows_keeps_every_row_it_made(monkeypatch):
     ctx.doc = doc
     asyncio.run(data.recipe_group(ctx))
     assert asked and asked[0] >= 150_000
+
+
+def test_a_stop_while_a_finished_recipe_is_read_back_still_closes_its_run_record(monkeypatch):
+    from core.flows.registry import FlowCancelled
+    from storage import flows_db
+
+    saved = []
+    monkeypatch.setattr(
+        flows_db, "save_recipe_run", lambda flow, node, record: saved.append(dict(record))
+    )
+    monkeypatch.setattr(data, "POLL_S", 0)
+    doc = _flow()
+    step = next(n for n in doc["nodes"] if n["type"] == "recipe.generate")
+    routes = _job_routes("completed")
+
+    def stopped(method, path, params, body):
+        if path.endswith("/dataset"):
+            raise FlowCancelled()
+        return routes(method, path, params, body)
+
+    class Ctx(_FlowCtx):
+        node_id = step["id"]
+
+    ctx = Ctx(stopped, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"})
+    ctx.doc = doc
+    with pytest.raises(FlowCancelled):
+        asyncio.run(data.recipe_group(ctx))
+    assert saved and saved[-1]["status"] == "cancelled" and saved[-1]["finishedAt"]
+
+
+def test_a_cached_dataset_whose_files_are_gone_is_not_handed_back(monkeypatch, tmp_path):
+    from core.flows.nodes import _common
+    from core.flows.registry import FlowNodeError
+
+    kept = tmp_path / "rows.jsonl"
+    kept.write_text("{}\\n")
+
+    def resolve(ref):
+        if not (tmp_path / ref).exists():
+            raise FlowNodeError("gone")
+        return str(tmp_path / ref)
+
+    monkeypatch.setattr(data, "local_seed_path", resolve)
+    value = {"dataset": {"kind": "dataset", "source": "local", "ref": "rows.jsonl"}, "preview": []}
+    assert _common.gallery_media_present(value)
+    kept.unlink()
+    assert not _common.gallery_media_present(value)
+    # A Hub dataset is never checked on disk.
+    assert _common.gallery_media_present({"kind": "dataset", "source": "hf", "ref": "org/data"})

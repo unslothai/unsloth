@@ -164,8 +164,23 @@ def gallery_media(kind: str, row: dict, **extra: Any) -> dict:
     return value
 
 
+def _dataset_present(dataset: dict) -> bool:
+    """False for a dataset a step saved (an upload or a recipe's parquet) whose files are gone."""
+    from core.flows.nodes.data import local_seed_path, recipe_artifact
+
+    ref, source = dataset.get("ref"), dataset.get("source")
+    if not (source == "local" or (source == "recipe" and recipe_artifact(ref))):
+        return True
+    try:
+        local_seed_path(ref)
+    except FlowNodeError:
+        return False
+    return True
+
+
 def gallery_media_present(value: Any) -> bool:
-    """False when a value holds an image, clip or video whose gallery entry is gone (the user deleted it)."""
+    """False when a value holds an image, clip or video whose gallery entry is gone (the user deleted
+    it), or a saved dataset whose files are gone."""
     from core.inference import audio_gallery, image_gallery, video_gallery
 
     owned = {
@@ -185,6 +200,8 @@ def gallery_media_present(value: Any) -> bool:
                 and item.get("kind") == kind
                 and owned[kind](media_id) is None
             ):
+                return False
+            if item.get("kind") == "dataset" and not _dataset_present(item):
                 return False
             stack.extend(item.values())
         elif isinstance(item, list):

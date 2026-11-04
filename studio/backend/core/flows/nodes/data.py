@@ -407,33 +407,35 @@ async def run_recipe(
     preview: list = []
     total = None
     try:
-        page = await ctx.call(
-            "GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset", params = {"limit": 20}
+        try:
+            page = await ctx.call(
+                "GET", f"{RECIPES}/jobs/{quote(job_id, safe = '')}/dataset", params = {"limit": 20}
+            )
+            if isinstance(page, dict):
+                preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
+                total = page.get("total")
+        except FlowNodeError:
+            pass
+        # The job's own row count is the last batch's on a batched run; the dataset page counts them all.
+        rows = (
+            total
+            if isinstance(total, int)
+            else (status.get("rows") if isinstance(status, dict) else None)
         )
-        if isinstance(page, dict):
-            preview = [row for row in page.get("dataset") or [] if isinstance(row, dict)]
-            total = page.get("total")
-    except FlowNodeError:
-        pass
-    # The job's own row count is the last batch's on a batched run; the dataset page counts them all.
-    rows = (
-        total
-        if isinstance(total, int)
-        else (status.get("rows") if isinstance(status, dict) else None)
-    )
-    artifact = status.get("artifact_path") if isinstance(status, dict) else None
-    saved = isinstance(artifact, str) and artifact.strip()
-    try:
+        artifact = status.get("artifact_path") if isinstance(status, dict) else None
+        saved = isinstance(artifact, str) and artifact.strip()
         # Every row the job made, up to the most a Recipe Dataset step can ask for.
         kept = (
             None if saved else await recipe_rows(ctx, job_id, limit = max(MAX_RECIPE_ROWS, rows or 0))
         )
+        await history.finish(ctx, job_id, preview, total, kept)
     except BaseException as exc:
-        # finish() never runs, so the record would stay running and the Runs pane keep polling.
-        failed = isinstance(exc, FlowNodeError)
-        await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
+        # A Stop or failure anywhere before the record is finished would leave it running, and the
+        # Runs pane polling it.
+        if history.record.get("status") not in ("completed", "error", "cancelled"):
+            failed = isinstance(exc, FlowNodeError)
+            await history.update(status = "error" if failed else "cancelled", error = str(exc) or None)
         raise
-    await history.finish(ctx, job_id, preview, total, kept)
     if saved:
         ref = f"recipes/{Path(artifact.strip()).name}/parquet-files"
         dataset = {
