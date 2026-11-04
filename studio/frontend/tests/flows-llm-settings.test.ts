@@ -342,3 +342,12 @@ test("extra llama-server arguments commit as they are typed, so a keyboard run s
   assert.match(field, /if \(!found\.unterminatedQuote\)\s*onChange\(/);
   assert.doesNotMatch(field, /onBlur/);
 });
+
+test("Thinking reads off and is disabled under a JSON schema", async () => {
+  const { readFileSync } = await import("node:fs");
+  const panel = readFileSync(
+    new URL("../src/features/flows/editor/llm-settings-panel.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(panel, /checked=\{node\.params\.thinking === true && !node\.params\.json_schema\}\s+disabled=\{!!node\.params\.json_schema\}/);
+});

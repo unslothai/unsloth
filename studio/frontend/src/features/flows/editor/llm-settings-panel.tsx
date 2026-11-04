@@ -495,9 +495,11 @@ export function LlmSettingsPanel({
                   button in Chat's composer does. Off for JSON output.
                 </InfoHint>
               </div>
+              {/* JSON output always runs without thinking, so the switch reads off there. */}
               <Switch
                 aria-label="Thinking"
-                checked={node.params.thinking === true}
+                checked={node.params.thinking === true && !node.params.json_schema}
+                disabled={!!node.params.json_schema}
                 onCheckedChange={(checked) =>
                   update({ thinking: checked === true }, "thinking")
                 }
