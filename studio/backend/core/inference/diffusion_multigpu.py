@@ -3031,10 +3031,20 @@ _UNET_SPLIT_KWARGS = frozenset(
 
 
 def _unet_cfg_parallel_disabled() -> bool:
-    return (os.environ.get(UNET_CFG_PARALLEL_ENV) or "").strip().lower() in ("0", "off", "false", "no")
+    return (os.environ.get(UNET_CFG_PARALLEL_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
 
 
-def _split_batch(value: Any, n: int, half: int, depth: int = 0) -> Any:
+def _split_batch(
+    value: Any,
+    n: int,
+    half: int,
+    depth: int = 0,
+) -> Any:
     """``value`` with every tensor of leading size ``n`` cut to its ``half`` (0 = first, 1 = second) along dim 0;
     other tensors and plain values are shared. Raises TypeError on an object it cannot see into."""
     torch = _torch()
@@ -3091,7 +3101,11 @@ class UnetCfgParallelRouter(CfgParallelRouter):
         sample = kwargs.get("sample", args[0] if args else None)
         n = sample.shape[0] if isinstance(sample, torch.Tensor) and sample.dim() >= 1 else 0
         halves = None
-        if n >= 2 and n % 2 == 0 and set(k for k in kwargs if k not in ("sample", "timestep")) <= _UNET_SPLIT_KWARGS:
+        if (
+            n >= 2
+            and n % 2 == 0
+            and set(k for k in kwargs if k not in ("sample", "timestep")) <= _UNET_SPLIT_KWARGS
+        ):
             try:
                 halves = [(_split_batch(args, n, h), _split_batch(kwargs, n, h)) for h in (0, 1)]
             except TypeError:
@@ -3122,7 +3136,11 @@ def _cfg_denoiser(pipe: Any) -> Any:
     if denoiser is not None:
         return denoiser
     unet = getattr(pipe, "unet", None)
-    if unet is not None and type(unet).__name__ == "UNet2DConditionModel" and not _unet_cfg_parallel_disabled():
+    if (
+        unet is not None
+        and type(unet).__name__ == "UNet2DConditionModel"
+        and not _unet_cfg_parallel_disabled()
+    ):
         if _batch_coupled_processors(unet):
             return None  # PAG-style processors chunk the batch themselves: a dim-0 split would mix their thirds
         return unet
@@ -3161,7 +3179,10 @@ def cfg_parallel_decline(
     denoiser = _cfg_denoiser(pipe)
     torch = _torch()
     if not isinstance(denoiser, torch.nn.Module):
-        if isinstance(getattr(pipe, "unet", None), torch.nn.Module) and _unet_cfg_parallel_disabled():
+        if (
+            isinstance(getattr(pipe, "unet", None), torch.nn.Module)
+            and _unet_cfg_parallel_disabled()
+        ):
             return f"U-Net CFG-parallel off ({UNET_CFG_PARALLEL_ENV}=0)"
         return "no DiT denoiser (a U-Net batches its guidance branches)"
     from .diffusion_layer_split import is_layer_split
@@ -3256,7 +3277,9 @@ def install_cfg_parallel(
                 if graph is not None:
                     del denoiser.__dict__["forward"]
                 router_cls = (
-                    UnetCfgParallelRouter if denoiser is not getattr(pipe, "transformer", None) else CfgParallelRouter
+                    UnetCfgParallelRouter
+                    if denoiser is not getattr(pipe, "transformer", None)
+                    else CfgParallelRouter
                 )
                 router = router_cls(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger

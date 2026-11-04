@@ -54,7 +54,14 @@ def _router(unet):
     return router, replicas
 
 
-def _sdxl_loop(unet, latents, steps, batch = 1, cfg = True, **extra):
+def _sdxl_loop(
+    unet,
+    latents,
+    steps,
+    batch = 1,
+    cfg = True,
+    **extra,
+):
     g = torch.Generator().manual_seed(3)
     cond = torch.randn(batch, 5, 8, generator = g)
     uncond = torch.randn(batch, 5, 8, generator = g)
@@ -68,7 +75,12 @@ def _sdxl_loop(unet, latents, steps, batch = 1, cfg = True, **extra):
         else:
             x, emb, tid = latents, cond, ids
         out = unet(
-            x, t, encoder_hidden_states = emb, added_cond_kwargs = {"time_ids": tid}, return_dict = False, **extra
+            x,
+            t,
+            encoder_hidden_states = emb,
+            added_cond_kwargs = {"time_ids": tid},
+            return_dict = False,
+            **extra,
         )[0]
         if cfg:
             u, c = out.chunk(2)
@@ -143,11 +155,16 @@ def test_unet_is_a_cfg_parallel_candidate(monkeypatch):
 
     sel = mg.MultiGpuSelection(primary = 0, secondaries = (1,))
     # resident on the CPU here: past the U-Net gate, refused only for not being on a CUDA card
-    assert mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel) == "denoiser is not on a CUDA card"
+    assert (
+        mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel)
+        == "denoiser is not on a CUDA card"
+    )
     assert mg._cfg_denoiser(Pipe()) is Pipe.unet
     monkeypatch.setenv(mg.UNET_CFG_PARALLEL_ENV, "0")
     assert mg._cfg_denoiser(Pipe()) is None
-    assert mg.UNET_CFG_PARALLEL_ENV in mg.cfg_parallel_decline(Pipe(), offload_policy = "none", selection = sel)
+    assert mg.UNET_CFG_PARALLEL_ENV in mg.cfg_parallel_decline(
+        Pipe(), offload_policy = "none", selection = sel
+    )
 
 
 def test_real_diffusers_unet_split_matches_batched():
@@ -175,7 +192,9 @@ def test_real_diffusers_unet_split_matches_batched():
     with torch.no_grad():
         ref = unet(x, t, encoder_hidden_states = emb, added_cond_kwargs = added, return_dict = False)[0]
         router = mg.UnetCfgParallelRouter(
-            unet, primary = "cpu", secondary = "cpu",
+            unet,
+            primary = "cpu",
+            secondary = "cpu",
             replica_factory = lambda: mg.build_replica(unet, torch.device("cpu")),
         )
         unet.forward = router
