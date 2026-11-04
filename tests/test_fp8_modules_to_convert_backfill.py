@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
+
 """`backfill_fp8_modules_to_convert`: unsloth/Qwen3.8-Flash-Next-FP8's config omits the n-gram table from
 `modules_to_convert`, so transformers 5.21 loaded it as raw fp8 and dropped its `weight_scale`."""
 
