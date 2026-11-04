@@ -225,6 +225,15 @@ def _snapshot(key = _KEY):
     return get_llama_admission_queue(key).snapshot()
 
 
+async def _wait_for_queued(task, count = 1):
+    deadline = time.monotonic() + 5
+    while _snapshot().queued < count and not task.done() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    if task.done():
+        await task
+    assert _snapshot().queued == count
+
+
 def _occupy(key, capacity, n):
     """Hold ``n`` slots on the queue so the next reserve must wait; returns leases."""
     leases = []
@@ -395,8 +404,7 @@ def test_non_streaming_queued_then_admitted(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1
+        await _wait_for_queued(task)
         held[0].release()
         response = await asyncio.wait_for(task, timeout = 2)
         assert response.status_code == 200
@@ -413,9 +421,7 @@ def test_capacity_enforced_from_effective_parallel_slots(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        deadline = time.monotonic() + 5
-        while _snapshot().queued == 0 and not task.done() and time.monotonic() < deadline:
-            await asyncio.sleep(0.01)
+        await _wait_for_queued(task)
         snap = _snapshot()
         assert snap.capacity == 3 and snap.active == 3 and snap.queued == 1
         for lease in held:
@@ -534,8 +540,7 @@ def test_shares_queue_with_openai_by_base_url(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1
+        await _wait_for_queued(task)
         openai_lease.release()
         assert (await asyncio.wait_for(task, timeout = 2)).status_code == 200
 
@@ -595,9 +600,7 @@ def test_fifo_fairness_across_many_waiters(monkeypatch):
         tasks = []
         for i in range(8):
             tasks.append(asyncio.create_task(_one(i)))
-            deadline = time.monotonic() + 5
-            while _snapshot().queued < i + 1 and time.monotonic() < deadline:
-                await asyncio.sleep(0.01)
+            await _wait_for_queued(tasks[-1], i + 1)
         assert _snapshot().queued == 8
         held[0].release()
         await asyncio.wait_for(asyncio.gather(*tasks), timeout = 5)
@@ -826,8 +829,7 @@ def test_passthrough_dispatch_site_reserves_and_releases(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_passthrough_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1
+        await _wait_for_queued(task)
         for lease in held:
             lease.release()
         with contextlib.suppress(Exception):
@@ -864,8 +866,7 @@ def test_queued_non_stream_cancel_does_not_leak_a_coroutine(monkeypatch):
         task = asyncio.create_task(
             anthropic_messages(_payload(), request = _Request(), current_subject = "t")
         )
-        await asyncio.sleep(0.1)
-        assert _snapshot().queued == 1
+        await _wait_for_queued(task)
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await task
