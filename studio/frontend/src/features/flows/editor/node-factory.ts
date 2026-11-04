@@ -57,6 +57,7 @@ export function tryConnect(req: ConnectRequest): string | null {
     req.target,
     targetSpec,
     req.targetHandle,
+    doc.graph.groups[sourceNode.group ?? ""]?.kind === "loop",
   );
   if (!check.ok) return check.reason ?? "Cannot connect";
   if (

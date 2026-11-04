@@ -1120,9 +1120,28 @@ def test_a_loops_frozen_test_questions_never_reach_a_later_rounds_training(monke
     frozen = loop_rounds.questions(rows[:3])
     ctx.inputs = {
         "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data"},
-        loop_rounds.EXCLUDE_INPUT: frozen,
+        loop_rounds.EXCLUDE_INPUT: {"column": "", "questions": frozen},
     }
     with pytest.raises(RuntimeError, match = "started"):
         asyncio.run(training.finetune(ctx))
     train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.jsonl"))
     assert train and not {r["prompt"] for r in train} & set(frozen)
+
+
+def test_frozen_test_questions_are_read_through_the_benchmarks_prompt_column(monkeypatch):
+    from core.flows import loop as loop_rounds
+
+    rows = [{"ticket": f"my payment failed on day {i}", "queue": "billing"} for i in range(10)]
+    monkeypatch.setattr(training, "_load_rows", lambda dataset, token, end, start = 0: list(rows))
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    frozen = loop_rounds.questions(rows[:4], "ticket")
+    assert len(frozen) == 4
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data"},
+        loop_rounds.EXCLUDE_INPUT: {"column": "ticket", "questions": frozen},
+    }
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.jsonl"))
+    assert train and not {r["ticket"] for r in train} & set(frozen)

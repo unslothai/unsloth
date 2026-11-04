@@ -394,6 +394,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       connection.target,
       getSpec(target.type),
       connection.targetHandle,
+      doc.groups[source.group ?? ""]?.kind === "loop",
     );
     if (!check.ok) return false;
     if (recipeConnectionError(doc, connection.source, connection.target))

@@ -136,10 +136,14 @@ def questions(rows: list[dict], prompt_column: str = "") -> list[str]:
     return sorted({q for q in (_asked(row, prompt_column) for row in rows) if q})
 
 
-def without_questions(rows: list[dict], asked: Any) -> list[dict]:
-    """``rows`` less those asking one of the ``asked`` questions."""
-    banned = {q for q in asked or [] if isinstance(q, str)}
-    return [r for r in rows if _asked(r) not in banned] if banned else list(rows)
+def without_questions(rows: list[dict], exclude: Any) -> list[dict]:
+    """``rows`` less those asking one of ``exclude``'s questions, read through its column as the score
+    step reads them (``{"column": ..., "questions": [...]}``)."""
+    if not isinstance(exclude, dict):
+        return list(rows)
+    banned = {q for q in exclude.get("questions") or [] if isinstance(q, str)}
+    column = str(exclude.get("column") or "")
+    return [r for r in rows if _asked(r, column) not in banned] if banned else list(rows)
 
 
 def drop_test_rows(

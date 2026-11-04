@@ -112,6 +112,8 @@ export function checkConnection(
   targetId: string,
   targetSpec: NodeSpec | undefined,
   targetHandle: string | null | undefined,
+  /** The source sits in a Loop group: only there is failures-into-a-seed the next round's wire. */
+  sourceInLoop = false,
 ): ConnectionCheck {
   if (!sourceSpec || !targetSpec)
     return { ok: false, reason: "Unknown node type" };
@@ -139,7 +141,7 @@ export function checkConnection(
   const out = sourceSpec.outputs.find((p) => p.id === src.port);
   const inp = targetSpec.inputs.find((p) => p.id === dst.port);
   if (!out || !inp) return { ok: false, reason: "Unknown port" };
-  if (isFeedback(sourceSpec, out, targetSpec, inp)) {
+  if (sourceInLoop && isFeedback(sourceSpec, out, targetSpec, inp)) {
     return {
       ok: true,
       kind: "feedback",

@@ -37,6 +37,9 @@ _DEFAULT_METRIC_PRIORITY = (
     "f1",
     "acc,none",
     "acc",
+    # IFEval: the share of prompts whose every instruction was followed, strictly; per row a bool.
+    "prompt_level_strict_acc,none",
+    "prompt_level_strict_acc",
 )
 
 

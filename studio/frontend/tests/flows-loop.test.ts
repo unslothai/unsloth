@@ -43,6 +43,7 @@ test("a score step's failures into a dataset seed is a feedback wire, and never 
     "gen",
     spec("recipe.generate"),
     inHandle("seed"),
+    true,
   );
   assert.deepEqual(check, {
     ok: true,
@@ -50,16 +51,26 @@ test("a score step's failures into a dataset seed is a feedback wire, and never 
     sourcePort: "failures",
     targetPort: "seed",
   });
+  // Outside a Loop the same wire is ordinary data: a pipeline that makes more rows from failures.
+  assert.deepEqual(
+    checkConnection("bench", spec("train.benchmark"), outHandle("failures"), "gen", spec("recipe.generate"), inHandle("seed")),
+    { ok: true, kind: "data", sourcePort: "failures", targetPort: "seed" },
+  );
   const edges = [
     { id: "a", source: "gen", source_port: "dataset", target: "train", target_port: "dataset", kind: "data" },
     { id: "b", source: "train", source_port: "holdout", target: "bench", target_port: "dataset", kind: "data" },
     { id: "c", source: "bench", source_port: "failures", target: "gen", target_port: "seed", kind: "feedback" },
   ] as const;
   assert.equal(wouldCreateCycle(edges, "train", "bench"), false);
+  // Both callers say whether the source sits in a Loop group.
+  for (const file of ["editor/node-factory.ts", "editor/canvas.tsx"]) {
+    const src = readFileSync(new URL(`../src/features/flows/${file}`, import.meta.url), "utf8");
+    assert.match(src, /groups\[(sourceNode|source)\.group \?\? ""\]\?\.kind === "loop",\s*\);/, file);
+  }
   // Without a score output, failures is just json and cannot go into a dataset.
   const plain = { ...bench, outputs: [bench.outputs[1]] };
   assert.equal(
-    checkConnection("x", plain, outHandle("failures"), "gen", spec("recipe.generate"), inHandle("seed")).ok,
+    checkConnection("x", plain, outHandle("failures"), "gen", spec("recipe.generate"), inHandle("seed"), true).ok,
     false,
   );
 });

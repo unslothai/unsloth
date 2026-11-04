@@ -2285,8 +2285,11 @@ class FlowEngine:
                         override(b, "start", last[b])
                 if test_rows:
                     # The frozen test questions never train a later round, wherever the recipe puts them.
+                    column = str(scorer_params.get("prompt_column") or "")
                     override(
-                        held_src[0], loop_rounds.EXCLUDE_INPUT, loop_rounds.questions(test_rows)
+                        held_src[0],
+                        loop_rounds.EXCLUDE_INPUT,
+                        {"column": column, "questions": loop_rounds.questions(test_rows, column)},
                     )
                 # The scored Fine-tune's start, not whichever trainer comes first.
                 continued = (

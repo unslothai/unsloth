@@ -36,3 +36,20 @@ def test_sample_correct_uses_the_same_priority():
     assert _sample_correct({"acc_norm": 1.0, "acc": 0.0}) is True
     assert _sample_correct({"exact_match,strict-match": 1.0}) is True
     assert _sample_correct({}) is False
+
+
+def test_ifeval_has_a_headline_score_and_rows_that_followed_every_instruction_pass():
+    from core.benchmark import parse
+
+    names = [
+        {"name": n, "score": 1.0}
+        for n in (
+            "prompt_level_strict_acc,none",
+            "inst_level_strict_acc,none",
+            "prompt_level_loose_acc,none",
+            "inst_level_loose_acc,none",
+        )
+    ]
+    assert parse.pick_default_metric(names) == "prompt_level_strict_acc,none"
+    assert parse._sample_correct({"prompt_level_strict_acc": True, "inst_level_strict_acc": [True]})
+    assert not parse._sample_correct({"prompt_level_strict_acc": False})

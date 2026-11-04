@@ -774,4 +774,4 @@ async def test_later_rounds_train_without_the_frozen_test_questions():
     test = sorted({p for split, rows in scored if split == "test" for p in rows})
     # Round 1 makes the split; every later round is told its test questions.
     assert excluded[0] is None
-    assert excluded[1:] and all(e == test for e in excluded[1:])
+    assert excluded[1:] and all(e == {"column": "", "questions": test} for e in excluded[1:])
