@@ -22,7 +22,14 @@ def _enabled():
     )
 
 
-def _replacement(A, quant_state=None, absmax=None, out=None, blocksize=None, quant_type="fp4"):
+def _replacement(
+    A,
+    quant_state = None,
+    absmax = None,
+    out = None,
+    blocksize = None,
+    quant_type = "fp4",
+):
     if not torch.compiler.is_compiling() or not _enabled() or not _UTILS._USE_NF4_KERNELS:
         return _ORIGINAL(A, quant_state, absmax, out, blocksize, quant_type)
     s = quant_state
@@ -92,7 +99,7 @@ def _replacement(A, quant_state=None, absmax=None, out=None, blocksize=None, qua
         256 if s.nested else 0,
         s.shape,
         s.dtype,
-        out=out,
+        out = out,
     )
     return result.t() if A.shape[0] == 1 else result
 

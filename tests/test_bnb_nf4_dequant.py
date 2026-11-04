@@ -236,10 +236,10 @@ print("PUBLIC DEQUANT GPU EXACT OK")
 def _run(code):
     return subprocess.run(
         [sys.executable, "-c", code, str(REPO)],
-        text=True,
-        capture_output=True,
-        env=dict(os.environ),
-        timeout=420,
+        text = True,
+        capture_output = True,
+        env = dict(os.environ),
+        timeout = 420,
     )
 
 
@@ -251,7 +251,7 @@ def test_bnb_dequant_installer_cpu():
 
 
 @pytest.mark.skipif(
-    not has_real_cuda() or torch.version.hip is not None, reason="needs NVIDIA CUDA"
+    not has_real_cuda() or torch.version.hip is not None, reason = "needs NVIDIA CUDA"
 )
 def test_bnb_dequant_actual_backend_on_gpu():
     proc = _run(_GPU)
