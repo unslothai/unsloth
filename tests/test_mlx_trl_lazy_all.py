@@ -586,10 +586,12 @@ class RefusesBf16(RealDPO):
 assert trl.DPOTrainer(model=model, args=RefusesBf16(output_dir="o", bf16=False), train_dataset=[]).args.beta == 0.1
 """,
         before_unsloth = (
-            "import trl\n"
-            "RealDPO = trl.DPOConfig\n"
-            "RealGRPO = trl.GRPOConfig\n"
-            "RealConfigs = {s: getattr(trl, s + 'Config') for s in ('ORPO', 'KTO', 'CPO') if hasattr(trl, s + 'Config')}\n"
+            "import dataclasses, trl\n"
+            # TRL defaults bf16 on, which transformers refuses on a Mac VM without MPS (GitHub's runners).
+            "def cpu(c): return dataclasses.make_dataclass(c.__name__, [('bf16', bool, False)], bases=(c,))\n"
+            "RealDPO = cpu(trl.DPOConfig)\n"
+            "RealGRPO = cpu(trl.GRPOConfig)\n"
+            "RealConfigs = {s: cpu(getattr(trl, s + 'Config')) for s in ('ORPO', 'KTO', 'CPO') if hasattr(trl, s + 'Config')}\n"
         ),
     )
 
