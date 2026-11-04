@@ -9,7 +9,12 @@ import {
   registerComparePaneRunPreparer,
 } from "../src/features/chat/compare-run-ownership.ts";
 
-import { readSrc } from "./helpers/kit.ts";
+import { readSrc, registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+const { checkpointMatchesPick } = await import(
+  "../src/features/chat/lib/resident-model-match.ts"
+);
 
 const adapterSource = readSrc("features/chat/api/chat-adapter.ts");
 const chatPageSource = readSrc("features/chat/chat-page.tsx");
@@ -73,6 +78,7 @@ test("Refresh or Edit in a compare pane loads that pane's own model", () => {
     /registerComparePaneRunPreparer\(pairId, async \(pane\) => \{\s*const sel = pane === "model1" \? model1 : model2;/,
   );
   assert.match(generalCompareSource, /await loadPaneModel\(\{\s*id: sel\.id,/);
+  assert.match(generalCompareSource, /return checkpointMatchesPick\(/);
   assert.match(
     generalCompareSource,
     /if \(comparingRef\.current \|\| !sel\.id \|\| isActive\(\)\) return;/,
@@ -83,4 +89,24 @@ test("Refresh or Edit in a compare pane loads that pane's own model", () => {
     /onComparingChange=\{handleComparingChange\}/,
   );
   assert.match(chatPageSource, /loadPaneModel=\{selectModel\}/);
+});
+
+test("a standalone GGUF pane matches the quant the backend derives", () => {
+  const file = "/models/Qwen3-0.6B-Q4_K_M.gguf";
+  assert.ok(checkpointMatchesPick(file, "Q4_K_M", { id: file }));
+  assert.ok(
+    checkpointMatchesPick("unsloth/Qwen3-0.6B-GGUF", "Q4_K_M", {
+      id: "unsloth/Qwen3-0.6B-GGUF",
+      ggufVariant: "Q4_K_M",
+    }),
+  );
+  assert.ok(
+    !checkpointMatchesPick("unsloth/Qwen3-0.6B-GGUF", "Q8_0", {
+      id: "unsloth/Qwen3-0.6B-GGUF",
+      ggufVariant: "Q4_K_M",
+    }),
+  );
+  assert.ok(
+    !checkpointMatchesPick("/models/other.gguf", "Q4_K_M", { id: file }),
+  );
 });

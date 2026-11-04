@@ -69,10 +69,7 @@ import {
   INVENTORY_FRESHNESS_WINDOW_MS,
   useDeviceInventorySources,
 } from "@/features/hub/inventory";
-import {
-  ggufVariantsMatch,
-  modelIdsMatch,
-} from "@/features/hub/lib/model-identity";
+import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { ChatHeaderMenu } from "./components/chat-header-menu";
 import { DeleteChatFilesSwitch } from "./components/delete-chat-files-switch";
 import { chatLocalModelOptions } from "./local-model-options";
@@ -257,6 +254,7 @@ import {
   SharedComposer,
 } from "./shared-composer";
 import { registerComparePaneRunPreparer } from "./compare-run-ownership";
+import { checkpointMatchesPick } from "./lib/resident-model-match";
 import { compareModelDisplayName } from "./lib/external-model-label";
 import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
 import { RootSandboxSetupDialog } from "./sandbox-setup-dialog";
@@ -1614,9 +1612,10 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
         const sel = pane === "model1" ? model1 : model2;
         const isActive = () => {
           const store = useChatRuntimeStore.getState();
-          return (
-            modelIdsMatch(store.params.checkpoint, sel.id) &&
-            ggufVariantsMatch(store.activeGgufVariant, sel.ggufVariant)
+          return checkpointMatchesPick(
+            store.params.checkpoint,
+            store.activeGgufVariant,
+            sel,
           );
         };
         if (comparingRef.current || !sel.id || isActive()) return;
