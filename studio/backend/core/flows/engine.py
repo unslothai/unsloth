@@ -463,8 +463,11 @@ class NodeContextImpl:
         model_kind: str,
         choice: Optional[dict],
         options: Optional[dict] = None,
+        primary: bool = False,
     ) -> Optional[dict]:
         from core.flows.nodes import _common
+        if primary:
+            return await _common.ensure_model(self, model_kind, choice, options, primary = True)
         return await _common.ensure_model(self, model_kind, choice, options)
 
     async def llm_text(self, **kwargs: Any) -> str:

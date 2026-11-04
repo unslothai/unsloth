@@ -461,12 +461,15 @@ async def ensure_model(
     model_kind: str,
     choice: Optional[dict],
     options: Optional[dict] = None,
+    primary: bool = False,
 ) -> Optional[dict]:
     """Load ``choice`` into its slot unless it is already resident; None keeps what is loaded.
 
     ``options`` are load settings merged into the chat load body (context, KV cache type, offload, speculative
-    decoding); the model counts as resident only when it was loaded with the same settings."""
-    found = await _ensure_model(ctx, model_kind, choice, options)
+    decoding); the model counts as resident only when it was loaded with the same settings. ``primary``
+    puts it in Chat's main slot even under Keep multiple models loaded, for a caller (a recipe job)
+    that only reaches the main model."""
+    found = await _ensure_model(ctx, model_kind, choice, options, primary)
     requires = (getattr(ctx, "spec", None) or {}).get("requires")
     if requires:
         await _check_backend(ctx, model_kind, requires)
@@ -496,7 +499,11 @@ async def _check_backend(ctx: Any, model_kind: str, requires: list[str]) -> None
 
 
 async def _ensure_model(
-    ctx: Any, model_kind: str, choice: Optional[dict], options: Optional[dict]
+    ctx: Any,
+    model_kind: str,
+    choice: Optional[dict],
+    options: Optional[dict],
+    primary: bool = False,
 ) -> Optional[dict]:
     from core.flows.engine import LOAD_KIND, MODEL_SLOT
     from studio_mcp import loading
@@ -525,6 +532,7 @@ async def _ensure_model(
     resident = await resident_name(ctx, model_kind)
     if (
         slot == "llm"
+        and not primary
         and model_kind in ("chat", "vision")
         and not (resident and resident.lower() == repo.lower())
     ):

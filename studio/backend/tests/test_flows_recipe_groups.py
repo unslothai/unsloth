@@ -1011,13 +1011,15 @@ def test_a_recipe_naming_a_local_model_loads_it_before_its_job(monkeypatch):
             kind,
             choice,
             options = None,
+            primary = False,
         ):
-            order.append(("load", kind, choice["repo"], choice["variant"]))
+            order.append(("load", kind, choice["repo"], choice["variant"], primary))
 
     ctx = Ctx(recording, params = {RECIPE_PARAM: _compiled(doc), "rows": 3, "mode": "full"})
     ctx.doc = doc
     asyncio.run(data.recipe_group(ctx))
-    assert order[0] == ("load", "chat", "unsloth/Qwen3-1.7B-GGUF", "Q4_K_M")
+    # Into Chat's main slot: the job's local provider reaches only that one.
+    assert order[0] == ("load", "chat", "unsloth/Qwen3-1.7B-GGUF", "Q4_K_M", True)
     assert order.index("/api/data-recipe/jobs") > 0
     assert data.local_model({"model_providers": [], "columns": []}) is None
 
@@ -1054,3 +1056,39 @@ def test_a_named_recipe_model_without_a_quant_is_keyed_on_the_quant_chat_holds(m
     # Another model in Chat: the named one loads at its default quant, whatever Chat held.
     held["name"] = "unsloth/gemma-3-4b-it-GGUF"
     assert key()["variant"] is None
+
+
+def test_a_primary_load_never_goes_alongside_the_main_model(monkeypatch):
+    from core.flows.nodes import _common
+
+    went = []
+
+    async def alongside(
+        ctx,
+        repo,
+        variant,
+        options = None,
+    ):
+        went.append(repo)
+        return {"repo": repo, "variant": variant}
+
+    async def resident_name(ctx, kind):
+        return "org/model-a"
+
+    monkeypatch.setattr(_common, "_alongside", alongside)
+    monkeypatch.setattr(_common, "resident_name", resident_name)
+
+    class Ctx:
+        caller = None
+        resident: dict = {}
+        chat_model = None
+
+    found = asyncio.run(_common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None))
+    assert went == ["org/model-b"] and found == {"repo": "org/model-b", "variant": None}
+    went.clear()
+    with pytest.raises(Exception):
+        # Past the alongside branch it tries the main slot (no real Studio here).
+        asyncio.run(
+            _common._ensure_model(Ctx(), "chat", {"repo": "org/model-b"}, None, primary = True)
+        )
+    assert went == []

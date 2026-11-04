@@ -61,23 +61,17 @@ function DropRow({
   );
 }
 
-/** Whether another block of the same family (columns, or setup blocks of one kind) has this name. A
- * recipe with two blocks of one name does not open again, so such a name stays a draft in the form. */
+/** Whether another block of the recipe (a column, seed, provider, preset or tool profile: they share one
+ * namespace) has this name. A recipe with two blocks of one name does not open again, so such a name
+ * stays a draft in the form. */
 function nameTaken(
   configs: Record<string, NodeConfig>,
   id: string,
   name: string,
 ): boolean {
-  const self = configs[id];
-  if (!self) return false;
   const wanted = name.trim();
   return Object.values(configs).some(
-    (other) =>
-      other.id !== id &&
-      other.name.trim() === wanted &&
-      (isColumnConfig(self)
-        ? isColumnConfig(other)
-        : other.kind === self.kind),
+    (other) => other.id !== id && other.name.trim() === wanted,
   );
 }
 

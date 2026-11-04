@@ -1335,5 +1335,6 @@ test("recipe blocks pasted outside a recipe frame are left out, and a shared too
 test("a name another block already has stays a draft in the form, so the recipe keeps opening", () => {
   const forms = readFileSync(new URL("../src/features/flows/recipe/recipe-forms.tsx", import.meta.url), "utf8");
   assert.match(forms, /\(!patch\.name\.trim\(\) \|\| nameTaken\(latest\.current, id, patch\.name\)\)/);
-  assert.match(forms, /isColumnConfig\(self\)\s*\?\s*isColumnConfig\(other\)\s*:\s*other\.kind === self\.kind/);
+  // One namespace for every block, as the importer reads them.
+  assert.match(forms, /\(other\) => other\.id !== id && other\.name\.trim\(\) === wanted/);
 });

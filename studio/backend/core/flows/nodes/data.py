@@ -197,7 +197,8 @@ async def recipe_group(ctx: NodeContext) -> dict:
     local = local_model(body)
     if local:
         # The preset names a model: it is loaded here, under the GPU lease, as Recipe Studio's Run does.
-        await ctx.ensure_model("chat", local)
+        # The main slot: the job's local provider reaches only Chat's main model.
+        await ctx.ensure_model("chat", local, primary = True)
     # Validate against the seed it will run on: its columns are what the prompts read.
     await apply_seed(ctx, body)
     checked = await ctx.call("POST", f"{RECIPES}/validate", json = {"recipe": body})

@@ -63,8 +63,10 @@ class _Ctx:
         kind,
         choice,
         options = None,
+        primary = False,
     ):
         self.loaded = choice
+        self.primary = primary
 
     def on_cancel(self, fn):
         self.hooks.append(fn)
