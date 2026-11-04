@@ -17,7 +17,7 @@ CASES = {
     "diffusion_flux2_rope.py": {"_rope_fwd": ("S",)},
     "diffusion_rocm_fused.py": {"_adaln_fwd": ("S",)},
     "diffusion_moss_fused.py": {"kernel": ("S",)},
-    "diffusion_qwenimage21_eager.py": {"_norm_rope_kernel": ("n_rows", "n_seq")},
+    "diffusion_qwenimage21_eager.py": {"_norm_rope_kernel": ("n_seq",)},
     "video_minimax_h3_vae.py": {
         "_gn_partials": ("T", "HW", "W", "n_chunks"),
         "_gn_combine": ("n_chunks",),
