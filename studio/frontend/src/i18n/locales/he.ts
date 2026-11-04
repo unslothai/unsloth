@@ -4826,7 +4826,7 @@ export const he = {
       viewStageHint: "תמונת הדובר לצד הצ'אט",
       viewNovelHint: "הדמויות מעל הסצנה, ההודעות מתחת",
       replyNow: "בקש מ-{name} להגיב",
-      continueScene: "תן לסצנה להמשיך",
+      continueScene: "{name} כותב/ת תשובה נוספת, בלי שתכתבו דבר",
       letContinue: "{name}, המשך",
       writeMyReply: "כתוב את התגובה שלי",
       writing: "כותב...",

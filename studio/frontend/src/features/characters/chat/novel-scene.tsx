@@ -6,7 +6,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { useEffect, useState, type CSSProperties } from "react";
 import { Portrait } from "../components/portrait";
-import { nameHue, useImageUrl, viewPicture } from "../images";
+import { nameHue, viewPicture } from "../images";
 import { useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
 import { useAskToReply } from "./speaker-bar";
@@ -40,7 +40,7 @@ function useWallpaperUrl(): string | null {
 /**
  * Visual novel view: the cast stands in the scene, the speaker in front and the others a step behind,
  * their lower halves behind the dialogue panel. The scene is the user's chat background when one is set,
- * otherwise a wash of the speaker's colors.
+ * otherwise a plain stage in the theme's colors.
  */
 export function NovelScene({ threadId, cast }: { threadId: string | null; cast: Character[] }) {
   const t = useT();
@@ -51,9 +51,9 @@ export function NovelScene({ threadId, cast }: { threadId: string | null; cast: 
   const figures = shownCast(cast, focus);
   return (
     <>
-      <NovelBackdrop character={focus} wallpaper={wallpaper} />
+      <NovelBackdrop wallpaper={wallpaper} />
       <section
-        className="novel-figures pointer-events-none absolute inset-x-0 bottom-[22%] top-14 z-0 flex items-end justify-center px-[3%] max-md:bottom-[44%] max-md:top-12"
+        className="novel-figures pointer-events-none absolute inset-x-0 bottom-[34%] top-14 z-0 flex items-end justify-center px-[3%] max-md:bottom-[44%] max-md:top-12"
         aria-label={t("characters.chat.viewNovel")}
         data-testid="character-novel"
       >
@@ -138,30 +138,14 @@ export function SpeakingDots({ name }: { name: string }) {
   );
 }
 
-function NovelBackdrop({ character, wallpaper }: { character: Character; wallpaper: string | null }) {
-  const portrait = useImageUrl("character", character.id, character.avatarRev, character.hasAvatar && !wallpaper);
-  const hue = nameHue(character.name);
-  const wash: CSSProperties = {
-    background:
-      `radial-gradient(90% 70% at 50% 35%, hsl(${hue} 55% 62% / 0.55), transparent 70%), ` +
-      `linear-gradient(180deg, hsl(${(hue + 200) % 360} 35% 72% / 0.5), hsl(${hue} 30% 40% / 0.35))`,
-  };
+function NovelBackdrop({ wallpaper }: { wallpaper: string | null }) {
   return (
     <div className="novel-backdrop pointer-events-none absolute inset-0 -z-10 overflow-hidden bg-background" aria-hidden={true}>
       {wallpaper ? (
         <img src={wallpaper} alt="" className="absolute inset-0 size-full object-cover animate-in fade-in-0 duration-500" />
       ) : (
-        <>
-          {portrait ? (
-            <img
-              key={portrait}
-              src={portrait}
-              alt=""
-              className="absolute inset-0 size-full scale-125 object-cover opacity-70 blur-[70px] saturate-[1.6] animate-in fade-in-0 duration-700 dark:opacity-55"
-            />
-          ) : null}
-          <div className="absolute inset-0 transition-[background] duration-700" style={wash} />
-        </>
+        // No wallpaper: a quiet stage in the theme's own colors, lighter where the cast stands.
+        <div className="absolute inset-0 bg-[radial-gradient(90%_70%_at_50%_30%,var(--muted),var(--background))]" />
       )}
       {/* Seats the dialogue panel and keeps the header readable over any picture. */}
       <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-background/70 to-transparent" />

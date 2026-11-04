@@ -5060,7 +5060,7 @@ export const fa = {
       viewStageHint: "تصویر گوینده کنار گفتگو",
       viewNovelHint: "شخصیت‌ها روی صحنه، پیام‌ها پایین",
       replyNow: "درخواست پاسخ از {name}",
-      continueScene: "بگذارید صحنه ادامه پیدا کند",
+      continueScene: "{name} پاسخ دیگری می‌نویسد، بدون اینکه شما چیزی بنویسید",
       letContinue: "{name}، ادامه بده",
       writeMyReply: "نوشتن پاسخ من",
       writing: "در حال نوشتن...",

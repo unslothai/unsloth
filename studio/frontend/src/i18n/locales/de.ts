@@ -4819,7 +4819,7 @@ export const de = {
       viewStageHint: "Das Bild der sprechenden Figur neben dem Chat",
       viewNovelHint: "Die Figuren über der Szene, die Nachrichten darunter",
       replyNow: "{name} um eine Antwort bitten",
-      continueScene: "Szene weiterlaufen lassen",
+      continueScene: "{name} schreibt eine weitere Antwort, ohne dass du etwas schreibst",
       letContinue: "{name}, mach weiter",
       writeMyReply: "Meine Antwort schreiben",
       writing: "Wird geschrieben...",

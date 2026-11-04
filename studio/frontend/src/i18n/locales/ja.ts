@@ -4696,7 +4696,7 @@ export const ja = {
       viewStageHint: "話している人物の画像をチャットの横に表示",
       viewNovelHint: "シーンの上にキャラクター、下にメッセージ",
       replyNow: "{name} に返信してもらう",
-      continueScene: "場面を続ける",
+      continueScene: "あなたが何も書かなくても、{name}が次の返信を書きます",
       letContinue: "{name}、続けて",
       writeMyReply: "自分の返信を書く",
       writing: "作成中...",

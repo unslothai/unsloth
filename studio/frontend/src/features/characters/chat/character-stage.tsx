@@ -41,7 +41,7 @@ export function CharacterStage({ threadId, children }: { threadId: string | null
         className={cn(
           "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden",
           novel &&
-            "novel-dialogue relative z-10 mx-auto mt-auto w-[calc(100%-2rem)] max-w-[calc(920px*var(--ui-space-scale,1))] flex-none basis-auto h-[40%] min-h-[calc(290px*var(--ui-space-scale,1))] overflow-visible rounded-t-[30px] bg-background/75 shadow-[0_-30px_80px_-40px_rgb(0_0_0/0.6)] ring-1 ring-white/25 backdrop-blur-2xl dark:bg-background/70 dark:ring-white/10 max-md:h-[58%] max-md:w-full [--studio-chat-header-height:calc(1.75rem*var(--ui-space-scale,1))] [--studio-chat-scroller-top:0px] [--studio-content-top-inset:0px]",
+            "novel-dialogue relative z-10 mx-auto mt-auto w-[calc(100%-2rem)] max-w-[calc(920px*var(--ui-space-scale,1))] flex-none basis-auto h-[52%] min-h-[calc(440px*var(--ui-space-scale,1))] overflow-visible rounded-t-[30px] bg-background/75 shadow-[0_-30px_80px_-40px_rgb(0_0_0/0.6)] ring-1 ring-white/25 backdrop-blur-2xl dark:bg-background/70 dark:ring-white/10 max-md:h-[58%] max-md:w-full [--studio-chat-header-height:calc(1.75rem*var(--ui-space-scale,1))] [--studio-chat-scroller-top:0px] [--studio-content-top-inset:0px]",
         )}
       >
         {children}

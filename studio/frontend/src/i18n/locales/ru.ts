@@ -4773,7 +4773,7 @@ export const ru = {
       viewStageHint: "Изображение говорящего рядом с чатом",
       viewNovelHint: "Персонажи над сценой, сообщения внизу",
       replyNow: "Попросить {name} ответить",
-      continueScene: "Продолжить сцену",
+      continueScene: "{name} пишет ещё один ответ, без вашего сообщения",
       letContinue: "{name}, продолжай",
       writeMyReply: "Написать мой ответ",
       writing: "Пишем...",

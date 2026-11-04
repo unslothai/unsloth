@@ -4819,7 +4819,7 @@ export const zhTW = {
       viewStageHint: "在聊天旁顯示說話角色的圖片",
       viewNovelHint: "角色在場景之上，訊息在下方",
       replyNow: "請 {name} 回覆",
-      continueScene: "讓場景繼續",
+      continueScene: "無需你輸入，{name} 會再寫一則回覆",
       letContinue: "{name}，請繼續",
       writeMyReply: "幫我寫回覆",
       writing: "正在撰寫...",

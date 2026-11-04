@@ -5086,7 +5086,7 @@ export const tr = {
       viewStageHint: "Konuşanın resmi sohbetin yanında",
       viewNovelHint: "Karakterler sahnede, mesajlar altta",
       replyNow: "{name} karakterinden yanıt iste",
-      continueScene: "Sahne devam etsin",
+      continueScene: "Siz hiçbir şey yazmadan {name} bir yanıt daha yazar",
       letContinue: "{name}, devam et",
       writeMyReply: "Yanıtımı yaz",
       writing: "Yazılıyor...",

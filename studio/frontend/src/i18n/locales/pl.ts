@@ -5137,7 +5137,7 @@ export const pl = {
       viewStageHint: "Obraz mówiącej postaci obok czatu",
       viewNovelHint: "Postacie na scenie, wiadomości pod nimi",
       replyNow: "Poproś {name} o odpowiedź",
-      continueScene: "Pozwól scenie toczyć się dalej",
+      continueScene: "{name} pisze kolejną odpowiedź, bez pisania czegokolwiek przez ciebie",
       letContinue: "{name}, mów dalej",
       writeMyReply: "Napisz moją odpowiedź",
       writing: "Pisanie...",

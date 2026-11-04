@@ -5127,7 +5127,7 @@ export const uk = {
       viewStageHint: "Зображення того, хто говорить, поруч із чатом",
       viewNovelHint: "Персонажі над сценою, повідомлення внизу",
       replyNow: "Попросити {name} відповісти",
-      continueScene: "Продовжити сцену",
+      continueScene: "{name} пише ще одну відповідь, без вашого повідомлення",
       letContinue: "{name}, продовжуй",
       writeMyReply: "Написати мою відповідь",
       writing: "Пишемо...",

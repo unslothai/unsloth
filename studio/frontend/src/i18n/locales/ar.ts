@@ -4745,7 +4745,7 @@ export const ar = {
       viewStageHint: "صورة المتحدث بجانب المحادثة",
       viewNovelHint: "الشخصيات فوق المشهد والرسائل أسفلها",
       replyNow: "اطلب من {name} الرد",
-      continueScene: "دع المشهد يستمر",
+      continueScene: "يكتب {name} ردًا آخر دون أن تكتب شيئًا",
       letContinue: "{name}، تابع",
       writeMyReply: "اكتب ردّي",
       writing: "جارٍ الكتابة...",

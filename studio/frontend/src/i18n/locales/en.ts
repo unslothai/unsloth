@@ -4754,7 +4754,7 @@ export const en = {
       viewStageHint: "The speaker's picture beside the chat",
       viewNovelHint: "The cast over the scene, messages below",
       replyNow: "Ask {name} to reply",
-      continueScene: "Let the scene continue",
+      continueScene: "{name} writes another reply, without you writing anything",
       letContinue: "{name}, go on",
       writeMyReply: "Write my reply",
       writing: "Writing...",

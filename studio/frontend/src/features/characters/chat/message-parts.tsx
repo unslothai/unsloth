@@ -87,14 +87,14 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   const character = speaker.character;
   return (
     <RoleplaySpeakerNameContext.Provider value={speaker.name}>
-      <div className="roleplay-reply relative pl-[calc(3.75rem*var(--ui-space-scale,1))] max-sm:pl-[calc(3.25rem*var(--ui-space-scale,1))] [&_.aui-assistant-message-content_em]:text-[color-mix(in_oklab,currentColor_62%,transparent)]" data-speaker={speaker.id}>
+      <div className="roleplay-reply relative min-h-[calc(4rem*var(--ui-space-scale,1))] pl-[calc(3.75rem*var(--ui-space-scale,1))] max-sm:pl-[calc(3.25rem*var(--ui-space-scale,1))] [&_.aui-assistant-message-content_em]:text-[color-mix(in_oklab,currentColor_62%,transparent)]" data-speaker={speaker.id}>
         <Portrait
           id={character?.id ?? speaker.id}
           name={speaker.name}
           hasImage={Boolean(character?.hasAvatar)}
           rev={character?.avatarRev ?? 0}
           label={speaker.name}
-          className="absolute left-0 top-0 size-[calc(3rem*var(--ui-space-scale,1))] rounded-[14px] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:size-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[12px]"
+          className="absolute left-0 top-0 aspect-[3/4] w-[calc(3rem*var(--ui-space-scale,1))] rounded-[12px] text-[1.05rem] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:w-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[10px]"
           onClick={
             character && threadId
               ? () => showOnStage(threadId, character.id, aui.thread().getState().messages.length)
@@ -131,12 +131,17 @@ export function RoleplayPersonaTag() {
   );
 }
 
-/** Hidden bookkeeping turns (the opening and group turn markers) render nothing. */
-export function useIsHiddenRoleplayTurn(): boolean {
+/** Whether a thread is a character chat. */
+export function useIsRoleplayThread(threadId: string | null | undefined): boolean {
+  return useThreadScene(threadId) !== null;
+}
+
+/** The hidden bookkeeping turn this message is (the opening or a group turn marker), else null. */
+export function useHiddenRoleplayTurn(): "opening" | "turn" | null {
   return useAuiState(({ message }) => {
-    if (message.role !== "user") return false;
+    if (message.role !== "user") return null;
     const kind = roleplayMetaOf(message)?.kind;
-    return kind === "opening" || kind === "turn";
+    return kind === "opening" || kind === "turn" ? kind : null;
   });
 }
 

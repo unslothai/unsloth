@@ -6703,8 +6703,8 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 }
 /* The dialogue panel: messages fade in under its top edge, and the composer sits on the panel itself. */
 .novel-dialogue .aui-thread-viewport {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 2.75rem);
-  mask-image: linear-gradient(to bottom, transparent 0, #000 2.75rem);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 1.25rem);
 }
 .novel-dialogue .thread-bottom-fade {
   display: none;

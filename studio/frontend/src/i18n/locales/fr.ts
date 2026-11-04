@@ -4829,7 +4829,7 @@ export const fr = {
       viewStageHint: "L'image du personnage qui parle à côté du chat",
       viewNovelHint: "Les personnages sur la scène, les messages en dessous",
       replyNow: "Demander à {name} de répondre",
-      continueScene: "Laisser la scène continuer",
+      continueScene: "{name} écrit une autre réponse, sans que vous écriviez quoi que ce soit",
       letContinue: "{name}, continue",
       writeMyReply: "Rédiger ma réponse",
       writing: "Rédaction...",

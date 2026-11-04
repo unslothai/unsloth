@@ -4736,7 +4736,7 @@ export const ko = {
       viewStageHint: "말하는 캐릭터의 그림을 채팅 옆에 표시",
       viewNovelHint: "장면 위에 캐릭터, 아래에 메시지",
       replyNow: "{name}에게 답변 요청",
-      continueScene: "장면 계속 진행",
+      continueScene: "아무것도 쓰지 않아도 {name}이(가) 다음 답장을 씁니다",
       letContinue: "{name}, 계속해",
       writeMyReply: "내 답장 작성",
       writing: "작성 중...",

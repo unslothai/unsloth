@@ -11,7 +11,8 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useT, type TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { TheaterIcon } from "@hugeicons/core-free-icons";
+import { BubbleChatIcon, ImageCompositionIcon, LayoutLeftIcon } from "@hugeicons/core-free-icons";
+import type { IconSvgElement } from "@hugeicons/react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Portrait } from "../components/portrait";
 import { chatViewOf, setChatView } from "../stage-focus";
@@ -54,10 +55,10 @@ export function CastChip({ threadId, onOpen }: { threadId: string | null | undef
   );
 }
 
-const VIEWS: { value: ChatView; label: TranslationKey; hint: TranslationKey | null }[] = [
-  { value: "chat", label: "characters.chat.viewChat", hint: null },
-  { value: "stage", label: "characters.chat.viewStage", hint: "characters.chat.viewStageHint" },
-  { value: "novel", label: "characters.chat.viewNovel", hint: "characters.chat.viewNovelHint" },
+const VIEWS: { value: ChatView; label: TranslationKey; hint: TranslationKey | null; icon: IconSvgElement }[] = [
+  { value: "chat", label: "characters.chat.viewChat", hint: null, icon: BubbleChatIcon },
+  { value: "stage", label: "characters.chat.viewStage", hint: "characters.chat.viewStageHint", icon: LayoutLeftIcon },
+  { value: "novel", label: "characters.chat.viewNovel", hint: "characters.chat.viewNovelHint", icon: ImageCompositionIcon },
 ];
 
 /** Picks how a character chat is laid out, remembered per chat. */
@@ -66,6 +67,7 @@ export function ChatViewMenu({ threadId }: { threadId: string | null | undefined
   const thread = useThreadScene(threadId);
   if (!thread || !threadId) return null;
   const view = chatViewOf(thread.scene.settings);
+  const current = VIEWS.find((option) => option.value === view) ?? VIEWS[0];
   return (
     <DropdownMenu>
       <Tooltip>
@@ -80,7 +82,7 @@ export function ChatViewMenu({ threadId }: { threadId: string | null | undefined
                 view !== "chat" && "bg-nav-surface-hover text-foreground",
               )}
             >
-              <HugeiconsIcon icon={TheaterIcon} strokeWidth={1.75} className="size-icon" />
+              <HugeiconsIcon icon={current.icon} strokeWidth={1.75} className="size-icon" />
             </button>
           </DropdownMenuTrigger>
         </TooltipTrigger>
@@ -88,10 +90,12 @@ export function ChatViewMenu({ threadId }: { threadId: string | null | undefined
           {t("characters.chat.view")}
         </TooltipContent>
       </Tooltip>
-      <DropdownMenuContent align="end" className="w-72">
+      {/* Focus would return to the button and reopen its tooltip after every choice. */}
+      <DropdownMenuContent align="end" className="w-72" onCloseAutoFocus={(event) => event.preventDefault()}>
         <DropdownMenuRadioGroup value={view} onValueChange={(next) => setChatView(threadId, next as ChatView)}>
           {VIEWS.map((option) => (
-            <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start">
+            <DropdownMenuRadioItem key={option.value} value={option.value} className="items-start gap-2.5">
+              <HugeiconsIcon icon={option.icon} strokeWidth={1.75} className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
               <span className="flex flex-col gap-0.5">
                 <span>{t(option.label)}</span>
                 {option.hint ? <span className="text-ui-12 text-muted-foreground">{t(option.hint)}</span> : null}

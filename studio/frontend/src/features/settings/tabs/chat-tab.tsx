@@ -36,7 +36,7 @@ import {
   McpServerIcon,
   Scroll01Icon,
   Telescope02Icon,
-  LaughIcon,
+  MessageUser01Icon,
 } from "@hugeicons/core-free-icons";
 import { BookmarkIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -174,7 +174,7 @@ const PLUS_MENU_SETTINGS: {
   {
     id: "characters",
     labelKey: "characters.plusMenu",
-    icon: <HugeiconsIcon icon={LaughIcon} strokeWidth={2} className={PLUS_MENU_ICON_CLASS} />,
+    icon: <HugeiconsIcon icon={MessageUser01Icon} strokeWidth={2} className={PLUS_MENU_ICON_CLASS} />,
   },
 ];
 

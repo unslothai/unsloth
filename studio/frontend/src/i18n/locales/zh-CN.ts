@@ -4647,7 +4647,7 @@ export const zhCN = {
       viewStageHint: "在聊天旁显示说话角色的图片",
       viewNovelHint: "角色在场景之上，消息在下方",
       replyNow: "让 {name} 回复",
-      continueScene: "让场景继续",
+      continueScene: "无需你输入，{name} 会再写一条回复",
       letContinue: "{name}，继续",
       writeMyReply: "替我写回复",
       writing: "正在撰写...",

@@ -5136,7 +5136,7 @@ export const nl = {
       viewStageHint: "De afbeelding van wie spreekt naast de chat",
       viewNovelHint: "De personages boven de scène, de berichten eronder",
       replyNow: "{name} laten antwoorden",
-      continueScene: "De scène laten doorgaan",
+      continueScene: "{name} schrijft nog een antwoord, zonder dat jij iets schrijft",
       letContinue: "{name}, ga door",
       writeMyReply: "Mijn antwoord schrijven",
       writing: "Schrijven...",

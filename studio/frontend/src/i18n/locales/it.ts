@@ -4814,7 +4814,7 @@ export const it = {
       viewStageHint: "L'immagine di chi parla accanto alla chat",
       viewNovelHint: "I personaggi sulla scena, i messaggi sotto",
       replyNow: "Chiedi a {name} di rispondere",
-      continueScene: "Lascia proseguire la scena",
+      continueScene: "{name} scrive un'altra risposta, senza che tu scriva nulla",
       letContinue: "{name}, continua",
       writeMyReply: "Scrivi la mia risposta",
       writing: "Scrittura...",

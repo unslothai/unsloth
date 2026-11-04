@@ -5088,7 +5088,7 @@ export const id = {
       viewStageHint: "Gambar pembicara di samping obrolan",
       viewNovelHint: "Para karakter di atas adegan, pesan di bawahnya",
       replyNow: "Minta {name} membalas",
-      continueScene: "Biarkan adegan berlanjut",
+      continueScene: "{name} menulis balasan lain tanpa Anda menulis apa pun",
       letContinue: "{name}, lanjutkan",
       writeMyReply: "Tulis balasan saya",
       writing: "Menulis...",

@@ -4,7 +4,8 @@
 import {
   RoleplayPersonaTag,
   RoleplayReplyFrame,
-  useIsHiddenRoleplayTurn,
+  useHiddenRoleplayTurn,
+  useIsRoleplayThread,
   useRoleplayUserParts,
 } from "@/features/characters/chat/message-parts";
 import { CharacterChatPicker } from "@/features/characters/chat/start-picker";
@@ -470,7 +471,7 @@ import {
   MoreHorizontalIcon,
   PlusSignIcon,
   Cancel01Icon,
-  LaughIcon,
+  MessageUser01Icon,
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -1864,8 +1865,10 @@ const RUN_SHRINK_WINDOW_MS = 1000;
 const ThreadMessage: FC = () => {
   const role = useAuiState(({ message }) => message.role);
   const isEditing = useAuiState(({ message }) => message.composer.isEditing);
-  // A character chat's opening and turn markers are for the model, not the screen.
-  const hiddenTurn = useIsHiddenRoleplayTurn();
+  // A character chat's opening and turn markers are for the model, not the screen. The opening
+  // keeps the room a first user message would take, so the greeting clears the header's fade.
+  const hiddenTurn = useHiddenRoleplayTurn();
+  if (hiddenTurn === "opening") return <div aria-hidden={true} className="h-[calc(1.75rem*var(--ui-space-scale,1))]" />;
   if (hiddenTurn) return null;
   let body: ReactNode = null;
   switch (threadMessageKind(role, isEditing)) {
@@ -2111,6 +2114,8 @@ export const Thread: FC<{
   );
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const threadId = targetThreadId ?? activeThreadId ?? null;
+  // Turn ticks would count a character chat's hidden turns, and roleplay reads as one scene.
+  const roleplayThread = useIsRoleplayThread(threadId);
   const aui = useAui();
   useThreadForkCounts();
   useTrackForkBoundaryAnchor(threadId);
@@ -2342,7 +2347,7 @@ export const Thread: FC<{
             </AuiIf>
           )}
 
-          <TurnNavigator viewportRef={viewportElRef} />
+          {roleplayThread ? null : <TurnNavigator viewportRef={viewportElRef} />}
 
           {/* Drop-in for ThreadPrimitive.Messages that bounds a long thread's first commit to
           the tail and mounts the rest over the following frames. Nothing unmounts and the
@@ -7224,7 +7229,7 @@ const ComposerToolsMenu: FC<{
     ),
     characters: (
       <DropdownMenuItem onSelect={() => setCharacterPickerOpen(true)}>
-        <HugeiconsIcon icon={LaughIcon} strokeWidth={2} />
+        <HugeiconsIcon icon={MessageUser01Icon} strokeWidth={2} />
         {t("characters.plusMenu")}
       </DropdownMenuItem>
     ),

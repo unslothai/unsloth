@@ -5085,7 +5085,7 @@ export const vi = {
       viewStageHint: "Hình của người đang nói bên cạnh cuộc trò chuyện",
       viewNovelHint: "Nhân vật trên khung cảnh, tin nhắn bên dưới",
       replyNow: "Yêu cầu {name} trả lời",
-      continueScene: "Để cảnh tiếp diễn",
+      continueScene: "{name} viết thêm một câu trả lời mà bạn không cần viết gì",
       letContinue: "{name}, tiếp tục đi",
       writeMyReply: "Viết câu trả lời của tôi",
       writing: "Đang viết...",

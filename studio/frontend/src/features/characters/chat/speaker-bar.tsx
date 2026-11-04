@@ -103,7 +103,7 @@ export function RoleplaySpeakerBar() {
           disabled={running}
           onClick={() => ask(solo.id, solo.name)}
           className={cn(CHIP, "pl-1 pr-3")}
-          title={t("characters.chat.continueScene")}
+          title={t("characters.chat.continueScene", { name: solo.name.split(/\s+/)[0] || solo.name })}
         >
           <Portrait id={solo.id} name={solo.name} hasImage={solo.hasAvatar} rev={solo.avatarRev} className="size-7 rounded-full text-[0.7rem]" />
           <HugeiconsIcon icon={PlayIcon} strokeWidth={1.8} className="size-3.5 text-muted-foreground" />

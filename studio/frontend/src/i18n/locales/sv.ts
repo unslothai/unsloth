@@ -4960,7 +4960,7 @@ export const sv = {
       viewStageHint: "Bilden av den som talar bredvid chatten",
       viewNovelHint: "Karaktärerna över scenen, meddelandena under",
       replyNow: "Be {name} att svara",
-      continueScene: "Låt scenen fortsätta",
+      continueScene: "{name} skriver ett till svar utan att du skriver något",
       letContinue: "{name}, fortsätt",
       writeMyReply: "Skriv mitt svar",
       writing: "Skriver …",

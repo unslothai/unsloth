@@ -144,7 +144,7 @@ import {
   LayerIcon,
   ApiIcon,
   Clock01Icon,
-  LaughIcon,
+  MessageUser01Icon,
 } from "@hugeicons/core-free-icons";
 import { Folder02Icon, FolderExportIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -3543,7 +3543,7 @@ export function AppSidebar() {
       ),
     },
     characters: {
-      icon: LaughIcon,
+      icon: MessageUser01Icon,
       label: t("shell.navigation.characters"),
       badge: t("shell.navigation.newBadge"),
       active: pathname === "/characters" || pathname.startsWith("/characters/"),

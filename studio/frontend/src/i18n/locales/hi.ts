@@ -4756,7 +4756,7 @@ export const hi = {
       viewStageHint: "बोलने वाले की तस्वीर चैट के बगल में",
       viewNovelHint: "दृश्य पर पात्र, नीचे संदेश",
       replyNow: "{name} से जवाब देने को कहें",
-      continueScene: "दृश्य को आगे बढ़ने दें",
+      continueScene: "{name} एक और जवाब लिखता है, बिना आपके कुछ लिखे",
       letContinue: "{name}, आगे बढ़ो",
       writeMyReply: "मेरा जवाब लिखें",
       writing: "लिखा जा रहा है...",

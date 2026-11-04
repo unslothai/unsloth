@@ -5106,7 +5106,7 @@ export const cs = {
       viewStageHint: "Obrázek mluvčího vedle chatu",
       viewNovelHint: "Postavy nad scénou, zprávy pod nimi",
       replyNow: "Požádat o odpověď: {name}",
-      continueScene: "Nechat scénu pokračovat",
+      continueScene: "{name} napíše další odpověď, aniž byste cokoli psali",
       letContinue: "{name}, pokračuj",
       writeMyReply: "Napsat mou odpověď",
       writing: "Píše se...",

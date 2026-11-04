@@ -5169,7 +5169,7 @@ export const es419 = {
       viewStageHint: "La imagen de quien habla junto al chat",
       viewNovelHint: "Los personajes sobre la escena y los mensajes debajo",
       replyNow: "Pedir a {name} que responda",
-      continueScene: "Dejar que la escena continúe",
+      continueScene: "{name} escribe otra respuesta sin que tú escribas nada",
       letContinue: "{name}, sigue",
       writeMyReply: "Escribir mi respuesta",
       writing: "Escribiendo...",

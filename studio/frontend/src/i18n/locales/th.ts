@@ -4861,7 +4861,7 @@ export const th = {
       viewStageHint: "ภาพของผู้พูดข้างแชต",
       viewNovelHint: "ตัวละครอยู่บนฉาก ข้อความอยู่ด้านล่าง",
       replyNow: "ขอให้ {name} ตอบ",
-      continueScene: "ให้ฉากดำเนินต่อ",
+      continueScene: "{name} เขียนตอบกลับอีกครั้งโดยที่คุณไม่ต้องพิมพ์อะไร",
       letContinue: "{name} ต่อเลย",
       writeMyReply: "เขียนคำตอบของฉัน",
       writing: "กำลังเขียน...",
