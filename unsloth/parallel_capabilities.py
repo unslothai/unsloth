@@ -962,9 +962,12 @@ def _low_precision(model) -> Optional[str]:
         if m is None or id(m) in seen:
             continue
         seen.add(id(m))
-        if isinstance(getattr(m, "_unsloth_fp8_lora_recipe", None), str) or getattr(
-            m, "_unsloth_float8_linears", None
-        ):
+        # enable_fp8_lora leaves an empty bases tuple when it converted nothing: that run trains in 16 bit.
+        requested = isinstance(getattr(m, "_unsloth_fp8_lora_recipe", None), str) and (
+            getattr(m, "_unsloth_fp8_lora_bases", None) != ()
+        )
+        linears = getattr(m, "_unsloth_float8_linears", None)
+        if requested or (isinstance(linears, (list, tuple)) and len(linears) > 0):
             return "fp8"
         stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
     try:

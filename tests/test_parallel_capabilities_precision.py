@@ -137,6 +137,27 @@ def test_low_precision_training_alone_or_with_dp_is_not_refused(kind):
         )
 
 
+def test_a_float8_request_that_converted_nothing_trains_in_16_bit_and_is_not_refused():
+    # The tiny checkpoint's 8-wide projections are below the fp8 minimum: enable_fp8_lora converts no base,
+    # warns that training stays in 16 bit, and the run must not be refused as fp8.
+    from transformers import AutoConfig, AutoModelForCausalLM
+
+    from unsloth.models import float8_training as f8
+
+    model = AutoModelForCausalLM.from_config(AutoConfig.from_pretrained(TINY), dtype = torch.bfloat16)
+    f8.mark_fp8_lora(model, f8.FP8_LORA_RECIPE)
+    model = _lora(model)
+    f8.enable_fp8_lora(model, f8.FP8_LORA_RECIPE, allow_cpu = True)
+    assert not any("_unsloth_fp8_lora" in m.__dict__ for m in model.modules())
+    assert caps.query_from(None, None, model).mode == "lora"
+    caps.check_layout(
+        ParallelLayout(tp = 2, dp = 1, world = 2, fsdp2 = False),
+        None,
+        model,
+        types.SimpleNamespace(packing = False),
+    )
+
+
 def test_models_without_a_low_precision_marker_keep_their_mode():
     from transformers import AutoModelForCausalLM
 
