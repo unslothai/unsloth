@@ -292,6 +292,7 @@ from .diffusion_speed import (
     fp16_unet_offloaded,
     fused_qkv_added_bytes,
     fresh_compile_count,
+    restore_unfused_projections,
     int8_gemm_live,
     arm_graphs_after_placement,
     normalize_speed_mode,
@@ -13225,6 +13226,8 @@ class DiffusionBackend:
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
                 invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
                 return
+        # PEFT targets to_q / to_k / to_v: a fused U-Net that dropped them gets them back first (bit-exact).
+        restore_unfused_projections(getattr(pipe, "unet", None))
         # Read before loading, so a file rewritten during the load reads as changed next time.
         file_sigs = _lora_file_sigs(desired)
         try:
