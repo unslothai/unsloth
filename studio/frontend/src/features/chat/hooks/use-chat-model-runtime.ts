@@ -50,6 +50,7 @@ import {
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
+import { loadFailureToastParts } from "../lib/load-failure-message";
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import {
   failureLogPath,
@@ -3449,8 +3450,7 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
-            const [summary, ...rest] = message.split("\n");
-            const detail = rest.join("\n").trim();
+            const { summary, detail } = loadFailureToastParts(message);
             const runnerLogPath = failureLogPath(message);
             const logsAction = runnerLogPath
               ? viewLogsAction(

@@ -3952,8 +3952,6 @@ export const ptBR = {
             "Este dataset parece conter imagens e não pode ser usado em streaming.",
           audioDataset:
             "Este dataset parece conter áudio e não pode ser usado em streaming.",
-          appleSilicon:
-            "O streaming ainda não é compatível com Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "apenas respostas do assistente",

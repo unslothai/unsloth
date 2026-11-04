@@ -3986,8 +3986,6 @@ export const de = {
             "Dieser Datensatz scheint Bilder zu enthalten, die nicht gestreamt werden können.",
           audioDataset:
             "Dieser Datensatz scheint Audio zu enthalten, das nicht gestreamt werden kann.",
-          appleSilicon:
-            "Streaming wird auf Apple Silicon (MLX) noch nicht unterstützt.",
         },
         options: {
           trainOnCompletions: "nur Assistenten-Antworten",

@@ -4229,7 +4229,6 @@ export const id = {
             "Dataset ini tampaknya berupa gambar, yang tidak dapat di-streaming.",
           audioDataset:
             "Dataset ini tampaknya berupa audio, yang tidak dapat di-streaming.",
-          appleSilicon: "Streaming belum didukung di Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "hanya completion asisten",

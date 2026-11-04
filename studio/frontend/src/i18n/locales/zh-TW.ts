@@ -4013,7 +4013,6 @@ export const zhTW = {
           embeddingModel: "嵌入模型不支援串流（訓練需要完整的資料集）。",
           imageDataset: "此資料集看起來是圖片，無法串流。",
           audioDataset: "此資料集看起來是音訊，無法串流。",
-          appleSilicon: "Apple Silicon（MLX）目前尚不支援串流。",
         },
         options: {
           trainOnCompletions: "僅訓練助理回覆",

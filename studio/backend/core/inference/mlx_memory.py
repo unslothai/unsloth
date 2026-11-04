@@ -1364,12 +1364,17 @@ def _loader_view(model_dir: str, config: dict) -> tuple:
 
 
 def _install_oq_renames(config: dict) -> None:
-    """unsloth_zoo's sanitize renames for DeepSeek-V4.1 oQ quants, as its load installs them."""
+    """unsloth_zoo's sanitize renames for oQ quants, as its load installs them."""
     try:
-        from unsloth_zoo.mlx.loader import _ensure_deepseek_v41_omlx_layout
+        from unsloth_zoo.mlx import loader
     except Exception:
         return
-    _ensure_deepseek_v41_omlx_layout(config.get("model_type"))
+    # Older unsloth_zoo installs its one oQ layout (DeepSeek-V4.1) by that name.
+    install = getattr(loader, "_ensure_omlx_layout", None) or getattr(
+        loader, "_ensure_deepseek_v41_omlx_layout", None
+    )
+    if install is not None:
+        install(config.get("model_type"))
 
 
 @functools.lru_cache(maxsize = 4)

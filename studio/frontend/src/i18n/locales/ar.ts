@@ -3930,8 +3930,6 @@ export const ar = {
             "يبدو أن مجموعة البيانات هذه تحتوي على صور، ولا يمكن بثها.",
           audioDataset:
             "يبدو أن مجموعة البيانات هذه تحتوي على صوت، ولا يمكن بثها.",
-          appleSilicon:
-            "البث غير مدعوم على Apple Silicon (MLX) حتى الآن.",
         },
         options: {
           trainOnCompletions: "إكمالات المساعد فقط",

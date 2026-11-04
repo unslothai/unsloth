@@ -3941,8 +3941,6 @@ export const hi = {
             "यह डेटासेट इमेज वाला लगता है, जिसे स्ट्रीम नहीं किया जा सकता।",
           audioDataset:
             "यह डेटासेट ऑडियो वाला लगता है, जिसे स्ट्रीम नहीं किया जा सकता।",
-          appleSilicon:
-            "Apple Silicon (MLX) पर अभी स्ट्रीमिंग समर्थित नहीं है।",
         },
         options: {
           trainOnCompletions: "केवल असिस्टेंट completions",

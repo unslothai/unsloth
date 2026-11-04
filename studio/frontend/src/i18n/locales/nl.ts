@@ -4282,8 +4282,6 @@ export const nl = {
             "Deze dataset lijkt uit afbeeldingen te bestaan, die niet kunnen worden gestreamd.",
           audioDataset:
             "Deze dataset lijkt uit audio te bestaan, die niet kan worden gestreamd.",
-          appleSilicon:
-            "Streamen wordt nog niet ondersteund op Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "alleen assistentaanvullingen",

@@ -21269,6 +21269,32 @@ class LlamaCppBackend:
                 secrets,
             )
 
+        # Projectors, drafters and shards fail this way too: never name the main GGUF.
+        if "data is not within the file bounds" in lowered:
+            return LlamaCppBackend._with_startup_diagnostics(
+                "A model file appears incomplete or damaged. Check that the download finished.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        if "failed to open gguf file" in lowered:
+            return LlamaCppBackend._with_startup_diagnostics(
+                "Couldn't open a model file. Check it exists and Unsloth has permission to read it.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        # GPU evidence on the allocation line itself: a host allocation failure keeps the fallback.
+        if LlamaCppBackend._is_gpu_memory_start_failure(scan_tail):
+            return LlamaCppBackend._with_startup_diagnostics(
+                "Couldn't allocate memory. Try lowering the context length or choosing a smaller model.",
+                output,
+                log_path,
+                secrets,
+            )
+
         # Detect Ollama first so the arch branch keeps the Ollama hint.
         gguf = gguf_path or ""
         is_ollama = (
@@ -21357,8 +21383,9 @@ class LlamaCppBackend:
             # Includes an arch the installed build predates.
             return (
                 f"The installed llama.cpp does not recognise this GGUF's model "
-                f"architecture ('{arch}'). The file is valid. If the model is newer "
-                "than this llama.cpp build, updating llama.cpp may add support for it."
+                f"architecture ('{arch}'). Check the model card for its required runtime. "
+                "If the model is newer than this llama.cpp build, updating llama.cpp may "
+                "add support; a model requiring a custom runtime may still be incompatible."
             )
 
         # Other Ollama compat failures, only when the output shows a GGUF compat issue.
@@ -21380,11 +21407,11 @@ class LlamaCppBackend:
         if missing_key:
             return LlamaCppBackend._with_startup_diagnostics(
                 f"This GGUF is missing the metadata key '{_short(missing_key.group(1))}', "
-                "which the installed llama.cpp requires to load it. The file was made "
-                "for a different llama.cpp version of this model's format, usually an "
-                "older or pre-release one; this is not a memory problem. Download an "
-                "updated GGUF of this model, or update llama.cpp if the file is newer "
-                "than this build.",
+                "which the installed llama.cpp requires to load it; this is not a memory problem. "
+                "This can happen with an incompatible conversion, incomplete metadata, or "
+                "an adapter selected as a full model. Check the model card for its required "
+                "runtime and whether it needs a base model. Use a compatible full or updated "
+                "GGUF, or update llama.cpp if the model requires a newer build.",
                 output,
                 log_path,
                 secrets,

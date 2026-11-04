@@ -4057,8 +4057,6 @@ export const it = {
             "Questo dataset sembra contenere immagini, che non possono essere trasmesse in streaming.",
           audioDataset:
             "Questo dataset sembra contenere audio, che non può essere trasmesso in streaming.",
-          appleSilicon:
-            "Lo streaming non è ancora supportato su Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo completamenti dell'assistente",

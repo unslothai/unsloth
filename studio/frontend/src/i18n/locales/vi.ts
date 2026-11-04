@@ -4231,8 +4231,6 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
-          appleSilicon:
-            "Chưa hỗ trợ truyền trực tuyến trên Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",

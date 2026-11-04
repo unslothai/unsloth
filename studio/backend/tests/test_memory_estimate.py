@@ -4157,6 +4157,105 @@ def test_a_deepseek_v41_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, mon
     assert not os.path.exists(view)
 
 
+@pytest.mark.parametrize("name", ["_ensure_omlx_layout", "_ensure_deepseek_v41_omlx_layout"])
+def test_unsloth_zoo_installs_its_oq_layout_by_either_name(monkeypatch, name):
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
+    installed = []
+    for other in ("_ensure_omlx_layout", "_ensure_deepseek_v41_omlx_layout"):
+        monkeypatch.delattr(loader, other, raising = False)
+    monkeypatch.setattr(loader, name, installed.append, raising = False)
+    mm._install_oq_renames({"model_type": "glm5_next"})
+    assert installed == ["glm5_next"]
+
+
+def test_a_glm5_next_oq_quant_is_priced_as_unsloth_zoo_loads_it(tmp_path, monkeypatch):
+    if not _HAVE_MLX:
+        pytest.skip("needs MLX to build and load a checkpoint")
+    glm = pytest.importorskip("mlx_vlm.models.glm5_next.glm5_next")
+    loader = pytest.importorskip("unsloth_zoo.mlx.loader")
+    if "glm5_next" not in getattr(loader, "_OMLX_LAYOUTS", {}):
+        pytest.skip("this unsloth_zoo loads no GLM-5.3 oQ quant")
+    import re
+
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx.utils import tree_flatten
+    from mlx_vlm.models.glm5_next.config import ModelConfig
+
+    linear = {
+        "num_heads": 2,
+        "head_dim": 64,
+        "short_conv_kernel_size": 4,
+        "kda_layers": [0],
+        "full_attn_layers": [1],
+    }
+    text = dict(
+        model_type = "glm5_next_text",
+        vocab_size = 512,
+        hidden_size = 256,
+        num_hidden_layers = 2,
+        intermediate_size = 256,
+        moe_intermediate_size = 128,
+        n_routed_experts = 16,
+        num_experts_per_tok = 2,
+        first_k_dense_replace = 1,
+        num_attention_heads = 2,
+        num_key_value_heads = 2,
+        q_lora_rank = 128,
+        kv_lora_rank = 128,
+        qk_head_dim = 64,
+        qk_nope_head_dim = 64,
+        qk_rope_head_dim = 0,
+        v_head_dim = 64,
+        index_n_heads = 2,
+        index_head_dim = 64,
+        linear_attn_config = linear,
+        layer_types = ["linear_attention", "deepseek_sparse_attention"],
+        mlp_layer_types = ["dense", "sparse"],
+    )
+    vision = dict(depth = 1, hidden_size = 64, intermediate_size = 128, num_heads = 1, out_hidden_size = 256)
+    config = {"model_type": "glm5_next", "text_config": text, "vision_config": vision}
+    model = glm.Model(ModelConfig.from_dict(json.loads(json.dumps(config))))
+    nn.quantize(
+        model,
+        64,
+        4,
+        class_predicate = lambda path, module: hasattr(module, "to_quantized")
+        and model.quant_predicate(path, module),
+    )
+    config["quantization"] = {"group_size": 64, "bits": 4, "mode": "affine"}
+    params = dict(tree_flatten(model.parameters()))
+
+    # The layout omlx writes: its forget gate module, the fused convolution as `conv1d`, `vision_model`.
+    def omlx(key):
+        key = key.replace("vision_tower.", "vision_model.").replace(".qkv_conv.conv.", ".conv1d.")
+        return re.sub(r"\.self_attn\.(f_b_proj|A_log|dt_bias)", r".self_attn.forget_gate.\1", key)
+
+    fbg = "language_model.model.layers.0.self_attn.fbg_a_proj."
+    stored = {omlx(k): v for k, v in params.items() if not k.startswith(fbg)}
+    for leaf in ("weight", "scales", "biases"):
+        for name, part in zip(
+            ("forget_gate.f_a_proj", "b_proj", "g_a_proj"),
+            mx.split(params[fbg + leaf], [64, 66], axis = 0),
+        ):
+            stored[f"language_model.model.layers.0.self_attn.{name}.{leaf}"] = part
+    stored["language_model.mtp.0.eh_proj.weight"] = mx.zeros((256, 512))
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), stored)
+    (tmp_path / "config.json").write_text(json.dumps(config))
+
+    model_dir = str(tmp_path)
+    priced = mm._snapshot_config(model_dir)
+    sanitize = glm.Model.sanitize
+    if getattr(sanitize, "_unsloth_omlx_layout", False):
+        pytest.skip("an earlier load in this process installed the oQ layout")
+    monkeypatch.setattr(glm.Model, "sanitize", sanitize)
+    assert mm._load_is_refused(model_dir, priced, load_in_4bit = False) is None
+    glm.Model.sanitize = sanitize
+    experts = sum(v.nbytes for k, v in params.items() if ".switch_mlp." in k)
+    found = mm._offloadable(model_dir, priced)
+    assert (found["expert_bytes"], found["experts"]) == (experts, None)
+
+
 try:
     import importlib
 

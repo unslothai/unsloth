@@ -4006,7 +4006,6 @@ export const he = {
           imageDataset:
             "מערך נתונים זה נראה כמכיל תמונות, שאינן ניתנות להזרמה.",
           audioDataset: "מערך נתונים זה נראה כמכיל אודיו, שאינו ניתן להזרמה.",
-          appleSilicon: "הזרמה אינה נתמכת עדיין ב-Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "השלמות עוזר בלבד",

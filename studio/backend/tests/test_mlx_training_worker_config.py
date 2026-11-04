@@ -79,6 +79,7 @@ def _load_worker_module():
             "flash_attn_wheel_url",
             "install_wheel",
             "is_windows_wheel_env",
+            "mamba_ssm_pure_wheel_url",
             "pinned_source_build_supported",
             "probe_torch_wheel_env",
             "url_exists",
@@ -614,3 +615,492 @@ def test_mlx_single_process_finalization_keeps_prior_contract():
     events = _finalize(trainer, stop = (True, True), checkpoint_ok = False)
     assert trainer.saved == ["/out"]
     assert events[-1][0] == "error" and events[-1][1]["resume_blocked"] is True
+
+
+def _adapter_setup_block():
+    """The `continues_adapter = ...` line, the LoRA setup `if` and the wrap after it in _run_mlx_training."""
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    starts = [
+        i
+        for i, node in enumerate(body)
+        if isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == "continues_adapter"
+    ]
+    assert len(starts) == 1, "expected one continues_adapter assignment"
+    return body[starts[0] : starts[0] + 3]
+
+
+def _run_adapter_setup(
+    lora_modules,
+    training_type = "LoRA/QLoRA",
+    modules = (),
+    **config,
+):
+    """Lifts the real adapter setup out of _run_mlx_training, which only runs on Apple Silicon."""
+    block = compile(ast.Module(body = _adapter_setup_block(), type_ignores = []), "<peft>", "exec")
+    events, wraps = [], []
+    model = types.SimpleNamespace(lora_modules = lora_modules, named_modules = lambda: modules)
+
+    def get_peft_model(wrapped, **kwargs):
+        wraps.append(kwargs)
+        return wrapped
+
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": config,
+            "model": model,
+            "training_type": training_type,
+            "is_cpt": _run_mlx_assignment("is_cpt", training_type = training_type),
+            "use_lora": _run_mlx_assignment("use_lora", training_type = training_type),
+            "is_vlm": False,
+            "use_grad_checkpoint": "mlx",
+            "lora_random_state": 3407,
+            "mlx_dora_kwargs": {},
+            "FastMLXModel": types.SimpleNamespace(get_peft_model = get_peft_model),
+            "iter_mlx_lora_modules": lambda m: iter(m.lora_modules),
+            "_send": lambda event_type, **kw: events.append((event_type, kw)),
+        }
+    )
+    exec(block, namespace)
+    return events, wraps
+
+
+@pytest.mark.parametrize("training_type", ["LoRA/QLoRA", "Continued Pretraining"])
+def test_mlx_continued_adapter_is_not_wrapped_again(training_type):
+    events, wraps = _run_adapter_setup(
+        [("layers.0.self_attn.q_proj", object())], training_type = training_type
+    )
+
+    assert wraps == []
+    assert any("Continuing from existing LoRA adapters" in kw["status_message"] for _, kw in events)
+
+
+def test_mlx_base_model_gets_a_fresh_adapter():
+    _, wraps = _run_adapter_setup([], lora_r = 8)
+
+    assert [kwargs["r"] for kwargs in wraps] == [8]
+
+
+def test_mlx_cpt_trains_embedding_modules_in_full():
+    _, wraps = _run_adapter_setup(
+        [],
+        training_type = "Continued Pretraining",
+        target_modules = ["q_proj", "model.embed_tokens", "lm_head"],
+    )
+
+    assert len(wraps) == 1
+    assert wraps[0]["target_modules"] == ["q_proj"]
+    assert wraps[0]["modules_to_save"] == ["embed_tokens", "lm_head"]
+    assert not any(key.startswith("finetune_") for key in wraps[0])
+
+
+def test_mlx_cpt_without_embedding_targets_wraps_the_default_projections():
+    _, wraps = _run_adapter_setup([], training_type = "Continued Pretraining")
+
+    assert wraps[0]["target_modules"] == list(_worker._MLX_DEFAULT_LORA_TARGETS)
+    assert wraps[0]["modules_to_save"] is None
+
+
+def test_trains_embedding_modules_ignores_lora_on_the_head():
+    trains = _worker._trains_embedding_modules
+    assert trains(["model.layers.0.self_attn.q_proj.lora_a", "model.embed_tokens.weight"])
+    assert trains(["model.layers.0.mlp.up_proj.lora_b", "lm_head.weight"])
+    assert not trains(["lm_head.lora_a", "lm_head.lora_b", "model.layers.0.mlp.up_proj.lora_a"])
+
+
+def test_mlx_cpt_embedding_learning_rate_follows_the_cuda_rule(monkeypatch):
+    monkeypatch.setattr(_worker, "logger", types.SimpleNamespace(warning = lambda *_a: None))
+    rate = _worker._mlx_cpt_embedding_learning_rate
+    assert rate(None, 5e-5, trains_embeddings = True) == pytest.approx(5e-6)
+    assert rate(1e-6, 5e-5, trains_embeddings = True) == 1e-6
+    assert rate(1e-6, 5e-5, trains_embeddings = False) is None
+
+
+def _trainer_config_block():
+    """From the MLXTrainingConfig kwargs through the schedule call in _run_mlx_training."""
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    targets = [
+        ast.unparse(node.targets[0]) if isinstance(node, ast.Assign) else "" for node in body
+    ]
+    start = targets.index("mlx_config_kwargs")
+    end = targets.index("(max_steps, eval_steps_val)")
+    return body[start : end + 1]
+
+
+class _UnsizedStream:
+    def __len__(self):
+        raise TypeError("a stream has no length")
+
+
+@pytest.mark.parametrize("embedding_lr_value", [5e-6, None])
+@pytest.mark.parametrize("dataset_streaming", [True, False])
+def test_mlx_trainer_config_follows_streaming_and_embedding_lr(
+    dataset_streaming, embedding_lr_value
+):
+    block = compile(ast.Module(body = _trainer_config_block(), type_ignores = []), "<cfg>", "exec")
+    configs, schedules = [], []
+    namespace = dict(vars(_worker))
+    namespace.update(
+        {
+            "config": {},
+            "dataset": _UnsizedStream() if dataset_streaming else [0] * 7,
+            "dataset_streaming": dataset_streaming,
+            "embedding_lr_value": embedding_lr_value,
+            "training_type": "LoRA/QLoRA",
+            "format_type": "alpaca",
+            "MLXTrainingConfig": type(
+                "MLXTrainingConfig",
+                (),
+                {
+                    "__dataclass_fields__": {"dataset_order": None},
+                    "__init__": lambda self, **kw: configs.append(kw),
+                },
+            ),
+            "MLXTrainer": lambda **kw: kw,
+            "_configure_mlx_training_schedule": lambda *a, **kw: schedules.append(a) or (8, 0),
+            **{
+                name: None
+                for name in (
+                    "model",
+                    "tokenizer",
+                    "eval_dataset",
+                    "eval_steps_value",
+                    "max_grad_leaf_norm",
+                    "requested_max_steps",
+                    "batch_size",
+                    "grad_accum",
+                    "num_epochs",
+                    "warmup_ratio",
+                    "warmup_uses_ratio",
+                    "eval_steps_ratio",
+                    "warmup_steps",
+                    "lr_value",
+                    "lr_scheduler_type",
+                    "optim_name",
+                    "weight_decay",
+                    "max_grad_norm",
+                    "max_grad_value",
+                    "max_seq_length",
+                    "random_seed",
+                    "use_grad_checkpoint",
+                    "output_dir",
+                    "eval_steps_val",
+                )
+            },
+        }
+    )
+    exec(block, namespace)
+
+    assert configs[0]["streaming"] is dataset_streaming
+    assert configs[0]["dataset_order"] == ("sequential" if dataset_streaming else "torch_randperm")
+    assert configs[0].get("embedding_learning_rate") == embedding_lr_value
+    assert schedules[0][2] == (None if dataset_streaming else 7)
+
+
+def test_mlx_slice_reads_a_stream_lazily():
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [n for n in body if isinstance(n, ast.FunctionDef) and n.name == "_slice"]
+    calls = []
+
+    class Stream(_UnsizedStream):
+        def skip(self, n):
+            calls.append(("skip", n))
+            return self
+
+        def take(self, n):
+            calls.append(("take", n))
+            return self
+
+    namespace = {
+        **vars(_worker),
+        "dataset_streaming": True,
+        "slice_start": 2,
+        "slice_end": 4,
+        "mlx_split_names_rows": False,
+    }
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<slice>", "exec"), namespace)
+    namespace["_slice"](Stream())
+
+    # Rows 2..4 inclusive.
+    assert calls == [("skip", 2), ("take", 3)]
+
+
+def _run_mlx_assignment(target, **names):
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [n for n in body if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == target]
+    assert len(nodes) == 1
+    namespace = {**vars(_worker), **names}
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<assign>", "exec"), namespace)
+    return namespace[target]
+
+
+@pytest.mark.parametrize("is_cpt, expected", [(True, "raw"), (False, "alpaca")])
+def test_mlx_cpt_formats_raw_text_whatever_format_was_sent(is_cpt, expected):
+    config = {"format_type": "alpaca"}
+    assert _run_mlx_assignment("format_type", is_cpt = is_cpt, config = config) == expected
+
+
+@pytest.mark.parametrize("is_cpt", [True, False])
+@pytest.mark.parametrize("flag", ["is_dataset_image", "is_dataset_audio"])
+def test_mlx_cpt_reads_a_multimodal_dataset_as_text(is_cpt, flag):
+    assert _run_mlx_assignment(flag, is_cpt = is_cpt, config = {flag: True}) is not is_cpt
+
+
+@pytest.mark.parametrize("format_type", ["raw", "auto"])
+def test_mlx_raw_format_reads_an_audio_dataset_as_text(format_type):
+    config = {"is_dataset_audio": True, "format_type": format_type}
+    is_audio = _run_mlx_assignment("is_dataset_audio", is_cpt = False, config = config)
+    assert is_audio is (format_type != "raw")
+
+
+def test_mlx_cpt_embedding_lr_reaches_heads_zoo_resolved():
+    model = types.SimpleNamespace(
+        trainable_parameters = lambda: {"model.tok_embeddings.weight": None},
+        _unsloth_cpt_full_module_weight_keys = {"model.tok_embeddings.weight"},
+    )
+    rate = _run_mlx_assignment(
+        "embedding_lr_value",
+        is_cpt = True,
+        config = {},
+        lr_value = 5e-5,
+        model = model,
+        tree_flatten = lambda tree: list(tree.items()),
+    )
+    assert rate == pytest.approx(5e-6)
+
+
+def _mlx_body_if(test_source):
+    body = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training))).body[0].body
+    nodes = [
+        n
+        for n in ast.walk(ast.Module(body = body, type_ignores = []))
+        if isinstance(n, ast.If) and ast.unparse(n.test) == test_source
+    ]
+    assert len(nodes) == 1
+    return compile(ast.Module(body = nodes, type_ignores = []), "<if>", "exec")
+
+
+@pytest.mark.parametrize("is_vlm", [True, False])
+def test_mlx_audio_dataset_needs_an_audio_vlm(is_vlm):
+    block = _mlx_body_if("is_dataset_audio and (not is_vlm)")
+    namespace = {**vars(_worker), "is_dataset_audio": True, "is_vlm": is_vlm}
+    if is_vlm:
+        exec(block, namespace)
+    else:
+        with pytest.raises(ValueError, match = "audio-input model"):
+            exec(block, namespace)
+
+
+@pytest.mark.parametrize("image_col", [None, "image"])
+def test_mlx_audio_dataset_formats_both_splits_as_audio_rows(image_col):
+    formatted, adapted = [], []
+    namespace = {
+        **vars(_worker),
+        "is_dataset_audio": True,
+        "is_vlm": True,
+        "dataset": "train",
+        "eval_dataset": "eval",
+        "tokenizer": "processor",
+        "custom_format_mapping": None,
+        "_send": lambda *_a, **_kw: None,
+        "vision_image_size": None,
+        "_mlx_audio_rows": lambda ds, processor, mapping, *column: formatted.append((ds, *column))
+        or ([ds], image_col),
+        "_adapt_for_mlx_vlm": lambda rows, **_kw: adapted.append(rows) or [*rows, "lifted"],
+        "format_and_template_dataset": lambda *_a, **_kw: pytest.fail(
+            "audio skips the VLM formatter"
+        ),
+    }
+    exec(_mlx_body_if("is_dataset_audio"), namespace)
+
+    # The eval split takes the train split's image column, and only a split with images is lifted.
+    assert formatted == [("train",), ("eval", image_col)]
+    assert adapted == ([] if image_col is None else [["train"], ["eval"]])
+    suffix = [] if image_col is None else ["lifted"]
+    assert namespace["dataset"] == ["train", *suffix]
+    assert namespace["eval_dataset"] == ["eval", *suffix]
+
+
+@pytest.mark.parametrize("audio", [True, False])
+def test_mlx_audio_request_installs_the_decoder(monkeypatch, audio):
+    # A CPT or raw-format run masks is_dataset_audio but still reads rows with an Audio column.
+    from utils.datasets import audio_decode
+
+    calls = []
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: calls.append(1) or True)
+    exec(_mlx_body_if("config.get('is_dataset_audio')"), {"config": {"is_dataset_audio": audio}})
+
+    assert calls == ([1] if audio else [])
+
+
+class _AudioRowsDataset:
+    def __init__(self, rows):
+        self.rows, self.cast = rows, None
+        self.column_names = list(rows[0])
+        self.features = {}
+
+    def cast_column(self, column, feature):
+        if not hasattr(feature, "sampling_rate"):
+            return self
+        # A real cast returns a new dataset decoding at the target rate.
+        rate = feature.sampling_rate
+        cast = _AudioRowsDataset(
+            [{**row, column: {**row[column], "sampling_rate": rate}} for row in self.rows]
+        )
+        cast.cast = (column, rate)
+        return cast
+
+    def __iter__(self):
+        return iter(self.rows)
+
+
+def test_mlx_audio_rows_keep_the_decoded_clip(monkeypatch):
+    from utils.datasets import audio_decode
+
+    decoders = [True]
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: decoders[0])
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.audio_extractor_sampling_rate = lambda processor: {"processor": 24000}.get(processor)
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", zoo_utils)
+    clips = [{"array": [0.1], "sampling_rate": 8000}, {"array": [0.2], "sampling_rate": 8000}]
+    dataset = _AudioRowsDataset([{"audio": clip, "text": t} for clip, t in zip(clips, "ab")])
+
+    rows, image_col = _worker._mlx_audio_rows(dataset, "processor")
+
+    assert image_col is None
+    assert [row["messages"][1]["content"][0]["audio"] for row in rows] == [
+        {"array": [0.1], "sampling_rate": 24000},
+        {"array": [0.2], "sampling_rate": 24000},
+    ]
+    unknown_rate, _ = _worker._mlx_audio_rows(dataset, "unknown")
+    assert unknown_rate[0]["messages"][1]["content"][0]["audio"]["sampling_rate"] == 16000
+    assert [row["messages"][2]["content"][0]["text"] for row in rows] == ["a", "b"]
+    with pytest.raises(ValueError, match = "'audio' and 'text'"):
+        _worker._mlx_audio_rows(_AudioRowsDataset([{"audio": clips[0], "x": 1}]), "processor")
+    decoders[0] = False
+    with pytest.raises(RuntimeError, match = "audio runtime"):
+        _worker._mlx_audio_rows(dataset, "processor")
+
+
+def test_mlx_audio_rows_carry_each_rows_images(monkeypatch):
+    from PIL import Image
+
+    from utils.datasets import audio_decode
+
+    monkeypatch.setattr(audio_decode, "ensure_audio_decoding", lambda: True)
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.audio_extractor_sampling_rate = lambda processor: 16000
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.utils", zoo_utils)
+    red, blue = Image.new("RGB", (4, 4), "red"), Image.new("RGB", (4, 4), "blue")
+    clip = {"array": [0.1], "sampling_rate": 16000}
+    dataset = _AudioRowsDataset(
+        [
+            {"audio": clip, "photo": [red, blue], "text": "a"},
+            {"audio": clip, "photo": [None], "text": "b"},
+        ]
+    )
+
+    rows, image_col = _worker._mlx_audio_rows(dataset, "processor")
+
+    assert image_col == "photo"
+    assert rows[0]["images"] == [red, blue] and "images" not in rows[1]
+    kinds = [[part["type"] for part in row["messages"][1]["content"]] for row in rows]
+    assert kinds == [["image", "image", "audio", "text"], ["audio", "text"]]
+    # An eval split whose train split had no images trains on audio alone.
+    eval_rows, eval_image_col = _worker._mlx_audio_rows(dataset, "processor", None, None)
+    assert eval_image_col is None and "images" not in eval_rows[0]
+
+
+@pytest.mark.parametrize("is_dataset_audio", [True, False])
+def test_mlx_audio_dataset_loads_and_trains_as_a_vlm(is_dataset_audio):
+    names = {"is_dataset_image": False, "is_dataset_audio": is_dataset_audio}
+    model = types.SimpleNamespace(_is_vlm_model = True)
+    assert _run_mlx_assignment("is_vlm", model = model, **names) is is_dataset_audio
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    text_only = {
+        ast.unparse(kw.value)
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        for kw in n.keywords
+        if kw.arg == "text_only"
+    }
+    assert len(text_only) == 1
+    assert eval(text_only.pop(), names) is (None if is_dataset_audio else True)
+
+
+@pytest.mark.parametrize(
+    "is_dataset_image, is_dataset_audio, expected",
+    [(True, False, True), (False, True, False), (True, True, True)],
+)
+def test_mlx_vision_layers_train_only_on_image_rows(is_dataset_image, is_dataset_audio, expected):
+    tree = ast.parse(textwrap.dedent(inspect.getsource(_worker._run_mlx_training)))
+    nodes = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Assign) and ast.unparse(n.targets[0]) == "finetune_vision"
+    ]
+    assert len(nodes) == 1
+    namespace = {
+        "config": {"finetune_vision_layers": True},
+        "is_vlm": True,
+        "is_dataset_image": is_dataset_image,
+        "is_dataset_audio": is_dataset_audio,
+    }
+    exec(compile(ast.Module(body = nodes, type_ignores = []), "<vision>", "exec"), namespace)
+    assert namespace["finetune_vision"] is expected
+
+
+class _Module:
+    def __init__(
+        self,
+        quantized = False,
+        children = (),
+    ):
+        if quantized:
+            self.scales = object()
+        self._children = list(children)
+
+    def named_modules(self):
+        yield "", self
+        for name, child in self._children:
+            for sub, module in child.named_modules():
+                yield f"{name}.{sub}" if sub else name, module
+
+
+def test_mlx_cpt_leaves_quantized_embeddings_frozen_with_a_warning():
+    modules = [
+        ("model.embed_tokens", _Module(quantized = True)),
+        ("lm_head", _Module(children = [("linear", _Module(quantized = True))])),
+    ]
+    events, wraps = _run_adapter_setup(
+        [],
+        training_type = "Continued Pretraining",
+        modules = modules,
+        target_modules = ["q_proj", "embed_tokens", "lm_head"],
+    )
+
+    assert wraps[0]["target_modules"] == ["q_proj"]
+    assert wraps[0]["modules_to_save"] is None
+    warnings = [kw["message"] for kind, kw in events if kind == "warning"]
+    assert len(warnings) == 1 and "embed_tokens and lm_head" in warnings[0]
+
+
+def test_mlx_cpt_trains_unquantized_embeddings_in_full():
+    modules = [("model.embed_tokens", _Module()), ("lm_head", _Module())]
+    events, wraps = _run_adapter_setup(
+        [],
+        training_type = "Continued Pretraining",
+        modules = modules,
+        target_modules = ["q_proj", "embed_tokens", "lm_head"],
+    )
+
+    assert wraps[0]["modules_to_save"] == ["embed_tokens", "lm_head"]
+    assert not [kw for kind, kw in events if kind == "warning"]
+
+
+def test_mlx_cpt_drops_a_tied_head_with_its_quantized_embedding():
+    quantized = _Module(quantized = True)
+    assert _worker._mlx_quantized_cpt_modules(
+        types.SimpleNamespace(named_modules = lambda: [("model.embed_tokens", quantized)]),
+        {"embed_tokens", "lm_head"},
+    ) == {"embed_tokens", "lm_head"}

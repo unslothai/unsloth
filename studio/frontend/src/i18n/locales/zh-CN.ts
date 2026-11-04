@@ -3854,8 +3854,6 @@ export const zhCN = {
             "Embedding 模型不支持流式传输（训练需要完整数据集）。",
           imageDataset: "此数据集似乎包含图像，无法进行流式传输。",
           audioDataset: "此数据集似乎包含音频，无法进行流式传输。",
-          appleSilicon:
-            "Apple Silicon（MLX）暂不支持流式传输。",
         },
         options: {
           trainOnCompletions: "仅助手回复",
