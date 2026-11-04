@@ -665,6 +665,8 @@ def run_hires(
         seeds = list(base.get("seeds") or [base["seed"]] * len(images))
         prompts = kwargs.get("prompts") or None
         refined: list[Any] = []
+        # Where each pass ran its denoiser: a larger refine can stream where the base stayed resident.
+        placements = {base.get("denoiser_offload")}
         upscale_s = 0.0
         refine_s = 0.0
         upscale_info: dict = {}
@@ -750,11 +752,14 @@ def run_hires(
                     f"Hires fix refine pass at {target[0]}x{target[1]}: {exc}"
                 ) from exc
             refined.extend(out["images"])
+            placements.add(out.get("denoiser_offload"))
             refine_s += time.perf_counter() - t_ref
             if out.get("negative_prompt") and not refine_negative:
                 refine_negative = out["negative_prompt"]
     result = dict(base)
     result["images"] = refined
+    # One field describes the whole image: omitted when the base and a refine pass ran placed differently.
+    result["denoiser_offload"] = placements.pop() if len(placements) == 1 else None
     if refine_negative and not result.get("negative_prompt"):
         # Hires CFG engaged a negative the base pass's guidance left off; the recipe must still carry it.
         result["negative_prompt"] = refine_negative

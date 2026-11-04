@@ -14540,3 +14540,58 @@ def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
     assert dropped == [pipe]
     backend._apply_loras(_quant_lora_state(pipe), [], ev)
     assert dropped == [pipe, pipe]
+
+
+class _PinProbePipe(_FakePipe):
+    """Enters the denoise loop like diffusers (progress_bar), and runs out of memory on its first attempt."""
+
+    def __init__(self, fail_first: bool) -> None:
+        super().__init__()
+        self.attempts = 0
+        self.fail_first = fail_first
+
+    def progress_bar(self, *args, **kwargs):
+        return contextlib.nullcontext()
+
+    def __call__(self, **kwargs):
+        self.progress_bar(total = 1)
+        self.attempts += 1
+        if self.fail_first and self.attempts == 1:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        return super().__call__(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "pins, expected",
+    [
+        # the 2-image attempt cannot pin and runs out of memory; both 1-image retries run whole
+        ([False, True, True], "resident"),
+        # a retry that cannot pin streams, so the generation did not run whole
+        ([False, True, False], "streamed"),
+    ],
+)
+def test_saved_placement_counts_only_chunks_that_finished(
+    fake_runtime, tmp_path, monkeypatch, pins, expected
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _PinProbePipe(fail_first = True)
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    outcomes = list(pins)
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: (1.0, 2.0, 64))
+    monkeypatch.setattr(
+        diffusion,
+        "pin_denoiser_for_call",
+        lambda *a, **kw: (lambda: None) if outcomes.pop(0) else None,
+    )
+    # the load's own placement, which a generation that ran whole overrides
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: "streamed")
+
+    out = backend.generate(prompt = "p", steps = 4, batch_size = 2)
+
+    assert pipe.attempts == 3 and not outcomes
+    assert len(out["images"]) == 2
+    assert out["denoiser_offload"] == expected

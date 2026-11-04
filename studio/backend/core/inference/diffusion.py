@@ -14446,7 +14446,7 @@ class DiffusionBackend:
                         )
                         whole_tier = None
                 whole_release: list = []
-                # per chunk that reached the denoiser under a whole-tier pricing: whether the pin engaged
+                # per finished chunk under a whole-tier pricing: whether it ran with the denoiser pinned
                 whole_pinned: list[bool] = []
 
                 def _release_whole_denoiser() -> None:
@@ -14523,8 +14523,10 @@ class DiffusionBackend:
                         protect_ctx = protect_generation(pipe, denoise_steps, logger = logger)
                         # Per chunk: a later chunk encodes again after an earlier one decoded.
                         gen.phase = "encode"
+                        # recorded only once this chunk succeeds: an OOM attempt is split and retried
+                        chunk_whole = [False]
 
-                        def _enter_denoise_phase(gen = gen) -> None:
+                        def _enter_denoise_phase(gen = gen, chunk_whole = chunk_whole) -> None:
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
@@ -14538,7 +14540,7 @@ class DiffusionBackend:
                                     activation_mib = whole_tier[2],
                                     logger = logger,
                                 )
-                                whole_pinned.append(release is not None)
+                                chunk_whole[0] = release is not None
                                 if release is not None:
                                     whole_release.append(release)
                                     logger.info(
@@ -14663,6 +14665,8 @@ class DiffusionBackend:
                             images.extend(out)
                             per_image_seeds.extend(s for _, s in chunk)
                         chunk_shapes.append(len(chunk))
+                        if whole_tier is not None:
+                            whole_pinned.append(chunk_whole[0])
                         steps_done[0] += progress_steps
                 except BaseException:
                     if previewer is not None:
