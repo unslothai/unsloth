@@ -430,3 +430,21 @@ def test_a_build_with_a_late_family_probe_is_retried_sooner(env, monkeypatch):
     clock[0] += catalog._DEGRADED_TTL_SECONDS + 1
     catalog.audio_catalog_payload()
     assert env["calls"]["hub"] == hub_calls + 1
+
+
+def test_a_package_row_is_sized_by_every_file_it_loads():
+    # YuE2 loads its model GGUF with the VAE and sidecars, so the row and its estimate count them.
+    sizes = {
+        "sidecars/yue2-model-config.json": 1_000,
+        "sidecars/yue2-generation-config.json": 1_000,
+        "sidecars/yue2-qwen.tiktoken": 2_000_000,
+        "sidecars/yue2-vae-config.json": 1_000,
+        "yue2-3b-q8_0.gguf": 4_264_195_616,
+        "yue2-3b-q4_0.gguf": 2_666_000_000,
+        "yue2-vae-f16.gguf": 265_000_000,
+    }
+    files = [RepoFile(path, size) for path, size in sizes.items()]
+    package = {"id": "q8", "format": "gguf", "default": True, "files": ["yue2-3b-q8_0.gguf"]}
+    repo = "audio-cpp/Yue2-3B-GGUF"
+    row = catalog._row(repo, repo, "", "yue2", {"packages": [package]}, files)
+    assert row.size_bytes == sum(size for path, size in sizes.items() if "q4_0" not in path)

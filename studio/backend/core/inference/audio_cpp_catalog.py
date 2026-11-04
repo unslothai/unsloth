@@ -306,6 +306,17 @@ def _row(
                 reason = reason or _NOT_AUDIO_CPP
             wanted = set(recommended_gguf_files(spec or None))
             picked = [f for f in files if Path(f.path).name in wanted]
+            if picked and policy.package:
+                # A package loads and downloads every file it lists (YuE2's VAE and sidecars too).
+                package = next(
+                    (
+                        v
+                        for v in acm._package_variants(policy, files, folder)
+                        if any(f in v.files for f in picked)
+                    ),
+                    None,
+                )
+                picked = list(package.files) if package is not None else picked
             variant = None if picked else _ranked(files, folder, policy)
             size = sum(f.size for f in picked) if picked else (variant and variant.size_bytes)
         except Exception as exc:  # noqa: BLE001 - a malformed spec refuses its row, not the list
