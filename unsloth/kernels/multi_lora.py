@@ -507,13 +507,15 @@ class MultiLoRA_W(torch.autograd.Function):
         if dY.dtype != dtype:
             dY = dY.to(dtype)
         U, R, _ = A.shape
+        # dH = dY @ B_u stays unscaled: scale_u is applied in fp32 inside the dA and dX kernels, as
+        # single LoRA does, so a large dY times scale_u cannot overflow the fp16 / bf16 dH store.
         dH = torch.empty(X.shape[0], R, dtype = dtype, device = X.device)
         _seg_mm(
-            dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, scales, False, True, False
+            dY, B, (B.stride(0), B.stride(1), B.stride(2)), R, dH, batch, None, False, True, False
         )
         dA = torch.empty(A.shape, dtype = torch.float32, device = X.device)
         dB = torch.empty(B.shape, dtype = torch.float32, device = X.device)
-        _seg_wgrad(dH, X, dA, batch, None, True, False)
+        _seg_wgrad(dH, X, dA, batch, scales, True, False)
         _seg_wgrad(dY, H, dB, batch, scales, False, True)
         W = fast_dequantize(W.t(), W_quant, dtype = dtype).to(dtype)
         dX = dY @ W.t()
@@ -525,7 +527,7 @@ class MultiLoRA_W(torch.autograd.Function):
             A.shape[2],
             dX,
             batch,
-            None,
+            scales,
             True,
             False,
             True,
