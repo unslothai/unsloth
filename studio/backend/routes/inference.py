@@ -30200,8 +30200,7 @@ def _consume_chat_template_reasoning_kwargs(payload) -> None:
 
 
 def _extra_chat_template_kwargs(payload) -> Optional[dict]:
-    """The caller's other ``chat_template_kwargs`` (e.g. a model's ``verification`` tag), forwarded
-    to llama-server as sent; the reasoning keys go through the typed fields instead (#16545)."""
+    """Non-reasoning ``chat_template_kwargs`` (e.g. ``verification``), forwarded to llama-server as sent (#16545)."""
     extra = getattr(payload, "model_extra", None)
     template_kwargs = extra.get("chat_template_kwargs") if isinstance(extra, dict) else None
     if not isinstance(template_kwargs, dict):
