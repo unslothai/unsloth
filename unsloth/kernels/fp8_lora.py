@@ -59,6 +59,7 @@ def reset_fp8_lora_stats():
 
 def _count(key):
     # Counts eager calls only: a traced increment mutates a guarded global and recompiles every call.
+    # The fp8 GEMM ops stay opaque under compile, so their own counts still run.
     if not _compiling():
         FP8_LORA_STATS[key] += 1
 
