@@ -71,7 +71,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _gn_partials(
         x_ptr, bias_ptr, pn_ptr, pmean_ptr, pm2_ptr,
         T, HW, W, n_chunks, sb, sc, st, sh, sw,
-        C: tl.constexpr, G: tl.constexpr, CPG: tl.constexpr, BLOCK_P: tl.constexpr, HAS_BIAS: tl.constexpr
+        C: tl.constexpr, G: tl.constexpr, CPG: tl.constexpr, BLOCK_P: tl.constexpr, HAS_BIAS: tl.constexpr  # C channels, G groupnorm groups, CPG channels per group, BLOCK_P pixels per program, HAS_BIAS bias present
     ):  # fmt: skip
         chunk = tl.program_id(0)
         bt = tl.program_id(1)
@@ -106,7 +106,15 @@ def _kernels() -> Optional[types.SimpleNamespace]:
 
     @triton.jit
     def _gn_combine(
-        pn_ptr, pmean_ptr, pm2_ptr, mean_ptr, rstd_ptr, n_chunks, G, eps, BLOCK: tl.constexpr
+        pn_ptr,
+        pmean_ptr,
+        pm2_ptr,
+        mean_ptr,
+        rstd_ptr,
+        n_chunks,
+        G,
+        eps,
+        BLOCK: tl.constexpr,  # block size
     ):
         row = tl.program_id(0)
         g = row % G
@@ -138,7 +146,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _gn_apply(
         x_ptr, out_ptr, mean_ptr, rstd_ptr, w_ptr, b_ptr, ib_ptr,
         C, T, HW, W, G, sb, sc, st, sh, sw,
-        CPG: tl.constexpr, ACT: tl.constexpr, HAS_IN_BIAS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        CPG: tl.constexpr, ACT: tl.constexpr, HAS_IN_BIAS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # CPG channels per group, ACT apply silu, HAS_IN_BIAS input bias present, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -179,8 +187,8 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         x_ptr, out_ptr, w_ptr, b_ptr, ib_ptr, cache_ptr,
         C, T, H, W, Ho, Wo, ph, pw, To, front, n_cache, scale, eps,
         sb, sc, st, sh, sw, cb, cc, ct, ch, cw,
-        NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,
-        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        NORM: tl.constexpr, ACT: tl.constexpr, HAS_BIAS: tl.constexpr, HAS_IN_BIAS: tl.constexpr,  # NORM apply rms norm, ACT apply silu, HAS_BIAS bias present, HAS_IN_BIAS input bias present
+        REPLICATE: tl.constexpr, MEAN_SQ: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # REPLICATE replicate temporal padding, MEAN_SQ mean-square rms form, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -252,7 +260,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_bias_residual"])
     def _bias_residual(
         o_ptr, ob_ptr, r_ptr, rb_ptr, P, C, T, HW, W, sb, sc, st, sh, sw, inv_scale,
-        HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        HAS_OB: tl.constexpr, HAS_RB: tl.constexpr, SCALE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # HAS_OB output bias present, HAS_RB residual bias present, SCALE output scale != 1, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         p = tl.program_id(0) * BLOCK_P + tl.arange(0, BLOCK_P)
         c = tl.program_id(1) * BLOCK_C + tl.arange(0, BLOCK_C)
@@ -285,7 +293,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         h_ptr, hb_ptr, x_ptr, out_ptr,
         c, Cin, F, H, W, Fo, rep,
         hsb, hsc, hst, hsh, hsw, xsb, xsc, xst, xsh, xsw,
-        TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        TEMPORAL: tl.constexpr, HAS_HB: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # TEMPORAL temporal upsample, HAS_HB conv bias present, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bf = tl.program_id(1)
@@ -338,7 +346,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(out_ptr + o_off, (v + xv).to(out_ptr.dtype.element_ty), mask = m)
 
     @triton.jit
-    def _softmax_rows(s_ptr, p_ptr, S, P_STRIDE, scale, BLOCK: tl.constexpr):
+    def _softmax_rows(s_ptr, p_ptr, S, P_STRIDE, scale, BLOCK: tl.constexpr):  # block size
         row = tl.program_id(0).to(tl.int64)
         base = s_ptr + row * P_STRIDE
         m = tl.full([BLOCK], float("-inf"), tl.float32)
@@ -365,7 +373,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     def _dup_up_add(
         o_ptr, x_ptr, C, T_o, H_o, W_o, t_off, repeats,
         osb, osc, ost, osh, osw, xsb, xsc, xst, xsh, xsw,
-        FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        FT: tl.constexpr, FS: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # FT temporal upsample factor, FS spatial upsample factor, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         pid_p = tl.program_id(0)
         bt = tl.program_id(1)
@@ -399,7 +407,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     @triton.jit(do_not_specialize = _SHAPE_ARGS["_up_nearest2x"])
     def _up_nearest2x(
         x_ptr, out_ptr, C, T_o, H, W, xsb, xsc, xst, xsh, xsw,
-        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr
+        INTERLEAVE: tl.constexpr, BLOCK_P: tl.constexpr, BLOCK_C: tl.constexpr  # INTERLEAVE wan time_conv channel interleave, BLOCK_P pixels per program, BLOCK_C channels per program
     ):  # fmt: skip
         # INTERLEAVE: x is Wan time_conv output (B, 2C, T_o/2, H, W); frame 2t+j takes channels [jC, (j+1)C).
         pid_p = tl.program_id(0)
