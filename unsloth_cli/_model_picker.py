@@ -9,9 +9,11 @@ import typer
 
 
 def _is_gguf_entry(entry) -> bool:
-    # Downloaded GGUFs resolve to a .gguf file (or keep a *-GGUF repo id when that fails); local
-    # folders and exports say so in detail. A miss here is still refused by the agent's GGUF check.
-    return "gguf" in entry.model.lower() or "gguf" in entry.detail.lower()
+    # Downloaded GGUFs resolve to a .gguf file (or keep a *-GGUF repo id when that fails); GGUF
+    # exports and local folders carry exactly "gguf" as detail. Not a substring match: a path or
+    # dataset title containing "gguf" would list a model the agent then loads and refuses.
+    model = entry.model.lower().rstrip("/")
+    return model.endswith((".gguf", "-gguf")) or entry.detail.lower() == "gguf"
 
 
 def quiet_inventory_logs() -> None:

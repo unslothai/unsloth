@@ -36,7 +36,11 @@ def picker(monkeypatch):
         return state["answers"].pop(0)
 
     monkeypatch.setattr(cat, "list_chat_models", list_chat_models)
-    monkeypatch.setattr(start, "ensure_studio_backend_path", lambda: None)
+
+    def ensure_studio_backend_path(**kwargs):
+        state.setdefault("ensure_calls", []).append(kwargs)
+
+    monkeypatch.setattr(start, "ensure_studio_backend_path", ensure_studio_backend_path)
     # structlog.configure is process-wide; the other tests must keep their own log level.
     monkeypatch.setattr(model_picker, "quiet_inventory_logs", lambda: None)
     monkeypatch.setattr(start, "_can_ask_for_model", lambda: True)
@@ -88,6 +92,8 @@ def test_idle_server_loads_the_picked_model(fake_studio, picker, monkeypatch):
     assert picker["prompts"] == ["Load [1-3, Enter = 1]: "]
     assert _loads(fake_studio) == [{"model_path": GGUF}]
     assert f"model {GGUF}" in result.output
+    # Seeding would pin Unsloth's caches into the agent's env and an auto-started server's.
+    assert picker["ensure_calls"] == [{"seed_cache_env": False}]
 
 
 def test_enter_picks_the_first_model_and_bad_input_asks_again(fake_studio, picker, monkeypatch):
@@ -244,3 +250,19 @@ def test_asks_only_with_a_terminal_on_both_ends(monkeypatch, stdin_tty, stdout_t
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: stdin_tty))
     monkeypatch.setattr(start.sys, "stdout", SimpleNamespace(isatty = lambda: stdout_tty))
     assert start._can_ask_for_model() is expected
+
+
+@pytest.mark.parametrize(
+    "model, detail, expected",
+    [
+        pytest.param(GGUF, "Q4_K_M", True, id = "downloaded-file"),
+        pytest.param("unsloth/Qwen3-1.7B-GGUF", "Q4_K_M", True, id = "downloaded-repo-fallback"),
+        pytest.param("/exports/my-gguf-export", "gguf", True, id = "gguf-export-folder"),
+        pytest.param("/models/gguf-tests/llama-hf", "", False, id = "gguf-only-in-parent-dir"),
+        pytest.param("/outputs/run", "lora · gguf-chats · Oct 30", False, id = "gguf-in-dataset"),
+        pytest.param("unsloth/gemma-3-270m-it", "", False, id = "safetensors-repo"),
+    ],
+)
+def test_gguf_filter_matches_gguf_rows_only(model, detail, expected):
+    entry = cat.ModelEntry("Downloaded", "name", detail, model)
+    assert model_picker._is_gguf_entry(entry) is expected

@@ -4998,7 +4998,8 @@ def _ask_for_local_model(gguf_only: bool, reason: str) -> str:
     """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
     from rich.console import Console
 
-    ensure_studio_backend_path()
+    # No cache seeding: its pins would reach the agent and an auto-started server as if user-set, and the catalog resolves the cache without them.
+    ensure_studio_backend_path(seed_cache_env = False)
     from unsloth_cli._model_picker import pick_gguf_model, pick_local_model, quiet_inventory_logs
 
     quiet_inventory_logs()
