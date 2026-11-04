@@ -228,3 +228,155 @@ def test_batch_split_skips_are_recorded_and_stay_exact():
     router, _ = _router(model)
     _flux_loop(model, 2, 3, controlnet_block_samples = torch.ones(1))
     assert "unknown inputs" in router.stats["batch_split_skip"]
+
+
+# --- LoRA weight-only change: mirror the scales onto the replica instead of dropping it ---------------------------
+
+
+class _Pipe:
+    pass
+
+
+def _lora_model(seed = 0):
+    peft = pytest.importorskip("peft")
+    torch.manual_seed(seed)
+    model = FluxTransformer2DModel()
+    cfg = peft.LoraConfig(r = 4, lora_alpha = 4, target_modules = ["x", "t"], init_lora_weights = False)
+    peft.inject_adapter_in_model(cfg, model, adapter_name = "style")
+    return model
+
+
+def _set_scale(model, scale):
+    from peft.tuners.lora import LoraLayer
+
+    for mod in model.modules():
+        if isinstance(mod, LoraLayer):
+            mod.set_scale("style", scale)
+
+
+def _one_call(model):
+    g = torch.Generator().manual_seed(9)
+    x = torch.randn(2, 16, 8, generator = g)
+    return model(
+        hidden_states = x, encoder_hidden_states = torch.randn(2, 7, 6, generator = g),
+        pooled_projections = torch.randn(2, 12, generator = g), timestep = torch.ones(2), img_ids = torch.zeros(16, 3),
+        txt_ids = torch.zeros(7, 3), guidance = torch.ones(2), return_dict = False,
+    )[0]
+
+
+def test_weight_only_lora_change_mirrors_scales_onto_the_replica_bitwise():
+    model = _lora_model()
+    router, built = _router(model)
+    pipe = _Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    try:
+        router._build_replica()
+        replica = router.replica
+        assert replica is not None
+        _set_scale(model, 0.5)
+        assert mg.mirror_cfg_replica_adapter_scales(pipe)
+        assert router.replica is replica and router.stats["replica_rebuilds"] == 0
+        with torch.no_grad():
+            src = router.orig_forward(
+                hidden_states = torch.ones(2, 16, 8), encoder_hidden_states = torch.ones(2, 7, 6),
+                pooled_projections = torch.ones(2, 12), timestep = torch.ones(2), img_ids = torch.zeros(16, 3),
+                txt_ids = torch.zeros(7, 3), guidance = torch.ones(2), return_dict = False,
+            )[0]
+            rep = replica(
+                hidden_states = torch.ones(2, 16, 8), encoder_hidden_states = torch.ones(2, 7, 6),
+                pooled_projections = torch.ones(2, 12), timestep = torch.ones(2), img_ids = torch.zeros(16, 3),
+                txt_ids = torch.zeros(7, 3), guidance = torch.ones(2), return_dict = False,
+            )[0]
+        assert torch.equal(src, rep)
+        fresh = _lora_model()
+        _set_scale(fresh, 0.5)
+        with torch.no_grad():
+            assert torch.equal(_one_call(fresh), _one_call(router.replica))
+    finally:
+        mg._CFG_ROUTERS.pop(pipe, None)
+
+
+def test_a_changed_adapter_set_is_not_mirrored():
+    peft = pytest.importorskip("peft")
+    model = _lora_model()
+    router, _ = _router(model)
+    pipe = _Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    try:
+        router._build_replica()
+        cfg = peft.LoraConfig(r = 4, lora_alpha = 4, target_modules = ["x"], init_lora_weights = False)
+        peft.inject_adapter_in_model(cfg, model, adapter_name = "second")
+        assert not mg.mirror_cfg_replica_adapter_scales(pipe)
+        assert not mg.mirror_cfg_replica_adapter_scales(_Pipe())  # no router: nothing to mirror
+    finally:
+        mg._CFG_ROUTERS.pop(pipe, None)
+
+
+# --- replica failure at render time: CFG batching takes over from the next render --------------------------------
+
+
+def _cfg_steps(model, steps = 3):
+    g = torch.Generator().manual_seed(4)
+    latents = torch.randn(1, 16, 8, generator = g)
+    kw = dict(
+        encoder_hidden_states = torch.randn(1, 7, 6, generator = g), pooled_projections = torch.randn(1, 12, generator = g),
+        img_ids = torch.zeros(16, 3), txt_ids = torch.zeros(7, 3), guidance = torch.ones(1), return_dict = False,
+    )
+    for i in range(steps):
+        t = torch.full((1,), 1.0 - i / steps)
+        c = model(hidden_states = latents, timestep = t, **kw)[0]
+        u = model(hidden_states = latents, timestep = t, **kw)[0]
+        latents = latents - 0.1 * (u + 4.0 * (c - u))
+    return latents
+
+
+def test_render_time_replica_failure_hands_over_to_cfg_batching_between_renders():
+    torch.manual_seed(0)
+    ref = _cfg_steps(FluxTransformer2DModel())
+    torch.manual_seed(0)
+    model = FluxTransformer2DModel()
+
+    def boom():
+        raise RuntimeError("out of memory on cuda:1")
+
+    router = mg.CfgParallelRouter(model, primary = "cpu", secondary = "cpu", replica_factory = boom)
+    model.forward = router
+    pipe = _Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    calls = []
+    assert mg.set_cfg_parallel_fallback(pipe, lambda: calls.append("cfg_batch") or None)
+    out = _cfg_steps(model)
+    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-6)  # the failing render finishes on the source
+    assert router.disabled_reason.startswith("replica unavailable")
+    assert calls == []  # never swapped inside a render
+    mg.end_cfg_render(pipe)
+    assert calls == ["cfg_batch"]
+    assert pipe not in mg._CFG_ROUTERS and "forward" not in model.__dict__  # router gone, cfg_batch can wrap it
+    mg.end_cfg_render(pipe)
+    assert calls == ["cfg_batch"]  # once
+
+
+def test_no_fallback_without_a_failure_and_none_registered():
+    torch.manual_seed(0)
+    model = FluxTransformer2DModel()
+    router, _ = _router(model)
+    pipe = _Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    calls = []
+    mg.set_cfg_parallel_fallback(pipe, lambda: calls.append(1))
+    _cfg_steps(model)
+    mg.end_cfg_render(pipe)
+    assert calls == [] and mg._CFG_ROUTERS.get(pipe) is router
+    mg._CFG_ROUTERS.pop(pipe, None)
+    assert not mg.set_cfg_parallel_fallback(_Pipe(), lambda: None)
+
+
+def test_weight_only_lora_path_mirrors_before_it_would_drop_the_replica():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion)
+    branch = src.split("if _lora_weights_only_change(")[1].split("# Read before loading")[0]
+    assert "mirror_cfg_replica_adapter_scales(pipe, logger)" in branch
+    assert branch.index("mirror_cfg_replica_adapter_scales") < branch.index("invalidate_cfg_replica")

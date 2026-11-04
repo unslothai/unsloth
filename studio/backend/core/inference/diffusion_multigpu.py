@@ -2586,8 +2586,10 @@ class CfgParallelRouter:
     def disable(self, reason: str) -> None:
         if self.disabled_reason is None:
             self.disabled_reason = reason
-            if reason.startswith("replica "):
+            if reason.startswith("replica ") or "no longer idle" in reason or "carries hooks" in reason:
                 self.stats["replica_failures"] += 1
+                # the load's CFG batching lever takes over after this render (end_cfg_render), not unbatched branches
+                self.fallback_pending = getattr(self, "fallback", None) is not None
             if self.logger is not None:
                 self.logger.warning(
                     "diffusion.multigpu: CFG-parallel disabled (%s); one card from here", reason
@@ -3565,6 +3567,45 @@ def invalidate_cfg_replica(
     return True
 
 
+_ADAPTER_SCALE_ATTRS = ("scaling", "_active_adapter", "_disable_adapters")
+
+
+def mirror_cfg_replica_adapter_scales(pipe: Any, logger: Any = None) -> bool:
+    """After a LoRA weight-only change (``set_adapters`` on the same adapter set), copy each adapter layer's scales
+    and active-adapter state onto the CFG-parallel replica instead of dropping it. True when mirrored (the replica now
+    computes what the source does); False when there was nothing to mirror or the layers do not line up, in which case
+    the caller drops the replica as before."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return False
+    if router is None or router.replica is None:
+        return False
+    module = router.module_ref()
+    if module is None:
+        return False
+    src = [(n, m) for n, m in module.named_modules() if isinstance(getattr(m, "scaling", None), dict)]
+    dst = dict(
+        (n, m) for n, m in router.replica.named_modules() if isinstance(getattr(m, "scaling", None), dict)
+    )
+    if not src or len(src) != len(dst):
+        return False
+    for name, layer in src:
+        copy_layer = dst.get(name)
+        if copy_layer is None or set(copy_layer.scaling) != set(layer.scaling):
+            return False  # a different adapter set: only a rebuild is right
+    for name, layer in src:
+        copy_layer = dst[name]
+        for attr in _ADAPTER_SCALE_ATTRS:
+            if attr in layer.__dict__:
+                value = layer.__dict__[attr]
+                copy_layer.__dict__[attr] = dict(value) if isinstance(value, dict) else copy.copy(value)
+    router.stats["adapter_scale_mirrors"] = router.stats.get("adapter_scale_mirrors", 0) + 1
+    if logger is not None:
+        logger.info("diffusion.multigpu: CFG-parallel replica kept; LoRA scales mirrored onto it (%d layers)", len(src))
+    return True
+
+
 def _router_slot(module: Any, router: Any) -> Any:
     """``module`` when ``router`` is its forward, the outer layer (static step skip) whose inner it is, else None."""
     slot = module.__dict__.get("forward")
@@ -3613,6 +3654,37 @@ def end_cfg_render(pipe: Any) -> None:
         return
     if router is not None:
         router.end_render()
+        if getattr(router, "fallback_pending", False):
+            # The replica failed at render time: hand the denoiser to the fallback (CFG batching, #16261) between
+            # renders, never inside one. The render that failed finished on the source.
+            fallback, router.fallback, router.fallback_pending = router.fallback, None, False
+            reason = router.disabled_reason
+            uninstall_cfg_parallel(pipe)
+            try:
+                result = fallback()
+            except Exception as exc:  # noqa: BLE001 - an optional lever: one card stands
+                result = f"{type(exc).__name__}: {exc}"
+            if router.logger is not None:
+                router.logger.info(
+                    "diffusion.multigpu: CFG-parallel off after a render-time replica failure (%s); CFG batching %s",
+                    reason,
+                    "armed" if result is None else f"not armed ({result})",
+                )
+
+
+def set_cfg_parallel_fallback(pipe: Any, fallback: Callable[[], Optional[str]]) -> bool:
+    """Register the lever that replaces CFG-parallel when its replica fails at render time (CFG batching): called once,
+    after ``uninstall_cfg_parallel``, between renders; returns its decline reason or None when armed. True when a
+    router was armed to carry it."""
+    try:
+        router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
+    except TypeError:
+        return False
+    if router is None:
+        return False
+    router.fallback = fallback
+    router.fallback_pending = False
+    return True
 
 
 def release_cfg_prefix_kv(pipe: Any) -> None:
