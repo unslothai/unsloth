@@ -668,7 +668,21 @@ async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
     found = await dataset_material(ctx)
     if found is None:
         return None
-    base = str(ctx.params.get("base_model") or "").strip()
+    start = ctx.inputs.get("start")
+    if isinstance(start, dict) and start.get("kind") == "checkpoint":
+        # Continued from a checkpoint: its own weights (and the base a LoRA loads under) are what
+        # trains, so they key the result; resumed and changed in place, it trains again.
+        try:
+            path, _ = await checkpoint_source(ctx, start)
+        except FlowNodeError:
+            return None
+        model = await _model_material(ctx, path)
+        if model is None:
+            return None
+        found["start"] = model
+        base = ""
+    else:
+        base = str(ctx.params.get("base_model") or "").strip()
     if base:
         model = await _model_material(ctx, base)
         if model is None:
