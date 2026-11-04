@@ -27,16 +27,30 @@ export function seededRandom(seed: string): () => number {
   };
 }
 
+// Titles that open a name but are not what people call the character ("Captain Rhys Calloway" is Rhys).
+const TITLES = new Set([
+  "captain", "capt", "inspector", "detective", "professor", "prof", "doctor", "dr", "sir", "lady", "lord",
+  "dame", "mr", "mrs", "ms", "miss", "mx", "king", "queen", "prince", "princess", "commander", "general",
+  "lieutenant", "lt", "sergeant", "sgt", "officer", "agent", "father", "sister", "brother", "master", "madam",
+]);
+
+/** What a character is called in passing: the first word of the name that is not a title. */
+export function shortName(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  const word = words.find((w) => !TITLES.has(w.toLowerCase().replace(/\.$/, ""))) ?? words[0] ?? "";
+  return word || name.trim();
+}
+
 function escape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Members named in the text, in the order they are first named. Whole name or first word (3+ letters). */
+/** Members named in the text, in the order they are first named. Whole name or short name (3+ letters). */
 export function mentionedIds(text: string, cast: SpeakerCandidate[]): string[] {
   const found: { id: string; at: number }[] = [];
   for (const member of cast) {
     const names = [member.name.trim()];
-    const first = member.name.trim().split(/\s+/)[0];
+    const first = shortName(member.name);
     if (first && first.length >= 3 && first !== names[0]) names.push(first);
     let at = -1;
     for (const name of names) {

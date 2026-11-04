@@ -14,6 +14,7 @@ import { useCallback, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
 import { ROLEPLAY_SPEAKER_RUN_KEY } from "../chat-runtime";
 import { roleplayMetaOf } from "../meta";
+import { shortName } from "../prompt/speakers";
 import { writeMyReply } from "./impersonate";
 import { useThreadScene } from "./use-thread-scene";
 
@@ -103,11 +104,11 @@ export function RoleplaySpeakerBar() {
           disabled={running}
           onClick={() => ask(solo.id, solo.name)}
           className={cn(CHIP, "pl-1 pr-3")}
-          title={t("characters.chat.continueScene", { name: solo.name.split(/\s+/)[0] || solo.name })}
+          title={t("characters.chat.continueScene", { name: shortName(solo.name) })}
         >
           <Portrait id={solo.id} name={solo.name} hasImage={solo.hasAvatar} rev={solo.avatarRev} className="size-7 rounded-full text-[0.7rem]" />
           <HugeiconsIcon icon={PlayIcon} strokeWidth={1.8} className="size-3.5 text-muted-foreground" />
-          <span className="truncate">{t("characters.chat.letContinue", { name: solo.name.split(/\s+/)[0] || solo.name })}</span>
+          <span className="truncate">{t("characters.chat.letContinue", { name: shortName(solo.name) })}</span>
         </button>
       ) : (
         <>

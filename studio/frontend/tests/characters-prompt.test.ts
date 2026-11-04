@@ -13,7 +13,7 @@ import { activateLorebook } from "../src/features/characters/prompt/lorebook.ts"
 import { applyMacros } from "../src/features/characters/prompt/macros.ts";
 import { tidyRoleplayDisplay } from "../src/features/characters/prompt/display.ts";
 import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
-import { mentionedIds, planReplies, seededRandom } from "../src/features/characters/prompt/speakers.ts";
+import { mentionedIds, planReplies, seededRandom, shortName } from "../src/features/characters/prompt/speakers.ts";
 import type { Character, ChatScene, Lorebook, LorebookEntry } from "../src/features/characters/types.ts";
 
 function character(overrides: Partial<PromptCharacter> & { id: string; name: string }): PromptCharacter {
@@ -317,3 +317,19 @@ test("a long lorebook regex key is ignored rather than run", () => {
   const fired = activateLorebook(book([entry({ keys: [long], content: "never" })]), ["aaaa"]);
   assert.equal(fired.fired.length, 0);
 });
+
+test("a title is not a name: mentions and labels skip Captain, Professor and the like", () => {
+  assert.equal(shortName("Captain Rhys Calloway"), "Rhys");
+  assert.equal(shortName("Dr. Moon"), "Moon");
+  assert.equal(shortName("Elara Voss"), "Elara");
+  assert.equal(shortName("Captain"), "Captain");
+  const cast = [
+    { id: "elara", name: "Elara Voss", talkativeness: 0.5, muted: false },
+    { id: "rhys", name: "Captain Rhys Calloway", talkativeness: 0.5, muted: false },
+  ];
+  // "captain's coat" is not Rhys; "Elara" is the one named.
+  assert.deepEqual(mentionedIds("The man in the captain's coat stared. Elara, where are we?", cast), ["elara"]);
+  assert.deepEqual(mentionedIds("Rhys, and you, Elara?", cast), ["rhys", "elara"]);
+  assert.deepEqual(mentionedIds("Ask Captain Rhys Calloway first.", cast), ["rhys"]);
+});
+

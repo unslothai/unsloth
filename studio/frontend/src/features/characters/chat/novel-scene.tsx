@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 import { useEffect, useState, type CSSProperties } from "react";
 import { Portrait } from "../components/portrait";
 import { nameHue, viewPicture } from "../images";
+import { shortName } from "../prompt/speakers";
 import { useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
 import { useAskToReply } from "./speaker-bar";
@@ -133,7 +134,7 @@ export function SpeakingDots({ name }: { name: string }) {
         <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.15s]" />
         <span className="size-1 animate-bounce rounded-full bg-white/90" />
       </span>
-      {t("characters.chat.speaking", { name: name.split(/\s+/)[0] })}
+      {t("characters.chat.speaking", { name: shortName(name) })}
     </span>
   );
 }
