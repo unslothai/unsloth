@@ -376,6 +376,9 @@ from .diffusion_precision import (
     normalize_te_quant,
     quantize_text_encoders,
     resolve_te_quant_request,
+    TE_BF16_AUTO_REASON,
+    te_bf16_auto_wanted,
+    te_bf16_auto_fits,
     te_quant_needs_resident_weights,
     te_quant_supported,
     te_quant_unsupported_reason,
@@ -5597,9 +5600,26 @@ class DiffusionBackend:
                 kwargs["text_encoder_quant"] = _te_quant_for_supplied_encoders(
                     kwargs.get("text_encoder_quant")
                 )
+            # An unset request on a family listed in TE_BF16_AUTO_FAMILIES keeps the bf16 encoder when the card has room
+            # for it with the denoiser resident; settled here, before the dense encoder shards would be skipped.
+            te_bf16_auto = (
+                not local_files_only
+                and not (
+                    component_overrides is not None and component_overrides.text_encoder_components
+                )
+                and te_bf16_auto_wanted(
+                    kwargs.get("text_encoder_quant"),
+                    getattr(fam, "name", None),
+                    getattr(fam, "te_quant_auto", None),
+                    kind,
+                )
+                and self._te_bf16_auto_room(fam, base, kind, kwargs)
+            )
+            kwargs["_te_bf16_auto"] = te_bf16_auto
             # Skip the dense shards the pre-cast encoder replaces, using the same resolver as the injection; kwargs keep the raw request.
             te_quant_planned, _ = resolve_te_quant_request(
-                kwargs.get("text_encoder_quant"), getattr(fam, "te_quant_auto", None)
+                "none" if te_bf16_auto else kwargs.get("text_encoder_quant"),
+                getattr(fam, "te_quant_auto", None),
             )
             te_prequant_files = {
                 c: v
@@ -6943,11 +6963,28 @@ class DiffusionBackend:
         replaced = tuple(component_overrides.components) if component_overrides else ()
         if component_overrides is not None and component_overrides.text_encoder_components:
             text_encoder_quant = _te_quant_for_supplied_encoders(text_encoder_quant)
+        # The same bf16-encoder decision _run_load makes for an unset request, so the plan stages the dense encoder the
+        # load will open instead of the int8 file it will not.
+        te_bf16_auto = (
+            allow_device_probe
+            and not (
+                component_overrides is not None and component_overrides.text_encoder_components
+            )
+            and te_bf16_auto_wanted(
+                text_encoder_quant,
+                getattr(fam, "name", None),
+                getattr(fam, "te_quant_auto", None),
+                kind,
+            )
+            and self._te_bf16_auto_room(
+                fam, base, kind, {**load_kwargs, "repo_id": repo_id, "hf_token": hf_token}
+            )
+        )
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards
         # Resolved through the same tri-state the loader uses, so the size the picker SHOWS is the size the load will
         # actually move on a family whose unset request takes a hosted encoder.
         te_quant_planned, _ = resolve_te_quant_request(
-            text_encoder_quant, getattr(fam, "te_quant_auto", None)
+            "none" if te_bf16_auto else text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
         te_files = (
             {
@@ -8124,6 +8161,8 @@ class DiffusionBackend:
         _pipeline_prequant_skipped: tuple[str, ...] = (),
         _prequant_unreachable: tuple[str, ...] = (),
         _te_prequant_resolved: bool = True,
+        # _run_load proved room for the bf16 encoder on an unset request (diffusion_precision.te_bf16_auto_fits).
+        _te_bf16_auto: bool = False,
         _hosted_vae_planned: bool = False,
         # begin_load's ``normalize_token`` of the request token: False stays the anonymous sentinel.
         _hub_token: Any = None,
@@ -8161,6 +8200,14 @@ class DiffusionBackend:
         text_encoder_quant, text_encoder_quant_auto = resolve_te_quant_request(
             text_encoder_quant, getattr(fam, "te_quant_auto", None)
         )
+        te_bf16_auto_engaged = bool(_te_bf16_auto and text_encoder_quant_auto)
+        if te_bf16_auto_engaged:
+            logger.info(
+                "diffusion.text_encoder_quant: bf16 kept automatically for %s instead of '%s' (room on the card)",
+                fam.name,
+                text_encoder_quant,
+            )
+            text_encoder_quant, text_encoder_quant_auto = None, False
         if text_encoder_quant_auto:
             logger.info(
                 "diffusion.text_encoder_quant: '%s' selected automatically for %s (unset request)",
@@ -10899,6 +10946,11 @@ class DiffusionBackend:
                                     te_quant,
                                     auto = text_encoder_quant_auto,
                                     family = fam.name,
+                                )
+                                + (
+                                    f"; {TE_BF16_AUTO_REASON}"
+                                    if te_bf16_auto_engaged and te_quant is None
+                                    else ""
                                 ),
                                 te_outcome.status,
                             ),
@@ -12109,6 +12161,84 @@ class DiffusionBackend:
             device_memory_override = device_memory_override,
             text_encoder_quant = text_encoder_quant,
         )
+
+    def _te_bf16_auto_room(self, fam: Any, base: str, kind: str, kwargs: dict) -> bool:
+        """Whether this card holds the load with the bf16 text encoder, everything resident, plus the margin
+        (te_bf16_auto_fits). Priced on the denoiser the dense-encoder plan would seed (bf16 table when it seeds none),
+        with this process's own reservation credited as free like _seed_plan_stays_resident. Unanswerable keeps int8."""
+        try:
+            memory_mode = kwargs.get("memory_mode")
+            cpu_offload = bool(kwargs.get("cpu_offload"))
+            gpu_ordinal = kwargs.get("gpu_ordinal")
+            fetch_base = prefer_ungated_mirror(base, kwargs.get("hf_token"))
+            scheme = self._pipeline_planned_denoiser_scheme(
+                fam,
+                base = base,
+                kind = kind,
+                transformer_quant = kwargs.get("transformer_quant"),
+                speed_mode = kwargs.get("speed_mode"),
+                memory_mode = memory_mode,
+                cpu_offload = cpu_offload,
+                loras = kwargs.get("loras"),
+                transformer_prequant_path = kwargs.get("transformer_prequant_path"),
+                gpu_ordinal = gpu_ordinal,
+                repo_id = kwargs["repo_id"],
+                fast_accum = kwargs.get("transformer_quant_fast_accum"),
+                text_encoder_quant = None,
+            )
+            with diffusion_device_scope(gpu_ordinal):
+                target = self._target_for_ordinal(fam, gpu_ordinal)
+                memory = snapshot_device_memory(target)
+                if getattr(target, "device", None) == "cuda" and memory.free_mib is not None:
+                    import torch
+
+                    free = int(memory.free_mib) + int(torch.cuda.memory_reserved()) // (1024 * 1024)
+                    if memory.total_mib is not None:
+                        free = min(free, int(memory.total_mib))
+                    memory = DeviceMemory(
+                        memory.backend, memory.device, memory.memory_kind, free, memory.total_mib
+                    )
+                base_local_dir = base if _is_local_path(base) else None
+                if scheme not in (None, PIPELINE_SEED_DECLINED):
+                    plan = self._seeded_pipeline_plan(
+                        scheme,
+                        target,
+                        base,
+                        fam,
+                        memory_mode,
+                        cpu_offload,
+                        repo_id = kwargs["repo_id"],
+                        base_local_dir = base_local_dir,
+                        fetch_base = fetch_base,
+                        device_memory_override = memory,
+                        text_encoder_quant = None,
+                    )
+                else:
+                    plan = self._bf16_table_plan(
+                        target,
+                        fam,
+                        base,
+                        memory_mode,
+                        cpu_offload,
+                        kind = kind,
+                        repo_id = kwargs["repo_id"],
+                        fetch_base = fetch_base,
+                        base_local_dir = base_local_dir,
+                        text_encoder_quant = None,
+                        device_memory_override = memory,
+                    )
+            fits, why = te_bf16_auto_fits(plan)
+        except Exception as exc:  # noqa: BLE001 - an optional upgrade must not fail the load
+            logger.debug("diffusion.text_encoder_quant: bf16 room preview skipped: %r", exc)
+            return False
+        logger.info(
+            "diffusion.text_encoder_quant: bf16 encoder %s for %s (%s, denoiser seed %s)",
+            "kept" if fits else "not kept",
+            getattr(fam, "name", None),
+            why,
+            scheme,
+        )
+        return fits
 
     def _seed_plan_stays_resident(
         self, scheme: str, target: Any, *args: Any, **kwargs: Any
