@@ -7,6 +7,7 @@ import {
   readFastApiError,
 } from "@/lib/format-fastapi-error";
 import type { DecisionResponse } from "../lib/decision-request";
+import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export type SystemOneDevice = "cpu" | "gpu";
 export type SystemOneBackend = "auto" | "llama.cpp" | "mlx" | "pytorch";
@@ -241,6 +242,14 @@ export async function updateSystemOneSettings(
       "Failed to save Decision API settings",
     ),
   );
+}
+
+export async function tryFineTuneInDecisionApi(runName: string): Promise<void> {
+  const { model } = await updateSystemOneSettings({
+    enabled: true,
+    model: `laya-ft:${runName}`,
+  });
+  useSettingsDialogStore.getState().openDecisionTry(model);
 }
 
 export async function validateSystemOneSettings(

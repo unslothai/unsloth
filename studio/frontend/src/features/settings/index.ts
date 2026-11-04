@@ -26,6 +26,7 @@ export { listOpenAIModels } from "./api/openai-models";
 export {
   loadSystemOneSettings,
   subscribeSystemOneSettings,
+  tryFineTuneInDecisionApi,
   updateSystemOneSettings,
 } from "./api/systemone";
 export { DECISION_MODEL_LABELS } from "./lib/decision-model-labels";
