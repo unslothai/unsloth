@@ -275,7 +275,7 @@ export type CompareMessagePart =
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
-  appendMessage: (content: CompareMessagePart[]) => void;
+  appendMessage: (content: CompareMessagePart[]) => Promise<void>;
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
@@ -456,15 +456,24 @@ export function RegisterCompareHandle({
         aui
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) =>
-        aui
-          .thread()
-          .append({
-            role: "user",
-            content,
-            createdAt: new Date(),
-            startRun: false,
-          } as never),
+      appendMessage: (content) => {
+        const count = aui.thread().getState().messages.length;
+        aui.thread().append({
+          role: "user",
+          content,
+          createdAt: new Date(),
+          startRun: false,
+        } as never);
+        return new Promise<void>((resolve) => {
+          const landed = () => aui.thread().getState().messages.length > count;
+          if (landed()) return resolve();
+          const unsubscribe = aui.subscribe(() => {
+            if (!landed()) return;
+            unsubscribe();
+            resolve();
+          });
+        });
+      },
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -2124,8 +2133,10 @@ export function SharedComposer({
       const handle1 = handlesRef.current["model1"];
       const handle2 = handlesRef.current["model2"];
 
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
+      await Promise.all([
+        handle1?.appendMessage(content),
+        handle2?.appendMessage(content),
+      ]);
 
       const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";
       const name2 = model2?.id ? compareModelDisplayName(model2.id) : "";
