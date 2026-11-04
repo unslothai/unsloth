@@ -992,8 +992,7 @@ def set_account_model_allowlist(account_id: str, allowlist: Optional[list[str]])
 
 
 def rename_account(account_id: str, username: str) -> dict:
-    """Files key on the account id, so nothing moves. Sessions carry the old name and are revoked;
-    API keys follow the account."""
+    """Data keys on account_id, so nothing moves; sessions are revoked, API keys follow the account."""
     from auth.policy import account_mutation
 
     username = validate_account_username(username)

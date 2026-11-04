@@ -1222,7 +1222,6 @@ def test_old_name_is_free_after_rename_and_shares_nothing(matrix):
 
 
 def test_a_key_minted_under_the_old_name_after_rename_binds_the_renamed_account(matrix):
-    # Research runs persist the owner's username and mint a workflow key per model call.
     client, _, _ = matrix
     account_id = storage.get_account("alice").account_id
     assert rename(client, "alice", "alicia").status_code == 200
