@@ -467,3 +467,32 @@ def test_a_scoring_holds_the_gpu_lease_so_training_cannot_evict_its_model(monkey
     route._recipe_task({"targets": {}, "spec": {}, "is_cancelled": lambda: False})
     assert isinstance(refusals[0], gpu_arbiter.GpuLeaseHeldError)
     assert not gpu_arbiter.lease_held()
+
+
+def test_an_inequality_is_not_scored_as_an_equality():
+    assert not score_with_validator("reference", "x = 1", "x != 1")[0]
+    assert score_with_validator("reference", "So x != 1.", "x != 1")[0]
+    assert score_with_validator("reference", "Hello!", "hello")[0]
+
+
+def test_an_lm_eval_run_holds_the_model_for_its_whole_life(monkeypatch):
+    from core.benchmark import orchestrator
+    from core.inference import gpu_arbiter
+    from routes import benchmarks as bench_routes
+
+    seen = []
+
+    def evaluate(params):
+        import contextvars
+        seen.append(
+            (
+                bench_routes.scoring_active(),
+                contextvars.Context().run(gpu_arbiter.lease_refusal) is not None,
+            )
+        )
+        return {"results": {}}
+
+    monkeypatch.setattr(orchestrator, "_run_benchmark_task", evaluate)
+    assert orchestrator._held_benchmark_task({}) == {"results": {}}
+    assert seen == [(True, True)]
+    assert not bench_routes.scoring_active() and not gpu_arbiter.lease_held()

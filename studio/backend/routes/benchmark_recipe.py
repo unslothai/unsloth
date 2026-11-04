@@ -7,7 +7,6 @@ logs, progress and run storage as the lm-eval tasks, its own scorer."""
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import copy
 import time
 import uuid
@@ -49,7 +48,7 @@ def _recipe_task(params: dict) -> dict:
     from routes.benchmarks import scoring_hold
 
     try:
-        with httpx.Client() as client, scoring_hold(), _gpu_lease(params):
+        with httpx.Client() as client, scoring_hold():
             try:
                 return run_benchmark(
                     params["spec"],
@@ -64,35 +63,6 @@ def _recipe_task(params: dict) -> dict:
     finally:
         if params.get("key_id") is not None:
             _revoke_internal_api_key_safe(params["key_id"])
-
-
-# A scoring outliving this would be a hung worker; the lease is let go when the worker ends anyway.
-SCORING_LEASE_S = 6 * 3600
-
-
-@contextlib.contextmanager
-def _gpu_lease(params: dict):
-    """Hold the Studio-wide GPU lease while scoring and restoring the adapter: training's start, a
-    video load and every other residency change refuse instead of evicting the model being scored."""
-    from core.inference import gpu_arbiter
-
-    holder = f"benchmark-scoring:{uuid.uuid4().hex}"
-    for attempt in range(40):
-        try:
-            lease = gpu_arbiter.operation_lease(
-                "benchmark", holder, SCORING_LEASE_S, label = "A benchmark scoring"
-            )
-            lease.__enter__()
-            break
-        except gpu_arbiter.GpuLeaseHeldError as exc:
-            # The arbiter mid-change reads as busy for a moment; another operation's lease stays held.
-            if exc.label != "A model change" or attempt == 39:
-                raise
-            time.sleep(0.25)
-    try:
-        yield
-    finally:
-        lease.__exit__(None, None, None)
 
 
 def _restore_adapter(client: Any, targets: dict) -> None:

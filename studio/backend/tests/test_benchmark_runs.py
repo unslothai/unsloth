@@ -315,3 +315,15 @@ def test_a_held_out_scoring_refuses_every_load_path_a_chat_switch_included():
         with pytest.raises(HTTPException) as refused:
             asyncio.run(inference._load_model_impl(object(), None, "unsloth"))
     assert refused.value.status_code == 409
+
+
+def test_a_sweep_cannot_start_while_an_eval_is_scoring(monkeypatch):
+    monkeypatch.setattr(benchmarks_routes, "_lease", None)
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(benchmarks_routes.router, prefix = "/api/benchmarks")
+    client = TestClient(app)
+    sweep = {"holder": "tab-aaaaaaaa", "kind": "sweep"}
+    with benchmarks_routes.scoring_hold():
+        assert client.post("/api/benchmarks/lease", json = sweep).status_code == 409
+    assert client.post("/api/benchmarks/lease", json = sweep).status_code == 200

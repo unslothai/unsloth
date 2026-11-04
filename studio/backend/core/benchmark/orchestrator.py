@@ -147,6 +147,14 @@ def _run_benchmark_task(params: dict) -> dict:
         _uninstall_tqdm_progress_patch()
 
 
+def _held_benchmark_task(params: dict) -> dict:
+    """An lm-eval run under the scoring hold for the worker's whole life, a drain after Stop
+    included: its requests name the loaded model, so a reload or a sweep mid-run would mix models."""
+    from routes.benchmarks import scoring_hold
+    with scoring_hold():
+        return _run_benchmark_task(params)
+
+
 class BenchmarkOrchestrator:
     def __init__(self):
         self._lock = threading.Lock()
@@ -395,7 +403,7 @@ class BenchmarkOrchestrator:
             cancel_event = self._cancel_event
             clear_progress()
             # task_fn runs a non-lm_eval task (Recipe held-out) through the same slot.
-            future = self._executor.submit(task_fn or _run_benchmark_task, params)
+            future = self._executor.submit(task_fn or _held_benchmark_task, params)
             self._worker = future
         my_seq = op_seq
         self._append_log("stdout", "Starting benchmark run...")

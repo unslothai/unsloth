@@ -36,9 +36,10 @@ ChatFn = Callable[[str, list[dict[str, str]]], str]
 
 
 # Numbers (sign and decimals kept), words, a spaced minus, and symbol runs that change an answer's
-# meaning (C# and C++, x < 1 and x > 1); sentence punctuation and quotes are not compared.
+# meaning (C# and C++, x < 1 and x > 1, x != 1 and x = 1); sentence punctuation and quotes are not
+# compared.
 _TOKEN_RE = re.compile(
-    r"(?<![\w.])[+-]?\d+(?:\.\d+)?|\w+|(?<=\s)-(?=\s)|[^\w\s.,!?;:'\"()\[\]{}\-]+"
+    r"(?<![\w.])[+-]?\d+(?:\.\d+)?|\w+|(?<=\s)-(?=\s)|!=+|[^\w\s.,!?;:'\"()\[\]{}\-]+"
 )
 
 

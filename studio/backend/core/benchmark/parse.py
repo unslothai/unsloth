@@ -30,6 +30,8 @@ _DEFAULT_METRIC_PRIORITY = (
     "acc_norm",
     "exact_match,strict-match",
     "exact_match,flexible-extract",
+    # MATH (hendrycks_math) and other tasks scored with no filter.
+    "exact_match,none",
     "exact_match",
     "pass@1",
     "mc2",

@@ -139,6 +139,16 @@ def take_lease(lease: BenchmarkLease, current_subject: str = Depends(get_current
     global _lease
     now = time.monotonic()
     with _lease_lock:
+        if lease.kind == "sweep" and _scorings:
+            # A sweep reloads the server between rows: under a running eval it would swap the model.
+            raise HTTPException(
+                status_code = 409,
+                detail = {
+                    "error": "benchmark_running",
+                    "kind": "eval",
+                    "message": "An evaluation is scoring the loaded model. Stop it or let it finish first.",
+                },
+            )
         if _lease and _lease["holder"] != lease.holder and _lease["expires"] > now:
             raise HTTPException(
                 status_code = 409,
@@ -187,14 +197,48 @@ def _sweep_holds_against(holder: Optional[str]) -> bool:
 _scorings = 0
 
 
+# A scoring outliving this would be a hung worker; the hold is let go when the worker ends anyway.
+SCORING_LEASE_S = 6 * 3600
+
+
+@contextlib.contextmanager
+def _gpu_lease():
+    """The Studio-wide GPU lease: training's start, a video load and every other residency change
+    refuse instead of evicting the model being scored."""
+    import uuid
+
+    from core.inference import gpu_arbiter
+
+    holder = f"benchmark-scoring:{uuid.uuid4().hex}"
+    for attempt in range(40):
+        try:
+            lease = gpu_arbiter.operation_lease(
+                "benchmark", holder, SCORING_LEASE_S, label = "A benchmark scoring"
+            )
+            lease.__enter__()
+            break
+        except gpu_arbiter.GpuLeaseHeldError as exc:
+            # The arbiter mid-change reads as busy for a moment; another operation's lease stays held.
+            if exc.label != "A model change" or attempt == 39:
+                raise
+            time.sleep(0.25)
+    try:
+        yield
+    finally:
+        lease.__exit__(None, None, None)
+
+
 @contextlib.contextmanager
 def scoring_hold():
-    """Refuse model loads and unloads while a held-out scoring runs; the scoring itself never loads."""
+    """While a scoring (held-out rows or an lm-eval task) runs, nothing may change the model it
+    answers with: loads and unloads by any path, a Config sweep's start, training's eviction. The
+    scoring itself never loads."""
     global _scorings
     with _lease_lock:
         _scorings += 1
     try:
-        yield
+        with _gpu_lease():
+            yield
     finally:
         with _lease_lock:
             _scorings -= 1

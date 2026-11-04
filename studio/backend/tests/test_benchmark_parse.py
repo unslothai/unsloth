@@ -53,3 +53,12 @@ def test_ifeval_has_a_headline_score_and_rows_that_followed_every_instruction_pa
     assert parse.pick_default_metric(names) == "prompt_level_strict_acc,none"
     assert parse._sample_correct({"prompt_level_strict_acc": True, "inst_level_strict_acc": [True]})
     assert not parse._sample_correct({"prompt_level_strict_acc": False})
+
+
+def test_maths_unfiltered_exact_match_is_its_headline():
+    from core.benchmark.parse import pick_default_metric
+
+    assert pick_default_metric([{"name": "exact_match,none", "value": 0.75}]) == "exact_match,none"
+    # A strict-match filter still wins when the task reports both.
+    both = [{"name": "exact_match,none"}, {"name": "exact_match,strict-match"}]
+    assert pick_default_metric(both) == "exact_match,strict-match"
