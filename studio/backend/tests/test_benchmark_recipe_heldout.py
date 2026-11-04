@@ -199,9 +199,7 @@ def harness(monkeypatch):
     monkeypatch.setattr(route, "_revoke_internal_api_key_safe", revoked.append)
     monkeypatch.setattr(route, "managed_account", lambda: False)
     monkeypatch.setattr(route, "current_account", lambda: None)
-    monkeypatch.setattr(
-        route, "_loaded_local_model_identity", lambda: (True, "unsloth/Qwen3-0.6B", "")
-    )
+    monkeypatch.setattr("routes.benchmarks.loaded_identity", lambda: "unsloth/Qwen3-0.6B")
     monkeypatch.setattr(
         route,
         "_store",
@@ -518,3 +516,12 @@ def test_the_judge_sees_the_system_instructions_the_answer_was_given():
     )
     assert "System instructions the answer was given:\nAlways reply in French." in judged[0]
     assert result["candidate"]["score"] == pytest.approx(0.0)
+
+
+def test_a_local_model_is_stored_under_its_quant(monkeypatch):
+    from routes import benchmarks as bench_routes
+
+    monkeypatch.setattr(bench_routes, "loaded_identity", lambda: "unsloth/Qwen3-0.6B-GGUF:Q8_0")
+    configs = {"candidate": {"provider": "local", "model": ""}}
+    # Two quants of one repo are two models in history and on the scoreboard.
+    assert route._model_label("candidate", configs, {"local"}) == "unsloth/Qwen3-0.6B-GGUF:Q8_0"

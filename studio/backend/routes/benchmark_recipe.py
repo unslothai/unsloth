@@ -34,7 +34,6 @@ from utils.utils import log_and_http_error, safe_curated_detail
 
 from routes.data_recipe.jobs import (
     _inject_local_providers,
-    _loaded_local_model_identity,
     _revoke_internal_api_key_safe,
 )
 
@@ -85,7 +84,9 @@ def _model_label(alias: str, configs: dict[str, dict], local_names: set) -> str:
     mc = configs.get(alias) or {}
     model = str(mc.get("model") or "").strip()
     if mc.get("provider") in local_names and (not model or model.lower() == "local"):
-        model = _loaded_local_model_identity()[1]
+        # With its quant, as the lm-eval path names it: two quants of one repo are two models.
+        from routes.benchmarks import loaded_identity
+        model = loaded_identity()
     return model or alias
 
 
