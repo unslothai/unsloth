@@ -2,6 +2,8 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { openStreamResponse } from "@/lib/open-stream-response";
 import { readSseJsonEvents } from "@/lib/sse-json-events";
@@ -201,11 +203,18 @@ export const recipeRun = (flowId: string, nodeId: string, runId: string) =>
     `/${encodeURIComponent(flowId)}/nodes/${encodeURIComponent(nodeId)}/recipe-runs/${encodeURIComponent(runId)}`,
   );
 
-export const datasetRows = (value: unknown, offset: number, limit: number) =>
-  request<import("./dataset/dataset-value").DatasetRowsPage>(
+export const datasetRows = (value: unknown, offset: number, limit: number) => {
+  const init = json("POST", { value, offset, limit });
+  // A private or gated Hub dataset reads with this account's token, as the picker that chose it did.
+  init.headers = {
+    ...(init.headers as Record<string, string>),
+    ...hubTokenHeader(useHfTokenStore.getState().token),
+  };
+  return request<import("./dataset/dataset-value").DatasetRowsPage>(
     "/dataset-rows",
-    json("POST", { value, offset, limit }),
+    init,
   );
+};
 
 /** Every row of a saved Data Recipe output (a schema transform's) as JSONL. */
 export async function datasetExport(value: unknown): Promise<Blob> {

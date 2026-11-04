@@ -387,6 +387,21 @@ export function savedView(before: StudioView, configs: Record<string, NodeConfig
   return { ...before, configs, processors: renamedProcessors(before, configs) };
 }
 
+/** An AI column's image contexts with renamed columns renamed; the same list when none is. */
+function renamedImages(list: unknown, renames: Map<string, string>): unknown {
+  if (!Array.isArray(list) || !renames.size) return list;
+  let changed = false;
+  const next = list.map((entry) => {
+    const name = (entry as Record<string, unknown> | null)?.column_name;
+    const to = typeof name === "string" ? renames.get(name) : undefined;
+    if (to === undefined) return entry;
+    changed = true;
+    // biome-ignore lint/style/useNamingConvention: api schema
+    return { ...(entry as Record<string, unknown>), column_name: to };
+  });
+  return changed ? next : list;
+}
+
 /** What an edit made in Recipe Studio configs changes in the flow: only touched columns are rebuilt. */
 export function commitStudioEdit(
   group: FlowGroup,
@@ -396,10 +411,22 @@ export function commitStudioEdit(
   processors: RecipeProcessorConfig[] = renamedProcessors(before, configs),
 ): RecipeEdit {
   const nodes: FlowNode[] = [];
+  const renames = new Map(columnRenames(before, configs));
   for (const node of columns) {
     const id = before.byNode[node.id];
     const config = id ? configs[id] : undefined;
-    if (!config || config === before.configs[id]) continue;
+    const saved = columnOf(node);
+    const images = renamedImages(saved.multi_modal_context, renames);
+    if (!config) continue;
+    if (config === before.configs[id]) {
+      // The form shows one image context; a renamed column in any other is renamed in place.
+      if (images !== saved.multi_modal_context)
+        nodes.push({
+          ...node,
+          params: { ...node.params, column: { ...saved, multi_modal_context: images } },
+        });
+      continue;
+    }
     const built = buildColumn(config, configs);
     if (!built) continue;
     const prior = buildColumn(before.configs[id], before.configs);
@@ -407,10 +434,19 @@ export function commitStudioEdit(
       ? (untouchedFromSaved(
           built as Record<string, unknown>,
           prior as Record<string, unknown>,
-          columnOf(node),
-          [...new Set([...Object.keys(prior), ...Object.keys(built), ...Object.keys(columnOf(node))])],
+          saved,
+          [...new Set([...Object.keys(prior), ...Object.keys(built), ...Object.keys(saved)])],
         ) as typeof built)
       : built;
+    // Only a rename changed the form's image context: the saved list keeps its other images and
+    // their attributes, renamed where they name the column.
+    const formImages = (c: unknown) => (c as Record<string, unknown> | null)?.multi_modal_context;
+    if (
+      Array.isArray(saved.multi_modal_context) &&
+      JSON.stringify(renamedImages(formImages(prior), renames) ?? null) ===
+        JSON.stringify(formImages(built) ?? null)
+    )
+      (column as Record<string, unknown>).multi_modal_context = images;
     nodes.push({
       ...node,
       label: config.name.slice(0, 200),

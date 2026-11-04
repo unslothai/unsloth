@@ -86,6 +86,7 @@ import {
   removeElementsWithReferences,
 } from "../recipe/recipe-actions";
 import { isRecipeGroup } from "../recipe/recipe-columns";
+import { holdRecipeBlocks, ownRecipe } from "./recipe-drag";
 import {
   parseSetupId,
   setupEdges,
@@ -243,9 +244,13 @@ export function groupMembership(
       if (!best || area < best.area) best = { id: groupId, area };
     }
     membership[id] = best?.id ?? null;
+    // A recipe's blocks only run inside their recipe: dragged out, they stay its own (the frame grows).
+    const recipe = ownRecipe(graph, id);
+    if (recipe) membership[id] = recipe;
   }
   return membership;
 }
+
 
 export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
   const colorMode = useTheme().resolved;
@@ -619,6 +624,19 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
           );
           for (const id of kept) delete membership[id];
           doc.moveNodes(positions, membership);
+          const held = new Map<string, Record<string, [number, number]>>();
+          for (const [id, pos] of Object.entries(positions)) {
+            const group = ownRecipe(doc.graph, id);
+            if (group && membership[id] === group)
+              held.set(group, { ...held.get(group), [id]: pos });
+          }
+          for (const [groupId, moved] of held) {
+            // A frame dragged along with its blocks is placed by its own drag.
+            if (current[GROUP_PREFIX + groupId]) continue;
+            const group = groups.get(groupId) ?? doc.graph.groups[groupId];
+            const grown = holdRecipeBlocks(group, moved, sizesRef.current);
+            if (grown !== group) groups.set(groupId, grown);
+          }
         }
         if (groups.size) doc.patchGraph({ groups: [...groups.values()] });
       }

@@ -1370,3 +1370,54 @@ test("moving a column wire to another column moves the reference, in one undo st
   useDocStore.getState().undo();
   assert.match(JSON.stringify(useDocStore.getState().graph.nodes[sql].params.column), /sql_prompt/);
 });
+
+test("renaming a column renames it in every image context an AI column keeps", () => {
+  const { group, nodes } = sqlGroup();
+  const images = [
+    { modality: "image", column_name: "sql_prompt", data_type: "url" },
+    { modality: "image", column_name: "domain", data_type: "url" },
+  ];
+  const withImages = nodes.map((n) =>
+    columnName(n) === "sql"
+      ? { ...n, params: { column: { ...(n.params.column as object), multi_modal_context: images } } }
+      : n,
+  );
+  const view = studioView(group, withImages);
+  const rename = (from: string, to: string) => {
+    const config = Object.values(view.configs).find((c) => c.name === from);
+    assert.ok(config);
+    const edit = commitStudioEdit(group, withImages, view, applyConfigPatch(view.configs, config.id, { name: to }));
+    const sql = edit.nodes.find((n) => n.id === byName(withImages, "sql").id);
+    assert.ok(sql, `${from} renamed in sql`);
+    return (sql.params.column as Record<string, unknown>).multi_modal_context;
+  };
+  assert.deepEqual(rename("sql_prompt", "question"), [
+    { modality: "image", column_name: "question", data_type: "url" },
+    images[1],
+  ]);
+  // The second image is not on the form: it is renamed in place.
+  assert.deepEqual(rename("domain", "field"), [
+    images[0],
+    { modality: "image", column_name: "field", data_type: "url" },
+  ]);
+});
+
+test("a recipe block dragged out of its frame stays in its recipe, and the frame grows to hold it", async () => {
+  const { ownRecipe, holdRecipeBlocks } = await import("../src/features/flows/editor/recipe-drag.ts");
+  const { useDocStore } = await import("../src/features/flows/stores/doc-store.ts");
+  const { doc } = await import("./flows-editor-fixtures.ts");
+  const { group, nodes } = sqlGroup();
+  useDocStore.getState().load({
+    ...doc([...nodes, { id: "free", type: "input.text", v: 1, params: {}, pos: [0, 0] }], []),
+    groups: [group],
+  });
+  const graph = useDocStore.getState().graph;
+  assert.equal(ownRecipe(graph, nodes[0].id), "recipe");
+  assert.equal(ownRecipe(graph, "free"), null);
+  const grown = holdRecipeBlocks(group as never, { [nodes[0].id]: [2000, 2000] }, new Map());
+  assert.deepEqual(grown.rect, [0, 0, 2284, 2144]);
+  assert.equal(holdRecipeBlocks(grown, { [nodes[0].id]: [100, 100] }, new Map()), grown);
+  const canvas = readFileSync(new URL("../src/features/flows/editor/canvas.tsx", import.meta.url), "utf8");
+  assert.match(canvas, /const recipe = ownRecipe\(graph, id\);\s*if \(recipe\) membership\[id\] = recipe;/);
+  assert.match(canvas, /holdRecipeBlocks\(group, moved, sizesRef\.current\)/);
+});
