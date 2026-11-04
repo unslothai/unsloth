@@ -6,8 +6,9 @@
 PEFT runs every adapted layer as ``base(x) + B(A(x)) * scale``: two extra GEMMs per layer on every step. Once the
 same set renders twice, the second render folds ``B @ A * scale`` into the base weights (fp32 add, one rounding to the
 weight dtype) and marks each layer merged, so PEFT's forward runs the base layer alone. The original weights are kept
-in pinned host chunks and copied back before any change, so the weights-only fast path (``set_adapters``) runs on
-exactly the weights it would have seen unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0."""
+on the card when it has ample room (a restore is then a device copy), else in pinned host chunks, and copied back
+before any change, so the weights-only fast path (``set_adapters``) runs on exactly the weights it would have seen
+unfused. Opt out with UNSLOTH_DIFFUSION_LORA_FUSE=0."""
 
 from __future__ import annotations
 
@@ -15,6 +16,8 @@ import os
 from typing import Any, Optional
 
 LORA_FUSE_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE"
+BACKUP_ENV = "UNSLOTH_DIFFUSION_LORA_FUSE_BACKUP"
+_DEVICE_BACKUP_MIN_FREE = 8 << 30
 _FUSED_ATTR = "_unsloth_lora_fused"
 _ALIGN = 64
 _CHUNK = 64 << 20  # a power of two: no rounding waste in the pinned host allocator
@@ -93,9 +96,13 @@ def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
         places.append((len(sizes) - 1, used))
         used += nbytes
     total = sum(sizes)
+    on_device = _backup_on_device(device, total)
     try:
-        chunks = [torch.empty(n, dtype = torch.uint8, pin_memory = device.type == "cuda") for n in sizes]
-    except Exception:  # noqa: BLE001 - no pinned host memory: stay unfused
+        if on_device:
+            chunks = [torch.empty(n, dtype = torch.uint8, device = device) for n in sizes]
+        else:
+            chunks = [torch.empty(n, dtype = torch.uint8, pin_memory = device.type == "cuda") for n in sizes]
+    except Exception:  # noqa: BLE001 - no room for the backup: stay unfused
         return False
     entries = []
     try:
@@ -120,9 +127,10 @@ def fuse(pipe: Any, denoisers: list, logger: Any = None) -> bool:
     setattr(pipe, _FUSED_ATTR, {"entries": entries, "chunks": chunks})
     if logger is not None:
         logger.info(
-            "diffusion.lora_fuse: folded the unchanged LoRA set into %d layers (%d MiB kept on the host to restore)",
+            "diffusion.lora_fuse: folded the unchanged LoRA set into %d layers (%d MiB kept on the %s to restore)",
             len(entries),
             total >> 20,
+            "card" if on_device else "host",
         )
     return True
 
@@ -136,6 +144,23 @@ def _restore(entries: list) -> None:
             layer.merged_adapters = []
     if entries:
         _sync(entries[0][1].device)
+
+
+def _backup_on_device(device: Any, nbytes: int) -> bool:
+    """Keep the backup beside the weights (a restore is then a device copy, not a host upload) only when the card keeps
+    max(8 GiB, a quarter of it) free after it; UNSLOTH_DIFFUSION_LORA_FUSE_BACKUP=host / device forces either."""
+    mode = (os.environ.get(BACKUP_ENV) or "auto").strip().lower()
+    if device.type != "cuda" or mode == "host":
+        return False
+    if mode == "device":
+        return True
+    try:
+        import torch
+
+        free, total = torch.cuda.mem_get_info(device)
+    except Exception:  # noqa: BLE001 - unreadable: the host
+        return False
+    return int(free) - int(nbytes) >= max(_DEVICE_BACKUP_MIN_FREE, int(total) // 4)
 
 
 def _sync(device: Any) -> None:

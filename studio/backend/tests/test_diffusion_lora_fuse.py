@@ -167,3 +167,25 @@ def test_removing_the_set_restores_before_unload(engine):
         object.__new__(dmod.DiffusionBackend), engine.state, [], __import__("threading").Event()
     )
     assert seen == {"merged": 0, "equal": True}
+
+
+@pytest.mark.parametrize(
+    "free_gib, total_gib, mode, expected",
+    [
+        (80, 96, None, True),  # G4: 75 GiB stay free
+        (10, 24, None, False),  # L4 with SDXL resident: 5.6 GiB would stay free
+        (80, 96, "host", False),
+        (10, 24, "device", True),
+    ],
+)
+def test_backup_lands_on_the_card_only_with_ample_room(monkeypatch, free_gib, total_gib, mode, expected):
+    from core.inference import diffusion_lora_fuse as lf
+
+    gib = 1 << 30
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev = None: (free_gib * gib, total_gib * gib))
+    if mode is None:
+        monkeypatch.delenv(lf.BACKUP_ENV, raising = False)
+    else:
+        monkeypatch.setenv(lf.BACKUP_ENV, mode)
+    assert lf._backup_on_device(torch.device("cuda", 0), int(4.4 * gib)) is expected
+    assert lf._backup_on_device(torch.device("cpu"), int(4.4 * gib)) is False
