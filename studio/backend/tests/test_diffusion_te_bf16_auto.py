@@ -124,13 +124,14 @@ def backend(monkeypatch):
     b._cache_bytes = lambda *_a, **_k: 0
     b._released_transformer_cached = lambda *_a, **_k: False
     # The seed probe reads the Hub; the bf16-table branch is the one an unseeded default load prices.
-    b._pipeline_planned_denoiser_scheme = lambda *_a, **_k: None
+    b._pipeline_planned_denoiser_scheme = lambda *_a, **_k: card.get("seed")
 
-    def room(gib: int) -> bool:
+    def room(gib: int, seed = None) -> bool:
         from core.inference.diffusion_families import _FAMILIES
 
         fam = next(f for f in _FAMILIES if f.name == "qwen-image")
         base = "Qwen/Qwen-Image-2512"
+        card["seed"] = seed
         card["memory"] = DeviceMemory("cuda", "cuda", "discrete_vram", gib * GIB - 600, gib * GIB)
         return b._te_bf16_auto_room(fam, base, "pipeline", {"repo_id": base})
 
@@ -144,3 +145,13 @@ def test_big_card_keeps_the_bf16_encoder_and_small_cards_do_not(backend):
     assert backend(80) is True
     assert backend(64) is False
     assert backend(24) is False
+
+
+
+def test_seeded_int8_denoiser_is_priced_on_its_artifact(backend):
+    # The default G4 load seeds the hosted int8 denoiser: ~47 GiB with the bf16 encoder, so 64 GiB keeps it and a
+    # 56 GiB card, where the int8 encoder load is still resident, does not.
+    assert backend(96, "int8") is True
+    assert backend(64, "int8") is True
+    assert backend(56, "int8") is False
+    assert backend(24, "int8") is False
