@@ -739,8 +739,7 @@ _MOE_EVIDENCE = {
 }
 
 
-# MoE families whose decoder attention owns a parameter directly (the sinks): the rows of the cells table only; a
-# real model is read by structure (_direct_params).
+# Cells table only; a real model is read by structure (_direct_params).
 _DIRECT_PARAM_FAMILIES = ("gpt_oss",)
 
 
@@ -968,9 +967,8 @@ def _model_traits(model):
 
 
 def _direct_params(model) -> bool:
-    """A decoder layer's attention / MLP block owns a parameter itself (gpt-oss, DeepSeek-V4, MiMo-V2-Flash
-    attention sinks), the structure models/tp_native.derive_tp_plan refuses. MoE blocks run replicated there,
-    so they are skipped as tp_native skips them. Reads the module tree only: a meta-device model works."""
+    """An attention / MLP block owns a parameter itself (attention sinks), as tp_native.derive_tp_plan refuses.
+    MoE blocks are skipped as tp_native skips them (replicated). Meta-device safe."""
     if not callable(getattr(model, "named_modules", None)):
         return False
     try:

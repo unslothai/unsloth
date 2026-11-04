@@ -25,9 +25,7 @@ def clean_env(monkeypatch):
 
 
 def _meta(repo):
-    """The architecture from its config alone: no weight is read or allocated."""
     from transformers import AutoConfig, AutoModelForCausalLM
-
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(AutoConfig.from_pretrained(repo))
     return model.requires_grad_(
@@ -71,7 +69,7 @@ def test_the_registry_and_tp_native_refuse_the_same_model():
 
 def test_gpt_oss_without_tp_is_not_refused_by_the_rule():
     model = _meta(GPT_OSS)
-    _check(model, dp = 2)  # DDP over two ranks
+    _check(model, dp = 2)
 
 
 @pytest.mark.parametrize("repo", [QWEN3, QWEN3_MOE])
@@ -81,7 +79,7 @@ def test_models_whose_blocks_own_no_parameter_keep_running_under_tp(repo):
     model = _meta(repo)
     _check(model, tp = 2)
     assert not getattr(caps.query_from(None, None, model), "direct_params", False)
-    tp_native.derive_tp_plan(model, 2)  # tp_native shards it too
+    tp_native.derive_tp_plan(model, 2)
 
 
 def test_cells_table_says_gpt_oss_tp_is_refused():
