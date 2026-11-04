@@ -798,3 +798,15 @@ def test_a_column_name_with_spaces_reads_the_same_column_benchmark_scored():
     assert found["failed_prompt"] == "My payment was charged twice"
     assert found["failed_reference"] == "billing"
     assert loop_rounds.questions([row], " ticket ") == ["My payment was charged twice"]
+
+
+@run_async
+async def test_a_recipe_step_with_no_saved_row_count_is_seeded_for_its_default():
+    # An imported flow may omit rows: the step makes its catalog default (5), so the seed holds 5.
+    eng, seen, _ = _engine()
+    d = loop_doc(rounds = 2, target = 100, failure_percent = 25)
+    gen = next(n for n in d["nodes"] if n["id"] == "gen")
+    gen["params"].pop("rows")
+    rs = await _run(eng, d)
+    assert rs.status == "completed", rs.error
+    assert [len(rows) for rows in seen] == [5, 5]

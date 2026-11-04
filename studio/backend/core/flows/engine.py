@@ -2328,7 +2328,8 @@ class FlowEngine:
             else loop_rounds.FAILURE_PERCENT
         )
         per_failure = int(params.get("per_failure") or loop_rounds.PER_FAILURE)
-        seed_rows = int((plan.nodes[seed_node].get("params") or {}).get("rows") or 50)
+        # The rows the recipe step will make, its catalog default included, as its own run reads them.
+        seed_rows = int(param_values(plan.specs[seed_node], plan.nodes[seed_node]).get("rows") or 5)
         scorer_params = plan.nodes[scorer].get("params") or {}
         in_percent = plan.specs[scorer]["type"] in loop_rounds.PERCENT_SCORERS
         rs.set_status(nid, "running")
