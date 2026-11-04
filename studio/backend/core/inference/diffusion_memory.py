@@ -7236,6 +7236,7 @@ OVERSIZED_GENERATE_SETTING_LABEL = "Allow oversized generations"
 # Exposed through CORS in main.py: the desktop app is cross-origin (tauri://localhost).
 IMAGE_REFUSAL_HEADER = "X-Unsloth-Refusal"
 IMAGE_REFUSAL_MEMORY_ESTIMATE = "memory-estimate"
+IMAGE_REFUSAL_STREAMED_LORA = "streamed-lora-weights"
 
 ACTIVATION_RUN = "run"
 ACTIVATION_TILE = "tile"
@@ -7245,6 +7246,12 @@ ACTIVATION_REFUSE = "refuse"
 DENOISE_MIB_PER_MEGAPIXEL = 1024
 
 DEFAULT_VAE_TILE_SIDE = 1024
+
+
+class StreamedLoraWeightsFixedError(ValueError):
+    """A block-streamed load cannot change its baked LoRA weights at generate time; a reload with the new
+    weights can. A ValueError subclass so ``/images/generate`` still answers 400; the route tags the 400 so a
+    caller (Flows) can reload and retry instead of parsing the message."""
 
 
 class ImageActivationShortfallError(ValueError):

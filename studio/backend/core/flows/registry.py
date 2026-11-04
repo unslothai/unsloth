@@ -24,10 +24,12 @@ class FlowNodeError(Exception):
         *,
         retryable: bool = False,
         status: Optional[int] = None,
+        refusal: Optional[str] = None,
     ):
         super().__init__(message)
         self.retryable = retryable
         self.status = status
+        self.refusal = refusal
 
 
 class FlowCancelled(Exception):

@@ -1026,8 +1026,11 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
     _own_media_reload("image", repo, variant)
 
 
+# slot -> (repo, adapter ids, diffusion load count) Flows baked into a quantized build.
 _BAKED_LORAS: dict[str, tuple[str, frozenset, int]] = {}
 QUANT_BUILDS = ("int8", "fp8", "nvfp4", "mxfp8")
+# The /images/generate refusal tag for a block-streamed load asked to change its baked LoRA weights.
+STREAMED_LORA_REFUSAL = "streamed-lora-weights"
 
 
 async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict]) -> None:
@@ -1075,6 +1078,50 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
         wanted,
         gpu_arbiter.load_count(gpu_arbiter.DIFFUSION),
     )
+
+
+async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[list[dict]]) -> bool:
+    """Studio refused a LoRA weight change (or removal) because the load streams its transformer through GPU
+    memory and its baked weights are fixed. Reload with the requested set baked in, or plain when none is
+    requested, so the render can be retried. Other loads adjust the bake in place and never get here."""
+    from core.inference import gpu_arbiter
+    from studio_mcp import loading
+
+    _BAKED_LORAS.pop("image", None)
+    _LOADED_VARIANT.pop("image", None)
+    repo = model.get("repo") if isinstance(model, dict) else None
+    variant = model.get("variant") if isinstance(model, dict) else None
+    if not repo:
+        try:
+            status = await ctx.call("GET", IMAGE_STATUS)
+        except FlowNodeError:
+            return False
+        repo = status.get("repo_id") if isinstance(status, dict) else None
+    if not repo:
+        return False
+    wanted = frozenset(item["id"] for item in loras or [] if item.get("weight", 1.0) > 0)
+    ctx.log(
+        f"Reloading {repo} with its new LoRA weights baked in: this load streams the transformer, so its "
+        "baked weights are fixed"
+        if wanted
+        else f"Reloading {repo} without LoRAs: this load streams the transformer, so its baked weights are fixed"
+    )
+    await loading.load_media(
+        _caller(ctx),
+        None,
+        kind = "image",
+        model = str(repo),
+        variant = variant,
+        hf_token = None,
+        deadline = time.monotonic() + LOAD_DEADLINE_S,
+        knobs = {"loras": sorted(loras, key = lambda item: item["id"])} if wanted else None,
+    )
+    note_loaded(ctx, "image", str(repo))
+    count = gpu_arbiter.load_count(gpu_arbiter.DIFFUSION)
+    _LOADED_VARIANT["image"] = (str(repo).lower(), (variant or "").lower(), count)
+    if wanted:
+        _BAKED_LORAS["image"] = (str(repo).lower(), wanted, count)
+    return True
 
 
 async def generate_image(
@@ -1187,11 +1234,22 @@ async def generate_image(
                 preview = preview if isinstance(preview, str) and len(preview) < 400_000 else None,
             )
 
-    poller = asyncio.create_task(poll())
+    async def render() -> Any:
+        poller = asyncio.create_task(poll())
+        try:
+            return await ctx.call("POST", "/api/inference/images/generate", json = body)
+        finally:
+            poller.cancel()
+
     try:
-        payload = await ctx.call("POST", "/api/inference/images/generate", json = body)
-    finally:
-        poller.cancel()
+        payload = await render()
+    except FlowNodeError as exc:
+        # Only a block-streamed load refuses this; one reload with the requested set, then one retry.
+        if getattr(exc, "refusal", None) != STREAMED_LORA_REFUSAL or control is not None:
+            raise
+        if not await _reload_with_loras(ctx, model, lora_body):
+            raise
+        payload = await render()
     rows = payload.get("images") if isinstance(payload, dict) else None
     if not isinstance(rows, list) or not rows:
         raise FlowNodeError("Unsloth Studio returned no images")

@@ -53132,7 +53132,9 @@ async def _generate_diffusion_image_run(
     from core.inference.diffusion_memory import (
         IMAGE_REFUSAL_HEADER,
         IMAGE_REFUSAL_MEMORY_ESTIMATE,
+        IMAGE_REFUSAL_STREAMED_LORA,
         ImageActivationShortfallError,
+        StreamedLoraWeightsFixedError,
         unified_memory_refusal_code,
     )
     from core.inference.mlx_diffusion_routing import FallbackLoadRefusedError
@@ -53258,6 +53260,13 @@ async def _generate_diffusion_image_run(
                 status_code = 400,
                 detail = str(exc),
                 headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_MEMORY_ESTIMATE},
+            )
+        except StreamedLoraWeightsFixedError as exc:
+            # Tagged so Flows can reload the model with the new weights and retry.
+            raise HTTPException(
+                status_code = 400,
+                detail = str(exc),
+                headers = {IMAGE_REFUSAL_HEADER: IMAGE_REFUSAL_STREAMED_LORA},
             )
         except ValueError as exc:
             raise HTTPException(status_code = 400, detail = str(exc))

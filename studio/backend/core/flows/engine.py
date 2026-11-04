@@ -455,7 +455,10 @@ class NodeContextImpl:
             return flow_caller.parse_body(response)
         except flow_caller.RouteError as exc:
             raise FlowNodeError(
-                exc.detail, status = exc.status, retryable = exc.status in (409, 503)
+                exc.detail,
+                status = exc.status,
+                retryable = exc.status in (409, 503),
+                refusal = getattr(exc, "refusal", None),
             ) from None
 
     async def ensure_model(

@@ -3,6 +3,7 @@
 
 import asyncio
 
+import pytest
 from core.flows.nodes import _common
 from studio_mcp import loading
 
@@ -320,3 +321,162 @@ def test_flows_own_lora_bake_reload_keeps_the_variant_record(monkeypatch):
         )
         per_node.append(len(loads) - before)
     assert per_node == [2, 0, 0], per_node
+
+
+class _BakedPipe:
+    def set_adapters(
+        self,
+        names,
+        adapter_weights = None,
+    ):
+        self.active = (list(names), list(adapter_weights))
+
+
+def _run_baked_nodes(monkeypatch, sets, placement):
+    """Real generate_image and DiffusionBackend._apply_loras on an int8 load placed with ``placement``; the load is
+    stubbed, and the generate call maps errors the way /images/generate does. Returns each node's media loads."""
+    import threading
+    from types import SimpleNamespace
+
+    from core.flows.registry import FlowNodeError
+    from core.inference import diffusion_lora, diffusion_memory, gpu_arbiter
+    from core.inference.diffusion import DiffusionBackend
+
+    fixed = getattr(diffusion_memory, "StreamedLoraWeightsFixedError", ())
+    tag = getattr(diffusion_memory, "IMAGE_REFUSAL_STREAMED_LORA", None)
+    repo = "unsloth/FLUX.2-klein-4B-GGUF"
+    backend = DiffusionBackend()
+    loads, counts, held = [], {gpu_arbiter.DIFFUSION: 0}, {}
+
+    async def fake_load_media(caller, ctx, **kwargs):
+        knobs = kwargs.get("knobs") or {}
+        loads.append(knobs)
+        counts[gpu_arbiter.DIFFUSION] += 1
+        baked = knobs.get("loras") or []
+        pipe = _BakedPipe()
+        pipe._unsloth_loras_baked = bool(baked)
+        pipe._unsloth_loras = tuple(
+            (diffusion_lora.sanitize_alias(r["id"]), f"/{r['id']}.safetensors", r["weight"])
+            for r in baked
+        )
+        held["state"] = SimpleNamespace(
+            pipe = pipe,
+            transformer_quant = "int8",
+            kind = "gguf",
+            hf_token = None,
+            family = SimpleNamespace(name = "flux.2-klein"),
+            cuda_graphs = (SimpleNamespace(placement = SimpleNamespace(mode = placement)),),
+        )
+
+    async def fake_slots(caller):
+        return {"image": [repo] if held else []}
+
+    class Ctx(_ImageCtx):
+        async def call(
+            self,
+            method,
+            path,
+            json = None,
+        ):
+            if path == _common.IMAGE_STATUS:
+                return {
+                    "loaded": bool(held),
+                    "repo_id": repo,
+                    "resolved": {"transformer_quant": {"value": "int8"}},
+                }
+            if path == "/api/inference/images/generate":
+                specs = [(r["id"], r["weight"]) for r in (json.get("loras") or [])]
+                try:
+                    backend._apply_loras(held["state"], specs or None, threading.Event())
+                except ValueError as exc:
+                    refusal = tag if isinstance(exc, fixed) else None
+                    raise FlowNodeError(str(exc), status = 400, refusal = refusal) from None
+                return {"images": [{"id": "out1"}]}
+            return {}
+
+    monkeypatch.setattr(loading, "load_media", fake_load_media)
+    monkeypatch.setattr(loading, "resident_slots", fake_slots)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_BAKED_LORAS", {})
+    monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: counts.get(owner, 0))
+    monkeypatch.setattr(
+        diffusion_lora,
+        "resolve_specs",
+        lambda specs, **kwargs: [
+            diffusion_lora.ResolvedLora(
+                i, diffusion_lora.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w
+            )
+            for i, w in specs
+            if w != 0
+        ],
+    )
+    model = {"repo": repo, "variant": "Q4_K_M"}
+    per_node = []
+    for loras in sets:
+        before = len(loads)
+        asyncio.run(
+            _common.generate_image(Ctx(None), model = model, prompt = "a fox", options = {"loras": loras})
+        )
+        per_node.append(loads[before:])
+    return per_node
+
+
+FOX = "someone/flux2-lora"
+INK = "someone/flux2-ink"
+BOTH = [{"id": INK, "weight": 1.0}, {"id": FOX, "weight": 1.0}]
+ONE_CHANGED = [{"id": INK, "weight": 0.5}, {"id": FOX, "weight": 1.0}]
+_CHANGES = {
+    "weight": ([{"id": FOX, "weight": 1.0}], [{"id": FOX, "weight": 0.5}]),
+    "removed": ([{"id": FOX, "weight": 1.0}], []),
+    "one_of_two": (BOTH, ONE_CHANGED),
+}
+
+
+@pytest.mark.parametrize("change", sorted(_CHANGES))
+def test_streamed_bake_change_reloads_once_with_the_new_set(monkeypatch, change):
+    first, second = _CHANGES[change]
+    nodes = _run_baked_nodes(monkeypatch, [first, second], "group")
+    assert nodes[1] == [{"loras": second} if second else {}], nodes
+
+
+@pytest.mark.parametrize("change", sorted(_CHANGES))
+def test_model_placement_bake_change_adjusts_in_place(monkeypatch, change):
+    first, second = _CHANGES[change]
+    nodes = _run_baked_nodes(monkeypatch, [first, second], "model")
+    assert nodes[1] == [], nodes
+
+
+def test_streamed_bake_subset_reloads_with_the_subset(monkeypatch):
+    nodes = _run_baked_nodes(monkeypatch, [BOTH, [{"id": FOX, "weight": 1.0}]], "group")
+    assert nodes[1] == [{"loras": [{"id": FOX, "weight": 1.0}]}], nodes
+
+
+@pytest.mark.parametrize("placement", ["group", "model"])
+def test_baked_unchanged_set_does_not_reload(monkeypatch, placement):
+    fox = [{"id": FOX, "weight": 1.0}]
+    nodes = _run_baked_nodes(monkeypatch, [fox, fox, fox], placement)
+    assert [len(n) for n in nodes] == [2, 0, 0], nodes
+
+
+def test_streamed_lora_refusal_is_tagged_through_the_flows_caller():
+    import httpx
+    from core.flows import caller as flow_caller
+    from core.inference import diffusion, diffusion_memory
+    from types import SimpleNamespace
+
+    assert _common.STREAMED_LORA_REFUSAL == diffusion_memory.IMAGE_REFUSAL_STREAMED_LORA
+    state = SimpleNamespace(cuda_graphs = (SimpleNamespace(placement = SimpleNamespace(mode = "group")),))
+    with pytest.raises(diffusion_memory.StreamedLoraWeightsFixedError):
+        diffusion._refuse_weight_change_on_streamed_graph(state)
+    assert issubclass(diffusion_memory.StreamedLoraWeightsFixedError, ValueError)
+    response = httpx.Response(
+        400,
+        json = {"detail": "fixed"},
+        headers = {
+            diffusion_memory.IMAGE_REFUSAL_HEADER: diffusion_memory.IMAGE_REFUSAL_STREAMED_LORA
+        },
+    )
+    with pytest.raises(flow_caller.RouteError) as raised:
+        flow_caller.parse_body(response)
+    assert raised.value.refusal == _common.STREAMED_LORA_REFUSAL

@@ -188,6 +188,7 @@ from .diffusion_memory import (
     ACTIVATION_TILE,
     DeviceMemory,
     ImageActivationShortfallError,
+    StreamedLoraWeightsFixedError,
     OFFLOAD_GROUP,
     OFFLOAD_MODEL,
     OFFLOAD_NONE,
@@ -517,7 +518,7 @@ def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     later generate, so such a load keeps its baked weights until a reload."""
     handles = getattr(state, "cuda_graphs", ()) or ()
     if any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles):
-        raise ValueError(
+        raise StreamedLoraWeightsFixedError(
             "This load streams the transformer through GPU memory, so its LoRA weights are fixed until the "
             "model is reloaded. Reload the model with the new adapter weights."
         )
