@@ -17,7 +17,6 @@ CASES = {
         "_layernorm_sum_partials": ("n_programs",),
     },
     "fp8.py": {"_w8a8_block_fp8_matmul": ("M",)},
-    "nvfp4.py": {"_split_sum_kernel": ("SPLIT",)},
 }
 
 
@@ -47,3 +46,10 @@ def test_runtime_sizes_are_not_specialized(rel):
             ann = params[arg].annotation
             assert ann is None or "constexpr" not in ast.unparse(ann), (name, arg)
             assert arg in dns, (name, arg, sorted(dns))
+
+
+def test_nvfp4_split_sum_keeps_split_constexpr():
+    # The unrolled static_range over SPLIT (2, 4, 8 or 16) is 13-34% faster than a runtime loop.
+    fn = _defs(KERNELS / "nvfp4.py")["_split_sum_kernel"]
+    ann = {a.arg: a.annotation for a in fn.args.args}["SPLIT"]
+    assert ann is not None and "constexpr" in ast.unparse(ann)
