@@ -44,13 +44,21 @@ test("glass menus only apply on top of an applied material", () => {
 
 test("turning the wallpaper fade off drops the band behind the composer", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const workspace = ":is([data-wallpaper-workspace], [data-chat-content-root])";
-	const wallpaper = "> .chat-wallpaper[data-ready] > ";
-	const image = '.chat-wallpaper-image[data-fade="false"]';
-	const paths = [wallpaper + image, wallpaper + ".chat-wallpaper-frame > " + image];
-	const selectors = paths.map(path => `${workspace}:has(${path}) .thread-bottom-fade`);
-	assert.ok(css.includes(selectors.join(",\n") + " {\n  display: none;"));
-	assert.doesNotMatch(css, /:has\(> \.chat-wallpaper\[data-ready\] \.chat-wallpaper-image/);
+	assert.match(
+		css,
+		/\.chat-wallpaper-image\[data-fade="false"\]\) \.thread-bottom-fade \{\n  display: none;/,
+	);
+});
+
+test("the composer fade only checks direct children inside :has() while typing", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const paths = [...css.matchAll(/:has\(([^()]*)\)\s+\.thread-bottom-fade\b/g)]
+		.map(([, path]) => path.trim().replace(/\s*>\s*/g, " > ").trim());
+	// A descendant search here made every keystroke restyle a long chat in WebView2.
+	assert.deepEqual(new Set(paths), new Set([
+		'> .chat-wallpaper[data-ready] > .chat-wallpaper-image[data-fade="false"]',
+		'> .chat-wallpaper[data-ready] > .chat-wallpaper-frame > .chat-wallpaper-image[data-fade="false"]',
+	]));
 });
 
 test("glass strength repairs malformed persisted data", () => {
