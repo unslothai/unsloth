@@ -81,3 +81,29 @@ export function isCompareCancellation(
     (error instanceof DOMException && error.name === "AbortError")
   );
 }
+
+type ComparePaneRunPreparer = (pane: "model1" | "model2") => Promise<void>;
+
+const comparePaneRunPreparers = new Map<string, ComparePaneRunPreparer>();
+
+export function registerComparePaneRunPreparer(
+  pairId: string,
+  prepare: ComparePaneRunPreparer,
+): () => void {
+  comparePaneRunPreparers.set(pairId, prepare);
+  return () => {
+    if (comparePaneRunPreparers.get(pairId) === prepare) {
+      comparePaneRunPreparers.delete(pairId);
+    }
+  };
+}
+
+export async function prepareComparePaneRun(
+  pairId: string | undefined,
+  pane: string | undefined,
+): Promise<void> {
+  if (!pairId || (pane !== "model1" && pane !== "model2")) {
+    return;
+  }
+  await comparePaneRunPreparers.get(pairId)?.(pane);
+}
