@@ -2985,6 +2985,11 @@ def _generation_max_len(self, args, kwargs):
         return 0
 
 
+def _generation_input_ids(args, kwargs):
+    ids = kwargs.get("input_ids", kwargs.get("inputs", args[0] if args else None))
+    return ids if ids is not None else kwargs.get("inputs_embeds", None)
+
+
 def unsloth_fast_generate(self, *args, **kwargs):
     restore_training_mode = self.training
     # Snapshot the real GC mode (e.g. unsloth) before for_inference clears it, so restore does not collapse it to a bool
@@ -3069,13 +3074,23 @@ def unsloth_fast_generate(self, *args, **kwargs):
         graphs = _decode_graphs.enabled()
         if graphs:
             _decode_graphs.start_generation(_generation_max_len(self, args, kwargs))
+            # Buffers / graphs kept from earlier calls are freed when this call would not fit beside them.
+            try:
+                _decode_graphs.make_room(
+                    self, _generation_input_ids(args, kwargs), dtype, KV_CACHE_INCREMENT
+                )
+            except Exception:
+                pass
         # Mixed precision autocast.
         try:
             with (
                 _get_inference_mode_context_manager(self),
                 torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype),
             ):
-                output = self._old_generate(*args, **kwargs)
+                # Out of memory with graphs: freed, and this call is redone eagerly once.
+                output = _decode_graphs.generate_with_fallback(
+                    self, self._old_generate, graphs, args, kwargs
+                )
         finally:
             if graphs:
                 _decode_graphs.end_generation()

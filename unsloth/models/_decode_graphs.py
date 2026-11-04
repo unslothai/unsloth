@@ -40,6 +40,9 @@ __all__ = [
     "rl_generation",
     "studio_generation",
     "generate_scope",
+    "eager_scope",
+    "make_room",
+    "generate_with_fallback",
     "static",
     "alloc_decode_buffers",
     "decode_step",
@@ -70,6 +73,9 @@ _PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "
 
 def enabled():
     """Whether a decode step / prefill on this thread runs (and sizes its buffers) for graph replay."""
+    if getattr(_TLS, "eager", 0):
+        # The eager redo of a generate() that ran out of memory in the graph path.
+        return False
     if ENABLED is not None:
         return bool(ENABLED)
     if torch.compiler.is_compiling():
@@ -132,6 +138,121 @@ class generate_scope(studio_generation):
     to the eager step; for_training() frees the graphs and decode buffers."""
 
     __slots__ = ()
+
+
+class eager_scope:
+    """Per-thread: decode eagerly whatever the variable or scopes say (the OOM redo in generate())."""
+
+    __slots__ = ()
+
+    def __enter__(self):
+        _TLS.eager = getattr(_TLS, "eager", 0) + 1
+        return self
+
+    def __exit__(self, *exc):
+        _TLS.eager -= 1
+        return False
+
+
+# make_room() frees what earlier generate() calls left when the free memory (device + the allocator's
+# cached blocks) is under this multiple of the new call's estimated KV cache + prefill working set.
+ROOM_MARGIN = float(os.environ.get("UNSLOTH_DECODE_GRAPH_ROOM_MARGIN", "1.25"))
+
+
+def _call_bytes(config, bsz, prompt, dtype, increment):
+    """KV cache rows the first decode step allocates (as alloc_decode_buffers) and a prefill working
+    set for one generate() call, in bytes. None when the config lacks a dimension."""
+    try:
+        layers = int(config.num_hidden_layers)
+        hidden = int(config.hidden_size)
+        heads = int(config.num_attention_heads)
+        kv_heads = int(getattr(config, "num_key_value_heads", None) or heads)
+        head_dim = int(getattr(config, "head_dim", None) or hidden // heads)
+        inter = int(getattr(config, "intermediate_size", None) or 4 * hidden)
+        vocab = int(getattr(config, "vocab_size", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None, None
+    size = torch.empty((), dtype = dtype).element_size()
+    rows = _round_up(prompt + increment + 1, BUCKET)
+    kv = layers * rows * 2 * bsz * kv_heads * head_dim * size
+    tokens = bsz * prompt
+    work = tokens * (4 * hidden + 3 * inter + 2 * heads * head_dim) * size + bsz * vocab * 4
+    return rows, kv + work
+
+
+def _free_bytes(device):
+    # Device free memory plus blocks the caching allocator holds but has not handed out.
+    free, _ = torch.cuda.mem_get_info(device)
+    return free + torch.cuda.memory_reserved(device) - torch.cuda.memory_allocated(device)
+
+
+def _empty_cache():
+    torch.cuda.empty_cache()
+
+
+def make_room(model, input_ids, dtype, increment):
+    """Before a graphed generate(): when the decode buffers and graphs kept from earlier calls (other
+    batch sizes, a shorter cache) leave too little free memory for this call, release them and empty
+    the allocator cache. Measured: cudaMemGetInfo plus the allocator's reserved-but-free bytes, against
+    ROOM_MARGIN x the call's estimated KV cache + prefill working set. Returns True when it released."""
+    device = getattr(input_ids, "device", None)
+    if not hasattr(input_ids, "shape") or len(input_ids.shape) < 2 or getattr(device, "type", None) != "cuda":
+        return False
+    stores = [
+        m.__dict__["_unsloth_graph_buffers"]
+        for m in model.modules()
+        if "_unsloth_graph_buffers" in m.__dict__
+    ]
+    if not any(stores) and not any(state.graphs for state in _states(model)):
+        return False
+    bsz, prompt = int(input_ids.shape[0]), int(input_ids.shape[1])
+    rows, need = _call_bytes(model.config, bsz, prompt, dtype, increment)
+    if need is None:
+        return False
+    # A kept buffer of this batch size and dtype that already has the rows is reused, not reallocated.
+    for store in stores:
+        bufs = store.get((bsz, dtype, device))
+        if bufs is not None and bufs[0].shape[0] >= rows:
+            need -= bufs[0].numel() * bufs[0].element_size()
+    if need <= 0:
+        return False
+    if _free_bytes(device) >= ROOM_MARGIN * need:
+        return False
+    release(model)
+    _empty_cache()
+    return True
+
+
+_OOM_WARNED = False
+
+
+def generate_with_fallback(model, generate, graphs, args, kwargs):
+    """generate(*args, **kwargs); when it runs out of GPU memory with graph decode on, free the graphs
+    and decode buffers and redo the call once eagerly, with one warning per process. A caller-supplied
+    cache or streamer has already seen part of the call, so those re-raise instead."""
+    global _OOM_WARNED
+    try:
+        return generate(*args, **kwargs)
+    except torch.cuda.OutOfMemoryError:
+        if (
+            not graphs
+            or kwargs.get("streamer", None) is not None
+            or kwargs.get("past_key_values", None) is not None
+        ):
+            raise
+    if not _OOM_WARNED:
+        _OOM_WARNED = True
+        import warnings
+
+        warnings.warn(
+            "Unsloth: generate() ran out of GPU memory with CUDA-graph decode; freed the decode graphs "
+            "and buffers and decoded this call eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=0 always decodes eagerly).",
+            stacklevel = 3,
+        )
+    release_for_training(model)
+    _empty_cache()
+    with eager_scope():
+        return generate(*args, **kwargs)
 
 
 def static():
@@ -239,6 +360,15 @@ def alloc_decode_buffers(
         key = (bsz, dtype, device)
         bufs = store.get(key)
         if bufs is None or bufs[0].shape[0] < rows:
+            # Graphs reading a replaced / evicted buffer are dropped (BUFFER_EPOCH); a new batch size
+            # beside the ones kept leaves their graphs valid. Evicted before allocating, so the old
+            # and new caches are never both held.
+            if bufs is not None or len(store) >= 2:
+                store.clear()
+                for name in _BUFFER_NAMES:
+                    attn.__dict__.pop(name, None)
+                bufs = None
+                BUFFER_EPOCH += 1
             with _no_inference_tensors():
                 # Zeroed: a captured step reads every row of its bucket, and a masked row still
                 # multiplies its V by 0, which is NaN for uninitialised NaN / inf bit patterns.
@@ -255,11 +385,6 @@ def alloc_decode_buffers(
                 else:
                     temp_O = temp_QA[1][:, :, :hidden_size]
                 scores = torch.empty((bsz, n_heads, 1, rows), dtype = dtype, device = device)
-            # Graphs reading a replaced / evicted buffer are dropped (BUFFER_EPOCH); a new batch size
-            # beside the ones kept leaves their graphs valid.
-            if bufs is not None or len(store) >= 2:
-                store.clear()
-                BUFFER_EPOCH += 1
             bufs = store[key] = (paged, temp_QA, temp_KV, RH_Q, temp_O, scores)
         elif FULL:
             # A reused buffer still holds the last generation's rows: a whole-step graph reads them
