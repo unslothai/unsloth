@@ -76,23 +76,27 @@ if triton is not None:
     ):
         pid = tl.program_id(0).to(tl.int64)
         start = tl.full((), 0, tl.int64)
-        chosen_n = tl.full((), 0, tl.int64)
-        chosen_tile = tl.full((), 0, tl.int64)
-        pp, gp, mp, vp, sp, seedp = P[0], G[0], M[0], V[0], STEP[0], SEED[0]
         for j in tl.static_range(len(sizes)):
             n = tl.cast(sizes[j], tl.int64)
             stop = start + (n + BLOCK - 1) // BLOCK
-            active = (pid >= start) & (pid < stop)
-            pp = tl.where(active, P[j], pp)
-            gp = tl.where(active, G[j], gp)
-            mp = tl.where(active, M[j], mp)
-            vp = tl.where(active, V[j], vp)
-            sp = tl.where(active, STEP[j], sp)
-            seedp = tl.where(active, SEED[j], seedp)
-            chosen_n = tl.where(active, n, chosen_n)
-            chosen_tile = tl.where(active, pid - start, chosen_tile)
+            if (pid >= start) & (pid < stop):
+                _adamw_tile(
+                    P[j],
+                    G[j],
+                    M[j],
+                    V[j],
+                    STEP[j],
+                    LR,
+                    n,
+                    SEED[j],
+                    pid - start,
+                    B1,
+                    B2,
+                    EPS,
+                    WD,
+                    BLOCK,
+                )
             start = stop
-        _adamw_tile(pp, gp, mp, vp, sp, LR, chosen_n, seedp, chosen_tile, B1, B2, EPS, WD, BLOCK)
 
     @triton.jit(do_not_specialize = ["N"])
     def _adamw_single(
@@ -360,24 +364,28 @@ class AdamWBF16(torch.optim.Optimizer):
                             group["weight_decay"],
                         )
                     continue
-                for start in range(0, len(params), 64):
-                    batch = params[start : start + 64]
-                    states = [self.state[p] for p in batch]
-                    update = _cuda_update if torch.compiler.is_compiling() else _launch
-                    update(
-                        batch,
-                        [p.grad for p in batch],
-                        [state["exp_avg"] for state in states],
-                        [state["exp_avg_sq"] for state in states],
-                        [state["step"] for state in states],
-                        lr,
-                        [state["sr_seed"] for state in states],
-                        *group["betas"],
-                        group["eps"],
-                        group["weight_decay"],
-                    )
-                    if not torch.compiler.is_compiling():
-                        torch.autograd.graph.increment_version(batch)
+                small, large = [], []
+                for p in params:
+                    (small if p.numel() <= 65536 else large).append(p)
+                for width, bucket in ((32, small), (8, large)):
+                    for start in range(0, len(bucket), width):
+                        batch = bucket[start : start + width]
+                        states = [self.state[p] for p in batch]
+                        update = _cuda_update if torch.compiler.is_compiling() else _launch
+                        update(
+                            batch,
+                            [p.grad for p in batch],
+                            [state["exp_avg"] for state in states],
+                            [state["exp_avg_sq"] for state in states],
+                            [state["step"] for state in states],
+                            lr,
+                            [state["sr_seed"] for state in states],
+                            *group["betas"],
+                            group["eps"],
+                            group["weight_decay"],
+                        )
+                        if not torch.compiler.is_compiling():
+                            torch.autograd.graph.increment_version(batch)
         return loss
 
     def load_state_dict(self, state_dict):

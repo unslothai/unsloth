@@ -44,7 +44,8 @@ avoids losing small variance updates at common `beta2=0.999`.
 Moment buffers are allocated when a parameter first receives a gradient; frozen
 parameters and unused experts do not receive unnecessary optimizer buffers.
 
-Triton 3.3 and newer batch up to 64 parameter tensors per update launch.
+Triton 3.3 and newer batch up to 32 small or eight larger parameter tensors per
+update launch.
 Older Triton versions use the same fused update one tensor at a time. Compiling
 the optimizer step with `torch.compile(..., fullgraph=True)` is supported on GPU;
 CPU provides a reference implementation.
