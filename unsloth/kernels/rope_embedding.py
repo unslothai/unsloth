@@ -47,12 +47,12 @@ def _rope_heads_tile(
     n_heads,
     cos1,
     sin1,
-    half_head_dim: tl.constexpr,  # head_dim // 2
-    HEADS: tl.constexpr,  # heads in this tile (HEADS_Q or HEADS_K)
-    BLOCK_SIZE: tl.constexpr,  # next pow2 of half_head_dim
-    CAST_TO_SIN: tl.constexpr,  # upcast x to sin's dtype (float32 RoPE for Gemma)
-    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    BACKWARD_PASS: tl.constexpr,  # rotate by -sin (backward)
+    half_head_dim: tl.constexpr,  # hd // 2
+    HEADS: tl.constexpr,  # heads per program
+    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
+    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
 ):
     # Rotates HEADS heads of one (batch, seq) row from X into OUT (OUT may be X: each element is
     # read before it is written by the same program).
@@ -124,15 +124,15 @@ def _rope_embedding_QK(
     n_heads_Q: tl.constexpr,  # 32
     n_heads_K: tl.constexpr,  # 8 (0 without K)
     n_groups_Q: tl.constexpr,  # 1
-    half_head_dim: tl.constexpr,  # head_dim // 2
-    BACKWARD_PASS: tl.constexpr,  # rotate by -sin (backward)
-    HAS_ROPE_INDICES: tl.constexpr,  # position ids tensor given, else seq index
-    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    CAST_TO_SIN: tl.constexpr,  # upcast x to sin's dtype (float32 RoPE for Gemma)
-    HEADS_Q: tl.constexpr,  # query heads per program, pow2 capped by tile size
-    HEADS_K: tl.constexpr,  # key heads per program, pow2 capped by tile size
-    BLOCK_SIZE: tl.constexpr,  # next pow2 of half_head_dim
-    EVICT_INDICES: tl.constexpr,  # eviction hints on the position ids loads
+    half_head_dim: tl.constexpr,  # hd // 2
+    BACKWARD_PASS: tl.constexpr,  # backward (negated sin)
+    HAS_ROPE_INDICES: tl.constexpr,  # explicit rope position ids
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    CAST_TO_SIN: tl.constexpr,  # compute in sin dtype (fp32 gemma)
+    HEADS_Q: tl.constexpr,  # query heads per program
+    HEADS_K: tl.constexpr,  # key heads per program
+    BLOCK_SIZE: tl.constexpr,  # hd // 2 next pow2
+    EVICT_INDICES: tl.constexpr,  # evict-first hint on position ids
 ):
     """
     RoPE is Q * cos + rotate_half(Q) * sin; the backward is the same with -sin.

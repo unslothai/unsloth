@@ -32,11 +32,11 @@ def layernorm_forward(
     mu,
     Y_row_stride: tl.constexpr,  # n_cols
     X_row_stride: tl.constexpr,  # n_cols
-    n_cols: tl.constexpr,  # hidden size (last dim of X)
-    eps: tl.constexpr,  # norm epsilon from the module
-    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, one row per program
-    HAS_BIAS: tl.constexpr = True,  # bias pointer is real
+    n_cols: tl.constexpr,  # hidden size
+    eps: tl.constexpr,  # norm epsilon, per model
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # hidden next pow2
+    HAS_BIAS: tl.constexpr = True,  # bias present
 ):
     row_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -79,7 +79,7 @@ def _layernorm_backward_row(
     row_idx,
     col_offsets,
     mask,
-    n_cols: tl.constexpr,  # n_cols: hidden size
+    n_cols: tl.constexpr,  # hidden size
 ):
     # based on karpathy/llm.c; float32 matches torchtune's Fp32LayerNorm.
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -104,13 +104,13 @@ def layernorm_backward(
     b,
     r,
     mu,
-    dY_row_stride: tl.constexpr,  # dY.stride(0), row pitch of dY
-    dX_row_stride: tl.constexpr,  # dX.stride(0), row pitch of dX
-    X_row_stride: tl.constexpr,  # X.stride(0), row pitch of X
-    n_cols: tl.constexpr,  # hidden size (last dim of X)
-    eps: tl.constexpr,  # norm epsilon, unused in backward
-    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols, one row per program
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    n_cols: tl.constexpr,  # hidden size
+    eps: tl.constexpr,  # norm epsilon, per model
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # hidden next pow2
 ):
     row_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -145,14 +145,14 @@ def layernorm_backward_dw(
     dB,
     n_rows,
     rows_per_program,
-    dY_row_stride: tl.constexpr,  # dY.stride(0), row pitch of dY
-    dX_row_stride: tl.constexpr,  # dX.stride(0), row pitch of dX
-    X_row_stride: tl.constexpr,  # X.stride(0), row pitch of X
-    n_cols: tl.constexpr,  # hidden size (last dim of X)
-    LONG_INDEXING: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    BLOCK_SIZE: tl.constexpr,  # next pow2 of n_cols
-    TRAIN_W: tl.constexpr,  # W needs grad: write per-program fp32 dW partials
-    TRAIN_B: tl.constexpr,  # bias needs grad: write per-program fp32 dB partials
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    n_cols: tl.constexpr,  # hidden size
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # hidden next pow2
+    TRAIN_W: tl.constexpr,  # weight grad partials
+    TRAIN_B: tl.constexpr,  # bias grad partials
 ):
     pid = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
@@ -194,8 +194,8 @@ def _layernorm_sum_partials(
     out1,
     n_programs,
     n_cols,
-    BLOCK_ROWS: tl.constexpr,  # partial rows per step, 64
-    BLOCK_COLS: tl.constexpr,  # cols per program, 64
+    BLOCK_ROWS: tl.constexpr,  # partial rows per program
+    BLOCK_COLS: tl.constexpr,  # columns per program
 ):
     # Not torch.sum: Inductor reorders it, so eager and compiled bytes would differ.
     which = tl.program_id(1)

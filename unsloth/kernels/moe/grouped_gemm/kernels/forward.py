@@ -23,26 +23,26 @@ def _grouped_gemm_forward_kernel(
     gather_indices_ptr,
     topk_weights_ptr,
     # Constant problem shapes
-    NUM_EXPERTS: tl.constexpr,  # experts in the weight stack
+    NUM_EXPERTS: tl.constexpr,  # number of experts
     NUM_TOKENS,
-    TOPK: tl.constexpr,  # experts per token
-    N: tl.constexpr,  # output features per expert
-    K: tl.constexpr,  # input features (reduction dim)
+    TOPK: tl.constexpr,  # experts per token (top-k)
+    N: tl.constexpr,  # out features per expert
+    K: tl.constexpr,  # in features per expert
     NUM_SMS,
     # Tuning params
-    BLOCK_SIZE_M: tl.constexpr,  # rows per tile, from config / autotune (not keyed on tokens)
-    BLOCK_SIZE_N: tl.constexpr,  # output cols per tile, from the kernel config / autotune
-    BLOCK_SIZE_K: tl.constexpr,  # K per step, from the kernel config / autotune
-    PERMUTE_X: tl.constexpr = False,  # gather x from token to expert order on load
-    PERMUTE_Y: tl.constexpr = False,  # scatter y back to token order on store
-    FUSE_MUL_PRE: tl.constexpr = False,  # scale x by topk weights pre-GEMM (launchers leave it off)
-    FUSE_MUL_POST: tl.constexpr = False,  # scale y by topk weights after the GEMM
-    USE_FAST_ACCUM: tl.constexpr = False,  # unused; launchers leave it off
-    USE_TMA_LOAD_W: tl.constexpr = False,  # load W tiles via a TMA descriptor
-    USE_TMA_LOAD_X: tl.constexpr = False,  # load x tiles via a TMA descriptor
-    USE_TMA_STORE: tl.constexpr = False,  # store y tiles via a TMA descriptor
-    acc_dtype: tl.constexpr = tl.float32,  # accumulator dtype (fp32)
-    FLATTEN: tl.constexpr = True,  # flatten the expert loop (tl.range flatten)
+    BLOCK_SIZE_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_SIZE_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_SIZE_K: tl.constexpr,  # block size along K (in features)
+    PERMUTE_X: tl.constexpr = False,  # gather X rows by routing
+    PERMUTE_Y: tl.constexpr = False,  # scatter Y rows by routing
+    FUSE_MUL_PRE: tl.constexpr = False,  # multiply topk weight before gemm
+    FUSE_MUL_POST: tl.constexpr = False,  # multiply topk weight after gemm
+    USE_FAST_ACCUM: tl.constexpr = False,  # fp8 fast accumulation
+    USE_TMA_LOAD_W: tl.constexpr = False,  # TMA load for W
+    USE_TMA_LOAD_X: tl.constexpr = False,  # TMA load for X
+    USE_TMA_STORE: tl.constexpr = False,  # TMA store for output
+    acc_dtype: tl.constexpr = tl.float32,  # accumulator dtype
+    FLATTEN: tl.constexpr = True,  # flatten the expert loop
 ) -> None:
     tl.static_assert(K % BLOCK_SIZE_K == 0)
 

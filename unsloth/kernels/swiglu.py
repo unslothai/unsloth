@@ -27,7 +27,7 @@ def _fg_kernel(
     g,
     h,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,  # 1024 elements per program
+    BLOCK_SIZE: tl.constexpr,  # elements per program
     LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     block_idx = tl.program_id(0)
@@ -74,7 +74,7 @@ def _DWf_DW_dfg_kernel(
     e,
     g,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,  # 1024 elements per program
+    BLOCK_SIZE: tl.constexpr,  # elements per program
     LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     """

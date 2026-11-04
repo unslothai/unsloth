@@ -6515,6 +6515,8 @@ class MLXInferenceBackend:
                 _mlx_warm_inference(
                     model, self._int8_prefill["active"], self._fast_verify_decision()
                 )
+            with mlx_rng_preserved():
+                self._warm_resident_batch()
             if self._ane_prefill["active"]:
                 self._ane_prefill = _ane_prefill_status(True, model)
                 self.models[model_name].update(
@@ -6523,6 +6525,87 @@ class MLXInferenceBackend:
                 )
         logger.info("Model %s loaded successfully", model_name)
         return True
+
+    def narrow_context(self, max_seq_length):
+        """Serve a smaller context from the held weights; None where a fresh load could decide differently."""
+        entry = self.models.get(self.active_model_name)
+        pinned = _positive_int(max_seq_length)
+        if entry is None or pinned is None or not self._served_context:
+            return None
+        offload = entry.get("mlx_offload") or {}
+        if (
+            any(part.get("applied") for part in offload.values() if isinstance(part, dict))
+            or self._kv_quant["requested_kv_bits"] is not None
+            or self._turboquant
+            or self._prompt_cache_room is not None
+            or entry.get("spec_fallback_reason")
+        ):
+            return None
+        try:
+            if not self._resume_files or self._resume_files != self._resume_weight_files():
+                return None
+        except OSError:
+            return None
+        # The served length reads this attribute before the argument.
+        previous = self._model.max_seq_length
+        self._model.max_seq_length = pinned
+        served = self._resolve_context_lengths(self._model, pinned)[0]
+        if not served or served > self._served_context:
+            self._model.max_seq_length = previous
+            return None
+        self._clear_prompt_cache()
+        self._served_context = served
+        self._kv_quant, self._kv_cache_window, enforced, self._kv_context_budget = (
+            self._resolve_kv_policy(self._is_vlm, None, pinned, served)
+        )
+        fields = {
+            "context_length": served,
+            "requested_context_length": pinned,
+            "context_length_enforced": enforced,
+            "context_length_fitted": None,
+            "mlx_context_budget": self._kv_context_budget,
+        }
+        entry.update(fields)
+        return fields
+
+    def _warm_resident_batch(self):
+        """Warm the request batch Zoo's warm-up misses: twice greedy (Qwen4 scopes build kernels only after a reply), then sampled."""
+        if self.resident_unavailable_reason({}) is not None:
+            return
+        messages = [{"role": "user", "content": "Count from one to ten."}]
+        # Cold replies would teach the drafter's controller that drafting does not pay.
+        draft = self._speculative_draft
+        controller = getattr(draft, "controller", None)
+        if controller is not None:
+            draft.controller = copy.deepcopy(controller)
+        try:
+            for temperature in (0.0, 0.0, 0.7):
+                session = self.open_resident_batch(width = 1)
+                try:
+                    session.admit(
+                        {"messages": messages, "temperature": temperature, "max_new_tokens": 16},
+                        "warm",
+                    )
+                    while session.rows_in_flight:
+                        for _, snapshot in session.step():
+                            if isinstance(snapshot, BaseException):
+                                raise snapshot
+                finally:
+                    session.close()
+        except Exception as error:
+            if is_metal_queue_dead(error):
+                raise
+            logger.warning(
+                "MLX batch warm-up failed, so the first request runs it: %s: %s",
+                type(error).__name__,
+                error,
+            )
+        finally:
+            if controller is not None:
+                draft.controller = controller
+            room = self._prompt_cache_room
+            self._clear_prompt_cache()
+            self._prompt_cache_room = room
 
     def _render_template_probe(self, is_vision: bool) -> str:
         """Renders through the target generation uses, since the recovery renderer returns None off-list."""

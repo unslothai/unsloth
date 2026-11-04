@@ -31,7 +31,7 @@ def _exact_forward_kernel(
     g,
     h,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,  # 1024 elements per program
+    BLOCK_SIZE: tl.constexpr,  # elements per program
     LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     block_idx = tl.program_id(0)
@@ -78,7 +78,7 @@ def _exact_backward_kernel(
     e,
     g,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,  # 1024 elements per program
+    BLOCK_SIZE: tl.constexpr,  # elements per program
     LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     """
@@ -150,7 +150,7 @@ def _approx_forward_kernel(
     g,
     h,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,  # 1024 elements per program
+    BLOCK_SIZE: tl.constexpr,  # elements per program
     LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     block_idx = tl.program_id(0)
@@ -199,7 +199,7 @@ def _approx_backward_kernel(
     e,
     g,
     n_elements,
-    BLOCK_SIZE: tl.constexpr,  # 1024 elements per program
+    BLOCK_SIZE: tl.constexpr,  # elements per program
     LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
 ):
     """

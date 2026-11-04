@@ -51,21 +51,21 @@ def _grouped_gemm_dX_kernel(
     dX_ptr,
     gather_indices_ptr,
     m_sizes_ptr,
-    NUM_EXPERTS: tl.constexpr,  # experts in the weight stack
+    NUM_EXPERTS: tl.constexpr,  # number of experts
     NUM_TOKENS,
-    TOPK: tl.constexpr,  # experts per token
-    N: tl.constexpr,  # forward output features (dY width)
-    K: tl.constexpr,  # forward input features (dX width)
+    TOPK: tl.constexpr,  # experts per token (top-k)
+    N: tl.constexpr,  # out features per expert
+    K: tl.constexpr,  # in features per expert
     NUM_SMS,
-    BLOCK_SIZE_M: tl.constexpr,  # rows per tile, from config / autotune (not keyed on tokens)
-    BLOCK_SIZE_N: tl.constexpr,  # N per step, from the kernel config / autotune
-    BLOCK_SIZE_K: tl.constexpr,  # dX cols per tile, from the kernel config / autotune
-    PERMUTE_X: tl.constexpr = False,  # forward gathered x: scatter dX back to token order
-    PERMUTE_Y: tl.constexpr = False,  # forward scattered y: gather dY from token order
-    USE_TMA_LOAD_W: tl.constexpr = False,  # load W tiles via a TMA descriptor
-    USE_TMA_LOAD_dY: tl.constexpr = False,  # load dY tiles via a TMA descriptor
-    USE_TMA_STORE: tl.constexpr = False,  # store dX tiles via a TMA descriptor
-    FLATTEN: tl.constexpr = True,  # flatten the expert loop (tl.range flatten)
+    BLOCK_SIZE_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_SIZE_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_SIZE_K: tl.constexpr,  # block size along K (in features)
+    PERMUTE_X: tl.constexpr = False,  # gather X rows by routing
+    PERMUTE_Y: tl.constexpr = False,  # scatter Y rows by routing
+    USE_TMA_LOAD_W: tl.constexpr = False,  # TMA load for W
+    USE_TMA_LOAD_dY: tl.constexpr = False,  # TMA load for dY
+    USE_TMA_STORE: tl.constexpr = False,  # TMA store for output
+    FLATTEN: tl.constexpr = True,  # flatten the expert loop
 ) -> None:
     TOTAL_TOKENS = NUM_TOKENS * TOPK
     output_dtype = dX_ptr.dtype.element_ty
@@ -239,21 +239,21 @@ def _grouped_gemm_dW_kernel(
     m_sizes_ptr,
     gather_indices_ptr,
     NUM_TOKENS,
-    TOPK: tl.constexpr,  # experts per token
-    NUM_EXPERTS: tl.constexpr,  # experts in the weight stack
-    N: tl.constexpr,  # dW rows per expert (dY width)
-    K: tl.constexpr,  # dW cols per expert (x width)
+    TOPK: tl.constexpr,  # experts per token (top-k)
+    NUM_EXPERTS: tl.constexpr,  # number of experts
+    N: tl.constexpr,  # out features per expert
+    K: tl.constexpr,  # in features per expert
     NUM_SMS,
-    BLOCK_SIZE_N: tl.constexpr,  # dW rows per tile, from the kernel config / autotune
-    BLOCK_SIZE_K: tl.constexpr,  # dW cols per tile, from the kernel config / autotune
-    BLOCK_SIZE_M: tl.constexpr,  # rows per step, from config / autotune (not keyed on tokens)
-    PERMUTE_X: tl.constexpr = False,  # gather x rows from token order
-    PERMUTE_Y: tl.constexpr = False,  # gather dY rows from token order
-    USE_TMA_LOAD_dY: tl.constexpr = False,  # load dY tiles via a TMA descriptor
-    USE_TMA_LOAD_X: tl.constexpr = False,  # load x tiles via a TMA descriptor
-    USE_TMA_STORE: tl.constexpr = False,  # store dW tiles via a TMA descriptor
-    acc_dtype: tl.constexpr = tl.float32,  # accumulator dtype (fp32)
-    ACCUMULATE: tl.constexpr = False,  # add into the existing dW instead of overwriting
+    BLOCK_SIZE_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_SIZE_K: tl.constexpr,  # block size along K (in features)
+    BLOCK_SIZE_M: tl.constexpr,  # block size along M (rows)
+    PERMUTE_X: tl.constexpr = False,  # gather X rows by routing
+    PERMUTE_Y: tl.constexpr = False,  # scatter Y rows by routing
+    USE_TMA_LOAD_dY: tl.constexpr = False,  # TMA load for dY
+    USE_TMA_LOAD_X: tl.constexpr = False,  # TMA load for X
+    USE_TMA_STORE: tl.constexpr = False,  # TMA store for output
+    acc_dtype: tl.constexpr = tl.float32,  # accumulator dtype
+    ACCUMULATE: tl.constexpr = False,  # accumulate into existing dW
     # Seed the fp32 accumulator with the existing tile (load overlaps the main loop) instead of adding
     # it after the loop. Only for a bf16 / fp16 dW, whose final rounding dwarfs the fp32 order change;
     # an fp32 dW adds at the end, the same single fp32 add autograd would do.
@@ -436,22 +436,22 @@ def _grouped_gemm_dW_per_expert_kernel(
     m_sizes_ptr,
     gather_indices_ptr,
     NUM_TOKENS,
-    TOPK: tl.constexpr,  # experts per token
-    NUM_EXPERTS: tl.constexpr,  # experts in the weight stack
-    N: tl.constexpr,  # dW rows per expert (dY width)
-    K: tl.constexpr,  # dW cols per expert (x width)
+    TOPK: tl.constexpr,  # experts per token (top-k)
+    NUM_EXPERTS: tl.constexpr,  # number of experts
+    N: tl.constexpr,  # out features per expert
+    K: tl.constexpr,  # in features per expert
     NUM_SMS,
-    BLOCK_SIZE_N: tl.constexpr,  # dW rows per tile, from the kernel config / autotune
-    BLOCK_SIZE_K: tl.constexpr,  # dW cols per tile, from the kernel config / autotune
-    BLOCK_SIZE_M: tl.constexpr,  # rows per step, from config / autotune (not keyed on tokens)
-    PERMUTE_X: tl.constexpr = False,  # gather x rows from token order
-    PERMUTE_Y: tl.constexpr = False,  # gather dY rows from token order
-    USE_TMA_LOAD_dY: tl.constexpr = False,  # load dY tiles via a TMA descriptor
-    USE_TMA_LOAD_X: tl.constexpr = False,  # load x tiles via a TMA descriptor
-    USE_TMA_STORE: tl.constexpr = False,  # store dW tiles via a TMA descriptor
-    acc_dtype: tl.constexpr = tl.float32,  # accumulator dtype (fp32)
-    ACCUMULATE: tl.constexpr = False,  # add into the existing dW instead of overwriting
-    EXPERTS_POW2: tl.constexpr = 1,  # next pow2 of NUM_EXPERTS, for the m_sizes prefix sum
+    BLOCK_SIZE_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_SIZE_K: tl.constexpr,  # block size along K (in features)
+    BLOCK_SIZE_M: tl.constexpr,  # block size along M (rows)
+    PERMUTE_X: tl.constexpr = False,  # gather X rows by routing
+    PERMUTE_Y: tl.constexpr = False,  # scatter Y rows by routing
+    USE_TMA_LOAD_dY: tl.constexpr = False,  # TMA load for dY
+    USE_TMA_LOAD_X: tl.constexpr = False,  # TMA load for X
+    USE_TMA_STORE: tl.constexpr = False,  # TMA store for output
+    acc_dtype: tl.constexpr = tl.float32,  # accumulator dtype
+    ACCUMULATE: tl.constexpr = False,  # accumulate into existing dW
+    EXPERTS_POW2: tl.constexpr = 1,  # num experts next pow2
 ) -> None:
     """dW[e] = dY_e^T X_e with one program per (expert, n tile, k tile).
 

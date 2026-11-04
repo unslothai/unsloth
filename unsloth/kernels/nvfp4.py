@@ -81,10 +81,10 @@ def _nvfp4_dequant_kernel(
     rows,
     half_cols,
     scale_cols,
-    BLOCK_R: tl.constexpr,  # rows per program (8)
-    BLOCK_C: tl.constexpr,  # packed bytes per row per program (256)
-    SCALE_E4M3_BYTES: tl.constexpr,  # scales are raw e4m3 bytes, decoded in software
-    INT64_OFFSETS: tl.constexpr,  # int64 offsets when numel can pass 2**31
+    BLOCK_R: tl.constexpr,  # rows per program
+    BLOCK_C: tl.constexpr,  # cols per program
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
 ):
     r = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
     if INT64_OFFSETS:
@@ -193,12 +193,12 @@ def _nvfp4_weight_tile(
     stride_pc,
     stride_sr,
     stride_sc,
-    BLOCK_R: tl.constexpr,  # weight rows in the tile (caller's N or reduction block)
-    BLOCK_K: tl.constexpr,  # weight cols in the tile
-    SCALE_E4M3_BYTES: tl.constexpr,  # scales are raw e4m3 bytes, decoded in software
-    OUT_DTYPE: tl.constexpr,  # tile dtype, the activation dtype
-    INT64_OFFSETS: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    MASK_PAD: tl.constexpr,  # zero the padding of a partial tile
+    BLOCK_R: tl.constexpr,  # rows per program
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    OUT_DTYPE: tl.constexpr,  # output dtype
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     # Rounded like dense: E2M1 * (block scale / global scale) in fp32, then one cast; out-of-range decodes to 0.
     c = k0 // 2 + tl.arange(0, BLOCK_K // 2)
@@ -251,13 +251,13 @@ def _nvfp4_matmul_fwd_kernel(
     stride_yn,
     stride_ys,
     k_per_split,
-    BLOCK_M: tl.constexpr,  # rows per program, from the M-bucketed config
-    BLOCK_N: tl.constexpr,  # output cols per program, from the M-bucketed config
-    BLOCK_K: tl.constexpr,  # K per step, from the M-bucketed config
-    GROUP_M: tl.constexpr,  # M tiles per swizzle group (8)
-    SCALE_E4M3_BYTES: tl.constexpr,  # scales are raw e4m3 bytes, decoded in software
-    INT64_OFFSETS: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    MASK_PAD: tl.constexpr,  # N or K not a multiple of the tile: zero the weight padding
+    BLOCK_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    GROUP_M: tl.constexpr,  # M tiles per swizzle group
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     # Split K writes fp32 partials [split, M, N], summed in a fixed order afterwards (deterministic).
     pid = tl.program_id(0)
@@ -339,13 +339,13 @@ def _nvfp4_matmul_dx_kernel(
     stride_dk,
     stride_ds,
     n_per_split,
-    BLOCK_M: tl.constexpr,  # rows per program, from the M-bucketed config
-    BLOCK_N: tl.constexpr,  # N per step (reduction), from the M-bucketed config
-    BLOCK_K: tl.constexpr,  # dX cols per program, from the M-bucketed config
-    GROUP_M: tl.constexpr,  # M tiles per swizzle group (8)
-    SCALE_E4M3_BYTES: tl.constexpr,  # scales are raw e4m3 bytes, decoded in software
-    INT64_OFFSETS: tl.constexpr,  # int64 offsets when numel can pass 2**31
-    MASK_PAD: tl.constexpr,  # N or K not a multiple of the tile: zero the weight padding
+    BLOCK_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    GROUP_M: tl.constexpr,  # M tiles per swizzle group
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     pid = tl.program_id(0)
     split_id = tl.program_id(1)
@@ -559,8 +559,8 @@ def _split_sum_kernel(
     partial_ptr,
     out_ptr,
     numel,
-    SPLIT: tl.constexpr,  # partials to sum (pow2 <= 16)
-    BLOCK: tl.constexpr,  # elements per program (1024)
+    SPLIT: tl.constexpr,  # split-K partials
+    BLOCK: tl.constexpr,  # block size
 ):
     # Fixed-order sum of the split partials (determinism), one cast.
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)

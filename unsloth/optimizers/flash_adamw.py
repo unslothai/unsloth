@@ -268,7 +268,7 @@ def _variance_update(var, grad, beta2):
             out_ptr,
             n,
             beta2,
-            BLOCK: tl.constexpr,  # 1024 elements per program
+            BLOCK: tl.constexpr,  # elements per program
         ):
             offsets = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
             mask = offsets < n
