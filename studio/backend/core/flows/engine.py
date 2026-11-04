@@ -2187,12 +2187,16 @@ def _origin(account: AccountContext, kind: Optional[str]) -> dict:
 def _local_fingerprint(path: str) -> Optional[list]:
     try:
         if os.path.isdir(path):
-            entries = sorted(os.scandir(path), key = lambda e: e.name)
+            # Every file under it by relative path: a model's modules can live in subfolders
+            # (a sentence-transformers `2_Dense`), and they load with it.
             digest = hashlib.sha256()
-            for e in entries:
-                if e.is_file():
-                    st = e.stat()
-                    digest.update(f"{e.name}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+            for root, dirs, files in os.walk(path):
+                dirs.sort()
+                for name in sorted(files):
+                    full = os.path.join(root, name)
+                    st = os.stat(full)
+                    rel = os.path.relpath(full, path).replace(os.sep, "/")
+                    digest.update(f"{rel}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
             return [[os.path.basename(path.rstrip(os.sep)), digest.hexdigest()]]
         st = os.stat(path)
         return [[os.path.basename(path), st.st_size, st.st_mtime_ns]]

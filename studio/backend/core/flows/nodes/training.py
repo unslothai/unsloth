@@ -367,9 +367,12 @@ def drafter_request(params: dict) -> dict:
 def trained_system_prompt(config: dict) -> str:
     """The one system message every training row got, when the run set one: the GRPO prompt, or
     the SFT mapping's system prompt. A per-row system column has no single value to reuse."""
-    if config.get("objective") == "grpo" and config.get("rl_system_prompt"):
-        return str(config["rl_system_prompt"])
     mapping = config.get("custom_format_mapping")
+    if config.get("objective") == "grpo" and config.get("rl_system_prompt"):
+        # A column mapped to the system role wins over the fallback prompt, row by row.
+        if isinstance(mapping, dict) and "system" in mapping.values():
+            return ""
+        return str(config["rl_system_prompt"])
     if isinstance(mapping, dict) and isinstance(mapping.get("__system_prompt"), str):
         return mapping["__system_prompt"].strip()
     return ""

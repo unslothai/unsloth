@@ -1154,3 +1154,14 @@ def test_an_automatically_sized_chat_model_is_put_back_automatically_sized(monke
     previous = asyncio.run(training.active_chat_model(ctx))
     asyncio.run(training.restore_chat_model(ctx, previous, "run-1"))
     assert loads[0]["max_seq_length"] == 0
+
+
+def test_a_grpo_run_with_a_system_column_does_not_claim_the_fallback_prompt():
+    config = {
+        "objective": "grpo",
+        "rl_system_prompt": "Reason, then answer.",
+        "custom_format_mapping": {"question": "user", "rule": "system"},
+    }
+    assert training.trained_system_prompt(config) == ""
+    config["custom_format_mapping"] = {"question": "user"}
+    assert training.trained_system_prompt(config) == "Reason, then answer."
