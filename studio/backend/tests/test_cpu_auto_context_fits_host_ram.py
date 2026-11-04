@@ -45,8 +45,14 @@ def _cpu_load(
     *,
     available_mib,
     native = NATIVE,
+    cpu_only_build = True,
     **load_kwargs,
 ):
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_binary_ships_no_gpu_backend",
+        staticmethod(lambda *_a, **_kw: cpu_only_build),
+    )
     monkeypatch.setattr(
         LlamaCppBackend, "_apple_metal_memory_budget_bytes", staticmethod(lambda: 0)
     )
@@ -96,4 +102,11 @@ def test_rpc_offload_is_not_sized_against_coordinator_ram(tmp_path, monkeypatch,
         monkeypatch.delenv("LLAMA_ARG_RPC", raising = False)
         extra = {"extra_args": ["--rpc", "10.0.0.2:50052"]}
     _backend, ctx = _cpu_load(tmp_path, monkeypatch, available_mib = 8 * 1024, n_ctx = 0, **extra)
+    assert ctx == NATIVE
+
+
+def test_an_empty_gpu_probe_on_a_gpu_build_is_not_sized_against_host_ram(tmp_path, monkeypatch):
+    _backend, ctx = _cpu_load(
+        tmp_path, monkeypatch, available_mib = 8 * 1024, cpu_only_build = False, n_ctx = 0
+    )
     assert ctx == NATIVE
