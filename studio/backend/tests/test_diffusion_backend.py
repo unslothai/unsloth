@@ -392,8 +392,9 @@ def _fake_hub_cache(
 
 
 def test_a_superseded_cached_revision_does_not_disable_the_mirror(monkeypatch, tmp_path):
-    """Only refs/main can satisfy a gated fetch: on a 401 hf_hub_download resolves refs/<revision>
-    to one commit, so a superseded revision must not read as cached."""
+    """Only the revision refs/main names can satisfy a gated fetch: on a 401 the HEAD call fails
+    and hf_hub_download resolves refs/<revision> to ONE commit, returning its pointer or
+    re-raising. A complete but superseded revision must therefore not read as cached."""
     from core.inference.diffusion_families import _upstream_is_cached
 
     gated = "black-forest-labs/FLUX.1-dev"
@@ -534,8 +535,9 @@ def test_the_union_never_borrows_across_revisions_inside_one_root(monkeypatch, t
 
 
 def test_te_prequant_equivalence_group_accepts_a_mirrored_base():
-    """The T5-XXL artifact is shared via an equivalence group of upstream ids; a mirrored base must
-    be normalised or the pre-cast encoder is refused, forcing the dense multi-GB download."""
+    """The T5-XXL artifact is shared across the FLUX.1 releases through an equivalence group of
+    UPSTREAM ids. A mirrored base is a different string, so without normalising it the pre-cast
+    encoder is refused and the load falls back to the dense multi-GB download."""
     from core.inference.diffusion_te_prequant import te_base_equivalent
 
     ckpt = "black-forest-labs/FLUX.1-schnell"
@@ -595,7 +597,8 @@ class _FakeGenerator:
 
 
 class _FakeImage:
-    """Stand-in for a generated PIL image; the route persists it, so tests only count results."""
+    """Stand-in for a generated PIL image (the route persists it; here we only
+    count how many come back)."""
 
 
 class _FakePipe:
@@ -678,8 +681,9 @@ class _FakeTransformer:
 
 
 class _FakeImg2ImgPipe:
-    """Fake img2img pipe recording kwargs; takes image and strength but no width or height, as real
-    ones derive size from the input."""
+    """An img2img pipeline call: records the image-conditioned kwargs. Its signature
+    declares image/strength but NOT width/height, mirroring real img2img pipelines
+    (which derive the output size from the input image)."""
 
     last_kwargs: dict = {}
 
@@ -725,8 +729,9 @@ class _FakeImg2ImgPipeline:
 
 
 class _FakeInpaintPipe:
-    """Fake inpaint pipe recording image, mask_image and strength; like real ones it derives size
-    from the input, so no width or height."""
+    """An inpaint pipeline call: records image + mask_image + strength. Real inpaint
+    pipelines take both an init image and a grayscale mask and derive output size from
+    the input, so width/height are not in its signature."""
 
     last_kwargs: dict = {}
 
@@ -1412,8 +1417,9 @@ def _tiny_png_b64() -> str:
 
 
 def test_generate_img2img_uses_from_pipe(fake_runtime, tmp_path):
-    """An init_image sends generate() to the img2img pipe built via Pipeline.from_pipe, with no
-    reload; width and height are dropped as the pipe derives size from the input."""
+    """An init_image routes generate() through the family's img2img pipeline, built via
+    Pipeline.from_pipe around the loaded pipe (no reload), with image + strength passed
+    and width/height dropped (the img2img pipe derives size from the input image)."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = _loaded_backend(tmp_path)
     assert backend.status()["workflows"] == ["txt2img", "img2img", "upscale", "inpaint", "outpaint"]
@@ -1663,8 +1669,9 @@ def test_generate_rejects_reference_on_unsupported_family(fake_runtime, tmp_path
 
 
 def test_generate_upscale_enlarges_and_low_strength(fake_runtime, tmp_path):
-    """An init_image plus upscale goes via img2img: the source is enlarged to size times factor
-    (rounded to /16) before denoise; strength defaults low; the factor is capped against OOM."""
+    """An init_image + upscale factor routes generate() through the family's img2img
+    pipeline (hires fix): the source is enlarged to size*factor (rounded to /16) before the
+    denoise, the strength defaults low, and the factor is capped so a huge value can't OOM."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = _loaded_backend(tmp_path)
     assert "upscale" in backend.status()["workflows"]
@@ -1726,7 +1733,8 @@ def test_decode_image_rejects_oversized(fake_runtime, tmp_path):
 
 
 def test_upscale_output_is_capped(fake_runtime, tmp_path):
-    """Upscale caps the output side at 2048, so a large upload at 4x cannot OOM the VAE."""
+    """Upscale bounds the absolute output side to 2048 even when input*factor exceeds it, so a
+    large upload at 4x can't OOM the VAE/transformer."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = _loaded_backend(tmp_path)
     backend.generate(prompt = "x", steps = 4, seed = 1, init_image = _png_b64(1024), upscale = 4.0)
@@ -1775,8 +1783,9 @@ def test_inpaint_snaps_image_and_mask_together(fake_runtime, tmp_path):
 
 
 def test_generate_reference_uses_loaded_pipe_at_slider_size(fake_runtime, tmp_path):
-    """A reference family (FLUX.2-klein) passes init_image as the loaded pipe's image arg, with no
-    from_pipe or strength; output stays at slider size as the pipe resizes it."""
+    """A reference family (FLUX.2-klein) advertises txt2img + reference, and a generate with
+    an init_image passes it as the loaded pipe's `image` arg (no from_pipe, no strength) while
+    the output size stays the REQUESTED slider size (the pipe resizes the reference itself)."""
     import diffusers
 
     diffusers.Flux2KleinPipeline = _FakePipeline
@@ -1920,8 +1929,9 @@ def test_image_conditioned_passes_image_size_not_slider(fake_runtime, tmp_path):
 
 
 def test_compile_shape_dims_follow_workflow():
-    """_compile_shape_dims mirrors generate(): slider size for txt2img, reference and controlnet,
-    the input image size for image-conditioned workflows (forward runs at init_pil.size)."""
+    """_compile_shape_dims mirrors generate()'s width/height derivation: slider size for
+    txt2img / reference / controlnet, the input image's size for the image-conditioned
+    workflows (whose forward runs at init_pil.size, whatever the sliders say)."""
     from PIL import Image
 
     from core.inference.diffusion import _compile_shape_dims
@@ -1935,7 +1945,8 @@ def test_compile_shape_dims_follow_workflow():
 
 
 def test_register_shape_uses_actual_forward_dims(fake_runtime, tmp_path, monkeypatch):
-    """Register forward dims, not slider values, so the compile-cache manifest stays correct."""
+    """Register the forward's actual dims, not slider values, so the compile-cache manifest stays
+    correct."""
     from core.inference import diffusion as diff
 
     registered: list = []
@@ -1962,8 +1973,9 @@ def test_register_shape_uses_actual_forward_dims(fake_runtime, tmp_path, monkeyp
 
 
 def test_edit_family_uses_own_pipeline_and_requires_image(fake_runtime, tmp_path):
-    """An instruction-editing family (Qwen-Image-Edit) exposes only 'edit', runs the image through
-    its own loaded pipeline, and rejects calls without an input image."""
+    """An instruction-editing family (Qwen-Image-Edit) exposes only the 'edit' workflow,
+    runs the image through its OWN loaded pipeline (no from_pipe), and rejects a call with
+    no input image."""
     (tmp_path / "model.gguf").write_bytes(b"x")
     backend = DiffusionBackend()
     _load_into(
@@ -2351,8 +2363,9 @@ def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
 
 
 def test_resolve_base_repo_maps_a_mirrored_card_tag_back_to_the_vendor_id(monkeypatch):
-    """A card tag may name a mirror, but status()["base_repo"] and an adapter's base_model must stay
-    the vendor id; only fetch sites use the mirror."""
+    """A card tag can now name a mirror and clear the trust bar. This value is
+    status()["base_repo"] and a trained adapter's default base_model, so it must be the vendor
+    id; only the fetch sites see the mirror."""
     import core.inference.diffusion as dmod
 
     fam = detect_family("unsloth/FLUX.1-dev-GGUF")
@@ -2377,8 +2390,9 @@ def test_detect_family_routes_layered_to_its_own_pipeline():
 
 
 def test_failed_load_rolls_back_eager_patches(fake_runtime, tmp_path, monkeypatch):
-    """A failure after the eager patches install but before the _LoadState commit must roll the
-    process-wide patches back, or the next off load is contaminated."""
+    """A load failure AFTER the eager patches install but BEFORE the _LoadState commit must
+    roll the process-wide patches back, so the next bit-identical `off` load is not
+    contaminated (the asymmetric-cleanup bug the reviewers flagged)."""
     from core.inference import diffusion as diff_mod
     from core.inference import diffusion_eager_patches as ep
 
@@ -2785,7 +2799,8 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend, "_estimate_download_bytes", staticmethod(lambda *a, **k: (0, []))
     )
-    # Drain the worker by identity: an enumerated thread may not be joinable yet.
+    # Drain the worker by identity, not by diffing threading.enumerate(): an enumerated thread
+    # may not be joinable yet (ident is set before _started).
     holding = threading.Event()
     entered = threading.Event()
     worker = []
@@ -3614,7 +3629,8 @@ def test_prefetch_aborts_when_cancelled(tmp_path):
 
 
 def test_each_load_owns_its_cancel_event(fake_runtime, monkeypatch, tmp_path):
-    # unload() drops _loading, so a shared cancel Event lets clear() un-cancel the old worker.
+    # unload() drops _loading, so a replacement starts while the old worker still prefetches;
+    # a shared Event would let the replacement's clear() un-cancel it.
     backend = DiffusionBackend()
     started = threading.Event()
     seen: list[threading.Event] = []
@@ -3732,7 +3748,8 @@ def test_single_file_load_reads_config_and_companions_from_the_mirror(
 
 
 def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime, monkeypatch):
-    """Loaders fetch every component from the given id, so gated picks must arrive swapped."""
+    """Both per-component loaders fetch EVERY component from the id handed to them, so a gated
+    pipeline pick must arrive already swapped."""
     from core.inference import diffusion as dmod
 
     diffusers = sys.modules["diffusers"]
@@ -3809,7 +3826,8 @@ def test_dense_quant_pulls_the_transformer_from_the_mirror(monkeypatch):
 
 
 def test_load_progress_and_delete_guard_follow_the_mirrored_companion(monkeypatch):
-    """Bytes land in the mirror, so scanning upstream shows zero and the repo looks deletable."""
+    """Bytes land under the mirror, so scanning the upstream reports a companion download of zero
+    and leaves the repo being written to deletable."""
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -5635,7 +5653,8 @@ def test_dense_quant_replan_no_retry_when_capacity_truly_short(
 
 
 def _decline_dense_quant(backend, monkeypatch, tmp_path):
-    """Makes the dense-quant fast path decline for capacity, like the replan no-retry test."""
+    """Configure the harness so the dense-quant fast path is declined for capacity
+    (mirrors test_dense_quant_replan_no_retry_when_capacity_truly_short)."""
     import dataclasses
 
     from core.inference import diffusion as dmod
@@ -6933,7 +6952,7 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
 
 
 def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatch):
-    """Re-plans must price the quantised transformer, else offloaded runs miss the fast path."""
+    """Pipeline replans price the quantized transformer."""
     from core.inference import diffusion as dmod
     from core.inference.diffusion_memory import OFFLOAD_NONE, DeviceMemory
 
@@ -6942,7 +6961,7 @@ def test_plan_memory_pipeline_replan_prices_the_quantised_transformer(monkeypatc
     monkeypatch.setattr(
         dmod,
         "settled_snapshot_device_memory",
-        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
+        lambda t, **kwargs: DeviceMemory("cuda", "cuda", "discrete_vram", 40000, 40960),
     )
     monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 4000)
     monkeypatch.setattr(
@@ -8794,6 +8813,11 @@ def test_download_plan_counts_the_hosted_prequant_in_the_required_footprint(monk
     assert plan["required_bytes"] - baseline["required_bytes"] == 6 * GB
     prequant = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-FP8")
     assert prequant["checkpoint"] is False
+    assert prequant["hosted_denoiser"] is False
+    selected = [entry for entry in plan["entries"] if entry["checkpoint"]]
+    assert len(selected) == 1
+    assert selected[0]["repo_id"] == "unsloth/Z-Image-GGUF"
+    assert selected[0]["files"] == ["Z-Image-Turbo-Q4_K_M.gguf"]
 
 
 def test_download_plan_counts_a_cached_lower_auto_prequant(monkeypatch):
@@ -10279,7 +10303,8 @@ def test_files_already_cached_ignores_a_superseded_revision(monkeypatch, tmp_pat
 
 
 def test_files_already_cached_skips_unusable_hits(monkeypatch, tmp_path):
-    """Dangling symlinks and missing files are not hits, so neither can complete the live set."""
+    """A dangling symlink is a path but not usable bytes, and an absent file is simply missing, so
+    neither can complete the live root's set."""
     live, _other = _two_cache_roots(monkeypatch, tmp_path)
     sha = "c" * 40
     repo = "black-forest-labs/FLUX.1-dev"
@@ -10424,8 +10449,9 @@ def test_files_already_cached_survives_an_unreadable_root(monkeypatch, tmp_path)
 
 
 def test_download_plan_stages_a_half_cached_repo_whole(monkeypatch):
-    """Stage a half-cached repo whole: a shorter list 409s any second pick on this base, since
-    download_registry refuses differing scoped_files."""
+    """Dropped only when ALL of it is cached: a shrinking file list would 409 a second pick sharing
+    this base, since every diffusion entry rides the one "@diffusion" scope slot and
+    download_registry refuses a claim whose scoped_files differ from the live job's."""
     _fake_flux_hub(monkeypatch)
     _no_cache(monkeypatch)
     monkeypatch.setattr(
@@ -10530,8 +10556,9 @@ def _fake_hf_api_with_shas(monkeypatch, repos):
 
 
 def test_download_plan_pins_each_probe_to_the_commit_it_just_read(monkeypatch):
-    """Each probe is pinned to the sha its own model_info reported, since a mirror has its own
-    history, so the vendor sha would never hit the cache."""
+    """Each probe gets the sha its own model_info reported, the MIRROR at ITS commit: a mirror is a
+    separate repo with its own history, so the vendor's sha would never hit and a cached mirror
+    would re-stage in full."""
     gguf_sha, vendor_sha, mirror_sha = "f" * 40, "d" * 40, "e" * 40
     _fake_hf_api_with_shas(
         monkeypatch,
@@ -10759,7 +10786,8 @@ def test_a_cached_lower_rung_survives_the_unstaged_decline(fake_runtime, tmp_pat
 
 
 def test_the_cache_probe_reads_the_root_the_dense_load_will_use():
-    """The cache probe reads the dense load's root; a hit in another root re-downloads later."""
+    """The cache probe must read the root the dense load uses; a hit in the other root re-downloads
+    later."""
     import inspect
 
     from core.inference.diffusion_families import cache_holds_files
@@ -10823,7 +10851,8 @@ def test_text_encoder_cache_bytes_is_a_subset_of_the_companion_total(tmp_path, m
 
 
 def test_plan_memory_hands_the_planner_the_text_encoder_split(monkeypatch, tmp_path):
-    # Encoders take 150 of 200 MiB; streamed floor = VAE 50 + headroom 100 + overhead 2048.
+    # 150 MiB of encoders inside a 200 MiB companion total, so the streamed-encoder floor is the
+    # VAE (50) + headroom (100) + overhead (2048).
     from core.inference.diffusion_memory import OFFLOAD_GROUP
 
     snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
@@ -11547,7 +11576,8 @@ def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tm
 
     def _record(self, *a, **kw):
         calls.append("built")
-        # Raising skips assembly; the loader falls back to GGUF, so reaching here asserts.
+        # Raising here keeps the stub out of pipeline assembly; the loader's own handler falls
+        # back to the GGUF, and reaching this line at all is the assertion.
         raise RuntimeError("stub")
 
     monkeypatch.setattr(dmod.DiffusionBackend, "_load_dense_quant_pipeline", _record)
@@ -11559,8 +11589,9 @@ def test_unified_memory_keeps_a_prequant_that_fits(fake_runtime, monkeypatch, tm
 def test_the_resident_size_table_prices_a_pre_cast_encoder_at_its_real_size(
     fake_runtime, monkeypatch
 ):
-    """The table prices the encoder dense, but a pre-cast fp8 encoder loads at about 0.65x of that;
-    budgeting the dense size wrongly refuses the load."""
+    """The table's encoder term is the dense one, and a pick that takes its encoder PRE-CAST from a
+    hosted fp8 checkpoint loads roughly 0.65x of it. Budgeting the dense figure against a hard
+    refusal turns tens of GB the pipeline never materialises into a rejected load."""
     import torch
 
     from core.inference import diffusion as dmod
@@ -11683,8 +11714,10 @@ def test_the_prequant_fit_check_prices_a_pre_cast_text_encoder(fake_runtime, mon
 def test_an_offload_memory_request_is_not_reported_as_unstaged_shards(
     fake_runtime, tmp_path, monkeypatch
 ):
-    """Balanced, low_vram and legacy cpu_offload skip the dense build, so transformer/ is omitted by
-    policy, not missing bytes; a second-denoiser refusal would mislead."""
+    """balanced, low_vram and the legacy cpu_offload flag name their policy outright, so the plan
+    omits transformer/ because the dense build is skipped, not because bytes were missing.
+    Reporting a second-denoiser refusal told the caller the wrong thing about their own setting.
+    """
     marker = "an auto quant never downloads a second transformer"
     for request in (
         {"memory_mode": "balanced"},
@@ -14507,3 +14540,128 @@ def test_a_lora_change_drops_the_cfg_parallel_replica(monkeypatch):
     assert dropped == [pipe]
     backend._apply_loras(_quant_lora_state(pipe), [], ev)
     assert dropped == [pipe, pipe]
+
+
+class _PinProbePipe(_FakePipe):
+    """Enters the denoise loop and decoder like diffusers, and runs out of memory on its first attempt."""
+
+    def __init__(self, fail_first: bool) -> None:
+        super().__init__()
+        self.attempts = 0
+        self.fail_first = fail_first
+        self.vae = types.SimpleNamespace(decode = lambda: None)
+
+    def progress_bar(self, *args, **kwargs):
+        return contextlib.nullcontext()
+
+    def __call__(self, **kwargs):
+        self.progress_bar(total = 1)
+        self.attempts += 1
+        if self.fail_first and self.attempts == 1:
+            raise RuntimeError("CUDA out of memory. Tried to allocate 2.00 GiB")
+        if hasattr(self.vae, "decode"):
+            self.vae.decode()
+        return super().__call__(**kwargs)
+
+
+@pytest.mark.parametrize(
+    "pins, pinned_placement, expected",
+    [
+        # the 2-image attempt cannot pin and runs out of memory; both 1-image retries run whole
+        ([False, True, True], "resident", "resident"),
+        # one retry ran whole and the other streamed: no one placement describes the batch
+        ([False, True, False], "resident", None),
+        # the pin covers pipe.transformer only: a second DiT (Ideogram 4) still streams
+        ([False, True, True], "partial", "partial"),
+    ],
+)
+def test_saved_placement_counts_only_chunks_that_finished(
+    fake_runtime, tmp_path, monkeypatch, pins, pinned_placement, expected
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _PinProbePipe(fail_first = True)
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    outcomes = list(pins)
+    held = [False]
+
+    def _pin(*a, **kw):
+        if not outcomes.pop(0):
+            return None
+        held[0] = True
+        return lambda: held.__setitem__(0, False)
+
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: (1.0, 2.0, 64))
+    monkeypatch.setattr(diffusion, "pin_denoiser_for_call", _pin)
+    # the live hooks: the load streams, a held pin moves what it covers on the GPU
+    monkeypatch.setattr(
+        diffusion,
+        "denoiser_offload",
+        lambda pipe, policy: pinned_placement if held[0] else "streamed",
+    )
+
+    out = backend.generate(prompt = "p", steps = 4, batch_size = 2)
+
+    assert pipe.attempts == 3 and not outcomes
+    assert len(out["images"]) == 2
+    assert out["denoiser_offload"] == expected
+
+
+class _DeferredReturnPipe(_PinProbePipe):
+    """A resident load whose groups a VAE OOM recovery unpinned and left on a deferred return: the first forward
+    returns them, and the next decode's recovery unpins them again."""
+
+    def __init__(self, deferred: bool) -> None:
+        super().__init__(fail_first = False)
+        self.settled = not deferred
+        self.decoded = False
+        self.vae = types.SimpleNamespace(decode = lambda: setattr(self, "decoded", True))
+
+    def progress_bar(self, *args, **kwargs):
+        out = super().progress_bar(*args, **kwargs)
+        self.settled = True
+        return out
+
+    def placement(self) -> str:
+        return "resident" if self.settled and not self.decoded else "streamed"
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+def test_saved_placement_is_read_after_the_steps_and_before_the_decode(
+    fake_runtime, tmp_path, monkeypatch, deferred
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    pipe = _DeferredReturnPipe(deferred)
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: pipe.placement())
+
+    out = backend.generate(prompt = "p", steps = 4)
+
+    assert pipe.decoded
+    assert out["denoiser_offload"] == "resident"
+
+
+def test_a_pass_that_never_decodes_reads_the_placement_once_it_returns(
+    fake_runtime, tmp_path, monkeypatch
+):
+    import core.inference.diffusion as diffusion
+
+    backend = _loaded_backend(tmp_path)
+    state = backend._state
+    # a latent-output pass (the hires latent-upscaler base) never enters the decoder
+    pipe = _PinProbePipe(fail_first = False)
+    pipe.vae = types.SimpleNamespace()
+    object.__setattr__(state, "pipe", pipe)
+    object.__setattr__(state, "offload_policy", "group")
+    monkeypatch.setattr(diffusion, "_whole_tier_for_request", lambda state, **kw: None)
+    monkeypatch.setattr(diffusion, "denoiser_offload", lambda pipe, policy: "resident")
+
+    assert backend.generate(prompt = "p", steps = 4)["denoiser_offload"] == "resident"

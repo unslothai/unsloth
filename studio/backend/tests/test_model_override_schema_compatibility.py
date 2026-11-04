@@ -40,6 +40,13 @@ TUNING_PAYLOAD = dict(
 )
 
 
+def test_manual_full_offload_count_survives_save_and_reload(override_store):
+    _put(MODEL, gpu_memory_mode = "manual", gpu_layers = 2**31 - 1)
+    saved = settings.get_model_override(MODEL)
+    assert saved["gpu_layers"] == 2**31 - 1
+    assert settings.model_override_load_kwargs(saved, is_gguf = True)["gpu_layers"] == 2**31 - 1
+
+
 def test_a_row_written_before_the_tuning_group_still_loads(override_store):
     legacy_row = {
         "llama_extra_args": ["--numa", "distribute"],

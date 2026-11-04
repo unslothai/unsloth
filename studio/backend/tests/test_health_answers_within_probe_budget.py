@@ -86,6 +86,7 @@ import asyncio, contextlib, json, os, sys, threading, time
 os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
+main._startup_ml_warmup_features = frozenset({"hardware"})
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -205,6 +206,7 @@ import json, os, threading, time
 os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
+main._startup_ml_warmup_features = frozenset({"hardware"})
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -304,6 +306,7 @@ import asyncio, json, os, time
 os.environ.pop("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", None)
 
 import main
+main._startup_ml_warmup_features = frozenset({"hardware"})
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

@@ -1401,6 +1401,56 @@ def _manifest_snapshot_dirs(
     return snapshots
 
 
+_COMPONENT_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".ckpt", ".pt", ".pth", ".gguf"})
+_SUPPORTING_COMPONENT_DIRS = frozenset(
+    {"text_encoder", "text_encoder_2", "text_encoder_3", "text_encoder_4", "vae"}
+)
+
+
+def snapshot_is_encoder_companion(
+    repo_id: str, repo_cache_dir: Optional[Path], snapshot: Optional[Path]
+) -> bool:
+    """Whether *snapshot* holds only whole encoder or VAE files of a repo that hosts them for other models. Its transfer signals stay with :func:`is_snapshot_partial`; a dangling ref is an interrupted attempt, so it never qualifies."""
+    if snapshot is None or repo_cache_dir is None:
+        return False
+    try:
+        from hub.utils.companion_assets import hosted_supporting_names
+
+        hosted = hosted_supporting_names(repo_id)
+        if not hosted or snapshot_has_pipeline_index(snapshot):
+            return False
+        if _repo_has_a_dangling_ref(repo_cache_dir):
+            return False
+        root = Path(snapshot)
+        weights = [p for p in root.rglob("*") if p.suffix.lower() in _COMPONENT_WEIGHT_SUFFIXES]
+        if not weights:
+            return False
+        for weight in weights:
+            rel = weight.relative_to(root)
+            if (
+                rel.as_posix().lower() not in hosted
+                and rel.parts[0] not in _SUPPORTING_COMPONENT_DIRS
+            ):
+                return False
+            if not weight.is_file() or weight.stat().st_size == 0:
+                return False
+            match = _WEIGHT_SHARD_RE.search(weight.name)
+            if match:
+                index = weight.name[: match.start()] + weight.name[match.end() :] + ".index.json"
+                if not (weight.parent / index).is_file():
+                    return False
+                template = weight.name[: match.start(1)] + "{}" + weight.name[match.end(1) :]
+                for number in range(1, int(match.group(2)) + 1):
+                    sibling = weight.parent / template.format(
+                        str(number).zfill(len(match.group(1)))
+                    )
+                    if not sibling.is_file() or sibling.stat().st_size == 0:
+                        return False
+        return all(_read_index_shards(index) is not False for index in root.rglob("*.index.json"))
+    except (OSError, ValueError):
+        return False
+
+
 def is_snapshot_partial(
     repo_type: RepoType,
     repo_id: str,

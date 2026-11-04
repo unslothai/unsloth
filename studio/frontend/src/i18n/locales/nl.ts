@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const nl = {
+  turns: {
+    label: "Beurt {number}",
+    bookmarkedLabel: "Beurt {number}, met bladwijzer",
+    bookmark: "Bladwijzer voor beurt",
+    removeBookmark: "Bladwijzer verwijderen",
+    navigator: "Beurten",
+  },
   chatBackground: {
     noBackground: "Geen achtergrond",
     sizing: "Afbeeldingsgrootte",
@@ -31,6 +38,7 @@ export const nl = {
     halftone: "Halftoon",
     scanlines: "Scanlijnen",
     visibility: "Zichtbaarheid",
+    conversationVisibility: "Zichtbaarheid in gesprekken",
     blur: "Afbeelding vervagen",
     position: "Positie",
     horizontal: "Horizontale positie",
@@ -40,8 +48,8 @@ export const nl = {
     scopeChats: "Chats",
     scopeAll: "Alle pagina’s",
     positionValue: "Horizontaal {x}%, verticaal {y}%",
-    newChat: "Nieuwe chat",
-    conversation: "Gesprek",
+    newChat: "Voorbeeld nieuwe chat",
+    conversation: "Voorbeeld gesprek",
     prompt: "Wat wil je ontdekken?",
     response: "Je gesprek blijft goed leesbaar op de achtergrond.",
     storageError: "Kan de achtergrond niet opslaan. Controleer de beschikbare browseropslag.",
@@ -49,6 +57,26 @@ export const nl = {
     dimensionsError: "Kies een afbeelding kleiner dan 40 megapixels.",
     decodeError: "Kan deze afbeelding niet decoderen. Probeer een ander bestand.",
     effectError: "Kan het effect niet weergeven. Kies Geen of een andere afbeelding.",
+    material: "Glas",
+    materialSolid: "Uit",
+    materialTransparent: "Transparant",
+    materialFrosted: "Matglas",
+    materialBlurred: "Vervaagd",
+    materialLiquid: "Liquid Glass",
+    materialLiquid3d: "Liquid Glass 3D",
+    materialMacos: "macOS-systeemglas",
+    materialMacosNote: "Gebruikt het doorschijnende venstermateriaal van macOS, zodat je bureaublad doorschijnt.",
+    materialNativeFailed: "Deze versie van Unsloth Desktop kan het macOS-materiaal niet gebruiken. Werk de app bij om het in te schakelen.",
+    glassTheme: "Glasthema",
+    materialStyle: "Stijl",
+    materialMenus: "Glazen menu's",
+    materialMenusDescription: "Ook dropdowns, menu's en kiezers gebruiken glas.",
+    materialStrength: "Glassterkte",
+    lens: "Glaslens",
+    lensDescription: "Buigt de afbeelding onder het invoerveld als echt glas.",
+    lensOff: "Uit",
+    lensMagnify: "Vergroten",
+    lensShrink: "Verkleinen",
   },
   linkMenu: {
     openInBrowser: "Openen in Unsloth-browser",
@@ -713,6 +741,8 @@ export const nl = {
     plainText: "Invoerveld met platte tekst",
     plainTextDescription:
       "Behoud code, Markdown en links als letterlijke tekst. Schakel uit om een opgemaakt voorbeeld te tonen.",
+    richPaste: "Opgemaakte tekst plakken",
+    richPasteDescription: "Plakt links, tabellen en opmaak als Markdown. {shortcut} plakt platte tekst. Volledige rich-text-editor volgt binnenkort.",
     showContext: "Gebruik van contextvenster",
     sendShortcut: "Sneltoets voor versturen",
     sendMultiline: "{mod} + Enter voor prompts met meerdere regels",
@@ -831,38 +861,6 @@ export const nl = {
     compactEmpty: "Nog niets om te comprimeren",
     compactUnsupported:
       "Comprimeren vereist een GGUF- of MLX-model met toolondersteuning",
-  },
-  halloween: {
-    navLabel: "Snoep of je leven…",
-    title: "Snoep of je leven?!",
-    description:
-      "We hebben een paar griezels voor Unsloth gebrouwen, hier voor de rest van oktober.",
-    chooseTheme: "Kies een griezelig thema",
-    spookyGreetings: "Spookachtige begroetingen",
-    spookyGreetingsDescription:
-      "De luiaard begroet nieuwe chats met een schrikmoment.",
-    decorations: "Spinnen en vleermuizen",
-    decorationsDescription:
-      "Spinnenwebben, plus af en toe een spin of vleermuis.",
-    surprise: "Snoep of je leven!",
-    surpriseDescription: "Laat de luiaard een thema voor je kiezen.",
-    themesTitle: "Griezelige thema's",
-    back: "Terug",
-    footer: "Unsloth wordt op 1 november om middernacht weer normaal.",
-    removeNow: "Nu verwijderen",
-    hideFromSidebar: "Verbergen in zijbalk",
-    greeting: {
-      pumpkins: "De pompoenen zijn uitgehold. Wat nu?",
-      brewing: "Laten we gaan brouwen",
-      trickOrTreat: "Snoep of je leven?",
-      manor: "Welkom in het landhuis",
-      manorName: "Welkom in het landhuis, {name}",
-      happyHalloween: "Fijne Halloween",
-      happyHalloweenName: "Fijne Halloween, {name}",
-      spirits: "De geesten luisteren mee…",
-      mysteries: "Welke mysteries gaan we vannacht ontrafelen?",
-      conjure: "Wat kan ik voor je tevoorschijn toveren?",
-    },
   },
   welcome: {
     goodToSeeYou: "Fijn je te zien",
@@ -1180,6 +1178,7 @@ export const nl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Stel het wachtwoord van de installatie-eigenaar in voordat je een ander account toevoegt. Je gebruikt het om in te loggen zodra deze installatie meerdere accounts heeft.",
       signsInAs: "Logt in als {username}",
       signsInAsOwner: "Logt in als {alias} of {username}",
       signInName: "Je inlognaam",
@@ -2069,6 +2068,26 @@ export const nl = {
       autoTitleNewChats: "Nieuwe chats automatisch een titel geven",
       autoTitleNewChatsDescription:
         "Een titel genereren op basis van het eerste bericht.",
+      mlWarmup: {
+        sectionTitle: "Prestaties bij het opstarten",
+        description: "Bereid geselecteerde functies voor om ze bij het eerste gebruik sneller beschikbaar te maken. Alles staat standaard uit. Deze opties kunnen gedeelde afhankelijkheden laden en meer RAM gebruiken wanneer de app inactief is.",
+        restartRequired: "Wijzigingen worden toegepast nadat Unsloth opnieuw is gestart.",
+        hardwareLabel: "Hardwaredetectie",
+        hardwareDescription: "GPU's detecteren en PyTorch voorbereiden.",
+        textLabel: "Tekstmodellen",
+        textDescription: "Ondersteuning voor tekstmodellen in Transformers voorbereiden.",
+        datasetsLabel: "Datasetvoorbereiding",
+        datasetsDescription: "Datasets en de bijbehorende afhankelijkheden voorbereiden voor voorvertoningen en verwerking.",
+        mediaLabel: "Afbeeldings- en videomodellen",
+        mediaDescription: "Diffusers en gedeelde modelafhankelijkheden voorbereiden.",
+        advanced: "Geavanceerd",
+        quantizationLabel: "Voorafgaande controles voor afbeeldingskwantisatie",
+        quantizationDescription: "De ondersteuning controleren voordat een gekwantiseerd afbeeldingsmodel voor het eerst wordt geladen. Kan het RAM-gebruik kort verhogen.",
+        requiredBySelections: "Vereist voor je geselecteerde opties.",
+        disabledByEnv: "Uitgeschakeld door UNSLOTH_STUDIO_DISABLE_TORCH_WARM in de backendomgeving.",
+        loadError: "Kan de instellingen voor voorbereiding bij het opstarten niet laden.",
+        saveError: "Kan de instellingen voor voorbereiding bij het opstarten niet opslaan.",
+      },
       helperLlm: {
         sectionTitle: "Helper-LLM",
         preloadOnStartup: "Helper-LLM vooraf cachen bij opstarten",
@@ -2138,6 +2157,7 @@ export const nl = {
           "Kan de instellingen voor automatisch van model wisselen niet opslaan.",
         idleError:
           "Voer 0 in om het model geladen te houden, of minimaal 60 seconden.",
+        idleUnsaved: "Nog niet opgeslagen.",
         keepKv: "Chatcontext behouden bij ontladen",
         keepKvDescription:
           "De KV-cache opslaan vóór het ontladen bij inactiviteit, of voordat een afbeeldings- of videomodel de GPU overneemt, zodat hervatte chats de geschiedenis niet opnieuw hoeven te lezen. Tot 10 GB op schijf.",
@@ -2207,6 +2227,14 @@ export const nl = {
           off: "Voert elke toolaanroep uit zonder te vragen. Python- en terminalcode draaien nog steeds in de sandbox, die beperkt welke bestanden ze op je computer kunnen bereiken. Zonder werkende OS-sandbox wordt bij riskante aanroepen eerst om toestemming gevraagd.",
           full: "Voert elke toolaanroep uit zonder te vragen en schakelt de codesandbox uit, zodat Python- en terminalcode elk bestand kunnen lezen en wijzigen waartoe je account toegang heeft.",
         },
+      },
+      display: {
+        title: "Weergave",
+        timeFormat: "Tijdnotatie",
+        timeFormatDescription: "Toon tijden in 12-uurs- of 24-uursnotatie.",
+        timeFormatSystem: "Systeemstandaard",
+        timeFormat12: "12-uurs",
+        timeFormat24: "24-uurs",
       },
       notifications: {
         sectionTitle: "Meldingen",
@@ -2447,6 +2475,13 @@ export const nl = {
       avatarShapeRounded: "Afgerond",
       greetingSloth: "Begroeting",
       greetingSlothDescription: "De begroeting tonen bij nieuwe chats.",
+      greetingDefault: "Standaard",
+      greetingCustom: "Aangepast",
+      greetingImage: "Afbeelding",
+      greetingText: "Begroetingstekst",
+      greetingTextDescription: "Laat leeg om de ingebouwde begroetingen te gebruiken.",
+      greetingFileError: "Kies een PNG, JPEG, WebP of GIF kleiner dan 10 MB.",
+      greetingImageError: "Deze afbeelding kan niet worden gebruikt. Probeer een kleinere.",
       chooseSloth: "Of kies een luiaard",
       noPicture: "Geen profielfoto",
       noneLabel: "Geen",
@@ -2570,15 +2605,10 @@ export const nl = {
         description:
           "Kleuren die in heel Unsloth worden gebruikt, in de lichte en donkere modus.",
         standard: "Standaard",
-        classic: "Klassiek",
-        minimal: "Minimaal",
         moreThemes: "Meer thema's",
-        halloween: "Halloween",
       },
-      trickOrTreat: {
-        label: "Snoep of je leven",
-        description:
-          "Halloweenthema's en griezelige begroetingen, tot 1 november.",
+      composer: {
+        title: "Invoerveld",
       },
       code: {
         title: "Code",
@@ -3229,6 +3259,8 @@ export const nl = {
         "Meldingen zijn geblokkeerd. Sta ze toe voor Unsloth in je browser- of systeeminstellingen en probeer het opnieuw.",
       replyNotificationKeywords:
         "melden melding waarschuwing klaar voltooid gereed antwoord reactie achtergrond geminimaliseerd bureaublad geluid notify notification alert done reply",
+      showLinkPreviews: "Linkvoorbeelden",
+      showLinkPreviewsDescription: "Toon voorbeelden wanneer je de muisaanwijzer boven bronlinks houdt.",
       showResponseModel: "Antwoordmodel",
       showResponseModelDescription:
         "Modelgegevens tonen in antwoorden van de assistent.",
@@ -3245,6 +3277,8 @@ export const nl = {
       inlineEditResponse: "Antwoord bewerken bij antwoorden",
       inlineEditResponseDescription:
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
+      turnNavigation: "Beurtnavigatie",
+      turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
       composerAtBottom: "Invoerveld onderaan",
       composerAtBottomDescription:
         "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",
@@ -3764,6 +3798,9 @@ export const nl = {
         docsLabel: "Documentatie van de Decision API openen",
         description:
           "Beantwoord ja/nee-, meerkeuze- en scorevragen over tekst met een model op deze computer of een beslissingsmodel uit Verbindingen. Werkt met de TypeSafe SDK.",
+        codeTitle: "Aanroepen vanuit code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andere MCP-clients maken hier verbinding met hetzelfde token.",
         enable: "Verzoeken verwerken",
         enableDescription:
           "Biedt /v1/systemone aan. Bij inschakelen wordt het model gedownload.",
@@ -3918,8 +3955,6 @@ export const nl = {
         repoCheckoutFallback:
           "Als je de repository-checkout nog hebt, voer je daaruit het lokale installatieprogramma uit:",
         restartAfterUpdate: "Start Unsloth opnieuw na het bijwerken.",
-        desktopManaged:
-          "De desktop-app controleert automatisch op nieuwe app-versies. Je kunt hier ook op elk moment controleren of bijwerken.",
         desktopReady: "Updates van de desktop-app",
         desktopReadyDescription:
           "Controleren of er een nieuwere versie van de desktop-app beschikbaar is.",
@@ -3929,7 +3964,7 @@ export const nl = {
         desktopAvailableDescription:
           "Werk nu bij; de desktop-app start opnieuw wanneer dit klaar is.",
         desktopExternalServer:
-          "De app is verbonden met een Unsloth-server die al draaide en kan deze niet bijwerken. Stop die server, sluit de desktop-app af en open hem opnieuw om bij te werken.",
+          "Verbonden met een Unsloth-server op poort {port} die deze app niet heeft gestart, zoals `unsloth studio` in een terminal. Stop hem waar hij is gestart, sluit dan de app af en open hem opnieuw om bij te werken.",
         desktopManualInstall:
           "Open de releasepagina om het nieuwste Linux-pakket te installeren.",
         desktopCheckFailed: "Kan niet controleren op updates",
@@ -5514,6 +5549,8 @@ export const nl = {
     removeLevel: "Niveau {n} verwijderen",
     addLevel: "Niveau toevoegen",
     jsonHelp: "De request body. Uitvoeren verstuurt deze zoals geschreven.",
+    copyBody: "Body kopiëren",
+    copyCurl: "Kopiëren als cURL",
     examples: "Voorbeelden",
     presetToolApproval: "Toolaanroepen van agents goedkeuren",
     presetPromptInjection: "Promptinjectie detecteren",
@@ -5914,5 +5951,61 @@ export const nl = {
     later: "Later",
     update: "Bijwerken",
     undo: "Ongedaan maken",
+  },
+  generationStats: {
+    working: "Bezig...",
+    processingPrompt: "Prompt verwerken {percent}%",
+    compactingContext: "Context comprimeren...",
+    timeLeft: "nog {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "draft {accepted}/{drafted} geaccepteerd ({percent}%)",
+    timing: {
+      trigger: "Berichttiming",
+      firstToken: "Eerste token",
+      speedInStep: "Snelheid (binnen stap)",
+      effective: "Effectief",
+      output: "Uitvoer",
+      denoising: "Denoising",
+      stepsOne: "{count} stap",
+      steps: "{count} stappen",
+      blocksOne: "{count} blok",
+      blocks: "{count} blokken",
+      canvas: "Canvas",
+      generation: "Generatie",
+      answerTokens: "Antwoordtokens",
+      prompt: "Prompt",
+      total: "Totaal",
+      chunks: "Chunks",
+      promptEval: "Prompt-evaluatie",
+      promptSpeed: "Promptsnelheid",
+      speed: "Snelheid",
+      tokens: "Tokens",
+      draftAccepted: "Draft geaccepteerd",
+      denoisingSteps: "Denoisingstappen",
+      blocksLabel: "Blokken",
+      cacheHits: "Cachetreffers",
+      cacheWrites: "Cacheschrijfacties",
+      stopReason: "Stopreden",
+      stoppedByYou: "Door jou gestopt",
+      endOfTurn: "Einde van beurt",
+      lengthLimit: "Lengtelimiet",
+      toolCall: "Toolaanroep",
+      contentFilter: "Inhoudsfilter",
+    },
+    placement: {
+      title: "Plaatsing van gewichten",
+      allOnCpu: "Alle {total} lagen op de CPU",
+      split: "{gpu} van {total} lagen op de GPU, {cpu} op de CPU",
+      allOnGpu: "Alle {total} lagen op de GPU",
+      expertCache: "Alle {total} lagen op de GPU, alle experts in RAM ({amount} expertcache op de GPU)",
+      expertSpillOne: "Alle {total} lagen op de GPU, expertgewichten van {count} laag in RAM",
+      expertSpill: "Alle {total} lagen op de GPU, expertgewichten van {count} lagen in RAM",
+      inUnifiedMemory: "{amount} in unified memory",
+      inSharedMemory: "{amount} in gedeeld geheugen",
+      inVram: "{amount} in VRAM",
+      inRam: "{amount} in RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

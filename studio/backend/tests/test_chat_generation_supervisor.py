@@ -233,7 +233,7 @@ async def test_create_route_schedules_producer_on_request_loop(monkeypatch):
     monkeypatch.setattr(run_routes.db, "create_run", create_run)
     response = await run_routes.create_chat_generation_run(_create_payload(), request, "alice")
     assert response["created"] is True
-    assert started == [("run-1", {"thread_id": "thread-1", "model": "local"})]
+    assert started == [("run-1", {"thread_id": "thread-1", "model": "local", "images": {}})]
 
 
 @pytest.mark.asyncio
@@ -364,6 +364,43 @@ async def test_producer_dates_the_prompt_in_the_browser_timezone(monkeypatch):
     supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
     await supervisor._produce("run-1")
     assert observed == [(["generation_run_id"], date(2026, 9, 25))]
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_reaches_the_model_with_an_image_the_run_never_stored(monkeypatch):
+    studio_db.upsert_chat_thread(
+        {"id": "thread-1", "title": "Chat", "modelType": "base", "modelId": "local", "createdAt": 1}
+    )
+    studio_db.upsert_chat_message(
+        {"id": "user-1", "threadId": "thread-1", "role": "user", "content": [], "createdAt": 2}
+    )
+    url = "data:image/png;base64,iVBORw0KGgo="
+    image_turn = [
+        {"type": "text", "text": "what?"},
+        {"type": "image_url", "image_url": {"url": url}},
+    ]
+    payload = _create_payload("and the colour?")
+    payload.requestPayload["messages"] = [
+        {"role": "user", "content": image_turn},
+        {"role": "assistant", "content": "A square."},
+        *payload.requestPayload["messages"],
+    ]
+    observed = []
+
+    async def body():
+        yield "data: [DONE]\n\n"
+
+    async def fake(payload, _request, _subject, *, cancel_on_disconnect):
+        observed.append(payload.messages[0].content[1].image_url.url)
+        return SimpleNamespace(status_code = 200, body_iterator = body())
+
+    monkeypatch.setattr(inference, "produce_openai_chat_completions", fake)
+    supervisor = ChatGenerationSupervisor(SimpleNamespace(state = SimpleNamespace()))
+    await run_routes.create_chat_generation_run(payload, _route_request(supervisor), "alice")
+    await supervisor._tasks["run-1"]
+    assert observed == [url]
+    assert url not in json.dumps(runs_db.get_run("run-1")["requestPayload"])
+    assert supervisor._detached_images == {}
 
 
 @pytest.mark.asyncio

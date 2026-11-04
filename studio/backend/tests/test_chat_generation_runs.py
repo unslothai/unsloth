@@ -465,8 +465,9 @@ def test_running_generation_still_cannot_be_explicitly_edited(chat_home):
 
 
 def test_refreshed_generation_can_be_edited_when_tab_created_at_differs(chat_home):
-    """Issue 15004: Refresh/Reload lets create_run insert the assistant row with its own created_at,
-    while the tab keeps its minted Date, so an edit must still detach the finished run."""
+    """#15004: Refresh/Reload lets create_run insert the assistant row with its own
+    created_at. The tab keeps the Date it minted for the bubble, so an edit must still
+    detach the finished run."""
     _create()
     token = runs_db.get_worker_token("run-1")
     assert runs_db.mark_running("run-1", token)
@@ -920,13 +921,48 @@ _INLINE_PNG_PART = {
 }
 
 
-def test_a_text_only_follow_up_carrying_an_earlier_inline_image_stays_legacy():
-    """A text-only follow-up has no top-level image_base64, so the field-shaped guard admits it, but
-    a durable run persists the old screenshot in request_json."""
-    messages = [
+def _image_thread(*follow_up):
+    return [
         {"role": "user", "content": [{"type": "text", "text": "what is this?"}, _INLINE_PNG_PART]},
         {"role": "assistant", "content": "A red square."},
-        {"role": "user", "content": [{"type": "text", "text": "and what colour was it again?"}]},
+        *follow_up,
+    ]
+
+
+def test_a_text_follow_up_to_an_inline_image_is_admitted_without_storing_the_blob():
+    from core.inference.chat_generation_runs import detach_embedded_images
+
+    messages = _image_thread(
+        {"role": "user", "content": [{"type": "text", "text": "and what colour was it again?"}]}
+    )
+    sanitized = _sanitize_request(_model(messages = messages))
+    images = detach_embedded_images(sanitized)
+    url = _INLINE_PNG_PART["image_url"]["url"]
+    assert url not in json.dumps(sanitized)
+    assert list(images.values()) == [url]
+
+
+def test_a_different_image_is_a_different_stored_request():
+    from core.inference.chat_generation_runs import detach_embedded_images
+
+    follow_up = {"role": "user", "content": "again"}
+    first = _sanitize_request(_model(messages = _image_thread(follow_up)))
+    other = _image_thread(follow_up)
+    other[0]["content"][1] = {
+        "type": "image_url",
+        "image_url": {"url": "data:image/png;base64,AAAA"},
+    }
+    second = _sanitize_request(_model(messages = other))
+    detach_embedded_images(first)
+    detach_embedded_images(second)
+    assert first != second
+
+
+def test_an_image_on_the_latest_turn_stays_legacy():
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": [{"type": "text", "text": "what is this?"}, _INLINE_PNG_PART]},
     ]
     with pytest.raises(Exception, match = "Media chat runs use the legacy streaming path"):
         _sanitize_request(_model(messages = messages))

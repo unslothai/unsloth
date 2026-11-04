@@ -984,6 +984,8 @@ async def test_provider(
         try:
             if answers_decisions_only(payload.provider_type, payload.api_type):
                 await client.list_decision_models()
+            elif payload.provider_type == "openrouter":
+                await client.verify_models_endpoint_lightweight()
             else:
                 await client.list_models()
         except Exception:
@@ -1019,6 +1021,8 @@ async def test_provider(
                 ),
                 models_count = None,
             )
+        if payload.provider_type == "openrouter":
+            await client.verify_models_endpoint_lightweight()
         models = await client.list_models()
         if payload.provider_type in _KEY_CHECKED_PROVIDERS and await client.api_key_rejected():
             return ProviderTestResult(

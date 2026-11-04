@@ -50,6 +50,7 @@ from unsloth._decision_common import (
     _parsed,
     _predicted,
     _row_images,
+    _rows_problem,
     _served_lengths,
     _served_temperatures,
     _target,
@@ -182,7 +183,7 @@ def _decision_dataset(
             try:
                 if validate is not None:
                     validate(name, question)
-                internal = _internal(question)
+                internal = _internal(question, name)
                 target, label = _target(internal, _parsed(gold[name]))
                 ids, markers = common.build_sequence(
                     tokenizer, state, internal, max_len, head_max_len
@@ -871,6 +872,7 @@ class FastDecisionModel:
         clef = functools.partial(_clef_items, model._unsloth_pipeline) if _is_clef(model) else None
         return _decision_dataset(rows, tokenizer, model.decision_config, validate, clef)
 
+    rows_problem = staticmethod(_rows_problem)
     split_holdout = staticmethod(_decision_holdout)
 
     @staticmethod
@@ -912,7 +914,7 @@ class FastDecisionModel:
             tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
             items, keys = [], []
             for name, question in questions.items():
-                internal = _internal(question)
+                internal = _internal(question, name)
                 ids, markers = common.build_sequence(
                     tokenizer, state, internal, max_len, int(config.get("head_max_len", 192))
                 )

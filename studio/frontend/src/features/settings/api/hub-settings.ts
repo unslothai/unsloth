@@ -3,7 +3,7 @@
 
 import { fetchDeviceType } from "@/config/env";
 import { authFetch } from "@/features/auth";
-import { clearDownloadTransportCapabilitiesCache } from "@/features/hub";
+import { clearDownloadTransportCapabilitiesCache } from "@/features/hub/download-manager/api";
 import { markRemoteNetworkOnline } from "@/features/hub/lib/network";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import type { HubSource } from "@/lib/hf-endpoint";

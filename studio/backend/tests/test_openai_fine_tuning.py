@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The OpenAI fine-tuning API, driven by the real ``openai`` SDK against the router in-process.
-
-Training itself is stubbed at the ``/api/train`` handlers the router calls; the upload directory and the
-training history are the real ones, in the per-test Studio home."""
 
 import asyncio
 import json
@@ -139,6 +135,175 @@ def _finished_run(
     return run_id
 
 
+@pytest.mark.parametrize("mode", ["mapped", "alpaca", "raw"])
+def test_unused_weighted_messages_do_not_block_other_training_data(studio, mode):
+    client, calls, _live = studio
+    row = {
+        "messages": [{"role": "assistant", "content": "CONTEXT_ONLY", "weight": 0}],
+        "question": "Question",
+        "answer": "TARGET",
+    }
+    extra = {}
+    if mode == "mapped":
+        extra["custom_format_mapping"] = {"question": "user", "answer": "assistant"}
+    elif mode == "alpaca":
+        row.update(instruction = "Question", output = "TARGET")
+    else:
+        row["text"] = "TARGET"
+        extra["format_type"] = "raw"
+
+    async def flow():
+        uploaded = await client.files.create(
+            file = ("rows.jsonl", (json.dumps(row) + "\n").encode()), purpose = "fine-tune"
+        )
+        return await _create(client, uploaded.id, extra_body = extra)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
+@pytest.mark.parametrize("mode", ["cpt", "sparse_alpaca"])
+@pytest.mark.parametrize("file_param", ["training_file", "validation_file"])
+def test_dataset_selection_ignores_unused_message_weights(studio, tmp_path, mode, file_param):
+    from datasets import load_dataset
+    from utils.datasets.dataset_utils import format_dataset
+
+    client, calls, _live = studio
+    weighted = [{"role": "assistant", "content": "CONTEXT_ONLY", "weight": 0}]
+    if mode == "cpt":
+        rows = [{"text": "TARGET", "messages": weighted}]
+        extra = {"training_type": "Continued Pretraining"}
+    else:
+        rows = [
+            {"instruction": "Question", "output": "TARGET", "messages": weighted},
+            {"output": "TARGET", "messages": weighted},
+        ]
+        extra = {}
+    content = "".join(json.dumps(row) + "\n" for row in rows).encode()
+    source = tmp_path / "selected.jsonl"
+    source.write_bytes(content)
+    dataset = load_dataset(
+        "json", data_files = str(source), split = "train", cache_dir = str(tmp_path / "cache")
+    )
+    formatted = format_dataset(dataset, format_type = "raw" if mode == "cpt" else "auto")
+    assert formatted["final_format"] == ("raw_text" if mode == "cpt" else "alpaca")
+
+    async def flow():
+        uploaded = await client.files.create(file = ("selected.jsonl", content), purpose = "fine-tune")
+        plain = await client.files.create(file = ("plain.jsonl", CHATS), purpose = "fine-tune")
+        kwargs = {"training_file": plain.id, file_param: uploaded.id}
+        return await client.fine_tuning.jobs.create(
+            model = "unsloth/Qwen3-0.6B", extra_body = extra, **kwargs
+        )
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
+def test_a_mapping_that_selects_weighted_messages_is_still_refused(studio):
+    client, calls, _live = studio
+    rows = b'{"messages":[{"role":"assistant","content":"CONTEXT_ONLY","weight":0}]}\n'
+
+    async def flow():
+        uploaded = await client.files.create(file = ("rows.jsonl", rows), purpose = "fine-tune")
+        with pytest.raises(openai.BadRequestError):
+            await _create(
+                client, uploaded.id, extra_body = {"custom_format_mapping": {"messages": "assistant"}}
+            )
+
+    _run(flow())
+    assert calls["start"] == []
+
+
+def test_exported_unit_weight_messages_still_train(studio, tmp_path):
+    from datasets import Dataset
+
+    client, calls, _live = studio
+    exported = tmp_path / "export.jsonl"
+    Dataset.from_list(
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "Hi"},
+                    {"role": "assistant", "content": "Hello"},
+                    {"role": "user", "content": "Bye"},
+                    {"role": "assistant", "content": "Goodbye", "weight": 1},
+                ]
+            }
+        ]
+    ).to_json(exported)
+    rows = exported.read_bytes()
+    assert json.loads(rows)["messages"][1]["weight"] is None
+
+    async def flow():
+        uploaded = await client.files.create(file = ("export.jsonl", rows), purpose = "fine-tune")
+        return await _create(client, uploaded.id)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
+@pytest.mark.parametrize("weight, escaped", [(0, False), (0.5, False), (0, True)])
+def test_a_file_excluding_an_assistant_message_by_weight_is_refused(studio, weight, escaped):
+    client, calls, _live = studio
+    rows = (
+        json.dumps(
+            {
+                "messages": [
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "CONTEXT_ONLY", "weight": weight},
+                    {"role": "user", "content": "Question"},
+                    {"role": "assistant", "content": "TARGET", "weight": 1},
+                ]
+            }
+        ).encode()
+        + b"\n"
+    )
+    if escaped:
+        rows = rows.replace(b'"weight"', b'"weigh\\u0074"')
+        assert b'"weight"' not in rows and json.loads(rows)["messages"][1]["weight"] == 0
+
+    async def flow():
+        weighted = await client.files.create(
+            file = ("weighted.jsonl", CHATS + rows), purpose = "fine-tune"
+        )
+        plain = await client.files.create(file = ("plain.jsonl", CHATS), purpose = "fine-tune")
+        errors = []
+        for kwargs in (
+            {"training_file": weighted.id},
+            {"training_file": plain.id, "validation_file": weighted.id},
+        ):
+            try:
+                await client.fine_tuning.jobs.create(model = "unsloth/Qwen3-0.6B", **kwargs)
+            except openai.BadRequestError as exc:
+                errors.append(exc.response.text)
+        return errors
+
+    errors = _run(flow())
+    assert len(errors) == 2
+    assert "training_file line 3" in errors[0] and "validation_file line 3" in errors[1]
+    assert calls["start"] == []
+
+
+def test_a_file_with_only_weight_one_messages_still_trains(studio):
+    client, calls, _live = studio
+    rows = (
+        b'{"messages": [{"role": "user", "content": "Hi"}, '
+        b'{"role": "assistant", "content": "Hello!", "weight": 1}]}\n'
+    )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", rows), purpose = "fine-tune")
+        return await _create(client, uploaded.id)
+
+    job = _run(flow())
+    assert job.status == "validating_files"
+    assert len(calls["start"]) == 1
+
+
 def test_upload_then_create_starts_a_studio_run(studio):
     client, calls, _live = studio
 
@@ -194,7 +359,7 @@ def test_upload_then_create_starts_a_studio_run(studio):
 
     assert job.id == "ftjob_20261021_101500_ab12cd34"
     assert job.training_file == uploaded.id
-    # No history row until the worker is up: the live training status answers instead.
+
     assert retrieved.status == "validating_files"
     assert (retrieved.model, retrieved.training_file) == ("unsloth/Qwen3-0.6B", uploaded.id)
 
@@ -262,7 +427,7 @@ def test_cancel_stops_the_running_job(studio):
 
     async def flow():
         cancelled = await client.fine_tuning.jobs.cancel("ftjob_20261021_101500_ab12cd34")
-        # The worker is still finishing its step, so the row still reads running.
+
         return cancelled, await client.fine_tuning.jobs.retrieve(cancelled.id)
 
     job, retrieved = _run(flow())
@@ -384,7 +549,6 @@ def test_an_overflowed_grad_norm_keeps_events_readable(studio, tmp_path):
 
 @pytest.fixture
 def queue(studio, monkeypatch):
-    """The queue with the GPU busy and the background drainer replaced by explicit drains."""
     client, calls, live = studio
     monkeypatch.setattr(openai_fine_tuning, "_QUEUE", [])
     monkeypatch.setattr(openai_fine_tuning, "_ALIASES", {})
@@ -393,7 +557,7 @@ def queue(studio, monkeypatch):
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
     monkeypatch.setattr(openai_fine_tuning, "_aliases_loaded", set())
     monkeypatch.setattr(openai_fine_tuning, "_ensure_drainer", lambda: None)
-    # Without the multi-LoRA kernels: every queued job starts alone, as before batching existed.
+
     monkeypatch.setattr(openai_fine_tuning, "_multi_lora_available", lambda: False)
     gpu = {"busy": True}
     monkeypatch.setattr(openai_fine_tuning, "_training_busy", lambda: gpu["busy"])
@@ -415,9 +579,9 @@ def test_a_busy_gpu_queues_jobs_and_starts_them_in_order(queue):
         second = await _create(client, uploaded.id, suffix = "second")
         listed = await client.fine_tuning.jobs.list()
         events = await client.fine_tuning.jobs.list_events(second.id)
-        await openai_fine_tuning._drain_once()  # GPU still busy: nothing starts
+        await openai_fine_tuning._drain_once()
         gpu["busy"] = False
-        await openai_fine_tuning._drain_once()  # the head starts; the GPU is now taken by it
+        await openai_fine_tuning._drain_once()
         gpu["busy"] = True
         await openai_fine_tuning._drain_once()
         after_first = [await client.fine_tuning.jobs.retrieve(j.id) for j in (first, second)]
@@ -430,7 +594,7 @@ def test_a_busy_gpu_queues_jobs_and_starts_them_in_order(queue):
     assert [j.id for j in listed.data[:2]] == [second.id, first.id]
     assert events.data[0].message == "Waiting for the GPU: position 2 in the queue"
     assert [r.project_name for r in calls["start"]] == ["first", "second"]
-    # The started job keeps the id the client was given.
+
     assert started.id == first.id and started.status == "validating_files"
     assert waiting.status == "queued"
 
@@ -498,7 +662,6 @@ def test_another_account_cannot_see_or_cancel_a_queued_job(queue, monkeypatch):
 
 
 def _forget_aliases(monkeypatch):
-    # What a Studio restart leaves: nothing in memory, the database as it was.
     monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_RUN", {})
     monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {})
@@ -516,7 +679,7 @@ def test_a_started_queued_job_keeps_its_id_after_a_restart(queue, monkeypatch):
         _forget_aliases(monkeypatch)
         retrieved = await client.fine_tuning.jobs.retrieve(job.id)
         listed = await client.fine_tuning.jobs.list()
-        # The started job as a cursor pages past it rather than ending the list.
+
         paged = await client.fine_tuning.jobs.list(after = job.id)
         return job, retrieved, listed, paged
 
@@ -683,7 +846,7 @@ def test_a_job_id_store_failure_keeps_the_started_job(queue, monkeypatch):
     async def flow():
         uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
         job = await _create(client, uploaded.id)
-        await client.fine_tuning.jobs.list()  # load the id table before it locks
+        await client.fine_tuning.jobs.list()
         monkeypatch.setattr(openai_fine_tuning, "_alias_db", locked)
         gpu["busy"] = False
         await openai_fine_tuning._drain_once()
@@ -728,7 +891,7 @@ def test_queue_ids_are_stored_and_loaded_per_account(queue, monkeypatch):
 
     _run(flow())
     assert writes == [bob.account_id]
-    # Bob's own table is read even though another account loaded its ids first.
+
     assert bob.account_id in reads and len(set(reads)) == 2
 
 
@@ -768,7 +931,7 @@ def test_a_ui_run_winning_the_gpu_keeps_the_queued_job_waiting(queue, monkeypatc
     client, _calls, _live, gpu = queue
 
     async def lost_to_ui(request, current_subject, via_api_key):
-        gpu["busy"] = True  # the UI run is now training
+        gpu["busy"] = True
         return TrainingJobResponse(
             job_id = "",
             status = "error",
@@ -923,7 +1086,7 @@ def test_an_excluded_setting_trains_alone(batching, tmp_path, fields):
     other = _entry(tmp_path, "b", **fields)
     batching.extend([head, other])
     assert openai_fine_tuning._batch_for(head) == [head]
-    # A compatible head never pulls the excluded job in either.
+
     plain = _entry(tmp_path, "c")
     batching.insert(0, plain)
     assert openai_fine_tuning._batch_for(plain) == [plain]
@@ -997,7 +1160,7 @@ def test_the_kernel_lookup_reads_the_package_on_disk_once(tmp_path, monkeypatch)
     monkeypatch.setattr(openai_fine_tuning, "_multi_lora", None)
     assert _multi_lora_available() is False
     (package / "kernels" / "multi_lora.py").write_text("")
-    assert _multi_lora_available() is False  # cached
+    assert _multi_lora_available() is False
     monkeypatch.setattr(openai_fine_tuning, "_multi_lora", None)
     assert _multi_lora_available() is True
     # Only the top-level package is looked up: finding a submodule would import unsloth (and torch).
@@ -1022,7 +1185,6 @@ class _BatchBackend:
 
 @pytest.fixture
 def batch_queue(queue, monkeypatch):
-    """The queue with the multi-LoRA kernels present and a stubbed start_training_batch."""
     import core.training
 
     client, calls, live, gpu = queue
@@ -1076,7 +1238,7 @@ def test_compatible_queued_jobs_start_as_one_batch(batch_queue):
     assert (subject, via_api_key) == ("unsloth", True)
     assert calls["start"] == []
     batched = [retrieved[0], retrieved[1], retrieved[3]]
-    # Each job keeps the id it was given and its own settings, read from the batch's live status.
+
     assert [j.id for j in batched] == [jobs[0].id, jobs[1].id, jobs[3].id]
     assert [j.status for j in batched] == ["validating_files"] * 3
     assert [j.suffix for j in batched] == ["a", "b", "c"]
@@ -1084,7 +1246,7 @@ def test_compatible_queued_jobs_start_as_one_batch(batch_queue):
     assert retrieved[2].status == "queued"
     run_ids = [openai_fine_tuning._ALIAS_RUN[j.id][0] for j in batched]
     assert run_ids == [f"job_20261021_101500_member0{i}" for i in range(3)]
-    # The batch itself is no job: the list shows its members and the job still waiting.
+
     listed_ids = [j.id for j in listed.data]
     assert sorted(listed_ids) == sorted(j.id for j in jobs)
     assert live["status"].job_id not in {openai_fine_tuning._run_id(i) for i in listed_ids}
@@ -1245,7 +1407,7 @@ def test_batch_members_stay_validating_until_their_first_step(batch_queue):
         gpu["busy"] = False
         await openai_fine_tuning._drain_once()
         seen = []
-        # The batch's setup messages move its phase through all of these before any member has a row.
+
         for phase in ("loading_model", "training", "configuring", "loading_dataset", "training"):
             live["status"].phase = phase
             seen.append([(await client.fine_tuning.jobs.retrieve(j.id)).status for j in jobs])
@@ -1364,14 +1526,14 @@ def test_cancelling_the_last_running_batched_job_stops_the_run(batch_queue):
         jobs = [await _create(client, uploaded.id, suffix = name) for name in ("a", "b")]
         gpu["busy"] = False
         await openai_fine_tuning._drain_once()
-        backend.running = ["job_20261021_101500_member01"]  # the other adapter already finished
+        backend.running = ["job_20261021_101500_member01"]
         cancelled = await client.fine_tuning.jobs.cancel(jobs[1].id)
         return cancelled, await client.fine_tuning.jobs.retrieve(jobs[1].id)
 
     cancelled, retrieved = _run(flow())
     assert backend.stopped == []
     [stop] = calls["stop"]
-    # The whole run is the batch, so the stop names the batch's job.
+
     assert stop.expected_job_id == live["status"].job_id == "job_20261021_101500_batch000"
     assert cancelled.status == retrieved.status == "cancelled"
 
@@ -1420,7 +1582,6 @@ def test_start_training_batch_runs_one_start_carrying_every_member(monkeypatch):
         )
 
     async def start_training(request, current_subject, via_api_key):
-        # Inside start_training, after its own admission of the first member.
         members = training_routes._batch_members_for_start({"project_name": request.project_name})
         seen.append(("start", request.project_name, members))
         return TrainingJobResponse(job_id = "job_batch", status = "queued", message = "queued")
@@ -1504,7 +1665,6 @@ def test_start_training_batch_refuses_resume_and_reports_a_busy_gpu_per_member(m
     "model", ["//attacker.example/share/model", "\\\\attacker.example\\share\\model"]
 )
 def test_batch_probe_never_touches_a_managed_share_path(batch_queue, monkeypatch, model):
-    """A managed account's UNC model never reaches the batch probe; the single start refuses it."""
     import utils.models.diffusion_lm as diffusion_lm
     import utils.models.model_config as model_config
     from utils.account_context import AccountContext
@@ -1567,3 +1727,34 @@ def test_batch_probe_unchanged_for_the_owner(batch_queue, monkeypatch):
 
     _run(flow())
     assert touched and len(calls["batch"]) == 1
+
+
+@pytest.mark.parametrize("trains_alone", [False, True])
+@pytest.mark.parametrize("cancelled", [0, 1])
+def test_a_job_cancelled_during_the_batch_model_probe_never_starts(
+    batch_queue, monkeypatch, cancelled, trains_alone
+):
+    client, calls, _live, gpu, _backend = batch_queue
+    jobs = []
+
+    async def probe_then_cancel(request):
+        cancelled_job = await client.fine_tuning.jobs.cancel(jobs[cancelled].id)
+        assert cancelled_job.status == "cancelled"
+        return trains_alone
+
+    monkeypatch.setattr(openai_fine_tuning, "_trains_alone", probe_then_cancel)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs.extend([await _create(client, uploaded.id, suffix = s) for s in "ab"])
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        return [(await client.fine_tuning.jobs.retrieve(j.id)).status for j in jobs]
+
+    statuses = _run(flow())
+    started = [r.project_name for r in calls["start"]] + [
+        r.project_name for requests, *_ in calls["batch"] for r in requests
+    ]
+    assert "ab"[cancelled] not in started
+    assert statuses[cancelled] == "cancelled"
+    assert calls["stop"] == []

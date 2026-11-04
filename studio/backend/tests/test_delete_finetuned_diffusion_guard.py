@@ -60,17 +60,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(models_module, "exports_root", lambda: tmp_path / "exports")
     entries = {f"model:training:{outputs / 'my-diffusion-model'}": {}, "upload:abc": {}}
     monkeypatch.setattr(library_db, "list_entries", lambda: entries)
-    monkeypatch.setattr(models_module, "get_inference_backend", lambda: _NoChat())
 
     app = FastAPI()
     app.include_router(models_router, prefix = "/api/models")
     app.dependency_overrides[get_current_subject] = lambda: "test-user"
     return TestClient(app), outputs
-
-
-class _NoChat:
-    active_model_name = None
-    loading_models: set = set()
 
 
 def _model_dir(outputs):
