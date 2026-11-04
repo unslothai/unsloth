@@ -359,3 +359,21 @@ def test_source_cast_respects_the_kill_switch(pipe_dir, monkeypatch):
     pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
     V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
     assert "transformer" not in pipe_kwargs
+
+
+def test_a_split_plan_casts_from_the_source_shards_instead(pipe_dir, monkeypatch):
+    """A DiT a little over the card was split card / host through accelerate's cpu offload, whose host share loads
+    as meta tensors (nothing to write, on the Kaggle T4 the dense load then ran out of host RAM): it is cast from
+    its source shards instead, without touching the card."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 16000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    calls = _wire(monkeypatch, available = 18000, total = 20000)
+    written = []
+    real = CC.save_from_source
+    monkeypatch.setattr(CC, "save_from_source", lambda cand, **kw: written.append(cand.component) or real(cand, **kw))
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert written == ["transformer"] and ("transformer", "cuda") not in calls
+    _identical(pipe_kwargs["transformer"], _dense(_cands(pipe_dir)["transformer"]))

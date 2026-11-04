@@ -342,9 +342,25 @@ def stage_misses(
             )
         done = []
         by_name = {c.component: c for c in cands}
+        from .diffusion_cast_cache import save_from_source
+
         for name in plan.stage:
             if cancel_check is not None:
                 cancel_check()
+            if plan.split.get(name) and not stage_forced():
+                # A card / host split loads through accelerate's cpu offload, whose host share comes back as meta
+                # tensors (nothing to write); the source shards cast one tensor at a time instead, card untouched.
+                t0 = time.perf_counter()
+                if save_from_source(by_name[name], logger = logger, check = cancel_check) is not None:
+                    done.append(name)
+                    if logger is not None:
+                        logger.info(
+                            "video.small_host: %s cast written from its source shards in %.1f s (host RAM: one "
+                            "tensor at a time); the load maps it",
+                            name,
+                            time.perf_counter() - t0,
+                        )
+                    continue
             if stage_on_device(
                 by_name[name],
                 device,
@@ -356,8 +372,6 @@ def stage_misses(
         if plan.engaged and plan.skipped and not stage_disabled():
             # Neither the card nor a card / host split takes it: write its cast from the source shards one tensor at a
             # time, so the load maps the cached file instead of converting the whole component in host RAM.
-            from .diffusion_cast_cache import save_from_source
-
             for name in plan.skipped:
                 if name not in by_name:
                     continue
