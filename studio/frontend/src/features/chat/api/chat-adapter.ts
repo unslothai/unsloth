@@ -4857,6 +4857,7 @@ export function createOpenAIStreamAdapter(
         (options.modelType === undefined || options.modelType === "base");
       const runBrowserChat = options.pairId ? `compare:${options.pairId}` : runThreadId ? `single:${runThreadId}` : browserChatAtSend;
       const browserTools = browserAgentToolsForTurn(runBrowserChat);
+      const browserTargetVersion = agentChat(runBrowserChat).targetVersion;
       const toolConfirmationIdsByBackendId = new Map<string, string>();
       // Local tool ids ("call_0") repeat across turns and panes, so scope by pane and thread
       // (unstable_threadId only, matching the reader's remoteId).
@@ -5504,7 +5505,6 @@ export function createOpenAIStreamAdapter(
       const threadKey = resolvedThreadId || "__default";
       // A new chat's browser is the one on screen as it sends; a switch mid-run must not move it.
       const browserChat = runBrowserChat;
-      const browserTargetVersion = agentChat(browserChat ?? `single:${threadKey}`).targetVersion;
       // A first turn files its handles under "__default" and autosave re-keys them mid-run, so resolve per use.
       const liveThreadKey = (owner: () => void) => {
         const key = threadKey === "__default" ? useChatRuntimeStore.getState().runKeyForOwner(threadKey, owner) : threadKey;

@@ -21,7 +21,7 @@ annotator = next(
     if isinstance(node, ast.Assign)
     and any(isinstance(target, ast.Name) and target.id == "_ANNOTATE_JS" for target in node.targets)
 )
-html = "<!doctype html><html><body><input id='value'><p id='mark'>Text to annotate here</p><script>window.marker = Math.random()</script></body></html>"
+html = "<!doctype html><html><head><link rel='stylesheet' href='https://assets.example/site.css'></head><body><div style='height:600px'></div><input id='value'><p id='mark'>Text to annotate here</p><img id='asset' src='https://assets.example/site.svg'><div style='height:1000px'></div><script>window.marker = Math.random()</script></body></html>"
 with sync_playwright() as p:
     engine = os.environ.get("RUNTIME_BROWSER", "chromium")
     browser = getattr(p, "chromium" if engine == "edge" else engine).launch(
@@ -30,6 +30,23 @@ with sync_playwright() as p:
         **({"channel": "msedge"} if engine == "edge" else {}),
     )
     page = browser.new_page()
+    assets = []
+
+    def asset(route):
+        assets.append(route.request.url)
+        css = route.request.url.endswith(".css")
+        route.fulfill(
+            content_type = "text/css" if css else "image/svg+xml",
+            headers = {
+                "Access-Control-Allow-Origin": "*",
+                "Cross-Origin-Resource-Policy": "cross-origin",
+            },
+            body = "#value{color:rgb(14,97,43)}"
+            if css
+            else '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><rect width="16" height="16" fill="red"/></svg>',
+        )
+
+    page.route("https://assets.example/**", asset)
     page.route(
         "**/api/browser/fetch",
         lambda r: r.fulfill(
@@ -63,6 +80,11 @@ with sync_playwright() as p:
     shell_frame = next(f for f in page.frames if "/api/browser/frame?" in f.url)
     f = shell_frame.child_frames[0]
     f.locator("#value").fill("kept")
+    f.wait_for_function(
+        "getComputedStyle(document.querySelector('#value')).color === 'rgb(14, 97, 43)'"
+    )
+    f.wait_for_function("document.querySelector('#asset').naturalWidth === 16")
+    f.evaluate("scrollTo(0,400)")
     marker = f.evaluate("window.marker")
     page.evaluate(
         '(id) => window.agents.setState({chats: {"single:a": {tabId:id, shared:true}}})', a
@@ -111,6 +133,42 @@ with sync_playwright() as p:
     f.evaluate("document.querySelector('#value').focus()")
     assert b_frame.evaluate("document.activeElement.id") == "value"
     assert b_frame.evaluate("window.blurs || 0") == 0
+    b_frame.locator("#value").fill("second")
+    asset_count = len(assets)
+    viewport = f.evaluate("[innerWidth,innerHeight,scrollY]")
+    page.evaluate("(id) => window.watchTab(id)", a)
+    readonly = page.locator(f'[data-web-readonly="{a}"] iframe')
+    readonly.wait_for(state = "visible")
+    assert readonly.evaluate("frame => frame.parentElement.inert")
+    assert f.evaluate("[innerWidth,innerHeight,scrollY]") == viewport
+    assert (
+        f.locator("#value").evaluate("element => getComputedStyle(element).color")
+        == "rgb(14, 97, 43)"
+    )
+    assert f.locator("#asset").evaluate("image => image.naturalWidth") == 16
+    box = f.locator("#value").bounding_box()
+    assert box
+    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.keyboard.type("must not enter A")
+    page.keyboard.press("Enter")
+    assert f.locator("#value").input_value() == "kept"
+    assert b_frame.locator("#value").input_value() == "second"
+    assert f.evaluate("window.marker") == marker
+    assert f.evaluate("[innerWidth,innerHeight,scrollY]") == viewport
+    assert len(assets) == asset_count
+    assert page.evaluate("window.store.getState().activeTabId") == b
+    assert page.evaluate("window.store.getState().chat") == "single:b"
+    assert not page.evaluate(
+        '([id,frame]) => window.browserScopeContains(document.querySelector("#slot"),id,frame)',
+        [b, shell_frame.frame_element()],
+    )
+    assert page.evaluate("id => window.requestFrameAgent(id, {op:'status'}, '')", a)["result"][
+        "virtualInput"
+    ]
+    page.evaluate("window.watchTab(null)")
+    page.wait_for_function("frame => !frame.parentElement.inert", arg = b_shell.frame_element())
+    b_frame.locator("#value").focus()
+    b_frame.evaluate("window.blurs=0")
     c = page.evaluate("window.store.getState().openTabIn('single:c', 'https://c.example/')")
     assert not page.evaluate("(id) => window.whenWebPageReady(id, undefined, 250)", c)
     page.evaluate(
@@ -171,6 +229,18 @@ with sync_playwright() as p:
     page.evaluate("window.observe(false)")
     note.wait_for(state = "visible")
     assert note.input_value() == "Keep this annotation"
+    page.locator("#slot").evaluate("element => element.style.width='300px'")
+    page.wait_for_function(
+        "frame => frame.parentElement.style.clipPath.includes('300px')",
+        arg = shell_frame.frame_element(),
+    )
+    slot = page.locator("#slot").bounding_box()
+    assert slot
+    assert page.evaluate(
+        "([x,y,frame]) => document.elementFromPoint(x,y) !== frame",
+        [slot["x"] + slot["width"] + 30, slot["y"] + 150, shell_frame.frame_element()],
+    )
+    page.locator("#slot").evaluate("element => element.style.width='600px'")
     page.evaluate("window.store.getState().closePanel()")
     assert f.evaluate("window.marker") == marker
     print(

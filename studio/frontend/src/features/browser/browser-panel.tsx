@@ -2403,6 +2403,9 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const htmlAnnotating = frameAvailable && activeEntry?.kind === "file" &&
     fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
+  const domPage = activeTab && activeEntry?.kind === "web" && !native
+    ? document.querySelector<HTMLElement>(`[data-browser-scope-tab="${CSS.escape(activeTab.id)}"]:not([data-browser-annotation-portal])`) ?? pageElement
+    : pageElement;
 
   return (
     <section
@@ -2528,6 +2531,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
                 tabId={activeTab.id}
                 title={activeEntry.name}
                 page={pageElement}
+                suspended={!active || !!observed}
               />
             ) : (
               <AnnotateLayer
@@ -2535,6 +2539,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
                 page={pageElement}
                 fileName={activeEntry.name}
                 zoom={activeTab.zoom}
+                suspended={!active || !!observed}
               />
             )
           ) : null}
@@ -2559,16 +2564,20 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
               url={webAddress(activeTab) ?? ""}
               page={pageElement}
               native={true}
+              suspended={!active || !!observed}
             />
           ) : null}
-          {activeTab && activeEntry && pageAnnotating === "dom" && pageElement ? (
+          {activeTab && activeEntry && pageAnnotating === "dom" && pageElement && domPage ? (
+            <AnnotationPortal page={pageElement} tabId={activeTab.id} hidden={!active || !!observed}>
             <AnnotateLayer
               key={`${activeTab.id}:${entryKey(activeEntry)}:${activeTab.reloadKey}`}
-              page={pageElement}
+              page={domPage}
               fileName={tabTitle(activeTab, activeEntry)}
               url={webAddress(activeTab) ?? undefined}
               zoom={activeTab.zoom}
+              suspended={!active || !!observed}
             />
+            </AnnotationPortal>
           ) : null}
         </div>
         </div>

@@ -127,7 +127,7 @@ export const tr = {
     observer: {
       menu: "Diğer sohbetler",
       otherChat: "Başka bir sohbet",
-      label: "{owner} tarayıcısının salt okunur anlık görüntüleri",
+      label: "{owner} tarayıcısının salt okunur görünümü",
       back: "Tarayıcınıza dönün",
       preview: "Salt okunur tarayıcı önizlemesi",
       unavailable: "Bu sayfanın önizlemesi şu anda gösterilemiyor.",

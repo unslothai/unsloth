@@ -409,7 +409,8 @@ export function AnnotateLayer({
   fileName,
   url,
   zoom = 1,
-}: { page: HTMLElement; fileName: string; url?: string; zoom?: number }) {
+  suspended = false,
+}: { page: HTMLElement; fileName: string; url?: string; zoom?: number; suspended?: boolean }) {
   const t = useT();
   const layerRef = useRef<HTMLDivElement | null>(null);
   const cursorRef = useRef<HTMLDivElement | null>(null);
@@ -513,6 +514,7 @@ export function AnnotateLayer({
 
   // Capture phase, so the page's own links and click handlers never see a marking press.
   useEffect(() => {
+    if (suspended) return;
     const ownUi = (target: EventTarget | null) =>
       target instanceof Element && target.closest("[data-annotate-ui]");
     let press: { x: number; y: number; dragging: boolean } | null = null;
@@ -646,10 +648,11 @@ export function AnnotateLayer({
       page.removeEventListener("pointerleave", onLeave);
       page.removeEventListener("click", onClick, true);
     };
-  }, [page, t]);
+  }, [page, t, suspended]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (suspended) return;
       if (event.key !== "Escape") return;
       event.preventDefault();
       if (pending) {
@@ -662,8 +665,8 @@ export function AnnotateLayer({
   });
 
   useLayoutEffect(() => {
-    if (pending) inputRef.current?.focus();
-  }, [pending]);
+    if (pending && !suspended) inputRef.current?.focus();
+  }, [pending, suspended]);
 
   const origin = layerRef.current?.getBoundingClientRect() ?? new DOMRect();
   const hoverBox = hover ? boxOf(hover, origin) : null;
@@ -1215,8 +1218,8 @@ export function WebAnnotateLayer({
   });
 
   useLayoutEffect(() => {
-    if (pending) inputRef.current?.focus();
-  }, [pending]);
+    if (pending && !suspended) inputRef.current?.focus();
+  }, [pending, suspended]);
 
   useEffect(() => {
     const numbers: Array<[number, number]> = items.map((item, index) => [item.id, index + 1]);

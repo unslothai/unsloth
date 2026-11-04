@@ -127,7 +127,7 @@ export const nl = {
     observer: {
       menu: "Andere chats",
       otherChat: "Andere chat",
-      label: "Alleen-lezen momentopnamen van de browser van {owner}",
+      label: "Alleen-lezenweergave van de browser van {owner}",
       back: "Terug naar je browser",
       preview: "Alleen-lezen browservoorbeeld",
       unavailable: "Deze pagina kan nu niet worden weergegeven.",

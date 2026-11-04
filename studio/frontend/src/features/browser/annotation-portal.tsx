@@ -3,6 +3,7 @@
 
 import { type ReactNode, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { BROWSER_ANNOTATION_ROOT } from "./browser-runtime-root";
 
 export function AnnotationPortal({ page, tabId, hidden, children }: { page: HTMLElement; tabId: string; hidden: boolean; children: ReactNode }) {
   const [host] = useState(() => document.createElement("div"));
@@ -19,7 +20,7 @@ export function AnnotationPortal({ page, tabId, hidden, children }: { page: HTML
     const schedule = () => { if (!host.hidden && !frame) frame = requestAnimationFrame(measure); };
     const observer = new ResizeObserver(schedule);
     observer.observe(page);
-    document.body.append(host);
+    document.getElementById(BROWSER_ANNOTATION_ROOT)!.append(host);
     measure();
     window.addEventListener("resize", schedule);
     window.addEventListener("scroll", schedule, true);

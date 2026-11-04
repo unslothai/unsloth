@@ -127,7 +127,7 @@ export const vi = {
     observer: {
       menu: "Các cuộc trò chuyện khác",
       otherChat: "Cuộc trò chuyện khác",
-      label: "Ảnh chụp chỉ đọc của trình duyệt {owner}",
+      label: "Chế độ xem chỉ đọc trình duyệt của {owner}",
       back: "Quay lại trình duyệt của bạn",
       preview: "Bản xem trước trình duyệt chỉ đọc",
       unavailable: "Không thể xem trước trang này lúc này.",

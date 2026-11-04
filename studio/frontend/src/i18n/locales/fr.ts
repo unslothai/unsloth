@@ -127,7 +127,7 @@ export const fr = {
     observer: {
       menu: "Autres discussions",
       otherChat: "Autre discussion",
-      label: "Instantanés en lecture seule du navigateur de {owner}",
+      label: "Vue en lecture seule du navigateur de {owner}",
       back: "Revenir à votre navigateur",
       preview: "Aperçu du navigateur en lecture seule",
       unavailable: "Cette page ne peut pas être prévisualisée pour le moment.",

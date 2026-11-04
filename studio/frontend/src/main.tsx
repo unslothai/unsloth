@@ -27,7 +27,7 @@ import {
 } from "./features/auth/session";
 import { startStartupCredentialBootstrap } from "./features/credentials/bootstrap";
 import { loadChatPage, prefetchChatPage } from "./features/chat/load-chat-page";
-import { WebRuntimeLoader } from "./features/browser/web-runtime-loader";
+import { BrowserRuntimeRoot } from "./features/browser/browser-runtime-root";
 import {
   applyInterfaceScaleBeforeFirstPaint,
   useInterfaceScaleStore,
@@ -100,7 +100,7 @@ function renderApp(): void {
   root.render(
     <StrictMode>
       <App />
-      <WebRuntimeLoader />
+      <BrowserRuntimeRoot />
     </StrictMode>,
   );
   if (!chatPageAtStart) {

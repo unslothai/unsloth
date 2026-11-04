@@ -127,7 +127,7 @@ export const pl = {
     observer: {
       menu: "Inne czaty",
       otherChat: "Inny czat",
-      label: "Migawki przeglądarki {owner} tylko do odczytu",
+      label: "Podgląd przeglądarki czatu {owner} tylko do odczytu",
       back: "Wróć do swojej przeglądarki",
       preview: "Podgląd przeglądarki tylko do odczytu",
       unavailable: "Nie można teraz wyświetlić podglądu tej strony.",

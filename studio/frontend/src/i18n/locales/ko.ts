@@ -127,7 +127,7 @@ export const ko = {
     observer: {
       menu: "다른 채팅",
       otherChat: "다른 채팅",
-      label: "{owner} 브라우저의 읽기 전용 스냅샷",
+      label: "{owner}의 브라우저 읽기 전용 보기",
       back: "내 브라우저로 돌아가기",
       preview: "읽기 전용 브라우저 미리보기",
       unavailable: "지금은 이 페이지를 미리 볼 수 없습니다.",

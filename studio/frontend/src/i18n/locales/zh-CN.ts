@@ -127,7 +127,7 @@ export const zhCN = {
     observer: {
       menu: "其他聊天",
       otherChat: "其他聊天",
-      label: "{owner}的浏览器只读快照",
+      label: "{owner} 浏览器的只读视图",
       back: "返回你的浏览器",
       preview: "只读浏览器预览",
       unavailable: "目前无法预览此页面。",

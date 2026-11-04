@@ -124,7 +124,7 @@ export const en = {
     observer: {
       menu: "Other chats",
       otherChat: "Another chat",
-      label: "Read-only snapshots of {owner}'s browser",
+      label: "Read-only view of {owner}'s browser",
       back: "Back to your browser",
       preview: "Read-only browser preview",
       unavailable: "This page cannot be previewed right now.",

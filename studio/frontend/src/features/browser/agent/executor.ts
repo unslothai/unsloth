@@ -790,12 +790,8 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const shown = agentTab(context);
   if (!shown) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
   showTab(shown, context);
-  // A kept page the cap closed reopens a beat later; its history flags are only good once it has.
   if (useNativeBrowser.getState().enabled && currentEntry(shown).kind === "web" && !hasNativeView(shown.id)) {
     await whenViewOpen(shown.id);
-  }
-  if (!useNativeBrowser.getState().enabled && !(await whenWebPageReady(shown.id, signal))) {
-    return { ok: false, error: "the browser page is not ready." };
   }
   if (signal?.aborted) return { ok: false, error: STOPPED };
   const tab = agentTab(context);
@@ -862,6 +858,9 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     return loaded ? arrive(loaded, before, action, context, since) : { ok: false, error: "the browser tab closed." };
   }
 
+  if (!useNativeBrowser.getState().enabled && !(await whenWebPageReady(tab.id, signal))) {
+    return { ok: false, error: "the browser page is not ready." };
+  }
   const ready = tab.loading ? await waitForLoad(tab.id, signal) : tab;
   if (!ready) return { ok: false, error: "the browser tab closed." };
   const here = tabUrl(ready);

@@ -127,7 +127,7 @@ export const id = {
     observer: {
       menu: "Chat lain",
       otherChat: "Chat lainnya",
-      label: "Cuplikan hanya baca dari browser {owner}",
+      label: "Tampilan hanya baca browser {owner}",
       back: "Kembali ke browser Anda",
       preview: "Pratinjau browser hanya baca",
       unavailable: "Halaman ini tidak dapat dipratinjau sekarang.",

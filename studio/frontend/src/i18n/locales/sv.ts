@@ -125,7 +125,7 @@ export const sv = {
     observer: {
       menu: "Andra chattar",
       otherChat: "Annan chatt",
-      label: "Skrivskyddade ögonblicksbilder av webbläsaren för {owner}",
+      label: "Skrivskyddad vy av webbläsaren för {owner}",
       back: "Tillbaka till din webbläsare",
       preview: "Skrivskyddad förhandsvisning av webbläsaren",
       unavailable: "Sidan kan inte förhandsvisas just nu.",

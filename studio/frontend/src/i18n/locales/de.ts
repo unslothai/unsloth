@@ -127,7 +127,7 @@ export const de = {
     observer: {
       menu: "Andere Chats",
       otherChat: "Anderer Chat",
-      label: "Schreibgeschützte Momentaufnahmen des Browsers von {owner}",
+      label: "Browser von {owner} nur ansehen",
       back: "Zurück zu deinem Browser",
       preview: "Schreibgeschützte Browservorschau",
       unavailable: "Diese Seite kann derzeit nicht angezeigt werden.",

@@ -32,7 +32,7 @@ with sync_playwright() as playwright:
     for frame in (a, b):
         frame.set_content(markup)
         frame.evaluate(
-            '(source) => { window.agent = eval(source); window.events = []; window.submits = 0; document.addEventListener("input", e => events.push(e.target.getAttribute("aria-label"))); document.addEventListener("submit", e => { e.preventDefault(); submits++; }); }',
+            '(source) => { window.agent = eval(source); window.events = []; window.focuses = []; window.submits = 0; for (const kind of ["focus","focusin","blur","focusout"]) document.addEventListener(kind, e => focuses.push(kind+":"+e.target.getAttribute("aria-label")),true); document.addEventListener("input", e => events.push(e.target.getAttribute("aria-label"))); document.addEventListener("submit", e => { e.preventDefault(); submits++; }); }',
             source,
         )
     b.locator("input").focus()
@@ -62,6 +62,14 @@ with sync_playwright() as playwright:
     run(a, dict(op = "type", ref = a_refs["first"], text = "alpha", submit = False, virtualInput = True))
     run(a, dict(op = "press", key = "Backspace", virtualInput = True))
     run(a, dict(op = "press", key = "Tab", virtualInput = True))
+    assert a.evaluate("focuses.slice(0,6)") == [
+        "focus:first",
+        "focusin:first",
+        "blur:first",
+        "focusout:first",
+        "focus:second",
+        "focusin:second",
+    ]
     run(a, dict(op = "press", key = "Enter", virtualInput = True))
     assert a.locator("textarea").input_value() == "\n"
     run(a, dict(op = "type", ref = a_refs["second"], text = "line", submit = False, virtualInput = True))

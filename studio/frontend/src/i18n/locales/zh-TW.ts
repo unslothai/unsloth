@@ -126,7 +126,7 @@ export const zhTW = {
     observer: {
       menu: "其他聊天",
       otherChat: "其他聊天",
-      label: "{owner} 的瀏覽器唯讀快照",
+      label: "{owner} 瀏覽器的唯讀檢視",
       back: "返回你的瀏覽器",
       preview: "唯讀瀏覽器預覽",
       unavailable: "目前無法預覽此頁面。",

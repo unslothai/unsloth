@@ -127,7 +127,7 @@ export const ptBR = {
     observer: {
       menu: "Outras conversas",
       otherChat: "Outra conversa",
-      label: "Capturas somente leitura do navegador de {owner}",
+      label: "Visualização somente leitura do navegador de {owner}",
       back: "Voltar ao seu navegador",
       preview: "Prévia do navegador somente leitura",
       unavailable: "Não é possível visualizar esta página agora.",

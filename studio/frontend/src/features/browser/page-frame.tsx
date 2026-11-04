@@ -58,7 +58,6 @@ export type FrameCommand =
   | { command: "find"; query: string }
   | { command: "findStep"; delta: -1 | 1 }
   | { command: "snapshot" }
-  | { command: "snapshotView" }
   | { command: "go"; delta: -1 | 1 }
   | { command: "zoom"; value: number }
   | { command: "mute"; on: boolean }
@@ -140,42 +139,20 @@ export function frameScale(tabId: string): number {
   return frame?.offsetWidth ? frame.getBoundingClientRect().width / frame.offsetWidth : 1;
 }
 
-const snapshotRequests = new Map<string, Set<(html: string | null) => void>>();
-export type FrameViewSnapshot = { html: string; scrollX: number; scrollY: number; viewportWidth: number; viewportHeight: number };
-const viewSnapshotRequests = new Map<string, Set<(snapshot: FrameViewSnapshot | null) => void>>();
-
-export function requestFrameViewSnapshot(tabId: string): Promise<FrameViewSnapshot | null> {
-  return new Promise((resolve) => {
-    let requests = viewSnapshotRequests.get(tabId);
-    const first = !requests;
-    if (!requests) viewSnapshotRequests.set(tabId, requests = new Set());
-    const finish = (snapshot: FrameViewSnapshot | null) => {
-      clearTimeout(timer);
-      requests.delete(finish);
-      if (!requests.size && viewSnapshotRequests.get(tabId) === requests) viewSnapshotRequests.delete(tabId);
-      resolve(snapshot);
-    };
-    const timer = setTimeout(() => finish(null), 5000);
-    requests.add(finish);
-    if (first && !sendFrameCommand(tabId, { command: "snapshotView" })) finish(null);
-  });
-}
+const snapshotRequests = new Map<string, (html: string | null) => void>();
 
 /** The page's markup as it is now (see `snapshot` in routes/browser.py); null if it can't say. */
 export function requestFrameSnapshot(tabId: string): Promise<string | null> {
   return new Promise((resolve) => {
-    let requests = snapshotRequests.get(tabId);
-    const first = !requests;
-    if (!requests) snapshotRequests.set(tabId, requests = new Set());
+    snapshotRequests.get(tabId)?.(null);
     const finish = (html: string | null) => {
       clearTimeout(timer);
-      requests.delete(finish);
-      if (requests.size === 0 && snapshotRequests.get(tabId) === requests) snapshotRequests.delete(tabId);
+      if (snapshotRequests.get(tabId) === finish) snapshotRequests.delete(tabId);
       resolve(html);
     };
     const timer = setTimeout(() => finish(null), 5000);
-    requests.add(finish);
-    if (first && !sendFrameCommand(tabId, { command: "snapshot" })) finish(null);
+    snapshotRequests.set(tabId, finish);
+    if (!sendFrameCommand(tabId, { command: "snapshot" })) finish(null);
   });
 }
 
@@ -277,11 +254,7 @@ export function PageFrame({
         return;
       }
       if (message.type === "snapshot") {
-        for (const finish of snapshotRequests.get(tabIdRef.current) ?? []) finish(message.html);
-        return;
-      }
-      if (message.type === "snapshotView") {
-        for (const finish of viewSnapshotRequests.get(tabIdRef.current) ?? []) finish(message);
+        snapshotRequests.get(tabIdRef.current)?.(message.html);
         return;
       }
       if (message.type === "agent") {

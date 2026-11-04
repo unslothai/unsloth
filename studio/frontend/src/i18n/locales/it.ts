@@ -124,7 +124,7 @@ export const it = {
     observer: {
       menu: "Altre chat",
       otherChat: "Un’altra chat",
-      label: "Istantanee di sola lettura del browser di {owner}",
+      label: "Vista in sola lettura del browser di {owner}",
       back: "Torna al tuo browser",
       preview: "Anteprima del browser in sola lettura",
       unavailable: "Impossibile visualizzare l’anteprima di questa pagina ora.",

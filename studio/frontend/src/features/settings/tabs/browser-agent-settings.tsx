@@ -12,7 +12,9 @@ import {
   type SiteRule,
   normalizeSitePattern,
   useBrowserAgentStore,
+  useBrowserStore,
 } from "@/features/browser";
+import { setBrowserAgentEnabled } from "@/features/browser/agent/agent-store";
 import { useT } from "@/i18n";
 import { CursorInWindowIcon } from "@/lib/browser-use-icon";
 import { Cancel01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
@@ -197,11 +199,12 @@ function PermissionsTable() {
 /** Settings > Browser: browser use on or off, history and script access, and the agent's site permissions. */
 export function BrowserAgentSettings() {
   const t = useT();
-  const enabled = useBrowserAgentStore((state) => state.enabled);
+  const chat = useBrowserStore((state) => state.chat);
+  const enabled = useBrowserAgentStore((state) => state.chats[chat]?.enabled ?? state.enabled);
   const historyAccess = useBrowserAgentStore((state) => state.historyAccess);
   const scriptAccess = useBrowserAgentStore((state) => state.scriptAccess);
   const showCursor = useBrowserAgentStore((state) => state.showCursor);
-  const { setEnabled, setHistoryAccess, setScriptAccess, setShowCursor } = useBrowserAgentStore.getState();
+  const { setHistoryAccess, setScriptAccess, setShowCursor } = useBrowserAgentStore.getState();
   return (
     <>
       <SettingsSection
@@ -212,7 +215,7 @@ export function BrowserAgentSettings() {
           label={t("browser.agentSettings.enable")}
           description={t("browser.agentSettings.enableDescription")}
         >
-          <Switch aria-label={t("browser.agentSettings.enable")} checked={enabled} onCheckedChange={setEnabled} />
+          <Switch aria-label={t("browser.agentSettings.enable")} checked={enabled} onCheckedChange={(value) => setBrowserAgentEnabled(chat, value)} />
         </SettingsRow>
         <SettingsRow
           label={t("browser.agentSettings.history")}

@@ -63,8 +63,8 @@ test("HTML runs whole in the browser; only the source view is capped", () => {
 test("the browser over the chat is a modal: focus moves in, is trapped, and Escape closes it", () => {
   const page = read("../src/features/chat/chat-page.tsx");
   const overlay = page.slice(page.indexOf("function BrowserOverlay"), page.indexOf("const ProjectSourcesPanel"));
-  assert.match(overlay, /role="dialog"/);
-  assert.match(overlay, /aria-modal=\{true\}/);
+  assert.match(overlay, /modalRoot\.setAttribute\("role", "dialog"\)/);
+  assert.match(overlay, /modalRoot\.setAttribute\("aria-modal", "true"\)/);
   assert.match(overlay, /\(focusableIn\(dialog\)\[0\] \?\? dialog\)\.focus\(\)/);
   assert.match(overlay, /previous instanceof HTMLElement && previous\.isConnected\) previous\.focus\(\)/);
   assert.match(overlay, /event\.key !== "Tab"/);

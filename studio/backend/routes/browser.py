@@ -947,7 +947,7 @@ _FRAME_HTML = r"""<!doctype html>
         };
         // The page as it is now, for printing: scripts' DOM, typed values and canvases included.
         // Printed from a copy in a separate frame, as this sandbox can't open the print dialog.
-        const snapshot = (view = false) => {
+        const snapshot = () => {
           try {
             const source = document.documentElement;
             const copy = source.cloneNode(true);
@@ -989,11 +989,6 @@ _FRAME_HTML = r"""<!doctype html>
               }
             } catch {}
             for (const node of copy.querySelectorAll("script, [data-unsloth-annotate]")) node.remove();
-            if (view) {
-              for (const node of copy.querySelectorAll("iframe, frame, object, embed, meta[http-equiv]")) {
-                if (node.tagName !== "META" || node.getAttribute("http-equiv")?.toLowerCase() === "refresh") node.remove();
-              }
-            }
             const html = "<!doctype html>" + copy.outerHTML;
             return html.length <= 8 * 1024 * 1024 ? html : null;
           } catch {
@@ -1116,7 +1111,6 @@ _FRAME_HTML = r"""<!doctype html>
           else if (data.command === "find" && typeof data.query === "string" && data.query.length <= 1000) finder.search(data.query);
           else if (data.command === "findStep") finder.step(data.delta === -1 ? -1 : 1);
           else if (data.command === "snapshot") post({ type: "snapshot", html: snapshot() });
-          else if (data.command === "snapshotView") post({ type: "snapshotView", html: snapshot(true), scrollX, scrollY, viewportWidth: innerWidth, viewportHeight: innerHeight });
           else if (data.command === "go") {
             const to = stepFrom(data.delta === -1 ? -1 : 1);
             if (routes[to]) moveRoute(to);

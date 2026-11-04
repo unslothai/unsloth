@@ -128,7 +128,7 @@ export const ja = {
     observer: {
       menu: "他のチャット",
       otherChat: "別のチャット",
-      label: "{owner}のブラウザーの読み取り専用スナップショット",
+      label: "{owner} のブラウザー（閲覧のみ）",
       back: "自分のブラウザーに戻る",
       preview: "読み取り専用のブラウザープレビュー",
       unavailable: "現在、このページをプレビューできません。",

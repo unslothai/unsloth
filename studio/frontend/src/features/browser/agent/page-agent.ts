@@ -138,8 +138,13 @@ export function installPageAgent(): PageAgent {
     if (!el) return;
     if (virtualInput) {
       if (el.matches(":disabled") || (el.tabIndex < 0 && !el.hasAttribute("tabindex") && !el.isContentEditable)) return;
-      if (virtualTarget !== el) virtualRange = null;
+      const previous = activeTarget();
+      if (previous !== el) virtualRange = null;
       virtualTarget = el;
+      if (previous !== el) {
+        if (previous) for (const name of ["blur", "focusout"]) previous.dispatchEvent(new FocusEvent(name, { bubbles: name === "focusout", composed: true, relatedTarget: el }));
+        for (const name of ["focus", "focusin"]) el.dispatchEvent(new FocusEvent(name, { bubbles: name === "focusin", composed: true, relatedTarget: previous }));
+      }
     } else {
       el.focus?.({ preventScroll: true });
     }
