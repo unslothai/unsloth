@@ -405,7 +405,7 @@ def test_render_time_replica_failure_hands_over_to_cfg_batching_between_renders(
     pipe = _Pipe()
     mg._CFG_ROUTERS[pipe] = router
     calls = []
-    assert mg.set_cfg_parallel_fallback(pipe, lambda: calls.append("cfg_batch") or None)
+    assert mg.set_cfg_parallel_fallback(pipe, lambda p: calls.append("cfg_batch") or None)
     out = _cfg_steps(model)
     torch.testing.assert_close(
         out, ref, rtol = 1e-5, atol = 1e-6
@@ -428,12 +428,12 @@ def test_no_fallback_without_a_failure_and_none_registered():
     pipe = _Pipe()
     mg._CFG_ROUTERS[pipe] = router
     calls = []
-    mg.set_cfg_parallel_fallback(pipe, lambda: calls.append(1))
+    mg.set_cfg_parallel_fallback(pipe, lambda p: calls.append(1))
     _cfg_steps(model)
     mg.end_cfg_render(pipe)
     assert calls == [] and mg._CFG_ROUTERS.get(pipe) is router
     mg._CFG_ROUTERS.pop(pipe, None)
-    assert not mg.set_cfg_parallel_fallback(_Pipe(), lambda: None)
+    assert not mg.set_cfg_parallel_fallback(_Pipe(), lambda p: None)
 
 
 def test_weight_only_lora_path_mirrors_before_it_would_drop_the_replica():
@@ -483,3 +483,38 @@ def test_mirroring_lora_scales_resets_the_warm_state():
         assert not router.warm_primary and not router.warm_replica
     finally:
         mg._CFG_ROUTERS.pop(pipe, None)
+
+
+def test_the_registered_fallback_does_not_keep_the_pipeline_alive():
+    """The router is the value of a weak-keyed map on the pipeline: a fallback that captured the pipeline would keep a
+    load rolled back before publication (and its weights) alive. It is handed the pipeline when it runs instead."""
+    import functools
+
+    model = FluxTransformer2DModel()
+    router, _ = _router(model)
+    pipe = _Pipe()
+    mg._CFG_ROUTERS[pipe] = router
+    seen = []
+    assert mg.set_cfg_parallel_fallback(
+        pipe, functools.partial(lambda p, tag: seen.append((p, tag)), tag = "batch")
+    )
+    router.fallback_pending = True
+    mg.end_cfg_render(pipe)
+    assert seen == [(pipe, "batch")]
+    # the image and video loads register a partial that leaves the pipeline to the call
+    import ast
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parents[1] / "core" / "inference"
+    for name in ("diffusion.py", "video.py"):
+        tree = ast.parse((backend / name).read_text(encoding = "utf-8"))
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", None) == "set_cfg_parallel_fallback"
+        ]
+        assert len(calls) == 1, name
+        held = calls[0].args[1]
+        assert isinstance(held, ast.Call) and ast.unparse(held.func) == "functools.partial", name
+        assert [ast.unparse(a) for a in held.args] == ["install_cfg_batch"], name

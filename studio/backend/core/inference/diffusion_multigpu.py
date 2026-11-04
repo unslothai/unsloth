@@ -3733,7 +3733,7 @@ def end_cfg_render(pipe: Any) -> None:
             reason = router.disabled_reason
             uninstall_cfg_parallel(pipe)
             try:
-                result = fallback()
+                result = fallback(pipe)
             except Exception as exc:  # noqa: BLE001 - an optional lever: one card stands
                 result = f"{type(exc).__name__}: {exc}"
             if router.logger is not None:
@@ -3744,10 +3744,11 @@ def end_cfg_render(pipe: Any) -> None:
                 )
 
 
-def set_cfg_parallel_fallback(pipe: Any, fallback: Callable[[], Optional[str]]) -> bool:
-    """Register the lever that replaces CFG-parallel when its replica fails at render time (CFG batching): called once,
-    after ``uninstall_cfg_parallel``, between renders; returns its decline reason or None when armed. True when a
-    router was armed to carry it."""
+def set_cfg_parallel_fallback(pipe: Any, fallback: Callable[[Any], Optional[str]]) -> bool:
+    """Register the lever that replaces CFG-parallel when its replica fails at render time (CFG batching): called once
+    with the pipeline, after ``uninstall_cfg_parallel``, between renders; returns its decline reason or None when armed.
+    It must not hold the pipeline itself (the router is the value of a weak-keyed map on it, so that would keep a
+    rolled-back load alive). True when a router was armed to carry it."""
     try:
         router = _CFG_ROUTERS.get(pipe) if pipe is not None else None
     except TypeError:
