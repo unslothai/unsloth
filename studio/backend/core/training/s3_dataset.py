@@ -289,9 +289,11 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
-    if not isinstance(data, list):
-        return  # column-oriented JSON
-    for row in data:
+    # A single JSON Lines record also parses as a complete JSON object.
+    # Keep its object shape while applying the same rewrite as multi-row manifests.
+    if not isinstance(data, (dict, list)):
+        return
+    for row in [data] if isinstance(data, dict) else data:
         _rewrite_row(row, resolve)
     with open(manifest_path, "w", encoding = "utf-8") as f:
         json.dump(data, f, ensure_ascii = False)

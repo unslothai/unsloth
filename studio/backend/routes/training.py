@@ -425,7 +425,9 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
 
 
 def _trainable_local_roots(path: Path, model_name: Optional[str] = None) -> list[Path]:
-    """Snapshot root plus load subdirs: Spark-TTS keeps weights in LLM, which a root-only probe misses."""
+    """The snapshot root plus any subdirectory a load reads from. Spark-TTS / BiCodec keep config.json
+    and the weights under <snapshot>/LLM, so probing only the root reports a good cached model as
+    having no trainable weights."""
     roots = [path]
     if not model_name:
         return roots
@@ -468,22 +470,30 @@ def _has_adapter_metadata(path: Path) -> bool:
 
 
 def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
-    """LoRA/CPT only (issue 13140); only CUDA reuses a loaded adapter, other runners rebuild on a base."""
+    """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
+
+    The embedding and decision runners always build a fresh adapter on top, so those still need
+    a base model."""
     if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
         return False
-    if getattr(request, "is_embedding", False) or getattr(request, "is_decision", False):
-        return False
-    from core.training.training import should_use_mlx_training_backend
-
-    return not should_use_mlx_training_backend()
+    return not (getattr(request, "is_embedding", False) or getattr(request, "is_decision", False))
 
 
 # The names PEFT and Unsloth's loader open; numbered adapter shards are not loaded.
 _ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+# The MLX loader imports PEFT safetensors (not .bin) and reads its own saved format.
+_MLX_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapters.safetensors")
 
 
 def _has_local_adapter_weights(path: Path) -> bool:
-    return path.is_dir() and any((path / name).is_file() for name in _ADAPTER_WEIGHT_FILES)
+    if not path.is_dir():
+        return False
+    from core.training.training import should_use_mlx_training_backend
+
+    names = (
+        _MLX_ADAPTER_WEIGHT_FILES if should_use_mlx_training_backend() else _ADAPTER_WEIGHT_FILES
+    )
+    return any((path / name).is_file() for name in names)
 
 
 _HF_MODEL_ACCESS_DENIED = (
@@ -1335,20 +1345,10 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
-    if request.training_type == "Continued Pretraining":
-        raise HTTPException(
-            status_code = 400,
-            detail = "Continued Pretraining is not supported for MLX training yet.",
-        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
-        )
-    if request.is_dataset_audio:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Audio dataset training is not yet supported on Apple Silicon.",
         )
     if request.use_loftq:
         raise HTTPException(
@@ -1544,13 +1544,15 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
 
 def _prepare_resume_resource_provenance(
     request: TrainingStartRequest, resume_run: dict
-) -> tuple[Optional[str], bool, bool, bool, Optional[str]]:
+) -> tuple[Optional[str], bool, bool, bool, Optional[str], dict[str, Any]]:
     stored = training_run_config(resume_run)
     from core.training.provenance import (
         ExactResumeResourcesUnavailable,
         RESOURCE_PROVENANCE_KEY,
         exact_resume_resource_requirements,
+        local_model_resume_expectation,
         resource_provenance_is_complete,
+        streamed_dataset_revision,
     )
 
     try:
@@ -1623,6 +1625,22 @@ def _prepare_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
+    overrides: dict[str, Any] = {}
+    stream_revision = streamed_dataset_revision(stored)
+    if stream_revision is not None:
+        # Replay the streamed commit even if the run never attested, not the moving branch.
+        overrides["dataset_revision"] = stream_revision
+    expected_model = local_model_resume_expectation(stored)
+    if expected_model is not None:
+        # The worker checks the base it loads against this; the dataset pin still applies.
+        return (
+            None,
+            False,
+            requires_exact_dataset,
+            False,
+            None,
+            {**overrides, "resume_expected_model": expected_model},
+        )
     marker = stored.get(RESOURCE_PROVENANCE_KEY)
     model_load_mode = (
         _normalized_optional_string(marker.get("model_load_mode"))
@@ -1635,6 +1653,7 @@ def _prepare_resume_resource_provenance(
         requires_exact_dataset,
         resource_provenance_is_complete(stored),
         model_load_mode,
+        overrides,
     )
 
 
@@ -1956,6 +1975,7 @@ async def _admit_training_request(
     resume_requires_exact_resources = False
     resume_requires_exact_model = False
     resume_requires_exact_dataset = False
+    resume_overrides: dict[str, Any] = {}
     if request.resume_from_checkpoint:
         try:
             resume_output_dir = await asyncio.to_thread(
@@ -2005,6 +2025,7 @@ async def _admit_training_request(
             resume_requires_exact_dataset,
             resume_requires_exact_resources,
             resume_model_load_mode,
+            resume_overrides,
         ) = await asyncio.to_thread(
             _prepare_resume_resource_provenance,
             request,
@@ -2042,11 +2063,6 @@ async def _admit_training_request(
             raise HTTPException(
                 status_code = 400,
                 detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
-            )
-        if _hw.DEVICE == _hw.DeviceType.MLX:
-            raise HTTPException(
-                status_code = 400,
-                detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
             )
         if request.max_steps is None or request.max_steps <= 0:
             raise HTTPException(
@@ -2093,8 +2109,11 @@ async def _admit_training_request(
             )
     allow_ambient = via_api_key is not True
     hf_token = hf_token_arg(request.hf_token, allow_ambient_token = allow_ambient)
-    # Authorize local dataset paths once the token is known, before anything reads them; eval paths
-    # only while evaluation is on, so a stale unused eval path must not refuse a valid run
+    # The local dataset paths were resolved above for existence only; authorize them now that
+    # the caller's token is known, before anything reads them.
+    # Eval paths only while evaluation is on, matching the validation above and the trainer,
+    # which reads them under the same condition: a stale eval path nothing will open must not
+    # refuse an otherwise valid run.
     for _local_paths, _label in (
         (request.local_datasets, "dataset"),
         (
@@ -2218,6 +2237,7 @@ async def _admit_training_request(
         "is_decision": request.is_decision,
         "model_subfolder": request.model_subfolder,
         "decision_layout": request.decision_layout,
+        "decision_head": request.decision_head,
         "enable_wandb": request.enable_wandb,
         "wandb_token": request.wandb_token or "",
         "wandb_project": request.wandb_project or "",
@@ -2237,6 +2257,7 @@ async def _admit_training_request(
         "gpu_ids": request.gpu_ids,
         "s3_config": request.s3_config.model_dump() if request.s3_config else None,
     }
+    training_kwargs.update(resume_overrides)
 
     # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled for brand-new
     # architectures, so VRAM checks must not underestimate a load the worker refuses.
@@ -3527,8 +3548,9 @@ def _free_gpu_for_diffusion_training() -> None:
         from core.inference import gpu_arbiter
         from core.inference.diffusion_engine_router import get_active_diffusion_engine
 
-        # Use the ACTIVE engine: the singleton unload is a no-op while a native sd-server holds the
-        # GPU; the mask segmenter sits on torch's GPU and a still-running one refuses the start
+        # The ACTIVE engine, not the diffusers singleton: on a native (sd_cpp) selection the resident sd-server still
+        # holds the GPU, so unloading only the singleton is a no-op.
+        # The mask segmenter sits on torch's card whichever engine renders; one still running refuses the start.
         gpu_arbiter.release_mask_segmenter("diffusion training start")
         diffusion = get_active_diffusion_engine()
         if getattr(diffusion, "runs_off_torch_device", False) is True:
@@ -4644,7 +4666,8 @@ _MAX_CAPTION_CHARS = 2000
 
 
 def _resolve_dataset_folder(name: str, *, must_exist: bool = True) -> Path:
-    """Single-component name, no traversal, under datasets root; 404 when a read target is missing."""
+    """Validate ``name`` (single component, no traversal) and resolve it under the Unsloth
+    datasets root. 404 when a read target is missing."""
     from utils.paths import datasets_root
 
     cleaned = _clean_diffusion_dataset_name(name)
@@ -5108,7 +5131,8 @@ def _detect_image_column(features) -> Optional[str]:
 
 
 def _detect_image_column_from_row(row: dict) -> Optional[str]:
-    """Picks the image column from one row, since a streamed dataset has no feature metadata to inspect."""
+    """Image column picked from one materialized row, for a streamed dataset that arrives with no
+    feature metadata to inspect."""
     try:
         from PIL.Image import Image as PILImage
     except Exception:  # noqa: BLE001 -- no Pillow -> the caller reports "no image column"
@@ -5131,7 +5155,8 @@ def _detect_caption_column(entry: dict, columns: list[str]) -> Optional[str]:
 
 
 def _materialize_hf_dataset(entry: dict, dest: Path, cap: int) -> int:
-    """Streams datasets.load_dataset rows into dest as numbered images with optional .txt sidecars."""
+    """Stream rows from datasets.load_dataset into ``dest`` as numbered images + optional
+    .txt sidecars. Returns the number of images written."""
     from datasets import load_dataset
 
     kwargs = {"split": "train"}

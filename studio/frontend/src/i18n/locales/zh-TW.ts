@@ -3085,9 +3085,8 @@ export const zhTW = {
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",
       turnNavigation: "輪次導覽",
       turnNavigationDescription: "在長對話的左側邊緣以導軌形式顯示你的訊息。懸停可預覽某一輪，點擊可跳轉，並可加書籤以便再次找到。",
-      composerAtBottom: "輸入框置於底部",
-      composerAtBottomDescription:
-        "開始新聊天時，將輸入框放在頁面底部而非中間。",
+      composerPosition: "輸入框位置",
+      composerPositionDescription: "新聊天時輸入框的位置，可從頁面頂端調到底部。",
       projectAttachments: "在專案中共用檔案",
       projectAttachmentsDescription: "讓新的聊天附件可供專案中的每個聊天使用。",
       rememberParamsPerModel: "依模型記住設定",
@@ -4014,7 +4013,6 @@ export const zhTW = {
           embeddingModel: "嵌入模型不支援串流（訓練需要完整的資料集）。",
           imageDataset: "此資料集看起來是圖片，無法串流。",
           audioDataset: "此資料集看起來是音訊，無法串流。",
-          appleSilicon: "Apple Silicon（MLX）目前尚不支援串流。",
         },
         options: {
           trainOnCompletions: "僅訓練助理回覆",
