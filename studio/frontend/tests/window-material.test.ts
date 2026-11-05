@@ -212,6 +212,7 @@ test("glass dims the wallpaper on other pages like an open chat, and blurs it no
 test("glass leaves the unstuck library header clear", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
+	assert.match(css, /\[data-page-model-header\] \[data-slot="api-toolbar-fade"\] \{\n  display: none;/);
 	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
 	assert.match(api, /data-page-model-header=""\n\s*className=\{cn\(\n\s*"pointer-events-none sticky top-0/);
 	assert.doesNotMatch(css, /data-hub-pane/);

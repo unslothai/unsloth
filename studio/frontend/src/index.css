@@ -6811,6 +6811,10 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
+/* Its fade drew the bar's bottom edge as a band over the wallpaper. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] [data-page-model-header] [data-slot="api-toolbar-fade"] {
+  display: none;
+}
 /* Follow the actual sidebar edge during resize. The decorative layer stays
    behind the scrolling pane and below the Windows caption. */
 [data-windows-wallpaper-page] > [data-slot="sidebar"] {
