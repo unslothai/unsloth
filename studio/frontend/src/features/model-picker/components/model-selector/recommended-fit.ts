@@ -250,6 +250,8 @@ export function hfModelFitsDevice(
   },
   gpu: {
     memoryTotalGb: number;
+    /** The largest single card; absent means memoryTotalGb is one card. */
+    maxDeviceMemoryGb?: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
     backend?: string;
@@ -268,9 +270,13 @@ export function hfModelFitsDevice(
     !gpu.budgetKnown
   )
     return true;
-  // audio.cpp loads whole on one card: the load-check estimate of its smallest variant decides, as on
-  // the row badge, so a model whose default quant is too big stays listed when a smaller one fits.
-  const resident = audioCppRowFit(model, gpu.memoryTotalGb);
+  // audio.cpp loads whole on the card with the most free memory, not the lowest ordinal: the estimate
+  // of its smallest variant against the largest card decides, as on the row badge, so a model whose
+  // default quant is too big stays listed when a smaller one fits.
+  const resident = audioCppRowFit(
+    model,
+    gpu.maxDeviceMemoryGb ?? gpu.memoryTotalGb,
+  );
   if (resident) return resident === "fits";
   const params = model.totalParams ?? paramsFromId(model.id);
   const isGguf = isGgufId(model.id, model.isGguf);

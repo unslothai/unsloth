@@ -8,7 +8,10 @@ import {
   pickDefaultQuant,
   recommendedQuantForDevice,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
-import { hfModelFitsDevice } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
+import {
+  hfModelFitsDevice,
+  loadScopedGpu,
+} from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import { parseMetaTokens } from "../src/features/model-picker/components/model-selector/row-meta.ts";
 import {
   audioCppRowFit,
@@ -16,6 +19,7 @@ import {
   classifyGgufVariantFit,
   classifyVariantFitOnCard,
 } from "../src/lib/gguf-fit.ts";
+import { readSrc } from "./helpers/kit.ts";
 
 test("a row shows the load estimate beside the file size, not in its place", () => {
   const parsed = parseMetaTokens("GGUF · 7.7GB · 20.5 GB to run");
@@ -124,4 +128,40 @@ test("the recommended and default quant follow the estimate on a 10 GiB card", (
   );
   assert.equal(recommendedQuantForDevice(yue2, rule, null, 8)?.quant, "Q4_0");
   assert.equal(pickDefaultQuant(yue2, "BF16", card10)?.quant, "Q8_0");
+});
+
+test("an audio.cpp row is judged on the largest card, where automatic placement loads it", () => {
+  // GPU0 10 GiB beside GPU1 24 GiB: task scoping narrows the capacity to GPU0, but the load check
+  // places on the card with the most free memory, so ACE-Step (Q8_0 12.17 GiB) runs on GPU1.
+  const host = {
+    available: true,
+    memoryTotalGb: 34,
+    maxDeviceMemoryGb: 24,
+    loadDeviceMemoryGb: 10,
+    systemRamAvailableGb: 32,
+    deviceCount: 2,
+  };
+  const aceStep = {
+    id: "audio-cpp/ACE-Step-1.5-GGUF",
+    isGguf: true,
+    estimatedResidentGb: 16.36,
+    smallestResidentGb: aceQ8.estimated_resident_gb,
+  };
+  const scoped = loadScopedGpu(host, true);
+  assert.equal(scoped.memoryTotalGb, 10);
+  assert.equal(hfModelFitsDevice(aceStep, scoped), true);
+  // Two 8 GiB cards: the Hub passes their 16 GiB sum, but no one card holds YuE2 BF16 (12.86 GiB).
+  const twoCards = { gpuGb: 16, gpuCount: 2, largestGpuGb: 8, systemRamGb: 32 };
+  assert.equal(classifyGgufVariantFit(yue2[2], twoCards), "oom");
+  assert.equal(classifyGgufVariantFit(yue2[0], twoCards), "fits");
+});
+
+test("the picker's audio.cpp verdicts read the largest card", () => {
+  // The quant expander and row badges render only under React, so their capacity is read from source.
+  const pickers = readSrc(
+    "features/model-picker/components/model-selector/pickers.tsx",
+  );
+  assert.match(pickers, /useInferenceGpuInfo\(\)\.maxDeviceMemoryGb/);
+  assert.match(pickers, /const cardGb = anyBudgetGb \? largestGpuGb : 0;/);
+  assert.doesNotMatch(pickers, /audioCppRowFit\([^)]*memoryTotalGb\)/);
 });

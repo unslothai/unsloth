@@ -1835,6 +1835,9 @@ export function ModelsPage() {
       vramInfo,
       gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       gpuCount: inferenceGpu.deviceCount,
+      largestGpuGb: inferenceGpu.available
+        ? inferenceGpu.maxDeviceMemoryGb
+        : undefined,
       systemRamGb:
         inferenceGpu.systemRamAvailableGb > 0
           ? inferenceGpu.systemRamAvailableGb
@@ -1852,6 +1855,7 @@ export function ModelsPage() {
       inferenceGpu.available,
       inferenceGpu.memoryTotalGb,
       inferenceGpu.deviceCount,
+      inferenceGpu.maxDeviceMemoryGb,
       inferenceGpu.systemRamAvailableGb,
       inferenceGpu.unifiedLoadBudgetGb,
       inferenceGpu.unifiedLoadCeilingGb,

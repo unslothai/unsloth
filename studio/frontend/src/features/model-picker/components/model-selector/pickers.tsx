@@ -2927,8 +2927,10 @@ function GgufVariantExpander({
   );
 
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
-  // audio.cpp variants carry the backend's own estimate: judged on it, as their load check is.
-  const cardGb = anyBudgetGb ? (gpuGb ?? 0) : 0;
+  // audio.cpp variants carry the backend's own estimate: judged on it, as their load check is, against
+  // the largest card, since automatic placement takes the one with the most free memory.
+  const largestGpuGb = useInferenceGpuInfo().maxDeviceMemoryGb;
+  const cardGb = anyBudgetGb ? largestGpuGb : 0;
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
       classifyVariantFitOnCard(getGgufFit, variant, cardGb),
@@ -4980,10 +4982,10 @@ export function HubModelPicker({
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
-        // audio.cpp: the backend's estimate against the card, the number its load check compares.
+        // audio.cpp: the backend's estimate against the largest card, the number its load check compares.
         // The badge asks whether any variant fits, as the fit filter does; the meta shows the default.
         const resident = r.estimatedResidentGb;
-        const residentFit = audioCppRowFit(r, rowInferenceGpu.memoryTotalGb);
+        const residentFit = audioCppRowFit(r, rowInferenceGpu.maxDeviceMemoryGb);
         if (resident && residentFit) {
           map.set(r.id, {
             meta,

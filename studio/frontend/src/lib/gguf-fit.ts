@@ -21,6 +21,9 @@ export interface GgufFitInput {
   gpuCount?: number;
   /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`): past it, `fits` becomes `marginal`. */
   unifiedLoadBudgetGb?: number | null;
+  /** The largest single GPU (`GpuInfo.maxDeviceMemoryGb`), which audio.cpp estimates are judged on;
+   * absent means gpuGb is one card. */
+  largestGpuGb?: number;
 }
 
 /** Shared with the memory bar; the loader's `_CTX_FIT_VRAM_FRACTION`. 0.90 was tried and
@@ -176,6 +179,6 @@ export function classifyGgufVariantFit(
   return classifyVariantFitOnCard(
     (sizeBytes) => classifyGgufFit(sizeBytes, input),
     variant,
-    input.gpuGb ?? 0,
+    input.largestGpuGb ?? input.gpuGb ?? 0,
   );
 }
