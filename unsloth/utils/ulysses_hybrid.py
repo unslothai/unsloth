@@ -344,7 +344,8 @@ def _refuse_non_causal(module, is_causal = None) -> None:
 
 def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
-    as transformers' masks), and packed documents closed off from one another."""
+    as transformers' masks), and packed documents closed off from one another (tokens past cu_seqlens[-1], the
+    padding to the cp multiple, form one more segment)."""
     idx = torch.arange(total, device = device)
     allowed = idx[None, :] <= idx[:, None]
     if window is not None:
@@ -405,9 +406,6 @@ def _ulysses_hf_attention(
         else get_packed_info_from_kwargs({"packed_seq_lengths": packed_seq_lengths}, query.device)
     )
     cu_seqlens = None if seq_info is None else seq_info[1]
-    if cu_seqlens is not None and int(cu_seqlens[-1]) < total:
-        # Padding to the cp multiple sits after the last document: its own segment.
-        cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
 
     overrides = {"num_key_value_groups": plan.local_groups}
     sinks = getattr(module, "sinks", None)
@@ -423,6 +421,9 @@ def _ulysses_hf_attention(
         # Flash takes the window and the softcap as arguments, and documents as cu_seqlens.
         mask = None
         if cu_seqlens is not None:
+            if int(cu_seqlens[-1]) < total:
+                # Padding to the cp multiple sits after the last document: its own segment.
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
             cu = cu_seqlens.to(device = query.device, dtype = torch.int32)
             longest = int((cu[1:] - cu[:-1]).max())
             kwargs.update(
@@ -431,6 +432,8 @@ def _ulysses_hf_attention(
     elif implementation == "sdpa" and cu_seqlens is None and window is None:
         mask = None  # sdpa's is_causal path
     else:
+        # The dense mask puts the padding tail past the last document in a segment of its own, with no
+        # data-dependent check (that check graph-broke every compiled packed attention call).
         mask = _whole_sequence_mask(total, query.device, query.dtype, window, cu_seqlens)
     out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
     # [B, T, H / N, D] -> [B, T / N, H, D]
