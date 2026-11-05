@@ -447,6 +447,15 @@ def mapping_facts(
         roles = dict(mapping)
     per_row = [] if templated else [c for c, role in roles.items() if role == "system"]
     facts = {"system_column": per_row[0] if per_row else ""}
+    if (objective or "sft") == "sft":
+        # The columns that made each row's question and answer: several user columns are one
+        # message per column, or one message of their lines under the template or Alpaca format.
+        users = [c for c, role in roles.items() if role == "user"]
+        answers = [c for c, role in roles.items() if role == "assistant"]
+        if users:
+            facts.update(user_columns = users, user_join = "lines" if templated else "turns")
+        if answers:
+            facts["answer_columns"] = answers
     labels = mapping.get("__label_mapping")
     if isinstance(labels, dict) and labels:
         facts["label_mapping"] = labels

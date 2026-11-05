@@ -1449,12 +1449,20 @@ def test_a_csv_grpo_set_reads_its_first_row_as_training_does(tmp_path, monkeypat
 def test_a_template_mapping_names_no_per_row_system_column():
     # A plain role mapping trains each row's own system column.
     assert training.mapping_facts({"rule": "system", "q": "user", "a": "assistant"}) == {
-        "system_column": "rule"
+        "system_column": "rule",
+        "user_columns": ["q"],
+        "user_join": "turns",
+        "answer_columns": ["a"],
     }
     # Any `__` metadata selects the template mapping, which drops the system column: every row got
     # `__system_prompt` instead.
     mapping = {"rule": "system", "q": "user", "a": "assistant", "__system_prompt": "Be brief."}
-    assert training.mapping_facts(mapping) == {"system_column": ""}
+    assert training.mapping_facts(mapping) == {
+        "system_column": "",
+        "user_columns": ["q"],
+        "user_join": "lines",
+        "answer_columns": ["a"],
+    }
     assert training.trained_system_prompt({"custom_format_mapping": mapping}) == "Be brief."
     labels = {"label": {"0": "neg", "1": "pos"}}
     assert training.mapping_facts({"rule": "system", "__label_mapping": labels}) == {
@@ -1467,9 +1475,18 @@ def test_a_template_mapping_names_no_per_row_system_column():
 def test_an_sft_input_role_is_recorded_as_the_system_column():
     # SFT's formatter reads `input` as the system message, as it reads `system`.
     mapping = {"instruction": "instruction", "input": "input", "output": "output"}
-    assert training.mapping_facts(mapping) == {"system_column": "input"}
+    facts = {"user_columns": ["instruction"], "answer_columns": ["output"]}
+    assert training.mapping_facts(mapping) == {
+        "system_column": "input",
+        "user_join": "turns",
+        **facts,
+    }
     # An Alpaca format makes it the Alpaca input instead, part of the question.
-    assert training.mapping_facts(mapping, "alpaca") == {"system_column": ""}
+    assert training.mapping_facts(mapping, "alpaca") == {
+        "system_column": "",
+        "user_join": "lines",
+        **facts,
+    }
     # RL objectives read only the literal role.
     assert training.mapping_facts(mapping, "auto", "grpo") == {"system_column": ""}
     assert training.mapping_facts({"q": "prompt", "rule": "system"}, "auto", "grpo") == {

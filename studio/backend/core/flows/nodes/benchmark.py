@@ -382,6 +382,9 @@ async def _samples(ctx: NodeContext, run_id: Optional[str]) -> list[dict]:
 
 
 ALPACA_PROMPT = "__instruction_and_input"
+# The question and answer of a checkpoint whose mapping joined several columns into each.
+MAPPED_PROMPT = "__mapped_question"
+MAPPED_REFERENCE = "__mapped_answer"
 
 
 def _alpaca_question(row: dict) -> Any:
@@ -428,6 +431,18 @@ def _system_column(ctx: NodeContext, columns: list[str]) -> Optional[str]:
     return next((c for c in columns if c.strip().lower() in SYSTEM_GUESSES), None)
 
 
+def _mapped_cells(row: dict, columns: list[str], labels: Any, join: str) -> Any:
+    """Several mapped columns as training joined them: one user message per column, or their
+    lines in one message (template mapping, Alpaca format) with label names for numeric labels."""
+    from utils.datasets.cells import cell_turns
+    from utils.datasets.dataset_utils import _extract_column_value
+
+    if join == "turns":
+        return [turn for c in columns for turn in cell_turns(row.get(c), "user")]
+    labels = labels if isinstance(labels, dict) else {}
+    return "\n".join(_extract_column_value(row.get(c), c, labels) for c in columns)
+
+
 def _labelled(rows: list[dict], columns: tuple, ctx: NodeContext) -> list[dict]:
     """The rows with the label names training gave numeric labels (Fine-tune's label mapping)."""
     checkpoint = ctx.inputs.get("checkpoint")
@@ -463,7 +478,24 @@ async def _recipe_heldout(
     unasked = {system_col, trained_system} - {None, ""}
     guessable = [c for c in columns if c not in unasked]
     named_prompt = str(ctx.params.get("prompt_column") or "").strip()
-    prompt_col = guess_column(columns if named_prompt else guessable, named_prompt, PROMPT_GUESSES)
+    facts = checkpoint if isinstance(checkpoint, dict) else {}
+    # The checkpoint's mapping names the question and answer columns, unless one is missing here.
+    users = [c for c in facts.get("user_columns") or [] if isinstance(c, str)]
+    users = users if users and all(c in columns for c in users) else []
+    answers = [c for c in facts.get("answer_columns") or [] if isinstance(c, str)]
+    answers = answers if answers and all(c in columns for c in answers) else []
+    asked = rows
+    if named_prompt or not users:
+        prompt_col = guess_column(
+            columns if named_prompt else guessable, named_prompt, PROMPT_GUESSES
+        )
+    elif len(users) == 1:
+        prompt_col = users[0]
+    else:
+        join = "lines" if facts.get("user_join") == "lines" else "turns"
+        labels = facts.get("label_mapping")
+        asked = [{**r, MAPPED_PROMPT: _mapped_cells(r, users, labels, join)} for r in rows]
+        prompt_col = MAPPED_PROMPT
     if not prompt_col and not named_prompt:
         # A whole-conversation SFT row (`messages`, `conversations`): its turns are the question
         # and its closing assistant answer the reference.
@@ -474,20 +506,26 @@ async def _recipe_heldout(
         prompt_col == "instruction"
         and "input" in columns
         and system_col != "input"
-        and not str(ctx.params.get("prompt_column") or "").strip()
+        and not named_prompt
+        and not users
     ):
         # An Alpaca row's question is its instruction plus its input, as training formats it.
         asked = [{**r, ALPACA_PROMPT: _alpaca_question(r)} for r in rows]
         prompt_col = ALPACA_PROMPT
         columns = [c for c in columns if c != "input"]
-    else:
-        asked = rows
     named_reference = str(ctx.params.get("reference_column") or "").strip()
-    reference_col = guess_column(
-        [c for c in columns if c != prompt_col and (named_reference or c not in unasked)],
-        named_reference,
-        REFERENCE_GUESSES,
-    )
+    if not named_reference and len(answers) == 1:
+        reference_col = answers[0]
+    elif not named_reference and answers:
+        labels = facts.get("label_mapping")
+        asked = [{**r, MAPPED_REFERENCE: _mapped_cells(r, answers, labels, "lines")} for r in asked]
+        reference_col = MAPPED_REFERENCE
+    else:
+        reference_col = guess_column(
+            [c for c in columns if c != prompt_col and (named_reference or c not in unasked)],
+            named_reference,
+            REFERENCE_GUESSES,
+        )
     # The failures output keeps the original rows.
     asked = _labelled(asked, (prompt_col, reference_col), ctx)
     scorer = SCORERS.get(str(ctx.params.get("scorer") or ""), "reference")
@@ -574,6 +612,8 @@ async def _recipe_heldout(
                 {
                     **row,
                     "model_output": item["output"],
+                    # The question as asked, when no one column of the row holds it.
+                    **({"scored_prompt": item["prompt"]} if prompt_col == MAPPED_PROMPT else {}),
                     # What the answer was scored against: the label name, a structured answer's text.
                     "scored_reference": item["reference"],
                     "reason": item["reason"],
@@ -594,7 +634,7 @@ async def _recipe_heldout(
         "failures": failures,
         # The column asked, so a Loop reads failures and test questions as they were scored; an
         # Alpaca row's question is its instruction plus input, which the Loop rebuilds itself.
-        "prompt_column": "" if prompt_col == ALPACA_PROMPT else prompt_col,
+        "prompt_column": "" if prompt_col in (ALPACA_PROMPT, MAPPED_PROMPT) else prompt_col,
     }
 
 

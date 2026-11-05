@@ -1029,3 +1029,46 @@ def test_a_whole_conversation_hold_out_is_scored_on_its_closing_answer(monkeypat
     spec = sent[0]["recipe"]
     assert spec["prompt_column"] == "messages" and spec["reference_column"] is None
     assert spec["scorer"] == "reference"
+
+
+def test_a_question_mapped_from_several_columns_is_asked_whole(monkeypatch):
+    from datasets import Dataset
+
+    from core.flows.nodes.training import mapping_facts
+    from utils.datasets.dataset_utils import _apply_user_mapping
+
+    row = {
+        "context": "The parcel is being held in customs.",
+        "question": "Where is the parcel?",
+        "answer": "customs",
+    }
+    mapping = {"context": "user", "question": "user", "answer": "assistant"}
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(row)]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    for extra, join in (({}, "turns"), ({"__system_prompt": "Be brief."}, "lines")):
+        mapping_used = {**mapping, **extra}
+        trained = _apply_user_mapping(Dataset.from_list([row]), mapping_used)[0]["conversations"]
+        sent = []
+        ctx = _Ctx(_routes(sent))
+        ctx.inputs["checkpoint"] = {
+            "kind": "checkpoint",
+            "name": "run-1",
+            **mapping_facts(mapping_used),
+        }
+        asyncio.run(benchmark.benchmark(ctx))
+        spec = sent[0]["recipe"]
+        asked = spec["rows"][0][spec["prompt_column"]]
+        # The question carries the context, as training put it in the user message(s).
+        user = [t for t in trained if t["role"] == "user"]
+        if join == "turns":
+            assert asked == user
+        else:
+            assert asked == user[0]["content"]
+        assert spec["reference_column"] == "answer"

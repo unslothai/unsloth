@@ -61,6 +61,7 @@ def failure_row(
     failure: Any,
     prompt_column: str = "",
     reference_column: str = "",
+    as_scored: bool = True,
 ) -> Optional[dict]:
     if not isinstance(failure, dict):
         return None
@@ -68,7 +69,11 @@ def failure_row(
     prompt_column, reference_column = prompt_column.strip(), reference_column.strip()
     lowered = {str(k).lower(): v for k, v in failure.items()}
     output = next((k for k in OUTPUT_KEYS if k in lowered), None)
-    rest = [k for k in lowered if k not in (output, "reason", "origin", "scored_reference")]
+    rest = [
+        k
+        for k in lowered
+        if k not in (output, "reason", "origin", "scored_reference", "scored_prompt")
+    ]
 
     def pick(named: str, guesses: tuple[str, ...], skip: Optional[str]) -> Optional[str]:
         if named and named.lower() in lowered:
@@ -82,6 +87,9 @@ def failure_row(
     if extra.strip():
         # An Alpaca row was scored as instruction plus input; feed back the same question.
         question = f"{question}\n\n{extra.strip()}"
+    if as_scored and isinstance(lowered.get("scored_prompt"), str) and question:
+        # Benchmark's own question when it gave one: several mapped columns joined.
+        question = lowered["scored_prompt"]
     row = {
         "origin": "failure",
         "failed_prompt": question,
@@ -111,7 +119,8 @@ def _strings(value: Any) -> list[str]:
 
 def _asked(row: Any, prompt_column: str = "") -> str:
     """The question a row asks (an Alpaca row's instruction plus input), as Benchmark asked it."""
-    found = failure_row(row, prompt_column) if isinstance(row, dict) else None
+    # Read from the row alone, as a test row (which carries no scored question) is read.
+    found = failure_row(row, prompt_column, as_scored = False) if isinstance(row, dict) else None
     return found["failed_prompt"].strip() if found else ""
 
 

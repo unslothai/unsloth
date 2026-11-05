@@ -156,9 +156,12 @@ def row_reference(row: dict[str, Any], prompt_column: str, reference_column: Opt
     """What a row's answer is scored against: its reference column, else the closing assistant
     answer of a whole conversation in its prompt column."""
     if reference_column:
-        return reference_text(row.get(reference_column))
-    turns = cell_messages(row.get(prompt_column))
-    return split_answer(turns)[1] if turns else ""
+        found = reference_text(row.get(reference_column))
+    else:
+        turns = cell_messages(row.get(prompt_column))
+        found = split_answer(turns)[1] if turns else ""
+    # Normalized as the answer is: a reasoning dataset's thinking is not part of what is matched.
+    return strip_thinking(found) if found else found
 
 
 def prompt_text(value: Any) -> str:

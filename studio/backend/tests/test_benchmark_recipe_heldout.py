@@ -635,3 +635,17 @@ def test_a_whole_conversation_is_asked_without_its_answer_and_scored_on_it():
     assert result["samples"]["candidate"][0]["target"] == "Paris"
     run_benchmark({**spec, "scorer": "judge"}, chat = chat)
     assert "Instruction:\nCapital of France?\n\nReference answer:\nParis" in judged[0]
+
+
+def test_a_reference_with_thinking_is_matched_as_the_answer_is():
+    answer = "<think>Two plus two equals four.</think>4"
+    result = run_benchmark(
+        {
+            "rows": [{"q": "2+2?", "a": answer}],
+            "prompt_column": "q",
+            "reference_column": "a",
+            "scorer": "reference",
+        },
+        chat = lambda target, messages: answer,
+    )
+    assert result["candidate"]["passed"] == 1

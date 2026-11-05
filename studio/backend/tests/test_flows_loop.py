@@ -850,3 +850,18 @@ def test_sharegpt_turns_are_read_as_benchmark_asked_them():
         )
         == []
     )
+
+
+def test_a_failure_seeds_the_question_benchmark_asked_but_is_known_by_its_row():
+    failure = {
+        "context": "The parcel is being held in customs.",
+        "question": "Where is the parcel?",
+        "answer": "customs",
+        "model_output": "home",
+        "scored_prompt": "The parcel is being held in customs.\nWhere is the parcel?",
+    }
+    found = loop_rounds.failure_row(failure)
+    assert found["failed_prompt"] == failure["scored_prompt"]
+    # A test row carries no scored question: both are known by the same column.
+    test_row = {k: v for k, v in failure.items() if k not in ("model_output", "scored_prompt")}
+    assert loop_rounds.questions([failure]) == loop_rounds.questions([test_row])
