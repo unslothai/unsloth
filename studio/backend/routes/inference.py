@@ -30612,108 +30612,6 @@ async def _relay_split_thinking(
         await lines.aclose()
 
 
-_THINK_TAGS = ("<think>", "</think>")
-
-
-class _ThinkAwareStops:
-    """Stop sequences over visible text only; <think>...</think> reasoning passes, its tags whole even
-    when a provider splits them across chunks."""
-
-    def __init__(self, stops: list[str]) -> None:
-        self.stop = _StopSequenceFilter(stops)
-        self.in_think = False
-        self.carry = ""
-
-    @property
-    def hit(self) -> Optional[str]:
-        return self.stop.hit
-
-    def feed(self, text: str) -> str:
-        text, self.carry = self.carry + text, ""
-        cut = text.rfind("<")
-        if cut >= 0 and any(
-            tag.startswith(text[cut:]) and tag != text[cut:] for tag in _THINK_TAGS
-        ):
-            text, self.carry = text[:cut], text[cut:]
-        out = ""
-        for piece in re.split(r"(</?think>)", text):
-            if piece in _THINK_TAGS:
-                # Visible text held back for a possible stop goes out before the reasoning starts.
-                out += (
-                    self.stop.flush() if piece == "<think>" and not self.in_think else ""
-                ) + piece
-                self.in_think = piece == "<think>"
-            else:
-                out += piece if self.in_think else self.stop.feed(piece)
-            if self.stop.hit is not None:
-                break
-        return out
-
-    def flush(self) -> str:
-        carry, self.carry = self.carry, ""
-        out = carry if self.in_think else self.stop.feed(carry)
-        return out + (self.stop.flush() if self.stop.hit is None else "")
-
-
-async def _cut_studio_reply_at_stops(chunks, stops: list[str]):
-    """Stop sequences enforced on an explicit external provider's stream, which is sent none."""
-    stop = _ThinkAwareStops(stops)
-    lines = _sse_data_lines(chunks)
-    try:
-        async for line in lines:
-            data = line[len("data:") :].strip() if line.startswith("data:") else ""
-            if data == "[DONE]":
-                tail = stop.flush()
-                if tail:
-                    chunk = {"choices": [{"index": 0, "delta": {"content": tail}}]}
-                    yield "data: " + json.dumps(chunk) + "\n\n"
-            elif data:
-                try:
-                    chunk = json.loads(data) if '"choices"' in data else None
-                except ValueError:
-                    chunk = None
-                choices = chunk.get("choices") if isinstance(chunk, dict) else None
-                choices = choices if isinstance(choices, list) else []
-                deltas = [c.get("delta") if isinstance(c, dict) else None for c in choices]
-                # A tool event or call marks a place in the text, so held-back text goes out before it.
-                if (
-                    not isinstance(chunk, dict)
-                    or "_toolEvent" in chunk
-                    or any(isinstance(d, dict) and d.get("tool_calls") for d in deltas)
-                ):
-                    held = stop.flush()
-                    if held:
-                        tail = {"choices": [{"index": 0, "delta": {"content": held}}]}
-                        yield "data: " + json.dumps(tail) + "\n\n"
-                for choice, delta in zip(choices, deltas):
-                    content = delta.get("content") if isinstance(delta, dict) else None
-                    if isinstance(content, str):
-                        out = stop.feed(content)
-                        if (
-                            choice.get("finish_reason") or delta.get("tool_calls")
-                        ) and stop.hit is None:
-                            out += stop.flush()
-                        delta["content"] = out
-                    if stop.hit is not None:
-                        choice["finish_reason"] = "stop"
-                if isinstance(chunk, dict):
-                    line = "data: " + json.dumps(chunk)
-            yield line + "\n"
-            if stop.hit is not None:
-                yield "\ndata: [DONE]\n\n"
-                return
-        tail = stop.flush()
-        if tail:
-            # The stream ended without [DONE]; what was held back is still text.
-            yield (
-                "data: "
-                + json.dumps({"choices": [{"index": 0, "delta": {"content": tail}}]})
-                + "\n\n"
-            )
-    finally:
-        await lines.aclose()
-
-
 async def _chat_completion_from_connection_stream(response: StreamingResponse, model: str):
     lines = _sse_data_lines(response.body_iterator)
     try:
@@ -30820,14 +30718,6 @@ async def openai_chat_completions(
         cancel_on_disconnect = True,
     )
     if connection is None or not isinstance(response, StreamingResponse):
-        stops = _normalize_stop_sequences(payload.stop)
-        if (
-            stops
-            and (payload.provider_id or payload.provider_type)
-            and isinstance(response, StreamingResponse)
-        ):
-            # The provider client sends no stop sequences, e.g. a character chat's other speakers.
-            response.body_iterator = _cut_studio_reply_at_stops(response.body_iterator, stops)
         return response
     response.body_iterator = _relay_split_thinking(
         _relay_recording_tool_extras(response.body_iterator, current_subject),

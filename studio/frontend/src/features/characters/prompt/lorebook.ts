@@ -19,6 +19,7 @@ export function estimateTokens(text: string): number {
 
 const REGEX_KEY = /^\/(.+)\/([gimsuy]*)$/;
 const MAX_REGEX_KEY = 160;
+const MAX_LITERAL_KEY = 500;
 // Scan only the tail of recent messages: keys are matched on every send and token count.
 const MAX_SCAN_CHARS = 16_000;
 
@@ -28,11 +29,18 @@ function keyMatcher(key: string, caseSensitive: boolean): ((text: string) => boo
   const regex = REGEX_KEY.exec(trimmed);
   // Card keys run on every send on the UI thread, so they never reach the backtracking RegExp engine.
   if (regex) return trimmed.length > MAX_REGEX_KEY ? null : linearRegex(regex[1], regex[2].replace("g", ""));
+  // A keyword is a word or phrase; a card's oversized one is skipped rather than abort the prompt.
+  if (trimmed.length > MAX_LITERAL_KEY) return null;
   const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // Whole words when the key is a word, so "cat" does not fire on "category".
   const wordy = /^[\p{L}\p{N}_][\p{L}\p{N}_\s'-]*[\p{L}\p{N}_]$|^[\p{L}\p{N}_]$/u.test(trimmed);
   const source = wordy ? `(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])` : escaped;
-  const pattern = new RegExp(source, caseSensitive ? "u" : "iu");
+  let pattern: RegExp;
+  try {
+    pattern = new RegExp(source, caseSensitive ? "u" : "iu");
+  } catch {
+    return null;
+  }
   return (text) => pattern.test(text);
 }
 

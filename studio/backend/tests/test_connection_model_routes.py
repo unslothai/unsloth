@@ -1170,30 +1170,3 @@ def test_messages_rejects_a_sampling_value_chat_refuses_with_a_400(v1, field, va
     assert resp.json()["type"] == "error"
     assert field in resp.json()["error"]["message"]
     assert FakeExternalClient.calls == []
-
-
-def test_an_explicit_provider_stream_stops_at_a_requested_stop_sequence(v1, monkeypatch):
-    # The provider client is sent no stop sequences, so the route cuts the stream (character chats).
-    import routes.inference as inf
-
-    monkeypatch.setattr(
-        inf, "ExternalProviderClient", _content_stream("Sure.\nA", "nn: hi", " more")
-    )
-    body = {
-        "model": "gemini-2.5-flash",
-        "provider_id": "c1",
-        "external_model": "gemini-2.5-flash",
-        "messages": [{"role": "user", "content": "hello"}],
-        "stream": True,
-        "stop": ["\nAnn:"],
-    }
-    resp = v1.post("/v1/chat/completions", json = body)
-
-    assert resp.status_code == 200, resp.text
-    lines = [line for line in resp.text.splitlines() if line.startswith("data: {")]
-    chunks = [json.loads(line[len("data: ") :]) for line in lines]
-    text = "".join(
-        (c.get("delta") or {}).get("content") or "" for e in chunks for c in e.get("choices") or []
-    )
-    assert text == "Sure."
-    assert resp.text.count("data: [DONE]") == 1
