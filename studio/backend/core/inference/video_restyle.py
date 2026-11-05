@@ -286,6 +286,35 @@ def preview(frames: list[Any], source_seconds: Optional[float] = None) -> dict[s
     }
 
 
+# The progress line ``parse_progress`` reads; only an sd.cpp build with the Cosmos3 port prints it.
+_COSMOS3_MARKER = b"cosmos3: latent frame"
+_MARKER_CACHE: dict[tuple[str, int, int], bool] = {}
+
+
+def _file_has_marker(path: Path) -> bool:
+    import mmap
+    try:
+        stat = path.stat()
+        key = (str(path), stat.st_mtime_ns, stat.st_size)
+        if key not in _MARKER_CACHE:
+            with path.open("rb") as f, mmap.mmap(f.fileno(), 0, access = mmap.ACCESS_READ) as m:
+                _MARKER_CACHE[key] = m.find(_COSMOS3_MARKER) >= 0
+        return _MARKER_CACHE[key]
+    except (OSError, ValueError):
+        return False
+
+
+def binary_supports_cosmos3(binary: str) -> bool:
+    """The sd-server binary, or a stable-diffusion library next to it, carries the Cosmos3 port."""
+    path = Path(binary)
+    candidates = [
+        path,
+        *sorted(path.parent.glob("*stable-diffusion*")),
+        *sorted(path.parent.glob("libsd*")),
+    ]
+    return any(c.is_file() and _file_has_marker(c) for c in candidates)
+
+
 def availability(env: Optional[dict[str, str]] = None) -> dict[str, Any]:
     """Whether a restyle can run here, with the reason shown to the user when it can't."""
     try:
@@ -297,7 +326,8 @@ def availability(env: Optional[dict[str, str]] = None) -> dict[str, Any]:
         }
     from core.inference.sd_cpp_engine import find_sd_server_binary
 
-    if not find_sd_server_binary():
+    binary = find_sd_server_binary()
+    if not binary or not binary_supports_cosmos3(binary):
         return {
             "available": False,
             "reason": "No stable-diffusion.cpp server with Cosmos3 support is installed.",

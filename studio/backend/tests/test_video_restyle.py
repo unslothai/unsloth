@@ -498,9 +498,12 @@ def test_availability_names_what_is_missing(weights, monkeypatch, tmp_path):
     monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: None)
     out = vr.availability()
     assert not out["available"] and "stable-diffusion.cpp" in out["reason"]
-    monkeypatch.setattr(
-        "core.inference.sd_cpp_engine.find_sd_server_binary", lambda: "/bin/sd-server"
-    )
+    plain = tmp_path / "bin" / "sd-server"
+    plain.parent.mkdir()
+    plain.write_bytes(b"\x7fELF generic sd-server")
+    monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: str(plain))
+    assert not vr.availability()["available"]
+    (plain.parent / "libstable-diffusion.so").write_bytes(b"..." + vr._COSMOS3_MARKER + b" %d/%d")
     assert vr.availability() == {"available": True, "reason": None}
     assert not vr.availability({})["available"]
 
