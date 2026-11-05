@@ -208,12 +208,20 @@ test("glass dims the wallpaper on other pages like an open chat, and blurs it no
 	assert.match(root, /data-wallpaper-media=\{isImagesRoute \|\| isVideoRoute \|\| isAudioRoute \|\| undefined\}/);
 });
 
-test("glass frosts the model hub panes on a layer and leaves the unstuck library header clear", () => {
+test("glass leaves the unstuck library header clear", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /\[data-hub-pane\]::before \{\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: -1;\n  pointer-events: none;\n  -webkit-backdrop-filter: blur\(8px\)/);
 	assert.match(css, /\.library-header-row\.sticky:not\(\[data-stuck\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
-	const hub = readFileSync(new URL("../src/features/hub/hub-page.tsx", import.meta.url), "utf8");
-	assert.equal(hub.match(/data-hub-pane=""/g)?.length, 3);
+	assert.doesNotMatch(css, /data-hub-pane/);
+});
+
+test("model hub and library controls take the chat model button's glass", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const scope = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] `;
+	assert.match(css, new RegExp(`${scope}:is\\(\\.hub-page :is\\(\\.hub-tag-soft[^{]*\\[data-library-page\\] \\[class\\*="dark:bg-card"\\]\\) \\{\\n  background-color: color-mix\\(in srgb, var\\(--glass-composer-fill\\)[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
+	assert.match(css, new RegExp(`${scope}:is\\(\\.hub-page, \\[data-library-page\\]\\) button:not\\(:disabled, \\[data-slot="checkbox"\\]\\):is\\(:hover, \\[data-state="open"\\]\\) \\{[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
+	for (const file of ["../src/features/library/library-page.tsx", "../src/features/library/chats/chats-library.tsx"]) {
+		assert.match(readFileSync(new URL(file, import.meta.url), "utf8"), /<main\s+data-library-page=""/);
+	}
 });
 
 test("dark glass chat row menus keep the glass rim over the flat sidebar-menu shadow", () => {

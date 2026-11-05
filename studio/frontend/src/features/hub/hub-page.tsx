@@ -2163,9 +2163,8 @@ export function ModelsPage() {
         <div
           ref={catalogPaneRef}
           data-tour="hub-catalog"
-          data-hub-pane=""
           className={cn(
-            "relative flex min-h-0 flex-col",
+            "flex min-h-0 flex-col",
             splitMode
               ? cn(
                   "flex-1 lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60",
@@ -2212,7 +2211,6 @@ export function ModelsPage() {
         {splitMode ? (
           detailOpen ? (
             <div
-              data-hub-pane=""
               className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1"
             >
               <HubDetailView
@@ -2238,7 +2236,6 @@ export function ModelsPage() {
           detailOpen && (
             <div
               data-tour="hub-detail"
-              data-hub-pane=""
               className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col"
             >
               <HubDetailView
