@@ -62,8 +62,8 @@ test("glass strength repairs malformed persisted data", () => {
 
 test("composer outline off also drops the glass ring and bevel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] [^{]*\[data-outline="false"\]\) \.unsloth-composer-surface,[^{]*\{\n  --composer-shadow: none;/);
-	assert.match(css, /\[data-outline="false"\]\) \.unsloth-composer-surface::before,[^{]*\{\n  content: none;/);
+	assert.match(css, /html\[data-glass\] [^{]*\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
+	assert.match(css, /\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
 });
 
 test("glass adds no outer shadows, only inset light", () => {
@@ -163,11 +163,11 @@ test("the glass preference survives an account switch, and sign-in waits for the
 	assert.match(client, /getConfirmedLoginMode = \(\): LoginMode \| null =>\n\s*statusKnown \? loginMode : null;/);
 });
 
-test("glass over an open conversation dims the image and thickens only that composer", () => {
+test("glass over an open conversation dims the image and thickens the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const conversation = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\):not\(:has\(\.aui-thread-welcome-center\)\)`;
 	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
-	assert.match(css, new RegExp(`${conversation} \\.unsloth-composer-surface,[^{]*\\{\\n  --glass-composer-boost: 9%;`));
+	assert.match(css, new RegExp(`${conversation} :is\\(\\.unsloth-composer-surface, \\.unsloth-files-panel\\),[^{]*\\{\\n  --glass-composer-boost: 9%;`));
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
 });
 
