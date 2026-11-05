@@ -110,11 +110,12 @@ export async function removeCharacterAvatar(id: string): Promise<Character> {
   );
 }
 
-export async function fetchImage(kind: "character" | "persona", id: string): Promise<Blob> {
+// rev is in the URL because the server marks pictures immutable: a new picture needs a new URL.
+export async function fetchImage(kind: "character" | "persona", id: string, rev: number): Promise<Blob> {
   const path =
     kind === "character"
-      ? `${CHARACTERS_API}/${encodeURIComponent(id)}/avatar`
-      : `${CHARACTERS_API}/personas/${encodeURIComponent(id)}/avatar`;
+      ? `${CHARACTERS_API}/${encodeURIComponent(id)}/avatar?rev=${rev}`
+      : `${CHARACTERS_API}/personas/${encodeURIComponent(id)}/avatar?rev=${rev}`;
   const response = await authFetch(path);
   if (!response.ok) throw new Error(`Picture unavailable (${response.status})`);
   return response.blob();

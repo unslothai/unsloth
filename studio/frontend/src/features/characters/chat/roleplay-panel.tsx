@@ -69,6 +69,8 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   const castPayload = (members: { characterId: string; muted: boolean }[]) =>
     members.map((m) => ({ characterId: m.characterId, muted: m.muted }));
   const members = [...scene.cast].sort((a, b) => a.position - b.position);
+  // A group needs someone left to answer: with every member muted, a sent message has no speaker.
+  const leavesNoSpeaker = (next: { muted: boolean }[]) => next.length > 1 && next.every((m) => m.muted);
   // Only the changed keys: patchScene merges them into the latest settings when the write runs.
   const setSettings = (next: Partial<SceneSettings>) => void patch({ settings: next });
 
@@ -80,6 +82,8 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
           {cast.map((character) => {
             const member = members.find((m) => m.characterId === character.id);
             const muted = Boolean(member?.muted);
+            const toggled = members.map((m) => (m.characterId === character.id ? { ...m, muted: !m.muted } : m));
+            const remaining = members.filter((m) => m.characterId !== character.id);
             return (
               <li key={character.id} className="group/member flex items-center gap-2.5 rounded-xl py-1 pl-1 pr-1 hover:bg-nav-surface-hover">
                 <Portrait
@@ -108,16 +112,14 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
                     <IconAction
                       label={muted ? t("characters.panel.unmute", { name: character.name }) : t("characters.panel.mute", { name: character.name })}
                       icon={muted ? VolumeMute01Icon : VolumeHighIcon}
-                      onClick={() =>
-                        void patch({
-                          cast: castPayload(members.map((m) => (m.characterId === character.id ? { ...m, muted: !m.muted } : m))),
-                        })
-                      }
+                      disabled={leavesNoSpeaker(toggled)}
+                      onClick={() => void patch({ cast: castPayload(toggled) })}
                     />
                     <IconAction
                       label={t("characters.panel.remove", { name: character.name })}
                       icon={Cancel01Icon}
-                      onClick={() => void patch({ cast: castPayload(members.filter((m) => m.characterId !== character.id)) })}
+                      disabled={leavesNoSpeaker(remaining)}
+                      onClick={() => void patch({ cast: castPayload(remaining) })}
                     />
                   </>
                 ) : null}
@@ -233,7 +235,17 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   );
 }
 
-function IconAction({ label, icon, onClick }: { label: string; icon: typeof BubbleChatIcon; onClick: () => void }) {
+function IconAction({
+  label,
+  icon,
+  onClick,
+  disabled = false,
+}: {
+  label: string;
+  icon: typeof BubbleChatIcon;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild={true}>
@@ -241,7 +253,8 @@ function IconAction({ label, icon, onClick }: { label: string; icon: typeof Bubb
           type="button"
           aria-label={label}
           onClick={onClick}
-          className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-nav-fg-muted opacity-0 transition-opacity hover:bg-background hover:text-nav-fg focus-visible:opacity-100 group-hover/member:opacity-100"
+          disabled={disabled}
+          className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-lg text-nav-fg-muted opacity-0 transition-opacity hover:bg-background hover:text-nav-fg focus-visible:opacity-100 group-hover/member:opacity-100 disabled:cursor-default disabled:text-nav-fg-muted/40 disabled:hover:bg-transparent"
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-4" />
         </button>

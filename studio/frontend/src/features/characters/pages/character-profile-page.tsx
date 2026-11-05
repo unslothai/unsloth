@@ -140,7 +140,7 @@ export function CharacterProfilePage({ characterId }: { characterId: string }) {
             variant="card"
             label={t("characters.actions.viewPicture")}
             className="aspect-[2/3] w-full max-w-75 rounded-[28px] shadow-[0_24px_48px_-28px_rgb(0_0_0/0.55)] max-md:mx-auto max-md:max-w-60"
-            onClick={character.hasAvatar ? () => viewPicture("character", character.id, character.name) : undefined}
+            onClick={character.hasAvatar ? () => viewPicture("character", character.id, character.name, character.avatarRev) : undefined}
           />
         </div>
 

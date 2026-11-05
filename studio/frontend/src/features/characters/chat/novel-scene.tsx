@@ -112,7 +112,7 @@ function NovelFigure({
 }) {
   const t = useT();
   const { breathing, onAnimationIteration } = useSettlingBreath(speaking);
-  const onClick = active || solo ? () => character.hasAvatar && viewPicture("character", character.id, character.name) : onAsk;
+  const onClick = active || solo ? () => character.hasAvatar && viewPicture("character", character.id, character.name, character.avatarRev) : onAsk;
   return (
     <button
       type="button"

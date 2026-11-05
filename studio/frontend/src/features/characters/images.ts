@@ -21,7 +21,7 @@ export function loadImageUrl(kind: Kind, id: string, rev: number): Promise<strin
   const key = cacheKey(kind, id, rev);
   const hit = urls.get(key);
   if (hit) return hit;
-  const request = fetchImage(kind, id)
+  const request = fetchImage(kind, id, rev)
     .then((blob) => URL.createObjectURL(blob))
     .catch(() => null)
     .then((url) => {
@@ -143,14 +143,14 @@ if (typeof window !== "undefined") {
 
 const EXTENSIONS: Record<string, string> = { "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
 
-export function viewPicture(kind: Kind, id: string, name: string): void {
+export function viewPicture(kind: Kind, id: string, name: string, rev: number): void {
   const base = name.trim().replace(/[\\/:*?"<>|]+/g, "_") || kind;
   openImageViewer([
     {
-      key: `${kind}:${id}`,
+      key: cacheKey(kind, id, rev),
       title: name,
       fileName: (contentType) => `${base}.${EXTENSIONS[contentType] ?? "png"}`,
-      load: () => fetchImage(kind, id),
+      load: () => fetchImage(kind, id, rev),
     },
   ]);
 }

@@ -4,6 +4,8 @@
 import type { ThreadMessage } from "@assistant-ui/react";
 import { authFetch } from "@/features/auth";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
+import { ggufCompactionRequestFields } from "@/features/chat/utils/auto-compaction";
+import { isServedByLlamaCpp } from "@/features/model-picker/model-config/per-model-config";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { castOf, resolvePersona, textOf, toPromptCharacter } from "../chat-runtime";
 import { roleplayMetaOf } from "../meta";
@@ -24,7 +26,8 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
     scene: scene.settings,
     history: chat.map((m) => ({ role: m.role as "user" | "assistant", text: textOf(m), meta: roleplayMetaOf(m) })),
   });
-  const { params } = useChatRuntimeStore.getState();
+  const state = useChatRuntimeStore.getState();
+  const { params } = state;
   const response = await authFetch("/api/inference/chat/completions", {
     method: "POST",
     signal,
@@ -38,6 +41,21 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
       top_p: params.topP,
       stop: prompt.stop,
       enable_thinking: false,
+      // Explicit: an omitted enable_tools takes the launcher default, and a draft must never run tools.
+      enable_tools: false,
+      // Fitted like a character reply, minus thread_id: a draft must not touch the thread's compaction state.
+      ...ggufCompactionRequestFields({
+        isGguf: isServedByLlamaCpp({
+          loadedIsGguf: state.loadedIsGguf,
+          activeGgufVariant: state.activeGgufVariant,
+          activeNativePathToken: state.activeNativePathToken,
+          checkpoint: params.checkpoint,
+        }),
+        isMlx: state.loadedIsMlx === true,
+        isManagedEngine: state.loadedEngine !== "auto",
+        autoCompactEnabled: state.autoCompactEnabled,
+        rolling: true,
+      }),
     }),
   });
   if (!response.ok) throw new Error(await readFastApiError(response, "Could not write a reply"));

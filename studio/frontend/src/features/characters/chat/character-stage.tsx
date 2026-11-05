@@ -70,7 +70,7 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
         <button
           type="button"
           className="block size-full cursor-zoom-in"
-          onClick={() => viewPicture("character", focus.id, focus.name)}
+          onClick={() => viewPicture("character", focus.id, focus.name, focus.avatarRev)}
           disabled={!focus.hasAvatar}
           aria-label={t("characters.actions.viewPicture")}
         >
