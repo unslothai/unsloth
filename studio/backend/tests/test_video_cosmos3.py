@@ -1383,9 +1383,10 @@ def test_short_long_and_unreadable_clips_are_refused(monkeypatch):
     with pytest.raises(ValueError, match = "has 4"):
         vc3.decode_continuation_clip(_clip(4), keep = "last", fps = 24, count = 5)
     monkeypatch.setattr(vc3, "CONTINUATION_MAX_SECONDS", 0.5)
-    with pytest.raises(ValueError, match = "longer than 0.5 seconds"):
-        vc3.decode_continuation_clip(_clip(13), keep = "last", fps = 24, count = 5)
     vc3.decode_continuation_clip(_clip(12), keep = "last", fps = 24, count = 5)
+    for keep in ("last", "first"):
+        with pytest.raises(ValueError, match = "longer than 0.5 seconds"):
+            vc3.decode_continuation_clip(_clip(13), keep = keep, fps = 24, count = 5)
     monkeypatch.setattr(vc3, "CONTINUATION_MAX_SIDE", 200)
     with pytest.raises(ValueError, match = "208x120"):
         vc3.decode_continuation_clip(_clip(6), keep = "first", fps = 24, count = 5)

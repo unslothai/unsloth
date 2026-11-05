@@ -255,11 +255,11 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
                         f"The clip to continue is {frame.width}x{frame.height}; the limit is "
                         f"{CONTINUATION_MAX_SIDE} px a side."
                     )
+                # "first" still decodes to the end, so both ends are held to the same limits.
                 while int(next_target * source_fps / fps) <= index:
-                    picked.append(frame)
+                    if keep != "first" or len(picked) < count:
+                        picked.append(frame)
                     next_target += 1
-                if keep == "first" and len(picked) >= count:
-                    break
         except av.error.FFmpegError as exc:
             raise ValueError("That clip could not be decoded.") from exc
         frames = [frame.to_image().convert("RGB") for frame in list(picked)[:count]]
