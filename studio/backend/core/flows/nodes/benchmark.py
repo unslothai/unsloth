@@ -198,7 +198,11 @@ async def _loaded_identity(
             status = {}
         serving = [s for s in status.get("serving") or [] if isinstance(s, str)]
         main = serving[0] if serving else status.get("model_identifier")
-        if isinstance(main, str) and main and not _same_model(main, target):
+        variant = str(getattr(ctx, "benchmark_variant", "") or "").lower()
+        quant = status.get("gguf_variant")
+        # A picked quant reloaded at another quant of the same repo is another model too.
+        swapped_quant = bool(variant) and isinstance(quant, str) and quant.lower() != variant
+        if isinstance(main, str) and main and (swapped_quant or not _same_model(main, target)):
             raise FlowNodeError(
                 f"Another model ({main}) was loaded after Benchmark loaded {label or target}. Run again."
             )
@@ -268,6 +272,14 @@ async def _load_target(ctx: NodeContext) -> tuple[str, bool]:
         raise FlowNodeError(
             "Wire a Fine-tune checkpoint in, pick a model, or load one in Chat first"
         )
+    picked = model.get("repo") if isinstance(model, dict) else None
+    if picked and not _same_model(label, str(picked)):
+        raise FlowNodeError(
+            f"Another model ({label}) was loaded after Benchmark loaded {picked}. Run again."
+        )
+    # What the identity read later must still find: the model and, when one was picked, its quant.
+    ctx.benchmark_target = label
+    ctx.benchmark_variant = str(model.get("variant") or "") if picked else ""
     return label, await asyncio.to_thread(_is_adapter, label)
 
 
@@ -474,6 +486,7 @@ async def _recipe_heldout(
         "prompt_column": prompt_col,
         "reference_column": reference_col,
         "system_prompt": _system_prompt(ctx),
+        "system_override": bool(str(ctx.params.get("system_prompt") or "").strip()),
         "system_column": system_col,
         "scorer": scorer,
         "rubric": str(ctx.params.get("rubric") or ""),

@@ -199,11 +199,21 @@ export const useBenchmarkRuntimeStore = create<BenchmarkRuntimeStore>()((set, ge
     set((state) => {
       const base = { hasHydrated: true, backendActive: status.is_benchmark_active };
       if (status.is_benchmark_active && !state.isRunning && !state.ownsRun) {
+        // A run started elsewhere (a Flow, another tab): none of the last run's state is its own.
         return {
           ...base,
           isRunning: true,
           phase: "running" as const,
-          startedAt: state.startedAt ?? Date.now(),
+          task: null,
+          logLines: [],
+          lastSeq: null,
+          stage: null,
+          progressPercent: 0,
+          progressDetail: null,
+          result: null,
+          error: null,
+          cancelRequested: false,
+          startedAt: Date.now(),
         };
       }
       if (!status.is_benchmark_active && state.isRunning && !state.ownsRun) {
@@ -336,6 +346,7 @@ const apiParams = {
       set({
         phase: "success",
         isRunning: false,
+        ownsRun: false,
         reconnecting: false,
         result: "Benchmark completed",
       });
@@ -345,6 +356,7 @@ const apiParams = {
         set({
           phase: "canceled",
           isRunning: false,
+          ownsRun: false,
           reconnecting: false,
           error: null,
         });
@@ -352,6 +364,7 @@ const apiParams = {
         set({
           phase: "error",
           isRunning: false,
+          ownsRun: false,
           reconnecting: false,
           error: err instanceof Error ? err.message : "Benchmark failed",
         });

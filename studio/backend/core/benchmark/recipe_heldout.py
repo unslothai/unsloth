@@ -213,6 +213,8 @@ def run_benchmark(
     reference_column: str | None = spec.get("reference_column") or None
     system_prompt: str = spec.get("system_prompt") or ""
     system_column: str | None = spec.get("system_column") or None
+    # The run's system prompt is an override (set on the node), not training's default.
+    override = bool(spec.get("system_override")) and bool(system_prompt.strip())
     targets = ["candidate"] + (["baseline"] if spec.get("with_baseline") else [])
     per_target: dict[str, list[dict[str, Any]]] = {t: [] for t in targets}
     total = len(rows) * len(targets)
@@ -224,10 +226,13 @@ def run_benchmark(
         reference = reference_text(row.get(reference_column)) if reference_column else ""
         # A row's own system message (training sent it) unless the run sets one for every row.
         system = (_cell(row, system_column).strip() and _cell(row, system_column)) or system_prompt
-        # A conversational prompt is asked as the turns training saw, its own system message kept.
+        # A conversational prompt is asked as the turns training saw, its own system message kept
+        # unless the run overrides it.
         turns = cell_messages(row.get(prompt_column)) or [{"role": "user", "content": prompt}]
         own = [t["content"] for t in turns if t["role"] == "system"]
-        if own:
+        if override:
+            turns, own = [t for t in turns if t["role"] != "system"], []
+        elif own:
             system = "\n\n".join(str(c or "") for c in own)
         messages = ([] if own or not system else [{"role": "system", "content": system}]) + turns
         for target in targets:

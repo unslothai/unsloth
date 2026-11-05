@@ -932,3 +932,44 @@ def test_a_model_swapped_in_after_the_load_fails_the_run(monkeypatch):
     with pytest.raises(FlowNodeError, match = "Another model"):
         asyncio.run(benchmark.benchmark(ctx))
     assert not [c for c in ctx.calls if c[1].endswith("/run")]
+
+
+def test_a_picked_model_is_held_to_what_was_picked(monkeypatch):
+    from studio_mcp import loading
+
+    serving = {"name": "org/A-GGUF", "quant": "Q4_K_M"}
+
+    async def resident_name(ctx, kind):
+        return serving["name"]
+
+    async def resident(caller):
+        return {}, {"serving": [serving["name"]], "gguf_variant": serving["quant"]}
+
+    monkeypatch.setattr(benchmark, "resident_name", resident_name)
+    monkeypatch.setattr(loading, "_resident", resident)
+    monkeypatch.setattr("routes.benchmarks.loaded_identity", lambda: "org/A-GGUF:Q4_K_M")
+    ctx = _Ctx(lambda *a: {}, model = {"repo": "org/A-GGUF", "variant": "Q4_K_M"})
+    ctx.inputs = {"dataset": ctx.inputs["dataset"]}
+    ctx.chat_model = None
+
+    async def ensure(kind, choice):
+        pass
+
+    ctx.ensure_model = ensure
+    label, _ = asyncio.run(benchmark._load_target(ctx))
+    assert asyncio.run(benchmark._loaded_identity(ctx, ctx.benchmark_target, label)) == (
+        "org/A-GGUF:Q4_K_M"
+    )
+    # Another tab loads B right after the pick: it is never adopted as the model to score.
+    serving["name"] = "org/B"
+    with pytest.raises(FlowNodeError, match = "Another model"):
+        asyncio.run(benchmark._load_target(ctx))
+    # Or swaps it in later, or reloads A at another quant: the identity read refuses both.
+    serving["name"] = "org/A-GGUF"
+    label, _ = asyncio.run(benchmark._load_target(ctx))
+    serving["name"] = "org/B"
+    with pytest.raises(FlowNodeError, match = "Another model"):
+        asyncio.run(benchmark._loaded_identity(ctx, ctx.benchmark_target, label))
+    serving.update(name = "org/A-GGUF", quant = "Q8_0")
+    with pytest.raises(FlowNodeError, match = "Another model"):
+        asyncio.run(benchmark._loaded_identity(ctx, ctx.benchmark_target, label))

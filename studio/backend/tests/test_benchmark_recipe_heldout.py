@@ -564,3 +564,31 @@ def test_a_conversational_prompt_is_asked_as_turns_and_scored_on_the_answer():
     assert result["candidate"]["passed"] == 1
     failed = result["failed_examples"][0]
     assert failed["prompt"] == "Capital of Italy?" and failed["reference"] == "Rome"
+
+
+def test_a_set_system_prompt_replaces_a_conversation_s_own():
+    asked, judged = [], []
+
+    def chat(target, messages):
+        if target == "judge":
+            judged.append(messages[-1]["content"])
+            return "PASS"
+        asked.append(messages)
+        return "Hello"
+
+    prompt = [
+        {"role": "system", "content": "Answer in French."},
+        {"role": "user", "content": "Greet me"},
+    ]
+    spec = {"rows": [{"prompt": prompt}], "prompt_column": "prompt", "scorer": "judge"}
+    run_benchmark(
+        {**spec, "system_prompt": "Answer in English.", "system_override": True}, chat = chat
+    )
+    assert asked[0] == [
+        {"role": "system", "content": "Answer in English."},
+        {"role": "user", "content": "Greet me"},
+    ]
+    assert "Answer in English." in judged[0] and "French" not in judged[0]
+    # Training's own prompt (not an override) leaves the row's system turn in place.
+    run_benchmark({**spec, "system_prompt": "Answer in English."}, chat = chat)
+    assert asked[1] == prompt and "Answer in French." in judged[1]

@@ -45,6 +45,9 @@ class RecipeHeldoutSpec(BaseModel):
     prompt_column: str = Field(..., min_length = 1)
     reference_column: Optional[str] = None
     system_prompt: str = ""
+    system_override: bool = Field(
+        False, description = "system_prompt replaces each row's own system message"
+    )
     system_column: Optional[str] = Field(
         None, description = "A column holding each row's own system message, as training used it"
     )

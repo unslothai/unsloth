@@ -227,6 +227,7 @@ async def run_recipe_heldout(
                 "prompt_column": spec.prompt_column,
                 "reference_column": spec.reference_column,
                 "system_prompt": spec.system_prompt,
+                "system_override": spec.system_override,
                 "system_column": spec.system_column,
                 "scorer": spec.scorer,
                 "rubric": spec.rubric,
