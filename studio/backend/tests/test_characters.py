@@ -672,3 +672,20 @@ def test_repeated_compressed_card_chunks_are_not_all_inflated(monkeypatch):
         bomb = _with_text(bomb, "ccv3", "x" * 3000, b"zTXt")
     calls.clear()
     assert cards.read_png_card(_with_text(bomb, "chara", V2, b"zTXt"))[0] is None
+
+
+def test_scene_settings_merge_so_tabs_keep_each_others_edits(client):
+    character = client.post("/api/characters", json = {"name": "Ann", "firstMes": "Hi."}).json()
+    thread_id = client.post(
+        "/api/characters/chats", json = {"characterIds": [character["id"]]}
+    ).json()["threadId"]
+    note = {"authorsNote": {"text": "Rain.", "depth": 2}}
+    client.put(f"/api/characters/chats/{thread_id}", json = {"settings": note})
+    scene = client.put(
+        f"/api/characters/chats/{thread_id}", json = {"settings": {"view": "stage"}}
+    ).json()
+    assert scene["settings"] == {**note, "view": "stage"}
+    cleared = client.put(
+        f"/api/characters/chats/{thread_id}", json = {"settings": {"authorsNote": None}}
+    )
+    assert cleared.json()["settings"] == {"view": "stage"}

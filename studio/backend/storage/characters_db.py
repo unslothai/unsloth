@@ -638,9 +638,19 @@ def update_chat_scene(
                 (persona_id, now, thread_id),
             )
         if settings is not None:
+            # A patch over what is stored, so an edit from one tab keeps what another tab saved; None clears.
+            row = conn.execute(
+                "SELECT settings_json FROM chat_scene WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+            merged = _loads(row[0], {}) if row else {}
+            for key, value in settings.items():
+                if value is None:
+                    merged.pop(key, None)
+                else:
+                    merged[key] = value
             conn.execute(
                 "UPDATE chat_scene SET settings_json = ?, updated_at = ? WHERE thread_id = ?",
-                (_dumps(settings), now, thread_id),
+                (_dumps(merged), now, thread_id),
             )
         if cast is not None:
             if len(cast) > MAX_CAST:

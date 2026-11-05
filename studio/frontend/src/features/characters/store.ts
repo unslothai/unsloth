@@ -178,7 +178,10 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
         const latest = get().scenes[threadId];
         const base = latest?.settings ?? {};
         const edit = typeof settingsEdit === "function" ? settingsEdit(base) : settingsEdit;
-        const settings = edit ? { ...base, ...edit } : undefined;
+        // Only the keys this edit touches: the server merges them, so another tab's saved keys survive.
+        const settings = edit
+          ? Object.fromEntries(Object.entries(edit).map(([key, value]) => [key, value ?? null]))
+          : undefined;
         const current = [...(latest?.cast ?? [])]
           .sort((a, b) => a.position - b.position)
           .map((m) => ({ characterId: m.characterId, muted: m.muted }));

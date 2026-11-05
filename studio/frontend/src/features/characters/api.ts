@@ -219,12 +219,15 @@ export async function getChatScene(threadId: string): Promise<ChatScene | null> 
   return json(response, "Could not load the chat's characters");
 }
 
+export type SettingsPatch = { [K in keyof SceneSettings]?: SceneSettings[K] | null };
+
 export async function updateChatScene(
   threadId: string,
   patch: {
     cast?: { characterId: string; muted?: boolean }[];
     personaId?: string | null;
-    settings?: SceneSettings;
+    /** Merged into the stored settings; null clears a key. */
+    settings?: SettingsPatch;
   },
 ): Promise<ChatScene> {
   return json(

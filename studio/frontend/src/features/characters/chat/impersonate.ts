@@ -41,8 +41,10 @@ export async function writeMyReply(threadId: string, messages: readonly ThreadMe
       top_p: params.topP,
       stop: prompt.stop,
       enable_thinking: false,
-      // Explicit: an omitted enable_tools takes the launcher default, and a draft must never run tools.
+      // A draft must never run tools: --enable-tools overrides enable_tools, so withdraw the catalog too.
       enable_tools: false,
+      tool_choice: "none",
+      enabled_tools: [],
       // Fitted like a character reply, minus thread_id: a draft must not touch the thread's compaction state.
       ...ggufCompactionRequestFields({
         isGguf: isServedByLlamaCpp({

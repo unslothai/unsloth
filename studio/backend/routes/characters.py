@@ -488,7 +488,7 @@ def update_chat_scene(
             cast = [m.model_dump() for m in payload.cast] if payload.cast is not None else None,
             persona_id = payload.personaId,
             persona_set = "personaId" in payload.model_fields_set,
-            settings = payload.settings.model_dump(exclude_none = True)
+            settings = payload.settings.model_dump(exclude_unset = True)
             if payload.settings is not None
             else None,
         )
