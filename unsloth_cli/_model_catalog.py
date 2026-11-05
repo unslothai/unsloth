@@ -127,7 +127,7 @@ def trained_entries() -> List[ModelEntry]:
     return entries
 
 
-def exported_entries() -> List[ModelEntry]:
+def exported_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]:
     from utils.models import scan_exported_models
 
     entries = []
@@ -137,10 +137,18 @@ def exported_entries() -> List[ModelEntry]:
         if export_type == "gguf" and _gguf_export_task(path, name, base) in NON_CHAT_TASKS:
             continue
         if export_type == "gguf":
-            # Drop only when positively unloadable: a falsy result also means "could not tell".
-            load_id = _preferred_complete_gguf(path)
-            if not load_id and not _local_dir_holds_a_payload(Path(path)):
-                continue
+            if gguf_variant:
+                # The export scanner represents the whole export by its first GGUF file.
+                folder = Path(path)
+                load_id = _directory_variant_target(
+                    folder.parent if folder.is_file() else folder, gguf_variant
+                )
+                if load_id is None:
+                    continue
+            else:
+                load_id = _preferred_complete_gguf(path)
+                if not load_id and not _local_dir_holds_a_payload(Path(path)):
+                    continue
         else:
             load_id = None
             # scan_exported_models calls a dir "lora" on adapter_config.json alone; require weights.
@@ -448,23 +456,30 @@ def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
     return newest_first(gguf_rows), newest_first(model_rows)
 
 
-def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
-    """Resolve a requested quant inside the same snapshots that supply the row's labels."""
+def _directory_variant_target(directory: Path, variant: str) -> Optional[str]:
+    """Resolve a complete local quant, keeping the directory for path-qualified selectors."""
     from hub.utils.gguf import gguf_variant_key
     from hub.utils.inventory_scan import complete_snapshot_variants
     from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
 
+    directory = directory.absolute()
+    target = _find_local_gguf_by_variant(str(directory), variant)
+    if target is None or not Path(target).is_relative_to(directory):
+        return None
+    relative = Path(target).relative_to(directory).as_posix()
+    if gguf_variant_key(relative) not in complete_snapshot_variants(str(directory)):
+        return None
+    if _direct_gguf_for_variant(target, variant) is None:
+        return str(directory)
+    return target
+
+
+def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
     for snapshot in _reachable_snapshots(Path(row["cache_path"]), row.get("load_id")):
-        target = _find_local_gguf_by_variant(str(snapshot), variant)
-        if target is None or not Path(target).is_relative_to(snapshot.absolute()):
-            continue
-        relative = Path(target).relative_to(snapshot.absolute()).as_posix()
-        if gguf_variant_key(relative) not in complete_snapshot_variants(str(snapshot)):
-            continue
-        # A path-qualified selector needs the snapshot as its resolution root.
-        if _direct_gguf_for_variant(target, variant) is None:
-            return ModelEntry("Downloaded", row["repo_id"], "gguf", str(snapshot))
-        return ModelEntry("Downloaded", row["repo_id"], variant, target)
+        target = _directory_variant_target(snapshot, variant)
+        if target is not None:
+            detail = variant if _is_gguf_file(target) else "gguf"
+            return ModelEntry("Downloaded", row["repo_id"], detail, target)
     return None
 
 
@@ -632,7 +647,7 @@ def _registered_custom_hf_cache(model) -> bool:
         return False
 
 
-def local_folder_entries() -> List[ModelEntry]:
+def local_folder_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]:
     entries = []
     for model in _local_catalog_rows():
         if (
@@ -654,7 +669,12 @@ def local_folder_entries() -> List[ModelEntry]:
             continue
         target = model.load_id or model.id
         if is_gguf:
-            target = _gguf_load_target(target)
+            if gguf_variant and Path(target).is_dir():
+                target = _directory_variant_target(Path(target), gguf_variant)
+                if target is None:
+                    continue
+            else:
+                target = _gguf_load_target(target)
         entries.append(
             ModelEntry(
                 "Downloaded",
@@ -729,15 +749,12 @@ def _dedup_key(model: str):
 
 
 def list_chat_models(*, gguf_variant: Optional[str] = None) -> List[ModelEntry]:
+    options = {"gguf_variant": gguf_variant} if gguf_variant else {}
     entries = [
         *_safe(trained_entries),
-        *_safe(exported_entries),
-        *(
-            _safe(cached_entries, gguf_variant = gguf_variant)
-            if gguf_variant
-            else _safe(cached_entries)
-        ),
-        *_safe(local_folder_entries),
+        *_safe(exported_entries, **options),
+        *_safe(cached_entries, **options),
+        *_safe(local_folder_entries, **options),
     ]
     seen = set()
     unique = []

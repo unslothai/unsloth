@@ -33,7 +33,7 @@ def cached_gguf_pick(tmp_path, monkeypatch, picker):
     monkeypatch.setattr(catalog, "_cached_catalog_rows", lambda: ([row], []))
     monkeypatch.setattr(catalog, "list_chat_models", REAL_CATALOG)
     for source in ("trained_entries", "exported_entries", "local_folder_entries"):
-        monkeypatch.setattr(catalog, source, lambda: [])
+        monkeypatch.setattr(catalog, source, lambda **kwargs: [])
     return target
 
 
@@ -116,26 +116,50 @@ def test_picked_repo_resolves_requested_quant(
         assert _loads(fake_studio) == [{"model_path": expected, "gguf_variant": variant}]
 
 
+@pytest.mark.parametrize("source", ["models_dir", "custom", "export"])
 @pytest.mark.parametrize("mode", ["idle-server", "auto-start"])
-def test_picked_directory_keeps_explicit_quant(
-    cached_gguf_pick, picker, fake_studio, monkeypatch, mode
+def test_picked_directory_resolves_requested_quant(
+    tmp_path, picker, fake_studio, monkeypatch, mode, source
 ):
-    directory = str(Path(cached_gguf_pick).parent)
-    monkeypatch.setattr(
-        catalog,
-        "list_chat_models",
-        lambda **kwargs: [catalog.ModelEntry("Fine-tunes", "export", "gguf", directory)],
-    )
+    ensure_studio_backend_path(seed_cache_env = False)
+    from hub.services.models.local_inventory import _classify_local_path, _scan_models_dir
+    from utils import models
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    root = tmp_path / ("exports" if source == "export" else "models")
+    folder = root / "tiny"
+    folder.mkdir(parents = True)
+    default = folder / "tiny-Q4_K_M.gguf"
+    requested = folder / "tiny-Q8_0.gguf"
+    for file in (default, requested):
+        file.write_bytes(b"GGUF" + bytes(4092))
+
+    if source == "export":
+        exports, rows = models.scan_exported_models(), []
+    else:
+        exports = []
+        rows = (
+            _scan_models_dir(root)
+            if source == "models_dir"
+            else _classify_local_path(folder, "custom")
+        )
+    monkeypatch.setattr(models, "scan_exported_models", lambda: exports)
+    monkeypatch.setattr(catalog, "_local_catalog_rows", lambda: rows)
+    monkeypatch.setattr(catalog, "trained_entries", lambda: [])
+    monkeypatch.setattr(catalog, "_cached_catalog_rows", lambda: ([], []))
+    monkeypatch.setattr(catalog, "list_chat_models", REAL_CATALOG)
+    assert [entry.model for entry in REAL_CATALOG()] == [str(default)]
+
     attempts = []
     load = start.LoadOptions(gguf_variant = "Q8_0")
     if mode == "auto-start":
         with pytest.raises(typer.Exit) as error:
             _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
         assert error.value.exit_code == 7
-        assert attempts == [(directory, load)]
+        assert attempts == [(str(requested), load)]
     else:
         _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
-        assert _loads(fake_studio) == [{"model_path": directory, "gguf_variant": "Q8_0"}]
+        assert _loads(fake_studio) == [{"model_path": str(requested), "gguf_variant": "Q8_0"}]
 
 
 def test_cached_picker_excludes_missing_and_incomplete_quants(cached_gguf_pick):
