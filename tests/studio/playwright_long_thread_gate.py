@@ -96,6 +96,12 @@ def measure(browser, base: str, turns: int) -> dict:
     cdp.send("Performance.enable")
     box = page.locator(".aui-composer-input").first
     box.click()
+    # Focusing the composer restyles focus-dependent rules once, across the thread; that one-off
+    # is not a per-keystroke cost, so let it and a warm-up key land before the window opens.
+    page.wait_for_timeout(800)
+    page.keyboard.press("x")
+    page.keyboard.press("Backspace")
+    page.wait_for_timeout(500)
     m0 = metrics(cdp)
     for ch in KEYS:
         page.keyboard.press("Space" if ch == " " else ch)
