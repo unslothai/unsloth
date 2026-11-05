@@ -3876,7 +3876,7 @@ export function HubModelPicker({
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
-  const audioCardGb = audioCppCardGb(inferenceGpu, cpuLoad);
+  const audioCardGb = audioCppCardGb(gpu, cpuLoad);
   // Threaded into every fit call, not only the quant rows.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   // FP8 / NVFP4 checkpoints every GPU here runs natively: chat lists them past the GGUF-only rule and

@@ -424,7 +424,7 @@ export function ModelsPage() {
   const inferenceGpu = useInferenceGpuInfo();
   // Audio runs load on the Audio page, so its placement decides how audio.cpp quants are judged.
   const [audioDevice] = usePersistedChoice(AUDIO_DEVICE_KEY, "auto");
-  const hubAudioCardGb = audioCppCardGb(inferenceGpu, audioDevice === "cpu");
+  const hubAudioCardGb = audioCppCardGb(gpu, audioDevice === "cpu");
   // Judge fit by the runtime that places the row: media repos use the diffusion planner's rule,
   // everything else the GGUF backend's inventory.
   const rowFitsDevice = useCallback(

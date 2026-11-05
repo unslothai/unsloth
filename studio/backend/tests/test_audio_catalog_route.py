@@ -81,11 +81,23 @@ def test_a_builder_failure_answers_503_without_its_text(client, monkeypatch):
     assert "exploded" not in response.text and "/home/me" not in response.text
 
 
-def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
+def _sized_host(
+    monkeypatch,
+    device = "CUDA",
+    cpu_runtime = False,
+):
+    """The host the load check sizes on: its torch device and whether audio.cpp runs on the CPU."""
+    import utils.hardware as hardware
     from core.inference import audio_cpp_server
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType[device])
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+
+
+def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
     from core.inference.audio_cpp_failures import estimate_resident_gb
 
-    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    _sized_host(monkeypatch)
     sized = dict(
         KOKORO, family = "kokoro_tts", size_bytes = 189_000_000, smallest_size_bytes = 90_000_000
     )
@@ -105,10 +117,9 @@ def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
 def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
     import asyncio
 
-    from core.inference import audio_cpp_server
     from utils.hardware import nvidia
 
-    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    _sized_host(monkeypatch)
     on_loop = []
 
     def capabilities():
@@ -128,12 +139,16 @@ def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
     assert on_loop == [False, False]
 
 
-@pytest.mark.parametrize("task, cpu_runtime", [("tts", True), ("asr", False)])
-def test_a_load_the_check_never_sizes_lists_no_gpu_estimate(client, monkeypatch, task, cpu_runtime):
-    # A CPU-only runtime runs every Auto load on the CPU; dictation loads on its sidecar.
-    from core.inference import audio_cpp_server
-
-    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+@pytest.mark.parametrize(
+    "task, device, cpu_runtime",
+    [("tts", "CUDA", True), ("asr", "CUDA", False), ("tts", "MLX", False)],
+)
+def test_a_load_the_check_never_sizes_lists_no_gpu_estimate(
+    client, monkeypatch, task, device, cpu_runtime
+):
+    # A CPU-only runtime runs every Auto load on the CPU, dictation loads on its sidecar, and the
+    # check sizes only CUDA and XPU hosts.
+    _sized_host(monkeypatch, device, cpu_runtime)
     sized = dict(KOKORO, task = task, family = "kokoro_tts", size_bytes = 189_000_000)
     catalog = AudioCatalogResponse(**{**CATALOG.model_dump(), "models": [sized]})
     _builder(monkeypatch, lambda: catalog)

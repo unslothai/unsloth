@@ -3241,11 +3241,23 @@ def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignor
     assert b.last_generation_stats == {"seed": sent and int(sent), "ignored_options": ignored}
 
 
-def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
+def _sized_host(
+    monkeypatch,
+    device = "CUDA",
+    cpu_runtime = False,
+):
+    """The host the load check sizes on: its torch device and whether audio.cpp runs on the CPU."""
+    import utils.hardware as hardware
     from core.inference import audio_cpp_server
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType[device])
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+
+
+def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
     from core.inference.audio_cpp_failures import estimate_resident_gb
 
-    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    _sized_host(monkeypatch)
     names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-bf16.gguf"]
     _online(monkeypatch, *names, size = 189_000_000)
     rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
@@ -3260,9 +3272,7 @@ def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
 @pytest.mark.parametrize("cpu_runtime", [False, True])
 def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu_runtime):
     # The load check skips VRAM for a CPU-only quant, and for every quant on a CPU-only runtime.
-    from core.inference import audio_cpp_server
-
-    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+    _sized_host(monkeypatch, cpu_runtime = cpu_runtime)
     names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-tq2_1.gguf"]
     _online(monkeypatch, *names, size = 189_000_000)
     rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
@@ -3274,11 +3284,17 @@ def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu
 
 def test_a_dictation_model_lists_no_gpu_estimate(hub, monkeypatch):
     # Dictation loads on its sidecar, which never compares the estimate.
-    from core.inference import audio_cpp_server
-
-    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    _sized_host(monkeypatch)
     _online(monkeypatch, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf")
     row = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
     rows = _rows(row)
     assert acm.resolve(row, network = True).task == "asr"
+    assert rows and all(listed.estimated_resident_gb is None for listed in rows.values())
+
+
+@pytest.mark.parametrize("device", ["MLX", "CPU"])
+def test_a_host_the_check_never_sizes_lists_no_gpu_estimate(hub, monkeypatch, device):
+    _sized_host(monkeypatch, device)
+    _online(monkeypatch, "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
     assert rows and all(listed.estimated_resident_gb is None for listed in rows.values())
