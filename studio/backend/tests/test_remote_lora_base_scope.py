@@ -1,7 +1,10 @@
-"""One load reads a repo's adapter_config.json once: the inference worker's own lookup and
-its activation share the definitive answer, and nothing else is reused."""
+"""One inference or export load reads a repo's adapter_config.json once; only definitive answers are shared."""
 
 import io
+import json
+import os
+import subprocess
+import sys
 import threading
 import urllib.error
 from pathlib import Path
@@ -133,12 +136,61 @@ def test_activation_reuses_the_worker_lookup(hub, monkeypatch):
     assert len(hub["calls"]) == 1
 
 
-def test_inference_worker_wraps_lookup_and_activation_in_one_scope():
-    src = (Path(__file__).resolve().parents[1] / "core" / "inference" / "worker.py").read_text(
-        encoding = "utf-8"
+_WORKER_DRIVER = """
+import io, json, os, queue, sys, urllib.error
+import utils.transformers_version as tv
+import utils.utils as uu
+
+uu.hf_dns_dead = lambda *a, **k: False
+tv.hf_endpoint_unreachable = lambda *a, **k: False
+out, worker, model = sys.argv[1:4]
+reads = []
+
+
+def read(url, token):
+    reads.append(url.rsplit("/", 1)[-1])
+    raise urllib.error.HTTPError(url, 404, "x", {}, io.BytesIO(b""))
+
+
+def done(*a, **k):
+    with open(out, "w") as f:
+        json.dump(reads, f)
+    os._exit(0)
+
+
+tv._read_hf_json = read
+config = {"model_name": model, "checkpoint_path": model, "hf_token": None, "device_backend": "cuda"}
+if worker == "inference":
+    import core.inference.worker as w
+
+    w._native_audio_security_targets_or_error = done
+    w.run_inference_process(cmd_queue = queue.Queue(), resp_queue = queue.Queue(), cancel_event = None, config = config)
+else:
+    import core._torchao_stub as stub
+    import core.export.worker as w
+    import utils.ssm_runtime as ssm
+
+    w._run_export_security_gates = lambda *a, **k: True
+    ssm.provision_ssm_kernels = lambda *a, **k: None
+    stub.install_torchao_windows_rocm_real_or_stub = done
+    w.run_export_process(cmd_queue = queue.Queue(), resp_queue = queue.Queue(), config = config)
+"""
+
+
+@pytest.mark.parametrize("worker", ["inference", "export"])
+def test_worker_load_reads_adapter_config_once(worker, tmp_path):
+    backend = Path(__file__).resolve().parents[1]
+    out = tmp_path / "reads.json"
+    env = {
+        k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    }
+    env["PYTHONPATH"] = str(backend)
+    subprocess.run(
+        [sys.executable, "-c", _WORKER_DRIVER, str(out), worker, "org/model"],
+        cwd = tmp_path,
+        env = env,
+        timeout = 300,
+        capture_output = True,
     )
-    scope = src.index("with remote_lora_base_scope():")
-    lookup = src.index("_lora_base = _remote_lora_base(model_name, hf_token = _hf_token)")
-    activate = src.index("_activate_transformers_version(_base, _hf_token)")
-    gates = src.index("_native_audio_security_targets_or_error(model_name")
-    assert scope < lookup < activate < gates
+    reads = json.loads(out.read_text())
+    assert reads.count("adapter_config.json") == 1, reads
