@@ -9,6 +9,7 @@ import test from "node:test";
 
 import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import {
+  keptNumFrames,
   resolveVideoFps,
   restoredClipDuration,
   videoDurationOptions,
@@ -139,4 +140,19 @@ test("a restored clip takes its frame count only when the loaded family's window
   const edgeAt12 = videoDurationOptions([3, 5, 6], 12, 4, 1, 53, 149);
   assert.deepEqual(restoredClipDuration(edgeAt12, 25, 12), { frames: 53, seconds: 53 / 12 });
   assert.equal(restoredClipDuration([], 121, 24), null);
+});
+
+test("a new frame rate keeps the picked length, not a frame count that is another length at that rate", () => {
+  // Nano at 24 fps, 2 s picked (49 frames). 49 is also an option at 10 fps, where it lasts 4.9 s.
+  const nanoAt10 = videoDurationOptions([2, 5, 7.875], 10, 4, 1, 5, 397);
+  assert.ok(nanoAt10.some((o) => o.frames === 49));
+  assert.equal(keptNumFrames(nanoAt10, 49, 49 / 24, true), 21);
+  // Edge at 24 fps, 3 s (73 frames); at 12 fps 73 is 6.1 s, so the nearest to 3 s (53, 4.4 s) wins.
+  const edgeAt12 = videoDurationOptions([3, 5, 6], 12, 4, 1, 53, 149);
+  assert.equal(keptNumFrames(edgeAt12, 73, 73 / 24, true), 53);
+  // Same rate: a count still on offer stays, one that is not snaps to the picked length.
+  const edgeAt24 = videoDurationOptions([3, 5, 6], 24, 4, 1, 53, 149);
+  assert.equal(keptNumFrames(edgeAt24, 145, 145 / 24, false), 145);
+  assert.equal(keptNumFrames(edgeAt24, 61, 5, false), 121);
+  assert.equal(keptNumFrames([], 61, 5, true), 61);
 });

@@ -144,6 +144,7 @@ import {
   videoSizeLimits,
 } from "./video-size";
 import {
+  keptNumFrames,
   resolveVideoFps,
   restoredClipDuration,
   videoDurationOptions,
@@ -1712,9 +1713,12 @@ function VideoGenerator({
     setPickedFps(null);
   }, [loadedFamily]);
   const prevFamilyRef = useRef<string | null>(null);
+  const prevFpsRef = useRef(fps);
   useEffect(() => {
     const familyChanged = loadedFamily !== prevFamilyRef.current;
     prevFamilyRef.current = loadedFamily;
+    const fpsChanged = fps !== prevFpsRef.current;
+    prevFpsRef.current = fps;
     // Apply the family's default clip length, or every default run stays a ~1s clip.
     const applyFamilyDefault = shouldApplyModelDefaults(
       familySeeded.current,
@@ -1733,14 +1737,9 @@ function VideoGenerator({
         return;
       }
     }
-    setNumFrames((cur) => {
-      if (!familyChanged && durationOptions.some((o) => o.frames === cur)) return cur;
-      return (
-        durationOptions[
-          closestDurationIndex(durationOptions, durationIntentSeconds)
-        ]?.frames ?? cur
-      );
-    });
+    setNumFrames((cur) =>
+      keptNumFrames(durationOptions, cur, durationIntentSeconds, familyChanged || fpsChanged),
+    );
   }, [
     durationIntentSeconds,
     durationOptions,
