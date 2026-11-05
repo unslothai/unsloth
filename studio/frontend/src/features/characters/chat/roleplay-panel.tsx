@@ -69,7 +69,8 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   const castPayload = (members: { characterId: string; muted: boolean }[]) =>
     members.map((m) => ({ characterId: m.characterId, muted: m.muted }));
   const members = [...scene.cast].sort((a, b) => a.position - b.position);
-  const setSettings = (next: Partial<SceneSettings>) => void patch({ settings: { ...settings, ...next } });
+  // Only the changed keys: patchScene merges them into the latest settings when the write runs.
+  const setSettings = (next: Partial<SceneSettings>) => void patch({ settings: next });
 
   return (
     <div className="flex flex-col gap-5 pb-2" data-testid="roleplay-panel">

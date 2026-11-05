@@ -111,6 +111,18 @@ def test_reads_every_png_text_chunk_kind(kind):
     assert parsed.fields["name"] == "Mira"
 
 
+@pytest.mark.parametrize("kind", [b"zTXt", b"iTXt"])
+def test_compressed_card_text_is_inflated_only_up_to_the_card_limit(monkeypatch, kind):
+    monkeypatch.setattr(cards, "MAX_CARD_BYTES", 4096)
+    big = {**V2, "data": {**V2["data"], "description": "x" * 20_000}}
+    payload = base64.b64encode(json.dumps(big).encode())
+    flags = b"\x00" if kind == b"zTXt" else b"\x01\x00\x00\x00"
+    body = b"chara\x00" + flags + zlib.compress(payload)
+    png = _png()
+    iend = png.rindex(b"IEND") - 4
+    assert cards.read_png_card(png[:iend] + _chunk(kind, body) + png[iend:])[0] is None
+
+
 def test_prefers_the_v3_chunk_over_v2():
     v3 = {
         "spec": "chara_card_v3",
@@ -203,6 +215,22 @@ def test_export_png_round_trips_unknown_fields_and_carries_both_chunks():
     assert v2["spec"] == "chara_card_v2" and "group_only_greetings" not in v2["data"]
     reparsed = cards.parse_card_file(exported, "again.png")
     assert reparsed.fields["name"] == "Mira (edited)"
+
+
+def test_export_carries_an_edited_lorebook_placement_into_the_entry_extensions():
+    entry = {"keys": ["k"], "content": "c", "extensions": {"position": 4, "depth": 4, "keep": 1}}
+    card = {**V2, "data": {**V2["data"], "character_book": {"entries": [entry]}}}
+    parsed = cards.parse_card_file(json.dumps(card).encode(), "mira.json")
+    book = parsed.fields["character_book"]
+    assert book["entries"][0]["position"] == "at_depth"
+    book["entries"][0].update(position = "after_char", depth = 0)
+    character = {"name": "Mira", "characterBook": book, "card": parsed.card}
+    exported = cards.build_card_v3(character)
+    ext = exported["data"]["character_book"]["entries"][0]["extensions"]
+    assert ext == {"position": 1, "depth": 0, "keep": 1}
+    again = cards.parse_card_file(json.dumps(exported).encode(), "again.json")
+    assert again.fields["character_book"]["entries"][0]["position"] == "after_char"
+    assert book["entries"][0]["extensions"]["position"] == 4
 
 
 def test_export_converts_a_missing_or_jpeg_portrait_to_png():

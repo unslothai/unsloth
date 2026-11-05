@@ -118,23 +118,34 @@ def _iter_png_chunks(data: bytes):
             return
 
 
+def _inflate(data: bytes) -> bytes:
+    # Bounded: a few KB of zlib can expand to gigabytes before any card check runs.
+    inflater = zlib.decompressobj()
+    out = inflater.decompress(data, MAX_CARD_BYTES)
+    if inflater.unconsumed_tail or not inflater.eof:
+        raise ValueError("compressed text chunk too large or truncated")
+    return out
+
+
 def _png_text_chunk(kind: bytes, body: bytes) -> Optional[tuple[str, str]]:
+    """A text chunk's key and text; text is decoded only for card keys, so other chunks cost nothing."""
     try:
+        key, _, rest = body.partition(b"\x00")
+        key = key.decode("latin-1")
+        if key.lower() not in _CARD_CHUNK_KEYS:
+            return key, ""
         if kind == b"tEXt":
-            key, _, text = body.partition(b"\x00")
-            return key.decode("latin-1"), text.decode("latin-1")
+            return key, rest.decode("latin-1")
         if kind == b"zTXt":
-            key, _, rest = body.partition(b"\x00")
-            return key.decode("latin-1"), zlib.decompress(rest[1:]).decode("latin-1")
+            return key, _inflate(rest[1:]).decode("latin-1")
         if kind == b"iTXt":
-            key, _, rest = body.partition(b"\x00")
             compressed, rest = rest[0], rest[2:]
             _language, _, rest = rest.partition(b"\x00")
             _translated, _, text = rest.partition(b"\x00")
             if compressed:
-                text = zlib.decompress(text)
-            return key.decode("latin-1"), text.decode("utf-8")
-    except (zlib.error, UnicodeDecodeError, IndexError):
+                text = _inflate(text)
+            return key, text.decode("utf-8")
+    except (zlib.error, UnicodeDecodeError, IndexError, ValueError):
         return None
     return None
 
@@ -556,7 +567,7 @@ def _overlay(character: dict, data: dict) -> dict:
     data["extensions"] = extensions
     book = character.get("characterBook")
     if book:
-        data["character_book"] = book
+        data["character_book"] = _export_book(book)
     else:
         data.pop("character_book", None)
     # A V1 card stored top-level keys that are not V2 data.
@@ -572,6 +583,28 @@ def _overlay(character: dict, data: dict) -> dict:
     ):
         data.pop(legacy, None)
     return data
+
+
+_EXT_POSITION = {"before_char": 0, "after_char": 1, "at_depth": 4}
+
+
+def _export_book(book: dict) -> dict:
+    """The book with each entry's placement also in SillyTavern's extensions, which importers read first."""
+    entries = []
+    for entry in book.get("entries") or []:
+        if not isinstance(entry, dict):
+            entries.append(entry)
+            continue
+        ext = dict(entry["extensions"]) if isinstance(entry.get("extensions"), dict) else {}
+        position = entry.get("position")
+        # Placements Studio does not model (2, 3, 5, 6) stay as imported unless the entry is at a depth.
+        if position == "at_depth" or ext.get("position") in (0, 1, 4, None):
+            if position in _EXT_POSITION:
+                ext["position"] = _EXT_POSITION[position]
+        if "depth" in entry and (position == "at_depth" or "depth" in ext):
+            ext["depth"] = entry["depth"]
+        entries.append({**entry, "extensions": ext})
+    return {**book, "entries": entries}
 
 
 def _camel(key: str) -> str:

@@ -20,13 +20,20 @@ const REGEX_KEY = /^\/(.+)\/([gimsuy]*)$/;
 const MAX_REGEX_KEY = 160;
 // Scan only the tail of recent messages: keys are matched on every send and token count.
 const MAX_SCAN_CHARS = 16_000;
+const ESCAPE_OR_CLASS = /\\.|\[(?:\\.|[^\]\\])*\]/g;
+const REPEATED_GROUP = /\)[*+{]/;
+
+// JS regexes cannot time out, and a repeated group such as (a+)+ backtracks exponentially on the UI thread.
+function repeatsAGroup(source: string): boolean {
+  return REPEATED_GROUP.test(source.replace(ESCAPE_OR_CLASS, "x"));
+}
 
 function keyMatcher(key: string, caseSensitive: boolean): ((text: string) => boolean) | null {
   const trimmed = key.trim();
   if (!trimmed) return null;
   const regex = REGEX_KEY.exec(trimmed);
-  // Card keys run on every send; a long pattern is likelier to backtrack badly, so it is skipped.
-  if (regex && trimmed.length > MAX_REGEX_KEY) return null;
+  // Card keys run on every send, so patterns that could backtrack badly are skipped.
+  if (regex && (trimmed.length > MAX_REGEX_KEY || repeatsAGroup(regex[1]))) return null;
   if (regex) {
     try {
       const pattern = new RegExp(regex[1], regex[2].replace("g", ""));

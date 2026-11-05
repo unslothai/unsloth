@@ -317,6 +317,16 @@ test("a long lorebook regex key is ignored rather than run", () => {
   assert.equal(fired.fired.length, 0);
 });
 
+test("a short lorebook regex key that repeats a group is skipped, not run", () => {
+  const started = Date.now();
+  const scan = [`${"a".repeat(40)}!`];
+  const fired = activateLorebook(book([entry({ keys: ["/(a+)+$/"], content: "never" })]), scan);
+  assert.equal(fired.fired.length, 0);
+  assert.ok(Date.now() - started < 1000);
+  const ok = activateLorebook(book([entry({ keys: ["/dra(g|k)ons?\\b/i", "/[(]+x/"], content: "yes" })]), ["Two DRAKONS", "((x"]);
+  assert.equal(ok.fired.length, 1);
+});
+
 test("a title is not a name: mentions and labels skip Captain, Professor and the like", () => {
   assert.equal(shortName("Captain Rhys Calloway"), "Rhys");
   assert.equal(shortName("Dr. Moon"), "Moon");
