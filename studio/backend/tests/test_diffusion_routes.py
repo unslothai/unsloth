@@ -709,6 +709,30 @@ def test_generate_native_job_failure_names_an_oom_from_its_log_tail(client, monk
         assert leak not in detail
 
 
+def test_generate_native_render_short_of_device_memory_names_the_shortfall(client, monkeypatch):
+    # The failure a render printed when VRAM taken after the load left too little for one DiT segment.
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n"
+            "[E] MOSS-Image segment 2/43 (moss_image.layers.1) failed during weight preparation\n"
+            "[E] sampling for image 1/1 failed after 0.87s\n"
+            "[W] model manager cannot make enough memory available on CUDA0: need 1223.37 MB device / 759.59 MB "
+            "budget, available 1187.75 MB device / 935.29 MB budget"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("CUDA0", "1223", "segment"):
+        assert leak not in detail
+
+
 def test_generate_failure_tail_echoing_a_prompt_word_is_not_an_oom(client, monkeypatch):
     backend = diffusion_module.get_diffusion_backend()
     backend.loaded = True

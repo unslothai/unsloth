@@ -86,7 +86,6 @@ from core.inference.sd_cpp_args import (
     SdCppModelFiles,
     build_img_gen_request,
     device_backend_flags,
-    is_device_oom_text,
     is_ggml_unsupported_op_abort,
     offload_flags,
     sd_cli_output_paths,
@@ -2075,23 +2074,6 @@ def output_shows_vulkan_device_lost(text: Optional[str]) -> bool:
     return any(marker in lowered for marker in _VULKAN_DEVICE_LOST_MARKERS)
 
 
-# sd.cpp's model manager / graph-cut executor failing a render for want of device memory. Only read from a FAILED
-# render's output: the capacity warning alone also precedes renders that recover.
-_RENDER_DEVICE_MEMORY_FAILURE_MARKERS: tuple[str, ...] = (
-    "failed during weight preparation",
-    "cannot make enough memory available",
-)
-
-
-def _render_failed_for_device_memory(text: Optional[str]) -> bool:
-    if not text:
-        return False
-    if is_device_oom_text(text):
-        return True
-    lowered = str(text).lower()
-    return any(marker in lowered for marker in _RENDER_DEVICE_MEMORY_FAILURE_MARKERS)
-
-
 # Appended when a lost Vulkan device repeats and no CPU fallback applies. Must match no failure marker.
 _REPEATED_DEVICE_LOSS_HINT = (
     "The GPU lost its Vulkan device twice in a row (usually a driver reset during the render). Try Low VRAM "
@@ -3179,8 +3161,6 @@ class SdCppDiffusionBackend:
         self._stopping_servers = 0
         # Set once the GPU graph is unrunnable (ggml unsupported-op abort); CPU restarts once per load.
         self._cpu_backend_forced = False
-        # Set once a render that ran short of device memory restarted the server to plan again; once per load.
-        self._memory_respawned = False
 
     @property
     def is_loaded(self) -> bool:
@@ -3743,7 +3723,6 @@ class SdCppDiffusionBackend:
                 # A new checkpoint earns a fresh attempt on the GPU backend: the previous abort says nothing about
                 # this graph.
                 self._cpu_backend_forced = False
-                self._memory_respawned = False
                 server: Optional[SdCppServer] = None
                 if mode == "server":
                     assert server_binary is not None
@@ -4892,10 +4871,6 @@ class SdCppDiffusionBackend:
                     while True:
                         moved_to_cpu = False
                         server = self._restart_server_on_cpu_backend(state, str(exc), cancel)
-                        if server is None:
-                            server = self._respawn_server_after_memory_failure(
-                                state, str(exc), cancel
-                            )
                         if server is None and output_shows_vulkan_device_lost(str(exc)):
                             device_losses += 1
                             if device_losses >= 2:
@@ -5064,46 +5039,6 @@ class SdCppDiffusionBackend:
             "sd-server lost its Vulkan device; restarting it on the same build. Details: %s",
             error_text[:300],
         )
-        state.server.stop()
-        server = SdCppServer(state.server.binary)
-        with self._lock:
-            self._pending_server = server
-        return self._start_replacement(
-            state,
-            server,
-            cancel,
-            vae_format = state.vae_format,
-            offload = state.offload_flags,
-            native_speed = state.native_speed,
-            threads = state.threads,
-            env = state.spawn_env(),
-        )
-
-    def _respawn_server_after_memory_failure(
-        self, state: _SdState, error_text: str, cancel: threading.Event
-    ) -> Optional[SdCppServer]:
-        """Restart this checkpoint's sd-server on the same build, once per load, after a render failed for want of
-        device memory; None if that does not apply.
-
-        sd.cpp's auto-fit sizes weight placement and graph segments from the device memory free when the server
-        starts. When something else takes VRAM after that (on a desktop card: the display, the browser, another
-        app), a later render can fail part way with "cannot make enough memory available" / "failed during weight
-        preparation", reported only as "generate_image returned no results", and every render on that server fails
-        the same way. A new server plans again from what is free now."""
-        if self._memory_respawned or not _render_failed_for_device_memory(error_text):
-            return None
-        if self._cpu_backend_forced or state.device == "cpu":
-            return None
-        if state.server is None or cancel.is_set():
-            return None
-        if not self._begin_replacement(state):
-            return None
-        logger.warning(
-            "sd-server ran short of device memory during a render; restarting it so it plans again from the "
-            "memory free now, and retrying once. Details: %s",
-            error_text[:600],
-        )
-        self._memory_respawned = True
         state.server.stop()
         server = SdCppServer(state.server.binary)
         with self._lock:
