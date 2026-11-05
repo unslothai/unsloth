@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A download speed limit is stored per install, keeps a limited job on HTTP, and paces the worker's transfer."""
+
+from __future__ import annotations
+
+import hashlib
+import subprocess
+import sys
+import time
+import types as _types
+from pathlib import Path
+
+_BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
+if _BACKEND_DIR not in sys.path:
+    sys.path.insert(0, _BACKEND_DIR)
+
+_loggers_stub = _types.ModuleType("loggers")
+_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+sys.modules.setdefault("loggers", _loggers_stub)
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+import routes.settings as settings
+import storage.studio_db as studio_db
+import utils.download_speed_limit as speed_limit
+from hub.services import download_lifecycle
+
+from .test_hf_download_pinned_revision import _OLD, _REPO, _WORKER, _FakeHub, _repo_dir
+from .test_hf_download_reclaim_race import _worker_env
+
+
+@pytest.fixture
+def store(monkeypatch):
+    values: dict = {}
+    monkeypatch.setattr(
+        studio_db, "get_app_setting", lambda key, fallback = None: values.get(key, fallback)
+    )
+    monkeypatch.setattr(
+        studio_db, "upsert_app_settings", lambda updates: values.update(updates) or values
+    )
+    return values
+
+
+def test_nothing_stored_means_no_limit(store):
+    assert speed_limit.get_download_speed_limit_mbps() is None
+    assert store == {}
+
+
+def test_a_stored_limit_is_returned(store):
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = 8
+    assert speed_limit.get_download_speed_limit_mbps() == 8.0
+
+
+@pytest.mark.parametrize("junk", ["fast", -3, 0, True, None])
+def test_junk_on_disk_reads_as_no_limit(store, junk):
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = junk
+    assert speed_limit.get_download_speed_limit_mbps() is None
+
+
+def test_set_validates_and_persists(store):
+    assert speed_limit.set_download_speed_limit_mbps(8) == 8.0
+    assert store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] == 8.0
+    assert speed_limit.set_download_speed_limit_mbps(None) is None
+    assert store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] is None
+    assert speed_limit.set_download_speed_limit_mbps(2.5) == 2.5
+    assert speed_limit.set_download_speed_limit_mbps(0) is None
+    for junk in ("8", -1, True, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            speed_limit.set_download_speed_limit_mbps(junk)
+
+
+@pytest.fixture
+def client(store):
+    app = FastAPI()
+    app.include_router(settings.router)
+    app.dependency_overrides[settings.get_current_subject] = lambda: "admin"
+    return TestClient(app, raise_server_exceptions = False)
+
+
+def test_route_reports_no_limit_by_default(client):
+    assert client.get("/download-speed-limit").json() == {"mbps": None}
+
+
+def test_route_saves_and_clears_a_limit(client, store):
+    assert client.put("/download-speed-limit", json = {"mbps": 8}).json() == {"mbps": 8.0}
+    assert store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] == 8.0
+    assert client.put("/download-speed-limit", json = {"mbps": None}).json() == {"mbps": None}
+    assert store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] is None
+
+
+def test_route_rejects_a_negative_limit(client):
+    assert client.put("/download-speed-limit", json = {"mbps": -1}).status_code == 422
+
+
+def _spawn_env(monkeypatch) -> dict:
+    captured = {}
+
+    class _Fake:
+        pid = 4242
+
+    def _fake_popen(*_args, **popen_kwargs):
+        captured.update(popen_kwargs["env"])
+        return _Fake()
+
+    monkeypatch.setattr(download_lifecycle.subprocess, "Popen", _fake_popen)
+    download_lifecycle.spawn_worker(["--repo-id", _REPO], None, use_xet = False)
+    return captured
+
+
+def test_spawn_worker_hands_the_limit_to_the_worker(monkeypatch, store):
+    monkeypatch.delenv(speed_limit.DOWNLOAD_SPEED_LIMIT_ENV, raising = False)
+    assert speed_limit.DOWNLOAD_SPEED_LIMIT_ENV not in _spawn_env(monkeypatch)
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = 8
+    assert _spawn_env(monkeypatch)[speed_limit.DOWNLOAD_SPEED_LIMIT_ENV] == "8.0"
+
+
+@pytest.mark.parametrize("mode", ["xet", "auto", None])
+def test_a_limit_keeps_a_download_on_http(store, mode):
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = 8
+    use_xet, reason = download_lifecycle.resolve_requested_use_xet(mode, True)
+    assert use_xet is False
+    assert "limit" in reason.lower()
+
+
+_BIG = hashlib.sha256(b"paced").digest() * (24 * 1024 * 1024 // 32)
+
+
+def _timed_run(hub: _FakeHub, root: Path, limit_mbps: str | None) -> float:
+    env = _worker_env(hub, root)
+    env.pop(speed_limit.DOWNLOAD_SPEED_LIMIT_ENV, None)
+    if limit_mbps is not None:
+        env[speed_limit.DOWNLOAD_SPEED_LIMIT_ENV] = limit_mbps
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, str(_WORKER), "--repo-id", _REPO, "--transport", "http"],
+        cwd = _BACKEND_DIR,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 180,
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0, result.stderr
+    assert (_repo_dir(root) / "snapshots" / _OLD / "model.safetensors").read_bytes() == _BIG
+    return elapsed
+
+
+def test_the_worker_paces_the_transfer_to_the_limit(tmp_path):
+    hub = _FakeHub()
+    hub.commits[_OLD]["model.safetensors"] = _BIG
+    try:
+        unlimited = _timed_run(hub, tmp_path / "unlimited", None)
+        # 24 MB at 64 Mbit/s (8 MB/s) is three seconds of pacing on top of the same startup.
+        limited = _timed_run(hub, tmp_path / "limited", "64")
+    finally:
+        hub.close()
+    assert limited - unlimited >= 2.0, (unlimited, limited)
+    assert limited - unlimited < 15.0, (unlimited, limited)

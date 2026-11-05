@@ -2173,6 +2173,11 @@ export const he = {
         autoHint: "בוחר לפי המחשב ועובר ל-HTTPS אם Xet נתקע או נכשל כאן.",
         autoCurrently: "מצב אוטומטי משתמש כעת ב-{transport} במחשב זה.",
         xetMissing: "Xet אינו זמין מכיוון ש-hf_xet אינו מותקן.",
+        speedLimit: "מגבלת מהירות הורדה",
+        speedLimitDescription:
+          "ללא מגבלה אלא אם הוגדר ערך. הורדה מוגבלת משתמשת ב-HTTPS.",
+        speedLimitNoLimit: "ללא מגבלה",
+        speedLimitInvalid: "הזינו מספר ב-Mbit/s או השאירו את השדה ריק.",
       },
       uploads: {
         sectionTitle: "העלאות",

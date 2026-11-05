@@ -2323,6 +2323,11 @@ export const uk = {
         autoCurrently:
           "На цьому комп’ютері автоматичний режим використовує {transport}.",
         xetMissing: "Xet недоступний, бо hf_xet не інстальовано.",
+        speedLimit: "Обмеження швидкості завантаження",
+        speedLimitDescription:
+          "Без обмеження, доки не задано значення. Обмежене завантаження йде через HTTPS.",
+        speedLimitNoLimit: "Без обмеження",
+        speedLimitInvalid: "Введіть число в Мбіт/с або залиште поле порожнім.",
       },
       uploads: {
         sectionTitle: "Вивантаження",

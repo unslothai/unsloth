@@ -2132,6 +2132,11 @@ export const en = {
           "Picks per machine and switches to HTTPS if Xet stalls or fails here.",
         autoCurrently: "Auto is using {transport} on this machine.",
         xetMissing: "Xet is unavailable because hf_xet is not installed.",
+        speedLimit: "Download speed limit",
+        speedLimitDescription:
+          "No limit unless a figure is set. A limited download uses HTTPS.",
+        speedLimitNoLimit: "No limit",
+        speedLimitInvalid: "Enter a number of Mbit/s, or leave the field empty.",
       },
       uploads: {
         sectionTitle: "Uploads",

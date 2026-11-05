@@ -2122,6 +2122,11 @@ export const de = {
           "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
         autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
         xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
+        speedLimit: "Download-Geschwindigkeitslimit",
+        speedLimitDescription:
+          "Kein Limit, solange kein Wert gesetzt ist. Ein begrenzter Download verwendet HTTPS.",
+        speedLimitNoLimit: "Kein Limit",
+        speedLimitInvalid: "Gib eine Zahl in Mbit/s ein oder lass das Feld leer.",
       },
       uploads: {
         sectionTitle: "Uploads",

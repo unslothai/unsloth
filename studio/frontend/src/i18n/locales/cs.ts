@@ -2318,6 +2318,11 @@ export const cs = {
         autoCurrently:
           "Automatický režim na tomto počítači používá: {transport}.",
         xetMissing: "Xet není k dispozici, protože není nainstalován hf_xet.",
+        speedLimit: "Limit rychlosti stahování",
+        speedLimitDescription:
+          "Bez limitu, dokud nezadáte hodnotu. Omezené stahování používá HTTPS.",
+        speedLimitNoLimit: "Bez limitu",
+        speedLimitInvalid: "Zadejte počet Mbit/s nebo nechte pole prázdné.",
       },
       uploads: {
         sectionTitle: "Nahrávání",

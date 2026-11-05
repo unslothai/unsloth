@@ -2330,6 +2330,11 @@ export const pl = {
           "Opcja Automatycznie używa na tym komputerze metody {transport}.",
         xetMissing:
           "Xet jest niedostępny, ponieważ hf_xet nie jest zainstalowany.",
+        speedLimit: "Limit prędkości pobierania",
+        speedLimitDescription:
+          "Brak limitu, dopóki nie ustawisz wartości. Ograniczone pobieranie używa HTTPS.",
+        speedLimitNoLimit: "Brak limitu",
+        speedLimitInvalid: "Wpisz liczbę w Mbit/s albo zostaw pole puste.",
       },
       uploads: {
         sectionTitle: "Przesyłanie",

@@ -26,6 +26,7 @@ from hub.utils import inventory_scan as hf_cache_scan
 from hub.utils.hf_cache_state import EXIT_CANCELLED
 from hub.utils.hf_tokens import HfTokenArg, hf_token_arg
 from hub.utils.state_dir import RepoType
+from utils.download_speed_limit import DOWNLOAD_SPEED_LIMIT_ENV, get_download_speed_limit_mbps
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,9 @@ def resolve_requested_use_xet(
     largest_file_bytes: Optional[int] = None,
 ) -> tuple[bool, str]:
     """Resolve the current transport mode, falling back to the legacy ``use_xet`` flag."""
+    if get_download_speed_limit_mbps():
+        # Only the HTTP stream can be paced: hf_xet transfers natively.
+        return (False, "HTTP (download speed limit)")
     mode = (transport_mode or "").strip().lower()
     if mode == download_registry.TRANSPORT_HTTP:
         return (False, "HTTP (requested)")
@@ -391,6 +395,11 @@ def spawn_worker(
         env["UNSLOTH_PROTECTED_BLOB_HASHES"] = ",".join(sorted(protected_blob_hashes))
     else:
         env.pop("UNSLOTH_PROTECTED_BLOB_HASHES", None)
+    speed_limit = get_download_speed_limit_mbps()
+    if speed_limit:
+        env[DOWNLOAD_SPEED_LIMIT_ENV] = str(speed_limit)
+    else:
+        env.pop(DOWNLOAD_SPEED_LIMIT_ENV, None)
     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
     env["HF_HUB_DISABLE_TELEMETRY"] = "1"
     env["HF_HUB_DISABLE_XET"] = "0" if use_xet else "1"

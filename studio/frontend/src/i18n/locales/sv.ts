@@ -2240,6 +2240,11 @@ export const sv = {
           "Automatiskt läge använder {transport} på den här datorn.",
         xetMissing:
           "Xet är inte tillgängligt eftersom hf_xet inte är installerat.",
+        speedLimit: "Hastighetsgräns för nedladdning",
+        speedLimitDescription:
+          "Ingen gräns om inget värde anges. En begränsad nedladdning använder HTTPS.",
+        speedLimitNoLimit: "Ingen gräns",
+        speedLimitInvalid: "Ange ett tal i Mbit/s eller lämna fältet tomt.",
       },
       uploads: {
         sectionTitle: "Uppladdningar",

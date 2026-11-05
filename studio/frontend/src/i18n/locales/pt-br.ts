@@ -2110,6 +2110,11 @@ export const ptBR = {
           "Escolhe por máquina e muda para HTTPS se o Xet travar ou falhar aqui.",
         autoCurrently: "O Auto está usando {transport} nesta máquina.",
         xetMissing: "O Xet está indisponível porque o hf_xet não está instalado.",
+        speedLimit: "Limite de velocidade de download",
+        speedLimitDescription:
+          "Sem limite até que um valor seja definido. Um download limitado usa HTTPS.",
+        speedLimitNoLimit: "Sem limite",
+        speedLimitInvalid: "Digite um número em Mbit/s ou deixe o campo vazio.",
       },
       uploads: {
         sectionTitle: "Uploads",

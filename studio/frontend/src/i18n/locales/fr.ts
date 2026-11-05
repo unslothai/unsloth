@@ -2121,6 +2121,11 @@ export const fr = {
           "Choisit selon la machine et passe à HTTPS si Xet se bloque ou échoue ici.",
         autoCurrently: "Auto utilise {transport} sur cette machine.",
         xetMissing: "Xet est indisponible car hf_xet n'est pas installé.",
+        speedLimit: "Limite de vitesse de téléchargement",
+        speedLimitDescription:
+          "Aucune limite tant qu'aucune valeur n'est définie. Un téléchargement limité utilise HTTPS.",
+        speedLimitNoLimit: "Aucune limite",
+        speedLimitInvalid: "Saisissez un nombre en Mbit/s ou laissez le champ vide.",
       },
       uploads: {
         sectionTitle: "Téléversements",
