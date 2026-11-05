@@ -41,6 +41,7 @@ TOOL_XML_SIGNALS = (
     "<|tool_calls_section_begin|>",
     "<|tool_call_begin|>",
     "<|content_invoke_tool_json|>",
+    "<minimax:tool_call>",
 )
 
 
@@ -377,6 +378,12 @@ _KIMI_CALL_BEGIN = "<|tool_call_begin|>"
 _KIMI_ARG_BEGIN = "<|tool_call_argument_begin|>"
 _KIMI_CALL_END = "<|tool_call_end|>"
 _KIMI_ID_RE = re.compile(r"^(?:functions\.)?([\w\.\-]+)(?::(\d+))?$")
+
+# MiniMax-M2 / M2.1: ``<minimax:tool_call><invoke name="NAME"><parameter name="KEY">VALUE</parameter></invoke></minimax:tool_call>``.
+_MINIMAX_BLOCK_OPEN = "<minimax:tool_call>"
+_MINIMAX_BLOCK_CLOSE = "</minimax:tool_call>"
+_MINIMAX_INVOKE_OPEN_RE = re.compile(r'<invoke\s+name="([\w\.\-]+)">')
+_MINIMAX_INVOKE_CLOSE = "</invoke>"
 
 # Gemma 4: ``<|tool_call>call:NAME{...}<tool_call|>``, ``<|"|>`` wraps strings.
 _GEMMA_TC_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w\.\-]+)\s*\{")
@@ -798,6 +805,7 @@ _CONTAINING_WRAPPERS = (
     "<function=",
     '<function name="',
     "[TOOL_CALLS]",
+    "<minimax:tool_call>",
 ) + _INFERENCE_WRAPPER_OPENERS
 
 
@@ -886,8 +894,11 @@ def _inference_wrapper_spans(text: str) -> list:
         spans.append((m.end(), len(text) if end is None else end))
     # Attribute-form calls have no JSON body; protect the element interior so a genuine call's
     # arguments are not masked.
+    close = -2  # Not yet sought, as ``brace`` above.
     for m in _ATTR_FUNC_OPEN_RE.finditer(text):
-        close = text.find("</function>", m.end())
+        # Re-seek only once the close falls behind this opener; seeking per opener is quadratic.
+        if close != -1 and close < m.end():
+            close = text.find("</function>", m.end())
         spans.append((m.end(), len(text) if close < 0 else close))
     # A streaming Mistral array has no ``]`` yet but is still parsed; trust the envelope through EOS.
     pos = text.find(_MISTRAL_TRIGGER)
@@ -1060,9 +1071,16 @@ def _mask_blocked_bodies(
     enabled_tool_names,
     *,
     think: bool = False,
+    mentions: bool = False,
 ) -> tuple:
-    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. Returns (masked_text, bodies), restored in order."""
+    """With think, reasoning is masked so a rehearsed call cannot execute; parse only, strip passes think=False. With
+    mentions (display strips), a tag alone in backticks is masked so no strip arm reads it as an opener or closer.
+    Returns (masked_text, bodies), restored in order."""
     spans = _blocked_markerless_body_spans(text, enabled_tool_names)
+    if mentions:
+        mention_spans = _tool_healing.tag_mention_spans(text)
+        if mention_spans:
+            spans = _merge_spans(spans + mention_spans)
     if think:
         # Merged, not just sorted: sorting alone moves the masking cursor backward and re-appends the reasoning block of a blocked body unmasked.
         think_spans = _tool_healing._think_spans_outside_tool_markup(text)
@@ -1176,9 +1194,8 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
     """Strip ``<function=...>`` calls by mirroring the parser: an opener inside an open
     ``<parameter>`` is data and each call closes at its first ``</function>`` that is not
     parameter data; ``final`` drops a trailing unclosed call."""
-    starts = [
-        m for m in _TC_FUNC_START_RE.finditer(text) if not _inside_open_parameter(text, m.start())
-    ]
+    inside = _tool_healing._OpenParameterIndex(text, **_OPEN_PARAMETER_TAGS).inside
+    starts = [m for m in _TC_FUNC_START_RE.finditer(text) if not inside(m.start())]
     if not starts:
         return text
     out: list[str] = []
@@ -1190,7 +1207,7 @@ def _strip_function_xml_calls(text: str, *, final: bool) -> str:
         next_start = starts[idx + 1].start() if idx + 1 < len(starts) else len(text)
         close = None
         for cm in _FUNC_CLOSE_TAG_RE.finditer(text, m.end(), next_start):
-            if not _inside_open_parameter(text, cm.start()):
+            if not inside(cm.start()):
                 close = cm  # first close that is not parameter data = the real close
                 break
         if close is not None:
@@ -1293,6 +1310,21 @@ def _strip_glm_calls(text: str, *, final: bool) -> str:
     return "".join(out)
 
 
+def _strip_minimax_calls(text: str, *, final: bool) -> str:
+    """Strip ``<minimax:tool_call>`` blocks at the close the parser uses; ``final`` drops a trailing unclosed block."""
+    if _MINIMAX_BLOCK_OPEN not in text:
+        return text
+    out: list[str] = []
+    pos = 0
+    for start, end, closed in _minimax_block_spans(text):
+        if not (closed or final):
+            break
+        out.append(text[pos:start])
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def strip_segment(
     segment: str,
     *,
@@ -1301,6 +1333,7 @@ def strip_segment(
 ) -> str:
     """Strips markup from one non-think segment; seg_final enables end-of-turn arms. routes/inference.py differs, pinned by tests/test_route_strip_drift.py."""
     seg = _strip_mistral_closed_calls(segment)
+    seg = _strip_minimax_calls(seg, final = seg_final)
     # Name-gated: an inactive ``foo[ARGS]{..}`` is prose and is kept.
     seg = _tool_healing._strip_bracket_tag_calls(seg, enabled_tool_names = enabled_tool_names)
     if seg_final:
@@ -1373,7 +1406,7 @@ def strip_tool_markup(
         )
 
     # Reasoning stays verbatim, display included; a literal think marker in call arguments is data and goes with the call; blocked call bodies are masked.
-    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names)
+    masked, bodies = _mask_blocked_bodies(text, enabled_tool_names, mentions = True)
     result = _tool_healing.strip_outside_think(masked, _strip_segment)
     if bodies:
         restored = _unmask_blocked_bodies(result, bodies)
@@ -1395,6 +1428,7 @@ _STRIP_SENTINELS = (
     "[ARGS]",  # reasoning-model rehearsal
     "<|python_tag|>",  # Llama-3 built-in tools
     "<|content_invoke_tool_json|>",
+    "<minimax:tool_call>",
     "<｜",  # DeepSeek's full-width pipe opens every one of its markers
     "<think",  # reasoning segmentation
     "</think",
@@ -1417,6 +1451,7 @@ _OPEN_CALL_TRIGGERS = (
     "<function",
     "[TOOL_CALLS]",
     "[ARGS]",
+    "<minimax:tool_call>",
     "<｜",
     "<think",
     "</think",
@@ -1425,16 +1460,21 @@ _OPEN_CALL_TRIGGERS = (
 )
 _OPEN_CALL_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_CALL_TRIGGERS)
 _OPEN_CALL_WS_RE = re.compile(r"\s*")
+# ``<function=NAME>`` (bare or inside ``<tool_call>``) closes at ``</function>``; other bodies get the same set.
+_OPEN_BODY_TRIGGERS = _OPEN_CALL_TRIGGERS + ("</function",)
+_OPEN_BODY_TRIGGER_MAX_LEN = max(len(trigger) for trigger in _OPEN_BODY_TRIGGERS)
+# The scanner's opener without its trailing ``\s*``, so the body starts at a fixed offset.
+_OPEN_FUNCTION_OPENER_RE = re.compile(r'<function(?:=[\w\.\-]+|\s+name="[\w\.\-]+")>')
 
 
 def _promotable_gemma_call_pos(text: str, start: int, enabled_tool_names) -> int:
     """The sentinel find is exact, not a heuristic: sweeping call-free prose per chunk was quadratic."""
-    start = text.find(_GEMMA_BARE_SENTINEL, start)
-    if start < 0:
-        return -1
-    for m in _GEMMA_BARE_TC_RE.finditer(text, start):
+    # Every match starts with the literal: same matches as ``finditer``, without sweeping the buffer per chunk.
+    m = _search_from_literal(_GEMMA_BARE_TC_RE, _GEMMA_BARE_SENTINEL, text, start)
+    while m is not None:
         if _markerless_promotable(m.group(1), enabled_tool_names):
             return m.start()
+        m = _search_from_literal(_GEMMA_BARE_TC_RE, _GEMMA_BARE_SENTINEL, text, m.end())
     return -1
 
 
@@ -1549,6 +1589,7 @@ class StreamingMarkupStripper:
         "_gate_out",
         "_gate_dead",
         "_gate_from",
+        "_gate_triggers",
         "_gate_scanned",
         "_gate_call_ws",
     )
@@ -1586,6 +1627,7 @@ class StreamingMarkupStripper:
         # (floor, first) the gate can never arm for; append-only growth cannot undo its reason.
         self._gate_dead = None
         self._gate_from = 0
+        self._gate_triggers = _OPEN_CALL_TRIGGERS
         self._gate_scanned = 0
         # Where a ``call`` followed only by whitespace so far resumes its colon check, else -1.
         self._gate_call_ws = -1
@@ -1593,10 +1635,16 @@ class StreamingMarkupStripper:
     def _gate_clean(self, text: str) -> bool:
         """Scan only text appended since the last call (plus an overlap) for anything that could change the strip."""
         n = len(text)
-        lo = self._gate_scanned - _OPEN_CALL_TRIGGER_MAX_LEN + 1
+        triggers = self._gate_triggers
+        overlap = (
+            _OPEN_CALL_TRIGGER_MAX_LEN
+            if triggers is _OPEN_CALL_TRIGGERS
+            else _OPEN_BODY_TRIGGER_MAX_LEN
+        )
+        lo = self._gate_scanned - overlap + 1
         if lo < self._gate_from:
             lo = self._gate_from
-        for trigger in _OPEN_CALL_TRIGGERS:
+        for trigger in triggers:
             if text.find(trigger, lo) >= 0:
                 return False
         at = self._gate_call_ws
@@ -1621,20 +1669,17 @@ class StreamingMarkupStripper:
         return True
 
     def _gate_try_arm(self, text: str, seg_start: int, out: str, seg_out: str):
-        """Arm when ``text[seg_start:]`` is ``P + <tool_call> + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``;
-        B starting ``\\s*{`` without a trigger or ``call\\s*:``. Then only ``<tool_call>.*$`` matches (the masking
-        walk stops at the opener, GLM needs a name, every other arm needs a ``<`` or ``[`` in P), so the segment
-        strips to P (``seg_final``) or itself, and so do the cut decisions, until a trigger arrives."""
+        """Arm on ``text[seg_start:]`` = ``P + O + B``: P without ``<``, ``[``, ``{``, ``call\\s*:``; O ``<tool_call>``
+        and/or ``<function=NAME>``; B without a trigger or ``call\\s*:``. Arms reaching past O run to the end, the rest
+        need ``<`` or ``[`` in P, so the segment strips to P (``seg_final``) or itself until a trigger arrives."""
         key = (self._floor, self._first)
         if self._gate_dead == key:
             return
         start = self._floor + self._first
         prefix = text[seg_start:start]
-        body = start + len(_OPEN_CALL_OPENER)
         if (
-            not text.startswith(_OPEN_CALL_OPENER, start)
             # ``<param`` in the kept head makes the cut depend on later text (``_inside_open_parameter``).
-            or text.find("<param", self._floor, seg_start) >= 0
+            text.find("<param", self._floor, seg_start) >= 0
             or "<" in prefix
             or "[" in prefix
             or "{" in prefix
@@ -1645,14 +1690,39 @@ class StreamingMarkupStripper:
         ):
             self._gate_dead = key
             return
-        brace = _OPEN_CALL_WS_RE.match(text, body).end()
-        if brace == len(text):
-            return
+        triggers = _OPEN_BODY_TRIGGERS
+        if text.startswith(_OPEN_CALL_OPENER, start):
+            body = start + len(_OPEN_CALL_OPENER)
+            nxt = _OPEN_CALL_WS_RE.match(text, body).end()
+            if nxt == len(text):
+                return
+            if text[nxt] == "{":
+                triggers = _OPEN_CALL_TRIGGERS
+            elif text[nxt] == "<":
+                fn = _OPEN_FUNCTION_OPENER_RE.match(text, nxt)
+                if fn is not None:
+                    body = fn.end()
+                elif text.find(">", nxt) < 0:
+                    # Possibly a ``<function=NAME>`` still arriving.
+                    return
+        else:
+            fn = _OPEN_FUNCTION_OPENER_RE.match(text, start)
+            if fn is None:
+                rest = len(text) - start
+                if text.find(">", start) < 0 and (
+                    (rest < len(_OPEN_CALL_OPENER) and _OPEN_CALL_OPENER.startswith(text[start:]))
+                    or text.startswith("<function", start)
+                ):
+                    return
+                self._gate_dead = key
+                return
+            body = fn.end()
         # Fail closed if the full strip just run disagrees with the reasoning above.
-        if text[brace] != "{" or seg_out != (prefix if self._seg_final else text[seg_start:]):
+        if seg_out != (prefix if self._seg_final else text[seg_start:]):
             self._gate_dead = key
             return
         self._gate_from = body
+        self._gate_triggers = triggers
         self._gate_scanned = body
         self._gate_call_ws = -1
         if not self._gate_clean(text):
@@ -1730,7 +1800,7 @@ class StreamingMarkupStripper:
 
         # Mask as strip_tool_markup does: consumers get append-only snapshots, so a corrupted one
         # emitted earlier could never be repaired.
-        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names)
+        masked, bodies = _mask_blocked_bodies(text, self._enabled_tool_names, mentions = True)
         result = _tool_healing.strip_outside_think(masked, _seg)
         if not bodies:
             return result
@@ -1842,7 +1912,13 @@ def has_tool_signal(text: str) -> bool:
 
 # A Qwen/Hermes envelope whose args carry DeepSeek/Kimi markers must parse as the outer call.
 _EMBEDDED_MARKER_RE = re.compile(
-    _DEEPSEEK_OPEN_RE_SRC + "|" + re.escape(_KIMI_SECTION_BEGIN) + "|" + re.escape(_KIMI_CALL_BEGIN)
+    _DEEPSEEK_OPEN_RE_SRC
+    + "|"
+    + re.escape(_KIMI_SECTION_BEGIN)
+    + "|"
+    + re.escape(_KIMI_CALL_BEGIN)
+    + "|"
+    + re.escape(_MINIMAX_BLOCK_OPEN)
 )
 # The lookahead mirrors the ``_TOOL_ALL_PATS`` python_tag arm so a prose mention is not one.
 _OUTER_ENVELOPE_OPEN_RE = re.compile(
@@ -2231,9 +2307,11 @@ def parse_tool_calls_from_text(
         _km_section = content.find(_KIMI_SECTION_BEGIN)
         _km_bare = content.find(_KIMI_CALL_BEGIN)
         _km_pos = min(p for p in (_km_section, _km_bare, len(content)) if p >= 0)
+        _mm_pos = content.find(_MINIMAX_BLOCK_OPEN)
         pre_pass = [
             (_ds_pos, _parse_deepseek_tool_calls),
             (_km_pos, _parse_kimi_tool_calls),
+            (_mm_pos if _mm_pos >= 0 else len(content), _parse_minimax_tool_calls),
         ]
         pre_pass.sort(key = lambda pair: pair[0])
         for _pos, parser in pre_pass:
@@ -2491,15 +2569,17 @@ _trim_param_value = _tool_healing._trim_param_value
 _json_object_body = _tool_healing._json_object_body
 
 
+# Shared by the helper and ``_tool_healing._OpenParameterIndex`` so the two cannot drift.
+_OPEN_PARAMETER_TAGS = {
+    "param_start_re": _TC_PARAM_START_RE,
+    "param_closers": ("</parameter>", "</param>"),
+    "func_closers": ("</function>", "</tool_call>"),
+}
+
+
 def _inside_open_parameter(text: str, pos: int) -> bool:
     """An opener inside an unclosed parameter block is a literal in an argument value, not a nested call."""
-    return _tool_healing._inside_open_parameter(
-        text,
-        pos,
-        param_start_re = _TC_PARAM_START_RE,
-        param_closers = ("</parameter>", "</param>"),
-        func_closers = ("</function>", "</tool_call>"),
-    )
+    return _tool_healing._inside_open_parameter(text, pos, **_OPEN_PARAMETER_TAGS)
 
 
 def _parse_function_xml(
@@ -2509,11 +2589,13 @@ def _parse_function_xml(
     allow_incomplete: bool = True,
 ) -> list[dict]:
     out: list[dict] = []
-    # Skip openers inside an open parameter value, else they become a second call.
+    mention_spans = _tool_healing.tag_mention_spans(content)
+    # Skip openers inside an open parameter value, else they become a second call; one alone in backticks names the format.
+    inside = _tool_healing._OpenParameterIndex(content, **_OPEN_PARAMETER_TAGS).inside
     func_starts = [
         fm
         for fm in _TC_FUNC_START_RE.finditer(content)
-        if not _inside_open_parameter(content, fm.start())
+        if not inside(fm.start()) and not _tool_healing.in_tag_mention(mention_spans, fm.start())
     ]
     for idx, fm in enumerate(func_starts):
         # group(1) is ``<function=name>``, group(2) is ``<function name="...">``.
@@ -2523,7 +2605,7 @@ def _parse_function_xml(
         # The first close not inside an open parameter ends the call (mirrors _strip_function_xml_calls).
         close_match = None
         for cm in _TC_END_TAG_RE.finditer(content, body_start, next_func):
-            if not _inside_open_parameter(content, cm.start()):
+            if not inside(cm.start()):
                 close_match = cm
                 break
         has_close = close_match is not None
@@ -2541,10 +2623,9 @@ def _parse_function_xml(
         args: dict = {}
         param_unclosed = False
         # A ``<parameter>`` opener inside an open parameter value is literal text.
+        body_inside = _tool_healing._OpenParameterIndex(body, **_OPEN_PARAMETER_TAGS).inside
         param_starts = [
-            pm
-            for pm in _TC_PARAM_START_RE.finditer(body)
-            if not _inside_open_parameter(body, pm.start())
+            pm for pm in _TC_PARAM_START_RE.finditer(body) if not body_inside(pm.start())
         ]
         if len(param_starts) == 1:
             pm = param_starts[0]
@@ -3160,22 +3241,49 @@ def _parse_gemma_tool_calls(
 _balanced_brace_end = _tool_healing._balanced_brace_end
 
 
+# Streaming rescans one growing body per token: saved walks resume at their old end.
+_GEMMA_BODY_SCAN_SLOTS = 8
+_GEMMA_BODY_SCAN_MIN = 256
+_gemma_body_scans: list = [None] * _GEMMA_BODY_SCAN_SLOTS
+_gemma_body_scan_next = 0
+
+
 def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
     """Closing brace of a Gemma body; quotes hide braces, but a single quote opens only at value start, so apostrophes in prose do not."""
+    global _gemma_body_scan_next
     if brace_pos >= len(text) or text[brace_pos] != "{":
         return None
+    n = len(text)
     depth = 0
     quote = ""
     prev = ""
     prev_raw = ""
     i = brace_pos
-    n = len(text)
+    hit = -1
+    for k, entry in enumerate(tuple(_gemma_body_scans)):
+        if (
+            entry is not None
+            and entry[1] == brace_pos
+            and entry[2] > i
+            and len(entry[0]) <= n
+            and text.startswith(entry[0])
+        ):
+            if entry[3] is not None:
+                return entry[3]
+            i, depth, quote, prev, prev_raw = entry[2], entry[4], entry[5], entry[6], entry[7]
+            hit = k
+            break
+    start = i
+    end = None
     while i < n:
         ch = text[i]
         if quote:
-            if ch == "\\" and i + 1 < n:
-                i += 2
-                continue
+            if ch == "\\":
+                if i + 1 < n:
+                    i += 2
+                    continue
+                # A trailing backslash escapes whatever arrives next: stop before it.
+                break
             if ch == quote:
                 quote = ""
         elif ch in "\"'" and (prev in ":{[(,=" or (ch == '"' and prev_raw.isspace())):
@@ -3185,12 +3293,20 @@ def _gemma_body_brace_end(text: str, brace_pos: int) -> int | None:
         elif ch == "}":
             depth -= 1
             if depth == 0:
-                return i
+                end = i
+                break
         if not ch.isspace():
             prev = ch
         prev_raw = ch
         i += 1
-    return None
+    if i > start and (hit >= 0 or i - start >= _GEMMA_BODY_SCAN_MIN):
+        prefix = text if end is None and i == n else text[: (end + 1 if end is not None else i)]
+        slot = hit
+        if slot < 0:
+            slot = _gemma_body_scan_next % _GEMMA_BODY_SCAN_SLOTS
+            _gemma_body_scan_next = slot + 1
+        _gemma_body_scans[slot] = (prefix, brace_pos, i, end, depth, quote, prev, prev_raw)
+    return end
 
 
 _BARE_JSON_NAME_RE = re.compile(r'"name"\s*:\s*"([^"]+)"')
@@ -4239,4 +4355,129 @@ def _parse_kimi_section_body(
             )
         # Seeking <|tool_call_end|> could skip the next call when this one's marker is missing.
         pos = brace_end + 1
+    return out
+
+
+class _MinimaxValueIndex:
+    """Whether a tag sits inside an unclosed ``<parameter>`` value (argument text, not markup), O(log n) per query."""
+
+    __slots__ = ("_param_starts", "_param_ends", "_param_closers", "_func_closers")
+
+    def __init__(self, text: str):
+        starts: list[int] = []
+        ends: list[int] = []
+        for m in _TC_PARAM_START_RE.finditer(text):
+            starts.append(m.start())
+            # Bounded at the tag's own ">", as the helper's endpos-limited match is.
+            ends.append(text.index(">", m.start()) + 1)
+        self._param_starts = starts
+        self._param_ends = ends
+        self._param_closers = self._positions(text, ("</parameter>", "</param>"))
+        self._func_closers = self._positions(text, (_MINIMAX_INVOKE_CLOSE, _MINIMAX_BLOCK_CLOSE))
+
+    @staticmethod
+    def _positions(text: str, tags) -> list[int]:
+        found: list[int] = []
+        for tag in tags:
+            at = text.find(tag)
+            while at >= 0:
+                found.append(at)
+                at = text.find(tag, at + len(tag))
+        return sorted(found)
+
+    @staticmethod
+    def _any_in(positions: list[int], lo: int, hi: int) -> bool:
+        i = bisect.bisect_left(positions, lo)
+        return i < len(positions) and positions[i] <= hi
+
+    def inside(self, pos: int) -> bool:
+        idx = bisect.bisect_right(self._param_ends, pos) - 1
+        if idx < 0:
+            return False
+        last = self._param_starts[idx]
+        if self._any_in(self._param_closers, last, pos):
+            return False
+        if self._param_closers and self._param_closers[-1] >= pos + 1:
+            return True
+        return not self._any_in(self._func_closers, last, pos)
+
+
+def _minimax_block_spans(text: str) -> list[tuple[int, int, bool]]:
+    """``(start, end, closed)`` per ``<minimax:tool_call>`` block; an unclosed block runs to the end of the text."""
+    spans: list[tuple[int, int, bool]] = []
+    if _MINIMAX_BLOCK_OPEN not in text:
+        return spans
+    inside = _MinimaxValueIndex(text).inside
+    pos = 0
+    while True:
+        start = text.find(_MINIMAX_BLOCK_OPEN, pos)
+        if start < 0:
+            return spans
+        if inside(start):
+            pos = start + len(_MINIMAX_BLOCK_OPEN)
+            continue
+        close = text.find(_MINIMAX_BLOCK_CLOSE, start + len(_MINIMAX_BLOCK_OPEN))
+        while close >= 0 and inside(close):
+            close = text.find(_MINIMAX_BLOCK_CLOSE, close + 1)
+        if close < 0:
+            spans.append((start, len(text), False))
+            return spans
+        pos = close + len(_MINIMAX_BLOCK_CLOSE)
+        spans.append((start, pos, True))
+
+
+def _parse_minimax_tool_calls(
+    content: str,
+    *,
+    id_offset: int,
+    allow_incomplete: bool = True,
+) -> list[dict]:
+    """Values stay strings as in the ``<function=...>`` form; the tool loop coerces them by schema. A block inside
+    reasoning (a ``<think>`` span, or before a stray ``</think>`` the template opened) is a rehearsal and is skipped."""
+    out: list[dict] = []
+    if _MINIMAX_BLOCK_OPEN not in content:
+        return out
+    # Tool-aware, so a think tag in another block's arguments neither hides nor opens reasoning.
+    think_spans = _merge_spans(_tool_healing._think_spans_outside_tool_markup(content))
+    think_starts = [s for s, _ in think_spans]
+    inside = _MinimaxValueIndex(content).inside
+    for start, end, closed in _minimax_block_spans(content):
+        think_idx = bisect.bisect_right(think_starts, start) - 1
+        if think_idx >= 0 and start < think_spans[think_idx][1]:
+            continue
+        body_end = end - len(_MINIMAX_BLOCK_CLOSE) if closed else end
+        invokes = [
+            m
+            for m in _MINIMAX_INVOKE_OPEN_RE.finditer(content, start, body_end)
+            if not inside(m.start())
+        ]
+        for idx, im in enumerate(invokes):
+            next_invoke = invokes[idx + 1].start() if idx + 1 < len(invokes) else body_end
+            close = content.find(_MINIMAX_INVOKE_CLOSE, im.end(), next_invoke)
+            while close >= 0 and inside(close):
+                close = content.find(_MINIMAX_INVOKE_CLOSE, close + 1, next_invoke)
+            if close < 0 and not allow_incomplete:
+                continue
+            body = content[im.end() : close if close >= 0 else next_invoke]
+            args: dict = {}
+            param_unclosed = False
+            body_inside = _MinimaxValueIndex(body).inside
+            params = [pm for pm in _TC_PARAM_START_RE.finditer(body) if not body_inside(pm.start())]
+            for pidx, pm in enumerate(params):
+                next_param = params[pidx + 1].start() if pidx + 1 < len(params) else len(body)
+                raw_val = body[pm.end() : next_param]
+                param_closed = raw_val.rstrip().endswith(("</parameter>", "</param>"))
+                if not param_closed:
+                    param_unclosed = True
+                val = _TC_PARAM_CLOSE_RE.sub("", raw_val) if param_closed else raw_val
+                args[pm.group(1) or pm.group(2)] = _trim_param_value(val)
+            if param_unclosed and not allow_incomplete:
+                continue
+            out.append(
+                {
+                    "id": f"call_{id_offset + len(out)}",
+                    "type": "function",
+                    "function": {"name": im.group(1), "arguments": json.dumps(args)},
+                }
+            )
     return out

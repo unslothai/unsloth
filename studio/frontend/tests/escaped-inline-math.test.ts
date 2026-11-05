@@ -9,6 +9,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { Streamdown } from "streamdown";
 import { parseMarkdownIntoRenderableBlocks } from "../src/components/assistant-ui/streaming-render-schedule.ts";
 import {
+  type SettledEscapedMath,
   looksLikeEscapedInlineMath,
   mayHoldEscapedInlineMath,
   normalizeEscapedInlineMath,
@@ -316,4 +317,75 @@ test("escaped currency in a long streamed reply stays within the streaming budge
   }
   const elapsed = performance.now() - started;
   assert.ok(elapsed < 500, `streaming took ${elapsed.toFixed(1)}ms`);
+});
+
+test("real escaped math in a long streamed reply stays within the streaming budget", () => {
+  const section =
+    "## Derivation\n\nThe energy \\$E_k = \\frac{1}{2}mv^2\\$ grows, a [docs](https://example.com) link and `code`.\n\n- first \\$a + b\\$\n- second item\n\n```python\nprint(1)\n```\n\n";
+  const reply = section.repeat(300);
+  const settled: SettledEscapedMath = { prefix: "", ranges: [] };
+  const started = performance.now();
+  for (let end = 500; end <= reply.length; end += 500) {
+    normalizeEscapedInlineMath(reply.slice(0, end), settled);
+  }
+  const elapsed = performance.now() - started;
+  assert.ok(elapsed < 1500, `streaming took ${elapsed.toFixed(1)}ms`);
+  assert.ok(settled.prefix.length > 0);
+});
+
+test("a streamed reply normalizes the same as the finished text at every length", () => {
+  const reply = [
+    String.raw`Intro \$x\$ costs $5 and \$20.`,
+    "",
+    "```python",
+    String.raw`keep \$y\$ literal`,
+    "",
+    String.raw`and \$z\$ too`,
+    "```",
+    "",
+    String.raw`   indented \$a_1\$ paragraph`,
+    "",
+    String.raw`- list \$b\$`,
+    "",
+    String.raw`  continued \$c\$`,
+    "",
+    String.raw`- next \$d\$`,
+    "",
+    "<pre>",
+    "",
+    String.raw`\$e\$ in html`,
+    "",
+    "</pre>",
+    "",
+    String.raw`Setext \$f\$`,
+    "---",
+    "",
+    String.raw`> quote \$g\$`,
+    "",
+    String.raw`> second \$h\$`,
+    "",
+    "    indented code \\$i\\$",
+    "",
+    "    more code \\$j\\$",
+    "",
+    "| a | b |",
+    "| - | - |",
+    String.raw`| \$k\$ | 1 |`,
+    "",
+    String.raw`Open \(p \$l\$ \) then \`tick \$m\$`,
+    "",
+    String.raw`Last \$n\$ line`,
+  ].join("\n");
+  for (const source of [reply, reply.replaceAll("\n", "\r\n")]) {
+    const settled: SettledEscapedMath = { prefix: "", ranges: [] };
+    for (let end = 0; end <= source.length; end += 1) {
+      const chunk = source.slice(0, end);
+      assert.equal(
+        normalizeEscapedInlineMath(chunk, settled),
+        normalizeEscapedInlineMath(chunk),
+        JSON.stringify(chunk.slice(-40)),
+      );
+    }
+    assert.ok(settled.prefix.length > 0);
+  }
 });

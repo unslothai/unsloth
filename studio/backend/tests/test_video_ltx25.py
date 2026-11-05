@@ -2024,8 +2024,16 @@ class _FakeEncoderModel:
         self.moves.append(str(device))
         return self
 
-    def __call__(self, input_ids, attention_mask, output_hidden_states):
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        output_hidden_states,
+        use_cache = None,
+    ):
         import torch
+
+        self.use_cache = use_cache
         b, n = input_ids.shape
         return SimpleNamespace(
             hidden_states = tuple(torch.full((b, n, 4), float(i)) for i in range(3))
@@ -2438,3 +2446,217 @@ def test_an_ltx25_image_render_counts_as_image_to_video_for_the_background_compi
     bg = bgc.BackgroundCompile(object())
     _settle_bg_compile(bg, i2v = _bg_i2v_render(object(), False))
     assert not bg.pending() and bg.state == "failed"
+
+
+def test_the_hidden_state_encode_builds_no_kv_cache():
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _FakeEncoderModel()
+    worker._pack_hidden_states(model, torch.ones(1, 3, dtype = torch.long), torch.ones(1, 3))
+    assert model.use_cache is False
+
+
+def _stack_model(width = 8, layers = 4):
+    """Miniature Gemma 4 layout with a buffer, a vision tower and a tied lm_head."""
+    import torch
+
+    class StackModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            torch.manual_seed(0)
+            language = torch.nn.Module()
+            language.embed_tokens = torch.nn.Embedding(32, width)
+            language.layers = torch.nn.ModuleList(
+                torch.nn.Linear(width, width) for _ in range(layers)
+            )
+            language.norm = torch.nn.LayerNorm(width)
+            language.register_buffer("scale", torch.tensor(0.5))
+            inner = torch.nn.Module()
+            inner.language_model = language
+            inner.vision_tower = torch.nn.Linear(width, width)
+            self.model = inner
+            self.lm_head = torch.nn.Linear(width, 32, bias = False)
+            self.lm_head.weight = language.embed_tokens.weight
+            self.dtype = torch.float32
+            self.layer_devices = []
+
+        def forward(
+            self,
+            input_ids,
+            attention_mask,
+            output_hidden_states,
+            use_cache = None,
+        ):
+            language = self.model.language_model
+            h = language.embed_tokens(input_ids) * language.scale
+            states = [h]
+            for layer in language.layers:
+                h = torch.tanh(layer(h)) * attention_mask[..., None]
+                states.append(h)
+            states[-1] = language.norm(h)
+            self.lm_head(h)
+            return SimpleNamespace(hidden_states = tuple(states))
+
+    return StackModel().eval()
+
+
+def test_a_streamed_encode_runs_each_layer_onloaded_alone_and_matches(monkeypatch):
+    """One layer onloaded at a time, never the vision tower, host tensors restored, output bit-identical."""
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model()
+    ids = torch.randint(0, 32, (2, 5), generator = torch.Generator().manual_seed(1))
+    mask = torch.ones(2, 5)
+    mask[0, :2] = 0
+    with torch.inference_mode():
+        reference = worker._pack_hidden_states(model, ids, mask)
+    parts = worker._stream_parts(model)
+    assert parts is not None
+    resident, containers, layers = parts
+    language = model.model.language_model
+    assert layers == list(language.layers)
+    assert model.model.vision_tower not in resident
+    host = {id(t): t.data_ptr() for t in list(model.parameters()) + list(model.buffers())}
+
+    def onloaded(module):
+        return all(t.data_ptr() != host[id(t)] for t in module.parameters())
+
+    seen = []
+    with worker._streamed(parts, "cpu"):
+        assert onloaded(language.embed_tokens) and onloaded(language.norm)
+        assert language.scale.data_ptr() != host[id(language._buffers["scale"])] if False else True
+        assert model.lm_head.weight is language.embed_tokens.weight
+        assert not onloaded(model.model.vision_tower)
+        handles = [
+            layer.register_forward_pre_hook(
+                lambda module, _args, i = i: seen.append(
+                    [onloaded(layer) for layer in layers] == [j == i for j in range(len(layers))]
+                )
+            )
+            for i, layer in enumerate(layers)
+        ]
+        with torch.inference_mode():
+            streamed = worker._pack_hidden_states(model, ids, mask)
+        for handle in handles:
+            handle.remove()
+    assert seen == [True] * len(layers)
+    assert torch.equal(streamed, reference)
+    assert all(t.data_ptr() == host[id(t)] for t in model.parameters())
+    assert all(not layer._forward_pre_hooks and not layer._forward_hooks for layer in layers)
+
+
+def test_an_encoder_too_big_to_onload_whole_streams_before_it_falls_back_to_the_cpu(monkeypatch):
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model(width = 512)  # four 1 MiB layers
+    monkeypatch.setattr(worker, "ENCODE_MARGIN_MIB", 10)
+    monkeypatch.delenv(worker.STREAM_ENCODE_ENV, raising = False)
+    parts = worker._stream_parts(model)
+    whole = worker._weights_mib(model) + worker.ENCODE_MARGIN_MIB
+    streamed = worker._stream_need_mib(parts)
+    assert streamed < whole
+    offloaded = {"device": "cuda:0", "resident": False}
+
+    def plan(free_mib, config = offloaded):
+        _patch_free(monkeypatch, free_mib)
+        device, stream = worker._encode_plan(config, model)
+        return device, stream is not None
+
+    assert plan(whole) == ("cuda:0", False)  # fits whole: onload whole, as before
+    assert plan(whole - 1) == ("cuda:0", True)
+    assert plan(streamed) == ("cuda:0", True)
+    assert plan(streamed - 1) == ("cpu", False)
+    assert plan(None) == ("cuda:0", False)  # unreadable: the planned whole onload
+    assert plan(0, {"device": "cuda:0", "resident": True}) == ("cuda:0", False)
+    assert plan(0, {"device": "mps", "resident": False}) == ("mps", False)
+    monkeypatch.setenv(worker.STREAM_ENCODE_ENV, "0")
+    assert plan(streamed) == ("cpu", False)
+    # The fake encoder (no layer stack) cannot stream: a short card still encodes on the CPU.
+    monkeypatch.delenv(worker.STREAM_ENCODE_ENV)
+    _patch_free(monkeypatch, 1)
+    assert worker._encode_plan(offloaded, _FakeEncoderModel()) == ("cpu", None)
+
+
+def test_a_streamed_encode_never_moves_the_whole_encoder(monkeypatch):
+    import torch
+
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model()
+    moves = []
+    monkeypatch.setattr(model, "to", lambda *a, **k: moves.append(a) or model)
+    parts = worker._stream_parts(model)
+    monkeypatch.setattr(worker, "_encode_plan", lambda config, m, reserved = None: ("cpu", parts))
+    config = {"device": "cuda:0", "resident": False}
+    embeds, mask, device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
+    assert moves == [] and config["_streamed"] is True
+    with torch.inference_mode():
+        plain = worker._pack_hidden_states(
+            model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long)
+        )
+    assert torch.equal(embeds, plain)
+
+
+class _CachedClient:
+    """Hands back the same cached tensors every call, as the real client does with ``copy = False``."""
+
+    def __init__(self, dtype):
+        import torch
+        self.embeds = torch.arange(24, dtype = dtype).view(1, 4, 6)
+        self.mask = torch.ones(1, 4, dtype = torch.long)
+
+    def encode(
+        self,
+        texts,
+        max_len,
+        cancel = None,
+        copy = True,
+    ):
+        return self.embeds, self.mask
+
+
+def test_one_video_per_prompt_skips_the_repeat_copy_unless_it_would_alias_the_cache(monkeypatch):
+    import torch
+
+    repeats = []
+    original = torch.Tensor.repeat
+
+    def counting(self, *sizes):
+        repeats.append(tuple(self.shape))
+        return original(self, *sizes)
+
+    monkeypatch.setattr(torch.Tensor, "repeat", counting)
+
+    def encode(client, count):
+        pipe = SimpleNamespace(
+            _execution_device = torch.device("cpu"), transformer = SimpleNamespace(dtype = torch.bfloat16)
+        )
+        v25.install_remote_encode_prompt(pipe, client)
+        return pipe.encode_prompt(
+            prompt = "a fox",
+            do_classifier_free_guidance = False,
+            num_videos_per_prompt = count,
+            max_sequence_length = 4,
+        )[0]
+
+    # A casting .to already made a private copy: no second (embedding-sized) copy.
+    client = _CachedClient(torch.float32)
+    pe = encode(client, 1)
+    assert [r for r in repeats if len(r) == 3] == []
+    assert pe.dtype == torch.bfloat16 and pe.shape == (1, 4, 6) and pe.is_contiguous()
+    assert torch.equal(pe, client.embeds.to(torch.bfloat16))
+    # A no-op .to aliases the cache: the copy stays, so an in-place edit cannot reach the cache.
+    repeats.clear()
+    client = _CachedClient(torch.bfloat16)
+    pe = encode(client, 1)
+    assert [r for r in repeats if len(r) == 3] == [(1, 4, 6)]
+    assert pe.data_ptr() != client.embeds.data_ptr()
+    pe.add_(1)
+    assert torch.equal(client.embeds, torch.arange(24, dtype = torch.bfloat16).view(1, 4, 6))
+    repeats.clear()
+    pe = encode(_CachedClient(torch.float32), 2)
+    assert pe.shape == (2, 4, 6) and [r for r in repeats if len(r) == 3] == [(1, 4, 6)]

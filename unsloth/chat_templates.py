@@ -1452,6 +1452,8 @@ gemma4_thinking_template = \
     {{ '<turn|>\n' }}
 {%- endif -%}
 {%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
+{%- set ns_turn = namespace(last_user_idx=-1) -%}
+{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}
 {%- for message in loop_messages -%}
     {%- if message['role'] != 'tool' -%}
     {%- set continues = message['role'] == 'assistant' and ns_tool.tool_calls -%}
@@ -1466,6 +1468,12 @@ gemma4_thinking_template = \
     {%- if not continues -%}
         {%- set ns_tool.turns = ns_tool.turns + 1 -%}
         {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- endif -%}
     {%- endif -%}
     {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
     {%- if ns_tool.tool_calls -%}
@@ -1589,26 +1597,12 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
-# 26B-A4B / 31B generate after an empty thought channel their template omits from history; final-turn reasoning fills it.
-_gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
+# 26B-A4B / 31B generate after an empty thought channel their template omits from history; with thinking off, model turns without reasoning get it.
 gemma4_empty_thought_template = gemma4_thinking_template.replace(
-    _gemma4_model_turn + "    {%- endif -%}\n",
-    _gemma4_model_turn + "    {%- endif -%}\n" + \
-"""    {%- if role == "model" -%}
-        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
-        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
-            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
-        {%- elif not thinking and not continues -%}
-            {{ '<|channel>thought\n<channel|>' }}
-        {%- endif -%}
-    {%- endif -%}
-""",
-    1,
-).replace(
-    "{%- for message in loop_messages -%}",
-    "{%- set ns_turn = namespace(last_user_idx=-1) -%}\n"
-    "{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}\n"
-    "{%- for message in loop_messages -%}",
+    "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n",
+    "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n"
+    "        {%- elif not thinking and not continues -%}\n"
+    "            {{ '<|channel>thought\n<channel|>' }}\n",
     1,
 )
 assert gemma4_empty_thought_template != gemma4_thinking_template
@@ -1630,6 +1624,9 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- end }}"""
 '''
 GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
+# Unsloth's gemma-4-thinking primes it in the generation prompt for every size, in every release
+_gemma4_thinking_prompt_empty_thought = "    {%- if not thinking -%}\n        {{ '<|channel>thought\n<channel|>' }}\n    {%- endif -%}\n"
+assert _gemma4_thinking_prompt_empty_thought in gemma4_thinking_template
 
 
 def _gemma4_wants_empty_thought(*holders):
@@ -1638,8 +1635,7 @@ def _gemma4_wants_empty_thought(*holders):
         template = getattr(holder, "chat_template", None)
         if isinstance(template, dict): template = template.get("default")
         if not isinstance(template, str): continue
-        # Unsloth's gemma-4-thinking primes it for every size
-        if template.endswith(gemma4_thinking_template): continue
+        template = template.replace(_gemma4_thinking_prompt_empty_thought, "")
         if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
             return True
     return False

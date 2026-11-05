@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { decodeNamedCharacterReference } from "decode-named-character-reference";
+import emojiRegex from "emoji-regex";
 import type { Nodes, Root, RootContent } from "mdast";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { gfmFromMarkdown } from "mdast-util-gfm";
@@ -23,6 +24,27 @@ const LINE_TAGS = new Set(
     " ",
   ),
 );
+function removeTtsEmojis(text: string): string {
+  let removed = false;
+  const cleaned = text.replace(emojiRegex(), (emoji, offset, source) => {
+    if (
+      source[offset + emoji.length] === "\uFE0E" ||
+      ([...emoji].length === 1 &&
+        /\p{Emoji}/u.test(emoji) &&
+        !/\p{Emoji_Presentation}/u.test(emoji))
+    ) {
+      return emoji;
+    }
+    removed = true;
+    return " ";
+  });
+  return removed
+    ? cleaned
+        .replace(/[ \t]+([,.;:!?])/g, "$1")
+        .replace(/[ \t]{2,}/g, " ")
+        .trim()
+    : text;
+}
 
 /** The words a markdown reply shows, for read-aloud: voices speak raw markup ("asterisk asterisk", #12547). */
 export function markdownToSpeechText(markdown: string): string {
@@ -34,7 +56,7 @@ export function markdownToSpeechText(markdown: string): string {
       mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
     });
   } catch {
-    return markdown;
+    return removeTtsEmojis(markdown);
   }
   const out: string[] = [];
   const notes: string[] = [];
@@ -46,7 +68,9 @@ export function markdownToSpeechText(markdown: string): string {
       false,
     );
   }
-  return [...out, ...notes].filter((block) => block.length > 0).join("\n");
+  return removeTtsEmojis(
+    [...out, ...notes].filter((block) => block.length > 0).join("\n"),
+  );
 }
 
 function collectBlocks(
@@ -68,7 +92,10 @@ function collectBlocks(
       return;
     case "table":
       for (const row of node.children) {
-        out.push(sentence(row.children.map(inline).join(", ")));
+        const cells = row.children.map((cell) => removeTtsEmojis(inline(cell)));
+        if (cells.some((cell) => cell.trim())) {
+          out.push(sentence(cells.join(", ")));
+        }
       }
       return;
     // The sanitizer unwraps raw HTML, so its text shows on the page.
@@ -138,7 +165,7 @@ function htmlText(html: string): string {
 }
 
 function sentence(text: string): string {
-  const trimmed = text.trim();
+  const trimmed = removeTtsEmojis(text).trim();
   if (!trimmed || /[.!?:;,…]$/.test(trimmed)) return trimmed;
   return `${trimmed}.`;
 }

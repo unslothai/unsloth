@@ -11,6 +11,8 @@ import {
   isDenseQuantKind,
   isPrecisionRefusal,
   isResolvedHonored,
+  denoiserPlacement,
+  memoryRecipeValue,
   resolvedBadge,
   resolvedSeedKey,
   resolvedSelectValue,
@@ -417,4 +419,23 @@ test("a pinned dense text encoder reseeds as Dense, not Default", () => {
     reason: "nvfp4 needs Blackwell sm_100+",
   };
   assert.equal(resolvedSelectValue(declined, toTeOption), "none");
+});
+
+test("group offload placements get distinct labels, so the slow tier is not shown as the fast one", () => {
+  const labels = ["resident", "partial", "streamed"].map((tier) => denoiserPlacement(tier)?.label);
+  assert.deepEqual(labels, [
+    "Transformer on GPU",
+    "Transformer partly streamed",
+    "Transformer streamed",
+  ]);
+  assert.match(denoiserPlacement("streamed")?.detail ?? "", /every denoise step/);
+});
+
+test("records and backends without a placement show no placement and keep the memory label", () => {
+  assert.equal(denoiserPlacement(undefined), null);
+  assert.equal(denoiserPlacement(null), null);
+  assert.equal(denoiserPlacement("unknown"), null);
+  assert.equal(memoryRecipeValue("auto", "group"), "auto (group offload)");
+  assert.equal(memoryRecipeValue(null, "model"), "model offload");
+  assert.equal(memoryRecipeValue("fast", "none"), "fast");
 });

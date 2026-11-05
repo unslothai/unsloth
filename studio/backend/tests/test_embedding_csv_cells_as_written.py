@@ -100,7 +100,7 @@ def run_embedding(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(worker, "_model_load_security_error", lambda *a, **k: None)
     monkeypatch.setattr(worker, "_start_worker_stop_poller", lambda *a, **k: None)
-    monkeypatch.setattr(worker, "_emit_resource_provenance", lambda *a, **k: None)
+    monkeypatch.setattr(worker, "_emit_resource_provenance", lambda *a, **k: True)
 
     def run(
         csv_text,

@@ -285,6 +285,23 @@ def test_intermediate_done_sentinel_is_not_relayed(executed):
     assert "the real answer" in _visible_text(lines)
 
 
+def test_search_conversation_branch_holds_this_turns_tool_results(executed):
+    """A refit can evict this turn's results; the branch must still hold them or the archive filters them out (#16602)."""
+    transport = FakeTransport(
+        [
+            _call_turn("c1", "web_search", '{"query":"valve"}'),
+            _call_turn("c2", "search_conversation", '{"query":"valve"}'),
+            _answer_turn(),
+        ]
+    )
+    _run(transport, tools = [WEB, _tool("search_conversation")])
+
+    [search] = [call for call in executed if call["name"] == "search_conversation"]
+    branch = search["conversation_branch"]
+    assert branch[0] == {"role": "user", "content": "hi"}
+    assert any(m.get("role") == "tool" and m.get("content") == "RESULT<web_search>" for m in branch)
+
+
 def test_non_json_data_line_is_relayed_untouched(executed):
     """Garbage on the wire is passed through, not parsed and not fatal."""
     transport = FakeTransport(

@@ -1156,7 +1156,7 @@ HOSTED_CASES = {
     ),
     "video-nvfp4": (
         "unsloth/HunyuanVideo-1.5-NVFP4",
-        [("HunyuanVideo-1.5-NVFP4.pt", 4_800_000)],
+        [("HunyuanVideo-1.5-NVFP4.safetensors", 4_800_000)],
         "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
         [("model_index.json", 400), *_VAE],
         ("hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v", [*_VAE]),

@@ -15,10 +15,10 @@ import { getAuthToken } from "@/features/auth";
 import { cn } from "@/lib/utils";
 import { useT } from "@/i18n";
 import { toastError, toastSuccess } from "@/shared/toast";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   Edit03Icon,
-  Image01Icon,
+  ImageIcon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -223,7 +223,7 @@ export function ProfilePersonalizationPanel() {
             />
             <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/45 opacity-0 any-pointer-coarse:opacity-100 transition-opacity group-hover:opacity-100">
               <HugeiconsIcon
-                icon={Image01Icon}
+                icon={ImageIcon}
                 className="size-8 text-white"
                 strokeWidth={2}
               />
@@ -303,7 +303,7 @@ export function ProfilePersonalizationPanel() {
                   className="size-9 shrink-0 rounded-full p-0 text-muted-foreground"
                 >
                   <HugeiconsIcon
-                    icon={Delete02Icon}
+                    icon={TrashIcon}
                     className="size-4"
                     strokeWidth={2}
                   />

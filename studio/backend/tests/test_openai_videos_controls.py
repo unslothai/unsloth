@@ -129,7 +129,10 @@ def test_a_plain_openai_request_sends_the_old_kwargs_plus_a_seed(client, backend
     )
     for resp, kwargs in zip((json_resp, form_resp), calls, strict = True):
         assert resp.status_code == 200, resp.json()
-        assert set(kwargs) - {"seed"} == _PLAIN_KWARGS
+        # The readability check's decode rides along, so the render does not decode it again.
+        assert set(kwargs) - {"seed", "decoded_reference_images"} == _PLAIN_KWARGS
+        ((source, _, _),) = kwargs["decoded_reference_images"].entries
+        assert source is kwargs["input_reference"]
         assert isinstance(kwargs["seed"], int) and 0 <= kwargs["seed"] < 2**53
         job = resp.json()
         assert set(job) - {"seed"} == _PLAIN_RESPONSE

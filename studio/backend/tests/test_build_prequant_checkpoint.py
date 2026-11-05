@@ -247,11 +247,24 @@ def _build_nvfp4(
     monkeypatch.setattr(tq, "quantize_", _fake_quantize)
     monkeypatch.setattr(dtq, "_make_quant_config", lambda *a, **k: object())
 
+    # nvfp4 writes safetensors only; the stand-in writer records what the build would store.
+    import core.inference.prequant_safetensors as pst
+
+    written = {}
+    monkeypatch.setattr(pst, "safetensors_prequant_supported", lambda: True)
+    monkeypatch.setattr(pst, "scheme_is_flattenable", lambda *a, **k: None)
+
+    def _save(path, **kw):
+        written.update(kw, path = path)
+        open(path, "wb").close()
+
+    monkeypatch.setattr(pst, "save_prequant_safetensors", _save)
     build = _script()
-    out = tmp_path / "out.pt"
+    out = tmp_path / "out.safetensors"
     argv = ["--base", "b", "--family", fam.name, "--scheme", "nvfp4", "--out", str(out)]
     assert build.main(argv + list(extra_argv)) == 0
-    return quantized, torch.load(out, weights_only = False)["metadata"]
+    assert written["path"] == str(out)
+    return quantized, written["metadata"]
 
 
 def test_the_build_skips_ragged_linears_and_records_the_alignment_floor(monkeypatch, tmp_path):
@@ -296,16 +309,25 @@ def test_the_second_expert_builds_from_its_own_subfolder_and_loads_as_transforme
 
     build = _script()
     assert (
-        build.upload_destination(wan, "nvfp4", rotated = False, component = "transformer_2")
-        == "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt"
+        build.upload_destination(
+            wan, "nvfp4", rotated = False, component = "transformer_2", safetensors = True
+        )
+        == "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors"
     )
-    assert build.upload_destination(wan, "nvfp4", rotated = False) == "transformer_nvfp4.pt"
+    assert (
+        build.upload_destination(wan, "nvfp4", rotated = False, safetensors = True)
+        == "Wan2.2-T2V-A14B-NVFP4.safetensors"
+    )
+    for kwargs in ({}, {"component": "transformer_2"}, {"override": "x-NVFP4.pt"}):
+        with pytest.raises(ValueError, match = "safetensors only"):
+            build.upload_destination(wan, "nvfp4", rotated = False, **kwargs)
     with pytest.raises(ValueError, match = "transformer_2"):
         build.upload_destination(
             detect_family("Tongyi-MAI/Z-Image-Turbo"),
             "nvfp4",
             rotated = False,
             component = "transformer_2",
+            safetensors = True,
         )
 
 
@@ -313,3 +335,30 @@ def test_a_default_build_still_reads_the_transformer_subfolder(monkeypatch, tmp_
     loaded = []
     _, meta = _build_nvfp4(monkeypatch, tmp_path, loaded = loaded)
     assert loaded == ["transformer"] and meta["component"] == "transformer"
+
+
+@pytest.mark.parametrize("out_name", ["out.pt", "out.pth", "out"])
+def test_an_nvfp4_build_refuses_a_pickle_output(tmp_path, capsys, out_name):
+    """Refused before any model or torch import: nvfp4 is published as .safetensors only."""
+    build = _script()
+    argv = [
+        "--base",
+        "b",
+        "--family",
+        "z-image",
+        "--scheme",
+        "nvfp4",
+        "--out",
+        str(tmp_path / out_name),
+    ]
+    assert build.main(argv) == 2
+    assert "safetensors only" in capsys.readouterr().out
+    assert not (tmp_path / out_name).exists()
+
+
+def test_int8_and_fp8_keep_their_pickle_upload_names():
+    """Only nvfp4 changes: an int8 / fp8 .pt build keeps the legacy name it always used."""
+    build = _script()
+    zimage = detect_family("Tongyi-MAI/Z-Image-Turbo")
+    assert build.upload_destination(zimage, "int8", rotated = False) == "transformer_int8.pt"
+    assert build.upload_destination(zimage, "fp8", rotated = False) == "transformer_fp8.pt"

@@ -3,6 +3,8 @@
 
 import { create } from "zustand";
 import {
+  CONNECTIONS_ENABLED_KEY,
+  EXTERNAL_PROVIDERS_KEY,
   loadConnectionsEnabled,
   loadExternalProviders,
   saveConnectionsEnabled,
@@ -34,3 +36,17 @@ export const useExternalProvidersStore = create<ExternalProvidersState>(
     },
   }),
 );
+
+// Voice settings sync across tabs and drop a provider id this tab does not list.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === EXTERNAL_PROVIDERS_KEY || event.key === null) {
+      useExternalProvidersStore.setState({ providers: loadExternalProviders() });
+    }
+    if (event.key === CONNECTIONS_ENABLED_KEY || event.key === null) {
+      useExternalProvidersStore.setState({
+        connectionsEnabled: loadConnectionsEnabled(),
+      });
+    }
+  });
+}

@@ -5,7 +5,9 @@
 
 import ast
 import inspect
+import sys
 import textwrap
+import types
 
 import pytest
 
@@ -126,3 +128,85 @@ def test_an_eval_split_formatted_to_nothing_disables_evaluation():
     assert result["warnings"] == [
         "The eval dataset is empty after preprocessing, so this run has no evaluation."
     ]
+
+
+def _run_mlx_until_model_load(monkeypatch, config, stop_requested):
+    """Runs the real _run_mlx_training with MLX stubbed; a model load fails the test."""
+    loaded = []
+    events = []
+
+    class _FastMLXModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            loaded.append(args)
+            raise AssertionError("the model loaded")
+
+        @staticmethod
+        def get_peft_model(model, **kwargs):
+            return model
+
+    mlx = types.ModuleType("mlx")
+    mlx_core = types.ModuleType("mlx.core")
+    mlx_core.metal = types.SimpleNamespace(is_available = lambda: False)
+    mlx.core = mlx_core
+    mlx_utils = types.ModuleType("mlx.utils")
+    mlx_utils.tree_flatten = lambda tree: []
+    mlx.utils = mlx_utils
+    zoo_utils = types.ModuleType("unsloth_zoo.mlx.utils")
+    zoo_utils.iter_mlx_lora_modules = lambda model: iter(())
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _FastMLXModel
+    trainer = types.ModuleType("unsloth_zoo.mlx.trainer")
+    trainer.MLXTrainer = trainer.MLXTrainingConfig = trainer.train_on_responses_only = object
+    s3_dataset = types.ModuleType("core.training.s3_dataset")
+    s3_dataset.S3DownloadCancelled = type("S3DownloadCancelled", (Exception,), {})
+
+    def _reject_manifest(*_args, **_kwargs):
+        raise ValueError("ambiguous audio reference")
+
+    s3_dataset.prepare_s3_dataset_download = _reject_manifest
+    for name, module in {
+        "mlx": mlx,
+        "mlx.core": mlx_core,
+        "mlx.utils": mlx_utils,
+        "unsloth_zoo.mlx.utils": zoo_utils,
+        "unsloth_zoo.mlx.loader": loader,
+        "unsloth_zoo.mlx.trainer": trainer,
+        "core.training.s3_dataset": s3_dataset,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(_worker, "_model_load_security_error", lambda *_args: None)
+    monkeypatch.setattr(
+        _worker,
+        "_start_mlx_stop_poller",
+        lambda _queue: ([True], stop_requested, [None], lambda: stop_requested[0], None),
+    )
+
+    class _Queue:
+        def put(self, event):
+            events.append(event)
+
+    _worker._run_mlx_training(_Queue(), None, {"model_name": "org/model", **config})
+    return loaded, events
+
+
+def test_mlx_dataset_error_surfaces_before_the_model_loads(monkeypatch):
+    with pytest.raises(ValueError, match = "ambiguous audio reference"):
+        _run_mlx_until_model_load(monkeypatch, {"s3_config": {"bucket": "b"}}, [False])
+
+
+def test_mlx_stop_during_dataset_load_skips_the_model_load(monkeypatch):
+    stop_requested = [False]
+
+    def _load_and_stop(*_args):
+        stop_requested[0] = True
+        return ["row"], None
+
+    monkeypatch.setattr(_worker, "_load_hf_train_and_eval_datasets", _load_and_stop)
+    loaded, events = _run_mlx_until_model_load(
+        monkeypatch, {"hf_dataset": "org/data"}, stop_requested
+    )
+
+    assert loaded == []
+    assert events[-1]["type"] == "complete"
+    assert events[-1]["status_message"] == "Training cancelled"

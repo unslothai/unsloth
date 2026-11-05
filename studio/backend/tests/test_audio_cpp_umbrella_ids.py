@@ -843,3 +843,29 @@ def test_cached_path_of_a_folder_skips_a_newer_snapshot_missing_voice_files(hub)
     _add_snapshot(hub, "a" * 40, {rel: "pocket_tts"}, main = True)
     acm.forget()
     assert acm.folder_snapshot_dir(f"{AUDIO_CPP_REPO}/PocketTTS-GGUF") == older / "PocketTTS-GGUF"
+
+
+@pytest.mark.parametrize("local_path, packaged", [("audio-cpp/Yue2-3B-GGUF", True), ("dir", False)])
+def test_a_package_repo_row_lists_its_packages(hub, tmp_path, monkeypatch, local_path, packaged):
+    from hub.services.models import gguf_variants
+
+    sentinel = object()
+    seen = []
+
+    async def packages(repo_id, hf_token, offline):
+        seen.append(repo_id)
+        return sentinel
+
+    monkeypatch.setattr(gguf_variants, "_audio_cpp_variants_answer", packages)
+    if local_path == "dir":
+        local_path = str(tmp_path / "my-models")
+        (tmp_path / "my-models").mkdir()
+    try:
+        answer = asyncio.run(
+            gguf_variants.get_gguf_variants_answer(
+                "audio-cpp/Yue2-3B-GGUF", offline = True, local_path = local_path
+            )
+        )
+    except Exception:
+        answer = None
+    assert (answer is sentinel) is packaged and bool(seen) is packaged

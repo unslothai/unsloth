@@ -23,7 +23,9 @@ from test_diffusion_qwenimage21 import _inputs, _model, _render  # noqa: E402
 def _clean(monkeypatch):
     monkeypatch.delenv(e.EAGER_FAST_ENV, raising = False)
     monkeypatch.delenv(q.FAST_STEP_ENV, raising = False)
+    # Wiring tests on CPU tensors posing as an NVIDIA host: ROCm torch keeps the stock step (test below).
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(e, "is_rocm_torch", lambda _torch: False)
     q.uninstall()
     e.uninstall()
     yield
@@ -127,6 +129,16 @@ def test_install_is_idempotent_and_uninstall_restores():
     assert source_digest(wrapped) == source_digest(stock)
     e.uninstall()
     assert qmod._qwenimage21_prepare_qkv is stock
+
+
+def test_rocm_torch_keeps_the_stock_step(monkeypatch):
+    monkeypatch.setattr(e, "is_rocm_torch", lambda _torch: True)
+    stock = qmod._qwenimage21_prepare_qkv
+    m = _model()
+    assert not e.install()
+    assert not e.install_for_pipe(types.SimpleNamespace(transformer = m))
+    assert qmod._qwenimage21_prepare_qkv is stock
+    assert e._ATTR not in m.__dict__
 
 
 def test_installed_diffusers_matches_the_fingerprints():

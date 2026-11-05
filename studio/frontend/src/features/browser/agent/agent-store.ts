@@ -40,7 +40,10 @@ export type AgentStep = {
     | "evaluate"
     | "history"
     | "move"
-    | "drag";
+    | "drag"
+    | "tabs"
+    | "readFile"
+    | "editFile";
   detail: string;
 };
 

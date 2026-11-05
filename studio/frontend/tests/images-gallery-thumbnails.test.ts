@@ -27,12 +27,12 @@ function between(text: string, start: string, end: string): string {
 const page = source("../src/features/images/images-page.tsx");
 
 test("strip tiles fetch and show thumbnails, falling back to a cached original", () => {
-  const strip = between(
-    page,
-    "{(thumbById[image.id] ?? srcById[image.id]) ? (",
-    "{/* Selection marker",
-  );
+  // The strip hands each tile its thumbnail (or the cached original); the tile draws it or a spinner.
+  const strip = between(page, "{images.map((image) => (", "{hasMore && (");
   assert.ok(strip.includes("src={thumbById[image.id] ?? srcById[image.id]}"));
+  const tile = between(page, "const GalleryStripTile = memo(", "{/* Selection marker");
+  assert.ok(tile.includes("{src ? ("));
+  assert.ok(tile.includes("src={src}"));
 
   const observer = between(page, "const io = new IntersectionObserver(", "return () => io.disconnect();");
   assert.ok(observer.includes("void ensureThumb(image);"));

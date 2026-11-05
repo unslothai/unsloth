@@ -25,7 +25,7 @@ def _load():
     wanted_assign = {
         "gemma4_template",
         "gemma4_thinking_template",
-        "_gemma4_model_turn",
+        "_gemma4_thinking_prompt_empty_thought",
         "gemma4_empty_thought_template",
         "GEMMA4_TEMPLATE_NAMES",
         "gemma4_empty_thought_ollama",
@@ -101,9 +101,16 @@ def test_ignores_missing_or_non_string_templates():
     assert not NS["_gemma4_wants_empty_thought"](None, _Holder(None), _Holder(123))
 
 
-def test_ignores_unsloth_thinking_template():
-    # Re-calling get_chat_template on an E2B tokenizer already carrying it must not switch.
+@pytest.mark.parametrize("older_release", [False, True])
+def test_ignores_unsloth_thinking_template(older_release):
+    # Re-calling get_chat_template on an E2B tokenizer carrying it, even from an older release, must not switch.
     tmpl = "{{ bos_token }}" + NS["gemma4_thinking_template"]
+    if older_release:
+        tmpl = tmpl.replace(
+            "{%- for message in loop_messages -%}",
+            "{#- older -#}{%- for message in loop_messages -%}",
+            1,
+        )
     assert not NS["_gemma4_wants_empty_thought"](_Holder(tmpl))
 
 

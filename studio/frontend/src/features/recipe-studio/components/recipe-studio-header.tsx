@@ -14,7 +14,6 @@ import {
   Alert02Icon,
   CookBookIcon,
   FloppyDiskIcon,
-  AlertCircleIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type KeyboardEvent, type ReactElement, useState } from "react";
@@ -168,7 +167,7 @@ export function RecipeStudioHeader({
                   >
                     <HugeiconsIcon
                       icon={
-                        w.severity === "error" ? AlertCircleIcon : Alert02Icon
+                        w.severity === "error" ? Alert02Icon : Alert02Icon
                       }
                       className={`mt-0.5 size-3 shrink-0 ${w.severity === "error" ? "text-destructive" : RECIPE_STUDIO_WARNING_ICON_TONE}`}
                     />

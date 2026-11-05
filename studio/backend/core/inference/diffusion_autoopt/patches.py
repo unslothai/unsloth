@@ -186,6 +186,8 @@ class PatchContext:
     dtype: Any = None
     device: Any = None
     speed_mode: Optional[str] = None
+    # The user asked for speed "off" (an unset request also resolves to off on dense loads); None = speed_mode == "off".
+    explicit_off: Optional[bool] = None
     offload_active: bool = False
     denoiser_offloaded: Optional[bool] = None
     backend: str = "image"
@@ -422,7 +424,11 @@ def _builtin_specs() -> list[PatchSpec]:
 
     def rocm_fused(ctx: PatchContext) -> dict:
         from ..diffusion_rocm_fused import install_for_pipe
-        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger)
+
+        exact = ctx.explicit_off
+        if exact is None:
+            exact = str(ctx.speed_mode or "").strip().lower() == "off"
+        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger, adaln = not exact)
 
     def rocm_fused_uninstall() -> None:
         from ..diffusion_rocm_fused import uninstall

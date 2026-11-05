@@ -33,6 +33,9 @@ const { orderBySelectedBranch } = await import(
 const { contextUsageMarkers } = await import(
   "../src/features/chat/utils/saved-context-usage.ts"
 );
+const { readGenerationProgress } = await import(
+  "../src/features/chat/lib/generation-progress.ts"
+);
 
 const start = (id = "call_0") => ({
   type: "tool_start",
@@ -495,6 +498,8 @@ async function recoverRun(
     viewContent?: unknown[];
     metadata?: Record<string, unknown>;
     stallBefore?: number;
+    /** The real follower drops repeated seqs; a repeat would reach the publish a lone event skips. */
+    yieldOnce?: boolean;
   } = {},
 ) {
   class ChatGenerationStalledError extends Error {}
@@ -518,6 +523,10 @@ async function recoverRun(
     // The real store has these; a stand-in missing them would make approval recovery look broken.
     setToolConfirmation() {},
     clearToolConfirmation() {},
+    setLivePrefill() {},
+    setLiveDecode() {},
+    setLiveCompacting() {},
+    clearLiveGenerationForThread() {},
   };
   const run = {
     id: "run",
@@ -543,6 +552,7 @@ async function recoverRun(
     ...parser,
     createGenerationToolRecovery,
     contextUsageMarkers,
+    readGenerationProgress,
     orderBySelectedBranch,
     providerCompactionConnectionKey,
     RUN_CHECKPOINT_INTERVAL_MS,
@@ -569,7 +579,7 @@ async function recoverRun(
           },
         };
         yield update;
-        yield update;
+        if (!options.yieldOnce) yield update;
       }
       if (options.stallBefore) throw new ChatGenerationStalledError();
     },
@@ -680,6 +690,22 @@ test("the recovery scheduler persists provider compaction metadata", async () =>
       "chat_completions",
     ),
   );
+});
+
+test("a progress frame that ends the replay shows the tool result it rebuilt", async () => {
+  for (const progress of [
+    { phase: "compacting" },
+    { phase: "prefill", processed: 10, total: 100 },
+  ]) {
+    const { snapshots } = await recoverRun(
+      [],
+      [{ _toolEvent: start() }, { _toolEvent: end() }, { _generationProgress: progress }],
+      { stallBefore: 3, yieldOnce: true },
+    );
+    assert.equal(snapshots.length, 2, `${progress.phase}: published before the stall`);
+    assert.equal(snapshots[0].metadata.generationSettled, false);
+    assert.equal(snapshots[0].content.at(-1)?.result, "ok");
+  }
 });
 
 test("reopening a run that finished without the tab saves and renders only its end", async () => {

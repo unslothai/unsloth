@@ -152,6 +152,21 @@ def _old_layout_inputs(input_ids, logits_to_keep, pad_id, left_pad):
     return input_ids.tolist(), real_cols, cstart.tolist(), int(left_pad.max().item())
 
 
+def _same_layout(ref, got):
+    if ref is None or got is None:
+        return ref is None and got is None
+    names = ("flat_ids", "position_ids", "tgt_rows", "tgt_cols", "tgt_pred", "tgt_flat")
+    if not all(torch.equal(getattr(ref, n), getattr(got, n)) for n in names):
+        return False
+    seg_a, seg_b = ref.prefix_seg_info, got.prefix_seg_info
+    for n in ("group_of_kv", "is_prefix", "suffix_of_kv"):
+        if not torch.equal(getattr(seg_a, n), getattr(seg_b, n)):
+            return False
+    return all(
+        getattr(ref, n) == getattr(got, n) for n in ("total_rows", "L", "W", "tok_r", "signature")
+    )
+
+
 def test_build_group_layout_single_read_same_inputs(monkeypatch):
     g = torch.Generator().manual_seed(2)
     seen = []
@@ -161,7 +176,7 @@ def test_build_group_layout_single_read_same_inputs(monkeypatch):
         seen.append((ids_cpu, real_cols_cpu, cstart_cpu))
         return orig(ids_cpu, real_cols_cpu, cstart_cpu, num_generations, total_rows)
 
-    monkeypatch.setattr(pg, "_build_groups", spy)
+    fast = fallback = 0
     for trial in range(200):
         G = 2 + trial % 3
         groups = 1 + trial % 3
@@ -181,18 +196,31 @@ def test_build_group_layout_single_read_same_inputs(monkeypatch):
                 rows.append(row)
         raw = torch.stack(rows)
         left_pad = (raw[:, :P] == 0).sum(dim = 1)
+        ref = pg._build_group_layout_reference(raw, C, 0, G, left_pad, apply_tokr_gate = False)
         seen.clear()
-        counter = _ItemCounter(monkeypatch)
-        layout = pg.build_group_layout(raw, C, 0, G, left_pad, apply_tokr_gate = False)
-        reads = counter.n
-        monkeypatch.undo()
         monkeypatch.setattr(pg, "_build_groups", spy)
+        copies = []
+        orig_cpu = torch.Tensor.cpu
+        monkeypatch.setattr(
+            torch.Tensor, "cpu", lambda t, *a, **k: copies.append(1) or orig_cpu(t, *a, **k)
+        )
+        layout = pg.build_group_layout(raw, C, 0, G, left_pad, apply_tokr_gate = False)
+        monkeypatch.undo()
+        assert _same_layout(ref, layout)
         ids_cpu, real_cols, cstart, max_lp = _old_layout_inputs(raw, C, 0, left_pad)
-        assert len(seen) == 1
-        assert seen[0] == (ids_cpu, real_cols, cstart)
-        assert reads == 1
+        if any(cols != list(range(cols[0], cols[0] + len(cols))) for cols in real_cols):
+            # A row with a gap goes through the reference builder on the same host inputs.
+            assert len(seen) == 1
+            assert seen[0] == (ids_cpu, real_cols, cstart)
+            fallback += 1
+        else:
+            # Gap-free rows build the groups vectorized from a single host copy.
+            assert seen == []
+            assert len(copies) == 1
+            fast += 1
         if layout is not None:
             assert layout.W == C + max_lp
+    assert fast > 0 and fallback > 0
 
 
 def test_attached_host_lengths_skip_the_read(monkeypatch):

@@ -192,3 +192,61 @@ test("a native URL save reports the basename the dialog wrote", async (t) => {
   );
   assert.equal(await files.downloadUrl("/clip.wav", "clip.wav"), "renamed-clip.wav");
 });
+
+
+test("a native directory picker returns its save lease", async () => {
+  const calls: string[] = [];
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls.push(command);
+    assert.equal(args, undefined);
+    return "directory-token";
+  });
+  assert.equal(await files.pickNativeDownloadDirectory(), "directory-token");
+  assert.deepEqual(calls, ["pick_native_download_directory"]);
+});
+
+test("cancelling the native directory picker rejects as cancellation", async () => {
+  const calls: string[] = [];
+  const files = loadNativeFiles(true, async (command) => {
+    calls.push(command);
+    return null;
+  });
+  await assert.rejects(
+    files.pickNativeDownloadDirectory(),
+    (error: unknown) => files.isDownloadCancelled(error),
+  );
+  assert.deepEqual(calls, ["pick_native_download_directory"]);
+});
+
+test("a native directory save sends the file through its existing lease", async () => {
+  let calls = 0;
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls += 1;
+    assert.equal(command, "save_native_file_in_directory");
+    assert.deepEqual(args, {
+      token: "directory-token", url: "http://127.0.0.1:8000/image.png", fileName: "01-image.png",
+    });
+    return "01-image.png";
+  });
+  await files.downloadUrlInDirectory("directory-token", "http://127.0.0.1:8000/image.png", "01-image.png");
+  assert.equal(calls, 1);
+});
+
+test("a native directory save propagates a file failure", async () => {
+  const failure = new Error("Disk full");
+  const files = loadNativeFiles(true, async () => { throw failure; });
+  await assert.rejects(
+    files.downloadUrlInDirectory("directory-token", "http://127.0.0.1:8000/image.png", "image.png"),
+    (error: unknown) => error === failure,
+  );
+});
+
+test("a native directory release drops the named lease", async () => {
+  const calls: string[] = [];
+  const files = loadNativeFiles(true, async (command, args) => {
+    calls.push(command);
+    assert.deepEqual(args, { token: "directory-token" });
+  });
+  await files.releaseNativeDownloadDirectory("directory-token");
+  assert.deepEqual(calls, ["release_native_download_directory"]);
+});

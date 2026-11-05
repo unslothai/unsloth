@@ -27,13 +27,6 @@ import {
 } from "../stores/chat-runtime-store";
 import type { SidebarItem } from "../hooks/use-chat-sidebar-items";
 import {
-  exportConversationCsv,
-  exportConversationMarkdown,
-  exportConversationMessagesJsonl,
-  exportConversationRawJsonl,
-  exportConversationShareGPT,
-} from "../prompt-storage/prompt-storage-dialog";
-import {
   getStoredChatThread,
   listStoredChatMessages,
   listStoredChatThreads,
@@ -74,17 +67,25 @@ export async function exportConversationByFormat(
   threadId: string,
   format: ConversationExportFormat,
 ): Promise<void> {
+  const liveBranch = liveThreadBranch(threadId);
+  const {
+    exportConversationCsv,
+    exportConversationMarkdown,
+    exportConversationMessagesJsonl,
+    exportConversationRawJsonl,
+    exportConversationShareGPT,
+  } = await import("../prompt-storage/prompt-storage-dialog");
   switch (format) {
     case "raw-jsonl":
-      return exportConversationRawJsonl(threadId);
+      return exportConversationRawJsonl(threadId, liveBranch);
     case "messages-jsonl":
-      return exportConversationMessagesJsonl(threadId);
+      return exportConversationMessagesJsonl(threadId, liveBranch);
     case "csv":
-      return exportConversationCsv(threadId);
+      return exportConversationCsv(threadId, liveBranch);
     case "sharegpt-jsonl":
-      return exportConversationShareGPT(threadId);
+      return exportConversationShareGPT(threadId, liveBranch);
     case CONVERSATION_MARKDOWN_FORMAT:
-      return exportConversationMarkdown(threadId);
+      return exportConversationMarkdown(threadId, liveBranch);
     default: {
       const unhandled: never = format;
       throw new Error(`Unhandled export format: ${String(unhandled)}`);

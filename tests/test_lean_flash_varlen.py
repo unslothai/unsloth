@@ -78,7 +78,7 @@ def test_dispatch_uses_lean_in_eager_and_torch_when_compiling(monkeypatch):
     q = torch.randn(64, 4, 64, device = "cuda", dtype = torch.float16)
     cu = torch.tensor([0, 30, 64], dtype = torch.int32, device = "cuda")
     ad._varlen_attn_call(q, q, q, cu, 34, scale = None, window_size = (-1, 0), enable_gqa = False)
-    expect = 0 if ad._varlen_can_use_cudnn(q, q, q, 34, [-1, 0], False) else 1
+    expect = 0 if ad._varlen_can_use_cudnn(q, q, q, cu, 34, [-1, 0], False) else 1
     assert len(calls) == expect
     monkeypatch.setattr(torch.compiler, "is_compiling", lambda: True)
     ad._varlen_attn_call(q, q, q, cu, 34, scale = None, window_size = (-1, 0), enable_gqa = False)

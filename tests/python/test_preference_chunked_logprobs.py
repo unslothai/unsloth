@@ -318,7 +318,16 @@ def test_labels_differing_from_input_ids_take_a_second_nll_pass(monkeypatch):
 
 
 def test_declines_without_kernel_or_on_unsupported_setups(monkeypatch):
-    cls, _ = _trl_class("orpo")
+    stock, source = _trl_class("orpo")
+    cls = type(
+        "Patched",
+        (stock,),
+        {
+            "concatenated_forward": _compile(
+                rl.orpo_trainer_concatenated_forward("concatenated_forward", source)
+            )
+        },
+    )
     model = _HiddenStatesLM(_ToyLM())
     assert rl._unsloth_pref_chunked_head(_trainer(cls, "orpo"), model) is not None
     for attr, value in (

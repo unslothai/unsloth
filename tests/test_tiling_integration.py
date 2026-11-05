@@ -145,14 +145,14 @@ def test_trainer_revalidation_covers_peft_added_modules():
 
 
 def _calls(path, name):
-    tree = ast.parse((ROOT / path).read_text())
+    tree = ast.parse((ROOT / path).read_text(encoding = "utf-8"))
     return [
         n for n in ast.walk(tree) if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name
     ]
 
 
 def test_loader_call_sites_use_the_new_install():
-    src = (ROOT / "unsloth" / "models" / "loader.py").read_text()
+    src = (ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8")
     assert "_tiled_mlp_ddp" not in src and "patch_tiled_mlp" not in src
     calls = _calls("unsloth/models/loader.py", "loader_tile_mlp")
     assert len(calls) == 2  # FastLanguageModel and FastModel
@@ -162,7 +162,7 @@ def test_loader_call_sites_use_the_new_install():
 
 
 def test_trainer_init_revalidates():
-    tree = ast.parse((ROOT / "unsloth" / "models" / "_utils.py").read_text())
+    tree = ast.parse((ROOT / "unsloth" / "models" / "_utils.py").read_text(encoding = "utf-8"))
     init = next(
         n
         for n in ast.walk(tree)
@@ -175,7 +175,9 @@ def test_trainer_init_revalidates():
 
 
 def test_sentence_transformer_passes_the_kwarg_through():
-    tree = ast.parse((ROOT / "unsloth" / "models" / "sentence_transformer.py").read_text())
+    tree = ast.parse(
+        (ROOT / "unsloth" / "models" / "sentence_transformer.py").read_text(encoding = "utf-8")
+    )
     passed = [
         kw
         for n in ast.walk(tree)
@@ -187,7 +189,7 @@ def test_sentence_transformer_passes_the_kwarg_through():
 
 
 def test_package_exports_tile_mlp_on_every_backend():
-    tree = ast.parse((ROOT / "unsloth" / "__init__.py").read_text())
+    tree = ast.parse((ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8"))
     top = [
         n
         for n in tree.body
@@ -220,7 +222,7 @@ def test_tiling_on_without_the_registry_fails_fast(monkeypatch, env, kwarg):
 
 
 def test_loaders_check_the_registry_before_loading_weights():
-    tree = ast.parse((ROOT / "unsloth" / "models" / "loader.py").read_text())
+    tree = ast.parse((ROOT / "unsloth" / "models" / "loader.py").read_text(encoding = "utf-8"))
     loaders = [
         n
         for n in ast.walk(tree)
@@ -241,7 +243,7 @@ def test_loaders_check_the_registry_before_loading_weights():
 
 
 def test_model_init_revalidates_the_fresh_model():
-    tree = ast.parse((ROOT / "unsloth" / "models" / "_utils.py").read_text())
+    tree = ast.parse((ROOT / "unsloth" / "models" / "_utils.py").read_text(encoding = "utf-8"))
     fn = next(
         n
         for n in ast.walk(tree)

@@ -26,6 +26,7 @@ export function DownloadSection({
   isLoadingThisModel,
   gpuGb,
   gpuCount,
+  audioCppCardGb,
   systemRamGb,
   unifiedLoadBudgetGb,
   cachePath,
@@ -55,6 +56,7 @@ export function DownloadSection({
   isLoadingThisModel: boolean;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
   unifiedLoadBudgetGb?: number | null;
   cachePath?: string | null;
@@ -80,6 +82,7 @@ export function DownloadSection({
         isLoadingThisModel={isLoadingThisModel}
         gpuGb={gpuGb}
         gpuCount={gpuCount}
+        audioCppCardGb={audioCppCardGb}
         systemRamGb={systemRamGb}
         unifiedLoadBudgetGb={unifiedLoadBudgetGb}
         cachePath={cachePath}

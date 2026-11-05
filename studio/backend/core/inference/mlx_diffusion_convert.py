@@ -126,18 +126,25 @@ def _pack(q: np.ndarray, bits: int) -> np.ndarray:
     rows, cols = q.shape
     if (cols * bits) % 32:
         raise ValueError(f"{cols} columns do not pack into {bits}-bit words")
-    if 32 % bits == 0:
-        per_word = 32 // bits
-        q = q.reshape(rows, cols // per_word, per_word).astype(np.uint32)
-        shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
-        return np.bitwise_or.reduce(q << shifts, axis = -1).astype(np.uint32)
-    out = np.empty((rows, cols * bits // 32), dtype = np.uint32)
-    shifts = np.arange(bits, dtype = np.uint8)
+    q = np.asarray(q).astype(np.uint8, copy = False)
+    out = np.empty((rows, cols * bits // 32), dtype = "<u4")
+    stream = out.view(np.uint8)
+    if 8 % bits == 0:
+        per_byte = 8 // bits
+        lanes = q.reshape(rows, cols // per_byte, per_byte)
+        np.copyto(stream, lanes[..., 0])
+        for k in range(1, per_byte):
+            stream |= lanes[..., k] << np.uint8(bits * k)
+        return out
+    # 8 elements = `bits` bytes: the low bytes of a little-endian uint64.
     for start in range(0, rows, _ROW_CHUNK):
-        chunk = np.asarray(q[start : start + _ROW_CHUNK]).astype(np.uint8)
-        stream = ((chunk[..., None] >> shifts) & 1).reshape(chunk.shape[0], -1)
-        packed = np.packbits(stream, axis = -1, bitorder = "little")
-        out[start : start + _ROW_CHUNK] = np.ascontiguousarray(packed).view("<u4")
+        lanes = q[start : start + _ROW_CHUNK].reshape(-1, cols // 8, 8)
+        acc = lanes[..., 0].astype("<u8")
+        for k in range(1, 8):
+            acc |= lanes[..., k].astype("<u8") << np.uint64(bits * k)
+        stream[start : start + _ROW_CHUNK] = (
+            acc.view(np.uint8).reshape(-1, cols // 8, 8)[..., :bits].reshape(lanes.shape[0], -1)
+        )
     return out
 
 
@@ -291,9 +298,13 @@ def quantize_dense_affine(
     scale = round_to_bf16((hi - bias) / levels)
     flat = scale == 0
     safe_scale = np.where(flat, np.float32(1.0), scale).astype(np.float32)
-    q = np.rint((g - bias[..., None]) / safe_scale[..., None])
-    q = np.where(flat[..., None], 0.0, q)
-    q = np.clip(q, 0, levels).astype(np.uint8).reshape(rows, cols)
+    # In place, same ops and order as before: output stays byte-identical.
+    q = np.subtract(g, bias[..., None], dtype = np.float32)
+    np.divide(q, safe_scale[..., None], out = q)
+    np.rint(q, out = q)
+    q[flat] = 0.0
+    np.clip(q, 0, levels, out = q)
+    q = q.astype(np.uint8).reshape(rows, cols)
     return _pack(q, bits), scale.astype(np.float32), bias.astype(np.float32)
 
 

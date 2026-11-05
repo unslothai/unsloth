@@ -4,11 +4,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { GgufVariantsResponse } from "../src/features/chat/types/api.ts";
-import {
-  loadPickerGgufVariants,
-  createTaskLimiter,
-  hubWithdrawsSoleQuant,
-} from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
+import { loadPickerGgufVariants } from "../src/features/model-picker/components/model-selector/gguf-discovery.ts";
 
 const local: GgufVariantsResponse = {
   repo_id: "Org/Cached",
@@ -230,46 +226,6 @@ test("an update downloads the published revision's size and the Hub default wins
     () => {},
   );
   assert.equal(current.variants[0].size_bytes, 256);
-});
-
-test("a Hub update or missing drafter withdraws a collapsed sole quant", async () => {
-  for (const extra of [
-    { update_available: true },
-    { pending_drafter_filename: "mtp-drafter.gguf" },
-  ]) {
-    const remote = { ...local, variants: [{ ...local.variants[0], ...extra }] };
-    assert.equal(
-      await hubWithdrawsSoleQuant(async () => remote, "q4_k_m"),
-      true,
-    );
-  }
-  assert.equal(await hubWithdrawsSoleQuant(async () => local, "Q4_K_M"), false);
-  assert.equal(
-    await hubWithdrawsSoleQuant(async () => {
-      throw new Error("Hugging Face unreachable");
-    }, "Q4_K_M"),
-    false,
-  );
-});
-
-test("follow-up Hub probes never exceed the limiter's concurrency", async () => {
-  const run = createTaskLimiter(2);
-  let active = 0;
-  let peak = 0;
-  const done = await Promise.all(
-    Array.from({ length: 7 }, (_, i) =>
-      run(async () => {
-        active += 1;
-        peak = Math.max(peak, active);
-        await new Promise((resolve) => setTimeout(resolve, 5));
-        active -= 1;
-        if (i === 3) throw new Error("probe failed");
-        return i;
-      }).catch(() => -1),
-    ),
-  );
-  assert.equal(peak, 2);
-  assert.deepEqual(done, [0, 1, 2, -1, 4, 5, 6]);
 });
 
 test("a failed disk phase falls back to the Hub only when it is reachable", async () => {

@@ -60,11 +60,19 @@ def test_stages_largest_first_until_the_rest_fits():
     assert plan.stage == ("text_encoder", "transformer")
 
 
-def test_card_too_small_for_the_encoder_keeps_the_dense_load():
+def test_card_too_small_for_the_encoder_stages_it_split():
     plan = VS.plan_stage(WAN13, available_mib = 10100, reserve_mib = 3072, device_free_mib = 11000)
-    # the encoder does not fit the card; the DiT alone does but cannot rescue the load: staged anyway, logged
+    # the encoder does not fit the card: the card takes what fits, host RAM the 2.5 GB rest, and the DiT then
+    # converts densely beside it
+    assert plan.stage == ("text_encoder",)
+    assert plan.split == {"text_encoder": 11000 - VS._DEVICE_MARGIN_MIB}
+
+
+def test_a_split_whose_host_share_does_not_fit_keeps_the_dense_load():
+    plan = VS.plan_stage(WAN13, available_mib = 10100, reserve_mib = 3072, device_free_mib = 4000)
+    # 9.5 GB of the encoder would stay in host RAM beside the DiT: no split; the DiT alone is staged, logged
     assert "text_encoder" in plan.skipped
-    assert plan.stage == ("transformer",)
+    assert plan.stage == ("transformer",) and plan.split == {}
 
 
 def test_kill_switch_and_force(monkeypatch):
@@ -265,3 +273,180 @@ def test_non_cuda_device_never_stages(pipe_dir, monkeypatch):
     calls = _wire(monkeypatch, available = 10)
     assert VS.stage_misses(list(_cands(pipe_dir).values()), "cpu") == []
     assert calls == []
+
+
+# HunyuanVideo-1.5 on a Kaggle T4 (31 GB host, 15 GB card): the fp32 DiT converts to fp16 (18.4 GiB, a cast-cache
+# miss) while the bf16 Qwen2.5-VL-7B converts to fp16 beside it (15.6 GiB, not a cast candidate). Pricing the DiT
+# alone let every load through and the host ran out of RAM (rc -9).
+HV15_T4 = {"transformer": 18827}
+HV15_TE_MIB = 15600
+
+
+def test_the_encoder_converted_beside_the_dit_is_priced():
+    old = VS.plan_stage(HV15_T4, available_mib = 29238, reserve_mib = 3174, device_free_mib = 14600)
+    assert not old.engaged  # the DiT alone "fits"
+    plan = VS.plan_stage(
+        HV15_T4,
+        available_mib = 29238,
+        reserve_mib = 3174,
+        device_free_mib = 14600,
+        others_mib = HV15_TE_MIB,
+    )
+    assert plan.engaged and plan.stage == ("transformer",)
+    # 15 GB card: split, 13.8 GB on the card and 4.9 GB in host RAM beside the encoder's 15.6
+    assert plan.split == {"transformer": 14600 - VS._DEVICE_MARGIN_MIB}
+    assert plan.others_mib == HV15_TE_MIB and "other converted components" in plan.reason
+
+
+def test_others_that_fit_change_nothing():
+    plan = VS.plan_stage(
+        HV15_T4,
+        available_mib = 60000,
+        reserve_mib = 6000,
+        device_free_mib = 14600,
+        others_mib = HV15_TE_MIB,
+    )
+    assert not plan.engaged and "fits" in plan.reason
+
+
+def test_converted_others_counts_only_a_half_dtype_change(pipe_dir):
+    import safetensors.torch as st
+
+    te = pipe_dir / "text_encoder"
+    for f in te.glob("*.safetensors"):
+        f.unlink()
+    st.save_file({"w": torch.zeros(1024, 512, dtype = torch.bfloat16)}, str(te / "model.safetensors"))
+    cands = [c for c in CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT)]
+    assert {c.component for c in cands} == {
+        "transformer"
+    }  # the bf16 encoder is not a cast candidate
+    fp16 = VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT)
+    assert fp16 == 1  # 1 MiB of bf16 converted to fp16 in host RAM
+    bf16 = VS.converted_others_mib(
+        pipe_dir, cands, torch_dtype = {"default": torch.bfloat16, "vae": torch.float32}
+    )
+    assert bf16 == 0  # same dtype: memory-mapped, nothing converted
+    assert (
+        VS.converted_others_mib(pipe_dir, cands, torch_dtype = FP16_DEFAULT, skip = ("text_encoder",))
+        == 0
+    )
+
+
+def test_device_load_kwargs_put_the_whole_component_on_the_card():
+    import types
+    from unittest import mock
+
+    cand = types.SimpleNamespace()
+    with mock.patch.object(
+        CC, "_load_kwargs", lambda c: {"torch_dtype": torch.float16, "output_loading_info": True}
+    ):
+        whole = VS._device_load_kwargs(cand, "cuda:0")
+    assert whole["device_map"] == {"": "cuda:0"} and "max_memory" not in whole
+    assert "output_loading_info" not in whole
+
+
+def test_a_dit_neither_the_card_nor_a_split_takes_is_cast_from_its_shards(pipe_dir, monkeypatch):
+    """The HunyuanVideo-1.5 T4 case: the fp16 DiT is bigger than the card and its host share does not fit, so its cast
+    is written from the source shards one tensor at a time and the load maps it (no dense conversion in host RAM)."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 20000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    calls = _wire(monkeypatch, available = 3000, total = 13000)
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    written = []
+    real = CC.save_from_source
+    monkeypatch.setattr(
+        CC,
+        "save_from_source",
+        lambda cand, **kw: written.append(cand.component) or real(cand, **kw),
+    )
+    missed = V._read_cast_cache(
+        pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda"
+    )
+    assert written == ["transformer"] and ("transformer", "cuda") not in calls
+    assert "transformer" in pipe_kwargs and "transformer" not in [c.component for c in missed]
+    _identical(pipe_kwargs["transformer"], _dense(_cands(pipe_dir)["transformer"]))
+
+
+def test_source_cast_respects_the_kill_switch(pipe_dir, monkeypatch):
+    from core.inference import video as V
+
+    monkeypatch.setenv(VS.SMALL_HOST_ENV, "0")
+    sizes = {"text_encoder": 100, "transformer": 20000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    _wire(monkeypatch, available = 3000, total = 13000)
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert "transformer" not in pipe_kwargs
+
+
+def test_a_split_plan_casts_from_the_source_shards_instead(pipe_dir, monkeypatch):
+    """A DiT a little over the card was split card / host through accelerate's cpu offload, whose host share loads
+    as meta tensors (nothing to write, on the Kaggle T4 the dense load then ran out of host RAM): it is cast from
+    its source shards instead, without touching the card."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 16000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    calls = _wire(monkeypatch, available = 18000, total = 20000)
+    written = []
+    real = CC.save_from_source
+    monkeypatch.setattr(
+        CC,
+        "save_from_source",
+        lambda cand, **kw: written.append(cand.component) or real(cand, **kw),
+    )
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert written == ["transformer"] and ("transformer", "cuda") not in calls
+    _identical(pipe_kwargs["transformer"], _dense(_cands(pipe_dir)["transformer"]))
+
+
+def test_a_split_plan_whose_source_cast_fails_is_left_to_the_normal_load(pipe_dir, monkeypatch):
+    """No accelerate card / host split as a fallback (its host share comes back as meta tensors): a split-planned
+    component whose source cast fails is not staged at all, so the pipeline loads it as on main."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 16000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    calls = _wire(monkeypatch, available = 18000, total = 20000)
+    monkeypatch.setattr(CC, "save_from_source", lambda cand, **kw: None)
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert ("transformer", "cuda") not in calls and "transformer" not in pipe_kwargs
+
+
+def test_a_lone_dit_too_big_for_the_card_is_still_cast_from_its_shards(pipe_dir, monkeypatch):
+    """Nothing else staged: the plan is not engaged, but a skipped component too big for the card and the host still
+    takes the source cast, so the load maps it instead of converting it densely."""
+    from core.inference import video as V
+
+    sizes = {"text_encoder": 100, "transformer": 20000}
+    monkeypatch.setattr(VS, "loaded_mib", lambda cand: sizes[cand.component])
+    _wire(monkeypatch, available = 3000, total = 13000)
+    monkeypatch.setattr(VS, "_STAGE_MIN_MIB", 512)
+    written = []
+    real = CC.save_from_source
+    monkeypatch.setattr(
+        CC,
+        "save_from_source",
+        lambda cand, **kw: written.append(cand.component) or real(cand, **kw),
+    )
+    pipe_kwargs = {"torch_dtype": dict(FP16_DEFAULT), "cache_dir": None, "local_files_only": True}
+    V._read_cast_cache(pipe_kwargs, source = str(pipe_dir), revision = None, base = None, device = "cuda")
+    assert written == ["transformer"] and "transformer" in pipe_kwargs
+
+
+def test_a_transformers_encoder_over_the_card_is_not_split_planned():
+    """Its cast cannot be written from the source shards (diffusers components only), so it is skipped and the
+    planner goes on to stage the DiT, as before the split path existed."""
+    plan = VS.plan_stage(
+        WAN13,
+        available_mib = 16000,
+        reserve_mib = 3000,
+        device_free_mib = 11000,
+        source_castable = {"transformer"},
+    )
+    assert "text_encoder" in plan.skipped and plan.split == {}
+    assert plan.stage == ("transformer",)

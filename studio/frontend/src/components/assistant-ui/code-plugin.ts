@@ -8,20 +8,34 @@ import type {
   HighlightResult,
   ThemeInput,
 } from "@streamdown/code";
-import {
-  type BundledLanguage,
-  bundledLanguages,
-  bundledLanguagesInfo,
-  createHighlighter,
-  type GrammarState,
-  type ThemedToken,
-} from "shiki";
+import type { GrammarState, ThemedToken } from "shiki";
+import { createBundledHighlighter } from "shiki/core";
 import {
   createJavaScriptRegexEngine,
   defaultJavaScriptRegexConstructor,
 } from "shiki/engine/javascript";
+import {
+  type BundledLanguage,
+  bundledLanguages,
+  bundledLanguagesInfo,
+} from "shiki/langs";
 
-// Fence tags shiki does not alias: lower-cased input to canonical shiki id.
+// Keep named themes limited to Studio and Streamdown defaults; other callers pass objects.
+type NamedTheme = "github-light" | "github-dark";
+const NAMED_THEMES = {
+  "github-light": () => import("@shikijs/themes/github-light"),
+  "github-dark": () => import("@shikijs/themes/github-dark"),
+};
+
+const createHighlighter = createBundledHighlighter<
+  BundledLanguage,
+  NamedTheme
+>({
+  langs: bundledLanguages,
+  themes: NAMED_THEMES,
+  engine: () => createJavaScriptRegexEngine({ forgiving: true }),
+});
+
 const LANGUAGE_ALIAS_OVERRIDES: Record<string, BundledLanguage> = {
   objectivec: "objective-c",
   "obj-c": "objective-c",
@@ -63,32 +77,20 @@ const SUPPORTED_LANGUAGE_LIST = Array.from(
 ) as BundledLanguage[];
 const PLAIN_TEXT = "text" as BundledLanguage;
 
-/** Exported so per-grammar caches key on the same identity as `highlight`. */
 export const normalizeLanguage = (language: string): BundledLanguage => {
   const key = language.trim().toLowerCase();
   const alias = LANGUAGE_ALIAS_OVERRIDES[key] ?? SHIKI_LANGUAGE_ALIASES[key];
   return alias ?? (key as BundledLanguage);
 };
 
-// Past this size, cache completed lines and grammar state so a streaming fence tokenizes only new text.
 export const MIN_INCREMENTAL_CHARS = 2000;
 const REFRESH_MS = 250;
 const REFRESH_SLICE_MS = 8;
-// Shiki's own tokenizer guard is a wall clock: a line that takes longer than `tokenizeTimeLimit`
-// (default 500 ms) is abandoned part-way and the rest of it is emitted as one uncoloured token.
-// Dual themes are two passes with two separate budgets, and only the first pays to compile the
-// grammar's regexes, so a loaded machine drops the light theme to plain and keeps the dark one
-// correct -- for the same line, in the same result. Committed lines are never re-tokenized, so that
-// half-plain line is then cached for the life of the fence. Bound the work by line length instead:
-// same protection against a minified blob (~120 ms at this length, growing quadratically past it,
-// which is VS Code's `editor.maxTokenizationLineLength` default for the same reason), but the
-// output depends on the source rather than on the host.
+// A wall-clock limit can cache a half-plain theme; bound line length for deterministic dual-theme output.
 export const TOKENIZE_LIMITS = {
   tokenizeTimeLimit: 0,
   tokenizeMaxLineLength: 20_000,
 } as const;
-// An unvirtualized thread mounts every fence. Bound both their count and source
-// size; token data measured roughly 30 bytes per source character.
 export const MAX_FENCES = 512;
 export const MAX_CACHED_CHARACTERS = 512_000;
 
@@ -157,11 +159,9 @@ const shiftLine = (line: TokenLine, offset: number): TokenLine =>
     ? line
     : line.map((token) => ({ ...token, offset: token.offset + offset }));
 
-// Adjacent-token coalescing measured zero (dual tokens 537013 -> merged 537013); Shiki already
-// coalesces. Reproduce with scripts/coal-span-census.mjs.
-
 // Markdown reports a closing fence as body until it recognizes it, so that line (possibly
 // a partial run) is all a fence can lose.
+// Shiki already coalesces (537013 -> merged 537013); reproduce with scripts/coal-span-census.mjs.
 const CLOSING_FENCE = /^ {0,3}(?:`+|~+)[ \t]*$/;
 
 const shedsClosingRun = (shorter: string, longer: string): boolean =>
@@ -222,7 +222,6 @@ export function createCodePlugin(
       : { forgiving: true },
   );
   const highlighters = new Map<string, { highlighter: Highlighter | null }>();
-  // Most recently used first.
   const fences: Fence[] = [];
   const fencesByCode = new Map<string, Fence>();
   let cachedCharacters = 0;
@@ -231,7 +230,6 @@ export function createCodePlugin(
   const codeKey = (key: string, code: string): string =>
     `${key}\n${code.length}\n${code.slice(0, 32)}\n${code.slice(-32)}`;
 
-  // Identical fences can share an index key.
   const dropCodeIndex = (fence: Fence): void => {
     const indexKey = codeKey(fence.key, fence.code);
     if (fencesByCode.get(indexKey) === fence) fencesByCode.delete(indexKey);
@@ -275,7 +273,6 @@ export function createCodePlugin(
       fences.length > MAX_FENCES ||
       (cachedCharacters > MAX_CACHED_CHARACTERS && fences.length > 1)
     ) {
-      // Keep pending callbacks until their grammar resolves.
       let dropIndex = fences.length - 1;
       while (dropIndex >= 0 && fences[dropIndex].pending !== null) {
         dropIndex -= 1;
@@ -318,7 +315,6 @@ export function createCodePlugin(
     return anchor && reaches ? Math.min(anchor.length, code.length) : -1;
   };
 
-  /** The fence whose cached code reaches furthest into `code`. */
   const findFence = (key: string, code: string): Fence => {
     const exact = fencesByCode.get(codeKey(key, code));
     if (exact && exact.code === code) return promote(exact);

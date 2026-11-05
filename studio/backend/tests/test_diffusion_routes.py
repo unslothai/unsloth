@@ -508,6 +508,29 @@ def test_generate_batch_size_persists_each_image(client):
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
 
 
+def test_gallery_records_generation_time_for_the_whole_batch(client, monkeypatch):
+    import time
+
+    backend = diffusion_module.get_diffusion_backend()
+    generate = backend.generate
+
+    def _slow_generate(**kwargs):
+        time.sleep(0.03)
+        return generate(**kwargs)
+
+    monkeypatch.setattr(backend, "generate", _slow_generate)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    response = _post_generate(client, prompt = "p", batch_size = 2, seed = 5)
+    assert response.status_code == 200
+    images = response.json()["images"]
+    assert len(images) == 2
+    assert images[0]["generation_seconds"] >= 0.03
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
+    listed = client.get("/api/inference/images/gallery").json()["images"]
+    assert all(image["generation_seconds"] == images[0]["generation_seconds"] for image in listed)
+
+
 def test_generate_batch_persists_through_one_save_many(client, monkeypatch):
     batches = []
     real = gallery_module.save_many
@@ -2163,6 +2186,8 @@ def test_recipe_records_the_conditioned_workflow_settings(client, monkeypatch):
     assert gen.status_code == 200
     img = gen.json()["images"][0]
     assert img["workflow"] == "inpaint"
+    assert img["generation_seconds"] >= 0
+    assert img["generation_count"] == 1
     assert img["strength"] == 0.42
     plain = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
     assert plain.status_code == 200
@@ -3060,6 +3085,9 @@ def test_external_connection_generates_without_a_local_model_and_saves_to_galler
     assert [(i["prompt"], i["model"], i["width"], i["height"]) for i in images] == [
         ("a sloth", "qwen-image", 512, 256)
     ] * 2
+    assert images[0]["generation_seconds"] >= 0
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 2
     assert sent == [
         (

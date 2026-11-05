@@ -1,15 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-const MAX_EDGE = 256;
-const MIN_EDGE = 96;
 const EDGE_STEP = 32;
-const MAX_BYTES = 380_000;
-const MAX_DATA_URL_LENGTH = Math.floor(MAX_BYTES * 1.35);
 const JPEG_QUALITY_START = 0.88;
 const WEBP_QUALITY_START = 0.9;
 const MIN_QUALITY = 0.45;
 const QUALITY_STEP = 0.08;
+
+export type ResizeLimits = {
+  maxEdge: number;
+  minEdge: number;
+  maxBytes: number;
+};
+
+const AVATAR_LIMITS: ResizeLimits = {
+  maxEdge: 256,
+  minEdge: 96,
+  maxBytes: 380_000,
+};
+
+function maxDataUrlLength(limits: ResizeLimits): number {
+  return Math.floor(limits.maxBytes * 1.35);
+}
 
 function loadImage(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
@@ -43,24 +55,28 @@ function encodeCanvasWithinLimit(
   canvas: HTMLCanvasElement,
   mimeType: string,
   startQuality: number,
+  maxLength: number,
 ): string | null {
   let quality = startQuality;
   let dataUrl = canvas.toDataURL(mimeType, quality);
   if (!dataUrl.startsWith(`data:${mimeType}`)) return null;
 
-  while (dataUrl.length > MAX_DATA_URL_LENGTH && quality > MIN_QUALITY) {
+  while (dataUrl.length > maxLength && quality > MIN_QUALITY) {
     quality -= QUALITY_STEP;
     dataUrl = canvas.toDataURL(mimeType, quality);
   }
 
-  return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
+  return dataUrl.length <= maxLength ? dataUrl : null;
 }
 
 // Safari cannot encode WebP, so PNG is the universal alpha-preserving fallback.
-function encodePngWithinLimit(canvas: HTMLCanvasElement): string | null {
+function encodePngWithinLimit(
+  canvas: HTMLCanvasElement,
+  maxLength: number,
+): string | null {
   const dataUrl = canvas.toDataURL("image/png");
   if (!dataUrl.startsWith("data:image/png")) return null;
-  return dataUrl.length <= MAX_DATA_URL_LENGTH ? dataUrl : null;
+  return dataUrl.length <= maxLength ? dataUrl : null;
 }
 
 function drawScaled(
@@ -86,26 +102,32 @@ function drawScaled(
   return { canvas, ctx, cw, ch };
 }
 
-export async function resizeImageFileToDataUrl(file: File): Promise<string> {
+export async function resizeImageFileToDataUrl(
+  file: File,
+  limits: ResizeLimits = AVATAR_LIMITS,
+): Promise<string> {
   const img = await loadImage(file);
   const w = img.naturalWidth;
   const h = img.naturalHeight;
   if (!w || !h) throw new Error("Invalid image dimensions");
 
-  const base = drawScaled(img, w, h, MAX_EDGE);
+  const { maxEdge, minEdge } = limits;
+  const maxLength = maxDataUrlLength(limits);
+  const base = drawScaled(img, w, h, maxEdge);
   const hasTransparency = canvasHasTransparency(base.ctx, base.cw, base.ch);
 
   if (hasTransparency) {
     // Never JPEG: it would paint a background behind a transparent image.
-    for (let edge = MAX_EDGE; edge >= MIN_EDGE; edge -= EDGE_STEP) {
-      const { canvas } = edge === MAX_EDGE ? base : drawScaled(img, w, h, edge);
+    for (let edge = maxEdge; edge >= minEdge; edge -= EDGE_STEP) {
+      const { canvas } = edge === maxEdge ? base : drawScaled(img, w, h, edge);
       const webpDataUrl = encodeCanvasWithinLimit(
         canvas,
         "image/webp",
         WEBP_QUALITY_START,
+        maxLength,
       );
       if (webpDataUrl) return webpDataUrl;
-      const pngDataUrl = encodePngWithinLimit(canvas);
+      const pngDataUrl = encodePngWithinLimit(canvas, maxLength);
       if (pngDataUrl) return pngDataUrl;
     }
     throw new Error(
@@ -117,6 +139,7 @@ export async function resizeImageFileToDataUrl(file: File): Promise<string> {
     base.canvas,
     "image/jpeg",
     JPEG_QUALITY_START,
+    maxLength,
   );
   if (jpegDataUrl) return jpegDataUrl;
 

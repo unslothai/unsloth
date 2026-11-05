@@ -28,11 +28,11 @@ def _no_torch(monkeypatch):
     monkeypatch.setattr(hw, "_NO_TORCH_SETTLED_EPOCH", None)
     monkeypatch.setattr(hw, "_CHAT_ONLY_HINT", None)
     # detect_hardware sets these globals directly; restore them so they do not leak.
-    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM)
+    saved = (hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_REASON)
     try:
         yield
     finally:
-        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM = saved
+        hw.DEVICE, hw.CHAT_ONLY, hw.CHAT_ONLY_REASON, hw.IS_ROCM, hw._CPU_TRAINING_REASON = saved
 
 
 def test_apple_silicon_without_mlx_is_chat_only_with_reason(monkeypatch):
@@ -112,23 +112,32 @@ def test_a_no_torch_install_off_mac_is_off_by_request_not_missing_a_gpu(monkeypa
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_torch"
     assert hw.current_chat_only_verdict() == ("no_torch", None)
+    assert hw.trains_on_cpu("no_torch") is False
 
 
 @pytest.mark.parametrize("devices", [[], [_INTEL_IGPU]], ids = ["no-gpu", "intel-igpu"])
-def test_a_no_torch_install_without_a_trainable_gpu_stays_no_gpu(monkeypatch, devices):
-    # no_torch offers a multi-GB install that cannot enable Train here.
+def test_a_no_torch_install_without_a_trainable_gpu_is_offered_cpu_training(monkeypatch, devices):
+    # The full install trains here on the CPU backend, so the Desktop offers it; it still brings no export.
     _no_torch_off_mac(monkeypatch, devices = devices)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
-    assert hw.CHAT_ONLY_REASON == "no_gpu"
-    assert hw.current_chat_only_verdict() == ("no_gpu", None)
+    assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.current_chat_only_verdict() == ("no_torch", None)
+    assert hw.trains_on_cpu("no_torch") is True
+    export = hw.export_capability()
+    assert export["export_unsupported_reason"] == "no_accelerator"
+    assert "--no-torch" not in export["export_unsupported_message"]
 
 
 def test_a_no_torch_install_whose_inventory_cannot_answer_keeps_no_torch(monkeypatch):
     # A probe that timed out is not "no GPU".
     _no_torch_off_mac(monkeypatch, devices = [], unknown = True)
+    monkeypatch.setattr(hw, "get_device", lambda: hw.DeviceType.CPU)
     hw.detect_hardware()
     assert hw.CHAT_ONLY_REASON == "no_torch"
+    assert hw.trains_on_cpu("no_torch") is False
+    assert hw.export_capability()["export_unsupported_reason"] == "no_torch"
 
 
 _AMD_CARD = {"vendor": "amd", "index": 0, "name": "AMD Radeon RX 7900 XTX", "gfx": "gfx1100"}
@@ -175,6 +184,7 @@ def test_apple_silicon_no_torch_install_without_mlx_is_off_by_request(monkeypatc
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_torch"
     assert hw.CHAT_ONLY_DETAIL is None
+    assert hw.trains_on_cpu("no_torch") is False
 
 
 @pytest.mark.parametrize(
@@ -352,6 +362,7 @@ def test_cpu_only_non_mac_reason(monkeypatch):
     hw.detect_hardware()
     assert hw.CHAT_ONLY is True
     assert hw.CHAT_ONLY_REASON == "no_gpu"
+    assert hw.trains_on_cpu("no_gpu") is False
 
 
 @pytest.mark.parametrize("tegra, chosen", [(True, True), (False, False)])

@@ -64,7 +64,7 @@ test("one tab row holds every example, with no jump links above it; Agents opens
     /<UsageExamples\s+part="chat"/,
     /<MediaApiExamples[^>]*showHeading=\{false\}/,
     /<AudioApiExamples[^>]*showHeading=\{false\}/,
-    /<DecisionApiSection showHeading=\{false\} \/>/,
+    /<DecisionApiSection[^>]*showHeading=\{false\}/,
   ]) {
     assert.match(tabs, card);
   }
@@ -91,7 +91,7 @@ test("one tab row holds every example, with no jump links above it; Agents opens
   assert.doesNotMatch(monitor, /<ApiJumpLinks|<UsageExamples/);
   assert.match(monitor, /<ApiExampleTabNav kind=\{kind\} onChange=\{setKind\}/);
   assert.match(tabs, /font-heading text-ui-15/);
-  for (const icon of ["MessageCircleIcon", "Image01Icon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
+  for (const icon of ["MessageCircleIcon", "ImageIcon", "AiSpeechIcon", "TaskDone01Icon", "BotIcon"]) {
     assert.match(tabs, new RegExp(`icon: ${icon}`));
   }
   const decision = readSrc("features/settings/components/decision-api-section.tsx");
@@ -107,8 +107,10 @@ test("keyless API access is edited on Remote & LAN; the API tab links there and 
   const remoteLan = readSrc("features/settings/tabs/remote-lan-tab.tsx");
   assert.match(remoteLan, /scrollTarget !== "remote-lan-keyless"/);
   assert.match(remoteLan, /<div ref=\{keylessRef\}>\s*<KeylessApiAccessSection \/>/);
-  assert.match(TAB, /loadKeylessApiAccess\(\)/);
-  assert.match(TAB, /scope: next\.suspendedByAccounts \? "off" : next\.scope/);
+  assert.match(TAB, /useKeylessExampleAccess\(isOwner\)/);
+  const hook = readSrc("features/settings/hooks/use-keyless-example-access.ts");
+  assert.match(hook, /loadKeylessApiAccess\(\)/);
+  assert.match(hook, /scope: next\.suspendedByAccounts \? "off" : next\.scope/);
   assert.doesNotMatch(TAB, /<KeylessApiAccessSection/);
 });
 

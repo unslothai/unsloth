@@ -108,6 +108,27 @@ def _climbs_through_link(folder: Path, name: str) -> bool:
     return not any(_within(landing, root) for root in roots)
 
 
+def _lands_outside(folder: Path, module: Path, name: str) -> bool:
+    spelled = name.replace("\\", "/")
+    if spelled.startswith("/") or name[1:2] == ":":
+        return True
+    try:
+        landing = os.path.realpath(os.path.join(os.path.realpath(module), name))
+        roots = _confinement_roots(folder)
+    except (OSError, ValueError):
+        return True
+    return not any(_within(landing, root) for root in roots)
+
+
+def _same_folder(path: Path, folder: Path) -> bool:
+    try:
+        return os.path.normcase(os.path.realpath(path)) == os.path.normcase(
+            os.path.realpath(folder)
+        )
+    except (OSError, ValueError):
+        return False
+
+
 def _escapes(folder: Path, name: str) -> bool:
     return _escapes_folder(name) or _climbs_through_link(folder, name)
 
@@ -166,6 +187,7 @@ def escaping_weight_references(folder) -> list:
     except (OSError, ValueError):
         return []
     names = _weight_names(folder)
+    outside = []
     try:
         modules = json.loads((folder / "modules.json").read_text(encoding = "utf-8-sig"))
     except (OSError, ValueError):
@@ -186,14 +208,22 @@ def escaping_weight_references(folder) -> list:
         if any(_escapes_folder(spelled) for spelled in spellings):
             names.append(sub)
             continue
-        if spellings:
+        if not _same_folder(folder / sub, folder / os.path.normpath(sub)):
+            # link/.. or link/../x lands beside the link's target: judge names from there.
+            outside.extend(
+                _in_subfolder(sub, name)
+                for name in _weight_names(folder / sub)
+                if _lands_outside(folder, folder / sub, name)
+            )
+        elif spellings:
             module_names = _weight_names(folder / sub)
             for spelled in spellings:
                 names.extend(_in_subfolder(spelled, name) for name in module_names)
     # Spark-TTS / BiCodec load their transformers model from LLM/.
     if (folder / "LLM").is_dir():
         names.extend(_in_subfolder("LLM", name) for name in _weight_names(folder / "LLM"))
-    return [name for name in dict.fromkeys(names) if _escapes(folder, name)]
+    names = [name for name in names if _escapes(folder, name)]
+    return list(dict.fromkeys(names + outside))
 
 
 def _normalize_repo_path(path: str) -> str:
@@ -313,6 +343,31 @@ def _indexed_shard_paths(
 _REQUEST_TIMEOUT = 10.0
 _RETRY_TIMEOUT = 20.0
 
+# Why a load is hard-blocked, strongest first: a finding outranks a check that could not run.
+UNSAFE_FILES = "unsafe_files"
+CRITICAL_FINDINGS = "critical_findings"
+UNSCANNED_WEIGHTS = "unscanned_weights"
+MANAGED_REFUSED = "managed_refused"
+NOT_ON_SOURCE = "not_on_source"
+UNSCANNABLE = "unscannable"
+_BLOCK_CAUSES = (
+    UNSAFE_FILES,
+    CRITICAL_FINDINGS,
+    UNSCANNED_WEIGHTS,
+    MANAGED_REFUSED,
+    NOT_ON_SOURCE,
+    UNSCANNABLE,
+)
+
+
+def strongest_block(blocks: list) -> tuple:
+    """The ``(cause, target)`` to report from every gate's block; an unnamed cause is unscannable."""
+    return min(
+        ((cause if cause in _BLOCK_CAUSES else UNSCANNABLE, target) for cause, target in blocks),
+        key = lambda block: _BLOCK_CAUSES.index(block[0]),
+        default = (None, None),
+    )
+
 
 @dataclass
 class FileSecurityDecision:
@@ -322,6 +377,7 @@ class FileSecurityDecision:
     blocked: bool
     unsafe_files: list = field(default_factory = list)
     reason: str = ""
+    block_cause: Optional[str] = None
 
     def response_payload(self) -> dict:
         """Machine-readable detail merged into the preflight payload the dialog reads."""
@@ -329,6 +385,7 @@ class FileSecurityDecision:
             "unsafe_files": self.unsafe_files,
             "security_blocked": self.blocked,
             "reason": self.reason,
+            "block_cause": self.block_cause,
         }
 
 
@@ -553,6 +610,7 @@ def _evaluate_local_snapshot(
                 model_name,
                 True,
                 reason = f"{context}; could not inspect the local cache",
+                block_cause = UNSCANNABLE,
             )
     else:
         try:
@@ -570,6 +628,7 @@ def _evaluate_local_snapshot(
                 model_name,
                 True,
                 reason = f"{context}; could not inspect the selected model snapshot",
+                block_cause = UNSCANNABLE,
             )
 
     if snapshot is None:
@@ -591,6 +650,7 @@ def _evaluate_local_snapshot(
             model_name,
             True,
             reason = f"{context}; could not read the local cache",
+            block_cause = UNSCANNABLE,
         )
 
     if not pickles:
@@ -615,6 +675,7 @@ def _evaluate_local_snapshot(
         True,
         unsafe_files = [{"path": rel, "level": "unscanned"} for rel in rel_paths],
         reason = (f"{context}; unscanned pickle weights with no safetensors alternative: {names}"),
+        block_cause = UNSCANNED_WEIGHTS,
     )
 
 
@@ -637,12 +698,33 @@ def _evaluate_unscanned_listing(
     try:
         from huggingface_hub import HfApi
         files = HfApi().list_repo_files(model_name, token = hf_token or False)
-    except Exception:
+    except Exception as exc:
+        from utils.hf_probe import is_repo_not_found, repo_not_found_message
+
+        if is_repo_not_found(exc):
+            from utils.utils import hf_cache_snapshot_dir_for_repo
+
+            # The hub falls back to this snapshot, so its weights are what a load would read.
+            snapshot = hf_cache_snapshot_dir_for_repo(model_name)
+            if snapshot is not None:
+                return _evaluate_local_snapshot(
+                    model_name, snapshot, context = context, load_subdirs = load_subdirs
+                )
+            logger.warning("Blocking load of '%s': it is not on ModelScope.", model_name)
+            return FileSecurityDecision(
+                model_name,
+                True,
+                reason = repo_not_found_message(model_name),
+                block_cause = NOT_ON_SOURCE,
+            )
         logger.warning(
             "Blocking load of '%s': %s and its files could not be listed.", model_name, context
         )
         return FileSecurityDecision(
-            model_name, True, reason = f"{context}; could not list the repository"
+            model_name,
+            True,
+            reason = f"{context}; could not list the repository",
+            block_cause = UNSCANNABLE,
         )
     by_dir: dict[str, set] = {}
     for path in files:
@@ -679,6 +761,7 @@ def _evaluate_unscanned_listing(
             f"{context}; unscanned pickle weights with no safetensors alternative: {listed}. "
             "Switch the model source to Hugging Face in Settings to load it."
         ),
+        block_cause = UNSCANNED_WEIGHTS,
     )
 
 
@@ -800,4 +883,5 @@ def evaluate_file_security(
         True,
         unsafe_files = unsafe,
         reason = f"Hugging Face security scan flagged unsafe files: {names}",
+        block_cause = UNSAFE_FILES,
     )

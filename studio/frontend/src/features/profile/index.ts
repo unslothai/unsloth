@@ -7,3 +7,12 @@ export { UserAvatar } from "./components/user-avatar";
 export { useEffectiveProfile } from "./hooks/use-effective-profile";
 export { usePersonalizationSync } from "./hooks/use-personalization-sync";
 export { useUserProfileStore } from "./stores/user-profile-store";
+export {
+  GREETING_ICON_LIMITS,
+  GREETING_IMAGE_LIMITS,
+  GREETING_IMAGE_TYPES,
+  GREETING_TEXT_MAX_LENGTH,
+  isGreetingDataUrl,
+  validGreetingUpload,
+} from "./greeting";
+export { resizeImageFileToDataUrl } from "./utils/resize-image-file";

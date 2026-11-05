@@ -553,6 +553,9 @@ def normalize_model_override(
     if _coerce_bool(payload.get("mlx_ane_prefill")):
         entry["mlx_ane_prefill"] = True
 
+    if _coerce_bool(payload.get("mlx_fast_verify")):
+        entry["mlx_fast_verify"] = True
+
     for key in ("mlx_ple_offload", "mlx_expert_offload"):
         value = payload.get(key)
         if value == "off" or (
@@ -580,7 +583,7 @@ def normalize_model_override(
     if _clean_str(payload.get("gpu_memory_mode"), VALID_GPU_MEMORY_MODES) == "manual":
         entry["gpu_memory_mode"] = "manual"
 
-    gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 1024)
+    gpu_layers = _bounded_int(payload.get("gpu_layers"), minimum = 0, maximum = 2**31 - 1)
     if gpu_layers is not None:
         entry["gpu_layers"] = gpu_layers
 
@@ -706,6 +709,7 @@ def model_override_load_kwargs(override: dict[str, Any], *, is_gguf: bool) -> di
         ("chat_template_override", "chat_template_override"),
         ("mlx_int8_prefill", "mlx_int8_prefill"),
         ("mlx_ane_prefill", "mlx_ane_prefill"),
+        ("mlx_fast_verify", "mlx_fast_verify"),
         ("mlx_ple_offload", "mlx_ple_offload"),
         ("mlx_expert_offload", "mlx_expert_offload"),
     ):

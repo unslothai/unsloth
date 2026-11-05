@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { formatGiB } from "../../../lib/memory/format";
+import type { Translate } from "./generation-progress";
 import type { LoadedPlacement } from "../stores/chat-runtime-store";
 import { cpuFallbackMessage } from "../utils/mmproj-fallback";
 
@@ -110,10 +111,6 @@ function weightAmount(mib: number): string {
     : formatGiB(mib / 1024);
 }
 
-function layerCount(n: number): string {
-  return `${n} ${n === 1 ? "layer" : "layers"}`;
-}
-
 /** --fit reports its own expert spill; a Manual load says it through n_cpu_moe instead. */
 export function loadedPlacementFrom(response: {
   is_gguf?: boolean | null;
@@ -147,47 +144,61 @@ export function loadedPlacementFrom(response: {
 
 /** An overflowing layer has expert weights in RAM: all its routed experts, except --fit's first partial layer
  *  per device, which keeps only part of its FFN there, so the text says expert weights, not experts. */
-function describeLayers(p: LoadedPlacement): string | null {
+function describeLayers(p: LoadedPlacement, t: Translate): string | null {
   const { offloaded, total, overflowLayers, expertCacheMib } = p;
   if (offloaded === null || total === null || total <= 0) return null;
   // A GPU build whose backend failed to start still logs "offloaded N/N"; its buffers are all host ones.
   const noGpuBuffers = p.gpuWeightsMib === 0 && (p.hostWeightsMib ?? 0) > 0;
-  if (offloaded <= 0 || noGpuBuffers) return `All ${total} layers on the CPU`;
+  if (offloaded <= 0 || noGpuBuffers) return t("generationStats.placement.allOnCpu", { total });
   if (offloaded < total)
-    return `${offloaded} of ${total} layers on the GPU, ${total - offloaded} on the CPU`;
+    return t("generationStats.placement.split", { gpu: offloaded, total, cpu: total - offloaded });
   if (expertCacheMib !== null && expertCacheMib > 0) {
-    return `All ${total} layers on the GPU, all experts in RAM (${weightAmount(expertCacheMib)} expert cache on the GPU)`;
+    return t("generationStats.placement.expertCache", { total, amount: weightAmount(expertCacheMib) });
   }
   if (overflowLayers !== null && overflowLayers > 0) {
-    return `All ${total} layers on the GPU, expert weights of ${layerCount(overflowLayers)} in RAM`;
+    return t(
+      overflowLayers === 1
+        ? "generationStats.placement.expertSpillOne"
+        : "generationStats.placement.expertSpill",
+      { total, count: overflowLayers },
+    );
   }
-  return `All ${total} layers on the GPU`;
+  return t("generationStats.placement.allOnGpu", { total });
 }
 
+export type PlacementPool = "unified" | "shared";
+
 /** Both figures are shown: token embeddings stay in RAM even when every layer is on the GPU. On a machine whose
- *  GPU and CPU share one pool, `pool` names it ("unified memory") and the weights are one figure. */
+ *  GPU and CPU share one pool, `pool` names it and the weights are one figure. */
 function describeWeights(
   gpuWeightsMib: number | null,
   hostWeightsMib: number | null,
-  pool: string | null,
+  pool: PlacementPool | null,
+  t: Translate,
 ): string | null {
   const gpu = gpuWeightsMib !== null && gpuWeightsMib > 0 ? gpuWeightsMib : 0;
   const host =
     hostWeightsMib !== null && hostWeightsMib > 0 ? hostWeightsMib : 0;
   if (pool !== null && gpu + host > 0)
-    return `${weightAmount(gpu + host)} in ${pool}`;
+    return t(
+      pool === "unified"
+        ? "generationStats.placement.inUnifiedMemory"
+        : "generationStats.placement.inSharedMemory",
+      { amount: weightAmount(gpu + host) },
+    );
   const parts: string[] = [];
-  if (gpu > 0) parts.push(`${weightAmount(gpu)} in VRAM`);
-  if (host > 0) parts.push(`${weightAmount(host)} in RAM`);
+  if (gpu > 0) parts.push(t("generationStats.placement.inVram", { amount: weightAmount(gpu) }));
+  if (host > 0) parts.push(t("generationStats.placement.inRam", { amount: weightAmount(host) }));
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function describePlacement(
   p: LoadedPlacement,
-  pool: string | null = null,
+  t: Translate,
+  pool: PlacementPool | null = null,
 ): { layers: string | null; memory: string | null } {
   return {
-    layers: describeLayers(p),
-    memory: describeWeights(p.gpuWeightsMib, p.hostWeightsMib, pool),
+    layers: describeLayers(p, t),
+    memory: describeWeights(p.gpuWeightsMib, p.hostWeightsMib, pool, t),
   };
 }

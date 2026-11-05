@@ -18,9 +18,8 @@ import {
   useTrainingConfigStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
-import { FileAttachmentIcon, ViewIcon } from "@hugeicons/core-free-icons";
+import { FileAttachmentIcon, TextSelectionIcon, ViewIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { TextSelectIcon } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { formatUpdatedDate } from "./dataset-panel-helpers";
@@ -263,7 +262,7 @@ function SelectedDatasetCard({
             disabled={settings.isCheckingDataset}
             onClick={() => setTokenPreviewOpen(true)}
           >
-            <TextSelectIcon className="size-3.5" />
+            <HugeiconsIcon icon={TextSelectionIcon} className="size-3.5" />
             {t("studio.dataset.previewTokens")}
           </Button>
         ) : null}
