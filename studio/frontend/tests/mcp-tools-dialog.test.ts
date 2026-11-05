@@ -202,14 +202,23 @@ test("tool changes flip at once, and a late reply can't undo a newer change", ()
     SECTION.indexOf("// subscribe to same-tab tunnel changes"),
   );
   assert.ok(save.indexOf("setSettings((current)") < save.indexOf("updateMcpTools(states)"));
-  assert.match(save, /const request = \+\+toolsRequest\.current;/);
-  assert.match(save, /if \(request === toolsRequest\.current\) \{\s+setSettings\(next\);/);
+  assert.match(save, /const request = \+\+saveRequest\.current;/);
+  assert.match(save, /if \(request === saveRequest\.current\) \{\s+setSettings\(next\);/);
   assert.doesNotMatch(SECTION, /toolsSaving|saving=\{/);
   // Saves are queued, so two quick flips of one tool reach the server in click order.
+  assert.match(save, /await enqueueSave\(\(\) => updateMcpTools\(states\)\)/);
   assert.match(
-    save,
-    /const save = toolsQueue\.current\.then\(\(\) => updateMcpTools\(states\)\);\s+toolsQueue\.current = save\.catch\(\(\) => undefined\);/,
+    SECTION,
+    /const save = saveQueue\.current\.then\(run\);\s+saveQueue\.current = save\.catch\(\(\) => undefined\);/,
   );
+});
+
+test("the MCP switch shares the tool saves' queue, so neither full-snapshot reply can undo the other", () => {
+  const apply = SECTION.slice(SECTION.indexOf("const apply = async"), SECTION.indexOf("// Settings > API links here"));
+  assert.match(apply, /const request = \+\+saveRequest\.current;/);
+  assert.match(apply, /await enqueueSave\(\(\) => updateMcpAccess\(enabled\)\)/);
+  assert.equal(apply.match(/if \(request === saveRequest\.current\) \{\s+setSettings\(next\);/g)?.length, 2);
+  assert.doesNotMatch(apply, /setSettings\(await/);
 });
 
 test("a rejected tool change resyncs and shows the error in the dialog", () => {
