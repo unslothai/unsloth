@@ -448,7 +448,7 @@ def _default_threads(smt: bool = True) -> int:
     """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else (Linux: in the affinity mask; Windows) the logical CPUs on a
     non-hybrid SMT host with at most SD_CPP_CPU_SMT_MAX_CORES cores and the physical cores elsewhere, else
     ``os.cpu_count() // 2``; capped by the cgroup quota on Linux.
-    Diffusion is GEMM-bound, so the SMT siblings add throughput: sd.cpp image renders measured 1.07-1.26x faster with
+    Diffusion is GEMM-bound, so the SMT siblings add throughput: sd.cpp image renders measured 1.06-1.26x faster with
     every logical CPU than with one thread per core, pixel-identical, on 2 and 4 core SMT VMs (Broadwell, Ice Lake,
     Zen 2, Zen 3, Zen 5; Linux and Windows). A hybrid host keeps the core count (ggml's even split would wait on the
     E cores). Half the logical CPUs is one thread per core only on a
