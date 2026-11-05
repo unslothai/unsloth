@@ -334,8 +334,7 @@ def test_marker_check_error_falls_back_to_the_full_scan(home, monkeypatch):
 
 
 def test_scope_matched_only_when_folded_is_fingerprinted(home, monkeypatch):
-    # Windows folds names in the scan, so a ``Cache-*`` scope is read; the fingerprint must cover the
-    # same scopes or a v2 manifest written into it after a clean pass is never looked at again.
+    # The scan reads a ``Cache-*`` scope on Windows, so the fingerprint must cover it too.
     monkeypatch.setattr(download_manifest, "_folded", str.casefold)
     _populate(home)
     hand = home.root / "hand-hub"
