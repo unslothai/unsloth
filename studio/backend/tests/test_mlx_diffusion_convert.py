@@ -143,7 +143,6 @@ def test_pack_matches_mlx_layout_bit_for_bit(bits):
 
 
 def _pack_reference(q, bits):
-    """The previous ``_pack``."""
     rows, cols = q.shape
     if 32 % bits == 0:
         per_word = 32 // bits
@@ -177,7 +176,6 @@ def _quantize_dense_reference(
 @pytest.mark.parametrize("bits", [2, 3, 4, 5, 6, 8])
 @pytest.mark.parametrize("dtype", [np.uint8, np.int64])
 def test_pack_is_byte_identical_to_the_reference(bits, dtype):
-    # 600 rows crosses the 256-row chunk boundary.
     for cols in (32, 96, 256, 1024):
         q = _rng(bits * cols).integers(0, 1 << bits, size = (600, cols)).astype(dtype)
         got = conv._pack(q, bits)
