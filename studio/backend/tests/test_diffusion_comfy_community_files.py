@@ -118,7 +118,7 @@ def _anima_state(prefix: str, blocks: int = 2) -> dict:
     return state
 
 
-@pytest.mark.parametrize("prefix", ["net.", "model.diffusion_model."])
+@pytest.mark.parametrize("prefix", ["net.", "model.diffusion_model.", "diffusion_model."])
 def test_anima_file_splits_into_transformer_and_text_conditioner(prefix):
     pytest.importorskip("diffusers")
     from core.inference.diffusion_anima import _block_count, split_anima_checkpoint
