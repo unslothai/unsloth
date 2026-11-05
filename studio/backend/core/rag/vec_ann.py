@@ -6,9 +6,12 @@ build. Pure numpy + usearch: no SQLite here; ``vec_cache`` decides when an index
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import platform
+import sys
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
@@ -21,8 +24,39 @@ EXPANSION_SEARCH = 256
 FORMAT = 1
 
 
+# Must match studio/install_hnsw_prebuilt.py, which writes the marker this reads.
+PAIR = "usearch==2.26.6 numkong==7.8.6"
+MARKER = ".unsloth-hnsw.json"
+
+
+def hnsw_fingerprint() -> str:
+    """This interpreter's identity as install_hnsw_prebuilt records it in the marker."""
+    return hashlib.sha1(
+        f"{sys.executable}|{sys.version}|{platform.machine()}".encode()
+    ).hexdigest()[:16]
+
+
+def _probe_failed() -> bool:
+    """The installer's subprocess probe recorded that this pair crashes or fails here: never import it in-process."""
+    try:
+        with open(os.path.join(sys.prefix, MARKER), encoding = "utf-8") as fh:
+            marker = json.load(fh)
+        return (
+            marker.get("result") == "failed"
+            and marker.get("pair") == PAIR
+            and marker.get("fingerprint") == hnsw_fingerprint()
+        )
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def usearch():
     """The usearch.index module, or None when the wheel is missing or does not load on this machine."""
+    loaded = sys.modules.get("usearch.index")
+    if loaded is not None:
+        return loaded
+    if _probe_failed():
+        return None
     try:
         from usearch import index
     except Exception:  # noqa: BLE001 - any load failure leaves the exact / vec0 paths

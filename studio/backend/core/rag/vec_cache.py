@@ -18,7 +18,7 @@ import threading
 from collections import OrderedDict
 from dataclasses import dataclass
 
-from . import vec_ann
+from . import hnsw_runtime, vec_ann
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +122,11 @@ _entries: OrderedDict[tuple, _Entry] = OrderedDict()
 _ann: OrderedDict[tuple, _AnnEntry] = OrderedDict()
 _stale_files: set[str] = set()
 _too_big: dict[tuple, int] = {}
+# HNSW build failures, apart from _too_big: a build that failed is never retried at the same epoch, even once
+# the pair arrives.
+_ann_failed: dict[tuple, tuple] = {}
+# Scopes big enough for HNSW that found the pair missing; rescheduled when the on-demand fetch succeeds.
+_awaiting_ann: set[tuple] = set()
 _bytes = 0
 _lock = threading.Lock()
 _pending: set[tuple] = set()
@@ -171,7 +176,8 @@ def _publish(
         return
     if entry.nbytes > _budget():
         # A scope that outgrew the exact cache through appends moves to HNSW now, not at its next write.
-        if entry.n >= _ann_min_rows() and ann_enabled():
+        # _build fetches the pair on demand when it is missing.
+        if entry.n >= _ann_min_rows() and ann_wanted():
             _schedule(key)
         else:
             _too_big[key] = entry.epoch
@@ -205,7 +211,7 @@ def search(conn, db_file: str, scope: str, vector, fetch: int):
                 # ANN answers only at the reader's exact epoch: rows added elsewhere are not in its delta yet.
                 if ann is None or ann.epoch != epoch:
                     ann = None
-                    if _too_big.get(key) != epoch:
+                    if _too_big.get(key) != epoch and _ann_failed.get(key) != epoch:
                         _schedule(key)
                 else:
                     _ann.move_to_end(key)
@@ -261,8 +267,12 @@ def _search_entry(np, entry: _Entry, vector, fetch: int):
 _ANN_MAX_FETCH = 16384
 
 
+def ann_wanted() -> bool:
+    return os.environ.get("RAG_VEC_ANN", "1") != "0"
+
+
 def ann_enabled() -> bool:
-    return os.environ.get("RAG_VEC_ANN", "1") != "0" and vec_ann.usearch() is not None
+    return ann_wanted() and vec_ann.usearch() is not None
 
 
 def _ann_min_rows() -> int:
@@ -419,6 +429,7 @@ def _build(key: tuple) -> None:
     if np is None or not enabled():
         return
     db_file, _, scope, dim = key
+    fetch_pair = False
     conn = _connect(db_file)
     try:
         conn.row_factory = sqlite3.Row
@@ -427,15 +438,20 @@ def _build(key: tuple) -> None:
         if epoch is None or rag_db.vec_table_dim(conn) != dim:
             return
         count = conn.execute("SELECT count(*) FROM chunks WHERE scope=?", (scope,)).fetchone()[0]
-        if count >= _ann_min_rows() and ann_enabled():
-            try:
-                _build_ann(np, conn, key, epoch)
-            except Exception:
-                # A build takes minutes: never retry it at the same epoch.
-                with _lock:
-                    _too_big[key] = epoch
-                raise
-            return
+        if count >= _ann_min_rows() and ann_wanted():
+            if ann_enabled():
+                try:
+                    _build_ann(np, conn, key, epoch)
+                except Exception:
+                    # A build takes minutes: never retry it at the same epoch.
+                    with _lock:
+                        _ann_failed[key] = epoch
+                    raise
+                return
+            # Exact / vec0 answer meanwhile; the fetch is requested after the snapshot closes.
+            with _lock:
+                _awaiting_ann.add(key)
+            fetch_pair = True
         if count * (dim * 4 + 8 + _ID_OVERHEAD) > _budget():
             with _lock:
                 _too_big[key] = epoch
@@ -453,10 +469,24 @@ def _build(key: tuple) -> None:
             n = store.write(np, n, blk, [r[0] for r in rows], [r[1] for r in rows])
     finally:
         conn.close()
+        if fetch_pair:
+            hnsw_runtime.request(_on_ann_available)
     entry = _Entry(epoch, n, store, store.nbytes(_avg_id(store, n)))
     with _lock:
         _too_big.pop(key, None)
         _publish(key, entry)
+
+
+def _on_ann_available() -> None:
+    """The on-demand fetch made the pair importable: rebuild the scopes that were waiting for it."""
+    with _lock:
+        waiting = list(_awaiting_ann)
+        _awaiting_ann.clear()
+        for key in waiting:
+            _too_big.pop(key, None)
+            # An exact entry that fits keeps answering (exact and already in RAM); HNSW takes over when it drops.
+            if key not in _entries:
+                _schedule(key)
 
 
 def _ann_dir(db_file: str) -> str:
@@ -622,6 +652,8 @@ def clear() -> None:
         _entries.clear()
         _ann.clear()
         _too_big.clear()
+        _ann_failed.clear()
+        _awaiting_ann.clear()
         _pending.clear()
         _stale_files.clear()
         _bytes = 0
