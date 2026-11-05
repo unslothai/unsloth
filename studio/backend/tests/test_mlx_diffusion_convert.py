@@ -150,11 +150,17 @@ def _pack_reference(q, bits):
         q = q.reshape(rows, cols // per_word, per_word).astype(np.uint32)
         shifts = (bits * np.arange(per_word, dtype = np.uint32)).astype(np.uint32)
         return np.bitwise_or.reduce(q << shifts, axis = -1).astype(np.uint32)
-    stream = ((q.astype(np.uint8)[..., None] >> np.arange(bits, dtype = np.uint8)) & 1).reshape(rows, -1)
+    stream = ((q.astype(np.uint8)[..., None] >> np.arange(bits, dtype = np.uint8)) & 1).reshape(
+        rows, -1
+    )
     return np.ascontiguousarray(np.packbits(stream, axis = -1, bitorder = "little")).view("<u4")
 
 
-def _quantize_dense_reference(w, bits, group_size = 32):
+def _quantize_dense_reference(
+    w,
+    bits,
+    group_size = 32,
+):
     rows, cols = w.shape
     g = w.reshape(rows, cols // group_size, group_size)
     levels = float((1 << bits) - 1)

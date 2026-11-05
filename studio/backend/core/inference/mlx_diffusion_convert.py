@@ -143,8 +143,8 @@ def _pack(q: np.ndarray, bits: int) -> np.ndarray:
         acc = lanes[..., 0].astype("<u8")
         for k in range(1, 8):
             acc |= lanes[..., k].astype("<u8") << np.uint64(bits * k)
-        stream[start : start + _ROW_CHUNK] = acc.view(np.uint8).reshape(-1, cols // 8, 8)[..., :bits].reshape(
-            lanes.shape[0], -1
+        stream[start : start + _ROW_CHUNK] = (
+            acc.view(np.uint8).reshape(-1, cols // 8, 8)[..., :bits].reshape(lanes.shape[0], -1)
         )
     return out
 
