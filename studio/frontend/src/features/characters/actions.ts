@@ -32,7 +32,8 @@ export async function startCharacterChat(
   options: { projectId?: string | null } = {},
 ): Promise<string> {
   const store = useCharactersStore.getState();
-  if (store.personasStatus !== "ready") await store.refreshPersonas().catch(() => undefined);
+  // Not swallowed: unloaded personas would address the stored greetings to the account instead.
+  if (store.personasStatus !== "ready") await store.refreshPersonas();
   const persona = resolvePersona(null, useCharactersStore.getState().personas);
   // Resolved here, where the user's clock and locale are, and stored once so history never rerolls.
   const { characters } = useCharactersStore.getState();
