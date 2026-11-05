@@ -172,7 +172,12 @@ class _ImagesFirstProcessor:
     def apply_chat_template(self, *args, **kwargs):
         return self.tokenizer.apply_chat_template(*args, **kwargs)
 
-    def __call__(self, images = None, text = None, **kwargs):
+    def __call__(
+        self,
+        images = None,
+        text = None,
+        **kwargs,
+    ):
         if images is not None:
             raise ValueError("Incorrect image source")
         return self.tokenizer(text, **kwargs)
