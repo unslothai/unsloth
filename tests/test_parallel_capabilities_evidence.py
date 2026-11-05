@@ -3,6 +3,7 @@
 
 """The registry follows the measured composition evidence. CPU only."""
 
+import dataclasses
 import types
 
 import pytest
@@ -297,6 +298,23 @@ def test_block_swap_under_tp_or_pp_is_unverified(clean_env, axis):
     clean_env.setenv("UNSLOTH_PARALLEL_STRICT", "1")
     with pytest.raises(NotImplementedError, match = "block swap check"):
         caps.check(query)
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        dict(family = "llama", cp = 2, tp = 2, cp_backend = "ulysses"),
+        dict(family = "qwen3_moe", moe = True, expert_lora = True, pp = 2, pp_schedule = "gpipe"),
+    ],
+)
+def test_block_swap_refusal_on_a_gated_layout_names_offload_layers(clean_env, layout):
+    # Supported without block swap, refused with it in default mode: the message must name the knob.
+    query = caps.Query(trainer = "sft", torch = (2, 13), **layout)
+    assert caps.cell_status(query)[0] == "supported"
+    query = dataclasses.replace(query, block_swap = True)
+    with pytest.raises(NotImplementedError) as e:
+        caps.check(query)
+    assert "block swap x" in str(e.value) and "offload_layers = 0" in str(e.value)
 
 
 # MoE qwen3_moe x qlora x pp: measured with one micro-batch only, which the registry cannot see.

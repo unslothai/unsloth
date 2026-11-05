@@ -946,6 +946,10 @@ def _moe_cells():
     return tuple(cells)
 
 
+# The refusal names the knob to turn off: dropping an axis is not the fix for a swapped model.
+_NO_BLOCK_SWAP = (
+    "; load with offload_layers = 0 (and get_peft_model(offload_layers = 0)) to run this layout"
+)
 CELLS = (
     CELLS
     + _moe_cells()
@@ -956,7 +960,8 @@ CELLS = (
             None,
             None,
             None,
-            note = "models/tp_native.py has no block swap check and no run shards swapped layers yet",
+            note = "models/tp_native.py has no block swap check and no run shards swapped layers yet"
+            + _NO_BLOCK_SWAP,
         ),
         Cell(
             "block swap x pp",
@@ -964,7 +969,8 @@ CELLS = (
             None,
             None,
             None,
-            note = "models/pp_native.py has no block swap check and no run splits swapped layers yet",
+            note = "models/pp_native.py has no block swap check and no run splits swapped layers yet"
+            + _NO_BLOCK_SWAP,
         ),
     )
 )
