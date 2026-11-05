@@ -1140,9 +1140,6 @@ _480P = [(832, 480), (480, 832), (640, 640), (736, 544), (544, 736)]
 
 
 def test_presets_carry_the_pipelines_256p_and_480p_tiers():
-    from diffusers.pipelines.cosmos.pipeline_cosmos3_omni import _ACTION_RESOLUTION_BINS
-
-    tier = lambda key: {(w, h) for h, w in _ACTION_RESOLUTION_BINS[key].values()}  # noqa: E731
     edge, nano = _fam("cosmos3-edge"), _fam("cosmos3-nano")
     assert list(edge.resolution_presets) == _480P + _256P
     assert list(nano.resolution_presets[:5]) == [
@@ -1153,13 +1150,20 @@ def test_presets_carry_the_pipelines_256p_and_480p_tiers():
         (832, 1104),
     ]
     assert set(nano.resolution_presets[5:]) == set(_480P) | set(_256P)
-    assert set(_256P) == tier("256") and set(_480P) == tier("480")
-    assert set(nano.resolution_presets[:5]) == tier("720")
     for fam in (edge, nano):
         assert len(set(fam.resolution_presets)) == len(fam.resolution_presets)
         for w, h in fam.resolution_presets:
             assert w % fam.resolution_multiple == 0 and h % fam.resolution_multiple == 0
             vf.validate_video_request_shape(fam, w, h)
+
+
+def test_preset_tiers_match_the_pipelines_resolution_bins():
+    pytest.importorskip("diffusers", reason = "Backend CI installs no diffusers")
+    from diffusers.pipelines.cosmos.pipeline_cosmos3_omni import _ACTION_RESOLUTION_BINS
+
+    tier = lambda key: {(w, h) for h, w in _ACTION_RESOLUTION_BINS[key].values()}  # noqa: E731
+    assert set(_256P) == tier("256") and set(_480P) == tier("480")
+    assert set(_fam("cosmos3-nano").resolution_presets[:5]) == tier("720")
 
 
 @pytest.mark.parametrize("name", ["cosmos3-edge", "cosmos3-nano"])
