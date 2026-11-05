@@ -83,6 +83,38 @@ def test_idle_picker_scopes_model_scan_to_authenticated_account(
     assert current_account().is_owner
 
 
+@pytest.mark.parametrize("root_name", ["MTP", "dspark"])
+def test_picked_file_validation_uses_the_authenticated_scan_root(
+    account_catalog, fake_studio, monkeypatch, root_name
+):
+    from storage.studio_db import add_scan_folder
+    from utils.account_context import AccountContext, current_account, run_as
+    from utils.models.model_config import _direct_gguf_for_variant
+    from utils.paths import workspace_root
+
+    account = AccountContext(ALICE["account_id"], ALICE["username"], ALICE["role"])
+    root = run_as(account, workspace_root) / root_name
+    root.mkdir(parents = True)
+    file = root / "model-Q8_0.gguf"
+    file.write_bytes(b"GGUF" + bytes(4092))
+    run_as(account, add_scan_folder, str(root))
+    assert run_as(account, _direct_gguf_for_variant, str(file), "Q8_0") == str(file)
+    assert _direct_gguf_for_variant(str(file), "Q8_0") is None
+
+    def inventory(*, gguf_variant):
+        assert current_account().account_id == account.account_id
+        return [catalog._directory_variant_entry(root, gguf_variant, "Downloaded", "model")]
+
+    monkeypatch.setattr(catalog, "list_chat_models", inventory)
+    start._connect(
+        KEY, None, load = start.LoadOptions(gguf_variant = "Q8_0"), launch = False, gguf_only = True
+    )
+    assert _loads(fake_studio) == [
+        {"require_idle": True, "model_path": str(file), "gguf_variant": "Q8_0"}
+    ]
+    assert current_account().is_owner
+
+
 def test_idle_picker_still_lists_owner_models(account_catalog, fake_studio):
     targets, scans = account_catalog
     fake_studio.state["picker_account"] = OWNER

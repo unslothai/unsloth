@@ -5016,11 +5016,11 @@ def _allowed_picker_models(base: str, key: str, models: list[str]) -> set:
 def _ask_for_local_model(
     gguf_only: bool,
     reason: str,
-    gguf_variant: Optional[str],
+    load: LoadOptions,
     account: Optional[dict] = None,
     base: Optional[str] = None,
     key: Optional[str] = None,
-) -> "ModelEntry":
+) -> tuple[str, LoadOptions]:
     """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
     from rich.console import Console
 
@@ -5030,6 +5030,7 @@ def _ask_for_local_model(
 
     quiet_inventory_logs()
 
+    gguf_variant = load.gguf_variant
     kind = "GGUF models" if gguf_only else "models"
     hint = (
         f"No {kind} found on this device. Pass one with --model <hf-id-or-path>, or "
@@ -5046,15 +5047,13 @@ def _ask_for_local_model(
         entries = (
             list_chat_models(gguf_variant = gguf_variant) if gguf_variant else list_chat_models()
         )
-        if not check_access:
-            return picker(Console(), prompt = "Load", empty_hint = hint, entries = entries)
-        allowed = _allowed_picker_models(base, key, [entry.model for entry in entries])
-        return picker(
-            Console(),
-            prompt = "Load",
-            empty_hint = f"No {kind} available to this account. Pass an allowed model with --model <hf-id-or-path>.",
-            entries = [entry for entry in entries if entry.model in allowed],
-        )
+        empty_hint = hint
+        if check_access:
+            allowed = _allowed_picker_models(base, key, [entry.model for entry in entries])
+            entries = [entry for entry in entries if entry.model in allowed]
+            empty_hint = f"No {kind} available to this account. Pass an allowed model with --model <hf-id-or-path>."
+        entry = picker(Console(), prompt = "Load", empty_hint = empty_hint, entries = entries)
+        return entry.model, _picked_load_options(entry, load)
 
     if account is None:
         return choose(False)
@@ -5073,8 +5072,8 @@ def _pick_model_to_auto_start(
     serve: bool,
     launch: bool,
     gguf_only: bool,
-    gguf_variant: Optional[str] = None,
-) -> Optional["ModelEntry"]:
+    load: LoadOptions = LoadOptions(),
+) -> Optional[tuple[str, LoadOptions]]:
     """With no server running, the pick replaces --model so the auto-start path serves it."""
     if not (serve and launch and _can_ask_for_model()):
         return None
@@ -5087,7 +5086,7 @@ def _pick_model_to_auto_start(
     return _ask_for_local_model(
         gguf_only,
         "No Unsloth server is running. Pick a model on this device to start one with:",
-        gguf_variant,
+        load,
     )
 
 
@@ -5129,8 +5128,8 @@ def _pick_model_for_idle_server(
     base: str,
     key: str,
     gguf_only: bool,
-    gguf_variant: Optional[str] = None,
-) -> Optional["ModelEntry"]:
+    load: LoadOptions = LoadOptions(),
+) -> Optional[tuple[str, LoadOptions]]:
     """With a local server serving no chat model, the pick replaces --model and is loaded into it."""
     if not _can_ask_for_model():
         return None
@@ -5157,7 +5156,7 @@ def _pick_model_for_idle_server(
     return _ask_for_local_model(
         gguf_only,
         "No model is loaded in Unsloth. Pick one on this device to load:",
-        gguf_variant,
+        load,
         account = account,
         base = base,
         key = key,
@@ -5179,10 +5178,9 @@ def _connect(
     _refuse_npu_model(model)
     local_model_picked = False
     if model is None:
-        picked = _pick_model_to_auto_start(serve, launch, gguf_only, load.gguf_variant)
+        picked = _pick_model_to_auto_start(serve, launch, gguf_only, load)
         if picked is not None:
-            model = picked.model
-            load = _picked_load_options(picked, load)
+            model, load = picked
             local_model_picked = True
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
@@ -5220,10 +5218,10 @@ def _connect(
         if appeared_during_pick and model not in _allowed_picker_models(base, key, [model]):
             _fail("The selected model is unavailable to this account. Run the command again.")
         if model is None and server is None:
-            picked = _pick_model_for_idle_server(base, key, gguf_only, load.gguf_variant)
+            picked = _pick_model_for_idle_server(base, key, gguf_only, load)
             if picked is not None:
-                load = _picked_load_options(picked, load)
-                model = requested = picked.model
+                model, load = picked
+                requested = model
                 local_model_picked = True
         connection = (
             None
