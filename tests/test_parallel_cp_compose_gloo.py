@@ -180,6 +180,8 @@ def _case_train(
     ungate = False,
     mode = "lora",
     trl_aux = False,
+    aux_coef = None,
+    zoo_compile = False,
     device = "cpu",
     bypass_pre = False,
     bypass_post = False,
@@ -269,6 +271,10 @@ def _case_train(
         )
         return get_peft_model(model, config)
 
+    if zoo_compile:
+        # FastModel's path: Zoo's compiled CausalLM forward delegates to a module-level rewrite.
+        from unsloth_zoo.compiler import unsloth_compile_transformers
+        unsloth_compile_transformers(model_type = arch)
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
@@ -280,6 +286,14 @@ def _case_train(
     moe_calls = _count_moe_backend_calls() if count else None
     if router_aux:
         model.config.output_router_logits = True
+    if aux_coef is not None:
+        # TRL < 1.6 has no SFTConfig.router_aux_loss_coef: set the model's own
+        for m in [model, *model.modules()]:
+            config = getattr(m, "config", None)
+            if config is not None and hasattr(config, "router_aux_loss_coef"):
+                config.router_aux_loss_coef = aux_coef
+            if "router_aux_loss_coef" in vars(m):
+                m.router_aux_loss_coef = aux_coef
     compiled = _block_compile_on_cpu(model) if compile else []
 
     # Data parallel replicas read different rows; cp / tp / pp peers share theirs.
@@ -351,7 +365,7 @@ def _case_train(
     if hasattr(args, "router_aux_loss_coef"):
         # TRL turns the MoE load balancing loss on from the architecture's coefficient unless this is 0.0
         # (it then sets output_router_logits on the config itself): aux off unless the case asks for it.
-        args.router_aux_loss_coef = None if (router_aux or trl_aux) else 0.0
+        args.router_aux_loss_coef = aux_coef if (router_aux or trl_aux) else 0.0
     if sft_cp:
         args.context_parallel_size = cp
         args.context_parallel_backend = "ulysses"
@@ -538,11 +552,27 @@ def _ref(
 
 def _rows_per_step(res):
     """The dataset rows each optimizer step trained on (one rank's view)."""
+    assert "error" not in res, ("a worker failed", res.get("error"), res.get("trace"))
     ga, read = res["ga"], res["rows_read"]
     return [
         sorted(r for mb in read[i : i + ga] for r in mb)
         for i in range(0, len(read) - len(read) % ga, ga)
     ]
+
+
+# torch < 2.13 refuses fewer micro-batches than stages in every single-stage schedule (PipelineScheduleSingle);
+# 2.13 keeps the check in Schedule1F1B only.
+_ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 stages"
+
+
+def _skip_if_one_microbatch_refused(results):
+    errors = [res.get("error") or "" for res in results]
+    if errors and all(_ONE_MICROBATCH_REFUSED in e for e in errors):
+        import torch as _torch
+        pytest.skip(
+            f"torch {_torch.__version__}'s GPipe schedule refuses 1 micro-batch over 2 stages (torch < 2.13), and "
+            "the pipeline takes the router aux loss over one micro-batch only: " + errors[0][:200]
+        )
 
 
 def _same_rows(
@@ -552,6 +582,13 @@ def _same_rows(
 ):
     """Every step of the composed run trains on exactly the rows one process trains on (data parallel replicas
     split them, cp / tp / pp peers share theirs), and no side read a row twice (no second epoch)."""
+    for rank, res in enumerate([want, *results]):
+        assert "error" not in res, (
+            what,
+            "reference" if rank == 0 else f"rank {rank - 1}",
+            res.get("error"),
+            res.get("trace"),
+        )
     expected = _rows_per_step(want)
     flat = [r for step in expected for r in step]
     assert len(flat) == len(set(flat)), (what, "one process read a row twice", want["rows_read"])
@@ -811,6 +848,39 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
         assert "error" not in res, (rank, res.get("trace"))
         assert res["output_router_logits"]
         _close(res, ref, what = (env, rank))
+
+
+@pytest.mark.parametrize("zoo_compile", [False, True], ids = ["forward_install", "zoo_compiled"])
+@pytest.mark.parametrize("aux", [True, False], ids = ["aux_on", "aux_off"])
+@pytest.mark.parametrize("ga", [1, 2, 4])
+def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
+    ga, aux, zoo_compile, tmp_path
+):
+    """PP=2 Qwen3-MoE GA 1/2/4 matches one process: the aux term is token-share weighted (full = ~ga x larger)."""
+    kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
+    base = {}
+    if zoo_compile:
+        kw["zoo_compile"] = True
+        base = {
+            "UNSLOTH_FUSED_FORWARD": "0",
+            "UNSLOTH_COMPILE_DISABLE": "1",
+            "UNSLOTH_COMPILE_LOCATION": str(tmp_path / "unsloth_compiled_cache"),
+        }
+    (ref,) = _spawn("train", 1, base, **kw)
+    assert ref["output_router_logits"] is aux, ref
+    env = {
+        "UNSLOTH_PP_SIZE": "2",
+        "UNSLOTH_PP_MICROBATCHES": "1",
+        "UNSLOTH_PP_SCHEDULE": "gpipe",
+        **base,
+    }
+    results = _spawn("train", 2, env, **kw)
+    _skip_if_one_microbatch_refused(results)
+    _same_rows(results, ref, what = (ga, aux))
+    assert sorted(res.get("stage") for res in results) == [0, 1], results
+    for rank, res in enumerate(results):
+        # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
+        _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
 
 
 # LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance
