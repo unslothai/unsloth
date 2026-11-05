@@ -314,3 +314,51 @@ def test_cancel_aborts_a_loading_server(weights):
     assert released.is_set()  # the cancel stopped the load itself
     worker.join(5)
     assert runner.progress()["phase"] == "cancelled"
+
+
+def test_cancel_during_export_publishes_nothing(weights, monkeypatch):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+
+    def transcode(path, fps):
+        assert runner.cancel()
+        return b"MP4"
+
+    monkeypatch.setattr("core.inference.video_minimax_h3.transcode_video_to_mp4", transcode)
+    saved = []
+    job = runner.start(prompt = "x", frames = _frames(5))
+    runner.run(job, save = lambda mp4, meta: saved.append(mp4))
+    assert runner.progress()["phase"] == "cancelled"
+    assert saved == [] and runner.media_path(job["id"], "output") is None
+
+
+def test_body_middleware_streams_the_restyle_upload():
+    import main
+    from utils.upload_limits import VIDEO_RESTYLE_UPLOAD_MAX_BYTES, upload_request_limit_bytes
+
+    path = "/api/inference/video/restyle"
+    assert path in main._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+    for p in (path, path + "/"):
+        assert main._get_upload_passthrough_request_max_bytes(p) == upload_request_limit_bytes(
+            VIDEO_RESTYLE_UPLOAD_MAX_BYTES
+        )
+    # Its JSON siblings keep the normal cap.
+    assert path + "/cancel" not in main._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+
+
+def test_route_refuses_an_oversized_upload_before_reading(weights, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import video_restyle as route
+
+    monkeypatch.setattr(route, "VIDEO_RESTYLE_UPLOAD_MAX_BYTES", 100)
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    res = TestClient(app).post(
+        "/api/inference/video/restyle",
+        data = {"prompt": "x"},
+        files = [("video", ("a.mp4", b"x" * 200, "video/mp4"))],
+    )
+    assert res.status_code == 413

@@ -17,6 +17,7 @@ from auth.authentication import get_current_subject
 from core.inference import video_restyle
 from core.inference.video_restyle import RestyleBusy, RestyleError
 from utils.account_context import account_thread, current_account_id
+from utils.upload_limits import VIDEO_RESTYLE_UPLOAD_MAX_BYTES
 
 router = APIRouter()
 
@@ -33,18 +34,20 @@ async def _read_upload(request: Request) -> tuple[dict[str, Any], list[tuple[str
     try:
         form = await request.form(max_files = video_restyle.MAX_FRAMES + 8)
     except Exception:  # noqa: BLE001
-        raise HTTPException(status_code = 400, detail = "Send the clip as multipart/form-data.")
+        raise HTTPException(
+            status_code = 400,
+            detail = f"Send one clip or at most {video_restyle.MAX_FRAMES} frames as multipart/form-data.",
+        )
     fields = {key: form.get(key) for key in ("prompt", "seed") if isinstance(form.get(key), str)}
-    files: list[tuple[str, bytes]] = []
-    total = 0
-    for name, value in form.multi_items():
-        if name not in ("video", "frames") or not isinstance(value, UploadFile):
-            continue
-        data = await value.read()
-        total += len(data)
-        if total > video_restyle.MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code = 413, detail = "The upload is too large.")
-        files.append((name + ":" + (value.filename or ""), data))
+    uploads = [
+        (name, value)
+        for name, value in form.multi_items()
+        if name in ("video", "frames") and isinstance(value, UploadFile)
+    ]
+    # Starlette spools each part to disk and records its size, so the cap is checked before any is read.
+    if sum(value.size or 0 for _, value in uploads) > VIDEO_RESTYLE_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code = 413, detail = "The upload is too large.")
+    files = [(name + ":" + (value.filename or ""), await value.read()) for name, value in uploads]
     return fields, files
 
 

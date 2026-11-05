@@ -33,7 +33,6 @@ MIN_FRAMES = 5
 # NVIDIA's reference control is cv2.Canny(rgb, 100, 200) on the resized RGB frames.
 CANNY_LOW = 100
 CANNY_HIGH = 200
-MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
 MODEL_ENV = "UNSLOTH_COSMOS3_TRANSFER_MODEL"
 VAE_ENV = "UNSLOTH_COSMOS3_TRANSFER_VAE"
@@ -458,6 +457,9 @@ class RestyleRunner:
             raw.write_bytes(avi)
             mp4 = transcode_video_to_mp4(raw, fps = FPS)
             raw.unlink(missing_ok = True)
+            # A cancel accepted during export still wins: nothing is published.
+            if self._cancel.is_set():
+                raise SdCppCancelled("cancelled")
             (workdir / "output.mp4").write_bytes(mp4)
             record = None
             if save is not None:

@@ -1549,6 +1549,7 @@ from utils.upload_limits import (  # noqa: E402
     UNSTRUCTURED_RECIPE_UPLOAD_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES,
     VIDEO_INPUT_REFERENCE_MAX_BYTES,
+    VIDEO_RESTYLE_UPLOAD_MAX_BYTES,
     audio_input_max_bytes,
     default_request_body_limit_bytes,
     upload_request_limit_bytes,
@@ -1601,6 +1602,7 @@ _VIDEO_MULTIPART_UPLOAD_PATHS = (
     "/api/inference/videos",
 )
 _LIBRARY_UPLOAD_PATH = "/api/library/uploads"
+_VIDEO_RESTYLE_UPLOAD_PATH = "/api/inference/video/restyle"
 # RAG document uploads (knowledge base, thread, project, extract-text): multipart, capped by RAG_MAX_UPLOAD_BYTES in the route and
 # spooled by FastAPI, so they pass through on Content-Length instead of being held in memory here.
 _RAG_DOCUMENT_UPLOAD_RE = _re.compile(
@@ -1624,6 +1626,7 @@ _BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS = (
     *_STT_MULTIPART_UPLOAD_PATHS,
     *_VIDEO_MULTIPART_UPLOAD_PATHS,
     _LIBRARY_UPLOAD_PATH,
+    _VIDEO_RESTYLE_UPLOAD_PATH,
     _OPENAI_FILES_UPLOAD_PATH,
 )
 # Runs before auth, so only small bounded uploads may omit Content-Length; others keep 411.
@@ -1642,6 +1645,8 @@ def _get_upload_passthrough_request_max_bytes(path: str) -> int:
         )
     if path.rstrip("/") == _LIBRARY_UPLOAD_PATH:
         return upload_request_limit_bytes(LIBRARY_UPLOAD_MAX_BYTES)
+    if path.rstrip("/") == _VIDEO_RESTYLE_UPLOAD_PATH:
+        return upload_request_limit_bytes(VIDEO_RESTYLE_UPLOAD_MAX_BYTES)
     if path.rstrip("/") in _AUDIO_INPUT_UPLOAD_PATHS:
         # None means no cap, as the route treats it.
         cap = audio_input_max_bytes()

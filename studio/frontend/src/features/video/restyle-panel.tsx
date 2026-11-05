@@ -16,6 +16,7 @@ import {
 } from "./api";
 
 const POLL_MS = 1000;
+const MAX_FRAMES = 121;
 const IMAGE_RE = /\.(png|jpe?g|webp|bmp)$/i;
 
 const PHASE_LABEL: Record<string, string> = {
@@ -167,9 +168,11 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
                   className="hidden"
                   {...({ webkitdirectory: "", directory: "" } as object)}
                   onChange={(e) => {
-                    const picked = Array.from(e.target.files ?? []).filter((f) =>
-                      IMAGE_RE.test(f.name),
-                    );
+                    // File-name order, like the backend; it reads at most MAX_FRAMES.
+                    const picked = Array.from(e.target.files ?? [])
+                      .filter((f) => IMAGE_RE.test(f.name))
+                      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+                      .slice(0, MAX_FRAMES);
                     setFrames(picked);
                     setVideo(null);
                     e.target.value = "";
