@@ -17,7 +17,9 @@ export function insertSavedPrompt(
     const { selectionStart, selectionEnd, value } = input;
     const before = value.slice(0, selectionStart);
     const after = value.slice(selectionEnd);
-    const insert = `${before && !before.endsWith("\n") ? "\n\n" : ""}${text}${after && !after.startsWith("\n") ? "\n\n" : ""}`;
+    const gap = (side: string, newlines: RegExp) =>
+      side ? "\n".repeat(2 - Math.min(2, side.match(newlines)![0].length)) : "";
+    const insert = gap(before, /\n*$/) + text + gap(after, /^\n*/);
     insertAtCaret(input, insert, (next, caret) => {
       setText(next);
       requestAnimationFrame(() => input.setSelectionRange(caret, caret));

@@ -44,7 +44,9 @@ test("a saved prompt fills an empty composer as before", async () => {
 test("a saved prompt keeps the typed draft", async () => {
   assert.deepEqual(await pick("my text", "Summarize:"), ["my text\n\nSummarize:"]);
   assert.deepEqual(await pick("my text", "Summarize:", 0), ["Summarize:\n\nmy text"]);
-  assert.deepEqual(await pick("a\nb", "P", 2), ["a\nP\n\nb"]);
+  assert.deepEqual(await pick("a\nb", "P", 2), ["a\n\nP\n\nb"]);
+  assert.deepEqual(await pick("a\nb", "P", 1), ["a\n\nP\n\nb"]);
+  assert.deepEqual(await pick("a\n\n\nb", "P", 2), ["a\n\nP\n\nb"]);
 });
 
 for (const [file, writes] of [
