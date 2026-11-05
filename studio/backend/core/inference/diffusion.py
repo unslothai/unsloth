@@ -135,6 +135,8 @@ from .diffusion_multigpu import (
     install_cfg_parallel,
     multigpu_mode,
     invalidate_cfg_replica,
+    mirror_cfg_replica_adapter_scales,
+    set_cfg_parallel_fallback,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
     uninstall_cfg_parallel,
@@ -11069,6 +11071,19 @@ class DiffusionBackend:
                         transformer_quant = transformer_quant_engaged,
                         logger = logger,
                     )
+                    # CFG-parallel wins when armed (cfg_batch declines a wrapped forward); if its replica fails at
+                    # render time, CFG batching takes over from the next render instead of unbatched branches.
+                    set_cfg_parallel_fallback(
+                        pipe,
+                        # called with the pipeline: capturing it here would keep a rolled-back load alive
+                        functools.partial(
+                            install_cfg_batch,
+                            offload_policy = effective_policy,
+                            speed_mode = speed_mode,
+                            transformer_quant = transformer_quant_engaged,
+                            logger = logger,
+                        ),
+                    )
                     # Z-Image guided steps at the guidance-off batch: turning CFG on compiles and records nothing new.
                     # compiled_only: an eager denoiser keeps the batched guided call (no graph to protect).
                     install_zimage_cfg_split(
@@ -13388,7 +13403,9 @@ class DiffusionBackend:
                 pipe._unsloth_loras = desired
                 # A captured graph bakes the scales in.
                 cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
-                invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+                # Same adapters, new scales: the replica takes the scales; a rebuild only when they do not line up.
+                if not mirror_cfg_replica_adapter_scales(pipe, logger):
+                    invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
                 return
         # PEFT targets to_q / to_k / to_v: a fused U-Net that dropped them gets them back first (bit-exact).
         restore_unfused_projections(getattr(pipe, "unet", None))

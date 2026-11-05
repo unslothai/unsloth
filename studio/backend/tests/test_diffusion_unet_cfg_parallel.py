@@ -312,6 +312,21 @@ def test_automatic_replica_is_not_built_on_a_card_that_got_busy(monkeypatch):
     assert unet.calls[-1] == 2  # whole on the source from then on
 
 
+def test_automatic_replica_is_not_built_on_a_card_another_job_keeps_busy(monkeypatch):
+    # memory still free (under 1 GiB used), but another process computes on it: the build-time recheck refuses too
+    unet = UNet2DConditionModel()
+    router, replicas = _router(unet)
+    router.automatic_idle_only = True
+    monkeypatch.setattr(router, "_secondary_free_total_mib", lambda: (15000, 15360))
+    # read at render time, outside the load's selection scope (where _util_pct answers None)
+    monkeypatch.setattr(mg, "_smi_util_pct", lambda _o: 80.0)
+    assert mg._SELECTION.get() is None
+    lat = torch.randn(1, 4, 8, 8)
+    _sdxl_loop(unet, lat, steps = 2)
+    assert replicas == [] and "no longer idle" in (router.disabled_reason or "")
+    assert "80.0% busy" in router.disabled_reason
+
+
 def test_group_offloaded_denoiser_runs_cfg_parallel_from_its_onload_card(monkeypatch):
     from core.inference import diffusion_memory as dm
 
