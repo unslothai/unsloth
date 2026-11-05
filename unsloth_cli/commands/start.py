@@ -2630,28 +2630,6 @@ _QUANT_LABEL_RE = re.compile(
 )
 
 
-def _direct_gguf_variant_labels(path: str) -> tuple:
-    """The labels the server's direct-file resolver accepts for *path*. Mirrors _direct_gguf_for_variant: the quant label read from the basename first, the immediate parent only when the basename carries none, plus the shard-stripped stem itself. The basename wins the disagreement: a Q8_0/foo-Q4_K_M.gguf answers Q4_K_M, so its parent must not vouch for Q8_0 here while the load resolves nothing and evicts."""
-    norm = path.replace("\\", "/").rstrip("/")
-    name = norm.rsplit("/", 1)[-1]
-    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", name.rsplit(".", 1)[0])
-    match = _QUANT_LABEL_RE.search(stem)
-    if match is None and "/" in norm:
-        match = _QUANT_LABEL_RE.search(norm.rsplit("/", 2)[-2])
-    labels = [stem]
-    if match is not None:
-        label = f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}"
-        labels.append(label)
-        # The resolver also accepts the hub-style bpw-stripped spelling.
-        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label, flags = re.IGNORECASE)
-        if stripped != label:
-            labels.append(stripped)
-    else:
-        # The extractor's own fallback: the last hyphen-separated segment.
-        labels.append(stem.split("-")[-1])
-    return tuple(labels)
-
-
 # Mirrors hub.utils.gguf._BIG_ENDIAN_GGUF_FILENAME_RE; change in lockstep.
 _BIG_ENDIAN_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 
@@ -4994,25 +4972,31 @@ def _can_ask_for_model() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _check_picked_gguf_variant(model: Optional[str], variant: Optional[str]) -> None:
+def _picked_load_options(model: Optional[str], load: LoadOptions) -> LoadOptions:
+    variant = load.gguf_variant
     if not model or not variant:
-        return
+        return load
     from unsloth_cli._model_catalog import _is_gguf_file
+    from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
 
-    if not _is_gguf_file(model):
-        return
-    filename = Path(model).name
-    labels = _direct_gguf_variant_labels(model)
-    rows = [{"quant": label, "filename": filename} for label in labels]
-    if variant.strip().lower() == filename.lower() or _answer_offers_variant(
-        rows, variant, strict = True
-    ):
-        return
-    _fail(
-        f"Selected GGUF file {model} cannot use --gguf-variant {variant}. "
-        "Choose the matching file, or pass --model naming the repository or directory "
-        "to select a different quant."
-    )
+    if _is_gguf_file(model):
+        if _direct_gguf_for_variant(model, variant) is None:
+            _fail(
+                f"Selected GGUF file {model} cannot use --gguf-variant {variant}. "
+                "Choose the matching file, or pass --model naming the repository or directory "
+                "to select a different quant."
+            )
+    elif variant.lower().endswith(".gguf") and Path(model).is_dir():
+        from hub.utils.gguf import gguf_variant_family
+
+        # Directory preflight advertises shard-stripped stems. Preserve the exact file selected.
+        selected = _find_local_gguf_by_variant(model, variant)
+        if selected and Path(selected).is_relative_to(Path(model).absolute()):
+            relative = Path(selected).relative_to(Path(model).absolute()).as_posix()
+            stem = gguf_variant_family(relative)
+            if _find_local_gguf_by_variant(model, stem) == selected:
+                return load._replace(gguf_variant = stem)
+    return load
 
 
 def _ask_for_local_model(
@@ -5161,7 +5145,7 @@ def _connect(
     local_model_picked = False
     if model is None:
         model = _pick_model_to_auto_start(serve, launch, gguf_only, load.gguf_variant)
-        _check_picked_gguf_variant(model, load.gguf_variant)
+        load = _picked_load_options(model, load)
         local_model_picked = model is not None
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
@@ -5194,7 +5178,7 @@ def _connect(
         if model is None and server is None:
             picked = _pick_model_for_idle_server(base, key, gguf_only, load.gguf_variant)
             if picked is not None:
-                _check_picked_gguf_variant(picked, load.gguf_variant)
+                load = _picked_load_options(picked, load)
                 model = requested = picked
                 local_model_picked = True
         connection = (

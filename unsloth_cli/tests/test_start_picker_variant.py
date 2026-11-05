@@ -242,3 +242,46 @@ def test_picked_repo_finds_requested_quant_outside_main(
         commit_hash = Path(expected).parent.name,
     )
     assert catalog._cached_variant_entry(row, "Q8_0") is None
+
+
+@pytest.mark.parametrize("agent", ["claude", "codex"])
+@pytest.mark.parametrize(
+    ("filename", "selector"),
+    [
+        ("tiny-UD-NVFP4.gguf", "UD-NVFP4"),
+        ("tiny-NVFP4-4.25bpw.gguf", "NVFP4-4.25bpw"),
+        ("NVFP4/model.gguf", "NVFP4"),
+        ("other-build/tiny-Q8_0.gguf", "other-build/tiny-Q8_0.gguf"),
+    ],
+)
+def test_agent_picker_preload_agrees_with_local_loader(
+    cached_gguf_pick, fake_studio, monkeypatch, picker, filename, selector, agent
+):
+    import asyncio
+    from urllib.parse import parse_qs, urlparse
+    from typer.testing import CliRunner
+    from hub.services.models.gguf_variants import get_gguf_variants_response
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    snapshot = Path(cached_gguf_pick).parent
+    expected = snapshot / filename
+    expected.parent.mkdir(exist_ok = True)
+    expected.write_bytes(b"GGUF" + bytes(4092))
+    assert _find_local_gguf_by_variant(str(snapshot), selector) == str(expected)
+    _empty_server(fake_studio, monkeypatch)
+    previous = start._http_json
+
+    def http(method, url, key, *args, **kwargs):
+        if "/api/models/gguf-variants?" in url:
+            model = parse_qs(urlparse(url).query)["repo_id"][0]
+            return asyncio.run(get_gguf_variants_response(model)).model_dump()
+        return previous(method, url, key, *args, **kwargs)
+
+    monkeypatch.setattr(start, "_http_json", http)
+    picker["answers"] = [""]
+    result = CliRunner().invoke(start.start_app, [agent, "--gguf-variant", selector, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    [payload] = _loads(fake_studio)
+    assert _find_local_gguf_by_variant(payload["model_path"], payload["gguf_variant"]) == str(
+        expected
+    )
