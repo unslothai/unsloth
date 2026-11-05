@@ -5704,6 +5704,16 @@ def test_resolve_model_reload_option_keeps_the_resident_mlx_folder(monkeypatch, 
     assert [p.get("gguf_variant") for p in payloads] == ["6-bit"]
 
 
+def test_an_unchanged_mlx_folder_is_not_a_settings_change():
+    status = {"is_gguf": False, "is_mlx": True, "gguf_variant": "6-bit"}
+    assert not start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "6-bit"), frozenset({"gguf_variant"})
+    )
+    assert start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "8bit"), frozenset({"gguf_variant"})
+    )
+
+
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
@@ -11357,7 +11367,7 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     monkeypatch.setattr(
         start,
         "_hub_repo_files",
-        lambda repo: ["config.json", "6-bit/config.json", "8bit/Config.json"],
+        lambda repo: ["config.json", "6-bit/config.json", "8bit/config.json"],
     )
     monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
     start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:6-bit")
@@ -11367,6 +11377,9 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     with pytest.raises(typer.Exit):
         start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:4bit")
     assert "has no precision folder 4bit" in capsys.readouterr().err
+    # Hub folder names are case-sensitive: FP16 would 404 and load the root.
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:8BIT")
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
     # The real answer for a precision-folder repo: its folders, with only downloaded ones loadable.
@@ -11382,7 +11395,7 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
     start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", repo)
     assert "needs a GGUF model" not in capsys.readouterr().err
-    for wanted in ("Q8_0", "4bit"):
+    for wanted in ("Q8_0", "4bit", "6-BIT"):
         with pytest.raises(typer.Exit):
             start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, wanted)
     # A root-only repo lists no folders, so any suffix names one it does not have.

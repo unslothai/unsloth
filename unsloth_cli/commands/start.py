@@ -2162,6 +2162,11 @@ def _resident_runtime_payload(status: dict, payload: dict) -> dict:
     return carried
 
 
+def _resident_variant(status: dict) -> Optional[str]:
+    # An MLX resident reports its precision folder (6-bit) here, as a GGUF one reports its quant.
+    return status.get("gguf_variant") if status.get("is_gguf") or status.get("is_mlx") else None
+
+
 def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
     """Whether applying these settings can restart the resident. Unproven equality counts as a difference: a silent restart is worse than a spurious warning."""
     if not status:
@@ -2178,7 +2183,7 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
         return True
     for name in overrides:
         if name == "gguf_variant":
-            resident = status.get("gguf_variant") if status.get("is_gguf") else None
+            resident = _resident_variant(status)
             # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM would read as equal here yet still really reload on the server. The preload gate below already compares this way, and the two have to agree.
             if (
                 not resident
@@ -2330,7 +2335,7 @@ def _resolve_model(
                     status = _model_status(base, key, requested)
                 except Exception:
                     status = {}
-                resident_variant = status.get("gguf_variant") if status.get("is_gguf") else None
+                resident_variant = _resident_variant(status)
                 # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM would skip the gate here yet still really reload on the server.
                 resident_serves_request = (
                     bool(resident_variant)
@@ -2369,7 +2374,7 @@ def _resolve_model(
                 status = _model_status(base, key, active_id)
             except Exception:
                 status = {}
-            resident = status.get("gguf_variant") if status.get("is_gguf") else None
+            resident = _resident_variant(status)
             if resident and _normalized_variant(resident) != _normalized_variant(load.gguf_variant):
                 typer.echo(
                     f"Switching the Unsloth server from {active_id}:{resident} "
@@ -2943,8 +2948,7 @@ def _preflight_agent_gguf(
     # A missing precision folder would load the root checkpoint instead.
     if files is not None and not files and variant:
         names = _hub_repo_files(repo)
-        wanted = f"{variant.strip()}/config.json".lower()
-        if names is not None and wanted not in {n.lower() for n in names}:
+        if names is not None and f"{variant.strip()}/config.json" not in names:
             _fail(f"{repo} has no precision folder {variant}.")
 
 
@@ -3055,7 +3059,9 @@ def _attach_gguf_check(
             and isinstance(info, dict)
             and info.get("variant_format") == "mlx"
         ):
-            if variant and not _answer_offers_variant(variants, variant, strict = True):
+            # Folder names are case-sensitive on the Hub, unlike llama.cpp quant labels.
+            folders = {row.get("quant") for row in variants if isinstance(row, dict)}
+            if variant and variant.strip() not in folders:
                 _fail_gguf_variant_missing(candidate, variant, variants)
             _refuse_non_gguf(agent, candidate, base, key, None)
             return
