@@ -952,7 +952,8 @@ def _subagent_model_id(
                 "may pick a different cached quant. Pass :variant to pin it.",
                 err = True,
             )
-        variant = _resident_variant(status)
+        if status.get("is_gguf"):
+            variant = status.get("gguf_variant")
     if variant and _is_hub_model_id(model_id):
         return _display_model_spec(model_id, str(variant))
     if variant:

@@ -1321,16 +1321,15 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
     assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
 
 
-def test_subagent_model_id_pins_the_resident_mlx_folder(monkeypatch):
+def test_subagent_model_id_keeps_a_bare_id_for_an_mlx_folder(monkeypatch):
+    # The API resolves no :folder suffix for an MLX resident (bf16 reads as a GGUF quant), so pin nothing.
     monkeypatch.setattr(
         start,
         "_http_json",
-        lambda *args, **kwargs: {"is_gguf": False, "is_mlx": True, "gguf_variant": "6-bit"},
+        lambda *args, **kwargs: {"is_gguf": False, "is_mlx": True, "gguf_variant": "bf16"},
     )
     entry = {"id": "mlx-community/Qwen3-4B"}
-    assert (
-        start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B:6-bit"
-    )
+    assert start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B"
 
 
 def _kept_model_status(url):
