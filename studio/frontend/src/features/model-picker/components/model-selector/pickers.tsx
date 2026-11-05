@@ -982,6 +982,36 @@ function residentGbLabel(gb: number): string {
   return `${gb.toFixed(1)} GB`;
 }
 
+// Wide enough for "99.9GB to run", so the fit marks to its left line up across quant rows.
+const RESIDENT_COLUMN = "min-w-[13ch] text-right";
+
+/** An audio.cpp load estimate set like the size beside it ("9.5GB to run"), explained on hover. */
+function ResidentText({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          className={cn(
+            "shrink-0 whitespace-nowrap font-mono text-ui-10 text-muted-foreground tabular-nums",
+            className,
+          )}
+        >
+          <SizeText value={value} /> to run
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        GPU memory the load check needs while running
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
   if (!parts) {
@@ -1582,6 +1612,7 @@ function ModelRow({
               {text}
             </span>
           ))}
+          {parsed.resident ? <ResidentText value={parsed.resident} /> : null}
           {/* GGUF repos hold several quants, so their size shows only once expanded. */}
           {alignMeta === "device" || showSize ? (
             <span
@@ -3241,16 +3272,16 @@ function GgufVariantExpander({
                   diffusionLoad ? mediaGgufPickerStatus(fit) : fit
                 }
               />
+              {v.estimated_resident_gb ? (
+                <ResidentText
+                  value={residentGbLabel(v.estimated_resident_gb)}
+                  className={RESIDENT_COLUMN}
+                />
+              ) : null}
+              {/* The size stays rightmost, so it lines up across rows as on every other picker. */}
               <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
                 {companionBytes === null ? (
-                  <>
-                    <SizeText value={formatBytes(v.size_bytes)} />
-                    {v.estimated_resident_gb ? (
-                      <span title="GPU memory the load check requires">
-                        {` · ${residentGbLabel(v.estimated_resident_gb)} to run`}
-                      </span>
-                    ) : null}
-                  </>
+                  <SizeText value={formatBytes(v.size_bytes)} />
                 ) : (
                   <GgufDownloadFootprint
                     checkpointBytes={v.size_bytes}

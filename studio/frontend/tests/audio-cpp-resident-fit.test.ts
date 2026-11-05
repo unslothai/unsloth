@@ -20,7 +20,8 @@ import {
 test("a row shows the load estimate beside the file size, not in its place", () => {
   const parsed = parseMetaTokens("GGUF · 7.7GB · 20.5 GB to run");
   assert.equal(parsed.size, "7.7GB");
-  assert.deepEqual(parsed.texts, ["20.5 GB to run"]);
+  assert.equal(parsed.resident, "20.5 GB");
+  assert.deepEqual(parsed.texts, []);
 });
 
 const GB = 1024 ** 3;
