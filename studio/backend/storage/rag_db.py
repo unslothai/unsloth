@@ -317,8 +317,8 @@ def reset_schema_state_for_tests() -> None:
 
 
 class _ReusedConnection(sqlite_gate.GatedConnection):
-    """The connection a reuse_connections() block hands out. close() inside the block rolls back what
-    the caller left uncommitted, exactly what a real close discards, and keeps the connection open."""
+    """Shared by a reuse_connections() block: close() rolls back the uncommitted rest (what a real close
+    discards) and keeps the connection open."""
 
     _reuse_slot = None
 
@@ -328,7 +328,6 @@ class _ReusedConnection(sqlite_gate.GatedConnection):
             super().close()
             return
         if not slot.checked_out:
-            # A repeated close of an idle connection: nothing to end.
             return
         slot.checked_out = False
         try:
@@ -350,7 +349,6 @@ class _ReuseSlot:
         if conn is None or self.checked_out or self.db_path != db_path:
             return None
         try:
-            # A fresh connection's settings, whatever the previous holder changed.
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA busy_timeout = 5000")
         except Exception:  # noqa: BLE001 - unusable now, so the caller opens a new one
@@ -373,10 +371,8 @@ _reuse_state = threading.local()
 
 
 def release_reused() -> None:
-    """Close this thread's shared connection now if no caller holds it, so a reuse_connections() block
-    keeps no rag.db handle open while it waits or only stats files (an account rename on Windows sees
-    the same handles as without the block). The next get_connection() in the block opens a new one.
-    No-op outside a block or while the connection is checked out."""
+    """Close this thread's idle shared connection before file work or waits, so an account rename on
+    Windows sees the same open handles as without the block. No-op outside a block or while checked out."""
     slot = getattr(_reuse_state, "slot", None)
     if slot is not None and slot.conn is not None and not slot.checked_out:
         slot.discard()
@@ -384,11 +380,9 @@ def release_reused() -> None:
 
 @contextmanager
 def reuse_connections():
-    """On this thread, get_connection() hands every caller in the block one connection instead of
-    opening a new one (open, sqlite-vec load and schema parse cost ~0.5 ms). Each caller still commits
-    and closes as before; a close only rolls back the uncommitted rest. A caller that opens while
-    another still holds it gets its own connection. Closed when the block ends; nested blocks share
-    the outer one. Keep blocks to database work: the file stays open for the whole block."""
+    """On this thread, get_connection() reuses one connection (a fresh open costs ~0.5 ms) unless it is
+    still checked out, then opens a normal one. Callers commit and close as before. Nested blocks share
+    the outer one, which closes it."""
     if getattr(_reuse_state, "slot", None) is not None:
         yield
         return

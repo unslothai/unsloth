@@ -209,7 +209,6 @@ def _now() -> str:
 
 
 def _hash_file(path: str) -> str:
-    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
     rag_db.release_reused()
     digest = hashlib.sha256()
     with open(path, "rb") as source:
@@ -554,7 +553,6 @@ def _update_folder(
 def _remove_snapshot(path: str | None) -> None:
     if not path:
         return
-    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
     rag_db.release_reused()
     try:
         root = os.path.realpath(str(rag_uploads_root()))
@@ -1215,7 +1213,6 @@ def _scan(
 
 
 def _snapshot(root: str, metadata: dict) -> str:
-    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
     rag_db.release_reused()
     source = metadata["path"]
     resolved = os.path.realpath(source)
@@ -1304,7 +1301,6 @@ def _check_running() -> None:
 
 
 def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
-    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
     rag_db.release_reused()
     try:
         current = _root_identity(root)
@@ -1316,7 +1312,6 @@ def _check_root_identity(root: str, expected: tuple[int, int]) -> None:
 
 def _source_reappeared(root: str, relative_path: str, excluded: set[str]) -> bool:
     """check scanner eligibility without following a replaced path component."""
-    # File work only: a reuse_connections() block keeps no idle rag.db handle open across it, as without one.
     rag_db.release_reused()
     path = PurePosixPath(relative_path)
     parts = path.parts
@@ -1847,7 +1842,7 @@ def _reconcile_folder(job_id: str) -> None:
                     try:
                         _check_running()
                         metadata = current[rel]
-                        # Also here, not only inside _snapshot: nothing between this call and the copy holds a handle.
+                        # Also before the call: a wrapped _snapshot must not see the handle either.
                         rag_db.release_reused()
                         snapshot = _snapshot(folder["path"], metadata)
                         content_hash = _hash_file(snapshot)
