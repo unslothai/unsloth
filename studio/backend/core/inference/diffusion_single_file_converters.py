@@ -123,8 +123,8 @@ _MOSS_QKV_RE = re.compile(r"^(layers\.\d+\.proj\.)qkv\.(weight|bias)$")
 
 
 def moss_image_checkpoint_to_diffusers(checkpoint: Any = None, **kwargs: Any) -> dict:
-    """ComfyUI MOSS-Image -> the in-tree ``MOSSImageTransformer``: the same names, except ComfyUI's fused ``proj.qkv``
-    (q, k, v rows, equal thirds) and its ``comfy_attention.config`` hint, which is not a weight."""
+    """Reference-layout MOSS-Image -> the in-tree names: split the fused ``proj.qkv`` (equal q, k, v thirds), drop the
+    ``comfy_attention.config`` hint."""
     converted: dict = {}
     for raw_key, value in (checkpoint or {}).items():
         key = _strip_prefix(raw_key)

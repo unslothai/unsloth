@@ -1960,10 +1960,8 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
 
 
 def _family_default_ids(fam: Any) -> tuple:
-    """What a header-matched family puts ahead of the file and repo names when picking generation defaults. FLUX.3: the
-    names cannot tell its variants apart (BFL's ComfyUI base files are flux3_image_klein_*.safetensors, no "base", and a
-    base file can sit on the distilled repo's companions). Anima: its row is keyed by its base repo, since a bare
-    "anima" matches Animagine XL files, and a local folder never names that repo."""
+    """Ids ahead of the file / repo names in the defaults lookup: FLUX.3's file names cannot tell its variants apart,
+    and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo."""
     if is_flux3_family(fam):
         return (fam.name,)
     if is_anima_family(fam):
@@ -9954,8 +9952,6 @@ class DiffusionBackend:
                                 )
                             elif fam.name == MOSS_IMAGE_FAMILY_NAME:
                                 from .diffusion_moss_image import load_moss_image_pipeline
-
-                                # Pre-cast or supplied (ComfyUI text_encoders / vae files) components by name.
                                 moss_components = te_prequant_pipe_kwargs(
                                     fam,
                                     fetch_base,
@@ -10007,7 +10003,6 @@ class DiffusionBackend:
                                     cache_dir = hub_cache_dir(),
                                 )
                             elif fam.name == KREA2_FAMILY_NAME:
-                                # Pre-cast or supplied (ComfyUI text_encoders / vae files) components by name.
                                 krea_components = te_prequant_pipe_kwargs(
                                     fam,
                                     fetch_base,

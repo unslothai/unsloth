@@ -1169,7 +1169,6 @@ def load_moss_image_pipeline(
             repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common
         )
     else:
-        # A supplied ComfyUI VAE file decodes at the same precision as the base repo's.
         vae = vae.to(vae_dtype or torch.float32)
     check_cancelled()
     scheduler = MOSSImageScheduler.from_pretrained(repo_id, subfolder = "scheduler", **common)

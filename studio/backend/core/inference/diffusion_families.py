@@ -95,7 +95,7 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
-    # False: no GGUF loader on either engine (Anima), so the picker hides its GGUFs and the load refuses them.
+    # False: no GGUF loader on either engine (Anima).
     gguf_loadable: bool = True
     # Transformer-only GGUFs load only via sd.cpp (MOSS-Image); its .safetensors single files load on diffusers.
     native_transformer_files_only: bool = False
@@ -139,7 +139,7 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
-    # Scheduler config set after the ComfyUI shift (Chroma: ComfyUI's "beta" schedule is use_beta_sigmas).
+    # Scheduler config set after the static shift (Chroma's beta schedule).
     scheduler_overrides: tuple[tuple[str, Any], ...] = field(default_factory = tuple)
     # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
     comfy_shift_node: Optional[str] = None
@@ -1202,14 +1202,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         fp16_incompatible = True,
     ),
-    # Chroma: ComfyUI's template runs shift 1 on the "beta" schedule; shift 1 on the linear spacing renders washed out
-    # and letterboxed, and the shipped shift 3 still letterboxes some prompts, so both are set.
+    # Chroma: shift 1 on the beta schedule; linear spacing (shift 1 or the shipped 3) letterboxes some prompts.
     DiffusionFamily(
         name = "chroma",
         comfy_shift_node = "sd3",
         label = "Chroma",
-        # Quantized activations drift Chroma from a bf16 render (fp8 letterboxes some seeds): every
-        # activation-quantizing scheme is denied, so fp8 and GGUF weights widen to bf16 (ComfyUI's manual cast).
+        # Quantized activations drift Chroma (fp8 letterboxes some seeds): fp8 and GGUF weights widen to bf16.
         profile = FamilyProfile(scheme_deny = frozenset({"fp8", "int8", "nvfp4", "mxfp8"})),
         pipeline_class = "ChromaPipeline",
         transformer_class = "ChromaTransformer2DModel",
@@ -1219,7 +1217,6 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("chroma1", "chroma1-hd", "chroma-hd"),
         fp16_incompatible = True,
     ),
-    # Anima: a Cosmos-Predict2 DiT, an LLM adapter over Qwen3-0.6B and the Qwen-Image VAE (diffusion_anima).
     DiffusionFamily(
         name = ANIMA_FAMILY_NAME,
         label = "Anima",
@@ -2170,9 +2167,8 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
-    # Anima's ComfyUI template, keyed by base repo: a bare "anima" key would match Animagine XL (SDXL) files first.
+    # Keyed by base repo: a bare "anima" would match Animagine XL (SDXL) files first.
     ("circlestone-labs/anima", 30, 4.0),
-    # Chroma: the ComfyUI Chroma1-HD template (26 steps, CFG 3.5).
     ("chroma", 26, 3.5),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.

@@ -352,7 +352,6 @@ def _single_file_loadable(image_fam, video_fam, filename: str) -> bool:
         ):
             return False
         if getattr(image_fam, "native_transformer_files_only", False):
-            # MOSS-Image: a .safetensors single file loads on diffusers through the in-tree transformer.
             return str(filename or "").lower().endswith(".safetensors")
         return True
     from core.inference.video_families import PIPELINE_ONLY_VIDEO_FAMILIES

@@ -193,7 +193,7 @@ _DIT_PREFIXES = (
     "model.model.",
     "model.",
     "transformer.",
-    # Cosmos-Predict2 reference checkpoints (Anima's official files).
+    # Anima (Cosmos-Predict2 reference checkpoints).
     "net.",
     "",
 )
@@ -322,7 +322,6 @@ def _match_dit(s: dict[str, list[int]]) -> Optional[CheckpointInfo]:
         "video_embedder",
         "video_head_modulation",
     } <= tops:
-        # Studio's in-tree port keeps the reference names, so a ComfyUI file and the hosted one read alike.
         return _dit("moss-image", "a MOSS-Image diffusion transformer", "comfy")
 
     if {"blocks", "llm_adapter", "x_embedder", "t_embedder", "final_layer"} <= tops:

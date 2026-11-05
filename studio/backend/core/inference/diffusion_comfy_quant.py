@@ -27,7 +27,7 @@ FP8_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP8_STORAGE"
 CONVERSION_RECORD_KEY = "unsloth_comfy_conversion"
 
 INT8_TENSORWISE = "int8_tensorwise"
-# Unpacked, a ConvRot W4A4 layer IS an int8_tensorwise ConvRot layer, run with int8 activations (ComfyUI: int4).
+# Unpacked, a ConvRot W4A4 layer is an int8_tensorwise ConvRot layer (run with int8 activations, not int4).
 CONVROT_W4A4 = "convrot_w4a4"
 FP8_E4M3 = "float8_e4m3fn"
 FP8_FORMATS = {"float8_e4m3fn": "F8_E4M3", "float8_e5m2": "F8_E5M2"}
@@ -53,7 +53,7 @@ _CONSUMED = {
     MXFP8: (".weight_scale", ".input_scale"),
 }
 _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scale"}
-# Container prefixes a declaration may omit while its weight carries one (ComfyUI's unet_prefix_from_state_dict).
+# Container prefixes a declaration may omit while its weight carries one.
 _DECLARATION_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
 
 # Row tag: key index * 2**24 + row, exact in float64 for any real checkpoint.
@@ -71,7 +71,7 @@ class ComfyQuantLayer:
     format: str
     convrot: bool = False
     group: int = 0
-    # A CONVROT_W4A4 layer loaded as int8: ``.weight`` holds packed int4 (K / 2 columns), unpacked on read.
+    # ``.weight`` holds packed int4 (K / 2 columns), unpacked on load.
     packed_int4: bool = False
 
 

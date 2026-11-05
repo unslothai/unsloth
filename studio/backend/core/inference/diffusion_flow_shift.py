@@ -106,8 +106,7 @@ def apply_comfy_schedule(
     overrides: Any = (),
     logger: Any = None,
 ) -> bool:
-    """An image family's ComfyUI static schedule: its ``shift``, then its template's scheduler ``overrides`` (Chroma's
-    beta spacing). The opt-out keeps the shipped scheduler for both. True when it changed."""
+    """``shift``, then scheduler ``overrides``; the opt-out keeps the shipped scheduler. True when it changed."""
     if not comfy_sigmas_enabled():
         return False
     shifted = apply_comfy_flow_shift(pipe, shift, logger)

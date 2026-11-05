@@ -1214,7 +1214,7 @@ def load_override_modules(
             cache_dir = cache_dir,
         )
         if component == COMPONENT_VAE:
-            # MOSS-Image decodes in fp32 (load_moss_image_pipeline casts it): a bf16 build first would round its weights.
+            # MOSS-Image decodes in fp32: a bf16 build first would round its weights.
             vae_dtype = None if family == MOSS_IMAGE_FAMILY_NAME else dtype
             overrides.modules[component] = build_vae(
                 path, vae_cls = cls, config = config, dtype = vae_dtype, logger = logger

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI / Civitai single files of Anima, Chroma and MOSS-Image, and ComfyUI's ConvRot W4A4 int4 layout."""
+"""Reference-layout single files of Anima, Chroma and MOSS-Image, and the ConvRot W4A4 int4 layout."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def _save(
     return str(path)
 
 
-# ComfyUI ConvRot W4A4: rotate, symmetric per-row int4 (max 7), two codes per byte, low nibble first.
+# ConvRot W4A4: rotate, symmetric per-row int4 (max 7), two codes per byte, low nibble first.
 def _w4a4(weight: torch.Tensor, group: int = 256) -> tuple:
     h = build_convrot_hadamard(group)
     w = (weight.float().reshape(weight.shape[0], -1, group) @ h.T).reshape(weight.shape)
@@ -229,7 +229,6 @@ def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monke
     assert set(split_anima_checkpoint(dict(comfy))[0]) == set(transformer.state_dict())
     path = _save(tmp_path / "anima.safetensors", comfy)
 
-    # Built on meta: no fp32 model is initialised before the file's tensors arrive.
     init_devices = set()
     reset = torch.nn.Linear.reset_parameters
 
@@ -244,7 +243,6 @@ def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monke
         path, base, torch.bfloat16, local_files_only = True
     )
     assert init_devices == {"meta"}
-    # Each fp32 -> bf16 cast is charged to the host RAM budget before it allocates.
     assert sum(charged) == 2 * sum(v.numel() for k, v in comfy.items() if "pos_embedder" not in k)
     for model, ref in ((loaded, transformer), (loaded_conditioner, conditioner)):
         assert not model.training
@@ -253,7 +251,6 @@ def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monke
         for key, value in ref.state_dict().items():
             assert got[key].dtype == torch.bfloat16
             assert torch.equal(got[key], value.to(torch.bfloat16)), key
-    # A buffer built at init (the rotary inv_freq) stays as built, as from_pretrained leaves it.
     for (name, buf), (_, ref_buf) in zip(
         loaded_conditioner.named_buffers(), conditioner.named_buffers()
     ):
@@ -318,7 +315,6 @@ def test_every_anima_render_frees_the_offload_hooks():
 
 
 def test_every_anima_image_is_its_own_generation_chunk():
-    # One modular call per image (as FLUX.3), so each image is its own chunk.
     from core.inference.diffusion import _generation_chunks
     from core.inference.diffusion_families import detect_family
 
@@ -425,7 +421,6 @@ def test_a_local_anima_load_gets_the_anima_defaults():
     anima = detect_family("", override = "anima")
     local = "/models/Anima-Base-v1.0-Diffusers"
     expected = {"steps": 30, "guidance": 4.0}
-    # The defaults row is keyed by circlestone-labs/..., which a local folder never names.
     assert _generation_defaults_for(local, None, local, family = anima) == expected
     assert (
         _generation_defaults_for("/models/comfy", "anima-v1.safetensors", local, family = anima)
@@ -454,7 +449,6 @@ def test_the_comfy_schedule_switches_to_beta_sigmas_unless_opted_out(monkeypatch
         return changed, pipe.scheduler.config.shift, pipe.scheduler.config.use_beta_sigmas
 
     assert schedule() == (True, 1.0, True)
-    # The opt-out keeps the shipped scheduler: neither the shift nor the beta spacing.
     monkeypatch.setenv(COMFY_SIGMAS_ENV, "0")
     assert schedule() == (False, 3.0, False)
 
@@ -477,7 +471,6 @@ def test_qwen3_5_text_encoder_is_classified_and_fits_moss():
     ]
     assert classify_text_encoder(keys) == "qwen3_5"
     assert "Qwen3_5Model" in TE_KIND_CLASSES["qwen3_5"]
-    # A Qwen2.5-VL encoder (vision tower, no linear attention, no q_norm) keeps its kind.
     assert classify_text_encoder(
         ["model.layers.0.self_attn.q_proj.weight", "visual.blocks.0.attn.qkv.weight"]
     ) == ("qwen2_5_vl")
@@ -529,7 +522,6 @@ def test_a_supplied_moss_vae_keeps_its_fp32_weights(tmp_path):
         )
         return modules["vae"].state_dict()
 
-    # MOSS-Image decodes in fp32, so its supplied VAE must not be rounded to the pipeline dtype on the way.
     moss = built("moss-image")
     for key, value in reference.state_dict().items():
         assert moss[key].dtype == value.dtype and torch.equal(moss[key], value), key
@@ -550,5 +542,4 @@ def test_anima_gguf_is_neither_offered_nor_loaded():
         DiffusionBackend().validate_load_request(
             "someone/Anima-Base-GGUF", gguf_filename = "anima-base-v1.0-Q8_0.gguf", model_kind = "gguf"
         )
-    # Chroma keeps its GGUF path (diffusers loads ChromaTransformer2DModel GGUFs).
     assert family_gguf_loadable(detect_family("", override = "chroma"))
