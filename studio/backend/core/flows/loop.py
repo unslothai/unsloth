@@ -131,14 +131,16 @@ def _strings(value: Any) -> list[str]:
     return found
 
 
-def _system_of(row: dict, prompt_column: Any, system_column: str) -> str:
-    """The row's own system message as Benchmark sent it: its system column, else the system turns
-    of a conversation prompt."""
+def _system_of(row: dict, prompt_column: Any, system_column: Any) -> str:
+    """The row's own system message as Benchmark sent it: its system column (or columns), else the
+    system turns of a conversation prompt."""
     from core.benchmark.recipe_heldout import cell_messages
+    from core.flows.nodes.benchmark import system_message
     from utils.datasets.cells import cell_text
 
-    if system_column and cell_text(row.get(system_column)).strip():
-        return cell_text(row.get(system_column)).strip()
+    own = system_message(row, system_column) if system_column else ""
+    if own:
+        return own
     if isinstance(prompt_column, str) and prompt_column.strip():
         turns = cell_messages(row.get(prompt_column.strip())) or []
         return "\n\n".join(cell_text(t["content"]) for t in turns if t["role"] == "system").strip()
@@ -148,7 +150,7 @@ def _system_of(row: dict, prompt_column: Any, system_column: str) -> str:
 def _asked(
     row: Any,
     prompt_column: Any = "",
-    system_column: str = "",
+    system_column: Any = "",
 ) -> str:
     """The input a row asks (an Alpaca row's instruction plus input), as Benchmark asked it: its
     question, after its own system message when it has one (rows sharing a question can ask
@@ -163,7 +165,7 @@ def _asked(
 def _identifying(
     row: Any,
     prompt_column: Any = "",
-    system_column: str = "",
+    system_column: Any = "",
 ) -> frozenset:
     """The long strings that could name one test row: its question, never its answer or labels (a rare
     category would otherwise hide every failure sharing it). An Alpaca row's question is its
@@ -196,7 +198,7 @@ EXCLUDE_INPUT = "_loop_test_questions"
 def questions(
     rows: list[dict],
     prompt_column: Any = "",
-    system_column: str = "",
+    system_column: Any = "",
 ) -> list[str]:
     """The questions rows ask, as Benchmark asks them (an Alpaca row's instruction plus input)."""
     return sorted({q for q in (_asked(row, prompt_column, system_column) for row in rows) if q})
@@ -208,7 +210,7 @@ def without_questions(rows: list[dict], exclude: Any) -> list[dict]:
     if not isinstance(exclude, dict):
         return list(rows)
     banned = {q for q in exclude.get("questions") or [] if isinstance(q, str)}
-    column, system = exclude.get("column") or "", str(exclude.get("system") or "")
+    column, system = exclude.get("column") or "", exclude.get("system") or ""
     return [r for r in rows if _asked(r, column, system) not in banned] if banned else list(rows)
 
 
@@ -216,7 +218,7 @@ def drop_test_rows(
     failures: list[dict],
     test_rows: list[dict],
     prompt_column: Any = "",
-    system_column: str = "",
+    system_column: Any = "",
 ) -> list[dict]:
     """Guard: a failure asking a question that identifies one test row never reaches the seed.
     A value many test rows share (a fixed Alpaca instruction) identifies none of them."""

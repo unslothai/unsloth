@@ -301,7 +301,7 @@ async def finetune(ctx: NodeContext) -> dict:
     row = None
     mapping = config.get("custom_format_mapping")
     automatic = objective == "sft" and not mapping and config.get("format_type") in (None, "auto")
-    if objective == "grpo" or automatic:
+    if objective != "sft" or automatic:
         from core.training.account_jobs import account_hf_token
 
         # Whether a prompt carried its own system message, and which roles automatic formatting
@@ -314,18 +314,18 @@ async def finetune(ctx: NodeContext) -> dict:
         checkpoint["system_prompt"] = system
     if automatic:
         mapping = await asyncio.to_thread(auto_mapping, row)
-    elif objective == "grpo" and isinstance(row, dict):
+    elif objective != "sft" and isinstance(row, dict):
         from core.training.rl import resolve_role_columns
         try:
-            # The columns GRPO read, mapped or found by name.
+            # The columns GRPO, DPO or ORPO read, mapped or found by name.
             found = resolve_role_columns(
-                list(row), "grpo", mapping if isinstance(mapping, dict) else None
+                list(row), objective, mapping if isinstance(mapping, dict) else None
             )
             mapping = {
                 **{c: r for r, c in found.items()},
                 **{k: v for k, v in (mapping or {}).items() if str(k).startswith("__")},
             }
-        except ValueError:
+        except (KeyError, ValueError):
             pass
     checkpoint.update(mapping_facts(mapping, config.get("format_type"), objective))
     return {
@@ -491,6 +491,9 @@ def mapping_facts(
         roles = {c: _RL_AS_CHAT.get(role) for c, role in mapping.items() if isinstance(role, str)}
     per_row = [] if templated else [c for c, role in roles.items() if role == "system"]
     facts = {"system_column": per_row[0] if per_row else ""}
+    if len(per_row) > 1 and (objective or "sft") == "sft":
+        # SFT sends each of them as a system message, in order.
+        facts["system_columns"] = per_row
     # The columns that made each row's question and answer: several user columns are one
     # message per column, or one message of their lines under the template mapping. The
     # Alpaca format joins them as its instruction, and its system columns as its input.

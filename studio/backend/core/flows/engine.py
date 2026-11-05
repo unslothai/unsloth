@@ -2387,7 +2387,7 @@ class FlowEngine:
         # (a column training read as the system message is not it).
         asked_col: Any = str(scorer_params.get("prompt_column") or "")
         # The column each row's own system message came from, as the score step reports it.
-        asked_system = ""
+        asked_system: Any = ""
         try:
             for r in range(rounds):
                 if rs.cancelled:
@@ -2489,7 +2489,9 @@ class FlowEngine:
                     # A dict: the several mapped columns Benchmark built each question from.
                     asked_col = reported if isinstance(reported, dict) else str(reported or "")
                 if not asked_system and isinstance(fed_back, dict):
-                    asked_system = str(fed_back.get("system_column") or "")
+                    reported = fed_back.get("system_column")
+                    # A list: several columns made each row's system message.
+                    asked_system = reported if isinstance(reported, list) else str(reported or "")
                 test_layer = Env(child)
                 test_out = await score(test, test_layer, (*key, 1))
                 if after:

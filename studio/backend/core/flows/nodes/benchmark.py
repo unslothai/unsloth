@@ -385,6 +385,7 @@ ALPACA_PROMPT = "__instruction_and_input"
 # The question and answer of a checkpoint whose mapping joined several columns into each.
 MAPPED_PROMPT = "__mapped_question"
 MAPPED_REFERENCE = "__mapped_answer"
+MAPPED_SYSTEM = "__mapped_system"
 
 
 def _alpaca_question(row: dict) -> Any:
@@ -443,6 +444,14 @@ def _mapped_cells(row: dict, columns: list[str], labels: Any, join: str) -> Any:
     return "\n".join(_extract_column_value(row.get(c), c, labels) for c in columns)
 
 
+def system_message(row: dict, columns: Any) -> str:
+    """A row's own system message from one column or several (training sends each, in order)."""
+    names = (
+        [columns] if isinstance(columns, str) else [c for c in columns or [] if isinstance(c, str)]
+    )
+    return "\n\n".join(t for t in (cell_text(row.get(c)).strip() for c in names) if t)
+
+
 def mapped_question(row: dict, spec: dict) -> Any:
     """The question of a row whose checkpoint mapped several columns into it (``spec`` as the
     Benchmark node reports it to a Loop): user turns, lines, or an Alpaca instruction and input."""
@@ -490,6 +499,14 @@ async def _recipe_heldout(
     trained_system = checkpoint.get("system_column") if isinstance(checkpoint, dict) else None
     # A column training read as the system message is never guessed as the question or the answer.
     unasked = {system_col, trained_system} - {None, ""}
+    # Several system columns: training sent each, so the row's system message is all of them.
+    systems = [
+        c
+        for c in (checkpoint.get("system_columns") if isinstance(checkpoint, dict) else None) or []
+        if isinstance(c, str)
+    ]
+    systems = systems if len(systems) > 1 and all(c in columns for c in systems) else []
+    unasked |= set(systems)
     guessable = [c for c in columns if c not in unasked]
     named_prompt = str(ctx.params.get("prompt_column") or "").strip()
     facts = checkpoint if isinstance(checkpoint, dict) else {}
@@ -551,6 +568,9 @@ async def _recipe_heldout(
             REFERENCE_GUESSES,
         )
     # The failures output keeps the original rows.
+    if systems and system_col:
+        asked = [{**r, MAPPED_SYSTEM: system_message(r, systems)} for r in asked]
+        system_col = MAPPED_SYSTEM
     asked = _labelled(asked, (prompt_col, reference_col), ctx)
     scorer = SCORERS.get(str(ctx.params.get("scorer") or ""), "reference")
     if scorer == "reference" and not reference_col and not _conversation_column(asked, prompt_col):
@@ -662,7 +682,7 @@ async def _recipe_heldout(
         if prompt_col == MAPPED_PROMPT
         else ("" if prompt_col == ALPACA_PROMPT else prompt_col),
         # Rows sharing a question can ask different tasks through their own system message.
-        "system_column": system_col or "",
+        "system_column": systems if system_col == MAPPED_SYSTEM else (system_col or ""),
     }
 
 

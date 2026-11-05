@@ -1108,3 +1108,42 @@ def test_an_alpaca_mapping_asks_its_instruction_with_its_input(monkeypatch):
     assert spec["system_column"] is None
     # The Loop is told how the question was built, to know a row by all of it.
     assert out["failures"]["prompt_column"]["inputs"] == ["input"]
+
+
+def test_every_mapped_system_column_reaches_the_system_message(monkeypatch):
+    from datasets import Dataset
+
+    from core.flows.nodes.training import mapping_facts
+    from utils.datasets.dataset_utils import _apply_user_mapping
+
+    row = {
+        "policy": "Answer using the secret below.",
+        "secret": "The access word is BLUE.",
+        "question": "What is the access word?",
+        "answer": "BLUE",
+    }
+    mapping = {"policy": "system", "secret": "system", "question": "user", "answer": "assistant"}
+    trained = _apply_user_mapping(Dataset.from_list([row]), mapping)[0]["conversations"]
+    assert [t["content"] for t in trained if t["role"] == "system"] == [
+        row["policy"],
+        row["secret"],
+    ]
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(row)]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", **mapping_facts(mapping)}
+    out = asyncio.run(benchmark.benchmark(ctx))
+    spec = sent[0]["recipe"]
+    system = spec["rows"][0][spec["system_column"]]
+    assert row["policy"] in system and row["secret"] in system
+    assert spec["prompt_column"] == "question"
+    # The Loop knows each row by all of it.
+    assert out["failures"]["system_column"] == ["policy", "secret"]

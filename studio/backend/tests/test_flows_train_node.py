@@ -1537,3 +1537,56 @@ def test_grpo_prompt_and_answer_roles_reach_the_checkpoint():
         "user_join": "turns",
         "answer_columns": ["queue"],
     }
+
+
+@pytest.mark.parametrize(
+    "objective, row, facts",
+    [
+        (
+            "dpo",
+            {"prompt": "Greet me", "chosen": "Hello!", "rejected": "No."},
+            {"user_columns": ["prompt"], "answer_columns": ["chosen"]},
+        ),
+        (
+            "sft",
+            {
+                "context": "The parcel is being held in customs at the border.",
+                "question": "Where is the parcel?",
+                "answer": "customs",
+            },
+            {"system_column": "context", "user_columns": ["question"]},
+        ),
+    ],
+)
+def test_the_checkpoint_names_the_columns_training_read(monkeypatch, objective, row, facts):
+    import studio_mcp.tools.jobs as jobs
+
+    async def run_folder(caller, out):
+        return "run-1", None
+
+    monkeypatch.setattr(jobs, "_run_folder", run_folder)
+    monkeypatch.setattr(training, "POLL_S", 0)
+    # No column fields set: the roles are the ones training found in the rows.
+    monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
+    ctx = _Ctx(None, objective = objective)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.on_cancel = lambda fn: None
+    ctx.check_cancelled = lambda: None
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "j1"}
+        if path == "/api/train/status":
+            return {
+                "job_id": "j1",
+                "training_phase": "completed",
+                "phase": "completed",
+                "details": {"step": 1, "total_steps": 1, "loss": 1.0, "output_dir": "/x/run-1"},
+            }
+        if path == "/api/train/metrics":
+            return {"loss_history": [1.0]}
+        raise AssertionError(path)
+
+    ctx.routes = routes
+    checkpoint = asyncio.run(training.finetune(ctx))["checkpoint"]
+    assert {k: checkpoint.get(k) for k in facts} == facts

@@ -965,3 +965,17 @@ async def test_the_loop_knows_test_rows_by_the_system_column_benchmark_reports()
     rs = await _run(eng, loop_doc(rounds = 2, target = 100))
     assert rs.status == "completed", rs.error
     assert excluded[1]["system"] == "sys"
+
+
+def test_several_system_columns_tell_rows_apart():
+    rows = [
+        {"policy": "Use the secret.", "secret": f"The word is {w}.", "prompt": "What is the word?"}
+        for w in ("BLUE", "RED")
+    ]
+    system = ["policy", "secret"]
+    exclude = {
+        "column": "",
+        "system": system,
+        "questions": loop_rounds.questions(rows[:1], "", system),
+    }
+    assert loop_rounds.without_questions(rows, exclude) == rows[1:]
