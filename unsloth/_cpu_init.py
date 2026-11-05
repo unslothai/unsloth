@@ -37,7 +37,7 @@ class FastLanguageModel(FastCPUModel):
         unsloth_tiled_mlp = False,
         **kwargs,
     ):
-        # Sequence tiling is plain torch: tile as the GPU loaders do (UNSLOTH_TILED_MLP wins), not drop it.
+        # Tiling is plain torch, so honour it like the GPU loaders instead of dropping it.
         from .tiling import check_tiling_available, loader_tile_mlp
 
         check_tiling_available(unsloth_tiled_mlp)

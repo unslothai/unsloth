@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""CPU backend: FastLanguageModel.from_pretrained(unsloth_tiled_mlp = ...) and UNSLOTH_TILED_MLP tile the MLP / MoE
-blocks as the GPU loaders do (unsloth/tiling.py loader_tile_mlp), instead of being dropped without a word, and a
-tiled LoRA step matches the untiled one."""
+"""CPU backend honours unsloth_tiled_mlp / UNSLOTH_TILED_MLP and a tiled LoRA step matches the untiled one."""
 
 from __future__ import annotations
 
@@ -131,7 +129,7 @@ def test_cpu_backend_loader_tiles_like_the_gpu_loaders(tmp_path):
         pytest.skip(f"this host does not select the CPU backend ({off['device_type']})")
     kwarg = _run("kwarg", model_dir)
     env = _run("off", model_dir, {"UNSLOTH_TILED_MLP": "rows:8"})
-    # An off environment never overrides an explicit kwarg, and an explicit off kwarg keeps tiling off.
+    # An explicit kwarg beats UNSLOTH_TILED_MLP either way.
     env_off = _run("kwarg", model_dir, {"UNSLOTH_TILED_MLP": "0"})
     kwarg_off = _run("kwarg_off", model_dir)
     assert off["tiled"] == 0 and kwarg_off["tiled"] == 0
@@ -139,7 +137,6 @@ def test_cpu_backend_loader_tiles_like_the_gpu_loaders(tmp_path):
     assert env["tiled"] == 2, env["tiled"]
     assert env_off["tiled"] == 2, env_off["tiled"]
     assert kwarg["tiled_after_peft"] == 2
-    # Still the CPU backend: tiling loads no GPU module.
     assert kwarg["gpu_only"] == [] and env["gpu_only"] == []
     torch = pytest.importorskip("torch")
     assert abs(kwarg["loss"] - off["loss"]) <= 1e-6 * abs(off["loss"])
