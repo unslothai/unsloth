@@ -183,6 +183,30 @@ def test_json_lines_in_a_json_manifest_are_rewritten(monkeypatch, tmp_path):
     ]
 
 
+@pytest.mark.parametrize("suffix", [".jsonl", ".json"])
+@pytest.mark.parametrize("separator", ["\u0085", " ", " "])
+def test_json_lines_keep_unicode_line_separators_in_strings(
+    monkeypatch, tmp_path, suffix, separator
+):
+    text = f"first{separator}second"
+    manifest = "".join(
+        json.dumps({"audio": "a.wav", "text": t}, ensure_ascii = False) + "\n"
+        for t in (text, "third")
+    )
+    key = "datasets/train" + suffix
+    _install(
+        monkeypatch,
+        [key, "datasets/a.wav"],
+        contents = {key: manifest},
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    local_audio = str(tmp_path / "a.wav")
+    assert _rows(files[0]) == [
+        {"audio": local_audio, "text": text},
+        {"audio": local_audio, "text": "third"},
+    ]
+
+
 @pytest.mark.parametrize("layout", ["object", "jsonl", "array"])
 @pytest.mark.parametrize("audio_value", ["a.wav", {"path": "a.wav", "bytes": None}])
 def test_single_record_manifest_rewrites_audio(monkeypatch, tmp_path, layout, audio_value):
