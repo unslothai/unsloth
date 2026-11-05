@@ -140,7 +140,9 @@ def test_activation_reuses_the_worker_lookup(hub, monkeypatch):
 
 
 _WORKER_DRIVER = """
-import io, json, os, queue, sys, urllib.error
+import faulthandler, io, json, os, queue, sys, urllib.error
+
+faulthandler.dump_traceback_later(120, exit = True)
 import utils.transformers_version as tv
 import utils.utils as uu
 
@@ -193,7 +195,7 @@ def test_worker_load_reads_adapter_config_once(worker, tmp_path):
         [sys.executable, "-c", _WORKER_DRIVER, str(out), worker, "org/model"],
         cwd = tmp_path,
         env = env,
-        timeout = 300,
+        timeout = 240,
         capture_output = True,
         text = True,
     )
