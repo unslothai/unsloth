@@ -3372,8 +3372,7 @@ async function adoptInFlightServerLoad(
     : "server-idle";
 }
 
-// Detection on a busy host outlasts the health read's one 5 s wait, so keep reading until the verdict lands;
-// autoload is about to load a model anyway. Bounded: past it, or if detection was not started, stay fail-open.
+// Busy-host detection outlasts readHealth's one 5 s wait; past this bound autoload stays fail-open.
 const AUTO_LOAD_VERDICT_WAIT_MS = 60_000;
 const AUTO_LOAD_VERDICT_POLL_MS = 500;
 
@@ -4031,8 +4030,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
 
-    // Deferred detection reads as "unknown", which admits non-GGUF caches a chat-only host cannot load and
-    // aborts before the default GGUF. Measure first, only when such a candidate exists: a GGUF-only cache stays torch-free.
+    // A deferred verdict admits non-GGUF caches a chat-only host refuses; GGUF-only caches skip the probe.
     if (
       usePlatformStore.getState().detectionDeferred &&
       (allModelRepos.some(isChattableCachedRepo) ||

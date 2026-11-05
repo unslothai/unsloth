@@ -1167,9 +1167,7 @@ def family_buildable_here(
 ) -> bool:
     """True when THIS host can actually build ``fam`` for a ``model_kind`` load, by either engine.
 
-    ``provisional`` (listing before hardware detection) answers every device-dependent engine
-    prediction optimistically, so detection never starts; the device-free refusals still apply and
-    the load re-checks with ``provisional=False``.
+    ``provisional`` (listing before detection) answers engine predictions True so detection never starts.
 
     The two engines need different things. diffusers instantiates ``fam.pipeline_class``, which the
     newer families ship only in a newer diffusers -- and packaging still allows an older one on

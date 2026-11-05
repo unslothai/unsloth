@@ -2644,11 +2644,9 @@ def test_listing_before_detection_keeps_device_free_refusals(monkeypatch):
     buildable = _classification._family_buildable_for_listing
 
     assert buildable(None, model_kind = "gguf") is False
-    # Native-only GGUF: needs the device to predict sd.cpp, so it stays listed until the load re-checks.
     assert buildable(moss, model_kind = "gguf") is True
     monkeypatch.setattr(router, "family_pipeline_available", lambda fam: True)
     assert buildable(krea, model_kind = "pipeline") is True
-    # No diffusers class: a non-GGUF, or a GGUF of a family sd.cpp cannot assemble, is refused as before.
     monkeypatch.setattr(router, "family_pipeline_available", lambda fam: False)
     monkeypatch.setattr(router, "family_sd_cpp_supported", lambda fam: False)
     assert buildable(krea, model_kind = "pipeline") is False
@@ -3684,7 +3682,7 @@ def _pretend_old_diffusers(monkeypatch, *, engine):
 
     monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
     monkeypatch.setattr(router, "predict_engine", lambda fam, **kwargs: engine)
-    # A pinned engine is a post-detection answer; before detection the listing leaves it provisional.
+    # A pinned engine is a post-detection answer.
     _hardware_detected(monkeypatch)
 
 
