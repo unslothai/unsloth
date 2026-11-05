@@ -306,6 +306,8 @@ const REFRESH_LOCK_WAIT_MS = 8000;
 const REFRESH_RETRY_DEFAULT_MS = 1000;
 const REFRESH_RETRY_MIN_MS = 250;
 const REFRESH_RETRY_MAX_MS = 5000;
+const REFRESH_PEER_WAIT_MS = 3000;
+const REFRESH_PEER_POLL_MS = 100;
 
 function refreshRetryDelay(response: Response): number {
   const header = response.headers.get("Retry-After")?.trim();
@@ -319,7 +321,27 @@ function refreshRetryDelay(response: Response): number {
   );
 }
 
-async function runRefresh(refreshToken: string, preserveSessionMark = false): Promise<RefreshOutcome> {
+/** The winner's 200 committed before this 401 was sent, so its pair lands here within moments. */
+async function peerRotated(
+  refreshToken: string,
+  startGeneration: number,
+): Promise<boolean> {
+  const deadline = Date.now() + REFRESH_PEER_WAIT_MS;
+  for (;;) {
+    if (startGeneration !== logoutGeneration || accountTransitionPending()) return false;
+    const current = getRefreshToken();
+    if (current !== refreshToken) return current !== null;
+    if (Date.now() >= deadline) return false;
+    await wait(REFRESH_PEER_POLL_MS);
+  }
+}
+
+async function runRefresh(
+  refreshToken: string,
+  preserveSessionMark = false,
+  // Without Web Locks (insecure origins) another tab may spend the same single-use token first.
+  awaitPeer = false,
+): Promise<RefreshOutcome> {
   const startGeneration = logoutGeneration;
   const startedAt = Date.now();
   const superseded = (): RefreshOutcome | null => {
@@ -340,6 +362,8 @@ async function runRefresh(refreshToken: string, preserveSessionMark = false): Pr
     }
     // Only a 401 rejects the token; a 5xx, 429 or proxy error says nothing about the session.
     if (response.status === 401) {
+      if (awaitPeer && (await peerRotated(refreshToken, startGeneration)))
+        return "ok";
       clearAuthTokensIfCurrent(refreshToken);
       return "rejected";
     }
@@ -409,7 +433,7 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
           clearTimeout(timer);
         }
       })()
-    : runRefresh(refreshToken);
+    : runRefresh(refreshToken, false, true);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
   try {

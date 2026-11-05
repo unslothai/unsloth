@@ -405,3 +405,36 @@ test("the route guard still sends a rejected refresh to /login", async (t) => {
   await assert.rejects(loadGuards(f).requireAuth(), /redirect \/login/);
   assert.equal(f.tokens.refresh, null);
 });
+
+// Web Locks only exist in secure contexts, so a plain-HTTP origin such as http://<lan-ip>:8888
+// lets two tabs send the same single-use refresh token: one rotates, the other gets a 401.
+test("without Web Locks a peer tab's rotation does not sign every tab out", async (t) => {
+  const f = fixture(t, [
+    () => new Promise<Response>((resolve) =>
+      setImmediate(() => setImmediate(() => resolve(rotated())))),
+    () => new Response(null, { status: 401 }),
+  ]);
+  const otherWindow = f.makeApi();
+  const results = await Promise.all([
+    f.api.refreshSessionOutcome(),
+    otherWindow.refreshSessionOutcome(),
+  ]);
+  assert.deepEqual(results, ["ok", "ok"]);
+  assert.equal(f.refreshBodies.length, 2);
+  assert.deepEqual(f.tokens, { access: "new-access", refresh: "new-refresh" });
+  assert.equal(f.clears(), 0);
+});
+
+test("without Web Locks a 401 after a peer stored the rotation replays instead of redirecting", async (t) => {
+  const f = fixture(t, [() => {
+    f.tokens.access = "new-access";
+    f.tokens.refresh = "new-refresh";
+    return new Response(null, { status: 401 });
+  }]);
+  const response = await f.api.authFetch("/api/models");
+  assert.equal(response.status, 200);
+  assert.deepEqual(f.apiTokens, ["Bearer old-access", "Bearer new-access"]);
+  assert.equal(f.clears(), 0);
+  await f.settle();
+  assert.equal(f.location.href, "");
+});
