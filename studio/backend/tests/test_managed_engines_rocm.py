@@ -287,7 +287,6 @@ def test_cold_status_does_not_judge_an_overridden_gpu_by_its_kernel_target(amd_h
     monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
     monkeypatch.setattr(install, "_rocm_arches", None)
     monkeypatch.delitem(install.sys.modules, "torch", raising = False)
-    # The override names the target ROCr presents, so the cold poll judges gfx1100, not gfx1102.
     assert install.support_reason("vllm", wait = False) is None
     monkeypatch.delenv("HSA_OVERRIDE_GFX_VERSION")
     assert install.support_reason("vllm", wait = False).startswith("Requires an AMD Instinct")
@@ -312,7 +311,6 @@ def test_cold_status_judges_an_overridden_gpu_by_the_override_without_torch(
     assert install.support_reason("vllm", gpu_id, wait = False) == (
         install._unsupported_amd_gpu(["gfx1030"] if gpu_id is not None else ["gfx1030", "gfx1030"])
     )
-    # Unreadable, per device, or no topology to apply it to: stay provisional until torch reports.
     monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11")
     assert install.support_reason("vllm", gpu_id, wait = False) == "Checking for a supported AMD GPU."
     monkeypatch.setenv("HSA_OVERRIDE_GFX_VERSION", "11.0.0")
