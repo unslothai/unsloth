@@ -1192,6 +1192,35 @@ def test_python_high_risk_classifier(code, high_risk):
     assert is_high_risk_tool_call("python", {"code": code}) is high_risk
 
 
+@pytest.mark.parametrize(
+    "name, arguments, high_risk",
+    [
+        ("python", {"code": "__import__('os').system('rm -rf ~')"}, True),
+        ("python", {"code": "__import__('posix').system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import importlib\nimportlib.import_module('os').system('rm -rf ~')"},
+            True,
+        ),
+        ("python", {"code": "import sys\nsys.modules['os'].system('rm -rf ~')"}, True),
+        ("python", {"code": "import os\nf = os.system\nf('rm -rf ~')"}, True),
+        ("python", {"code": "import subprocess as sp\nr = sp.run\nr(['rm', '-rf', '/'])"}, True),
+        ("python", {"code": "m = __import__('os')\nm.system('rm -rf ~')"}, True),
+        ("python", {"code": "import nt\nnt.system('rm -rf ~')"}, True),
+        ("python", {"code": "(f := __import__('os').system)('rm -rf ~')"}, True),
+        ("python", {"code": "cmd = input()\n__import__('os').system(cmd)"}, True),
+        ("terminal", {"command": "python3 -c \"__import__('os').system('rm -rf ~')\""}, True),
+        ("python", {"code": "__import__('os').system('ls')"}, False),
+        ("python", {"code": "print(__import__('os').getcwd())"}, False),
+        ("python", {"code": "import sys\nprint(sys.modules['os'].getcwd())"}, False),
+        ("python", {"code": "import os\nf = os.getcwd\nprint(f())"}, False),
+        ("terminal", {"command": "python3 -c \"__import__('os').system('ls')\""}, False),
+    ],
+)
+def test_shell_command_through_any_os_module_handle_is_high_risk(name, arguments, high_risk):
+    assert is_high_risk_tool_call(name, arguments) is high_risk
+
+
 def test_high_risk_dispatcher_non_terminal():
     assert is_high_risk_tool_call("web_search", {"query": "hi"}) is False
     assert is_high_risk_tool_call("search_knowledge_base", {}) is False

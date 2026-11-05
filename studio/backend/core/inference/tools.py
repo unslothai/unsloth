@@ -17476,8 +17476,8 @@ def _check_signal_escape_patterns(code: str):
                     self.imports_signal = True
                     if alias.asname:
                         self.signal_aliases.add(alias.asname)
-                elif alias.name == "os":
-                    self.os_aliases.add(alias.asname or "os")
+                elif alias.name in ("os", "posix", "nt"):
+                    self.os_aliases.add(alias.asname or alias.name)
                 elif alias.name == "subprocess":
                     self.subprocess_aliases.add(alias.asname or "subprocess")
             self.generic_visit(node)
@@ -17507,6 +17507,59 @@ def _check_signal_escape_patterns(code: str):
                     fq = f"{node.module}.{alias.name}"
                     if fq in _SHELL_EXEC_FUNCS:
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
+            self.generic_visit(node)
+
+        def _module_of(self, node):
+            if isinstance(node, ast.NamedExpr):
+                return self._module_of(node.value)
+            if isinstance(node, ast.Name):
+                if node.id in self.os_aliases:
+                    return "os"
+                if node.id in self.subprocess_aliases:
+                    return "subprocess"
+                return None
+            name = None
+            if isinstance(node, ast.Call) and node.args:
+                f = node.func
+                if (isinstance(f, ast.Name) and f.id in ("__import__", "import_module")) or (
+                    isinstance(f, ast.Attribute) and f.attr in ("__import__", "import_module")
+                ):
+                    name = _extract_string_from_node(node.args[0])
+            elif (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == "modules"
+            ):
+                name = _extract_string_from_node(node.slice)
+            if name in ("os", "posix", "nt"):
+                return "os"
+            if name == "subprocess":
+                return "subprocess"
+            return None
+
+        def _shell_func_of(self, node):
+            if isinstance(node, ast.NamedExpr):
+                return self._shell_func_of(node.value)
+            if isinstance(node, ast.Name):
+                return self.shell_exec_aliases.get(node.id)
+            if isinstance(node, ast.Attribute):
+                module = self._module_of(node.value)
+                if module:
+                    return f"{module}.{node.attr}"
+            return None
+
+        def visit_Assign(self, node):
+            module = self._module_of(node.value)
+            shell_func = self._shell_func_of(node.value)
+            for tgt in node.targets:
+                if not isinstance(tgt, ast.Name):
+                    continue
+                if module == "os":
+                    self.os_aliases.add(tgt.id)
+                elif module == "subprocess":
+                    self.subprocess_aliases.add(tgt.id)
+                elif shell_func in _SHELL_EXEC_FUNCS:
+                    self.shell_exec_aliases[tgt.id] = shell_func
             self.generic_visit(node)
 
         def visit_While(self, node):
@@ -17569,16 +17622,7 @@ def _check_signal_escape_patterns(code: str):
                     )
 
             # Shell escape detection: resolve the FQ function name for os.*/subprocess.*
-            shell_func = None
-            if isinstance(func, ast.Attribute):
-                if isinstance(func.value, ast.Name):
-                    if func.value.id in self.os_aliases:
-                        shell_func = f"os.{func.attr}"
-                    elif func.value.id in self.subprocess_aliases:
-                        shell_func = f"subprocess.{func.attr}"
-            elif isinstance(func, ast.Name):
-                # from-import aliases: from os import system; system(...)
-                shell_func = self.shell_exec_aliases.get(func.id)
+            shell_func = self._shell_func_of(func)
 
             if shell_func and shell_func in _SHELL_EXEC_FUNCS:
                 # Expand **kwargs dicts to inspect their keys.
