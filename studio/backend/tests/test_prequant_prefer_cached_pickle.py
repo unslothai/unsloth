@@ -833,7 +833,6 @@ def test_nvfp4_cached_pickle_is_not_preferred_even_when_offered(nv_hub):
     """A stale chain naming the .pt (an older caller) still never moves the cached pickle ahead."""
     nv_hub.cache(NV_PT, NV_REPO)
     names = [NV_ST, NV_PT]
-    # control: a readable cached int8-style pickle WOULD move ahead of its uncached twin
     assert pq.prefer_cached_pickle_twins(NV_REPO, names, readable = None)[0] == NV_PT
     out = pq.prefer_cached_pickle_twins(
         NV_REPO, names, readable = lambda n: _REAL_LOAD_SUPPORTED("nvfp4", n)

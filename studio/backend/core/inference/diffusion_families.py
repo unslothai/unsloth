@@ -988,10 +988,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # 2.1's artifacts are baked from 2.1's denoiser: for nvfp4 Turbo quantizes its own weights.
         prequant_excluded_bases = ("qwen/qwen-image-2.1-turbo",),
         named_variant_bases = ("Qwen/Qwen-Image-2.1-Turbo",),
-        # The artifacts are safetensors, not the historical torch.save pickle, so the family NAMES
-        # them: a derived safetensors name is only a guess that planning will not bet the dense
-        # shards on, and the derived .pt fallbacks are not hosted here. (nvfp4 needs no row: it
-        # derives only <Model>-NVFP4.safetensors and never asks for a pickle.)
+        # Named explicitly: a derived safetensors name is a guess planning won't bet the dense shards on.
         prequant_filenames = (
             ("fp8", "Qwen-Image-2.1-FP8.safetensors"),
             ("int8", "Qwen-Image-2.1-INT8.safetensors"),

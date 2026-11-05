@@ -757,8 +757,7 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         pipeline_class = "WanPipeline",
         transformer_class = "WanTransformer3DModel",
         base_repo = "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
-        # fp8 / int8 share one repo, files Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4 is .safetensors only (never a .pt).
-        # Sizes from Hub metadata (2026-08-04).
+        # fp8 / int8: Wan2.2-TI2V-5B-<SCHEME>.pt; nvfp4: .safetensors only. Sizes from Hub (2026-08-04).
         prequant_repos = (
             ("nvfp4", "unsloth/Wan2.2-TI2V-5B-NVFP4"),
             ("fp8", "unsloth/Wan2.2-TI2V-5B-FP8"),

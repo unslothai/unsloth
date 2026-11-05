@@ -81,8 +81,7 @@ _PREQUANT_SAFE_GLOBALS: tuple[tuple[str, str], ...] = (
     ("torchao.quantization.granularity", "PerRow"),
     ("torchao.quantization.granularity", "PerTensor"),
     ("torchao.float8.inference", "Float8MMConfig"),
-    # mxfp8: local bakes only; torchao registers it only on prototype import. nvfp4 is never
-    # unpickled: its checkpoints load from safetensors only (see nvfp4_pickle_name).
+    # mxfp8: local bakes only; torchao registers it only on prototype import. nvfp4 is never unpickled.
     ("torchao.prototype.mx_formats.mx_tensor", "MXTensor"),
     ("torchao.prototype.mx_formats.mx_tensor", "QuantizeTensorToMXKwargs"),
     ("torchao.prototype.mx_formats.config", "ScaleCalculationMode"),
@@ -274,8 +273,7 @@ def _load_prequant_checkpoint(
     scheme: Optional[str] = None,
     **kwargs: Any,
 ) -> Any:
-    """Dispatches on file extension, not content, so a repo hosting both containers is never misparsed.
-    nvfp4 (asked for, or recorded in the pickle) is refused unless the file is safetensors."""
+    """Dispatches on extension, not content; nvfp4 (asked for or recorded) is refused unless safetensors."""
     from .prequant_safetensors import is_safetensors_checkpoint, load_prequant_safetensors
 
     if is_safetensors_checkpoint(path):
@@ -747,8 +745,7 @@ def with_declared_safetensors_twins(
     *,
     scheme: Optional[str] = None,
 ) -> list:
-    """Put ``<stem>.safetensors`` right before each declared root ``<stem>.pt`` / ``.pth``; the .pt stays as 404 fallback.
-    nvfp4 ignores SAFETENSORS_TWINS_ENV: its safetensors twin is the only container it may read."""
+    """Put ``<stem>.safetensors`` before each declared root .pt / .pth (kept as 404 fallback); nvfp4 ignores the env."""
     import os
 
     out = [n for n in names if n]
@@ -928,8 +925,7 @@ def derived_prequant_filenames(
     *,
     component: Optional[str] = None,
 ) -> tuple[str, ...]:
-    """Safetensors name first: needs no pickle allowlist and validates from its header; .pt stays behind.
-    nvfp4 derives the safetensors name only: its checkpoints are never read from a pickle."""
+    """Safetensors name first, .pt behind; nvfp4 derives the safetensors name only."""
     if _is_nvfp4_scheme(scheme):
         return (prequant_repo_filename(repo_id, scheme, ".safetensors", component = component),)
     names = (
@@ -1102,8 +1098,7 @@ _LOCAL_PREQUANT_SCHEME: dict[tuple[str, int, int], Optional[str]] = {}
 
 
 def local_prequant_scheme(path: str) -> Optional[str]:
-    """Reads the recorded scheme under the allowlisted weights_only load, so auto never accepts an override baked for another scheme.
-    nvfp4 is answered from a safetensors header only: a pickle recording nvfp4 reads as unknown, never a match."""
+    """Recorded scheme via the allowlisted load; a pickle recording nvfp4 reads as unknown."""
     import os
 
     try:
