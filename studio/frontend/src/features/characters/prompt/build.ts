@@ -53,6 +53,8 @@ export interface BuiltPrompt {
   system: string;
   /** One text per history entry, same order and length as the input. */
   texts: string[];
+  /** Whether each history entry is sent; a hidden turn followed by another user turn is not. */
+  sent: boolean[];
   stop: string[];
   speaker: PromptCharacter;
   lore: ActivatedLore;
@@ -85,7 +87,9 @@ export function buildImpersonationMessages(input: Omit<BuildInput, "speakerId">)
   const cast = input.cast;
   const built = buildCharacterPrompt({ ...input, speakerId: cast[0]?.id ?? "" });
   const user = input.persona.name || "User";
-  const messages = input.history.map((entry, index) => ({ role: entry.role, content: built.texts[index] }));
+  const messages = input.history
+    .map((entry, index) => ({ role: entry.role, content: built.texts[index] }))
+    .filter((_message, index) => built.sent[index]);
   // Group nudges ask a character to speak; this turn asks for the user instead.
   const last = messages[messages.length - 1];
   if (last?.role === "user") {
@@ -242,6 +246,12 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     .join("\n\n");
 
   const history = input.history;
+  // A hidden turn answered by no reply (a character without a greeting) would put two user turns in
+  // a row, which strict templates reject; it is left out of what is sent.
+  const sent = history.map(
+    (entry, index) =>
+      !(entry.meta?.kind === "opening" || entry.meta?.kind === "turn") || history[index + 1]?.role !== "user",
+  );
   const spoken = new Map<string, string>();
   for (const entry of history) if (entry.meta?.kind === "reply") spoken.set(entry.meta.speakerId, entry.meta.speakerName);
   // A chat that was a group keeps its history attributed after its other members leave.
@@ -278,9 +288,13 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
   }
   injections.push(...lore.atDepth.map((entry) => ({ depth: entry.depth, text: entry.content })));
   for (const injection of injections) {
-    let target = Math.max(0, history.length - 1 - Math.max(0, injection.depth));
-    while (target > 0 && history[target]?.role !== "user") target -= 1;
-    if (history[target]?.role !== "user") continue;
+    const start = Math.max(0, history.length - 1 - Math.max(0, injection.depth));
+    const fits = (index: number) => history[index]?.role === "user" && sent[index];
+    let target = start;
+    while (target > 0 && !fits(target)) target -= 1;
+    // Nothing sent above it (only a dropped opening): the next user turn takes it instead.
+    if (!fits(target)) for (target = start; target < history.length && !fits(target); ) target += 1;
+    if (!fits(target)) continue;
     const text = injection.text.trim();
     parts[target].push(text.startsWith("[") ? text : `[${text}]`);
   }
@@ -308,5 +322,5 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     for (const name of others) stop.push(`\n${name}:`);
   }
 
-  return { system, texts, stop, speaker, lore, sections, named };
+  return { system, texts, sent, stop, speaker, lore, sections, named };
 }

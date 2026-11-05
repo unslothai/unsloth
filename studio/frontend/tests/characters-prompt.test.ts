@@ -408,6 +408,22 @@ test("a group reduced to one character keeps its history attributed", () => {
   assert.equal(solo.named, false);
 });
 
+test("a hidden turn with no reply after it is not sent", () => {
+  const built = buildCharacterPrompt({
+    cast: [character({ id: "ann", name: "Ann" })],
+    speakerId: "ann",
+    persona: { name: "Pat", description: "" },
+    scene: { authorsNote: { text: "Rain.", depth: 1 } },
+    history: [
+      { role: "user", text: "[Start]", meta: { kind: "opening" } },
+      { role: "user", text: "Hello" },
+    ],
+    now: NOW,
+  });
+  assert.deepEqual(built.sent, [false, true]);
+  assert.ok(built.texts[1].startsWith("Hello") && built.texts[1].includes("[Rain.]"));
+});
+
 test("lorebook keys split on commas, except inside a regex key", () => {
   assert.deepEqual(parseKeyList(" sword, /a{2,4}/i , /[,/]x/,blade ,, "), ["sword", "/a{2,4}/i", "/[,/]x/", "blade"]);
 });

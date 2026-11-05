@@ -33,6 +33,8 @@ export interface CharacterRun {
   messages: ThreadMessage[];
   /** One message as this run sends it. */
   shape: <M extends { id: string }>(message: M) => M;
+  /** False for a hidden turn left out of what is sent (see BuiltPrompt.sent). */
+  sends: (messageId: string) => boolean;
   stop: string[];
   /** Stamped on the reply as `metadata.custom.roleplay`. */
   replyMeta: { kind: "reply"; speakerId: string; speakerName: string; plan?: string[] };
@@ -166,6 +168,7 @@ export async function prepareCharacterRun(args: {
     })),
   });
   const byId = new Map(chat.map((m, index) => [m.id, built.texts[index]]));
+  const unsent = new Set(chat.filter((_m, index) => !built.sent[index]).map((m) => m.id));
   // By id, so a later copy of the message (one with attachment paths added) is shaped the same.
   const shape = <M extends { id: string }>(message: M): M => {
     if (!byId.has(message.id)) return message;
@@ -175,8 +178,9 @@ export async function prepareCharacterRun(args: {
   };
   return {
     system: built.system,
-    messages: messages.map(shape),
+    messages: messages.filter((m) => !unsent.has(m.id)).map(shape),
     shape,
+    sends: (messageId) => !unsent.has(messageId),
     stop: built.stop,
     replyMeta: {
       kind: "reply",

@@ -5211,6 +5211,7 @@ export function createOpenAIStreamAdapter(
           : { messages: survivingMessages, sandboxAttachments: [] };
       // The backend Gemini translator rebuilds functionCall/functionResponse parts from these.
       let outboundMessages = renderedMessages
+        .filter((message) => !characterRun || characterRun.sends(message.id))
         .flatMap((message) => {
           const serialized = toOpenAIMessages(
             // A character chat's turns carry the speaker names, notes and turn instructions.
