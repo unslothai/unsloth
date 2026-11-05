@@ -885,25 +885,16 @@ def _rocm_reason(
 
     # Each GPU's target as the engine sees it (HSA_OVERRIDE_GFX_VERSION included), else the kernel's.
     arches = _known_rocm_gpu_arches(wait = wait)
-    if (
-        not arches
-        and _rocm_arches is None
-        and os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
-    ):
-        # Before torch reports: ROCr presents a readable global override for every GPU KFD lists.
-        override, kernel = hsa_override_gfx_target(), amd_kfd_gpu_gfx_targets()
-        if override is not None and kernel is not None:
-            arches = {gpu: override for gpu in range(len(kernel))}
-    if (
-        not arches
-        and _rocm_arches is None
-        and (
-            os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip()
-            or amd_kfd_gpu_gfx_targets() is None
-        )
-    ):
-        # The kernel's target ignores the override, or is unreadable; stay provisional until torch reports one.
-        return "Checking for a supported AMD GPU."
+    if not arches and _rocm_arches is None:
+        kernel = amd_kfd_gpu_gfx_targets()
+        if os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").strip():
+            # ROCr presents a readable global override for every GPU KFD lists; the kernel's target ignores it.
+            override = hsa_override_gfx_target()
+            if override is None or not kernel:
+                return "Checking for a supported AMD GPU."
+            arches = dict.fromkeys(range(len(kernel)), override)
+        elif kernel is None:
+            return "Checking for a supported AMD GPU."
     if gpu_id is None:
         selected = list(arches.values()) or amd_kfd_gpu_gfx_targets() or []
     elif gpu_id in arches:

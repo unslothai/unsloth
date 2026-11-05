@@ -656,11 +656,8 @@ def amd_kfd_gpu_gfx_targets(
 
 
 def hsa_override_gfx_target() -> Optional[str]:
-    """The gfx target ROCr presents for every GPU under HSA_OVERRIDE_GFX_VERSION, or ``None``
-    when it is unset, unreadable, or a per-device HSA_OVERRIDE_GFX_VERSION_<n> may differ.
-    ROCr reads major.minor.stepping as gfx<major><minor><stepping in hex>: 11.0.0 is gfx1100,
-    9.0.10 is gfx90a, as install_python_stack._hsa_override_gfx_arch reads it. libhsakmt parses
-    it with sscanf("%u.%u.%u%c") and rejects major > 63, so trailing text (even a space) fails."""
+    """Target ROCr presents for every GPU (11.0.0 -> gfx1100, 9.0.10 -> gfx90a), else None: unset,
+    per-node _<n> set, rejected by libhsakmt (sscanf "%u.%u.%u%c", major <= 63), or no one-digit name."""
     if any(key.startswith("HSA_OVERRIDE_GFX_VERSION_") for key in os.environ):
         return None
     value = os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").lstrip()
