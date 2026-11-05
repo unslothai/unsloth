@@ -422,7 +422,8 @@ def _builtin_specs() -> list[PatchSpec]:
 
     def rocm_fused(ctx: PatchContext) -> dict:
         from ..diffusion_rocm_fused import install_for_pipe
-        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger)
+        exact = str(ctx.speed_mode or "").strip().lower() == "off"
+        return install_for_pipe(ctx.pipe, ctx.dtype, ctx.device, ctx.logger, adaln = not exact)
 
     def rocm_fused_uninstall() -> None:
         from ..diffusion_rocm_fused import uninstall
