@@ -487,14 +487,9 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
           </Section>
 
           <Section title={t("characters.editor.creatorSection")} defaultOpen={Boolean(draft.creatorNotes || draft.creator)}>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Field label={t("characters.editor.creator")}>
-                <Input value={draft.creator} maxLength={200} onChange={(event) => set("creator", event.target.value)} />
-              </Field>
-              <Field label={t("characters.editor.version")}>
-                <Input value={draft.characterVersion} maxLength={200} onChange={(event) => set("characterVersion", event.target.value)} />
-              </Field>
-            </div>
+            <Field label={t("characters.editor.creator")}>
+              <Input value={draft.creator} maxLength={200} onChange={(event) => set("creator", event.target.value)} />
+            </Field>
             <Field label={t("characters.editor.creatorNotes")} hint={t("characters.editor.creatorNotesHint")}>
               <Textarea value={draft.creatorNotes} className="max-h-72 min-h-20 font-sans" onChange={(event) => set("creatorNotes", event.target.value)} />
             </Field>
