@@ -1217,6 +1217,16 @@ async def _off_thread(ctx: NodeContext, fn: Any, *args: Any) -> Any:
 EXCLUDE_INPUT = "_loop_test_questions"
 
 
+# core.flows.loop.FIELDS, the columns a Loop's seed rows carry (with their "origin").
+LOOP_SEED_FIELDS = ("failed_prompt", "failed_reference", "failed_output")
+
+
+def _without_loop_fields(row: Any) -> Any:
+    if not isinstance(row, dict) or not all(k in row for k in LOOP_SEED_FIELDS):
+        return row
+    return {k: v for k, v in row.items() if k not in LOOP_SEED_FIELDS and k != "origin"}
+
+
 async def holdout_split(
     ctx: NodeContext, dataset: dict, percent: int, seed: int
 ) -> tuple[dict, dict]:
@@ -1247,6 +1257,14 @@ async def holdout_split(
             raise
         except Exception as exc:
             raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
+    # A Loop's seed bookkeeping (which question failed, what the model answered) rides through a
+    # recipe that keeps its seed columns: never training data, nor a column automatic formatting
+    # could take for the question or the answer.
+    if table is None:
+        rows = [_without_loop_fields(r) for r in rows]
+    elif all(c in table.column_names for c in LOOP_SEED_FIELDS):
+        drop = [c for c in (*LOOP_SEED_FIELDS, "origin") if c in table.column_names]
+        table = table.remove_columns(drop)
     count = len(rows) if table is None else len(table)
     held_ids = holdout_row_ids(count, percent, seed)
     if not held_ids:

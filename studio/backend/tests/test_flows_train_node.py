@@ -1590,3 +1590,31 @@ def test_the_checkpoint_names_the_columns_training_read(monkeypatch, objective, 
     ctx.routes = routes
     checkpoint = asyncio.run(training.finetune(ctx))["checkpoint"]
     assert {k: checkpoint.get(k) for k in facts} == facts
+
+
+def test_a_loop_s_seed_bookkeeping_never_reaches_training(monkeypatch):
+    from core.flows import loop as loop_rounds
+
+    assert training.LOOP_SEED_FIELDS == loop_rounds.FIELDS
+    rows = [
+        {
+            "question": f"Which queue handles ticket {i}?",
+            "answer": "billing",
+            "origin": "failure" if i % 2 else "fresh",
+            "failed_prompt": "Which queue?" if i % 2 else "",
+            "failed_reference": "billing" if i % 2 else "",
+            "failed_output": "a long wrong answer the model gave last round" if i % 2 else "",
+        }
+        for i in range(20)
+    ]
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    monkeypatch.setitem(globals(), "ROWS", rows)
+    started = []
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10)
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    for name, uploaded in _uploads(ctx).items():
+        assert all(set(r) == {"question", "answer"} for r in uploaded), name
+    # Automatic formatting then reads the question and the answer, every round.
+    trained = next(r for n, r in _uploads(ctx).items() if n.endswith("-train.jsonl"))
+    assert training.auto_mapping(trained[0]) == {"question": "user", "answer": "assistant"}
