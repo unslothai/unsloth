@@ -225,10 +225,8 @@ def _cpu_cp_requested(args, kwargs) -> bool:
 
 
 def _install_cpu_context_parallel():
-    # _gpu_init.py installs context_parallel.patch_sft_trainer() at import. Its module loads the GPU model
-    # stack, so here it loads on the first trainer that asks for context parallelism (config, trainer kwarg,
-    # UNSLOTH_CP_SIZE / UNSLOTH_PARALLEL): that trainer gets CP, or an error before its __init__ runs, never
-    # plain DDP. Trainers without CP keep the CPU __init__ and never import the GPU stack.
+    # context_parallel loads the GPU model stack, so load it lazily on the first trainer requesting CP;
+    # that trainer gets CP or an error before __init__, never silent plain DDP.
     import functools
 
     trainer_cls = _SFTTrainer
@@ -244,8 +242,7 @@ def _install_cpu_context_parallel():
 
     @functools.wraps(original_init)
     def cp_fields_into_config(self, *args, **kwargs):
-        # The GPU route's Unsloth SFTConfig declares the CP fields and its trainer wrapper folds CP kwargs into
-        # it; stock TRL rejects them, so the CP patch's kwargs land on the config here.
+        # Stock TRL rejects CP kwargs (the GPU route's SFTConfig declares them), so move them onto the config.
         cp = {key: kwargs.pop(key) for key in cp_keys if key in kwargs}
         config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
         for key, value in cp.items():
@@ -274,7 +271,7 @@ def _install_cpu_context_parallel():
                 trainer_cls.__init__ = current
         init = state.get("init", original_init)
         init(self, *args, **kwargs)
-        # A config TRL rebuilt from to_dict() (a plain TrainingArguments) loses CP attributes set on it.
+        # A config TRL rebuilt from to_dict() loses CP attributes set on it.
         if (
             requested
             and init

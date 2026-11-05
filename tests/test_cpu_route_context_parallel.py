@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""CPU backend (`import unsloth` with no accelerator loads unsloth/_cpu_init.py): a trainer asking for context
-parallelism gets it, or an error before its __init__ runs, never plain DDP; and the CP / attention modules import
-on that route. Fresh interpreters, since the backend is chosen at import. The 2-rank cells are gloo CPU ranks on
-trl-internal-testing/tiny-Qwen3ForCausalLM (tiny_models.py Qwen3ForCausalLM)."""
+"""CPU backend: a trainer asking for CP gets it or an error before __init__, never plain DDP.
+Fresh interpreters since the backend is chosen at import; 2-rank cells are gloo on a tiny Qwen3."""
 
 from __future__ import annotations
 

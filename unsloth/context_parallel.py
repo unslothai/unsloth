@@ -200,8 +200,7 @@ def _unregister_cp_sharding_rules() -> None:
 _ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 
 
-# Defined before the imports below: they reach models/llama.py and utils/attention_dispatch.py, which bind it
-# from this partially initialised module when context_parallel is the first one imported (the CPU route).
+# Before the imports below: on the CPU route they bind this from the partially initialised module.
 def get_cp_manager() -> Optional["ContextParallelManager"]:
     return _ACTIVE_MANAGER
 
