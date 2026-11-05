@@ -4,6 +4,7 @@
 """Chat history API; sync SQLite handlers, except mixed ones that use Starlette's threadpool."""
 
 import asyncio
+import json
 import os
 import re
 import sqlite3
@@ -1704,6 +1705,86 @@ def _search_view_attachment_part(part: Any) -> bool:
     return not isinstance(text, str) or text.startswith(_PASTED_TEXT_PREFIX)
 
 
+# Mirrors searchableText: tool output keeps only text it would index, so images and widget seeds stay home.
+_SEARCH_SKIPPED_KEY = re.compile(r"b64|base64|^(?:images?|audio|video)\Z", re.IGNORECASE)
+_MCP_IMAGES_MARKER = "\n__MCP_IMAGES__:"
+_IMAGES_MARKER = "\n__IMAGES__:"
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError(name)
+
+
+def _split_mcp_images(text: str) -> str:
+    """splitMcpImages: only a valid image envelope after the last marker is cut."""
+    at = text.rfind(_MCP_IMAGES_MARKER)
+    if at == -1:
+        return text
+    try:
+        images = json.loads(
+            text[at + len(_MCP_IMAGES_MARKER) :], parse_constant = _reject_json_constant
+        )
+    except ValueError:
+        return text
+    valid = (
+        isinstance(images, list)
+        and len(images) > 0
+        and all(
+            isinstance(image, dict)
+            and isinstance(image.get("data"), str)
+            and isinstance(image.get("mimeType"), str)
+            for image in images
+        )
+    )
+    return text[:at] if valid else text
+
+
+def _search_view_string(text: str) -> str:
+    cut = _split_mcp_images(text)
+    at = cut.find(_IMAGES_MARKER)
+    if at != -1:
+        cut = cut[:at]
+    # Sent only when the browser would read it back unchanged, else the original.
+    return cut if _split_mcp_images(cut) == cut else text
+
+
+def _search_view_value(value: Any, depth: int = 0, tool_name: Any = None) -> Any:
+    if isinstance(value, str):
+        return _search_view_string(value)
+    if value is None or depth > 4:
+        return None
+    if isinstance(value, list):
+        return [_search_view_value(v, depth + 1) for v in value]
+    if isinstance(value, dict):
+        ui = value.get("ui")
+        if (
+            depth == 0
+            and isinstance(tool_name, str)
+            and tool_name.startswith("mcp__")
+            and isinstance(value.get("text"), str)
+            and isinstance(ui, dict)
+            and isinstance(ui.get("resourceUri"), str)
+        ):
+            return {"text": _search_view_string(value["text"])}
+        return {
+            k: _search_view_value(v, depth + 1)
+            for k, v in value.items()
+            if not _SEARCH_SKIPPED_KEY.search(k)
+        }
+    return value
+
+
+def _search_view_tool_call(part: dict) -> dict:
+    out = {key: part[key] for key in ("type", "toolName", "provenance") if key in part}
+    if isinstance(part.get("argsText"), str):
+        out["argsText"] = _search_view_string(part["argsText"])
+    elif "args" in part:
+        out["args"] = _search_view_value(part["args"])
+    if "result" in part:
+        out["result"] = _search_view_value(part["result"], 0, part.get("toolName"))
+    return out
+
+
 def _search_view_message(message: dict) -> dict:
     """What the search index reads of a message: no metadata, media or document bodies."""
     out = {
@@ -1716,7 +1797,7 @@ def _search_view_message(message: dict) -> dict:
         content = message["content"]
         if isinstance(content, list):
             content = [
-                part
+                _search_view_tool_call(part) if part["type"] == "tool-call" else part
                 for part in content
                 if isinstance(part, dict)
                 and isinstance(part.get("type"), str)

@@ -185,3 +185,64 @@ def test_search_view_leaves_absent_content_to_the_model_default():
     }
     view = chat_history.ChatMessage(**chat_history._search_view_message(message))
     assert view.content == chat_history.ChatMessage(**message).content == []
+
+
+def _tool_call(**part):
+    message = {
+        "id": "m",
+        "threadId": "t",
+        "role": "assistant",
+        "content": [{"type": "tool-call", "toolCallId": "c", **part}],
+        "createdAt": 1,
+    }
+    return chat_history._search_view_message(message)["content"][0]
+
+
+def test_search_view_drops_tool_output_the_index_skips():
+    envelope = json.dumps([{"data": "QUJD" * 1000, "mimeType": "image/png"}])
+    part = _tool_call(
+        toolName = "python",
+        args = {"code": "plot()", "image_b64": "QUJD"},
+        argsText = '{"code": "plot()"}',
+        result = {
+            "stdout": "done\n__IMAGES__:" + "QUJD" * 1000,
+            "images": [IMAGE],
+            "nested": {"audio": "QUJD", "log": "kept\n__MCP_IMAGES__:" + envelope},
+            "deep": [[[[[{"gone": "too deep to index"}]]]]],
+        },
+    )
+    assert part == {
+        "type": "tool-call",
+        "toolName": "python",
+        "argsText": '{"code": "plot()"}',
+        "result": {
+            "stdout": "done",
+            "nested": {"log": "kept"},
+            "deep": [[[[None]]]],
+        },
+    }
+
+
+def test_search_view_keeps_only_the_text_of_a_widget_result():
+    ui = {"resourceUri": "ui://w", "content": [{"type": "text", "data": "<div>" * 10_000}]}
+    widget = _tool_call(toolName = "mcp__w__show", result = {"text": "shown", "ui": ui})
+    assert widget["result"] == {"text": "shown"}
+    # Not a widget to the index without the mcp__ name, so every key is read.
+    plain = _tool_call(toolName = "show", result = {"text": "shown", "ui": ui})
+    assert plain["result"] == {"text": "shown", "ui": ui}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "no marker",
+        "text\n__MCP_IMAGES__:not json",
+        "text\n__MCP_IMAGES__:[]",
+        "text\n__MCP_IMAGES__:[NaN]",
+        'text\n__MCP_IMAGES__:[{"data": 1, "mimeType": "x"}]',
+        # Cutting the last envelope would expose an earlier valid one the browser never strips.
+        'a\n__MCP_IMAGES__:[{"data": "", "mimeType": ""}]\n__MCP_IMAGES__:[{"data": "", "mimeType": ""}]',
+    ],
+)
+def test_search_view_leaves_strings_the_browser_would_read_differently(text):
+    assert _tool_call(toolName = "mcp__x", result = text)["result"] == text

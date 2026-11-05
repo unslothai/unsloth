@@ -113,6 +113,27 @@ test("the search index asks the backend for the search view", async () => {
   assert.equal(build.items[0].searchText, "acme roadmap notes");
 });
 
+test("the search index reads messages a few threads per request", async () => {
+  const threads = Array.from({ length: 45 }, (_, i) => ({
+    id: `t${i}`,
+    title: `Chat ${i}`,
+    createdAt: 45 - i,
+  }));
+  configureChatSearchHistoryStub({ threads });
+  const build = await buildChatSearchIndex();
+  const requests = chatSearchBatchRequests();
+  assert.deepEqual(
+    requests.map((r) => r.threadIds.length),
+    [20, 20, 5],
+  );
+  assert.deepEqual(
+    requests.flatMap((r) => r.threadIds),
+    threads.map((t) => t.id),
+  );
+  assert.ok(requests.every((r) => (r.options as { view?: string }).view === "search"));
+  assert.equal(build.complete, true);
+});
+
 test("the backend search view keeps every part type the index reads", () => {
   const hook = readFileSync(
     new URL(
