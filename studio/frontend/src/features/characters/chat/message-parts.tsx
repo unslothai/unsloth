@@ -146,7 +146,6 @@ export function RoleplayPersonaTag() {
   );
 }
 
-/** Whether a thread is a character chat. */
 export function useIsRoleplayThread(threadId: string | null | undefined): boolean {
   return useThreadScene(threadId) !== null;
 }

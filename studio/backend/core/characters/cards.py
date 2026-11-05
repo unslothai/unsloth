@@ -100,9 +100,6 @@ def character_fields(parsed: "ParsedCard") -> dict:
     }
 
 
-# ── PNG chunks ──────────────────────────────────────────────────────────────
-
-
 def _iter_png_chunks(data: bytes):
     if not data.startswith(PNG_SIGNATURE):
         raise CardError("Not a PNG file.")
@@ -244,9 +241,6 @@ def _hsl_to_rgb(h: float, s: float, light: float) -> tuple[int, int, int]:
     return int(r * 255), int(g * 255), int(b * 255)
 
 
-# ── CHARX ───────────────────────────────────────────────────────────────────
-
-
 def read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
     try:
         return _read_charx(data)
@@ -304,9 +298,6 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
                     icon_bytes = blob
                     break
         return card, icon_bytes
-
-
-# ── Normalization ───────────────────────────────────────────────────────────
 
 
 def _text(value: Any) -> str:
@@ -492,9 +483,6 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
-# ── Import ──────────────────────────────────────────────────────────────────
-
-
 def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
     if not data:
         raise CardError("The file is empty.")
@@ -542,9 +530,6 @@ def parse_card_file(data: bytes, filename: str = "") -> ParsedCard:
         spec = spec,
         warnings = warnings,
     )
-
-
-# ── Export ──────────────────────────────────────────────────────────────────
 
 
 def _base_data(character: dict) -> dict:

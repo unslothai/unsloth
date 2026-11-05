@@ -142,7 +142,6 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
   const macro = (value: string, char = speaker.name, original?: string) =>
     applyMacros(value, { char, user, now, group: names, original });
 
-  // ── Lore: scanned over recent messages, from every member's book.
   const recent = [...input.history]
     .reverse()
     .filter((entry) => entry.meta?.kind !== "opening" && entry.meta?.kind !== "turn")
@@ -156,7 +155,6 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     lore.fired.push(...activated.fired);
   }
 
-  // ── System block.
   const sections: PromptSection[] = [];
   const defaultFrame = macro(group ? GROUP_FRAME : SOLO_FRAME);
   const override = speaker.systemPrompt.trim() && !group ? speaker.systemPrompt : "";
@@ -199,7 +197,6 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     .map((section, index) => (index === 0 ? section.text : `## ${section.label}\n${section.text}`))
     .join("\n\n");
 
-  // ── History, append-only.
   const history = input.history;
   const nameOf = (id: string | undefined, fallback: string) =>
     cast.find((c) => c.id === id)?.name ?? fallback;

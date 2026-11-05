@@ -84,9 +84,6 @@ def _dumps(value: Any) -> str:
     return json.dumps(value, ensure_ascii = False)
 
 
-# ── Portraits ───────────────────────────────────────────────────────────────
-
-
 def _image_dir(kind: str) -> Path:
     from utils.paths.storage_roots import account_path
 
@@ -121,8 +118,6 @@ def read_image(kind: str, item_id: str) -> Optional[bytes]:
 def delete_image(kind: str, item_id: str) -> None:
     _image_path(kind, item_id).unlink(missing_ok = True)
 
-
-# ── Characters ──────────────────────────────────────────────────────────────
 
 _CHARACTER_COLUMNS = {
     "name": "name",
@@ -333,9 +328,6 @@ def delete_character(character_id: str) -> bool:
     return deleted
 
 
-# ── Personas ────────────────────────────────────────────────────────────────
-
-
 def _persona_from_row(row: sqlite3.Row) -> dict:
     return {
         "id": row["id"],
@@ -436,8 +428,6 @@ def delete_persona(persona_id: str) -> bool:
     delete_image("personas", persona_id)
     return True
 
-
-# ── Character chats ─────────────────────────────────────────────────────────
 
 _MACRO_PATTERNS = (
     (re.compile(r"\{\{\s*char\s*\}\}|<BOT>", re.IGNORECASE), "char"),

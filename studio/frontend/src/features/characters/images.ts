@@ -74,7 +74,6 @@ if (typeof window !== "undefined") {
 
 const EXTENSIONS: Record<string, string> = { "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
 
-/** Opens a picture full size in Studio's image viewer. */
 export function viewPicture(kind: Kind, id: string, name: string): void {
   const base = name.trim().replace(/[\\/:*?"<>|]+/g, "_") || kind;
   openImageViewer([

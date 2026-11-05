@@ -50,7 +50,6 @@ export async function startCharacterChat(
   return created.threadId;
 }
 
-/** The newest chat with this character, if any. */
 export async function lastChatWith(characterId: string): Promise<string | null> {
   const chats = await listCharacterChats(characterId);
   return chats.find((chat) => !chat.archived)?.threadId ?? null;

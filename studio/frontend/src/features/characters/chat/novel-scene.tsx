@@ -143,7 +143,6 @@ function NovelFigure({
   );
 }
 
-/** The speaker's name on the dialogue panel, as a visual novel shows it. */
 export function NovelNameplate({ threadId, cast }: { threadId: string | null; cast: Character[] }) {
   const { focus, speaking } = useStageFocus(threadId, cast);
   if (!focus) return null;
@@ -170,7 +169,6 @@ export function NovelNameplate({ threadId, cast }: { threadId: string | null; ca
   );
 }
 
-/** "Seraphina is replying" with three bouncing dots. */
 export function SpeakingDots({ name }: { name: string }) {
   const t = useT();
   return (

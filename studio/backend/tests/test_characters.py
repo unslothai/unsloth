@@ -214,9 +214,6 @@ def test_export_converts_a_missing_or_jpeg_portrait_to_png():
         assert cards.read_png_card(exported)[0]["data"]["name"] == "X"
 
 
-# ── Routes ──────────────────────────────────────────────────────────────────
-
-
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_PROJECTS_HOME", str(tmp_path / "projects"))

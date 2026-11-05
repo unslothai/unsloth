@@ -46,7 +46,6 @@ export function useIsCharacterChat(threadId: string | null | undefined): boolean
   return useThreadScene(threadId) !== null;
 }
 
-/** The Characters section of a character chat's side panel. */
 export function RoleplayPanel({ threadId }: { threadId: string }) {
   const t = useT();
   const navigate = useNavigate();

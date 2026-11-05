@@ -192,9 +192,6 @@ def _checked_image(data: bytes) -> str:
     return media_type
 
 
-# ── Characters ──────────────────────────────────────────────────────────────
-
-
 @router.get("")
 def list_characters(current_subject: str = Depends(get_current_subject)):
     starters.seed_starters()
@@ -361,9 +358,6 @@ def list_character_chats(character_id: str, current_subject: str = Depends(get_c
     return {"chats": db.chats_for_character(character_id)}
 
 
-# ── Personas ────────────────────────────────────────────────────────────────
-
-
 def _persona_or_404(persona_id: str) -> dict:
     persona = db.get_persona(persona_id)
     if persona is None:
@@ -430,9 +424,6 @@ def delete_persona_avatar(persona_id: str, current_subject: str = Depends(get_cu
     if updated is None:
         raise HTTPException(status_code = 404, detail = _PERSONA_NOT_FOUND)
     return updated
-
-
-# ── Character chats ─────────────────────────────────────────────────────────
 
 
 @router.post("/chats", status_code = 201)
