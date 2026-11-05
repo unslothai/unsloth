@@ -2461,3 +2461,32 @@ def test_reapply_to_native_removes_rocm_flash_tracking(monkeypatch):
     assert state.resolved["attention_backend"] == entry
     assert att.apply_attention_backend(pipe, att.ROCM_FLASH_CANDIDATE, target = _target()) == "flash"
     assert att.attention_may_run_native(pipe)
+
+
+class _CompiledDitWithBreak(_CompiledDit):
+    """A traced attention call followed by a graph break in the same frame: Dynamo compiles the prefix and restarts
+    the frame's analysis, replaying it against its speculation log (diffusers' Wan blocks under regional compile)."""
+
+    def forward(self, q):
+        import torch
+
+        out = self._guarded(q, q, q, None)
+        torch._dynamo.graph_break()
+        return out * 1
+
+
+def test_traced_probe_survives_a_dynamo_restart_of_the_frame(monkeypatch):
+    # The traced call times an untimed bucket (8192) during the first analysis; the restart after the graph break
+    # must see the same segments, else SpeculationLogDivergence (Wan2.2 on gfx1151 with flash-attn, auto backend).
+    torch, dit, timed = _compiled_env(
+        monkeypatch, True, {4096: 70.0, 8192: 70.0}, _CompiledDitWithBreak
+    )
+    torch._dynamo.reset()
+    compiled = torch.compile(dit, backend = "eager")
+    q8 = torch.zeros(1, 9000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q8).flatten()[0]) == 1.0
+    assert timed == [4096, 8192]
+    # A later trace after an eager verdict sees it: the key moves with verdicts the traced calls did not add.
+    q16 = torch.zeros(1, 17000, 2, 16, dtype = torch.bfloat16)
+    assert float(compiled(q16).flatten()[0]) == -1.0
+    torch._dynamo.reset()
