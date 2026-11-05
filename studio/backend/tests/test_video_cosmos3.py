@@ -826,7 +826,7 @@ def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_ru
     with pytest.raises(ValueError, match = f"{_OPT_OUT_ENV}=0"):
         backend.begin_load(NANO, model_kind = "pipeline")
     assert started == [] and backend.loading_repo_ids() == ()
-    with pytest.raises(ValueError, match = "cosmos_guardrail"):
+    with pytest.raises(ValueError, match = "pip install cosmos-guardrail"):
         backend.load_pipeline(NANO, model_kind = "pipeline")
     assert _FakeCosmos3Pipeline.loads == []
     with pytest.raises(ValueError, match = "limited to"):

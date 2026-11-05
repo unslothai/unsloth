@@ -24,10 +24,13 @@ GUARDRAIL_PACKAGE = "cosmos_guardrail"
 GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
 # That download sends only the ambient Hub login (HF_TOKEN or `hf auth login`), never the Unsloth settings token.
 _GUARDRAIL_ACCESS = (
-    f"The guardrail downloads its weights from the gated Hugging Face repo {GUARDRAIL_REPO}: accept its licence at "
-    f"https://huggingface.co/{GUARDRAIL_REPO}, then log in with `hf auth login` or set HF_TOKEN for that account "
-    f"where Unsloth Studio runs, and restart Unsloth Studio (a token saved only in Unsloth settings does not reach "
-    f"this download)."
+    f"Accept its licence at https://huggingface.co/{GUARDRAIL_REPO}, sign in with that Hugging Face account where "
+    f"Unsloth Studio runs (hf auth login, or set HF_TOKEN; this download does not use the token in Unsloth settings), "
+    f"then restart Unsloth Studio and load again."
+)
+_GUARDRAIL_OPT_OUT = (
+    f"To run without the guardrail, set {SAFETY_CHECKER_ENV}=0; the model card's terms and safe use stay your "
+    f"responsibility."
 )
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
@@ -115,10 +118,9 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
     if not checkpoint_enables_safety_checker(repo_id, index):
         return None
     return (
-        f"'{repo_id}' runs NVIDIA's Cosmos guardrail (its model_index.json does not turn enable_safety_checker off, and "
-        f"the pipeline's default is on), which needs the cosmos_guardrail package: pip install cosmos-guardrail into "
-        f"Studio's Python environment, restart Studio, and retry. {_GUARDRAIL_ACCESS} To run without it, set "
-        f"{SAFETY_CHECKER_ENV}=0; the model card's terms and safe use stay your responsibility."
+        f"'{repo_id}' needs NVIDIA's Cosmos guardrail: pip install cosmos-guardrail in Unsloth Studio's Python "
+        f"environment. Its weights are in the gated Hugging Face repo {GUARDRAIL_REPO}. {_GUARDRAIL_ACCESS} "
+        f"{_GUARDRAIL_OPT_OUT}"
     )
 
 
@@ -131,9 +133,8 @@ def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
     if found is None or found.group(1).rstrip(".").lower() != GUARDRAIL_REPO.lower():
         return None
     return (
-        f"'{repo_id}' could not start NVIDIA's Cosmos guardrail, because Hugging Face refused this account access to "
-        f"{GUARDRAIL_REPO}. {_GUARDRAIL_ACCESS} Then load again. To run without it, set {SAFETY_CHECKER_ENV}=0; the "
-        f"model card's terms and safe use stay your responsibility."
+        f"'{repo_id}' could not start NVIDIA's Cosmos guardrail: Hugging Face refused access to the gated repo "
+        f"{GUARDRAIL_REPO}. {_GUARDRAIL_ACCESS} {_GUARDRAIL_OPT_OUT}"
     )
 
 
