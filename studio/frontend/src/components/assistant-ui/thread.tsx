@@ -562,7 +562,7 @@ type PromptQueueTarget = {
   releaseModel: () => void;
   isIndexing: () => boolean;
   /** A character chat's group round is about to start its next speaker; the queue waits for it. */
-  roundPending: () => boolean;
+  roundPending?: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
@@ -950,7 +950,7 @@ async function dispatchQueuedPrompt(
   // recheck loading after the document probe; a group's next speaker can also start during it.
   if (
     hasIndexingDocuments ||
-    item.target.roundPending() ||
+    item.target.roundPending?.() ||
     isPromptQueueTargetRunning(item.target, useChatRuntimeStore.getState().runningByThreadId) ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
   ) {
@@ -2374,7 +2374,9 @@ export const Thread: FC<{
             <div
               ref={spacerRef}
               className={cn(
-                "aui-thread-bottom-spacer shrink-0",
+                "shrink-0",
+                // Only a character chat's visual novel view styles it; ordinary chats render as before.
+                roleplayThread && "aui-thread-bottom-spacer",
                 hideComposer
                   ? "h-16"
                   : composerHeight == null

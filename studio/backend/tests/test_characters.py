@@ -476,7 +476,7 @@ def test_scene_updates_cast_persona_and_settings(client):
         == 422
     )
     assert client.put("/api/characters/chats/nope", json = {"settings": {}}).status_code == 404
-    assert client.get("/api/characters/chats/nope").status_code == 404
+    assert client.get("/api/characters/chats/nope").status_code == 204
 
 
 def test_an_ordinary_chat_has_no_scene(client):

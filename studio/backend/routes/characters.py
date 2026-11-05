@@ -461,15 +461,10 @@ def create_character_chat(
 
 @router.get("/chats/{thread_id}")
 def get_chat_scene(thread_id: str, current_subject: str = Depends(get_current_subject)):
-    """The chat's cast and scene; 204 for an ordinary chat, so the client can ask about any chat quietly."""
+    """The chat's cast and scene; 204 for any chat without one, including a new chat not saved yet, so the
+    client can ask about every chat it opens without logging an error."""
     scene = db.get_chat_scene(thread_id)
-    if scene is not None:
-        return scene
-    from storage import studio_db
-
-    if studio_db.get_chat_thread(thread_id) is None:
-        raise HTTPException(status_code = 404, detail = "Chat not found")
-    return Response(status_code = 204)
+    return scene if scene is not None else Response(status_code = 204)
 
 
 @router.put("/chats/{thread_id}")

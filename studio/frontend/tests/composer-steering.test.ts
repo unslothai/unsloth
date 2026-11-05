@@ -496,6 +496,7 @@ async function targetForSelection(
     withAttachmentOriginal: async (_pending: unknown, complete: unknown) => complete,
     getAuthSessionEpoch: () => 0,
     hasPreStreamRunReservation: () => false,
+    roundAdvancing: () => false,
   };
   const create = new Function(...Object.keys(deps), targetFactoryJs)(
     ...Object.values(deps),

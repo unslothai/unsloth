@@ -214,8 +214,8 @@ export async function createCharacterChat(input: {
 
 export async function getChatScene(threadId: string): Promise<ChatScene | null> {
   const response = await authFetch(`${CHARACTERS_API}/chats/${encodeURIComponent(threadId)}`);
-  // 204: an ordinary chat. 404: no such chat yet (a new chat before its first save).
-  if (response.status === 204 || response.status === 404) return null;
+  // 204: no characters (an ordinary chat, or a new one not saved yet).
+  if (response.status === 204) return null;
   return json(response, "Could not load the chat's characters");
 }
 

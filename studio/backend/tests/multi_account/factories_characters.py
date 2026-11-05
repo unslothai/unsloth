@@ -90,7 +90,13 @@ FACTORIES = {
     "routes.characters:DELETE:/personas/{persona_id}/avatar": Factory(
         "persona", fragment = '"hasAvatar":false'
     ),
-    "routes.characters:GET:/chats/{thread_id}": Factory("character-chat", fragment = '"cast"'),
+    "routes.characters:GET:/chats/{thread_id}": Factory(
+        "character-chat",
+        fragment = '"cast"',
+        owner = (204,),
+        wrong = (204,),
+        reason = "a chat without a scene in this account, its own or another's, answers 204 and reveals nothing",
+    ),
     "routes.characters:PUT:/chats/{thread_id}": Factory(
         "character-chat", {"settings": {"replyOrder": "list"}}, fragment = '"replyOrder":"list"'
     ),
