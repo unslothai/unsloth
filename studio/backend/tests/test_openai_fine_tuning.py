@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import threading
 
 import httpx
 import pytest
@@ -1887,3 +1888,41 @@ def test_a_batch_lists_in_the_same_order_before_and_after_its_history_rows_exist
 
     persisted = [{"id": "run_a", "started_at": started}, {"id": "run_c", "started_at": started}]
     assert order([], live) == order(persisted, {}) == ["ftjob_qc", "ftjob_qb", "ftjob_qa"]
+
+
+def test_a_cursor_on_a_batch_member_that_starts_during_the_request_still_pages(
+    batch_queue, monkeypatch, tmp_path
+):
+    client, _calls, live, gpu, _backend = batch_queue
+    previous = _finished_run(tmp_path, tmp_path / "chats.jsonl")
+    live["status"] = _Status(previous, "completed")
+    get_run = openai_fine_tuning.get_run
+    reached, released = threading.Event(), threading.Event()
+
+    def get_run_held_once(run_id):
+        if run_id == previous and not reached.is_set():
+            reached.set()
+            released.wait(timeout = 30)
+        return get_run(run_id)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "ab"]
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        monkeypatch.setattr(openai_fine_tuning, "get_run", get_run_held_once)
+        second = asyncio.ensure_future(
+            client.fine_tuning.jobs.list(after = first.data[0].id, limit = 1)
+        )
+        await asyncio.to_thread(reached.wait)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        released.set()
+        page = await second
+        seen = [j.id for j in first.data + page.data]
+        while page.has_more:
+            page = await client.fine_tuning.jobs.list(after = page.data[-1].id, limit = 1)
+            seen += [j.id for j in page.data]
+        return jobs, seen
+
+    jobs, seen = _run(flow())
+    assert seen == [jobs[1].id, jobs[0].id, "ftjob_20261021_101500_ab12cd34"]

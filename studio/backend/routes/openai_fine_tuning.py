@@ -1171,6 +1171,14 @@ def _list_job_page(
     return {"object": "list", "data": jobs, "has_more": False}
 
 
+def _pending_jobs(via_api_key: bool) -> dict[str, dict[str, Any]]:
+    return {
+        entry.alias: _for_caller(_queued_job(entry), via_api_key)
+        for entry in reversed(_ALIASES.values())
+        if _own_alias(entry.alias) is not None
+    }
+
+
 @router.get("/fine_tuning/jobs")
 async def list_fine_tuning_jobs(
     after: Optional[str] = None,
@@ -1179,6 +1187,7 @@ async def list_fine_tuning_jobs(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     await asyncio.to_thread(_load_aliases)
+    waiting = _pending_jobs(via_api_key)
     after_run = await _resolve(after) if after else None
     status = await _current_status(current_subject, via_api_key)
     live_id = _status_field(status, "job_id") if status is not None else None
@@ -1192,11 +1201,17 @@ async def list_fine_tuning_jobs(
                     after = job["id"]
 
     # After the awaits, so a job that started meanwhile is listed as its run.
-    pending = [
-        _for_caller(_queued_job(entry), via_api_key)
-        for entry in reversed(_ALIASES.values())
-        if _own_alias(entry.alias) is not None
-    ]
+    now = _pending_jobs(via_api_key)
+    listed = {job["id"] for job in live.values()}
+    pending = [job for alias, job in now.items() if alias not in waiting]
+    for alias, job in waiting.items():
+        run = _ALIAS_RUN.get(alias)
+        # Started meanwhile but not yet live or in history (a loading batch): keep its cursor valid.
+        if alias in now or (
+            alias not in listed
+            and (run is None or await asyncio.to_thread(get_run, run[0]) is None)
+        ):
+            pending.append(now.get(alias, job))
     return await asyncio.to_thread(
         _list_job_page, pending, live, after, after_run, limit, via_api_key
     )
