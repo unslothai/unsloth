@@ -14,6 +14,7 @@ import {
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 import { parseMetaTokens } from "../src/features/model-picker/components/model-selector/row-meta.ts";
 import {
+  audioCppCardGb,
   audioCppRowFit,
   classifyGgufFit,
   classifyGgufVariantFit,
@@ -142,19 +143,74 @@ test("an audio.cpp row is judged on the largest card, where automatic placement 
   };
   const scoped = loadScopedGpu(host, true);
   assert.equal(scoped.memoryTotalGb, 10);
-  assert.equal(hfModelFitsDevice(aceStep, scoped), true);
+  const card = audioCppCardGb(host);
+  assert.equal(card, 24);
+  assert.equal(
+    hfModelFitsDevice(aceStep, scoped, { audioCppCardGb: card }),
+    true,
+  );
   // Two 8 GiB cards: the Hub passes their 16 GiB sum, but no one card holds YuE2 BF16 (12.86 GiB).
-  const twoCards = { gpuGb: 16, gpuCount: 2, largestGpuGb: 8, systemRamGb: 32 };
+  const twoCards = {
+    gpuGb: 16,
+    gpuCount: 2,
+    audioCppCardGb: 8,
+    systemRamGb: 32,
+  };
   assert.equal(classifyGgufVariantFit(yue2[2], twoCards), "oom");
   assert.equal(classifyGgufVariantFit(yue2[0], twoCards), "fits");
 });
 
-test("the picker's audio.cpp verdicts read the largest card", () => {
-  // The quant expander and row badges render only under React, so their capacity is read from source.
+test("a CPU RAM load leaves audio.cpp quants to the RAM-aware rule", () => {
+  // 6 GiB GPU, 64 GiB RAM, Load model into: CPU RAM. The GPU estimate would mark every YuE2 quant oom.
+  const host = { available: true, maxDeviceMemoryGb: 6 };
+  const card = audioCppCardGb(host, true);
+  assert.equal(card, 0);
+  const budget = { gpuGb: 6, systemRamGb: 64 };
+  const rule = (bytes: number) => classifyGgufFit(bytes, budget);
+  for (const variant of yue2) {
+    assert.equal(
+      classifyVariantFitOnCard(rule, variant, audioCppCardGb(host)),
+      "oom",
+    );
+    assert.equal(
+      classifyVariantFitOnCard(rule, variant, card),
+      classifyGgufFit(variant.size_bytes, budget),
+    );
+  }
+  const plain = yue2.map(({ estimated_resident_gb: _, ...rest }) => rest);
+  assert.equal(
+    recommendedQuantForDevice(yue2, rule, null, card)?.quant,
+    recommendedQuantForDevice(plain, rule, null)?.quant,
+  );
+  assert.equal(
+    classifyGgufVariantFit(yue2[2], { ...budget, audioCppCardGb: card }),
+    classifyGgufFit(yue2[2].size_bytes, budget),
+  );
+  const row = {
+    id: "audio-cpp/Yue2-3B-GGUF",
+    isGguf: true,
+    estimatedSizeBytes: yue2[1].size_bytes,
+    estimatedResidentGb: yue2[1].estimated_resident_gb,
+    smallestResidentGb: yue2[0].estimated_resident_gb,
+  };
+  const gpu = { memoryTotalGb: 6, systemRamAvailableGb: 64 };
+  assert.equal(hfModelFitsDevice(row, gpu, { audioCppCardGb: 6 }), false);
+  assert.equal(hfModelFitsDevice(row, gpu, { audioCppCardGb: card }), true);
+});
+
+test("the picker judges audio.cpp variants on the card its load lands on", () => {
+  // The quant expander and row badges render only under React, so their wiring is read from source.
   const pickers = readSrc(
     "features/model-picker/components/model-selector/pickers.tsx",
   );
-  assert.match(pickers, /useInferenceGpuInfo\(\)\.maxDeviceMemoryGb/);
-  assert.match(pickers, /const cardGb = anyBudgetGb \? largestGpuGb : 0;/);
+  assert.match(
+    pickers,
+    /const audioCardGb = audioCppCardGb\(inferenceGpu, cpuLoad\);/,
+  );
+  assert.match(pickers, /const audioCardGb = useContext\(AudioCppCard\);/);
   assert.doesNotMatch(pickers, /audioCppRowFit\([^)]*memoryTotalGb\)/);
+  assert.match(
+    readSrc("features/audio/audio-page.tsx"),
+    /cpuLoad=\{audioDevice === "cpu"\}/,
+  );
 });

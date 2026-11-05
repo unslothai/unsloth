@@ -248,7 +248,6 @@ export function hfModelFitsDevice(
   },
   gpu: {
     memoryTotalGb: number;
-    maxDeviceMemoryGb?: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
     backend?: string;
@@ -259,6 +258,8 @@ export function hfModelFitsDevice(
     gpuCount?: number;
     mediaLoad?: boolean;
     hostPooledMemory?: boolean;
+    /** `audioCppCardGb` of the load; absent means memoryTotalGb is one card. */
+    audioCppCardGb?: number;
   } = {},
 ): boolean {
   if (
@@ -267,10 +268,10 @@ export function hfModelFitsDevice(
     !gpu.budgetKnown
   )
     return true;
-  // audio.cpp: listed when its smallest variant fits the largest card, where it is placed.
+  // audio.cpp: listed when its smallest variant fits the card the load lands on.
   const resident = audioCppRowFit(
     model,
-    gpu.maxDeviceMemoryGb ?? gpu.memoryTotalGb,
+    opts.audioCppCardGb ?? gpu.memoryTotalGb,
   );
   if (resident) return resident === "fits";
   const params = model.totalParams ?? paramsFromId(model.id);

@@ -118,6 +118,7 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
+  audioCppCardGb,
   audioCppRowFit,
   classifyVariantFitOnCard,
   ggufVariantLookupTableBytes,
@@ -672,6 +673,9 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
  *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
 const UnifiedLoadBudget = createContext<number | null>(null);
 
+/** `audioCppCardGb` of the picker's load, which audio.cpp variants are judged on; 0 judges none. */
+const AudioCppCard = createContext(0);
+
 /** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
  *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
 function loadsOnAudioCpp(repoId: string): boolean {
@@ -681,16 +685,20 @@ function loadsOnAudioCpp(repoId: string): boolean {
 function PickerScopes({
   capabilityScope,
   unifiedLoadBudgetGb,
+  audioCppCardGb,
   children,
 }: {
   capabilityScope: readonly (keyof ModelCapabilities)[] | null;
   unifiedLoadBudgetGb: number | null;
+  audioCppCardGb: number;
   children: ReactNode;
 }) {
   return (
     <CapabilityScope.Provider value={capabilityScope}>
       <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
-        {children}
+        <AudioCppCard.Provider value={audioCppCardGb}>
+          {children}
+        </AudioCppCard.Provider>
       </UnifiedLoadBudget.Provider>
     </CapabilityScope.Provider>
   );
@@ -2924,9 +2932,9 @@ function GgufVariantExpander({
   );
 
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
-  // audio.cpp variants: the backend estimate against the largest card, where they are placed.
-  const largestGpuGb = useInferenceGpuInfo().maxDeviceMemoryGb;
-  const cardGb = anyBudgetGb ? largestGpuGb : 0;
+  // audio.cpp variants: the backend estimate against the card the load lands on.
+  const audioCardGb = useContext(AudioCppCard);
+  const cardGb = anyBudgetGb ? audioCardGb : 0;
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
       classifyVariantFitOnCard(getGgufFit, variant, cardGb),
@@ -3816,6 +3824,7 @@ export function HubModelPicker({
   npu,
   rowFilter,
   moreModels,
+  cpuLoad = false,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -3862,9 +3871,12 @@ export function HubModelPicker({
       smallestResidentGb?: number | null;
     })[];
   };
+  /** Audio's "Load model into: CPU RAM": audio.cpp variants skip their GPU estimate. */
+  cpuLoad?: boolean;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
+  const audioCardGb = audioCppCardGb(inferenceGpu, cpuLoad);
   // Threaded into every fit call, not only the quant rows.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   // FP8 / NVFP4 checkpoints every GPU here runs natively: chat lists them past the GGUF-only rule and
@@ -4767,6 +4779,7 @@ export function HubModelPicker({
         (catalogFit(r.id, pipelineBudget)?.fits ??
           hfModelFitsDevice(r, source, {
             budgetFraction,
+            audioCppCardGb: audioCardGb,
             // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
             // rule IS the budget those rows had before the classifiers were merged.
             mediaLoad: diffusionLoad,
@@ -4821,6 +4834,7 @@ export function HubModelPicker({
     isTaskRuntimeSupported,
     gpu,
     inferenceGpu,
+    audioCardGb,
     isChatSupported,
     task,
     catalog,
@@ -4867,6 +4881,7 @@ export function HubModelPicker({
           cachedIdFor(row.id) !== null ||
           hfModelFitsDevice(row, source, {
             budgetFraction,
+            audioCppCardGb: audioCardGb,
             mediaLoad: diffusionLoad,
             hostPooledMemory: gpu.loadDeviceSharesHostMemory,
             gpuCount: source.deviceCount,
@@ -4880,6 +4895,7 @@ export function HubModelPicker({
     fitOnDeviceOnly,
     cachedIdFor,
     inferenceGpu,
+    audioCardGb,
     gpu,
     task,
     budgetFraction,
@@ -4978,7 +4994,7 @@ export function HubModelPicker({
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
         const resident = r.estimatedResidentGb;
-        const residentFit = audioCppRowFit(r, rowInferenceGpu.maxDeviceMemoryGb);
+        const residentFit = audioCppRowFit(r, audioCardGb);
         if (resident && residentFit) {
           map.set(r.id, {
             meta,
@@ -5035,6 +5051,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    audioCardGb,
     loadFreesResident,
   ]);
 
@@ -7767,6 +7784,7 @@ export function HubModelPicker({
   return (
     <PickerScopes
       capabilityScope={capabilityScope}
+      audioCppCardGb={audioCardGb}
       unifiedLoadBudgetGb={
         (loadFreesResident
           ? inferenceGpu.unifiedLoadCeilingGb

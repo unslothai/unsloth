@@ -21,8 +21,8 @@ export interface GgufFitInput {
   gpuCount?: number;
   /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`): past it, `fits` becomes `marginal`. */
   unifiedLoadBudgetGb?: number | null;
-  /** The largest single GPU, which audio.cpp estimates are judged on; absent: gpuGb is one card. */
-  largestGpuGb?: number;
+  /** `audioCppCardGb`, what audio.cpp estimates are judged on; absent means gpuGb is one card. */
+  audioCppCardGb?: number;
 }
 
 /** Shared with the memory bar; the loader's `_CTX_FIT_VRAM_FRACTION`. 0.90 was tried and
@@ -111,6 +111,15 @@ export interface GgufVariantSizes {
   estimated_resident_gb?: number | null;
 }
 
+/** The card an audio.cpp load lands on: the largest GPU, since automatic placement takes the one
+ *  with the most free memory. 0 for a CPU RAM load, which leaves the llama.cpp rule to decide. */
+export function audioCppCardGb(
+  gpu: { available: boolean; maxDeviceMemoryGb: number },
+  cpuLoad = false,
+): number {
+  return gpu.available && !cpuLoad ? gpu.maxDeviceMemoryGb : 0;
+}
+
 export function audioCppResidentFit(
   residentGb: number | null | undefined,
   gpuGb: number,
@@ -175,6 +184,6 @@ export function classifyGgufVariantFit(
   return classifyVariantFitOnCard(
     (sizeBytes) => classifyGgufFit(sizeBytes, input),
     variant,
-    input.largestGpuGb ?? input.gpuGb ?? 0,
+    input.audioCppCardGb ?? input.gpuGb ?? 0,
   );
 }
