@@ -189,8 +189,7 @@ def resolve_microbatches(
 
 
 def _plan_microbatches(want, explicit, num_stages, schedule, batch_size, train):
-    """(n_microbatches, padded rows) from the requested count, the stage count and the schedule only, so the
-    Trainer init refusals predict the count resolve_microbatches gives each step (before the split)."""
+    """(n_microbatches, padded rows); shared with the Trainer init refusals so they predict the per-step count."""
     floor = num_stages if (schedule == "1f1b" and train) or _gpipe_needs_stage_count() else 1
     if batch_size % want == 0:
         m = want
@@ -649,10 +648,9 @@ def pp_trainer_refusals(
 
 
 def _router_aux_coef_at_init(trainer_cls, args, model):
-    """The router load-balancing coefficient the pipeline's last stage will apply (0 = no aux loss), read before
-    Trainer.__init__: TRL's SFTTrainer / DPOTrainer rewrite output_router_logits and router_aux_loss_coef on the
-    config inside their __init__ (after this check) from SFTConfig.router_aux_loss_coef (None = the
-    architecture's); a plain Trainer follows the config's output_router_logits and the CausalLM's coefficient."""
+    """Router aux coefficient the last stage will apply (0 = none). TRL trainers rewrite output_router_logits and
+    router_aux_loss_coef inside their own __init__ (after this check) from args.router_aux_loss_coef (None = the
+    architecture's)."""
     from ..parallel_capabilities import _trainer_kind
     from .pp_native import _PP_MOE_AUX_FAMILIES
 
@@ -661,7 +659,7 @@ def _router_aux_coef_at_init(trainer_cls, args, model):
     owner = next((m for m in model.modules() if type(m).__name__ in _PP_MOE_AUX_FAMILIES), None)
     config = getattr(owner, "config", None)
     if config is None:
-        return 0  # not a family whose aux loss the pipeline carries (the split refuses other MoE models)
+        return 0  # the split refuses other MoE models
     text = config.get_text_config() if hasattr(config, "get_text_config") else config
     coef = getattr(owner, "router_aux_loss_coef", getattr(text, "router_aux_loss_coef", 0)) or 0
     on = bool(getattr(text, "output_router_logits", False))
@@ -678,9 +676,7 @@ def _router_aux_coef_at_init(trainer_cls, args, model):
 
 
 def _refuse_split_router_aux_at_init(trainer_cls, args, layout, model):
-    """_refuse_split_router_aux before the stage split: the micro-batch count each step will use, from
-    UNSLOTH_PP_MICROBATCHES (default 2 x pp), the schedule and per_device_train_batch_size (and the eval batch
-    when the Trainer evaluates). The per-step check stays for what is only known then."""
+    """_refuse_split_router_aux before the stage split; the per-step check covers what only the step knows."""
     if args is None or not _router_aux_coef_at_init(trainer_cls, args, model):
         return
     try:
@@ -701,7 +697,7 @@ def _refuse_split_router_aux_at_init(trainer_cls, args, layout, model):
                 want, layout.microbatches, layout.pp, schedule, batch_size, train
             )
         except ValueError:
-            continue  # UNSLOTH_PP_MICROBATCHES does not divide the batch: the step says so
+            continue  # the step raises its own error
         if m > 1:
             raise NotImplementedError(_split_router_aux_message(layout.env_vars, m))
 

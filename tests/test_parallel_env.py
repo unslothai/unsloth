@@ -1257,7 +1257,6 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
 
 
 def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
-    # Failing before: only the per-step check existed, so the refusal came after Trainer.__init__ split the model.
     import types
 
     import transformers
@@ -1304,28 +1303,26 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
     refuse = pp_env._refuse_split_router_aux_at_init
     T, SFT = transformers.Trainer, type("SFTTrainer", (transformers.Trainer,), {})
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
-        refuse(T, args(2), layout(), model)  # default 2 x pp micro-batches, lowered to 2
+        refuse(T, args(2), layout(), model)
     with pytest.raises(NotImplementedError, match = "into 2 micro-batches"):
-        refuse(T, args(1), layout(schedule = "1f1b"), model)  # 1F1B pads up to pp micro-batches
+        refuse(T, args(1), layout(schedule = "1f1b"), model)  # 1F1B pads up to pp
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
-        refuse(
-            T, args(1, eval_strategy = "steps", eval_bs = 4), layout(), model
-        )  # the eval batch splits
+        refuse(T, args(1, eval_strategy = "steps", eval_bs = 4), layout(), model)
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(SFT, args(2, coef = None), layout(), model)  # TRL takes the architecture's coefficient
-    refuse(T, args(4), layout(mb = 1), model)  # one micro-batch: allowed
+    refuse(T, args(4), layout(mb = 1), model)
     if not pp_env._gpipe_needs_stage_count():
-        refuse(T, args(1), layout(), model)  # a batch of one row: one micro-batch
-    refuse(SFT, args(4, coef = 0.0), layout(), model)  # TRL turns the aux loss off
-    refuse(T, args(4), layout(mb = 3), model)  # 3 does not divide 4: the step raises its own error
+        refuse(T, args(1), layout(), model)
+    refuse(SFT, args(4, coef = 0.0), layout(), model)
+    refuse(T, args(4), layout(mb = 3), model)  # the step raises its own error
     model.router_aux_loss_coef = 0.0
-    refuse(T, args(4), layout(), model)  # plain Trainer: the CausalLM's coefficient is 0
+    refuse(T, args(4), layout(), model)
     model.router_aux_loss_coef = 0.5
     config.output_router_logits = False
-    refuse(T, args(4), layout(), model)  # plain Trainer, output_router_logits off
+    refuse(T, args(4), layout(), model)
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(SFT, args(4, coef = 0.1), layout(), model)  # TRL turns it on inside its __init__
-    refuse(T, args(4), layout(), model.model)  # no CausalLM of a carried family: the split decides
+    refuse(T, args(4), layout(), model.model)  # not a carried family: the split decides
 
 
 def test_pending_expert_lora_counts_in_the_capability_query():

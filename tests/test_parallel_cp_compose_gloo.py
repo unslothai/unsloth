@@ -381,8 +381,6 @@ def _case_train(
         model._unsloth_forced_float32 = True
     tokenizer = AutoTokenizer.from_pretrained(ckpt)
     if probe_refusal:
-        # Where a refusal fires: Trainer init (before the stage split) or the first step (after it), and whether
-        # any parameter of the model passed in moved or changed by then.
         before = {n: (p.detach().clone(), p.device) for n, p in model.named_parameters()}
 
         def untouched():
@@ -933,17 +931,13 @@ _PP_AUX_SPLIT = "load-balancing loss per micro-batch"
 @pytest.mark.parametrize(
     "how",
     [
-        dict(router_aux = True, aux_coef = 0.5),  # output_router_logits on the config
-        dict(
-            trl_aux = True, aux_coef = 0.5
-        ),  # TRL's SFTConfig coefficient turns it on inside SFTTrainer.__init__
+        dict(router_aux = True, aux_coef = 0.5),
+        dict(trl_aux = True, aux_coef = 0.5),
     ],
     ids = ["config_flag", "trl_coef"],
 )
 @pytest.mark.parametrize("env", [{}, {"UNSLOTH_PP_SCHEDULE": "1f1b"}], ids = ["default", "1f1b"])
 def test_pp_moe_router_aux_loss_split_over_micro_batches_is_refused_at_trainer_init(how, env):
-    # Failing before: the refusal fired at the first training step, after Trainer.__init__ had split the model
-    # over the stages (the other stages' layers moved off this rank).
     env = {"UNSLOTH_PP_SIZE": "2", **env}
     for rank, res in enumerate(
         _spawn("train", 2, env, bs = 2, ga = 1, steps = 1, arch = "qwen3_moe", probe_refusal = True, **how)
@@ -956,16 +950,12 @@ def test_pp_moe_router_aux_loss_split_over_micro_batches_is_refused_at_trainer_i
 @pytest.mark.parametrize(
     "how, env",
     [
-        # aux off (SFTConfig router_aux_loss_coef = 0.0), default micro-batches (2 per step here)
         (dict(), {}),
-        # output_router_logits on the config, but router_aux_loss_coef = 0.0 in SFTConfig: TRL turns it off
         (dict(router_aux = True, args_coef = 0.0), {}),
-        # aux on, one micro-batch per step
         (
             dict(router_aux = True, aux_coef = 0.5, ga = 2),
             {"UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"},
         ),
-        # aux on, a batch of one row: the default micro-batch count lowers to 1
         (dict(router_aux = True, aux_coef = 0.5, bs = 1), {"UNSLOTH_PP_SCHEDULE": "gpipe"}),
     ],
     ids = ["aux_off", "config_flag_coef0", "aux_on_one_microbatch", "aux_on_batch_of_one"],
