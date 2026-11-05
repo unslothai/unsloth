@@ -339,11 +339,9 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
         runtime = False
     try:  # Studio's structured logger (the line lands in the server log), plain logging outside Studio
         from loggers import get_logger
-
         log = get_logger(__name__)
     except Exception:  # noqa: BLE001
         import logging
-
         log = logging.getLogger(__name__)
     if not runtime:
         _FUSED_STATE["failed"] = "no inductor runtime"
