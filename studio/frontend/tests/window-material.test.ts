@@ -221,8 +221,8 @@ test("glass leaves the unstuck library header clear", () => {
 test("every non-chat page takes the chat model button's glass on its controls and cards", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const scope = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] `;
-	assert.match(css, new RegExp(`${scope}:is\\(\\.elevated-card, \\[class~="bg-card"\\][^{]*\\{\\n  background-color: color-mix\\(in srgb, var\\(--glass-composer-fill\\)[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
-	assert.match(css, new RegExp(`${scope}button:not\\(:disabled, \\[data-slot="checkbox"\\], \\[data-slot="switch"\\]\\):is\\(:hover, \\[data-state="open"\\]\\) \\{[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
+	assert.match(css, new RegExp(`${scope}:where\\(\\.elevated-card, \\[class~="bg-card"\\][^{]*\\{\\n  background-color: var\\(--page-glass-fill, color-mix\\(in srgb, var\\(--glass-composer-fill\\)[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
+	assert.match(css, new RegExp(`${scope}:where\\(button:not\\(:disabled, \\[data-slot="checkbox"\\], \\[data-slot="switch"\\]\\):is\\(\\[class\\*="hover:bg-"\\]:hover, \\[class\\*="open:bg-"\\]\\[data-state="open"\\]\\)\\) \\{[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
 	assert.match(css, new RegExp(`${scope}\\.elevated-card:has\\(> \\[class~="bg-card"\\]\\) \\{\\n  background-color: transparent;`));
 });
 
@@ -252,4 +252,45 @@ test("glass sheen runs at 90% except on the composer", () => {
 	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.059\)/);
 	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
 	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
+});
+
+test("grouped glass cards get more blur and a lighter fill than single controls", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /:is\(\.elevated-card, \.elevated-card > \[class~="bg-card"\], \.library-card\) \{\n  background-color: var\(--page-glass-card-fill, color-mix\(in srgb, color-mix\(in srgb, var\(--glass-composer-fill\), #fff 6%\)[^}]*backdrop-filter: blur\(calc\(var\(--glass-blur\) \+ 8px\)\)/);
+	assert.ok(css.indexOf(".library-card) {") < css.indexOf(".elevated-card:has(> [class~=\"bg-card\"]) {"));
+	const surface = readFileSync(new URL("../src/features/library/surface.ts", import.meta.url), "utf8");
+	assert.match(surface, /CARD_SHADOW =\n  "library-card /);
+});
+
+test("light glass pages skip the extra wallpaper dim that hid the image under the reading wash", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html:not\(\.dark\)\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\] > \.chat-wallpaper\[data-ready\] \{\n  opacity: 1;/);
+	assert.match(css, /html:not\(\.dark\)\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\]\[data-wallpaper-media\] > \.chat-wallpaper\[data-ready\] \{\n  opacity: \.8;/);
+});
+
+test("light glass pages ease the white reading wash so the wallpaper shows through", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \{\n  --glass-page-wash: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) - 12%\)/);
+});
+
+test("light glass New chat lifts the wallpaper along a curve that still tracks the whole slider", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\.chat-wallpaper-frame:not\(\[data-entering\], \[data-departing\]\) \{\n  opacity: min\(1, calc\(var\(--wallpaper-visibility\) \* 2\)\);\n\}/);
+	assert.match(css, /@supports \(opacity: sqrt\(0\.5\)\) \{\n[^}]*\.chat-wallpaper-frame:not\(\[data-entering\], \[data-departing\]\) \{\n    opacity: sqrt\(var\(--wallpaper-visibility\)\);/);
+	const lift = (v: number) => Math.sqrt(v);
+	assert.ok(Math.abs(lift(0.24) - 0.5) < 0.02);
+	assert.ok(lift(0.9) - lift(0.75) > 0.07 && lift(1) === 1 && lift(0) === 0);
+});
+
+test("light glass pages use the white control glass, a lighter card sheet and one hairline edge", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const light = String.raw`html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\]`;
+	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: var\\(--glass-control\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / \\.45\\);\\n  --page-glass-edge: inset 0 0 0 1px color-mix\\(in srgb, var\\(--foreground\\) 8%, transparent\\);`));
+	assert.match(css, new RegExp(`${light} \\.elevated-card > \\[class~="bg-card"\\] \\{\\n  background-color: transparent;\\n  box-shadow: inset -1px 0 0 var\\(--page-glass-divider\\), inset 0 -1px 0 var\\(--page-glass-divider\\);`));
+	assert.match(css, new RegExp(`${light} :is\\(\\.elevated-card, \\.library-card\\) \\{\\n  box-shadow: var\\(--page-glass-card-edge\\);`));
+	assert.match(css, new RegExp(`${light} \\.glass-divider \\{\\n  border-color: var\\(--page-glass-divider\\);`));
+	assert.match(css, new RegExp(`${light} \\.unsloth-model-selector-trigger \\{\\n  background-color: var\\(--glass-control\\) !important;`));
+	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
+	assert.match(api, /const DIVIDER = "glass-divider /);
+	assert.match(api, /const INSET =\n  "glass-inset /);
 });
