@@ -1484,11 +1484,11 @@ def _generation_chunks(
     *,
     layer_count: Any = None,
 ) -> list:
-    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 runs one image per
-    modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
+    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 and Anima run one image
+    per modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
     the text-encoder release that comes with entering denoise (one chunk of several images would release it once,
     and the next image's encode would bring it back for the rest of the chunk)."""
-    if layer_count or is_flux3_family(family):
+    if layer_count or is_flux3_family(family) or is_anima_family(family):
         return [[job] for job in jobs]
     return chunk_jobs(jobs, batch_size)
 

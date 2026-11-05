@@ -106,6 +106,26 @@ def _block_count(state: dict) -> int:
     )
 
 
+def _assign_on_meta(cls: Any, config: dict, state: dict, dtype) -> Any:
+    """``cls`` built on meta and handed ``state``'s tensors, cast as ``from_pretrained`` casts them: floats to
+    ``dtype`` (``_keep_in_fp32_modules`` fp32), buffers made at init left as made. Strict on keys and shapes."""
+    import torch
+    from accelerate import init_empty_weights
+
+    from .diffusion_single_file_converters import charge_cast
+
+    keep = getattr(cls, "_keep_in_fp32_modules", None) or ()
+    with init_empty_weights():
+        model = cls.from_config(config)
+    for key, value in list(state.items()):
+        want = torch.float32 if any(m in key.split(".") for m in keep) else dtype
+        if value.is_floating_point() and value.dtype != want:
+            charge_cast(value, want)
+            state[key] = value.to(want)
+    model.load_state_dict(state, strict = True, assign = True)
+    return model.eval()
+
+
 def load_anima_single_file(
     path: str,
     config_source: str,
@@ -118,36 +138,39 @@ def load_anima_single_file(
     """``(CosmosTransformer3DModel, AnimaTextConditioner)`` from one ComfyUI-layout Anima file, on CPU.
 
     Configs come from ``config_source`` (the diffusers base); ``num_layers`` follows the file, so the 2.9B
-    (40-block) expansion loads with the 2B config. Strict on keys and shapes."""
-    import torch
+    (40-block) expansion loads with the 2B config. The models take the file's tensors (no fp32 model beside
+    them), under the host RAM check of the other single-file loaders."""
     from diffusers import AnimaTextConditioner, CosmosTransformer3DModel
     from safetensors.torch import load_file
+
+    from .diffusion_single_file_converters import HostRamBudget, converted_host_bytes
 
     common: dict[str, Any] = {"local_files_only": local_files_only}
     if cache_dir:
         common["cache_dir"] = cache_dir
     if hf_token:
         common["token"] = hf_token
-    t_state, c_state = split_anima_checkpoint(load_file(path))
     config = CosmosTransformer3DModel.load_config(config_source, subfolder = "transformer", **common)
-    blocks = _block_count(t_state)
-    if blocks and blocks != config.get("num_layers"):
-        logger.info(
-            "diffusion.anima: %s has %d blocks (base config %s)",
-            path,
-            blocks,
-            config.get("num_layers"),
-        )
-        config = {**config, "num_layers": blocks}
-    transformer = CosmosTransformer3DModel.from_config(config).to(dtype)
-    transformer.load_state_dict(t_state, strict = True)
-    conditioner = AnimaTextConditioner.from_config(
-        AnimaTextConditioner.load_config(config_source, subfolder = "text_conditioner", **common)
-    ).to(dtype)
-    conditioner.load_state_dict(c_state, strict = True)
-    del t_state, c_state
-    transformer.eval()
-    conditioner.eval()
+    conditioner_config = AnimaTextConditioner.load_config(
+        config_source, subfolder = "text_conditioner", **common
+    )
+    budget = HostRamBudget(
+        path, f"casting its weights to {str(dtype).replace('torch.', '')}", logger
+    )
+    budget.check(converted_host_bytes(path, dtype))
+    with budget:
+        t_state, c_state = split_anima_checkpoint(load_file(path))
+        blocks = _block_count(t_state)
+        if blocks and blocks != config.get("num_layers"):
+            logger.info(
+                "diffusion.anima: %s has %d blocks (base config %s)",
+                path,
+                blocks,
+                config.get("num_layers"),
+            )
+            config = {**config, "num_layers": blocks}
+        transformer = _assign_on_meta(CosmosTransformer3DModel, config, t_state, dtype)
+        conditioner = _assign_on_meta(AnimaTextConditioner, conditioner_config, c_state, dtype)
     return transformer, conditioner
 
 
