@@ -91,7 +91,7 @@ jobs:
   publish:
     name: Publish the wheelhouse
     needs: mirror
-    if: inputs.publish
+    if: inputs.publish && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

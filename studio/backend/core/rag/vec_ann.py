@@ -31,9 +31,9 @@ MARKER = ".unsloth-hnsw.json"
 
 def hnsw_fingerprint() -> str:
     """This interpreter's identity as install_hnsw_prebuilt records it in the marker."""
-    return hashlib.sha1(
-        f"{sys.executable}|{sys.version}|{platform.machine()}".encode()
-    ).hexdigest()[:16]
+    return hashlib.sha1(f"{sys.prefix}|{sys.version}|{platform.machine()}".encode()).hexdigest()[
+        :16
+    ]
 
 
 def _probe_failed() -> bool:

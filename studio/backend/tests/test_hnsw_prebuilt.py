@@ -164,7 +164,7 @@ def flow(tmp_path, monkeypatch):
     for k in ("RAG_VEC_ANN_AUTO_INSTALL", "RAG_VEC_ANN", "HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE",
               "UNSLOTH_OFFLINE", "UV_OFFLINE", "PIP_NO_INDEX"):  # fmt: skip
         monkeypatch.delenv(k, raising = False)
-    state = {"info": _info(tmp_path), "probe": (True, ""), "ran": [], "net": []}
+    state = {"info": _info(tmp_path), "probe": (True, ""), "ran": [], "net": [], "wants": []}
 
     def info(python, timeout = 60.0):
         return json.loads(json.dumps(state["info"]))
@@ -184,7 +184,17 @@ def flow(tmp_path, monkeypatch):
     monkeypatch.setattr(hp, "interpreter_info", info)
     monkeypatch.setattr(hp, "_run_first", run_first)
     monkeypatch.setattr(hp, "obtain", obtain)
-    monkeypatch.setattr(hp, "probe", lambda python, extra_path = "", timeout = 60.0: state["probe"])
+
+    def probe(
+        python,
+        extra_path = "",
+        timeout = 60.0,
+        want = hp.PAIR_STR,
+    ):
+        state["wants"].append(want)
+        return state["probe"]
+
+    monkeypatch.setattr(hp, "probe", probe)
     return state
 
 
@@ -208,6 +218,29 @@ def test_a_failed_probe_uninstalls_and_marks_failed(flow, tmp_path):
         and marker["pair"] == hp.PAIR_STR
     )
     assert hp.ensure("py", check_only = True)["status"] == "failed"
+
+
+def test_an_inconclusive_probe_leaves_no_marker_and_keeps_the_install(flow, tmp_path):
+    flow["probe"] = (None, "probe timed out")
+    r = hp.ensure("py")
+    assert r["status"] == "failed" and r["detail"] == "probe timed out"
+    assert flow["ran"] == ["install"] and hp.read_marker(str(tmp_path)) is None
+
+
+@pytest.mark.parametrize("numkong", ["7.8.7", "8.0.0"])
+def test_a_pair_from_an_older_install_is_probed_not_replaced(flow, tmp_path, numkong):
+    flow["info"] = _info(tmp_path, installed = {"usearch": "2.26.6", "numkong": numkong})
+    assert hp.ensure("py", check_only = True)["status"] == "already"
+    assert hp.ensure("py")["status"] == "already"
+    assert flow["wants"] == [""] and not flow["ran"] and not flow["net"]
+    assert hp.read_marker(str(tmp_path))["result"] == "ok"
+
+
+def test_a_users_own_pair_is_never_uninstalled(flow, tmp_path):
+    flow["info"] = _info(tmp_path, installed = {"usearch": "2.30.0", "numkong": "8.1.0"})
+    flow["probe"] = (False, "AttributeError: restore")
+    assert hp.ensure("py")["status"] == "failed"
+    assert not flow["ran"] and hp.read_marker(str(tmp_path))["result"] == "failed"
 
 
 @pytest.mark.parametrize("installed", [False, True])

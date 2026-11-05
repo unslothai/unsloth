@@ -53,6 +53,8 @@ def ver(n):
 def manual_tags():
     # uv venvs ship neither pip nor packaging: CPython tags only, which is all the catalog holds.
     import glob, os, re, sysconfig
+    if sysconfig.get_config_var("Py_GIL_DISABLED"):
+        return []
     machine = platform.machine().lower()
     plats = []
     if sys.platform == "win32":
@@ -91,7 +93,7 @@ print(json.dumps({
     "tags": tags,
     "prefix": sys.prefix,
     "version": list(sys.version_info[:2]),
-    "fp": hashlib.sha1(f"{sys.executable}|{sys.version}|{platform.machine()}".encode()).hexdigest()[:16],
+    "fp": hashlib.sha1(f"{sys.prefix}|{sys.version}|{platform.machine()}".encode()).hexdigest()[:16],
     "platform": sys.platform,
     "machine": platform.machine(),
     "libc": list(platform.libc_ver()),
@@ -115,12 +117,12 @@ rows = np.random.default_rng(0).standard_normal((64, 16)).astype(np.float32)
 index = Index(ndim = 16, metric = "cos", dtype = "f16", connectivity = 16, expansion_add = 128)
 index.add(np.arange(64, dtype = np.uint64), rows)
 assert all(int(index.search(rows[i], 1).keys[0]) == i for i in range(0, 64, 7))
-d = tempfile.mkdtemp()
-path = os.path.join(d, "probe.usearch")
-index.save(path)
-view = Index.restore(path, view = True)
-assert len(view) == 64 and int(view.search(rows[5], 1).keys[0]) == 5
-del view, index
+with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as d:
+    path = os.path.join(d, "probe.usearch")
+    index.save(path)
+    view = Index.restore(path, view = True)
+    assert len(view) == 64 and int(view.search(rows[5], 1).keys[0]) == 5
+    del view, index
 print("HNSW_PROBE_OK")
 """
 
@@ -367,36 +369,39 @@ def _pip_cmd(python: str, verb: str, args: list[str]) -> list[list[str]]:
 
 
 def _run_first(cmds: list[list[str]], timeout: float) -> None:
-    last = ""
+    errors = []
     for cmd in cmds:
         try:
             proc = subprocess.run(
                 cmd, capture_output = True, text = True, timeout = timeout, env = _child_env(), **_hidden()
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
-            last = f"{type(exc).__name__}"
+            errors.append(f"{os.path.basename(cmd[0])}: {type(exc).__name__}")
             continue
         if proc.returncode == 0:
             return
-        last = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
-        last = last[0][:300]
-    raise RuntimeError(last or "no installer available")
+        tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
+        errors.append(f"{os.path.basename(cmd[0])}: {tail[0][:300]}")
+    # Every attempt: the uv error is the useful one when the pip fallback only says pip is missing.
+    raise RuntimeError("; ".join(errors) or "no installer available")
 
 
 def probe(
     python: str,
     extra_path: str = "",
     timeout: float = _PROBE_TIMEOUT,
-) -> tuple[bool, str]:
+    want: str = PAIR_STR,
+) -> tuple[bool | None, str]:
+    """(True, "") works, (False, why) broken, (None, why) inconclusive: no marker, no uninstall."""
     try:
         proc = subprocess.run(
-            [python, "-I", "-c", _PROBE_SCRIPT, PAIR_STR, extra_path],
+            [python, "-I", "-c", _PROBE_SCRIPT, want, extra_path],
             capture_output = True, text = True, timeout = timeout, env = _child_env(), **_hidden(),
         )  # fmt: skip
     except subprocess.TimeoutExpired:
-        return False, "probe timed out"
+        return None, "probe timed out"
     except OSError as exc:
-        return False, f"probe could not start: {exc}"
+        return None, f"probe could not start: {exc}"
     if proc.returncode == 0 and "HNSW_PROBE_OK" in proc.stdout:
         return True, ""
     tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:]
@@ -434,7 +439,14 @@ class _Lock:
 
 
 def _pair_installed(info: dict) -> bool:
-    return all(info["installed"].get(n) == v for n, v in PAIR)
+    # Any installed pair is left alone and only probed: older Studio installs resolved numkong past the
+    # pin, and a user's own usearch must not be replaced or, on a failed probe, uninstalled.
+    return all(info["installed"].get(n) for n, _ in PAIR)
+
+
+def _want(info: dict) -> str:
+    """Versions the probe asserts: ours exactly, or none for a pair installed by other means."""
+    return PAIR_STR if all(info["installed"].get(n) == v for n, v in PAIR) else ""
 
 
 def ensure(
@@ -460,8 +472,9 @@ def ensure(
     if _pair_installed(info):
         if said == "ok" or check_only:
             return _result("already", "" if said == "ok" else "not probed", info)
-        ok, reason = probe(python)
-        _write_marker(prefix, fp, ok, reason)
+        ok, reason = probe(python, want = _want(info))
+        if ok is not None:
+            _write_marker(prefix, fp, ok, reason)
         return _result("already" if ok else "failed", reason, info)
     if _disabled():
         return _result("disabled", "RAG_VEC_ANN_AUTO_INSTALL=0 or RAG_VEC_ANN=0", info)
@@ -499,12 +512,13 @@ def ensure(
             remaining = max(30.0, deadline - time.monotonic())
             _run_first(_pip_cmd(python, "install", files), remaining)
             ok, reason = probe(python)
-            if not ok:
+            if ok is False:
                 try:
                     _run_first(_pip_cmd(python, "uninstall", [n for n, _ in PAIR]), 120.0)
                 except Exception:  # noqa: BLE001 - the failed marker still keeps Studio off it
                     pass
-            _write_marker(prefix, fp, ok, reason)
+            if ok is not None:
+                _write_marker(prefix, fp, ok, reason)
             info = interpreter_info(python)
             return _result("ready" if ok else "failed", reason, info, source)
     except TimeoutError as exc:
