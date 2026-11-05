@@ -810,3 +810,43 @@ async def test_a_recipe_step_with_no_saved_row_count_is_seeded_for_its_default()
     rs = await _run(eng, d)
     assert rs.status == "completed", rs.error
     assert [len(rows) for rows in seen] == [5, 5]
+
+
+@run_async
+async def test_the_loop_reads_questions_from_the_column_the_score_step_asked():
+    eng, _, _ = _engine()
+    real_bench, real_train = eng.handlers["test.bench"], eng.handlers["train.finetune"]
+    excluded = []
+
+    async def bench(ctx):
+        # Benchmark's failures report the column it asked when its own setting is blank.
+        found = await real_bench(ctx)
+        return {**found, "failures": {"rows": found["failures"], "prompt_column": "prompt"}}
+
+    async def train(ctx):
+        excluded.append(ctx.inputs.get(loop_rounds.EXCLUDE_INPUT))
+        return await real_train(ctx)
+
+    eng.handlers["test.bench"], eng.handlers["train.finetune"] = bench, train
+    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
+    assert rs.status == "completed", rs.error
+    assert excluded[1]["column"] == "prompt" and excluded[1]["questions"]
+
+
+def test_sharegpt_turns_are_read_as_benchmark_asked_them():
+    row = {
+        "prompt": [{"from": "human", "value": "What is the capital of France?"}],
+        "completion": [{"from": "gpt", "value": "Paris"}],
+        "model_output": "Lyon",
+    }
+    found = loop_rounds.failure_row(row)
+    assert found["failed_prompt"] == "What is the capital of France?"
+    assert found["failed_reference"] == "Paris"
+    assert loop_rounds.questions([row]) == ["What is the capital of France?"]
+    # The frozen test question keeps the same row out of training.
+    assert (
+        loop_rounds.without_questions(
+            [row], {"column": "", "questions": loop_rounds.questions([row])}
+        )
+        == []
+    )

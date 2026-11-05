@@ -973,3 +973,35 @@ def test_a_picked_model_is_held_to_what_was_picked(monkeypatch):
     serving.update(name = "org/A-GGUF", quant = "Q8_0")
     with pytest.raises(FlowNodeError, match = "Another model"):
         asyncio.run(benchmark._loaded_identity(ctx, ctx.benchmark_target, label))
+
+
+def test_a_column_trained_as_the_system_message_is_not_guessed_as_the_question(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [
+            {"prompt": "Reply with one word.", "question": "Capital of France?", "answer": "Paris"}
+        ]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    # Fine-tune mapped {"prompt": "system", "question": "user", "answer": "assistant"}.
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", "system_column": "prompt"}
+    out = asyncio.run(benchmark.benchmark(ctx))
+    spec = sent[0]["recipe"]
+    assert spec["prompt_column"] == "question" and spec["system_column"] == "prompt"
+    assert spec["reference_column"] == "answer"
+    # A Loop reads the failures through the same column.
+    assert out["failures"]["prompt_column"] == "question"
+    # Under a system prompt override it is still not the question; naming it under Advanced is.
+    ctx = _Ctx(_routes(sent), system_prompt = "Be brief.")
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", "system_column": "prompt"}
+    asyncio.run(benchmark.benchmark(ctx))
+    assert sent[-1]["recipe"]["prompt_column"] == "question"
+    ctx = _Ctx(_routes(sent), prompt_column = "prompt")
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", "system_column": "prompt"}
+    asyncio.run(benchmark.benchmark(ctx))
+    assert sent[-1]["recipe"]["prompt_column"] == "prompt"

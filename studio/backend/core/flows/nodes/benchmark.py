@@ -448,13 +448,17 @@ async def _recipe_heldout(
 ) -> dict:
     rows = await _read_rows(ctx, ctx.inputs.get("dataset"), max_rows)
     columns = sorted({k for r in rows for k in r})
-    prompt_col = guess_column(
-        columns, str(ctx.params.get("prompt_column") or "").strip(), PROMPT_GUESSES
-    )
-    if not prompt_col:
-        raise FlowNodeError("Set the prompt column under Advanced: no column looks like a prompt")
     # Read against every column first: training may have mapped `input` as the system message.
     system_col = _system_column(ctx, columns)
+    checkpoint = ctx.inputs.get("checkpoint")
+    trained_system = checkpoint.get("system_column") if isinstance(checkpoint, dict) else None
+    # A column training read as the system message is never guessed as the question or the answer.
+    unasked = {system_col, trained_system} - {None, ""}
+    guessable = [c for c in columns if c not in unasked]
+    named_prompt = str(ctx.params.get("prompt_column") or "").strip()
+    prompt_col = guess_column(columns if named_prompt else guessable, named_prompt, PROMPT_GUESSES)
+    if not prompt_col:
+        raise FlowNodeError("Set the prompt column under Advanced: no column looks like a prompt")
     if (
         prompt_col == "instruction"
         and "input" in columns
@@ -467,9 +471,10 @@ async def _recipe_heldout(
         columns = [c for c in columns if c != "input"]
     else:
         asked = rows
+    named_reference = str(ctx.params.get("reference_column") or "").strip()
     reference_col = guess_column(
-        [c for c in columns if c != prompt_col],
-        str(ctx.params.get("reference_column") or "").strip(),
+        [c for c in columns if c != prompt_col and (named_reference or c not in unasked)],
+        named_reference,
         REFERENCE_GUESSES,
     )
     # The failures output keeps the original rows.
@@ -576,6 +581,9 @@ async def _recipe_heldout(
         "run_id": run_ids.get("candidate"),
         "results": results,
         "failures": failures,
+        # The column asked, so a Loop reads failures and test questions as they were scored; an
+        # Alpaca row's question is its instruction plus input, which the Loop rebuilds itself.
+        "prompt_column": "" if prompt_col == ALPACA_PROMPT else prompt_col,
     }
 
 
@@ -736,4 +744,6 @@ async def benchmark(ctx: NodeContext) -> dict:
     failures["preview"] = [
         {k: _short(v) for k, v in r.items()} for r in found["failures"][:MAX_ROWS]
     ]
+    if "prompt_column" in found:
+        failures["prompt_column"] = found["prompt_column"]
     return {"score": _percent(found["score"]), "results": results, "failures": failures}

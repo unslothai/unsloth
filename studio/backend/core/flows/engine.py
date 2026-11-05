@@ -2383,6 +2383,9 @@ class FlowEngine:
                 raise FlowNodeError(rs.node(scorer).error or "The score step did not finish")
             return produced
 
+        # The question column: the score step's setting, else the one its failures report it asked
+        # (a column training read as the system message is not it).
+        asked_col = str(scorer_params.get("prompt_column") or "")
         try:
             for r in range(rounds):
                 if rs.cancelled:
@@ -2403,7 +2406,7 @@ class FlowEngine:
                     failures if feed else [],
                     seed_rows,
                     failure_percent,
-                    str(scorer_params.get("prompt_column") or ""),
+                    asked_col,
                     str(scorer_params.get("reference_column") or ""),
                     per_failure,
                 )
@@ -2415,7 +2418,7 @@ class FlowEngine:
                         override(b, "start", last[b])
                 if test_rows:
                     # The frozen test questions never train a later round, wherever the recipe puts them.
-                    column = str(scorer_params.get("prompt_column") or "")
+                    column = asked_col
                     override(
                         held_src[0],
                         loop_rounds.EXCLUDE_INPUT,
@@ -2474,6 +2477,9 @@ class FlowEngine:
                         "split": "test",
                     }
                 probe_out = await score(probe, Env(child), (*key, 0))
+                fed_back = probe_out.get(fail_port)
+                if not asked_col and isinstance(fed_back, dict):
+                    asked_col = str(fed_back.get("prompt_column") or "")
                 test_layer = Env(child)
                 test_out = await score(test, test_layer, (*key, 1))
                 if after:
@@ -2484,7 +2490,7 @@ class FlowEngine:
                 failures = loop_rounds.drop_test_rows(
                     await self._dataset_rows(ctx, found),
                     test_rows,
-                    str(scorer_params.get("prompt_column") or ""),
+                    asked_col,
                 )
                 entry = {
                     "round": r + 1,

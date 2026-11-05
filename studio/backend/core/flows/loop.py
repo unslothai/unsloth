@@ -44,14 +44,16 @@ def split_holdout(rows: list[dict], probe_percent: int, seed: int) -> tuple[list
     return [rows[i] for i in probe], [rows[i] for i in test]
 
 
-def _text(value: Any) -> str:
+def _text(value: Any, answer: bool = False) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
         return value
-    if isinstance(value, list) and value and isinstance(value[-1], dict):
-        # A chat transcript: the last message is what was asked or answered.
-        return _text(value[-1].get("content"))
+    from core.benchmark.recipe_heldout import cell_messages, prompt_text, reference_text
+
+    if cell_messages(value) is not None:
+        # A chat transcript (OpenAI or ShareGPT turns), read as Benchmark asked and scored it.
+        return reference_text(value) if answer else prompt_text(value)
     return json.dumps(value, ensure_ascii = False)
 
 
@@ -85,10 +87,10 @@ def failure_row(
         "failed_prompt": question,
         # Benchmark's own scored reference when it gave one: the dataset cell may be a label id or
         # a structured answer the score read differently.
-        "failed_reference": _text(lowered["scored_reference"])
+        "failed_reference": _text(lowered["scored_reference"], answer = True)
         if lowered.get("scored_reference") is not None
-        else (_text(lowered.get(reference)) if reference else ""),
-        "failed_output": _text(lowered.get(output)) if output else "",
+        else (_text(lowered.get(reference), answer = True) if reference else ""),
+        "failed_output": _text(lowered.get(output), answer = True) if output else "",
     }
     return row if row["failed_prompt"] else None
 
