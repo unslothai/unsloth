@@ -2508,7 +2508,11 @@ def run_inference_process(
     import json as _json
 
     _ensure_backend_on_path()
-    from utils.transformers_version import _remote_lora_base, _resolve_base_model
+    from utils.transformers_version import (
+        _remote_lora_base,
+        _resolve_base_model,
+        remote_lora_base_scope,
+    )
 
     _hf_token = _config_hf_token(config)
     _lora_base = None
@@ -2523,23 +2527,25 @@ def run_inference_process(
             )
         except Exception:
             _lora_base = None
-    if not _lora_base:
-        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
-    # LoRA base, else a full fine-tune's recorded base (its name reveals SSM/sidecar arch).
-    _base = _lora_base or _resolve_base_model(model_name)
+    # One adapter_config.json answer serves this lookup and activation's own.
+    with remote_lora_base_scope():
+        if not _lora_base:
+            _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+        # LoRA base, else a full fine-tune's recorded base (its name reveals SSM/sidecar arch).
+        _base = _lora_base or _resolve_base_model(model_name)
 
-    try:
-        _activate_transformers_version(_base, _hf_token)
-    except Exception as exc:
-        _send_response(
-            resp_queue,
-            {
-                "type": "error",
-                "error": f"Failed to activate transformers version: {exc}",
-                "stack": traceback.format_exc(limit = 20),
-            },
-        )
-        return
+        try:
+            _activate_transformers_version(_base, _hf_token)
+        except Exception as exc:
+            _send_response(
+                resp_queue,
+                {
+                    "type": "error",
+                    "error": f"Failed to activate transformers version: {exc}",
+                    "stack": traceback.format_exc(limit = 20),
+                },
+            )
+            return
 
     # Gates (model and genuine LoRA base only, never a full fine-tune's base), then SSM kernels, both before the transformers import, which snapshots backends.
     _gate_targets = _native_audio_security_targets_or_error(model_name, _hf_token, resp_queue)

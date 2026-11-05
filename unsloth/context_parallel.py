@@ -519,6 +519,13 @@ class ContextParallelManager:
         # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
         self.packed_seq_lengths = inputs.get("packed_seq_lengths")
         try:
+            if isinstance(self.packed_seq_lengths, torch.Tensor):
+                # Build the cached packed entry outside compile: dynamo does not guard its identity check
+                # (stale documents). Inside the try, so a raise here still restores the manager.
+                from .utils.packing import get_packed_info_from_kwargs
+                get_packed_info_from_kwargs(
+                    {"packed_seq_lengths": self.packed_seq_lengths}, inputs["input_ids"].device
+                )
             yield
         finally:
             _ACTIVE_MANAGER = previous

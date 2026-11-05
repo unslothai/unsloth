@@ -309,7 +309,9 @@ class _HeadShard:
     # Plain attribute access only: torch.compile cannot trace object.__getattribute__ / object.__setattr__.
     def __init__(self, module, **overrides):
         self._unsloth_module = module
-        self.__dict__.update(overrides)
+        # One attribute at a time: torch < 2.13 cannot trace self.__dict__.update (graph break).
+        for name, value in overrides.items():
+            setattr(self, name, value)
 
     def __getattr__(self, name):
         # Only called for names the shard does not hold itself.
@@ -344,7 +346,8 @@ def _refuse_non_causal(module, is_causal = None) -> None:
 
 def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
-    as transformers' masks), and packed documents closed off from one another."""
+    as transformers' masks), and packed documents closed off from one another (padding past
+    cu_seqlens[-1] is one more segment)."""
     idx = torch.arange(total, device = device)
     allowed = idx[None, :] <= idx[:, None]
     if window is not None:
@@ -405,9 +408,6 @@ def _ulysses_hf_attention(
         else get_packed_info_from_kwargs({"packed_seq_lengths": packed_seq_lengths}, query.device)
     )
     cu_seqlens = None if seq_info is None else seq_info[1]
-    if cu_seqlens is not None and int(cu_seqlens[-1]) < total:
-        # Padding to the cp multiple sits after the last document: its own segment.
-        cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
 
     overrides = {"num_key_value_groups": plan.local_groups}
     sinks = getattr(module, "sinks", None)
@@ -423,6 +423,9 @@ def _ulysses_hf_attention(
         # Flash takes the window and the softcap as arguments, and documents as cu_seqlens.
         mask = None
         if cu_seqlens is not None:
+            if int(cu_seqlens[-1]) < total:
+                # Padding to the cp multiple sits after the last document: its own segment.
+                cu_seqlens = torch.cat([cu_seqlens, cu_seqlens.new_tensor([total])])
             cu = cu_seqlens.to(device = query.device, dtype = torch.int32)
             longest = int((cu[1:] - cu[:-1]).max())
             kwargs.update(
@@ -431,6 +434,7 @@ def _ulysses_hf_attention(
     elif implementation == "sdpa" and cu_seqlens is None and window is None:
         mask = None  # sdpa's is_causal path
     else:
+        # No data-dependent padding check here: it graph-broke compiled packed attention.
         mask = _whole_sequence_mask(total, query.device, query.dtype, window, cu_seqlens)
     out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
     # [B, T, H / N, D] -> [B, T / N, H, D]

@@ -681,9 +681,9 @@ def encoder_resident_for_plan(plan: Any) -> bool:
 
     The plan prices the family's text encoder (the table's 23.9 GB) as if it were in-process: resident under ``none``
     and under ``group`` with resident companions, streamed under ``group`` with streamed text encoders and under
-    ``streaming`` / ``sequential``, alone on the card under ``model``. The worker cannot stream, so on every tier that did
-    not budget it resident it keeps the encoder on the host and onloads it only for an encode, when the card has room
-    (else it encodes on the CPU; see ``video_ltx25_te_worker._encode_device``)."""
+    ``streaming`` / ``sequential``, alone on the card under ``model``. On every tier that did not budget it resident the
+    worker keeps the encoder on the host and onloads it only for an encode: whole when the card has room, else one
+    decoder layer at a time, else it encodes on the CPU (see ``video_ltx25_te_worker._encode_plan``)."""
     from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
 
     policy = getattr(plan, "offload_policy", None)
@@ -1083,14 +1083,20 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
 
         def _one(texts: list[str]) -> tuple[Any, Any]:
             # The client's own cached tensors (read only): every op below returns a new tensor.
-            embeds, mask = client.encode(texts, max_sequence_length, copy = False)
-            batch = embeds.shape[0]
-            embeds = embeds.to(device = device, dtype = dtype)
+            cached, mask = client.encode(texts, max_sequence_length, copy = False)
+            batch = cached.shape[0]
+            embeds = cached.to(device = device, dtype = dtype)
             mask = mask.to(device = device)
             seq_len = embeds.shape[1]
-            embeds = embeds.repeat(1, num_videos_per_prompt, 1).view(
-                batch * num_videos_per_prompt, seq_len, -1
-            )
+            # A ``.to`` that moved or cast already copied, so one video skips ``repeat``; a no-op ``.to`` aliases the cache.
+            if (
+                num_videos_per_prompt != 1
+                or embeds.data_ptr() == cached.data_ptr()
+                or not embeds.is_contiguous()
+            ):
+                embeds = embeds.repeat(1, num_videos_per_prompt, 1).view(
+                    batch * num_videos_per_prompt, seq_len, -1
+                )
             mask = mask.view(batch, -1).repeat(num_videos_per_prompt, 1)
             return embeds, mask
 

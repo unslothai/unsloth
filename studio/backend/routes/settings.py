@@ -1736,6 +1736,12 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
 
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from core.systemone.native_worker import reuse_found_binary
+    with reuse_found_binary():
+        return _systemone_answer(request)
+
+
+def _systemone_answer(request: Request) -> SystemOneSettingsResponse:
     from pathlib import Path
 
     from core.systemone import catalog, laya_runtime
@@ -4890,7 +4896,7 @@ class PersonalizationCustomization(BaseModel):
     contrast: int = Field(50, ge = 0, le = 100)
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "system"
+    reduceMotion: Literal["system", "on", "off"] = "off"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False

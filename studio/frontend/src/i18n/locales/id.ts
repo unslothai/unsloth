@@ -215,6 +215,7 @@ export const id = {
     tabs: "Tab browser",
     newTab: "Tab baru",
     newTabFullView: "Tab baru dalam tampilan penuh",
+    newTabFloating: "Tab baru di jendela mengambang",
     closeTab: "Tutup tab",
     close: "Tutup browser",
     show: "Tampilkan browser",
@@ -433,6 +434,12 @@ export const id = {
       openChat: "Buka dalam tampilan penuh",
       moveLeft: "Pindahkan ke panel kiri",
       moveRight: "Pindahkan ke panel kanan",
+    },
+    floating: {
+      enter: "Jendela mengambang",
+      dock: "Sematkan ke samping",
+      close: "Tutup jendela mengambang",
+      handle: "Pindahkan jendela. Tombol panah memindahkannya; Shift dan tombol panah mengubah ukurannya.",
     },
     annotate: {
       countOne: "1 anotasi",
@@ -884,6 +891,9 @@ export const id = {
     unifiedTightFit: "Pas-pasan",
     unifiedTightFitHint:
       "Mungkin dimuat dengan konteks lebih pendek atau berjalan lebih lambat di Mac ini.",
+    residentToRun: "untuk menjalankan",
+    residentToRunHint:
+      "Memori GPU yang dibutuhkan pemeriksaan pemuatan saat berjalan",
     onDevice: "Di Perangkat",
     huggingFace: "Hugging Face",
     retry: "Coba lagi",
@@ -1205,6 +1215,9 @@ export const id = {
         "Satu model per baris, misalnya unsloth/Qwen3-4B-GGUF, atau unsloth/* untuk seluruh organisasi. Biarkan kosong untuk mengizinkan semua model.",
       modelAccessSave: "Simpan",
       modelAccessLimited: "Akses model terbatas",
+      rename: "Ganti nama",
+      renameTitle: "Ganti nama {username}",
+      renameDescription: "Pilih nama yang digunakan akun ini untuk masuk. Chat, file, dan kunci API tetap berada di akun ini. Pengguna akan dikeluarkan dan masuk lagi dengan nama baru serta kata sandi yang sekarang.",
       empty: "Belum ada akun lain",
       setupCode: "Kode penyiapan",
       setupFor: "Kode penyiapan untuk {username}",
