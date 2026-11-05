@@ -449,6 +449,85 @@ def test_weight_only_lora_path_mirrors_before_it_would_drop_the_replica():
     )
 
 
+# --- layer split only where streaming is exposed ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "streamed_mib, params, h2d, tflops, side, expect_hidden",
+    [
+        # FLUX.1-dev int8 on a T4: about 7 GiB streamed per step at ~11 GiB/s against 12B params of compute at 1024px
+        (7 * 1024, 12e9, 11.0, 40.0, 1024, True),
+        # the same model at 512px: still hidden (about 3% exposed)
+        (7 * 1024, 12e9, 11.0, 40.0, 512, True),
+        # a small DiT streaming most of its weights (Z-Image-Turbo at 512px): exposed
+        (10 * 1024, 6e9, 11.0, 40.0, 512, False),
+        # nothing streamed: hidden
+        (0, 9e9, 11.0, 40.0, 1024, True),
+    ],
+)
+def test_stream_exposure_table(streamed_mib, params, h2d, tflops, side, expect_hidden):
+    transfer, compute, exposed = mg.stream_exposure(
+        streamed_mib, params, h2d_gib_s = h2d, tflops = tflops, side_px = side
+    )
+    assert (exposed < mg.STREAM_HIDDEN_FRACTION) is expect_hidden
+    assert 0.0 <= exposed <= 1.0 and transfer >= 0 and compute > 0
+
+
+def test_split_gate_applies_only_to_automatic_group_plans(monkeypatch):
+    class Plan:
+        offload_policy = "group"
+        resident_transformer_mib = (
+            8 * 1024
+        )  # the whole denoiser resident on the primary (only encoders stream)
+
+    class Sel:
+        automatic = True
+        primary = 0
+
+    class Explicit(Sel):
+        automatic = False
+
+    class Pipe:
+        transformer = FluxTransformer2DModel().half()
+
+    class Other:
+        transformer = torch.nn.Linear(64, 64).half()
+
+    sizes = {"transformer": (8 * 1024, "dit")}
+    from core.inference import diffusion_memory as dm
+
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: (11.0, 10.0))
+    monkeypatch.setattr(mg, "_copy_partner", lambda pipe, sel: 1)
+    monkeypatch.setattr(mg, "_gemm_tflops", lambda o, d: 1e-9)
+    # a family whose copy cannot serve its requests (no batch split): the split stays
+    assert mg._hidden_stream_reason(Other(), Plan(), sizes, Sel()) is None
+    monkeypatch.setattr(mg, "_gemm_tflops", lambda o, d: 1e-9)  # compute dominates: hidden
+    pipe = Pipe()
+    assert "hidden behind compute" in mg._hidden_stream_reason(pipe, Plan(), sizes, Sel())
+    monkeypatch.setattr(
+        mg, "_copy_partner", lambda pipe, sel: None
+    )  # the copy does not fit: the split stays
+    assert mg._hidden_stream_reason(pipe, Plan(), sizes, Sel()) is None
+    monkeypatch.setattr(mg, "_copy_partner", lambda pipe, sel: 1)
+    assert mg._hidden_stream_reason(pipe, Plan(), sizes, Explicit()) is None
+    capacity = Plan()
+    capacity.offload_policy = "sequential"
+    assert mg._hidden_stream_reason(pipe, capacity, sizes, Sel()) is None
+    monkeypatch.setenv(mg.STREAM_GATE_ENV, "0")
+    assert mg._hidden_stream_reason(pipe, Plan(), sizes, Sel()) is None
+    monkeypatch.delenv(mg.STREAM_GATE_ENV)
+    streaming = Plan()
+    streaming.resident_transformer_mib = (
+        1024  # 7 GiB of the denoiser streams on the primary: main's split stays
+    )
+    assert mg._hidden_stream_reason(pipe, streaming, sizes, Sel()) is None
+    monkeypatch.setattr(
+        mg, "_gemm_tflops", lambda o, d: 1e9
+    )  # compute negligible: exposed, split tried
+    assert mg._hidden_stream_reason(pipe, streaming, sizes, Sel()) is None
+    assert mg._STREAM_ESTIMATES[pipe]["exposed"] > 0.9
+
+
 def test_dynamic_nvfp4_layers_keep_the_batch_whole():
     """A layer that takes its activation scale from each call's amax (ComfyUI's dynamic NVFP4) would quantise each half
     against its own maximum: the split is refused and the render matches one card."""

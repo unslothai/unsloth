@@ -753,6 +753,173 @@ def _one_card_rejection(plan: Any, primary: int) -> PlacementCandidate:
     )
 
 
+# Automatic placement order: one card (plus a second-card copy for guided steps / even batches) before a layer split,
+# when a copy fits and streaming the denoiser on one card is hidden behind its compute: a layer split adds no
+# parallelism (its blocks run one card after the other), so it only removes the stream, and below this exposed share
+# the cards' own speed spread (T4s 10% apart under the same load) decides instead.
+STREAM_HIDDEN_FRACTION = 0.05
+STREAM_GATE_ENV = "UNSLOTH_DIFFUSION_SPLIT_STREAM_GATE"
+_GEMM_PROBES: dict = {}
+
+
+def _gemm_tflops(device_index: int, dtype: Any) -> Optional[float]:
+    """Dense GEMM TFLOPS of ``device_index`` in ``dtype`` (the denoiser's compute dtype: fp16 on a T4, where bf16 runs
+    emulated), best of a few runs, cached."""
+    key = (int(device_index), str(dtype))
+    if key in _GEMM_PROBES:
+        return _GEMM_PROBES[key]
+    result = None
+    try:
+        torch = _torch()
+        with torch.cuda.device(int(device_index)):
+            a = torch.randn(4096, 3072, dtype = dtype, device = "cuda")
+            b = torch.randn(3072, 3072, dtype = dtype, device = "cuda")
+            start, end = torch.cuda.Event(enable_timing = True), torch.cuda.Event(enable_timing = True)
+            torch.mm(a, b)
+            torch.cuda.synchronize()
+            best = float("inf")
+            for _ in range(3):
+                start.record()
+                for _ in range(10):
+                    torch.mm(a, b)
+                end.record()
+                end.synchronize()
+                best = min(best, start.elapsed_time(end) / 10)
+            del a, b
+        if best > 0:
+            result = 2.0 * 4096 * 3072 * 3072 / (best / 1000.0) / 1e12
+    except Exception:  # noqa: BLE001 - unmeasurable: no gate
+        result = None
+    _GEMM_PROBES[key] = result
+    return result
+
+
+def stream_exposure(
+    streamed_mib: int,
+    dense_params: float,
+    *,
+    h2d_gib_s: float,
+    tflops: float,
+    side_px: int = 1024,
+) -> tuple[float, float, float]:
+    """(transfer s, compute s, exposed share) of one denoise step streaming ``streamed_mib`` while computing a DiT of
+    ``dense_params`` parameters at ``side_px``. Exposed share = time the step waits on the stream / step time. Pure."""
+    from .diffusion_memory import _DIT_COMPUTE_EFFICIENCY, _DIT_PIXELS_PER_TOKEN
+
+    transfer = max(0, int(streamed_mib)) / 1024.0 / max(float(h2d_gib_s), 1e-6)
+    tokens = (int(side_px) // _DIT_PIXELS_PER_TOKEN) ** 2
+    compute = (
+        _DIT_COMPUTE_EFFICIENCY
+        * 2.0
+        * float(dense_params)
+        * tokens
+        / (max(float(tflops), 1e-6) * 1e12)
+    )
+    step = max(transfer, compute)
+    exposed = max(0.0, transfer - compute) / step if step > 0 else 0.0
+    return transfer, compute, exposed
+
+
+def _hidden_stream_reason(pipe: Any, plan: Any, sizes: dict, selection: Any) -> Optional[str]:
+    """Why Automatic keeps the one-card streamed plan instead of a layer split, or None (try the split as before).
+
+    Only for an automatic selection whose one-card plan streams the denoiser in groups (a capacity plan such as
+    sequential / whole-module offload keeps the split), priced at Studio's cost canvas from this card's measured
+    pinned H2D bandwidth and its GEMM throughput in the denoiser's dtype. ``UNSLOTH_DIFFUSION_SPLIT_STREAM_GATE=0``
+    restores the old choice."""
+    if not getattr(selection, "automatic", False):
+        return None
+    if (os.environ.get(STREAM_GATE_ENV) or "").strip().lower() in ("0", "off", "false", "no"):
+        return None
+    if getattr(plan, "offload_policy", None) != "group":
+        return None
+    denoiser_cls = type(getattr(pipe, "transformer", None)).__name__
+    if denoiser_cls not in _DIT_BATCH_SPLIT_KWARGS:
+        # Only where a second-card copy can serve every kind of request this family runs (an even batch splits, a
+        # guided step pairs): elsewhere (Z-Image, measured 2.3-3.1x faster split) the split stays as on main.
+        return None
+    partner = _copy_partner(pipe, selection)
+    if partner is None:
+        # the copy does not fit an idle same-model card: the split stays (FLUX.2-klein-9B: 0-14% faster split)
+        return None
+    try:
+        from .diffusion_memory import _COST_CANVAS_PX, _offload_cost_measurements
+
+        measured = _offload_cost_measurements()
+        denoiser = getattr(pipe, "transformer", None)
+        if measured is None or denoiser is None:
+            return None
+        dtype = next((p.dtype for p in denoiser.parameters() if p.is_floating_point()), None)
+        dtype = getattr(denoiser, "dtype", None) or dtype
+        if dtype is None or not getattr(dtype, "is_floating_point", False) or dtype.itemsize < 2:
+            dtype = _torch().float16
+        if dtype == _torch().float32:
+            dtype = _torch().float16
+        tflops = _gemm_tflops(int(selection.primary), dtype)
+        if tflops is None:
+            return None
+        dit = _denoiser_mib(sizes)
+        resident = int(getattr(plan, "resident_transformer_mib", None) or 0)
+        streamed = max(0, dit - resident)
+        params = sum(p.numel() for p in denoiser.parameters())
+        transfer, compute, exposed = stream_exposure(
+            streamed, params, h2d_gib_s = measured[0], tflops = tflops, side_px = _COST_CANVAS_PX
+        )
+    except Exception:  # noqa: BLE001 - unpriced: the split is tried as before
+        return None
+    try:
+        _STREAM_ESTIMATES[pipe] = {
+            "streamed_mib": streamed,
+            "h2d_gib_s": round(measured[0], 2),
+            "tflops": round(tflops, 1),
+            "transfer_s": round(transfer, 3),
+            "compute_s": round(compute, 3),
+            "exposed": round(exposed, 3),
+        }
+    except TypeError:
+        pass
+    if exposed >= STREAM_HIDDEN_FRACTION:
+        return None
+    if streamed > 0:
+        # The primary would stream part of the denoiser while the partner could hold it whole: a single image then
+        # depends on which card runs cooler (FLUX.1-dev split -7.7% to +4.4%, Klein-9B 0% to +14% across T4 VMs), so
+        # main's split stays and one image is never slower than main. The order applies when the primary holds the
+        # whole denoiser (only encoders stream), where one card is the resident speed and the copy adds batches.
+        return None
+    return (
+        f"one card plus a copy on cuda:{partner}: streaming is hidden behind compute ({_gib(streamed)} per step in "
+        f"{transfer:.2f} s against {compute:.2f} s, {exposed:.0%} exposed at {_COST_CANVAS_PX}px), so a split would "
+        f"not be faster, while the copy splits even batches and guided steps; {STREAM_GATE_ENV}=0 tries the split"
+    )
+
+
+def _copy_partner(pipe: Any, selection: Any) -> Optional[int]:
+    """The idle same-model card a whole copy of the denoiser fits on (:func:`automatic_partner`), or None. Sized from
+    nvidia-smi for the secondaries, so no context is opened on them."""
+    try:
+        denoiser = getattr(pipe, "transformer", None)
+        need = (
+            sum(t.numel() * t.element_size() for t in (*denoiser.parameters(), *denoiser.buffers()))
+            >> 20
+        )
+        probes = probe_devices((selection.primary, *selection.secondaries))
+        primary = probes.get(int(selection.primary))
+        cards = [
+            probes[o]
+            for o in selection.secondaries
+            if probes.get(o) is not None and probes[o].free_mib is not None
+        ]
+        if primary is None:
+            return None
+        pick, _why = automatic_partner(primary, cards, need)
+        return pick
+    except Exception:  # noqa: BLE001 - unsized: the split is tried as before
+        return None
+
+
+_STREAM_ESTIMATES: "weakref.WeakKeyDictionary[Any, dict]" = weakref.WeakKeyDictionary()
+
+
 def refine_plan_for_multigpu(
     pipe: Any,
     plan: Any,
@@ -868,6 +1035,19 @@ def refine_plan_for_multigpu(
         rejected.append(_one_card_rejection(plan, primary))
 
     def layer_split_or_plan() -> Any:
+        hidden = None if layer_force else _hidden_stream_reason(pipe, plan, sizes, selection)
+        if hidden is not None:
+            rejected.append(PlacementCandidate("layer_split", hidden))
+            _record_decision(
+                pipe,
+                selection,
+                "offload",
+                f"one card with '{plan.offload_policy}' offload on cuda:{primary} ({hidden})",
+                rejected,
+            )
+            if logger is not None:
+                logger.info("diffusion.multigpu: layer split not used (%s)", hidden)
+            return plan
         refined = refine_plan_for_layer_split(
             pipe,
             plan,
@@ -1463,6 +1643,12 @@ def placement_status(pipe: Any) -> Optional[dict[str, Any]]:
     if info is None and cfg is None and declined is None and layer is None and decision is None:
         return None
     out: dict[str, Any] = dict(info or {})
+    try:
+        stream = _STREAM_ESTIMATES.get(pipe)
+    except TypeError:
+        stream = None
+    if stream is not None:
+        out["stream_estimate"] = dict(stream)
     from .diffusion_layer_split import layer_split_stats
 
     live = {
