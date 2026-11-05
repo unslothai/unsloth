@@ -113,6 +113,9 @@ class LoadRequest(BaseModel):
         description = "Opaque client attempt ID for scoped in-flight cancellation",
     )
 
+    require_idle: bool = Field(
+        False, description = "Refuse this load if the chat server is occupied at admission."
+    )
     force_reload: bool = Field(
         False,
         description = "Start a fresh runtime even when the active settings already match",
@@ -2357,6 +2360,10 @@ class LlamaFlagCatalogResponse(BaseModel):
 class InferenceStatusResponse(_InferenceRuntimeFields):
     """Current inference backend status"""
 
+    load_in_flight: bool = Field(
+        False,
+        description = "A chat load is pending or running, without exposing its model or account.",
+    )
     resident_mib: Optional[int] = Field(
         None,
         description = "Best-effort memory the resident model holds, in MiB; null when unknown.",

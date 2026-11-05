@@ -78,7 +78,7 @@ def test_idle_picker_scopes_model_scan_to_authenticated_account(
     if key_source == "saved":
         start._remember_key(start._key_cache_path(), BASE, KEY, "saved")
     start._connect(KEY if key_source == "explicit" else None, None, launch = False)
-    assert _loads(fake_studio) == [{"model_path": targets["alice"]}]
+    assert _loads(fake_studio) == [{"require_idle": True, "model_path": targets["alice"]}]
     assert scans == [ALICE["account_id"]]
     assert current_account().is_owner
 
@@ -87,7 +87,7 @@ def test_idle_picker_still_lists_owner_models(account_catalog, fake_studio):
     targets, scans = account_catalog
     fake_studio.state["picker_account"] = OWNER
     start._connect(KEY, None, launch = False)
-    assert _loads(fake_studio) == [{"model_path": targets["owner"]}]
+    assert _loads(fake_studio) == [{"require_idle": True, "model_path": targets["owner"]}]
     assert scans == ["owner"]
 
 

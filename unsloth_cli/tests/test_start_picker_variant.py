@@ -114,7 +114,9 @@ def test_picked_repo_resolves_requested_quant(
         assert attempts == [(expected, load)]
     else:
         _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
-        assert _loads(fake_studio) == [{"model_path": expected, "gguf_variant": variant}]
+        assert _loads(fake_studio) == [
+            {"require_idle": True, "model_path": expected, "gguf_variant": variant}
+        ]
 
 
 @pytest.mark.parametrize("source", ["models_dir", "custom", "export"])
@@ -160,7 +162,9 @@ def test_picked_directory_resolves_requested_quant(
         assert attempts == [(str(requested), load)]
     else:
         _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
-        assert _loads(fake_studio) == [{"model_path": str(requested), "gguf_variant": "Q8_0"}]
+        assert _loads(fake_studio) == [
+            {"require_idle": True, "model_path": str(requested), "gguf_variant": "Q8_0"}
+        ]
 
 
 def test_cached_picker_excludes_missing_and_incomplete_quants(cached_gguf_pick):
@@ -244,7 +248,9 @@ def test_picked_repo_finds_requested_quant_outside_main(
         assert attempts == [(expected, load)]
     else:
         _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
-        assert _loads(fake_studio) == [{"model_path": expected, "gguf_variant": "Q8_0"}]
+        assert _loads(fake_studio) == [
+            {"require_idle": True, "model_path": expected, "gguf_variant": "Q8_0"}
+        ]
 
     # A positive-sized file can still be shorter than its recorded download.
     from hub.utils.download_manifest import ExpectedFile, write_manifest

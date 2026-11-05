@@ -2480,8 +2480,10 @@ def _resolve_model(
             if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
         # Both picker flows can outlive the server state they observed before prompting.
-        if require_idle and not _picker_server_is_idle(base, key):
-            _fail("The model state changed while the picker was open. Run the command again.")
+        if require_idle:
+            if not _picker_server_is_idle(base, key):
+                _fail("The model state changed while the picker was open. Run the command again.")
+            payload["require_idle"] = True
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:
@@ -5099,6 +5101,13 @@ def _picker_server_is_idle(base: str, key: str) -> bool:
         _fail(
             "Couldn't verify whether Unsloth has a resident model. Retry or pass --model explicitly."
         )
+    # Older servers ignore the idle-only load flag. Only send a pick to one advertising it.
+    if not isinstance(status.get("load_in_flight"), bool):
+        _fail(
+            "This server cannot confirm idle-only loads. Update Unsloth or pass --model explicitly."
+        )
+    if status["load_in_flight"]:
+        return False
     if status["loaded"] or status["loading"] or status.get("active_model"):
         return False
     # An empty chat slot can still share the GPU with another account's image or video model.

@@ -333,6 +333,66 @@ def test_a_slot_evicted_while_it_loads_is_torn_down(backends, monkeypatch):
     assert model_slots.slots == [] and not spawned[0].llama.is_active
 
 
+def test_idle_only_load_queued_behind_foreign_load_refuses_replacement(backends, monkeypatch):
+    primary, _ = backends
+    primary.unload_model()
+    model_slots.slots.clear()
+    entered, finish = asyncio.Event(), asyncio.Event()
+    loaded = []
+
+    async def load(request, *args, **kwargs):
+        if request.model_path == "org/First":
+            entered.set()
+            await finish.wait()
+        loaded.append(request.model_path)
+        primary.model_identifier = request.model_path
+        primary.is_active = primary.is_loaded = True
+        return "loaded"
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+
+    async def visible_status(subject):
+        return InferenceStatusResponse(loading = [], loaded = [])
+
+    monkeypatch.setattr(inf, "_slot_status", visible_status)
+
+    async def run():
+        first = asyncio.create_task(
+            inf.load_model_gated(LoadRequest(model_path = "org/First"), None, "alice")
+        )
+        await asyncio.wait_for(entered.wait(), timeout = 5)
+        status = await inf.get_status("bob")
+        assert status.load_in_flight and status.loading == [] and status.loaded == []
+        picked = asyncio.create_task(
+            inf.load_model_gated(
+                LoadRequest(model_path = "org/Picked", require_idle = True), None, "bob"
+            )
+        )
+        await asyncio.sleep(0)
+        finish.set()
+        await first
+        with pytest.raises(HTTPException) as excinfo:
+            await picked
+        assert excinfo.value.status_code == 409
+
+    asyncio.run(run())
+    assert loaded == ["org/First"]
+    assert primary.model_identifier == "org/First"
+
+
+def test_idle_only_load_succeeds_on_empty_server(backends, monkeypatch):
+    primary, _ = backends
+    primary.unload_model()
+    model_slots.slots.clear()
+
+    async def load(*args, **kwargs):
+        return "loaded"
+
+    monkeypatch.setattr(inf, "_run_tracked_load_model_impl", load)
+    request = LoadRequest(model_path = "org/Picked", require_idle = True)
+    assert asyncio.run(inf.load_model_gated(request, None, "bob")) == "loaded"
+
+
 def test_only_a_new_slot_skips_the_running_chat_check(backends, monkeypatch):
     seen = []
 

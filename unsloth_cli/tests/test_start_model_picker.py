@@ -75,7 +75,11 @@ def _empty_server(
             fake_studio.append((method, url, payload))
             if isinstance(status, Exception):
                 raise status
-            return {"active_model": None, "loaded": [], "loading": []} if status is None else status
+            return (
+                {"active_model": None, "loaded": [], "loading": [], "load_in_flight": False}
+                if status is None
+                else status
+            )
         if url.endswith("/api/inference/load") and not fake_studio.state["models"]:
             # fake_studio compares against the first resident, which an empty server lacks.
             fake_studio.state["models"] = [{"id": "placeholder"}]
@@ -98,7 +102,7 @@ def test_idle_server_loads_the_picked_model(fake_studio, picker, monkeypatch):
     assert "No model is loaded in Unsloth. Pick one on this device to load:" in result.output
     assert "1. my-lora" in result.output and "3. gemma-3-270m-it" in result.output
     assert picker["prompts"] == ["Load [1-3, Enter = 1]: "]
-    assert _loads(fake_studio) == [{"model_path": GGUF}]
+    assert _loads(fake_studio) == [{"require_idle": True, "model_path": GGUF}]
     assert f"model {GGUF}" in result.output
     # Seeding would pin Unsloth's caches into the agent's env and an auto-started server's.
     assert picker["ensure_calls"] == [{"seed_cache_env": False}]
@@ -112,7 +116,7 @@ def test_enter_picks_the_first_model_and_bad_input_asks_again(fake_studio, picke
 
     assert result.exit_code == 0, result.output
     assert result.output.count("Pick a number between 1 and 3.") == 3
-    assert _loads(fake_studio) == [{"model_path": "/outputs/my-lora"}]
+    assert _loads(fake_studio) == [{"require_idle": True, "model_path": "/outputs/my-lora"}]
 
 
 def test_claude_lists_only_gguf_models(fake_studio, picker, monkeypatch):
@@ -124,7 +128,7 @@ def test_claude_lists_only_gguf_models(fake_studio, picker, monkeypatch):
     assert result.exit_code == 0, result.output
     assert "1. Qwen3-1.7B-GGUF" in result.output
     assert "my-lora" not in result.output and "gemma-3-270m-it" not in result.output
-    assert _loads(fake_studio) == [{"model_path": GGUF}]
+    assert _loads(fake_studio) == [{"require_idle": True, "model_path": GGUF}]
 
 
 def test_no_gguf_on_device_keeps_a_clear_error(fake_studio, picker, monkeypatch):
@@ -202,7 +206,9 @@ def test_another_accounts_model_is_not_evicted_by_a_prompt(fake_studio, picker, 
         urllib.error.HTTPError("http://localhost/status", 503, "unavailable", None, None),
         {"error": "API endpoint not found"},
         {},
-        {"loaded": [], "loading": ["pending"]},
+        {"loaded": [], "loading": ["pending"], "load_in_flight": True},
+        {"loaded": [], "loading": [], "load_in_flight": True},
+        {"loaded": [], "loading": []},
     ],
 )
 def test_idle_picker_requires_verified_empty_status(fake_studio, picker, monkeypatch, status):
@@ -217,7 +223,7 @@ def test_idle_picker_requires_verified_empty_status(fake_studio, picker, monkeyp
 
 
 def test_idle_picker_rechecks_after_a_selection(fake_studio, picker, monkeypatch):
-    status = {"loaded": [], "loading": []}
+    status = {"loaded": [], "loading": [], "load_in_flight": False}
     _empty_server(fake_studio, monkeypatch, status = status)
 
     def answer(prompt):

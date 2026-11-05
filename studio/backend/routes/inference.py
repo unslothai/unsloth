@@ -17726,6 +17726,28 @@ def _note_load_fetched_with_a_request_token(model_ref, hf_token) -> None:
         pass
 
 
+def _other_chat_load_in_flight(attempt: Optional[_ScopedLoadAttempt] = None) -> bool:
+    with _scoped_load_attempts_lock:
+        return (_running_load_attempt is not None and _running_load_attempt is not attempt) or any(
+            pending is not attempt for pending in _pending_load_attempts.values()
+        )
+
+
+def _require_idle_for_load(attempt: _ScopedLoadAttempt) -> None:
+    if (
+        _other_chat_load_in_flight(attempt)
+        or model_slots.busy()
+        or model_slots.stuck
+        or model_slots.in_slot(
+            None, lambda: get_llama_cpp_backend().is_active or _primary_seat_occupied()
+        )
+        or any(account_access.resident_hidden(owner) for owner in ("chat", "diffusion", "video"))
+    ):
+        raise HTTPException(
+            status_code = 409, detail = "Unsloth is no longer idle. Run the command again."
+        )
+
+
 async def load_model_gated(
     request: LoadRequest,
     fastapi_request: Request,
@@ -17792,6 +17814,9 @@ async def load_model_gated(
         async with model_load_gate():
             sink_token = eviction_sink.set(evicted_slots)
             replaced_token = _replaced_primary_sink.set(replaced_slots)
+            # Check after waiting: another account's accepted load may now be resident.
+            if request.require_idle:
+                await asyncio.to_thread(_require_idle_for_load, attempt)
             # Chosen under the gate, so two loads cannot both claim an empty primary.
             extra = await _select_load_slot(request)
             new_slot = extra is not None and extra not in model_slots.slots
@@ -22184,6 +22209,7 @@ async def get_status(current_subject: str, model: Optional[str] = None):
     if isinstance(response, InferenceStatusResponse):
         from utils.multi_model_settings import get_multi_model_mode
 
+        response.load_in_flight = _other_chat_load_in_flight()
         response.multi_model_mode = await asyncio.to_thread(get_multi_model_mode)
         active = response.active_model
         response.serving = [active] if active else []

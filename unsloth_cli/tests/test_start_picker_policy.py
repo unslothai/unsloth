@@ -131,7 +131,7 @@ def test_managed_picker_excludes_forbidden_cached_models(policy_catalog, fake_st
     agent = "codex" if fmt == "gguf" else "opencode"
     result = CliRunner().invoke(start.start_app, [agent, "--no-launch", "--api-key", KEY])
     assert result.exit_code == 0, result.output
-    assert _loads(fake_studio) == [{"model_path": expected}]
+    assert _loads(fake_studio) == [{"require_idle": True, "model_path": expected}]
     assert len(checked) == 1
     assert "1. Denied" not in result.output
 

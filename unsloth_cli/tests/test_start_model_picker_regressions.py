@@ -37,7 +37,7 @@ def test_local_selection_wins_over_connection_with_same_model_id(
     picker["answers"] = ["1"]
     result = CliRunner().invoke(start.start_app, [agent, "--no-launch"])
     assert result.exit_code == 0, result.output
-    assert _loads(fake_studio) == [{"model_path": LOCAL_ID}], result.output
+    assert _loads(fake_studio) == [{"require_idle": True, "model_path": LOCAL_ID}], result.output
     assert "external::" not in result.output
 
 
@@ -167,7 +167,7 @@ def test_local_selection_revalidates_server_appearing_during_prompt(
     if state == "idle":
         result = start._connect(None, None, serve = True, launch = True, connections = True)
         assert result[2]["id"] == LOCAL_ID
-        assert _loads(fake_studio) == [{"model_path": LOCAL_ID}]
+        assert _loads(fake_studio) == [{"require_idle": True, "model_path": LOCAL_ID}]
         assert checked == [LOCAL_ID]
     else:
         with pytest.raises(typer.Exit):
