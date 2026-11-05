@@ -5191,6 +5191,9 @@ html.force-reduced-motion .sidebar-section-drop-line {
 			scrollbar-gutter: auto;
 			overflow-y: scroll;
 			border-inline-start: var(--thread-scrollbar-gutter) solid transparent;
+		}
+		/* A chat background reads through the thread, so it trades compositor scrolling for the image. */
+		:root.client-windows[data-low-device-scale]:not([data-chat-wallpaper-ready]) .aui-thread-viewport:not(.chat-full-view-dock *) {
 			background-color: var(--background);
 		}
 	}
