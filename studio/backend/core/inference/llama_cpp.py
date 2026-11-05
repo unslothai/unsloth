@@ -14480,8 +14480,7 @@ class LlamaCppBackend:
             return []
         cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
         if cvd is not None and not cvd.strip():
-            # A blank mask hides every GPU: _nvml_rows_visible keeps no row of any payload,
-            # and every reader of _NVML_ROWS filters through it or needs a non-blank mask.
+            # Hides every GPU: _nvml_rows_visible keeps no row, and other _NVML_ROWS readers need a non-blank mask.
             return []
         script = LlamaCppBackend._nvidia_probe_script()
         if script is None:
