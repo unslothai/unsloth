@@ -319,7 +319,7 @@ test("light glass draws no grey outlines outside the composer", () => {
 	for (const selector of ['html[data-glass^="liquid"]', 'html[data-glass="liquid-3d"]', "html[data-glass]:not(.dark)"]) {
 		assert.doesNotMatch(block(selector), /--glass-(rim|control-rim): [^;]*inset 0 0 0 1px/, selector);
 	}
-	assert.match(css, /html\[data-glass\] \{\n  --glass-hover: [^;]*;\n[^\n]*\n  --glass-hover-rim: inset 0 0 0 0 transparent;/);
+	assert.match(css, /html\[data-glass\] \{\n  --glass-hover: [^;]*;\n  --glass-hover-rim: inset 0 0 0 0 transparent;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n[^}]*--glass-hover-rim: inset 0 0 0 1px rgb\(255 255 255 \/ \.06\);/);
 	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
 });

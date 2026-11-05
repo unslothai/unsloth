@@ -93,7 +93,7 @@ _VIEW_TRANSITION_KILLER_JS = """
 """
 
 
-# Reduce motion defaults to Off, which ignores the OS setting; "system" lets reduced_motion="reduce" collapse animations again.
+# Reduce motion Off ignores reduced_motion emulation; System honours it.
 _FOLLOW_OS_MOTION_JS = """
 (() => {
     try {

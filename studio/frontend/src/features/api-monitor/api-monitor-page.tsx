@@ -146,7 +146,7 @@ const PANE_HEIGHT =
   "max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(260px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto";
 
 const SURFACE = "elevated-card bg-card";
-// glass-divider / glass-inset: hooks the glass theme restyles (index.css).
+// glass-divider / glass-inset: index.css glass hooks.
 const DIVIDER = "glass-divider border-border/60 dark:border-background";
 const INSET =
   "glass-inset border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";

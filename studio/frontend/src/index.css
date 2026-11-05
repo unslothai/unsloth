@@ -6063,11 +6063,11 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 @keyframes wallpaper-leave { from { opacity: var(--wallpaper-visibility); } to { opacity: 0; } }
 .chat-wallpaper[data-reduced] .chat-wallpaper-frame { animation: none; }
 .chat-wallpaper[data-reduced] .chat-wallpaper-frame[data-departing] { display: none; }
-/* Light glass New chat lifts the Visibility slider along sqrt(v) (24% shows ~49%, 50% ~71%, 100% stays 100%), so every step of the slider still changes it. */
+/* Light New chat: sqrt(v) lifts the image but keeps the whole slider range live. */
 html:not(.dark)[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(.aui-thread-welcome-center) .chat-wallpaper-frame:not([data-entering], [data-departing]) {
   opacity: min(1, calc(var(--wallpaper-visibility) * 2));
 }
-/* With var() a bare sqrt() line parses everywhere and resolves to opacity 1 where sqrt() is missing, hence @supports. */
+/* var() makes a bare sqrt() parse everywhere (opacity 1 where unsupported), hence @supports. */
 @supports (opacity: sqrt(0.5)) {
   html:not(.dark)[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(.aui-thread-welcome-center) .chat-wallpaper-frame:not([data-entering], [data-departing]) {
     opacity: sqrt(var(--wallpaper-visibility));
@@ -6284,7 +6284,6 @@ html[data-glass="macos"] .unsloth-composer-surface {
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
 }
-/* Dimmed, not blurred, everywhere but the New chat welcome view. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready],
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper {
@@ -6293,14 +6292,13 @@ html[data-glass] .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpap
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"][data-wallpaper-media] > .chat-wallpaper[data-ready] {
   opacity: calc(.56 * (.4 + .6 * var(--wallpaper-conversation, 0)));
 }
-/* Light pages already sit under a ~75% white reading wash, so the extra dim left the image at ~1% and the glass read as a flat white page. */
+/* Light pages already sit under the white reading wash; dimming as well hid the image. */
 html:not(.dark)[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready] {
   opacity: 1;
 }
 html:not(.dark)[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"][data-wallpaper-media] > .chat-wallpaper[data-ready] {
   opacity: .8;
 }
-/* Light pages' white reading wash (~80% on a busy image) hid the wallpaper; ease it so the image shows through as it does in dark. */
 html:not(.dark)[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
   --glass-page-wash: color-mix(in srgb, var(--glass-page-bg) min(96%, calc((max(var(--glass-tint), var(--glass-pane-floor)) - 12%) * var(--glass-opacity, 1))), transparent);
 }
@@ -6339,7 +6337,7 @@ html.dark[data-glass="liquid-3d"] {
   --glass-bead: radial-gradient(120% 120% at 30% 12%, rgb(255 255 255 / .099), rgb(255 255 255 / .02) 62%, rgb(255 255 255 / .04));
   --glass-bead-rim: inset 0 1px 0 rgb(255 255 255 / .139), inset 0 -2px 5px rgb(255 255 255 / .03), inset 0 0 0 1px rgb(255 255 255 / .035);
 }
-/* The composer keeps the full sheen; the rest of the glass runs it at 90%. */
+/* The composer keeps the full sheen. */
 html[data-glass^="liquid"] :is(.unsloth-composer-surface, .wallpaper-preview-composer) {
   --glass-sheen: radial-gradient(130% 90% at 18% 0%, rgb(255 255 255 / .066), transparent 58%), linear-gradient(rgb(255 255 255 / .018), transparent 45%, rgb(255 255 255 / .014));
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .48), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
@@ -6488,7 +6486,6 @@ html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot=
 
 html[data-glass] {
   --glass-hover: color-mix(in srgb, var(--foreground) 9%, transparent);
-  /* Light glass draws no outlines; dark keeps its faint rim below. */
   --glass-hover-rim: inset 0 0 0 0 transparent;
 }
 html.dark[data-glass] {
@@ -6533,7 +6530,7 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
 }
-/* On the buttons, not the row, so the glass is the hover's box; the Images, Video, Audio and other page pickers match. */
+/* On the buttons, not the row, so the glass is the hover's box. */
 html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger {
   position: relative;
@@ -6563,7 +6560,7 @@ html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.un
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger:is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]) {
   background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
 }
-/* Every non-chat page takes the chat model button's glass: resting surfaces (cards, fields, outline buttons, a selected tab that draws a pill) get its fill, and buttons that draw a hover or open pill get its frost over that fill. Text-only tabs and filters stay plain. */
+/* Non-chat pages: the chat model button's glass on resting surfaces, its frost only on buttons that draw a hover or open pill. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where(.elevated-card, [class~="bg-card"], [class*="dark:bg-card"], [data-slot="input"], .panel-field, .field-soft, [data-slot="button"]:is([data-variant="outline"], [data-variant="secondary"]), button:is([data-active="true"][class*="active=true]:bg-"], [aria-current="page"]:is([class^="bg-"], [class*=" bg-"], [class*="dark:bg-"])), .hub-tag-soft, .hub-stat-pill, .hub-tab-toggle, .hub-download-card, .hub-tag-meta, .glass-inset) {
   background-color: var(--page-glass-fill, color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent));
   background-image: var(--glass-sheen, none);
@@ -6580,13 +6577,12 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="pag
 html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where(:is(.elevated-card, [class~="bg-card"], [class*="dark:bg-card"], [data-slot="input"], .panel-field, .field-soft, [data-slot="button"]:is([data-variant="outline"], [data-variant="secondary"]), button:is([data-active="true"][class*="active=true]:bg-"], [aria-current="page"]:is([class^="bg-"], [class*=" bg-"], [class*="dark:bg-"])), .hub-tag-soft, .hub-stat-pill, .hub-tab-toggle, .hub-download-card, .hub-tag-meta, .glass-inset), button:not(:disabled, [data-slot="checkbox"], [data-slot="switch"]):is([class*="hover:bg-"]:hover, [class*="open:bg-"][data-state="open"])) {
   box-shadow: var(--page-glass-rim, var(--glass-rim));
 }
-/* Grouped cards (API panels and stats, Library grid): more blur and a fill lifted toward white than single controls. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.elevated-card, .elevated-card > [class~="bg-card"], .library-card) {
   background-color: var(--page-glass-card-fill, color-mix(in srgb, color-mix(in srgb, var(--glass-composer-fill), #fff 6%) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent));
   -webkit-backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(var(--glass-saturate));
   backdrop-filter: blur(calc(var(--glass-blur) + 8px)) saturate(var(--glass-saturate));
 }
-/* A card split into glass cells (API stats) lets the wallpaper show in the gaps instead of a second fill behind them. */
+/* Split cards: the wallpaper shows in the gaps, no second fill behind the cells. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .elevated-card:has(> [class~="bg-card"]) {
   background-color: transparent;
   background-image: none;
@@ -6594,7 +6590,6 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="pag
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-/* Light glass pages: the white control glass (--glass-control) and a lighter card sheet, edged with inner light only; native borders off. */
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
   --page-glass-fill: var(--glass-control);
   --page-glass-card-fill: rgb(255 255 255 / .45);
@@ -6603,11 +6598,10 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
   --page-glass-card-edge: var(--glass-light-inner);
   --page-glass-divider: color-mix(in srgb, var(--foreground) 8%, transparent);
 }
-/* Cards: inner light, no grey outline. */
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.elevated-card, .library-card) {
   box-shadow: var(--page-glass-card-edge);
 }
-/* Stats: one card with hairline dividers; framed cells left double lines across the 1px gaps. */
+/* Framed stat cells doubled their lines across the 1px gaps. */
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .elevated-card:has(> [class~="bg-card"]) {
   gap: 0;
   background-color: var(--page-glass-card-fill);
@@ -6622,27 +6616,25 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-/* Tailwind focus rings are box-shadows, so a focused glass surface shows its ring instead of the glass edge (any mode). */
+/* Focus rings are box-shadows: let them beat the glass edge. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :focus-visible:is([class*="focus-visible:ring"]) {
   box-shadow: var(--tw-inset-shadow, 0 0 #0000), var(--tw-inset-ring-shadow, 0 0 #0000), var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow, 0 0 #0000) !important;
 }
-/* Focused and invalid fields keep their ring border (focus-visible:border-ring, aria-invalid). */
+/* Keep focus and invalid borders. */
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where(.elevated-card, [class~="bg-card"], [class*="dark:bg-card"], [data-slot="input"], .panel-field, .field-soft, [data-slot="button"], .glass-inset, .library-card):not(:focus-visible, [aria-invalid="true"]) {
   border-color: transparent;
 }
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .glass-divider {
   border-color: var(--page-glass-divider);
 }
-/* Boxed panels (the API code sample and the like) lose their outline too; straight dividers and checkable controls keep theirs. */
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where([class~="border"][class*="rounded"]):not([data-slot="checkbox"], [role="checkbox"], [role="radio"], [role="switch"], :focus-visible, [aria-invalid="true"]) {
   border-color: transparent;
 }
-/* API cards on light glass: no outline, a thinner white fill so the frost shows, and the Liquid 3D inner light (top highlight, top and bottom glow) as the glass edge. */
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .api-monitor-page {
   --page-glass-card-fill: rgb(255 255 255 / .3);
   --page-glass-card-edge: var(--glass-light-inner);
 }
-/* The last column and row would still draw their divider on the card's outer edge: clip that 1px. */
+/* Hide the outer column and row dividers. */
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .api-monitor-page .elevated-card:has(> [class~="bg-card"]) {
   clip-path: inset(0 1px 1px 0 round var(--radius-2xl));
 }
@@ -6653,7 +6645,6 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .glass-inset {
   box-shadow: var(--glass-light-inner);
 }
-/* The chat model button and the sidebar drop their grey outline on light glass too. */
 html:not(.dark)[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
   box-shadow: var(--glass-light-inner);
 }
@@ -6730,7 +6721,7 @@ html[data-glass][data-glass-menus] .browser-menu[data-slot] {
 html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
-/* Outranks the flat dark .sidebar-menu rule so chat row menus keep the rim. */
+/* Outranks the flat dark .sidebar-menu shadow. */
 html[data-glass^="liquid"][data-glass-menus].dark .unsloth-plus-menu.sidebar-menu[data-slot] {
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
@@ -6833,7 +6824,6 @@ html[data-glass]:not(.dark) {
   --glass-control-hover: rgb(255 255 255 / .45);
   --glass-control-pill: rgb(255 255 255 / .55);
   --glass-control-rim: inset 0 1px 0 rgb(255 255 255 / .48);
-  /* Light glass edge without a grey outline: a top highlight and soft top and bottom inner glow. */
   --glass-light-inner: inset 0 1px 1px rgb(255 255 255 / .7), inset 0 16px 30px -20px rgb(255 255 255 / .55), inset 0 -18px 34px -20px rgb(255 255 255 / .4);
 }
 html[data-glass][data-glass-menus]:not(.dark) [data-slot="dialog-content"] :is(.hub-tab-toggle, .btn-fill, [data-slot="select-trigger"], [data-slot="dropdown-menu-trigger"][class*="border-border"], [data-variant="picker"]),
@@ -6903,12 +6893,11 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
 }
-/* These frosted a strip of wallpaper with nothing beneath: the unstuck Library header, and the API model bar, whose picker carries its own glass. */
+/* At rest nothing scrolls under these, so their frost read as a strip. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header]) {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-/* Its fade drew the bar's bottom edge as a band over the wallpaper. */
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] [data-page-model-header] [data-slot="api-toolbar-fade"] {
   display: none;
 }
