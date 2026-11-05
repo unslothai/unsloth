@@ -210,6 +210,44 @@ def test_a_failed_probe_uninstalls_and_marks_failed(flow, tmp_path):
     assert hp.ensure("py", check_only = True)["status"] == "failed"
 
 
+@pytest.mark.parametrize("installed", [False, True])
+def test_a_recent_failure_is_not_retried_until_it_ages_or_is_forced(
+    flow, tmp_path, monkeypatch, installed
+):
+    if installed:
+        flow["info"] = _info(tmp_path, installed = dict(hp.PAIR))
+    flow["probe"] = (False, "ImportError: DLL load failed")
+    hp.ensure("py")
+    ran, net = list(flow["ran"]), list(flow["net"])
+    flow["probe"] = (True, "")
+    assert hp.ensure("py")["status"] == "failed" and (flow["ran"], flow["net"]) == (ran, net)
+    failed_at = hp.read_marker(str(tmp_path))["time"]
+    monkeypatch.setattr(hp.time, "time", lambda: failed_at + hp.FAILED_RETRY_S + 1)
+    assert hp.ensure("py")["status"] in ("ready", "already")
+    assert hp.read_marker(str(tmp_path))["result"] == "ok"
+
+
+def test_force_retries_a_recent_failure(flow, tmp_path):
+    flow["probe"] = (False, "ImportError: DLL load failed")
+    hp.ensure("py")
+    flow["probe"] = (True, "")
+    assert hp.ensure("py")["status"] == "failed"
+    assert hp.ensure("py", force = True)["status"] == "ready"
+
+
+def test_the_backend_fingerprint_matches_the_installer():
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    try:
+        from core.rag import vec_ann
+    finally:
+        sys.path.pop(0)
+    out = subprocess.run(
+        [sys.executable, str(_PATH), "--check-only", "--json"], capture_output = True, text = True
+    )
+    assert vec_ann.hnsw_fingerprint() == hp.interpreter_info(sys.executable)["fp"], out.stderr
+    assert vec_ann.PAIR == hp.PAIR_STR and vec_ann.MARKER == hp.MARKER
+
+
 @pytest.mark.parametrize("env", ["RAG_VEC_ANN_AUTO_INSTALL", "RAG_VEC_ANN"])
 def test_opting_out_downloads_nothing(flow, monkeypatch, env):
     monkeypatch.setenv(env, "0")

@@ -245,10 +245,21 @@ def _write_marker(
         pass
 
 
+# A failure (WDAC block, missing VC++ runtime, probe timeout) is retried after this, or with --force.
+FAILED_RETRY_S = 7 * 86400
+
+
 def _marker_says(marker: dict | None, fp: str) -> str | None:
     if marker and marker.get("pair") == PAIR_STR and marker.get("fingerprint") == fp:
         return marker.get("result")
     return None
+
+
+def _failure_is_fresh(marker: dict | None) -> bool:
+    try:
+        return time.time() - float((marker or {}).get("time", 0)) < FAILED_RETRY_S
+    except (TypeError, ValueError):
+        return False
 
 
 def _verified(path: Path, wheel: dict) -> bool:
@@ -431,6 +442,7 @@ def ensure(
     *,
     check_only: bool = False,
     timeout: float = 600.0,
+    force: bool = False,
 ) -> dict:
     """Make the pinned pair importable in ``python``; returns {status, detail, usearch, numkong, source}."""
     deadline = time.monotonic() + timeout
@@ -441,20 +453,19 @@ def ensure(
     if tuple(info["version"]) < (3, 11):
         return _result("unsupported", "usearch needs Python 3.11 or newer", info)
     prefix, fp = info["prefix"], info["fp"]
-    said = _marker_says(read_marker(prefix), fp)
+    marker = read_marker(prefix)
+    said = _marker_says(marker, fp)
+    if said == "failed" and (check_only or (_failure_is_fresh(marker) and not force)):
+        return _result("failed", (marker or {}).get("reason", ""), info)
     if _pair_installed(info):
         if said == "ok" or check_only:
             return _result("already", "" if said == "ok" else "not probed", info)
-        if said == "failed":
-            return _result("failed", (read_marker(prefix) or {}).get("reason", ""), info)
         ok, reason = probe(python)
         _write_marker(prefix, fp, ok, reason)
         return _result("already" if ok else "failed", reason, info)
     if _disabled():
         return _result("disabled", "RAG_VEC_ANN_AUTO_INSTALL=0 or RAG_VEC_ANN=0", info)
     if check_only:
-        if said == "failed":
-            return _result("failed", (read_marker(prefix) or {}).get("reason", ""), info)
         return _result("missing", "pair not installed", info)
     if not (info["installed"].get("numpy") and info["installed"].get("tqdm")):
         return _result("unsupported", "numpy and tqdm must already be installed", info)
@@ -510,8 +521,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--strict", action = "store_true", help = "exit 1 unless the pair is ready")
     ap.add_argument("--check-only", action = "store_true", help = "no download, no install")
     ap.add_argument("--timeout", type = float, default = 600.0)
+    ap.add_argument("--force", action = "store_true", help = "retry even after a recent failure")
     args = ap.parse_args(argv)
-    result = ensure(args.python, check_only = args.check_only, timeout = args.timeout)
+    result = ensure(args.python, check_only = args.check_only, timeout = args.timeout, force = args.force)
     if args.json:
         print(json.dumps(result), flush = True)
     else:
