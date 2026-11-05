@@ -41526,17 +41526,21 @@ class LlamaCppBackend:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
             # A tool round recounts the prompt it just fitted; the loaded server renders it the same.
             # Admission (prefer_native) counts once per request and keeps its own failover path.
-            memo_key = None if prefer_native else _count_memo_key(
-                self,
-                template_messages,
-                tools,
-                {
-                    key: template_options[key]
-                    for key in ("tool_choice", "parallel_tool_calls", "response_format")
-                    if template_options and key in template_options
-                },
-                chat_template_kwargs,
-                continue_final_message,
+            memo_key = (
+                None
+                if prefer_native
+                else _count_memo_key(
+                    self,
+                    template_messages,
+                    tools,
+                    {
+                        key: template_options[key]
+                        for key in ("tool_choice", "parallel_tool_calls", "response_format")
+                        if template_options and key in template_options
+                    },
+                    chat_template_kwargs,
+                    continue_final_message,
+                )
             )
             cached = _count_memo_get(self, memo_key)
             if cached is not None:
