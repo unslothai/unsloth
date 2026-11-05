@@ -4465,7 +4465,12 @@ export function createOpenAIStreamAdapter(
           "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
         );
       }
-      await prepareComparePaneRun(options.pairId, options.modelType);
+      await prepareComparePaneRun(
+        options.pairId,
+        options.modelType,
+        abortSignal,
+        () => waitForModelReady(abortSignal),
+      );
       abortSignal.throwIfAborted();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable across chat switches during model load.
