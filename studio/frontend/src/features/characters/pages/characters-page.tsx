@@ -28,7 +28,7 @@ import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
   Edit03Icon,
-  MessageUser01Icon,
+  WinkingIcon,
   MoreHorizontalIcon,
   PlusSignIcon,
   Search01Icon,
@@ -439,7 +439,7 @@ function EmptyLibrary({ onImport }: { onImport: () => void }) {
   return (
     <div className="mt-14 flex flex-col items-center gap-4 rounded-[28px] bg-muted/60 px-6 py-16 text-center dark:bg-card">
       <span className="flex size-16 items-center justify-center rounded-2xl bg-background text-foreground shadow-sm">
-        <HugeiconsIcon icon={MessageUser01Icon} strokeWidth={1.5} className="size-8" />
+        <HugeiconsIcon icon={WinkingIcon} strokeWidth={1.5} className="size-8" />
       </span>
       <div className="flex flex-col gap-1.5">
         <h2 className="text-ui-20 font-semibold text-foreground">{t("characters.emptyTitle")}</h2>

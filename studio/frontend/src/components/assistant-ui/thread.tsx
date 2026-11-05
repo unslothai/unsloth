@@ -471,7 +471,7 @@ import {
   MoreHorizontalIcon,
   PlusSignIcon,
   Cancel01Icon,
-  MessageUser01Icon,
+  WinkingIcon,
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon, FolderAttachmentIcon } from "@/lib/folder-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -7229,7 +7229,7 @@ const ComposerToolsMenu: FC<{
     ),
     characters: (
       <DropdownMenuItem onSelect={() => setCharacterPickerOpen(true)}>
-        <HugeiconsIcon icon={MessageUser01Icon} strokeWidth={2} />
+        <HugeiconsIcon icon={WinkingIcon} strokeWidth={2} />
         {t("characters.plusMenu")}
       </DropdownMenuItem>
     ),
