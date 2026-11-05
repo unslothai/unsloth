@@ -80,7 +80,6 @@ def _is_nvidia_linux() -> bool:
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
-# A100 eager FLUX.1 blocks: AdaLN 2.4% faster (bf16 40.0 -> 39.0 ms, A/A 0.1%), error vs fp32 equal to stock's.
 _AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: True}
 
 
@@ -515,8 +514,7 @@ def install_for_pipe(
     *,
     adaln: bool = True,
 ) -> dict:
-    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock. ``adaln=False`` (the bit-exact ``off`` speed
-    tier) keeps the stock AdaLN; RoPE is bit-identical, so it installs either way."""
+    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock; ``adaln=False`` (speed off) keeps stock AdaLN."""
     transformer = getattr(pipe, "transformer", None)
     module_name = type(transformer).__module__ if transformer is not None else ""
     if module_name not in _MODULES:

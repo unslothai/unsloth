@@ -78,7 +78,6 @@ def test_auto_engages_rope_and_adaln_on_nvidia_linux(fake_kernels, monkeypatch, 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
 def test_the_exact_tier_keeps_stock_adaln_on_nvidia(fake_kernels, monkeypatch, dtype):
-    # speed "off" is the bit-exact reference: the bit-identical RoPE still installs, the AdaLN kernel does not.
     _nvidia(monkeypatch)
     rf.install_for_pipe(_PipeLike(), dtype, "cuda")
     assert rf.install_for_pipe(_PipeLike(), dtype, "cuda", adaln = False) == {
@@ -273,7 +272,6 @@ def test_load_and_teardown_wiring():
     finally:
         diffusion_rocm_fused.install_for_pipe = orig_install
         diffusion_rocm_fused.uninstall = orig_uninstall
-    # speed "off" is the bit-exact tier: the AdaLN kernel is asked to stay out.
     assert ("install", (pipe, "bf16", "cuda", "log"), {"adaln": False}) in seen
     assert seen.count(("install", (pipe, "bf16", "cuda", "log"), {"adaln": True})) == 3
     assert ("uninstall",) in seen
