@@ -1548,6 +1548,11 @@ def _modular_companions(fam: Any) -> Optional[tuple[str, ...]]:
     return None
 
 
+def _single_file_components(fam: Any, kind: Optional[str]) -> tuple[str, ...]:
+    """Base components besides the denoiser whose weights a single file carries (Anima's text conditioner)."""
+    return ("text_conditioner",) if kind in ("single_file", "gguf") and is_anima_family(fam) else ()
+
+
 def _base_manifest_name(fam: Any) -> str:
     """The pipeline index a base repo carries: FLUX.3 ships only ``modular_model_index.json``."""
     return FLUX3_INDEX if is_flux3_family(fam) or is_anima_family(fam) else "model_index.json"
@@ -5311,7 +5316,9 @@ class DiffusionBackend:
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
         whole_file = kind in ("single_file", "gguf") and fam.single_file_is_pipeline
         excluded = (
-            (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
+            (fam.denoiser_attr,) + _single_file_components(fam, kind)
+            if kind in ("gguf", "single_file") and not whole_file
+            else ()
         )
         _assert_local_base_is_pipeline(
             base_repo,
@@ -5760,7 +5767,10 @@ class DiffusionBackend:
                     if kind == "gguf"
                     else False
                 ),
-                skip_te_components = tuple(te_prequant_files) + replaced + tuple(vae_hosted_files),
+                skip_te_components = tuple(te_prequant_files)
+                + replaced
+                + tuple(vae_hosted_files)
+                + _single_file_components(fam, kind),
                 skip_transformer_weights = skip_transformer_weights,
                 skipped_files_out = skipped_transformer_files,
                 local_files_only = local_files_only,
@@ -7143,7 +7153,10 @@ class DiffusionBackend:
             resident_file_sizes_out = resident_file_sizes,
             revisions_out = revisions,
             fetch_repos_out = fetch_repos,
-            skip_te_components = tuple(te_files) + replaced + tuple(vae_hosted_files),
+            skip_te_components = tuple(te_files)
+            + replaced
+            + tuple(vae_hosted_files)
+            + _single_file_components(fam, kind),
             skip_transformer_weights = skip_transformer_weights,
             failures_out = plan_failures,
             fp16_twins = kind == "pipeline"
