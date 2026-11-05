@@ -198,6 +198,33 @@ def test_candidate_tags_are_not_releases():
     )
 
 
+def test_stable_releases_are_read_from_every_page(monkeypatch):
+    first = f"{up._API}/repos/lemonade-sdk/lemonade/releases?per_page=100"
+    second = f"{up._API}/repositories/1/releases?per_page=100&page=2"
+    pages = {
+        first: (
+            [{"tag_name": f"candidate-v9.{n}.0", "prerelease": True} for n in range(100)],
+            f'<{second}>; rel="next", <{second}>; rel="last"',
+        ),
+        second: ([{"tag_name": "v9.0.1"}, {"tag_name": "v9.0.0", "draft": True}], None),
+    }
+
+    class Page(io.BytesIO):
+        def __init__(self, url):
+            body, link = pages[url]
+            super().__init__(json.dumps(body).encode())
+            self.headers = {"Link": link} if link else {}
+
+    seen = []
+    monkeypatch.setattr(
+        up.urllib.request,
+        "urlopen",
+        lambda request, timeout: seen.append(request.full_url) or Page(request.full_url),
+    )
+    assert up.fetch_stable_releases("lemonade-sdk/lemonade") == [{"tag_name": "v9.0.1"}]
+    assert seen == [first, second]
+
+
 def _tarball(files: dict[str, bytes]) -> io.BytesIO:
     buffer = io.BytesIO()
     with tarfile.open(fileobj = buffer, mode = "w:gz") as archive:

@@ -31,6 +31,7 @@ _CHUNK = 1 << 20
 # Ubuntu 24.04. FastFlowLM's own Linux build already needs glibc 2.39.
 MAX_LINUX_GLIBC = (2, 39)
 _GLIBC_VERSION = re.compile(rb"GLIBC_2\.(\d+)")
+_NEXT_PAGE = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
 def _lemonade_assets(version: str) -> dict[str, str]:
@@ -64,10 +65,13 @@ def _request(url: str) -> urllib.request.Request:
 
 
 def fetch_stable_releases(repo: str) -> list[dict]:
-    with urllib.request.urlopen(
-        _request(f"{_API}/repos/{repo}/releases?per_page=30"), timeout = _TIMEOUT_S
-    ) as r:
-        releases = json.load(r)
+    # Every page: prerelease candidates can push a compatible stable release past the first one.
+    releases, url = [], f"{_API}/repos/{repo}/releases?per_page=100"
+    while url:
+        with urllib.request.urlopen(_request(url), timeout = _TIMEOUT_S) as r:
+            releases += json.load(r)
+            next_page = _NEXT_PAGE.search(r.headers.get("Link") or "")
+        url = next_page.group(1) if next_page else None
     return [r for r in releases if not r.get("draft") and not r.get("prerelease")]
 
 
