@@ -4,7 +4,7 @@
 import { useBackgroundStore } from "@/features/chat-background";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Portrait } from "../components/portrait";
 import { nameHue, viewPicture } from "../images";
 import { shortName } from "../prompt/speakers";
@@ -58,42 +58,88 @@ export function NovelScene({ threadId, cast }: { threadId: string | null; cast: 
         aria-label={t("characters.chat.viewNovel")}
         data-testid="character-novel"
       >
-        {figures.map((character) => {
-          const active = character.id === focus.id;
-          const solo = cast.length === 1;
-          const onClick = active || solo
-            ? () => character.hasAvatar && viewPicture("character", character.id, character.name)
-            : () => ask(character.id, character.name);
-          return (
-            <button
-              key={character.id}
-              type="button"
-              onClick={onClick}
-              aria-label={
-                active || solo ? t("characters.actions.viewPicture") : t("characters.chat.replyNow", { name: character.name })
-              }
-              title={active ? character.name : t("characters.chat.replyNow", { name: character.name })}
-              className={cn(
-                "novel-figure pointer-events-auto relative -mx-[1.5%] aspect-[2/3] h-full min-w-0 max-w-[36%] shrink origin-bottom cursor-pointer focus-visible:outline-none",
-                active ? "z-[2] max-sm:max-w-[78%]" : "novel-figure-waiting z-[1] scale-[0.84] max-sm:hidden",
-                active && speaking && "novel-figure-speaking",
-                active && character.hasAvatar && "cursor-zoom-in",
-              )}
-              data-active={active || undefined}
-            >
-              <Portrait
-                id={character.id}
-                name={character.name}
-                hasImage={character.hasAvatar}
-                rev={character.avatarRev}
-                variant="card"
-                className="novel-figure-picture size-full rounded-t-[40px]"
-              />
-            </button>
-          );
-        })}
+        {figures.map((character) => (
+          <NovelFigure
+            key={character.id}
+            character={character}
+            active={character.id === focus.id}
+            speaking={speaking && character.id === focus.id}
+            solo={cast.length === 1}
+            onAsk={() => ask(character.id, character.name)}
+          />
+        ))}
       </section>
     </>
+  );
+}
+
+/**
+ * Breathing that ends where it began: once the reply is done, the cycle in progress finishes before the
+ * animation is removed, so the figure settles instead of snapping back.
+ */
+function useSettlingBreath(on: boolean) {
+  const [breathing, setBreathing] = useState(on);
+  const stopping = useRef(false);
+  useEffect(() => {
+    if (on) {
+      stopping.current = false;
+      setBreathing(true);
+    } else {
+      stopping.current = true;
+    }
+  }, [on]);
+  const onAnimationIteration = () => {
+    if (stopping.current) {
+      stopping.current = false;
+      setBreathing(false);
+    }
+  };
+  return { breathing, onAnimationIteration };
+}
+
+function NovelFigure({
+  character,
+  active,
+  speaking,
+  solo,
+  onAsk,
+}: {
+  character: Character;
+  active: boolean;
+  speaking: boolean;
+  solo: boolean;
+  onAsk: () => void;
+}) {
+  const t = useT();
+  const { breathing, onAnimationIteration } = useSettlingBreath(speaking);
+  const onClick = active || solo ? () => character.hasAvatar && viewPicture("character", character.id, character.name) : onAsk;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={active || solo ? t("characters.actions.viewPicture") : t("characters.chat.replyNow", { name: character.name })}
+      title={active ? character.name : t("characters.chat.replyNow", { name: character.name })}
+      className={cn(
+        "novel-figure pointer-events-auto relative -mx-[1.5%] aspect-[2/3] h-full min-w-0 max-w-[36%] shrink origin-bottom cursor-pointer focus-visible:outline-none",
+        active ? "z-[2] max-sm:max-w-[78%]" : "novel-figure-waiting z-[1] scale-[0.84] max-sm:hidden",
+        active && character.hasAvatar && "cursor-zoom-in",
+      )}
+      data-active={active || undefined}
+    >
+      <span
+        className={cn("novel-figure-body block size-full origin-bottom", breathing && "novel-figure-speaking")}
+        onAnimationIteration={onAnimationIteration}
+      >
+        <Portrait
+          id={character.id}
+          name={character.name}
+          hasImage={character.hasAvatar}
+          rev={character.avatarRev}
+          variant="card"
+          className="novel-figure-picture size-full rounded-t-[40px]"
+        />
+      </span>
+    </button>
   );
 }
 
@@ -145,8 +191,8 @@ function NovelBackdrop({ wallpaper }: { wallpaper: string | null }) {
       {wallpaper ? (
         <img src={wallpaper} alt="" className="absolute inset-0 size-full object-cover animate-in fade-in-0 duration-500" />
       ) : (
-        // No wallpaper: a quiet stage in the theme's own colors, lighter where the cast stands.
-        <div className="absolute inset-0 bg-[radial-gradient(90%_70%_at_50%_30%,var(--muted),var(--background))]" />
+        // No wallpaper: the chat's own background, with a soft shadow under the cast.
+        <div className="absolute inset-0 bg-[radial-gradient(70%_40%_at_50%_70%,rgb(0_0_0/0.06),transparent)] dark:bg-[radial-gradient(70%_40%_at_50%_70%,rgb(0_0_0/0.25),transparent)]" />
       )}
       {/* Seats the dialogue panel and keeps the header readable over any picture. */}
       <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-background/70 to-transparent" />

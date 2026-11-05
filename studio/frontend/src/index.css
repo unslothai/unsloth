@@ -6685,7 +6685,8 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 
 /* Character chats, visual novel view: figures fade into the dialogue panel and breathe while speaking. */
 .novel-figure {
-  transition: transform 600ms cubic-bezier(.2,.8,.2,1), opacity 400ms ease, filter 400ms ease;
+  /* Tailwind's scale utility sets the scale property, so it is listed alongside transform. */
+  transition: scale 650ms cubic-bezier(.2,.8,.2,1), transform 650ms cubic-bezier(.2,.8,.2,1), opacity 450ms ease, filter 650ms ease;
   filter: drop-shadow(0 26px 34px rgb(0 0 0 / .32));
 }
 .novel-figure-picture {

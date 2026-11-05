@@ -10,7 +10,7 @@ import { createContext, useContext, type ReactNode } from "react";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { Portrait } from "../components/portrait";
 import { RoleplayText } from "../components/roleplay-text";
-import { showOnStage } from "../stage-focus";
+import { toggleOnStage } from "../stage-focus";
 import { roleplayMetaOf } from "../meta";
 import { messageTime } from "../time";
 import { useCharactersStore } from "../store";
@@ -43,6 +43,12 @@ function MessageTime({ className }: { className?: string }) {
       {messageTime(locale, at)}
     </time>
   );
+}
+
+/** The chat's cast ids, read when needed rather than subscribed to by every reply. */
+function castIdsOf(threadId: string): string[] {
+  const scene = useCharactersStore.getState().scenes[threadId];
+  return scene ? scene.cast.map((member) => member.characterId) : [];
 }
 
 /** Who said this reply: its stamped speaker, else the chat's only character. */
@@ -97,7 +103,13 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
           className="absolute left-0 top-0 aspect-[3/4] w-[calc(3rem*var(--ui-space-scale,1))] rounded-[12px] text-[1.05rem] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:w-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[10px]"
           onClick={
             character && threadId
-              ? () => showOnStage(threadId, character.id, aui.thread().getState().messages.length)
+              ? () =>
+                  toggleOnStage(
+                    threadId,
+                    character.id,
+                    aui.thread().getState().messages,
+                    castIdsOf(threadId),
+                  )
               : undefined
           }
         />
