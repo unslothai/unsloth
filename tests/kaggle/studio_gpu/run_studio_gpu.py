@@ -676,7 +676,9 @@ class Payload:
         )
         if ok:
             return []
-        return [f"hardware detection never finished after sign-in: {reason} (last health: {str(last)[:300]})"]
+        return [
+            f"hardware detection never finished after sign-in: {reason} (last health: {str(last)[:300]})"
+        ]
 
     def server_alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
