@@ -323,6 +323,9 @@ function compactMenu(threadId: string) {
       return supported;
     },
     requestThreadCompaction,
+    isExternalModelId: (checkpoint: string | null | undefined) =>
+      typeof checkpoint === "string" && checkpoint.startsWith("external::"),
+    externalModelSupportsStudioTools: () => false,
     hasPreStreamRunReservation,
     liveThreadRunning,
     toast: { info: (text: string) => notices.push(text) },
