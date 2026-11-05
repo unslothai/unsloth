@@ -474,6 +474,46 @@ def add_chunks(
         )
 
 
+def add_lexical_chunks(
+    conn: sqlite3.Connection,
+    scope: str,
+    document_id: str,
+    chunks,
+) -> None:
+    """Index one document's chunks into chunks + FTS5 only, for text no embedder could encode.
+
+    Dense search never sees these rows (they have no vec0 row), keyword search does. The caller
+    commits, so the document row and its chunks land together."""
+    for chunk in chunks:
+        chunk_id = f"{document_id}:{chunk.chunk_index}"
+        conn.execute(
+            "INSERT OR REPLACE INTO chunks("
+            "id, document_id, scope, chunk_index, text, page_number, "
+            "source_page_index, page_char_start, page_char_end, token_count, "
+            "whole_document_token_count, kind, pdf_regions_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                chunk_id,
+                document_id,
+                scope,
+                chunk.chunk_index,
+                chunk.text,
+                chunk.page_number,
+                chunk.source_page_index,
+                getattr(chunk, "page_char_start", None),
+                getattr(chunk, "page_char_end", None),
+                chunk.token_count,
+                getattr(chunk, "whole_document_token_count", None),
+                getattr(chunk, "kind", "text"),
+                None,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO chunks_fts(text, chunk_id, scope) VALUES(?,?,?)",
+            (chunk.text, chunk_id, scope),
+        )
+
+
 def replace_document_vectors(
     conn: sqlite3.Connection,
     document_id: str,

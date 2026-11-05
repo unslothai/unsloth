@@ -1225,11 +1225,14 @@ def test_an_embedder_download_still_pending_is_logged_once_without_a_traceback(
     turn = _turn("what is the deploy code", "the deploy code is 5150")
     caplog.set_level(logging.INFO, logger = conversation_archive.logger.name)
 
-    for _ in range(3):
-        assert _archive([dict(m) for m in turn]) == 0
+    # The first fit keeps a keyword copy of the evicted turn; later fits find it there and add none.
+    for expected in (1, 0, 0):
+        assert _archive([dict(m) for m in turn]) == expected
         assert conversation_archive.degraded() is True
         found = conversation_archive.recall(THREAD, "sourdough")
         assert found is not None and "sourdough" in found[0]
+        found = conversation_archive.recall(THREAD, "deploy code")
+        assert found is not None and "5150" in found[0]
 
     records = [r for r in caplog.records if r.name == conversation_archive.logger.name]
     assert not [r for r in records if r.levelno >= logging.WARNING or r.exc_info]
@@ -1258,12 +1261,84 @@ def test_a_failed_archive_marks_the_feature_degraded(conn, monkeypatch):
         raise RuntimeError("no embedding model could be started")
 
     monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
-    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 0
+    # Kept for keyword search, but dense recall is still down.
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
     assert conversation_archive.degraded() is True
 
     monkeypatch.setattr(embeddings, "encode_with_identity", real)
+    # The keyword copy is re-embedded in place.
     assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turn]) == 1
     assert conversation_archive.degraded() is False
+
+
+def test_turns_evicted_while_the_embedder_fails_stay_searchable(conn, monkeypatch):
+    """#16706: with no archive the chat never gets search_conversation, and recall finds nothing."""
+    from core.inference import tools
+    from core.rag import embeddings
+
+    thread_id = "no-embedder-thread"
+    turns = _turn("what is the deploy code", "the deploy code is 5150") + _turn(
+        "which colour did we pick", "we picked teal"
+    )
+    _save_thread(thread_id, turns + [{"role": "user", "content": "and now?"}])
+
+    real_encode = embeddings.encode_with_identity
+    real_counter = embeddings.token_counter
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("llama-server binary not found")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    assert conversation_archive.has_archive(thread_id) is False
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 2
+    assert conversation_archive.has_archive(thread_id) is True
+
+    # The model's own search, through the tool it is now offered, answers from keyword matches.
+    found = tools._search_conversation({"query": "deploy code"}, {"thread_id": thread_id})
+    assert "5150" in found
+    found = tools._search_conversation({"query": "colour teal"}, {"thread_id": thread_id})
+    assert "teal" in found
+
+    scope = store.conversation_archive_scope(thread_id)
+    before = {
+        row["sha256"]: row["archive_ordinal"]
+        for row in conn.execute(
+            "SELECT sha256, archive_ordinal FROM documents WHERE scope = ?", (scope,)
+        )
+    }
+    assert len(before) == 2
+
+    # Once the embedder works, the same eviction re-embeds both turns where they were.
+    monkeypatch.setattr(embeddings, "encode_with_identity", real_encode)
+    monkeypatch.setattr(embeddings, "token_counter", real_counter)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 2
+    rows = conn.execute(
+        "SELECT sha256, archive_ordinal, embedding_model FROM documents WHERE scope = ?", (scope,)
+    ).fetchall()
+    assert {row["sha256"]: row["archive_ordinal"] for row in rows} == before
+    assert all(
+        row["embedding_model"] != conversation_archive.LEXICAL_ONLY_IDENTITY for row in rows
+    )
+    vectors = conn.execute(
+        "SELECT COUNT(*) FROM chunks_vec WHERE scope = ?", (scope,)
+    ).fetchone()[0]
+    assert vectors > 0
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 0
+
+
+def test_a_failing_store_does_not_fall_back_to_keyword_copies(conn, monkeypatch):
+    """Only the embedder failing falls back: a store that cannot write chunks is left to retry."""
+    turns = _turn("what is a wombat", "a burrowing marsupial")
+    real_add_chunks = store.add_chunks
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(store, "add_chunks", explode)
+    assert _archive(turns, thread_id = "store-fails") == 0
+    assert conversation_archive.has_archive("store-fails") is False
+    monkeypatch.setattr(store, "add_chunks", real_add_chunks)
 
 
 def test_the_late_archive_cleanup_spares_a_recreated_thread(conn):
@@ -2343,12 +2418,24 @@ def test_archive_embed_failure_keeps_completed_batches(conn, monkeypatch):
         evicted.append({"role": "user", "content": f"fail question {index} unique {index}"})
         evicted.append({"role": "assistant", "content": f"fail answer {index} unique {index}"})
 
-    written = conversation_archive.archive_turns(thread_id, evicted)
-    assert 0 < written < 8
+    scope = store.conversation_archive_scope(thread_id)
+
+    def keyword_only():
+        return conn.execute(
+            "SELECT COUNT(*) FROM documents WHERE scope = ? AND embedding_model = ?",
+            (scope, conversation_archive.LEXICAL_ONLY_IDENTITY),
+        ).fetchone()[0]
+
+    # Every turn is kept: the embedded batches with vectors, the rest for keyword search only.
+    assert conversation_archive.archive_turns(thread_id, evicted) == 8
+    unembedded = keyword_only()
+    assert 0 < unembedded < 8
     assert conversation_archive.degraded()
     calls.clear()
-    assert conversation_archive.archive_turns(thread_id, evicted) == 8 - written
-    assert sum(calls) <= 8 - written
+    # Only the keyword-only turns are encoded again.
+    assert conversation_archive.archive_turns(thread_id, evicted) == unembedded
+    assert sum(calls) <= unembedded
+    assert keyword_only() == 0
 
 
 VARIABLE = "ZQXVARA123"
