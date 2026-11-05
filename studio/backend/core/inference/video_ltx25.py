@@ -791,6 +791,19 @@ def ensure_text_encoder_sidecar() -> str:
     return _VENV_T5_510_DIR
 
 
+def _release_cached_device_memory(device: Optional[str]) -> None:
+    kind = str(device or "").split(":", 1)[0]
+    if kind not in ("cuda", "xpu"):
+        return
+    try:
+        import torch
+        accel = getattr(torch, kind)
+        if accel.is_available():
+            accel.empty_cache()
+    except Exception:  # noqa: BLE001 -- best effort; the worker re-measures
+        pass
+
+
 def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
     """What this (server) process holds on ``device`` right now, for the worker's budget check."""
     kind = str(device or "").split(":", 1)[0]
@@ -1033,6 +1046,10 @@ class Ltx25TextEncoderClient:
             self.wait_ready(cancel)
             self._seq += 1
             seq = self._seq
+            if not self.config.get("resident"):
+                # Encodes run before the denoise: hand the worker the blocks this process only caches, so a
+                # non-resident encoder can onload (or stream) on the card instead of encoding on the CPU.
+                _release_cached_device_memory(self.config.get("device"))
             self._cmd.put(
                 {
                     "type": "encode",

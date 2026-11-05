@@ -558,10 +558,20 @@ def _encode_device(
     if room >= need:
         return device
     # The whole encoder does not fit, but one module at a time does: stream the weights through the card (a few GB/s
-    # of host-to-device copies) instead of running a 12B encoder on the CPU (minutes per prompt).
-    if kind == "cuda" and not _stream_disabled() and room >= _largest_module_mib(model) * 2 + ENCODE_MARGIN_MIB:
+    # of host-to-device copies) instead of running a 12B encoder on the CPU (minutes per prompt). In flight: the module
+    # running and the next one, plus the stacked hidden states (49 x 1024 x 3840 bf16, twice while stacking).
+    stream_need = _largest_module_mib(model) * 2 + STREAM_MARGIN_MIB
+    if kind == "cuda" and not _stream_disabled() and room >= stream_need:
         return STREAM_PREFIX + device
+    print(
+        f"video.ltx25_te: encoding on the CPU (room {room} MiB; whole encoder needs {need} MiB, streamed {stream_need} MiB)",
+        file = sys.stderr,
+        flush = True,
+    )
     return "cpu"
+
+
+STREAM_MARGIN_MIB = 1536
 
 
 # ``_encode_device`` answer for a per-module streamed encode on the named device.
@@ -574,7 +584,11 @@ def _stream_disabled() -> bool:
 
 
 def _own_tensors(module: Any) -> list:
-    return [t for t in list(module.parameters(recurse = False)) + list(module.buffers(recurse = False)) if t is not None]
+    return [
+        t
+        for t in list(module.parameters(recurse = False)) + list(module.buffers(recurse = False))
+        if t is not None
+    ]
 
 
 def _largest_module_mib(model: Any) -> int:
@@ -719,12 +733,15 @@ def _encode_on(
     )
     streamed = str(device).startswith(STREAM_PREFIX)
     if streamed:
-        device = str(device)[len(STREAM_PREFIX):]
+        device = str(device)[len(STREAM_PREFIX) :]
     onloaded = not resident and device != "cpu" and not streamed
     if onloaded:
         model.to(device)
     try:
-        with torch.inference_mode(), (_StreamedWeights(model, device) if streamed else contextlib.nullcontext()):
+        with (
+            torch.inference_mode(),
+            _StreamedWeights(model, device) if streamed else contextlib.nullcontext(),
+        ):
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
