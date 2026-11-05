@@ -1758,3 +1758,132 @@ def test_a_job_cancelled_during_the_batch_model_probe_never_starts(
     assert "ab"[cancelled] not in started
     assert statuses[cancelled] == "cancelled"
     assert calls["stop"] == []
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+def test_a_cancelled_queued_job_is_still_listed_after_a_newer_job_starts(
+    queue, monkeypatch, tmp_path, persisted
+):
+    client, _calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+        old = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.cancel(old.id)
+        before = await client.fine_tuning.jobs.list()
+        gpu["busy"] = False
+        newer = await _create(client, uploaded.id)
+        if persisted:
+            _finished_run(tmp_path, tmp_path / "chats.jsonl")
+        after = [job.id async for job in client.fine_tuning.jobs.list(limit = 1)]
+        retrieved = await client.fine_tuning.jobs.retrieve(old.id)
+        return old, newer, before, after, retrieved
+
+    old, newer, before, after, retrieved = _run(flow())
+    assert [(job.id, job.status) for job in before.data] == [(old.id, "cancelled")]
+    assert retrieved.status == "cancelled"
+    assert after == [newer.id, old.id]
+
+
+def test_a_job_that_starts_during_a_list_request_is_listed_once(queue, monkeypatch):
+    client, _calls, live, gpu = queue
+    status_read = training_routes.get_training_status
+
+    async def start_mid_request(current_subject, via_api_key):
+        if openai_fine_tuning._QUEUE:
+            gpu["busy"] = False
+            await openai_fine_tuning._drain_once()
+        return await status_read(current_subject = current_subject, via_api_key = via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "get_training_status", start_mid_request)
+        page = await client.fine_tuning.jobs.list(limit = 1)
+        return job, page
+
+    job, page = _run(flow())
+    assert [(j.id, j.status) for j in page.data] == [(job.id, "validating_files")]
+    assert page.has_more is False
+
+
+def test_a_cursor_on_a_job_that_starts_during_the_request_still_pages(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+    status_read = training_routes.get_training_status
+
+    def history_row(run_id, started_at):
+        studio_db.create_run(
+            id = run_id,
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_name = "chats.jsonl",
+            config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+            started_at = started_at,
+            total_steps = 4,
+        )
+
+    async def start_mid_request(current_subject, via_api_key):
+        if openai_fine_tuning._QUEUE:
+            gpu["busy"] = False
+            await openai_fine_tuning._drain_once()
+            history_row("job_20261021_101500_ab12cd34", "2026-11-04T00:00:00+00:00")
+        return await status_read(current_subject = current_subject, via_api_key = via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        history_row("job_20261001_000000_old", "2026-10-01T00:00:00+00:00")
+        job = await _create(client, uploaded.id)
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        monkeypatch.setattr(training_routes, "get_training_status", start_mid_request)
+        second = await client.fine_tuning.jobs.list(after = job.id, limit = 1)
+        return job, first, second
+
+    job, first, second = _run(flow())
+    assert [j.id for j in first.data] == [job.id]
+    assert [j.id for j in second.data] == ["ftjob_20261001_000000_old"]
+
+
+def test_a_newer_cancelled_job_is_not_skipped_when_an_older_one_starts_between_pages(
+    queue, monkeypatch
+):
+    client, _calls, _live, gpu = queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        older = await _create(client, uploaded.id)
+        clock["t"] += 10
+        newer = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.cancel(newer.id)
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        rest = [j.id async for j in client.fine_tuning.jobs.list(after = first.data[0].id, limit = 1)]
+        return older, newer, [j.id for j in first.data] + rest
+
+    older, newer, walked = _run(flow())
+    assert sorted(walked) == sorted([older.id, newer.id])
+
+
+def test_a_batch_lists_in_the_same_order_before_and_after_its_history_rows_exist(monkeypatch):
+    started = "2026-11-04T00:00:00+00:00"
+    monkeypatch.setattr(
+        openai_fine_tuning, "_RUN_ALIAS", {"run_a": "ftjob_qa", "run_c": "ftjob_qc"}
+    )
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {"ftjob_qa": 100, "ftjob_qc": 300})
+    waiting = [{"id": "ftjob_qb", "created_at": 200}]
+    live = {
+        "run_c": {"id": "ftjob_qc", "created_at": 300},
+        "run_a": {"id": "ftjob_qa", "created_at": 100},
+    }
+
+    def order(rows, live_rows):
+        monkeypatch.setattr(openai_fine_tuning, "_iter_runs", lambda: iter(rows))
+        return [
+            openai_fine_tuning._RUN_ALIAS.get(row["id"], row["id"]) if is_run else row["id"]
+            for row, is_run in openai_fine_tuning._ordered_jobs(waiting, live_rows)
+        ]
+
+    persisted = [{"id": "run_a", "started_at": started}, {"id": "run_c", "started_at": started}]
+    assert order([], live) == order(persisted, {}) == ["ftjob_qc", "ftjob_qb", "ftjob_qa"]
