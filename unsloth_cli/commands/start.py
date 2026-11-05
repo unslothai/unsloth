@@ -2568,7 +2568,9 @@ def _hub_repo_files(repo: str) -> Optional[list]:
     if not isinstance(siblings, list) or not siblings:
         return None
     return [
-        s["rfilename"] for s in siblings if isinstance(s, dict) and isinstance(s.get("rfilename"), str)
+        s["rfilename"]
+        for s in siblings
+        if isinstance(s, dict) and isinstance(s.get("rfilename"), str)
     ]
 
 
