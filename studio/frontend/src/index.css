@@ -6488,8 +6488,9 @@ html[data-glass="macos"] :is([data-slot="sidebar-inner"], [data-slot="chat-setti
   --color-chat-icon-bg-hover: var(--glass-hover);
   --color-muted: var(--glass-hover);
 }
-/* On the buttons, not the row, so the glass is the hover's box. */
-html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
+/* On the buttons, not the row, so the glass is the hover's box; the Images, Video, Audio and other page pickers match. */
+html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]),
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger {
   position: relative;
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent) !important;
   background-image: var(--glass-sheen, none);
@@ -6498,10 +6499,12 @@ html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.un
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   text-shadow: none;
 }
-html[data-glass^="liquid"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]) {
+html[data-glass^="liquid"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]),
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger {
   box-shadow: var(--glass-rim);
 }
-html[data-glass="liquid-3d"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice])::before {
+html[data-glass="liquid-3d"][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice])::before,
+html[data-glass="liquid-3d"][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -6511,25 +6514,34 @@ html[data-glass="liquid-3d"][data-chat-wallpaper-ready] [data-chat-model-control
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
   pointer-events: none;
 }
-html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]):is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]) {
+html[data-glass][data-chat-wallpaper-ready] [data-chat-model-controls] > :is(.unsloth-model-selector-trigger, [data-chat-model-notice]):is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]),
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] .unsloth-model-selector-trigger:is(:hover:not(:has([data-eject-hit]:hover)), [aria-expanded="true"]) {
   background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
 }
-/* Model hub and Library controls take the chat model button's glass: resting surfaces get its fill, hovered ones its frost over their own hover fill. */
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] :is(.hub-page :is(.hub-tag-soft, .hub-stat-pill, .hub-tab-toggle, .field-soft, .hub-download-card, .hub-tag-meta, [data-slot="input"]), [data-library-page] [class*="dark:bg-card"]) {
+/* Every non-chat page takes the chat model button's glass: resting surfaces (cards, fields, outline buttons, the selected tab) get its fill, hovered buttons its frost over their own hover fill. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(.elevated-card, [class~="bg-card"], [class*="dark:bg-card"], [data-slot="input"], .panel-field, .field-soft, [data-slot="button"]:is([data-variant="outline"], [data-variant="secondary"]), button:is([data-active="true"], [aria-pressed="true"], [aria-current="page"]), .hub-tag-soft, .hub-stat-pill, .hub-tab-toggle, .hub-download-card, .hub-tag-meta) {
   background-color: color-mix(in srgb, var(--glass-composer-fill) min(96%, calc(max(calc(var(--glass-tint) + 14%), var(--glass-read-floor, 0%), var(--glass-composer-floor)) * var(--glass-opacity, 1))), transparent);
   background-image: var(--glass-sheen, none);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] :is(.hub-page, [data-library-page]) button:not(:disabled, [data-slot="checkbox"]):is(:hover, [data-state="open"]) {
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] button:not(:disabled, [data-slot="checkbox"], [data-slot="switch"]):is(:hover, [data-state="open"]) {
   background-image: linear-gradient(var(--glass-hover), var(--glass-hover)), var(--glass-sheen, linear-gradient(transparent, transparent));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
   -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
 }
-html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] :is(.hub-page :is(.hub-tag-soft, .hub-stat-pill, .hub-tab-toggle, .field-soft, .hub-download-card, .hub-tag-meta, [data-slot="input"]), [data-library-page] [class*="dark:bg-card"], :is(.hub-page, [data-library-page]) button:not(:disabled, [data-slot="checkbox"]):is(:hover, [data-state="open"])) {
+html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :is(:is(.elevated-card, [class~="bg-card"], [class*="dark:bg-card"], [data-slot="input"], .panel-field, .field-soft, [data-slot="button"]:is([data-variant="outline"], [data-variant="secondary"]), button:is([data-active="true"], [aria-pressed="true"], [aria-current="page"]), .hub-tag-soft, .hub-stat-pill, .hub-tab-toggle, .hub-download-card, .hub-tag-meta), button:not(:disabled, [data-slot="checkbox"], [data-slot="switch"]):is(:hover, [data-state="open"])) {
   box-shadow: var(--glass-rim);
+}
+/* A card split into glass cells (API stats) lets the wallpaper show in the gaps instead of a second fill behind them. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .elevated-card:has(> [class~="bg-card"]) {
+  background-color: transparent;
+  background-image: none;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),
 html[data-glass="macos"] .unsloth-composer-surface :is(.composer-pill-btn, .unsloth-thinking-pill, .unsloth-composer-plus):is(:hover:not(:disabled), [data-state="open"]):not(:focus-visible, [data-active="true"]),

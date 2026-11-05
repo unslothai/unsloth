@@ -174,7 +174,8 @@ test("glass over an open conversation dims the image and thickens only that comp
 test("glass frosts the chat model controls and gives the account row the row hover", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const model = String.raw`html\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\)`;
-	const glass = new RegExp(`${model} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+	const glass = new RegExp(`${model},\\n[^{]*\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+	assert.match(css, new RegExp(`${model},\\nhtml\\[data-glass\\]\\[data-chat-wallpaper-workspace-ready\\] \\[data-wallpaper-route="page"\\] \\.unsloth-model-selector-trigger \\{`));
 	assert.match(glass, /var\(--glass-composer-fill\) min\(96%, calc\(max\(calc\(var\(--glass-tint\) \+ 14%\)/);
 	assert.match(glass, /backdrop-filter: blur\(var\(--glass-blur\)\) saturate/);
 	assert.doesNotMatch(glass, /padding/);
@@ -214,14 +215,12 @@ test("glass leaves the unstuck library header clear", () => {
 	assert.doesNotMatch(css, /data-hub-pane/);
 });
 
-test("model hub and library controls take the chat model button's glass", () => {
+test("every non-chat page takes the chat model button's glass on its controls and cards", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const scope = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] `;
-	assert.match(css, new RegExp(`${scope}:is\\(\\.hub-page :is\\(\\.hub-tag-soft[^{]*\\[data-library-page\\] \\[class\\*="dark:bg-card"\\]\\) \\{\\n  background-color: color-mix\\(in srgb, var\\(--glass-composer-fill\\)[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
-	assert.match(css, new RegExp(`${scope}:is\\(\\.hub-page, \\[data-library-page\\]\\) button:not\\(:disabled, \\[data-slot="checkbox"\\]\\):is\\(:hover, \\[data-state="open"\\]\\) \\{[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
-	for (const file of ["../src/features/library/library-page.tsx", "../src/features/library/chats/chats-library.tsx"]) {
-		assert.match(readFileSync(new URL(file, import.meta.url), "utf8"), /<main\s+data-library-page=""/);
-	}
+	const scope = String.raw`html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] `;
+	assert.match(css, new RegExp(`${scope}:is\\(\\.elevated-card, \\[class~="bg-card"\\][^{]*\\{\\n  background-color: color-mix\\(in srgb, var\\(--glass-composer-fill\\)[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
+	assert.match(css, new RegExp(`${scope}button:not\\(:disabled, \\[data-slot="checkbox"\\], \\[data-slot="switch"\\]\\):is\\(:hover, \\[data-state="open"\\]\\) \\{[^}]*backdrop-filter: blur\\(var\\(--glass-blur\\)\\)`));
+	assert.match(css, new RegExp(`${scope}\\.elevated-card:has\\(> \\[class~="bg-card"\\]\\) \\{\\n  background-color: transparent;`));
 });
 
 test("dark glass chat row menus keep the glass rim over the flat sidebar-menu shadow", () => {

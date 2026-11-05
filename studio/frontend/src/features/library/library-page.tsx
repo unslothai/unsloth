@@ -1021,7 +1021,6 @@ function LibraryView({ search }: { search: LibrarySearch }) {
   return (
     <LibraryActionsProvider value={actions}>
       <main
-        data-library-page=""
         ref={dropRef}
         {...dragHandlers}
         className="relative mx-auto w-full max-w-[calc(1560px*var(--ui-space-scale,1))] px-6 pb-24 pt-8 font-heading sm:px-10"

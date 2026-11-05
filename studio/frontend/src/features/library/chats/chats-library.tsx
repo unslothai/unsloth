@@ -1441,7 +1441,7 @@ export function ChatsLibrary({
       {embedded ? (
         embedded.render(favoriteEntries())
       ) : (
-        <main data-library-page="" className="relative mx-auto w-full max-w-[calc(1560px*var(--ui-space-scale,1))] px-6 pb-24 pt-8 font-heading sm:px-10">
+        <main className="relative mx-auto w-full max-w-[calc(1560px*var(--ui-space-scale,1))] px-6 pb-24 pt-8 font-heading sm:px-10">
           <LibraryHeader
             title={title}
             controls={
