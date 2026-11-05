@@ -328,8 +328,25 @@ def set_character_avatar(
 
 def delete_character(character_id: str) -> bool:
     with _connect("BEGIN IMMEDIATE") as conn:
+        threads = [
+            row[0]
+            for row in conn.execute(
+                "SELECT thread_id FROM chat_cast WHERE character_id = ?", (character_id,)
+            )
+        ]
         cursor = conn.execute("DELETE FROM characters WHERE id = ?", (character_id,))
         deleted = cursor.rowcount > 0
+        # The cascade must not leave a group with every member muted (see NoSpeakerLeft).
+        for thread_id in threads:
+            rows = conn.execute(
+                "SELECT character_id, muted FROM chat_cast WHERE thread_id = ? ORDER BY position, character_id",
+                (thread_id,),
+            ).fetchall()
+            if len(rows) > 1 and all(row["muted"] for row in rows):
+                conn.execute(
+                    "UPDATE chat_cast SET muted = 0 WHERE thread_id = ? AND character_id = ?",
+                    (thread_id, rows[0]["character_id"]),
+                )
     if deleted:
         delete_image("characters", character_id)
     return deleted

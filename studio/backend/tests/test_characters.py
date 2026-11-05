@@ -723,3 +723,14 @@ def test_continuing_an_older_chat_moves_its_character_up(client):
     names = [c["name"] for c in listed if c["name"] in ("Old", "New")]
     assert names == ["Old", "New"]
     assert next(c for c in listed if c["name"] == "Old")["lastChatAt"] == later
+
+
+def test_deleting_the_only_unmuted_member_keeps_a_group_speaker(client):
+    ids = [
+        client.post("/api/characters", json = {"name": n}).json()["id"] for n in ("Ann", "Bo", "Cy")
+    ]
+    thread_id = client.post("/api/characters/chats", json = {"characterIds": ids}).json()["threadId"]
+    url = f"/api/characters/chats/{thread_id}"
+    client.put(url, json = {"mute": {ids[1]: True, ids[2]: True}})
+    assert client.delete(f"/api/characters/{ids[0]}").status_code == 204
+    assert [m["muted"] for m in client.get(url).json()["cast"]] == [False, True]

@@ -224,6 +224,7 @@ export function linearRegex(source: string, flags: string): ((text: string) => b
     return null;
   }
   const multiline = flags.includes("m");
+  const sticky = flags.includes("y");
   const unicode = flags.includes("u");
   return (text) => {
     const chars = unicode ? Array.from(text) : text.split("");
@@ -256,8 +257,8 @@ export function linearRegex(source: string, flags: string): ((text: string) => b
       return false;
     };
     for (let at = 0; at <= chars.length; at += 1) {
-      // Search: a new thread starts at every position.
-      if (add(current, 0, at, at)) return true;
+      // Search: a new thread starts at every position, or only at the start for a sticky key.
+      if ((!sticky || at === 0) && add(current, 0, at, at)) return true;
       if (at === chars.length) break;
       next = [];
       const ch = chars[at];

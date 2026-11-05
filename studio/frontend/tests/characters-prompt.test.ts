@@ -339,6 +339,8 @@ test("lorebook regex keys run in linear time and match as JS regexes do", () => 
     ["a.c", "s"],
     ["(?<who>Rin|Rhys):", ""],
     ["x{2}y{1,}z?$", ""],
+    ["dragon", "y"],
+    ["Two", "iy"],
     ["[(]+x", ""],
     ["\u{20BB7}野", "u"],
     ["\u{1F600}+!", "u"],
@@ -346,10 +348,9 @@ test("lorebook regex keys run in linear time and match as JS regexes do", () => 
   ];
   const texts = ["\u{20BB7}野", "\u{1F600}\u{1F600}!", "\u{1F600}", "Two DRAKONS", "cat", "a big cat\nhuge cat", "strength", "swordsmith", "Rin: hi", "Hello", "a\nc", "xxyyy", "((x", "", "dragonfly"];
   for (const [source, flags] of patterns) {
-    const native = new RegExp(source, flags);
     for (const text of texts) {
       const fired = activateLorebook(book([entry({ keys: [`/${source}/${flags}`], content: "c" })]), [text]);
-      assert.equal(fired.fired.length === 1, native.test(text), `/${source}/${flags} on ${JSON.stringify(text)}`);
+      assert.equal(fired.fired.length === 1, new RegExp(source, flags).test(text), `/${source}/${flags} on ${JSON.stringify(text)}`);
     }
   }
   for (const key of ["/(a)\\1/", "/(?=a)a/", "/(?<!x)a/"]) {
