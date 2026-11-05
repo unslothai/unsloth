@@ -52,6 +52,9 @@ def multigpu_mode() -> str:
     return "auto"
 
 
+UNET_CFG_PARALLEL_ENV = "UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET"
+
+
 def cfg_parallel_mode() -> str:
     """``off`` / ``auto`` (default) / ``force`` (also across different card models)."""
     if multigpu_mode() == "off":
@@ -3013,8 +3016,143 @@ def _replica_call(replica: Any, args: tuple, kwargs: dict) -> Callable[[], Any]:
     return lambda: replica(*args, **kwargs)
 
 
+# U-Net keyword arguments a batch split may carry; any other tensor-bearing keyword keeps the call whole on the source.
+_UNET_SPLIT_KWARGS = frozenset(
+    {
+        "encoder_hidden_states",
+        "timestep_cond",
+        "added_cond_kwargs",
+        "cross_attention_kwargs",
+        "down_block_additional_residuals",
+        "mid_block_additional_residual",
+        "return_dict",
+    }
+)
+
+
+def _unet_cfg_parallel_disabled() -> bool:
+    return (os.environ.get(UNET_CFG_PARALLEL_ENV) or "").strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _split_batch(
+    value: Any,
+    n: int,
+    half: int,
+    depth: int = 0,
+) -> Any:
+    """``value`` with every tensor of leading size ``n`` cut to its ``half`` (0 = first, 1 = second) along dim 0;
+    other tensors and plain values are shared. Raises TypeError on an object it cannot see into."""
+    torch = _torch()
+    if isinstance(value, torch.Tensor):
+        if value.dim() >= 1 and value.shape[0] == n:
+            b = n // 2
+            return value[:b] if half == 0 else value[b:]
+        return value
+    if value is None or isinstance(value, _PLAIN_TYPES):
+        return value
+    if depth > 4:
+        raise TypeError("nested too deep")
+    if isinstance(value, dict):
+        return {k: _split_batch(v, n, half, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_split_batch(v, n, half, depth + 1) for v in value)
+    raise TypeError(f"cannot split {type(value).__name__}")
+
+
+def _join_batch(a: Any, b: Any) -> Any:
+    torch = _torch()
+    if isinstance(a, torch.Tensor) and isinstance(b, torch.Tensor):
+        return torch.cat([a, b.to(a.device)], dim = 0)
+    if isinstance(a, tuple) and isinstance(b, tuple) and len(a) == len(b) and a:
+        return (_join_batch(a[0], b[0]),) + tuple(a[1:])
+    sample_a, sample_b = getattr(a, "sample", None), getattr(b, "sample", None)
+    if isinstance(sample_a, torch.Tensor) and isinstance(sample_b, torch.Tensor):
+        return type(a)(sample = torch.cat([sample_a, sample_b.to(sample_a.device)], dim = 0))
+    raise TypeError(f"unexpected U-Net output {type(a).__name__}")
+
+
+class UnetCfgParallelRouter(CfgParallelRouter):
+    """CFG-parallel for a U-Net (SDXL / SD 1.x / 2.x): diffusers sends both guidance branches through ONE call at batch
+    ``2 * B``, so there is no second call to route. Each such call is cut in half along the batch: the first half runs
+    on the source card, the second on the replica at the same time (:meth:`CfgParallelRouter.run_pair`), and the two
+    outputs are concatenated. A U-Net treats every sample on its own, so the math is the same; the bits differ only
+    where the batch-B kernels round differently from batch 2B. Any even batch splits (two images without guidance
+    too, which then builds the replica). Odd batches, unknown inputs, a compiled-whole module and an unavailable
+    replica run the whole call on the source. ``UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET=0`` keeps U-Nets on one card."""
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        torch = _torch()
+        module = self.module_ref()
+        if (
+            self._pairing
+            or self.disabled_reason is not None
+            or _background_compile_call()
+            or torch.compiler.is_compiling()
+            # compiled whole after the router was installed (a deferred speed profile): its graph owns the call
+            or getattr(module, "_compiled_call_impl", None) is not None
+        ):
+            self.stats["primary_calls"] += 1
+            return self._primary(*args, **kwargs)
+        sample = kwargs.get("sample", args[0] if args else None)
+        n = sample.shape[0] if isinstance(sample, torch.Tensor) and sample.dim() >= 1 else 0
+        halves = None
+        if (
+            n >= 2
+            and n % 2 == 0
+            and set(k for k in kwargs if k not in ("sample", "timestep")) <= _UNET_SPLIT_KWARGS
+        ):
+            try:
+                halves = [(_split_batch(args, n, h), _split_batch(kwargs, n, h)) for h in (0, 1)]
+            except TypeError:
+                halves = None
+        if halves is None:
+            self.stats["primary_calls"] += 1
+            return self._primary(*args, **kwargs)
+        (a0, k0), (a1, k1) = halves
+        self.stats["primary_calls"] += 1
+        # the primary half waits for a cold replica (a first call may compile) and marks its signature warm
+        res = self.run_pair(lambda: self._primary_noting(None, a0, k0), a1, k1)
+        if res is None:
+            return self._primary(*args, **kwargs)
+        first, second = res
+        if second is None:
+            second = self._primary(*a1, **k1)
+        return _join_batch(first, second)
+
+
 _CFG_ROUTERS: "weakref.WeakKeyDictionary[Any, CfgParallelRouter]" = weakref.WeakKeyDictionary()
 _CFG_DECLINES: "weakref.WeakKeyDictionary[Any, str]" = weakref.WeakKeyDictionary()
+
+
+def _cfg_denoiser(pipe: Any) -> Any:
+    """The module CFG-parallel routes: ``pipe.transformer``, else a U-Net (batch split, :class:`UnetCfgParallelRouter`)
+    unless ``UNSLOTH_DIFFUSION_CFG_PARALLEL_UNET=0``."""
+    denoiser = getattr(pipe, "transformer", None)
+    if denoiser is not None:
+        return denoiser
+    unet = getattr(pipe, "unet", None)
+    if (
+        unet is not None
+        and type(unet).__name__ == "UNet2DConditionModel"
+        and not _unet_cfg_parallel_disabled()
+    ):
+        if _batch_coupled_processors(unet):
+            return None  # PAG-style processors chunk the batch themselves: a dim-0 split would mix their thirds
+        return unet
+    return None
+
+
+def _batch_coupled_processors(unet: Any) -> bool:
+    try:
+        processors = getattr(unet, "attn_processors", None) or {}
+        return any("PAG" in type(p).__name__ for p in processors.values())
+    except Exception:  # noqa: BLE001 - unreadable: treat as coupled
+        return True
 
 
 def cfg_parallel_decline(
@@ -3038,9 +3176,14 @@ def cfg_parallel_decline(
     if bg_compile_enabled():
         # its replays call the denoiser, which would enter the router and race a render's branch state
         return "background compile replays through the denoiser (UNSLOTH_DIFFUSION_BG_COMPILE)"
-    denoiser = getattr(pipe, "transformer", None)
+    denoiser = _cfg_denoiser(pipe)
     torch = _torch()
     if not isinstance(denoiser, torch.nn.Module):
+        if (
+            isinstance(getattr(pipe, "unet", None), torch.nn.Module)
+            and _unet_cfg_parallel_disabled()
+        ):
+            return f"U-Net CFG-parallel off ({UNET_CFG_PARALLEL_ENV}=0)"
         return "no DiT denoiser (a U-Net batches its guidance branches)"
     from .diffusion_layer_split import is_layer_split
 
@@ -3089,7 +3232,7 @@ def install_cfg_parallel(
     selection = current_selection()
     reason = cfg_parallel_decline(pipe, offload_policy = offload_policy, selection = selection)
     if reason is None:
-        denoiser = pipe.transformer
+        denoiser = _cfg_denoiser(pipe)
         primary = _module_device(denoiser)
         probes = probe_devices((selection.primary, *selection.secondaries))
         same = [
@@ -3133,7 +3276,12 @@ def install_cfg_parallel(
                 graph = _resident_graph(denoiser)
                 if graph is not None:
                     del denoiser.__dict__["forward"]
-                router = CfgParallelRouter(
+                router_cls = (
+                    UnetCfgParallelRouter
+                    if denoiser is not getattr(pipe, "transformer", None)
+                    else CfgParallelRouter
+                )
+                router = router_cls(
                     denoiser, primary = primary, secondary = f"cuda:{best}", logger = logger
                 )
                 router.inner = graph
@@ -3147,8 +3295,9 @@ def install_cfg_parallel(
                 denoiser._unsloth_cfg_router = router
                 if logger is not None:
                     logger.info(
-                        "diffusion.multigpu: CFG-parallel armed (replica on cuda:%s when guidance runs two branches)",
+                        "diffusion.multigpu: CFG-parallel armed (replica on cuda:%s when guidance runs two branches%s)",
                         best,
+                        "; U-Net batch split" if router_cls is UnetCfgParallelRouter else "",
                     )
                 return None
     if selection is not None:
