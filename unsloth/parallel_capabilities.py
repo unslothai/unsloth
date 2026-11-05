@@ -65,6 +65,8 @@ class Query:
     multimodal: bool = False
     windowed: bool = False  # sliding window, chunked attention or logit softcapping
     direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
+    # tp_native's refusal at q.tp ranks; "" when it shards or the model is already split (_tp_blocker).
+    tp_blocker: str = ""
     mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
@@ -266,6 +268,14 @@ RULES = (
         lambda q: q.tp > 1 and q.direct_params,
         "tensor parallel shards the projections inside a block; a parameter the block owns itself (not inside a "
         "projection) has no sharding rule (models/tp_native.py refuses it)",
+        "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
+    ),
+    Rule(
+        "tp x model",
+        "tensor parallel on models tensor parallel has no sharding rule for (multi-head latent attention, a q / k "
+        "norm over all heads)",
+        lambda q: q.tp > 1 and bool(q.tp_blocker),
+        "models/tp_native.py refuses the model before any weight loads (its reason follows the layout below)",
         "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
     Rule(
@@ -666,7 +676,27 @@ CELLS = (
 
 # MoE rows: family x precision x router aux loss x parallel mode. Evidence where a CPU gloo run proves it; every
 # other row is refused (under cp / pp / tp) or reported unverified (dp alone), with what it waits for.
-MOE_FAMILIES = ("qwen3_moe", "qwen3_5_moe", "gpt_oss", "deepseek_v3", "kimi_linear")
+# Zoo MoE matrix families (structure checked on transformers 5.17); family drops "_text" (_model_traits).
+MOE_FAMILIES = (
+    "qwen3_moe",
+    "qwen3_5_moe",
+    "gpt_oss",
+    "deepseek_v3",
+    "kimi_linear",
+    "olmoe",
+    "mixtral",
+    "qwen2_moe",
+    "qwen3_next",
+    "qwen3_vl_moe",
+    "llama4",
+    "glm4_moe",
+    "ernie4_5_moe",
+    "nemotron_h",
+    "jamba",
+    "granitemoehybrid",
+    "gemma4",
+    "lfm2_moe",
+)
 _MOE_PRECISION = {
     "lora": {"mode": ("lora",), "expert_lora": (False,)},
     "lora+experts": {"mode": ("lora",), "expert_lora": (True,)},
@@ -739,14 +769,20 @@ _MOE_EVIDENCE = {
 }
 
 
-# Cells table only; a real model is read by structure (_direct_params).
+# Cells table only; a real model is read by structure (_direct_params, _tp_blocker).
 _DIRECT_PARAM_FAMILIES = ("gpt_oss",)
+_TP_BLOCKED_FAMILIES = {
+    "deepseek_v3": "multi-head latent attention (MLA, kv_lora_rank)",
+    "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
+}
 
 
 def _moe_note(family, precision, aux, mode):
     if mode == "tp":
         if family in _DIRECT_PARAM_FAMILIES:
             return "refused by the tp x model rule (its attention owns the sinks parameter)"
+        if family in _TP_BLOCKED_FAMILIES:
+            return f"refused by the tp x model rule (models/tp_native.py: {_TP_BLOCKED_FAMILIES[family]})"
         return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
@@ -898,6 +934,7 @@ def _describe(q: Query) -> str:
         + (" x ".join(parts) or "single rank")
         + f", trainer {q.trainer}"
         + (f", model {q.family}" if q.family else "")
+        + (f"; models/tp_native.py: {q.tp_blocker}" if q.tp > 1 and q.tp_blocker else "")
     )
 
 
@@ -950,6 +987,9 @@ def _model_traits(model):
         return "", False, False, False
     text = getattr(config, "text_config", None) or config
     family = str(getattr(text, "model_type", "") or getattr(config, "model_type", "") or "")
+    # A multimodal text config: qwen3_5_moe_text is the qwen3_5_moe family.
+    if family.endswith("_text"):
+        family = family[: -len("_text")]
     layer_types = list(getattr(text, "layer_types", None) or [])
     hybrid = any(
         t not in ("full_attention", "sliding_attention", "chunked_attention") for t in layer_types
@@ -988,6 +1028,29 @@ def _direct_params(model) -> bool:
             if next(child.named_parameters(recurse = False), None) is not None:
                 return True
     return False
+
+
+def _tp_blocker(model, tp) -> str:
+    """derive_tp_plan's ValueError for `model` at `tp` ranks, "" when it shards. Only for an unsplit model:
+    a sharded model's local shapes are not the model's. Meta-device safe."""
+    if not isinstance(tp, int) or tp <= 1 or not callable(getattr(model, "named_modules", None)):
+        return ""
+    try:
+        from .models import tp_native
+        if tp_native.is_tensor_parallel(model) or any(
+            type(p).__name__ == "DTensor" for p in model.parameters()
+        ):
+            return ""
+        tp_native._decoder_layers(model)  # not a decoder model: no answer
+    except Exception:
+        return ""
+    try:
+        tp_native.derive_tp_plan(model, tp)
+    except ValueError as e:
+        return str(e)
+    except Exception:
+        return ""
+    return ""
 
 
 def _low_precision(model) -> Optional[str]:
@@ -1213,6 +1276,7 @@ def query_from(
         multimodal = multimodal,
         windowed = windowed,
         direct_params = _direct_params(model),
+        tp_blocker = _tp_blocker(model, getattr(layout, "tp", 1)),
         mode = mode,
         packing = packing,
         cp_backend = backend,
