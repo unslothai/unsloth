@@ -1898,12 +1898,12 @@ def test_cursor_survives_batch_start_during_pagination(batch_queue, monkeypatch)
     old_run_id = "job_20261001_000000_old_member"
 
     studio_db.create_run(
-        id=old_run_id,
-        model_name="unsloth/Qwen3-0.6B",
-        dataset_name="chats.jsonl",
-        config_json=json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
-        started_at="2026-10-01T00:00:00+00:00",
-        total_steps=4,
+        id = old_run_id,
+        model_name = "unsloth/Qwen3-0.6B",
+        dataset_name = "chats.jsonl",
+        config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+        started_at = "2026-10-01T00:00:00+00:00",
+        total_steps = 4,
     )
 
     openai_fine_tuning._BATCHES[old_batch_id] = [old_run_id]
@@ -1919,7 +1919,7 @@ def test_cursor_survives_batch_start_during_pagination(batch_queue, monkeypatch)
     def blocked_get_run(run_id):
         if run_id == old_run_id and should_block["value"]:
             entered.set()
-            if not release.wait(timeout=10):
+            if not release.wait(timeout = 10):
                 raise TimeoutError("Timed out waiting to release get_run")
         return real_get_run(run_id)
 
@@ -1927,35 +1927,33 @@ def test_cursor_survives_batch_start_during_pagination(batch_queue, monkeypatch)
 
     async def flow():
         uploaded = await client.files.create(
-            file=("chats.jsonl", CHATS),
-            purpose="fine-tune",
+            file = ("chats.jsonl", CHATS),
+            purpose = "fine-tune",
         )
 
         jobs = [
-            await _create(client, uploaded.id, suffix="a"),
-            await _create(client, uploaded.id, suffix="b"),
+            await _create(client, uploaded.id, suffix = "a"),
+            await _create(client, uploaded.id, suffix = "b"),
         ]
 
         # Both jobs are queued, so the first page contains both.
-        first = await client.fine_tuning.jobs.list(limit=2)
+        first = await client.fine_tuning.jobs.list(limit = 2)
         assert len(first.data) == 2
 
         # Use the last job as the cursor. The next item should be old history.
         cursor = first.data[-1].id
-        assert cursor in {
-            entry.alias for entry in openai_fine_tuning._ALIASES.values()
-        }
+        assert cursor in {entry.alias for entry in openai_fine_tuning._ALIASES.values()}
 
         should_block["value"] = True
 
         async def fetch_second_page():
-            return await client.fine_tuning.jobs.list(after=cursor, limit=1)
+            return await client.fine_tuning.jobs.list(after = cursor, limit = 1)
 
         request = asyncio.create_task(fetch_second_page())
 
-        assert await asyncio.to_thread(entered.wait, 10), (
-            "Pagination did not reach the expected get_run call"
-        )
+        assert await asyncio.to_thread(
+            entered.wait, 10
+        ), "Pagination did not reach the expected get_run call"
 
         # Start the new Multi-LoRA batch while pagination is suspended.
         gpu["busy"] = False
@@ -1975,6 +1973,4 @@ def test_cursor_survives_batch_start_during_pagination(batch_queue, monkeypatch)
         release.set()
 
     assert len(jobs) == 2
-    assert [job.id for job in second.data] == [
-        "ftjob_20261001_000000_old_member"
-    ]
+    assert [job.id for job in second.data] == ["ftjob_20261001_000000_old_member"]
