@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { Lorebook, LorebookEntry } from "../types";
+import { linearRegex } from "./linear-regex.ts";
 
 export interface ActivatedLore {
   before: string[];
@@ -20,28 +21,13 @@ const REGEX_KEY = /^\/(.+)\/([gimsuy]*)$/;
 const MAX_REGEX_KEY = 160;
 // Scan only the tail of recent messages: keys are matched on every send and token count.
 const MAX_SCAN_CHARS = 16_000;
-const ESCAPE_OR_CLASS = /\\.|\[(?:\\.|[^\]\\])*\]/g;
-const REPEATED_GROUP = /\)[*+{]/;
-
-// JS regexes cannot time out, and a repeated group such as (a+)+ backtracks exponentially on the UI thread.
-function repeatsAGroup(source: string): boolean {
-  return REPEATED_GROUP.test(source.replace(ESCAPE_OR_CLASS, "x"));
-}
 
 function keyMatcher(key: string, caseSensitive: boolean): ((text: string) => boolean) | null {
   const trimmed = key.trim();
   if (!trimmed) return null;
   const regex = REGEX_KEY.exec(trimmed);
-  // Card keys run on every send, so patterns that could backtrack badly are skipped.
-  if (regex && (trimmed.length > MAX_REGEX_KEY || repeatsAGroup(regex[1]))) return null;
-  if (regex) {
-    try {
-      const pattern = new RegExp(regex[1], regex[2].replace("g", ""));
-      return (text) => pattern.test(text);
-    } catch {
-      return null;
-    }
-  }
+  // Card keys run on every send on the UI thread, so they never reach the backtracking RegExp engine.
+  if (regex) return trimmed.length > MAX_REGEX_KEY ? null : linearRegex(regex[1], regex[2].replace("g", ""));
   const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   // Whole words when the key is a word, so "cat" does not fire on "category".
   const wordy = /^[\p{L}\p{N}_][\p{L}\p{N}_\s'-]*[\p{L}\p{N}_]$|^[\p{L}\p{N}_]$/u.test(trimmed);

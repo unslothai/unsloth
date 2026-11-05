@@ -37,6 +37,8 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
   const [isDefault, setIsDefault] = useState(false);
   const [picture, setPicture] = useState<File | null | "remove">(null);
   const [saving, setSaving] = useState(false);
+  // A persona this dialog created, kept so a retry after a failed portrait upload updates it.
+  const [created, setCreated] = useState<Persona | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const previewUrl = useMemo(
     () => (picture instanceof File ? URL.createObjectURL(picture) : null),
@@ -51,15 +53,21 @@ export function PersonaDialog({ open, persona, onClose }: PersonaDialogProps) {
     setAbout(persona?.description ?? "");
     setIsDefault(persona?.isDefault ?? false);
     setPicture(null);
+    setCreated(null);
   }, [open, persona]);
 
   async function save() {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      let saved = persona
-        ? await updatePersona(persona.id, { name: name.trim(), description: about, ...(isDefault ? { isDefault: true } : {}) })
+      const existing = persona ?? created;
+      let saved = existing
+        ? await updatePersona(existing.id, { name: name.trim(), description: about, ...(isDefault ? { isDefault: true } : {}) })
         : await createPersona({ name: name.trim(), description: about, isDefault });
+      if (!existing) {
+        setCreated(saved);
+        useCharactersStore.getState().upsertPersona(saved);
+      }
       if (picture instanceof File) saved = await uploadPersonaAvatar(saved.id, picture);
       else if (picture === "remove" && saved.hasAvatar) saved = await removePersonaAvatar(saved.id);
       useCharactersStore.getState().upsertPersona(saved);

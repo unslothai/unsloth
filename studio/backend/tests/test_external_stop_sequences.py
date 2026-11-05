@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""A Studio chat run on an external provider, which is sent no stop sequences, is cut on the way through."""
+
+import asyncio
+import json
+
+from routes.inference import _cut_studio_reply_at_stops
+
+
+def _event(content, finish = None):
+    delta = {} if content is None else {"content": content}
+    chunk = {"choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+    return f"data: {json.dumps(chunk)}\n\n"
+
+
+def _run(events, stops):
+    closed = []
+
+    async def upstream():
+        try:
+            for event in events:
+                yield event.encode()
+        finally:
+            closed.append(True)
+
+    async def collect():
+        return "".join([part async for part in _cut_studio_reply_at_stops(upstream(), stops)])
+
+    return asyncio.run(collect()), closed
+
+
+def _text(stream):
+    text, finishes = "", []
+    for line in stream.splitlines():
+        if line.startswith("data:") and line[5:].strip() != "[DONE]":
+            for choice in json.loads(line[5:]).get("choices", []):
+                text += choice["delta"].get("content") or ""
+                finishes.append(choice.get("finish_reason"))
+    return text, finishes
+
+
+def test_a_stop_split_across_chunks_ends_the_reply_before_it():
+    events = [_event("Sure.\nA"), _event("nn: hi"), _event(" more"), "data: [DONE]\n\n"]
+    stream, closed = _run(events, ["\nAnn:"])
+    text, finishes = _text(stream)
+    assert text == "Sure." and finishes[-1] == "stop"
+    assert stream.count("data: [DONE]") == 1 and closed == [True]
+
+
+def test_reasoning_is_not_cut_and_a_held_back_tail_is_released():
+    events = [
+        _event("<think>maybe\nAnn: says no</think>"),
+        _event("Wait\nA"),
+        _event("nd then."),
+        _event(None, "stop"),
+        "data: [DONE]\n\n",
+    ]
+    text, _finishes = _text(_run(events, ["\nAnn:"])[0])
+    assert text == "<think>maybe\nAnn: says no</think>Wait\nAnd then."
+    text, _finishes = _text(_run([_event("Ends on \nAn"), "data: [DONE]\n\n"], ["\nAnn:"])[0])
+    assert text == "Ends on \nAn"
+
+
+def test_lines_without_choices_pass_through():
+    tool_event = "data: " + json.dumps({"_toolEvent": {"type": "x"}}) + "\n\n"
+    stream, _closed = _run(
+        [": keep-alive\n\n", tool_event, _event("ok"), "data: [DONE]\n\n"], ["\nAnn:"]
+    )
+    assert stream.startswith(": keep-alive\n\n" + tool_event)
+    assert _text(stream)[0] == "ok"

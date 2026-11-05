@@ -318,14 +318,35 @@ test("a long lorebook regex key is ignored rather than run", () => {
   assert.equal(fired.fired.length, 0);
 });
 
-test("a short lorebook regex key that repeats a group is skipped, not run", () => {
+test("lorebook regex keys run in linear time and match as JS regexes do", () => {
   const started = Date.now();
-  const scan = [`${"a".repeat(40)}!`];
-  const fired = activateLorebook(book([entry({ keys: ["/(a+)+$/"], content: "never" })]), scan);
-  assert.equal(fired.fired.length, 0);
-  assert.ok(Date.now() - started < 1000);
-  const ok = activateLorebook(book([entry({ keys: ["/dra(g|k)ons?\\b/i", "/[(]+x/"], content: "yes" })]), ["Two DRAKONS", "((x"]);
-  assert.equal(ok.fired.length, 1);
+  for (const key of ["/(a+)+$/", "/a+a+a+a+a+a+$/", "/(a|a)*(a?){20}b/"]) {
+    const fired = activateLorebook(book([entry({ keys: [key], content: "never" })]), [`${"a".repeat(3000)}!`]);
+    assert.equal(fired.fired.length, 0, key);
+  }
+  assert.ok(Date.now() - started < 1500);
+  const patterns: [string, string][] = [
+    ["dra(g|k)ons?\\b", "i"],
+    ["^\\s*(?:big |huge )?cat$", "m"],
+    ["[^aeiou\\s]{3,}", ""],
+    ["\\bsword(s|smith)?\\b", "i"],
+    ["\\p{Lu}\\p{Ll}+", "u"],
+    ["a.c", "s"],
+    ["(?<who>Rin|Rhys):", ""],
+    ["x{2}y{1,}z?$", ""],
+    ["[(]+x", ""],
+  ];
+  const texts = ["Two DRAKONS", "cat", "a big cat\nhuge cat", "strength", "swordsmith", "Rin: hi", "Hello", "a\nc", "xxyyy", "((x", "", "dragonfly"];
+  for (const [source, flags] of patterns) {
+    const native = new RegExp(source, flags);
+    for (const text of texts) {
+      const fired = activateLorebook(book([entry({ keys: [`/${source}/${flags}`], content: "c" })]), [text]);
+      assert.equal(fired.fired.length === 1, native.test(text), `/${source}/${flags} on ${JSON.stringify(text)}`);
+    }
+  }
+  for (const key of ["/(a)\\1/", "/(?=a)a/", "/(?<!x)a/"]) {
+    assert.equal(activateLorebook(book([entry({ keys: [key], content: "c" })]), ["aa"]).fired.length, 0, key);
+  }
 });
 
 test("a replayed reply with tools between its texts keeps their order", () => {

@@ -30612,6 +30612,55 @@ async def _relay_split_thinking(
         await lines.aclose()
 
 
+async def _cut_studio_reply_at_stops(chunks, stops: list[str]):
+    """A Studio chat run's stop sequences, enforced on an external provider's stream, which is sent none.
+
+    Studio's stream carries reasoning as <think>...</think> in content, emitted whole by the proxy, so
+    only text outside it is cut.
+    """
+    stop = _StopSequenceFilter(stops)
+    in_think = False
+    lines = _sse_data_lines(chunks)
+    try:
+        async for line in lines:
+            data = line[len("data:") :].strip() if line.startswith("data:") else ""
+            if data == "[DONE]" and stop.held:
+                tail = {"choices": [{"index": 0, "delta": {"content": stop.flush()}}]}
+                yield "data: " + json.dumps(tail) + "\n\n"
+            elif data and '"choices"' in data:
+                try:
+                    chunk = json.loads(data)
+                except ValueError:
+                    chunk = None
+                choices = chunk.get("choices") if isinstance(chunk, dict) else None
+                for choice in choices if isinstance(choices, list) else []:
+                    delta = choice.get("delta") if isinstance(choice, dict) else None
+                    content = delta.get("content") if isinstance(delta, dict) else None
+                    if isinstance(content, str):
+                        out = ""
+                        for piece in re.split(r"(</?think>)", content):
+                            if piece in ("<think>", "</think>"):
+                                in_think = piece == "<think>"
+                                out += piece
+                            else:
+                                out += piece if in_think else stop.feed(piece)
+                            if stop.hit is not None:
+                                break
+                        if choice.get("finish_reason") and stop.hit is None:
+                            out += stop.flush()
+                        delta["content"] = out
+                    if stop.hit is not None:
+                        choice["finish_reason"] = "stop"
+                if isinstance(chunk, dict):
+                    line = "data: " + json.dumps(chunk)
+            yield line + "\n"
+            if stop.hit is not None:
+                yield "\ndata: [DONE]\n\n"
+                return
+    finally:
+        await lines.aclose()
+
+
 async def _chat_completion_from_connection_stream(response: StreamingResponse, model: str):
     lines = _sse_data_lines(response.body_iterator)
     try:
