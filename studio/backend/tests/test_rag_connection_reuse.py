@@ -220,8 +220,7 @@ def test_folder_sync_reuses_connections_and_commits_each_file(
     monkeypatch.setattr(rag_db.sqlite_gate, "connect", counting_connect)
     assert _run(folder["id"])["status"] == "completed"
     attach_opens = len(opens)
-    # About fourteen fresh opens per file before; three per file now (the worker's block and two in
-    # finish_pending) plus the lease heartbeat and a fixed per-pass overhead.
+    # Base opens ~14 per file, head ~3.
     assert attach_opens < 12 * 8
 
     # Metadata-only changes: each file's row must be committed before the next file starts.
@@ -247,8 +246,7 @@ def test_folder_sync_reuses_connections_and_commits_each_file(
     opens.clear()
     assert _run(folder["id"])["status"] == "completed"
     assert durable == [10**18] * 12
-    # Four fresh opens per file before (68 here); three now, since the stat and snapshot removal
-    # between them hold no connection.
+    # Base opens 4 per file, head 3.
     assert len(opens) < 20 + 12 * 4 - 6
 
 
