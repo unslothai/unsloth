@@ -1245,8 +1245,16 @@ def healthy_diffusers(monkeypatch):
                 return object
             raise AttributeError(name)
 
+    from core.inference import diffusion_families as _df
+
+    # A present class below its floor is refused, so a healthy stand-in must also clear every floor.
+    version = str(getattr(_real, "__version__", "0.39.0"))
+    for floor in _df._PIPELINE_MIN_DIFFUSERS.values():
+        if not _df._installed_at_least(version, floor):
+            version = floor
+
     proxy = _AnyPipeline("diffusers")
-    proxy.__version__ = str(getattr(_real, "__version__", "0.39.0"))
+    proxy.__version__ = version
     for attr in ("__path__", "__file__", "__spec__", "__loader__"):
         if _real is not None and hasattr(_real, attr):
             setattr(proxy, attr, getattr(_real, attr))
