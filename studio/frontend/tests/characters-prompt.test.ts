@@ -335,8 +335,11 @@ test("lorebook regex keys run in linear time and match as JS regexes do", () => 
     ["(?<who>Rin|Rhys):", ""],
     ["x{2}y{1,}z?$", ""],
     ["[(]+x", ""],
+    ["\u{20BB7}野", "u"],
+    ["\u{1F600}+!", "u"],
+    ["[\u{1F600}]", "u"],
   ];
-  const texts = ["Two DRAKONS", "cat", "a big cat\nhuge cat", "strength", "swordsmith", "Rin: hi", "Hello", "a\nc", "xxyyy", "((x", "", "dragonfly"];
+  const texts = ["\u{20BB7}野", "\u{1F600}\u{1F600}!", "\u{1F600}", "Two DRAKONS", "cat", "a big cat\nhuge cat", "strength", "swordsmith", "Rin: hi", "Hello", "a\nc", "xxyyy", "((x", "", "dragonfly"];
   for (const [source, flags] of patterns) {
     const native = new RegExp(source, flags);
     for (const text of texts) {

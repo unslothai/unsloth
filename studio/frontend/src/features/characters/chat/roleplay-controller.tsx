@@ -19,11 +19,12 @@ export function RoleplayController() {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const running = useAuiState(({ thread }) => thread.isRunning);
   const ask = useAskToReply();
-  const wasRunning = useRef(false);
+  // Keyed by thread: a switch is not a finish, and a reply already streaming when the chat opens is seen finishing.
+  const seen = useRef<{ threadId: string | null; running: boolean }>({ threadId: null, running: false });
 
   useEffect(() => {
-    const finished = wasRunning.current && !running;
-    wasRunning.current = running;
+    const finished = seen.current.threadId === threadId && seen.current.running && !running;
+    seen.current = { threadId, running };
     if (!finished || !threadId) return;
     const scene = useCharactersStore.getState().scenes[threadId];
     if (!scene || scene.cast.length < 2) return;
@@ -43,10 +44,6 @@ export function RoleplayController() {
     }, 350);
     return () => window.clearTimeout(timer);
   }, [running, threadId, aui, ask]);
-
-  useEffect(() => {
-    wasRunning.current = false;
-  }, [threadId]);
 
   useEffect(
     () => (threadId ? registerAsk(threadId, ask, () => aui.thread().getState().messages) : undefined),

@@ -34,6 +34,7 @@ function charTest(source: string, flags: string): (ch: string) => boolean {
 
 function parse(pattern: string, flags: string): Node {
   const charFlags = flags.replace(/[gmy]/g, "");
+  const unicode = flags.includes("u");
   let pos = 0;
 
   function escapeAt(): string {
@@ -103,8 +104,10 @@ function parse(pattern: string, flags: string): Node {
       pos += 1;
       return { t: "char", test: charTest(".", charFlags) };
     }
-    pos += 1;
-    return { t: "char", test: charTest(ch.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"), charFlags) };
+    // In u mode a literal is a whole code point, as the text is read.
+    const literal = unicode ? String.fromCodePoint(pattern.codePointAt(pos)!) : ch;
+    pos += literal.length;
+    return { t: "char", test: charTest(literal.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&"), charFlags) };
   }
 
   function quantifier(): { min: number; max: number } | null {

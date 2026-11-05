@@ -128,7 +128,17 @@ export async function prepareCharacterRun(args: {
     cast = castOf(scene, useCharactersStore.getState().characters);
     if (!refreshed && cast.length < scene.cast.length) throw new CharacterChatUnavailableError(null);
   }
-  const { personas } = useCharactersStore.getState();
+  let { personas } = useCharactersStore.getState();
+  const personaKnown = !scene.personaId || personas.some((p) => p.id === scene.personaId);
+  if (useCharactersStore.getState().personasStatus !== "ready" || !personaKnown) {
+    // Unloaded personas would silently send as the account instead of the chat's persona.
+    const refreshed = await store.refreshPersonas().then(
+      () => true,
+      () => false,
+    );
+    if (!refreshed) throw new CharacterChatUnavailableError(null);
+    personas = useCharactersStore.getState().personas;
+  }
   if (cast.length === 0) {
     // Every character in the chat was deleted: it carries on as an ordinary chat.
     if (scene.cast.length === 0) return null;
