@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import importlib.util
 import json
 import os
@@ -16,7 +17,7 @@ from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from itertools import chain, groupby
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1128,16 +1129,25 @@ def _run_created(run: dict[str, Any]) -> int:
     return _ALIAS_CREATED.get(_RUN_ALIAS.get(run["id"])) or _unix(run.get("started_at")) or 0
 
 
+def _runs_by_creation() -> Iterator[dict[str, Any]]:
+    waiting: list[tuple[int, int, dict[str, Any]]] = []
+    for seq, run in enumerate(_iter_runs()):
+        heapq.heappush(waiting, (-_run_created(run), seq, run))
+        # A job is queued before it starts: no run further down the history sorts above this.
+        floor = _unix(run.get("started_at")) or 0
+        while waiting and -waiting[0][0] >= floor:
+            yield heapq.heappop(waiting)[2]
+    while waiting:
+        yield heapq.heappop(waiting)[2]
+
+
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
     # By creation time, queue entries first on ties: a started job keeps its place across pages.
     remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
-    # Batch members share started_at: order them by creation time, as the live batch lists them.
-    runs = groupby(_iter_runs(), key = lambda run: run.get("started_at"))
-    runs = chain.from_iterable(sorted(g, key = _run_created, reverse = True) for _, g in runs)
     # A live run can acquire its history row between the status and history reads.
-    history = ((run, True) for run in runs if run["id"] not in live)
+    history = ((run, True) for run in _runs_by_creation() if run["id"] not in live)
     for row, is_run in chain(((job, False) for job in live.values()), history):
         created_at = _run_created(row) if is_run else row["created_at"]
         while remaining and remaining[0]["created_at"] >= created_at:

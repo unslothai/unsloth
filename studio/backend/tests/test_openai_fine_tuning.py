@@ -1275,6 +1275,49 @@ def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
     assert sorted(seen) == sorted(j.id for j in jobs) and len(seen) == 3
 
 
+def test_a_job_that_waited_for_a_batch_keeps_its_place_once_it_starts(batch_queue, monkeypatch):
+    client, _calls, _live, gpu, _backend = batch_queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+
+    def history_row(run_id, started_at):
+        studio_db.create_run(
+            id = run_id,
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_name = "chats.jsonl",
+            config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+            started_at = started_at,
+            total_steps = 4,
+        )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = []
+        for suffix in "abc":
+            clock["t"] += 10
+            extra = {"use_dora": True} if suffix == "b" else {}
+            jobs.append(await _create(client, uploaded.id, suffix = suffix, extra_body = extra))
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        for run_id in openai_fine_tuning._BATCHES["job_20261021_101500_batch000"]:
+            history_row(run_id, "2026-11-04T00:00:00+00:00")
+        await openai_fine_tuning._drain_once()
+        history_row("job_20261021_101500_ab12cd34", "2026-11-04T00:10:00+00:00")
+        seen, after = [j.id for j in first.data], first.data[-1].id
+        for _ in range(5):
+            page = await client.fine_tuning.jobs.list(limit = 1, after = after)
+            seen += [j.id for j in page.data]
+            if not page.has_more:
+                break
+            after = page.data[-1].id
+        return jobs, seen
+
+    jobs, seen = _run(flow())
+    assert seen[0] == jobs[2].id
+    assert sorted(seen) == sorted(j.id for j in jobs)
+
+
 @pytest.mark.parametrize(
     "model_kind",
     [
