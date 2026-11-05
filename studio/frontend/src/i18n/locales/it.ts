@@ -3673,6 +3673,8 @@ export const it = {
   picker: {
     unifiedTightFit: "Al limite",
     unifiedTightFitHint: "Su questo Mac potrebbe caricarsi con un contesto più breve o essere più lento.",
+    residentToRun: "per l'esecuzione",
+    residentToRunHint: "Memoria GPU richiesta dal controllo di caricamento durante l'esecuzione",
     onDevice: "Sul dispositivo",
     huggingFace: "Hugging Face",
     retry: "Riprova",
