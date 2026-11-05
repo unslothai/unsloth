@@ -208,12 +208,19 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     state = runner.progress()
     assert state["phase"] == "done" and not state["active"]
     assert (state["step"], state["total"]) == (2, 2)
+    assert state["eta_seconds"] is None  # cleared once decoding starts
     assert state["video"] == {"id": "v1"}
     payload = server.payloads[0]
     assert payload["video_frames"] == 5 and len(payload["control_frames"]) == 5
     control = Image.open(io.BytesIO(base64.b64decode(payload["control_frames"][0])))
     assert control.size == (vr.WIDTH, vr.HEIGHT) and control.mode == "RGB"
     assert saved[0][0] == b"MP4:AVI" and saved[0][1]["model"] == vr.MODEL_ID
+    # The gallery lists only sidecars its own model accepts.
+    from core.inference import video_gallery
+    from models.inference import GalleryVideo
+
+    assert all(k in saved[0][1] for k in video_gallery._REQUIRED_META)
+    GalleryVideo(id = "v1", url = "/x", **saved[0][1])
     for kind in ("input", "output"):
         assert runner.media_path(state["id"], kind) is not None
     assert runner.media_path("other", "output") is None

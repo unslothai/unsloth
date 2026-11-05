@@ -92,6 +92,8 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
 
   const submit = async () => {
     setError(null);
+    setInputClip(null);
+    setOutputClip(null);
     try {
       const parsedSeed = seed.trim() === "" ? null : Number.parseInt(seed, 10);
       setProgress(

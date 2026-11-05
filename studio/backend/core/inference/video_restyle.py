@@ -409,16 +409,18 @@ class RestyleRunner:
             )
             server = self._ensure_server(job["files"])
             self._update(phase = "generate")
-            started = time.monotonic()
+            # Rate from the first latent frame on: before it, the control video is still being encoded.
+            first: list[float] = []
 
             def on_line(line: str) -> None:
                 hit = parse_progress(line)
                 if hit is not None:
                     done, total = hit
-                    elapsed = time.monotonic() - started
-                    self._update(
-                        step = done, total = total, eta_seconds = elapsed / done * (total - done)
-                    )
+                    now = time.monotonic()
+                    if not first:
+                        first.append(now)
+                    eta = (now - first[0]) / (done - 1) * (total - done) if done > 1 else None
+                    self._update(step = done, total = total, eta_seconds = eta)
                 elif _DECODE_RE.search(line):
                     self._update(phase = "decode", eta_seconds = None)
 
@@ -443,7 +445,7 @@ class RestyleRunner:
                         "fps": FPS,
                         "duration_s": count / float(FPS),
                         "steps": 4,
-                        "guidance": None,
+                        "guidance": 1.0,
                         "seed": job["seed"],
                         "has_audio": False,
                         "conditioning": "restyle",
