@@ -1543,6 +1543,29 @@ def test_grpo_prompt_and_answer_roles_reach_the_checkpoint():
     "objective, row, facts",
     [
         (
+            # An explicit conversation format reads the messages column, not a kept seed column.
+            "sft:chatml",
+            {
+                "messages": [
+                    {"role": "user", "content": "Capital of France?"},
+                    {"role": "assistant", "content": "Paris"},
+                ],
+                "prompt": "Seed text the recipe kept",
+            },
+            {"conversation_column": "messages"},
+        ),
+        (
+            "sft:sharegpt",
+            {
+                "conversations": [
+                    {"from": "human", "value": "Capital of France?"},
+                    {"from": "gpt", "value": "Paris"},
+                ],
+                "prompt": "Seed text the recipe kept",
+            },
+            {"conversation_column": "conversations"},
+        ),
+        (
             "dpo",
             {"prompt": "Greet me", "chosen": "Hello!", "rejected": "No."},
             {"user_columns": ["prompt"], "answer_columns": ["chosen"]},
@@ -1568,7 +1591,8 @@ def test_the_checkpoint_names_the_columns_training_read(monkeypatch, objective, 
     monkeypatch.setattr(training, "POLL_S", 0)
     # No column fields set: the roles are the ones training found in the rows.
     monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
-    ctx = _Ctx(None, objective = objective)
+    objective, _, format_type = objective.partition(":")
+    ctx = _Ctx(None, objective = objective, **({"format_type": format_type} if format_type else {}))
     ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
     ctx.on_cancel = lambda fn: None
     ctx.check_cancelled = lambda: None

@@ -136,6 +136,9 @@ def cell_messages(value: Any) -> Optional[list[dict[str, Any]]]:
     from utils.datasets.cells import _message, cell_turns, wrapped_messages
 
     turns = wrapped_messages(value)
+    if isinstance(turns, dict) and _message(turns) is not None:
+        # One message per cell, as some preference sets store chosen/rejected.
+        turns = value = [turns]
     if not isinstance(turns, list) or not turns or any(_message(t) is None for t in turns):
         return None
     return cell_turns(value, "user")
@@ -164,15 +167,16 @@ def row_reference(row: dict[str, Any], prompt_column: str, reference_column: Opt
     return strip_thinking(found) if found else found
 
 
-def prompt_text(value: Any) -> str:
+def prompt_text(value: Any, whole: bool = True) -> str:
     """A prompt cell as one text (the judge, the failures): a conversation's turns by role, its
-    closing answer left out."""
+    closing answer left out when it is a ``whole`` conversation (no separate reference: an
+    assistant prefill then stays part of the prompt)."""
     from utils.datasets.cells import cell_text
 
     turns = cell_messages(value)
     if turns is None:
         return cell_text(value)
-    asked = [t for t in split_answer(turns)[0] if t["role"] != "system"]
+    asked = [t for t in (split_answer(turns)[0] if whole else turns) if t["role"] != "system"]
     if len(asked) == 1:
         return cell_text(asked[0]["content"])
     return "\n\n".join(f"{t['role']}: {cell_text(t['content'])}" for t in asked)
@@ -243,6 +247,9 @@ def run_benchmark(
     system_column: str | None = spec.get("system_column") or None
     # The run's system prompt is an override (set on the node), not training's default.
     override = bool(spec.get("system_override")) and bool(system_prompt.strip())
+    # No reference column: a conversation prompt is whole, its closing answer the reference.
+    # With one, a prompt's trailing assistant turns are a prefill, asked as part of it.
+    whole = not reference_column
     targets = ["candidate"] + (["baseline"] if spec.get("with_baseline") else [])
     per_target: dict[str, list[dict[str, Any]]] = {t: [] for t in targets}
     total = len(rows) * len(targets)
@@ -250,7 +257,7 @@ def run_benchmark(
     on_progress(done, total)
     cancelled = False
     for index, row in enumerate(rows):
-        prompt = prompt_text(row.get(prompt_column))
+        prompt = prompt_text(row.get(prompt_column), whole)
         reference = row_reference(row, prompt_column, reference_column)
         # A row's own system message (training sent it) unless the run sets one for every row.
         system = (
@@ -260,8 +267,12 @@ def run_benchmark(
         )
         # A conversational prompt is asked as the turns training saw, its own system message kept
         # unless the run overrides it.
-        whole = cell_messages(row.get(prompt_column))
-        turns = split_answer(whole)[0] if whole else [{"role": "user", "content": prompt}]
+        conversation = cell_messages(row.get(prompt_column))
+        turns = (
+            (split_answer(conversation)[0] if whole else conversation)
+            if conversation
+            else [{"role": "user", "content": prompt}]
+        )
         own = [t["content"] for t in turns if t["role"] == "system"]
         if override:
             turns, own = [t for t in turns if t["role"] != "system"], []
@@ -295,7 +306,7 @@ def run_benchmark(
         target: [
             {
                 "doc_id": r["index"],
-                "question": prompt_text(rows[r["index"]].get(prompt_column)),
+                "question": prompt_text(rows[r["index"]].get(prompt_column), whole),
                 "target": row_reference(rows[r["index"]], prompt_column, reference_column),
                 "response": r.get("output"),
                 "raw_response": r.get("error") or r.get("reason") or None,
@@ -314,7 +325,7 @@ def run_benchmark(
         row = rows[result["index"]]
         failed.append(
             {
-                "prompt": prompt_text(row.get(prompt_column)),
+                "prompt": prompt_text(row.get(prompt_column), whole),
                 "reference": row_reference(row, prompt_column, reference_column) or None,
                 "output": result.get("output"),
                 "reason": result.get("error") or result.get("reason") or "",

@@ -16,7 +16,13 @@ from types import SimpleNamespace
 from typing import Any, Optional
 from urllib.parse import quote
 
-from core.benchmark.recipe_heldout import cell_messages, prompt_text, row_reference, split_answer
+from core.benchmark.recipe_heldout import (
+    cell_messages,
+    prompt_text,
+    reference_text,
+    row_reference,
+    split_answer,
+)
 from core.flows.nodes._common import note_loaded, resident_name
 from utils.datasets.cells import cell_text
 from core.flows.registry import FlowNodeError, NodeContext, handler
@@ -459,6 +465,36 @@ def system_message(row: dict, columns: Any) -> str:
     return "\n\n".join(t for t in (cell_text(row.get(c)).strip() for c in names) if t)
 
 
+def _rl_rows(rows: list[dict], facts: dict) -> Optional[list[dict]]:
+    """Held-out rows of a GRPO, DPO or ORPO checkpoint shaped by training's own formatter: the
+    prompt it trained on (an implicit prompt, an assistant prefill, the row's system message) and
+    the answer, the preferred reply's closing turn. None when the checkpoint is not RL or the rows
+    do not format."""
+    objective = facts.get("rl_objective")
+    if objective not in ("grpo", "dpo", "orpo") or not rows:
+        return None
+    from datasets import Dataset
+
+    from core.training.rl import format_rl_dataset
+
+    mapping = facts.get("rl_mapping")
+    try:
+        formatted, _roles = format_rl_dataset(
+            Dataset.from_list(rows), objective, mapping if isinstance(mapping, dict) else None
+        )
+    except Exception:
+        return None
+    shaped = []
+    for row, out in zip(rows, formatted):
+        found = {**row, MAPPED_PROMPT: out["prompt"]}
+        if objective != "grpo":
+            found[MAPPED_REFERENCE] = reference_text(out["chosen"])
+        elif "answer" in out:
+            found[MAPPED_REFERENCE] = "" if out["answer"] is None else str(out["answer"])
+        shaped.append(found)
+    return shaped
+
+
 def mapped_question(row: dict, spec: dict) -> Any:
     """The question of a row whose checkpoint mapped several columns into it (``spec`` as the
     Benchmark node reports it to a Loop): user turns, lines, or an Alpaca instruction and input."""
@@ -547,7 +583,12 @@ async def _recipe_heldout(
     conversation = (
         conversation if isinstance(conversation, str) and conversation in columns else None
     )
-    if not named_prompt and not users and conversation:
+    rl = None if named_prompt else _rl_rows(rows, facts)
+    if rl is not None:
+        asked, prompt_col = rl, MAPPED_PROMPT
+        # Training's prompt carries the row's own system message.
+        system_col, systems = None, []
+    elif not named_prompt and not users and conversation:
         prompt_col = conversation
     elif named_prompt or not users:
         prompt_col = guess_column(
@@ -576,7 +617,9 @@ async def _recipe_heldout(
         prompt_col = ALPACA_PROMPT
         columns = [c for c in columns if c != "input"]
     named_reference = str(ctx.params.get("reference_column") or "").strip()
-    if not named_reference and conversation and prompt_col == conversation:
+    if not named_reference and rl is not None and any(MAPPED_REFERENCE in r for r in rl):
+        reference_col = MAPPED_REFERENCE
+    elif not named_reference and conversation and prompt_col == conversation:
         reference_col = None
     elif not named_reference and len(answers) == 1 and not converted:
         reference_col = answers[0]

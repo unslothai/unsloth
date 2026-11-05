@@ -1251,3 +1251,61 @@ def test_several_answer_message_columns_are_read_as_training_reads_them(monkeypa
     spec = sent[0]["recipe"]
     result = run_benchmark({**spec, "with_baseline": False}, chat = lambda target, messages: answer)
     assert result["candidate"]["passed"] == 1
+
+
+def _scored(monkeypatch, row, checkpoint, answer):
+    from core.benchmark.recipe_heldout import run_benchmark
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(row)]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent, asked = [], []
+    ctx = _Ctx(_routes(sent))
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", **checkpoint}
+    asyncio.run(benchmark.benchmark(ctx))
+
+    def chat(target, messages):
+        asked.append(messages)
+        return answer
+
+    result = run_benchmark({**sent[0]["recipe"], "with_baseline": False}, chat = chat)
+    return result["candidate"]["passed"], asked[0]
+
+
+@pytest.mark.parametrize("objective", ["dpo", "orpo"])
+def test_an_implicit_prompt_preference_row_is_scored_as_it_trained(monkeypatch, objective):
+    row = {
+        "chosen": "Human: Capital of France? Assistant: Paris",
+        "rejected": "Human: Capital of France? Assistant: London",
+    }
+    rl = {"rl_objective": objective, "rl_mapping": None}
+    passed, asked = _scored(monkeypatch, row, rl, "Paris")
+    assert passed == 1
+    assert asked[-1]["role"] == "user" and "Capital of France?" in asked[-1]["content"]
+    assert "Paris" not in asked[-1]["content"]
+
+
+def test_a_preferred_reply_in_one_message_object_is_scored_on_its_text(monkeypatch):
+    row = {
+        "prompt": "Capital of France?",
+        "chosen": {"role": "assistant", "content": "Paris"},
+        "rejected": {"role": "assistant", "content": "London"},
+    }
+    passed, _ = _scored(monkeypatch, row, {"rl_objective": "dpo", "rl_mapping": None}, "Paris")
+    assert passed == 1
+
+
+def test_a_grpo_prefill_stays_in_the_prompt(monkeypatch):
+    prompt = [
+        {"role": "user", "content": "Complete this sequence."},
+        {"role": "assistant", "content": "2, 4, 6,"},
+    ]
+    row = {"prompt": prompt, "answer": "8"}
+    passed, asked = _scored(monkeypatch, row, {"rl_objective": "grpo", "rl_mapping": None}, "8")
+    assert passed == 1
+    assert [t["content"] for t in asked] == ["Complete this sequence.", "2, 4, 6,"]

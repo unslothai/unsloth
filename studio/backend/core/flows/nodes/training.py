@@ -301,7 +301,20 @@ async def finetune(ctx: NodeContext) -> dict:
     row = None
     mapping = config.get("custom_format_mapping")
     automatic = objective == "sft" and not mapping and config.get("format_type") in (None, "auto")
-    if objective != "sft" or automatic:
+    # A conversation format, chosen or detected, reads a whole-conversation column.
+    chat = (
+        objective == "sft"
+        and not mapping
+        and config.get("format_type")
+        in (
+            None,
+            "auto",
+            "chatml",
+            "sharegpt",
+        )
+    )
+    rl_mapping = mapping if isinstance(mapping, dict) else None
+    if objective != "sft" or chat:
         from core.training.account_jobs import account_hf_token
 
         # Whether a prompt carried its own system message, and which roles automatic formatting
@@ -315,6 +328,7 @@ async def finetune(ctx: NodeContext) -> dict:
     conversation = None
     if automatic:
         mapping = await asyncio.to_thread(auto_mapping, row)
+    if chat:
         conversation = await asyncio.to_thread(auto_conversation, row)
     alpaca_input = False
     if objective != "sft" and isinstance(row, dict):
@@ -343,6 +357,10 @@ async def finetune(ctx: NodeContext) -> dict:
         facts["conversation_column"] = conversation
     if alpaca_input:
         facts.update(user_join = "alpaca", input_columns = ["input"])
+    if objective in ("grpo", "dpo", "orpo"):
+        # Benchmark shapes the held-out rows with training's own RL formatter: implicit prompts,
+        # one-message cells and assistant prefills read as they trained.
+        facts.update(rl_objective = objective, rl_mapping = rl_mapping)
     checkpoint.update(facts)
     return {
         "checkpoint": checkpoint,

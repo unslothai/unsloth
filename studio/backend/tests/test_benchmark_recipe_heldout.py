@@ -662,3 +662,36 @@ def test_a_conversation_reference_is_its_closing_reply():
     ]
     assert reference_text(chosen) == "Berlin"
     assert reference_text([{"role": "assistant", "content": "Paris"}]) == "Paris"
+
+
+def test_a_prompt_with_its_own_reference_keeps_its_assistant_prefill():
+    asked = []
+
+    def chat(target, messages):
+        asked.append(messages)
+        return "8"
+
+    prompt = [
+        {"role": "user", "content": "Complete this sequence."},
+        {"role": "assistant", "content": "2, 4, 6,"},
+    ]
+    result = run_benchmark(
+        {
+            "rows": [{"prompt": prompt, "answer": "8"}],
+            "prompt_column": "prompt",
+            "reference_column": "answer",
+            "scorer": "reference",
+        },
+        chat = chat,
+    )
+    assert asked[0] == prompt and result["candidate"]["passed"] == 1
+    assert "2, 4, 6," in result["samples"]["candidate"][0]["question"]
+
+
+def test_a_single_message_object_reads_as_its_text():
+    from core.benchmark.recipe_heldout import reference_text
+
+    assert reference_text({"role": "assistant", "content": "Paris"}) == "Paris"
+    assert reference_text({"from": "gpt", "value": "Paris"}) == "Paris"
+    # A SQuAD answer is not a message.
+    assert reference_text({"text": ["Paris"], "answer_start": [0]}) == "Paris"
