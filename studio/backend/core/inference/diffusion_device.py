@@ -973,6 +973,27 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     return _cpu_target(torch)
 
 
+def apply_cpu_render_threads(device: Any) -> Optional[int]:
+    """On a CPU render, size torch's intra-op pool like sd.cpp's CPU threads (``sd_cpp_backend._default_threads``: the
+    logical CPUs on a small non-hybrid SMT host, else the physical cores; ``UNSLOTH_CPU_THREADS`` wins). torch's own
+    default is one thread per physical core. Called from the rendering thread: an OpenMP thread count is per thread.
+    ``UNSLOTH_DIFFUSION_CPU_SMT=0`` keeps one thread per core. Returns the count set, None when nothing changed."""
+    if str(device).split(":")[0] != "cpu":
+        return None
+    try:
+        import torch
+
+        from .sd_cpp_backend import _default_threads
+
+        threads = int(_default_threads())
+        if threads > 0 and torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+            return threads
+    except Exception:  # noqa: BLE001 -- a thread count is an optimisation only
+        return None
+    return None
+
+
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
     # torch is None on the no-torch CPU fallback; leave dtype=None rather than crash.
     if dtype is None and torch is not None:

@@ -496,3 +496,25 @@ def test_windows_runs_the_logical_cpus_on_a_small_non_hybrid_smt_host(monkeypatc
 def test_windows_cores_is_none_off_windows(monkeypatch):
     monkeypatch.setattr(bk.sys, "platform", "linux")
     assert bk._windows_cores() is None
+
+
+def test_cpu_renders_size_torch_threads_like_sd_cpp(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_device as dd
+
+    before = torch.get_num_threads()
+    calls = []
+    monkeypatch.setattr(torch, "set_num_threads", lambda n: calls.append(n))
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: before + 3)
+    assert dd.apply_cpu_render_threads("cuda:0") is None
+    assert dd.apply_cpu_render_threads("mps") is None
+    assert calls == []
+    assert dd.apply_cpu_render_threads("cpu") == before + 3
+    assert dd.apply_cpu_render_threads(torch.device("cpu")) == before + 3
+    assert calls == [before + 3, before + 3]
+    # already at the count: nothing to do
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: torch.get_num_threads())
+    assert dd.apply_cpu_render_threads("cpu") is None
+    # a failing read never breaks a render
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: 1 / 0)
+    assert dd.apply_cpu_render_threads("cpu") is None
