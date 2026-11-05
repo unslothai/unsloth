@@ -974,10 +974,7 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
 
 
 def apply_cpu_render_threads(device: Any) -> Optional[int]:
-    """On a CPU render, size torch's intra-op pool like sd.cpp's CPU threads (``sd_cpp_backend._default_threads``: the
-    logical CPUs on a small non-hybrid SMT host, else the physical cores; ``UNSLOTH_CPU_THREADS`` wins). torch's own
-    default is one thread per physical core. Called from the rendering thread: an OpenMP thread count is per thread.
-    ``UNSLOTH_DIFFUSION_CPU_SMT=0`` keeps one thread per core. Returns the count set, None when nothing changed."""
+    """Match torch CPU threads to sd.cpp's ``_default_threads``; per thread, so call from the render thread."""
     if str(device).split(":")[0] != "cpu":
         return None
     try:

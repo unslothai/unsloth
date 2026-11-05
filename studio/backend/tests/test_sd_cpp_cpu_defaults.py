@@ -349,7 +349,6 @@ def test_the_linux_default_counts_cores_then_smt_siblings(monkeypatch):
     # A 4-CPU cpuset (2 cores x 2 SMT) on a 192-CPU host: its 4 CPUs, not 96
     _host(monkeypatch, cpus = 192, allowed = 4, physical = 2)
     assert bk._default_threads() == 4
-    # The same cpuset with one CPU per core: 2
     _host(monkeypatch, cpus = 192, allowed = 2, physical = 2)
     assert bk._default_threads() == 2
     # 2-way SMT with the whole machine: a many-core server keeps one thread per core
@@ -410,16 +409,13 @@ def test_a_small_smt_host_runs_one_thread_per_logical_cpu(monkeypatch):
     # 4 cores x 2 SMT (desktop / laptop / cloud VM): all 8 logical CPUs
     _host(monkeypatch, cpus = 8, physical = 4)
     assert bk._default_threads() == 8
-    # 16 cores x 2 SMT: still the logical count; the cap is on cores
     _host(monkeypatch, cpus = 32, physical = 16)
     assert bk._default_threads() == 32
-    # 17+ cores: one per core
     _host(monkeypatch, cpus = 64, physical = 32)
     assert bk._default_threads() == 32
     # A cpuset holding 3 whole cores plus one lone sibling: the 7 CPUs it may use
     _host(monkeypatch, cpus = 192, allowed = 7, physical = 4)
     assert bk._default_threads() == 7
-    # The cgroup quota still caps it
     _host(monkeypatch, cpus = 8, physical = 4, limit = 6)
     assert bk._default_threads() == 6
 
@@ -452,8 +448,7 @@ def _win_record(
 ):
     import struct
 
-    # SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: Relationship, Size, PROCESSOR_RELATIONSHIP (Flags, EfficiencyClass,
-    # Reserved[20], GroupCount, GROUP_AFFINITY)
+    # SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: Relationship, Size, Flags, EfficiencyClass, ...
     body = struct.pack("<BB20xH", 1 if smt else 0, efficiency, 1) + struct.pack("<QH6x", 0b11, 0)
     return struct.pack("<II", relationship, 8 + len(body)) + body
 
@@ -512,9 +507,7 @@ def test_cpu_renders_size_torch_threads_like_sd_cpp(monkeypatch):
     assert dd.apply_cpu_render_threads("cpu") == before + 3
     assert dd.apply_cpu_render_threads(torch.device("cpu")) == before + 3
     assert calls == [before + 3, before + 3]
-    # already at the count: nothing to do
     monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: torch.get_num_threads())
     assert dd.apply_cpu_render_threads("cpu") is None
-    # a failing read never breaks a render
     monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: 1 / 0)
     assert dd.apply_cpu_render_threads("cpu") is None
