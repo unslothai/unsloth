@@ -10,6 +10,7 @@ OpenAI-compatible /v1/chat/completions endpoint.
 import ast
 import atexit
 import bisect
+import collections
 import weakref
 import contextlib
 import contextvars
@@ -8159,6 +8160,62 @@ class CountAborted(Exception):
 # Single-threaded render + tokenize ran ~600K chars/s on the #15800 reporter's CPU; a sixth of that still catches a hang.
 _COUNT_TIMEOUT_FLOOR_S = 10.0
 _COUNT_TIMEOUT_CHARS_PER_S = 100_000
+
+# Identical prompts recounted within a tool round; keyed per llama-server process.
+_COUNT_MEMO_INIT_LOCK = threading.Lock()
+_COUNT_MEMO_SIZE = 8
+
+
+def _count_memo_key(backend, *parts) -> Optional[bytes]:
+    """Digest of everything the server render sees, scoped to the running llama-server process."""
+    process = getattr(backend, "_process", None)
+    try:
+        payload = json.dumps(
+            [
+                getattr(backend, "base_url", None),
+                getattr(backend, "_model_identifier", None),
+                id(process),
+                getattr(process, "pid", None),
+                *parts,
+            ],
+            sort_keys = True,
+            ensure_ascii = False,
+        )
+    except Exception:  # unserialisable content: count it, never guess a key
+        return None
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).digest()
+
+
+def _count_memo(backend):
+    memo = vars(backend).get("_count_memo_state")
+    if memo is None:
+        with _COUNT_MEMO_INIT_LOCK:
+            memo = vars(backend).setdefault(
+                "_count_memo_state", (threading.Lock(), collections.OrderedDict())
+            )
+    return memo
+
+
+def _count_memo_get(backend, key) -> Optional[int]:
+    if key is None:
+        return None
+    lock, memo = _count_memo(backend)
+    with lock:
+        count = memo.get(key)
+        if count is not None:
+            memo.move_to_end(key)
+        return count
+
+
+def _count_memo_put(backend, key, count) -> None:
+    if key is None or type(count) is not int or count <= 0:
+        return
+    lock, memo = _count_memo(backend)
+    with lock:
+        memo[key] = count
+        memo.move_to_end(key)
+        while len(memo) > _COUNT_MEMO_SIZE:
+            memo.popitem(last = False)
 
 
 def _count_timeout(messages, system_text, tools) -> float:
@@ -41522,6 +41579,35 @@ class LlamaCppBackend:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
+            from core.inference.mcp_images import prepare_image_turn_boundaries
+
+            template_messages = prepare_image_turn_boundaries(
+                list(messages) if messages else [],
+                getattr(self, "_chat_template_override", None)
+                or getattr(self, "_chat_template", None),
+            )
+            if system_text:
+                template_messages = [{"role": "system", "content": system_text}] + template_messages
+            # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
+            memo_key = (
+                None
+                if prefer_native
+                else _count_memo_key(
+                    self,
+                    template_messages,
+                    tools,
+                    {
+                        key: template_options[key]
+                        for key in ("tool_choice", "parallel_tool_calls", "response_format")
+                        if template_options and key in template_options
+                    },
+                    chat_template_kwargs,
+                    continue_final_message,
+                )
+            )
+            cached = _count_memo_get(self, memo_key)
+            if cached is not None:
+                return cached
             with httpx.Client(
                 timeout = httpx.Timeout(
                     _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
@@ -41548,18 +41634,6 @@ class LlamaCppBackend:
                     return len(tokens)
 
                 # 1. Try /apply-template to render the real chat prompt.
-                from core.inference.mcp_images import prepare_image_turn_boundaries
-
-                template_messages = prepare_image_turn_boundaries(
-                    list(messages) if messages else [],
-                    getattr(self, "_chat_template_override", None)
-                    or getattr(self, "_chat_template", None),
-                )
-                if system_text:
-                    template_messages = [
-                        {"role": "system", "content": system_text}
-                    ] + template_messages
-
                 def _render_count(render_messages) -> tuple[Optional[int], bool]:
                     """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
                     try:
@@ -41634,6 +41708,7 @@ class LlamaCppBackend:
                         if count is not None:
                             self._empty_chat_render_refused = True
                 if count is not None:
+                    _count_memo_put(self, memo_key, count)
                     return count
 
                 # The fallback drops role markers, special tokens and tool schemas (~30% of a
