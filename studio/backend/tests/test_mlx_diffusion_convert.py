@@ -143,7 +143,7 @@ def test_pack_matches_mlx_layout_bit_for_bit(bits):
 
 
 def _pack_reference(q, bits):
-    """The previous ``_pack``: uint32 OR-reduce for 2 / 4 / 8 bits, a ``packbits`` bit stream otherwise."""
+    """The previous ``_pack``."""
     rows, cols = q.shape
     if 32 % bits == 0:
         per_word = 32 // bits
@@ -177,7 +177,7 @@ def _quantize_dense_reference(
 @pytest.mark.parametrize("bits", [2, 3, 4, 5, 6, 8])
 @pytest.mark.parametrize("dtype", [np.uint8, np.int64])
 def test_pack_is_byte_identical_to_the_reference(bits, dtype):
-    # 600 rows crosses the 256-row chunk boundary twice; 4 column counts exercise every word phase.
+    # 600 rows crosses the 256-row chunk boundary.
     for cols in (32, 96, 256, 1024):
         q = _rng(bits * cols).integers(0, 1 << bits, size = (600, cols)).astype(dtype)
         got = conv._pack(q, bits)
@@ -200,17 +200,17 @@ def test_pack_does_not_widen_to_uint32_per_element(bits):
         peak = tracemalloc.get_traced_memory()[1]
     finally:
         tracemalloc.stop()
-    # The output (q.nbytes * bits / 8) plus at most one uint8 lane; a uint32 copy of q alone is 4 * q.nbytes.
+    # Output plus one uint8 lane; a uint32 copy of q alone is 4 * q.nbytes.
     assert peak <= q.nbytes * bits // 8 + q.nbytes
 
 
 @pytest.mark.parametrize("bits", [4, 8])
 def test_quantize_dense_is_byte_identical_to_the_reference(bits):
     w = (_rng(bits).standard_normal((300, 256)) * 0.1).astype(np.float32)
-    w[3, :32] = 0.5  # a flat group: scale 0, every q forced to 0
+    w[3, :32] = 0.5
     w[4, 32:64] = -2.0
     w[5, :] = np.linspace(-1e4, 1e4, 256, dtype = np.float32)
-    w[6, :32] = np.float32(1e-38)  # subnormal-sized spread
+    w[6, :32] = np.float32(1e-38)
     got = conv.quantize_dense_affine(w, bits)
     ref = _quantize_dense_reference(w, bits)
     for a, b in zip(got, ref):

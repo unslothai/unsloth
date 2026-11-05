@@ -130,14 +130,13 @@ def _pack(q: np.ndarray, bits: int) -> np.ndarray:
     out = np.empty((rows, cols * bits // 32), dtype = "<u4")
     stream = out.view(np.uint8)
     if 8 % bits == 0:
-        # Whole elements per byte: OR them into bytes, the bytes of a little-endian word are its stream.
         per_byte = 8 // bits
         lanes = q.reshape(rows, cols // per_byte, per_byte)
         np.copyto(stream, lanes[..., 0])
         for k in range(1, per_byte):
             stream |= lanes[..., k] << np.uint8(bits * k)
         return out
-    # 8 elements are exactly `bits` bytes of the stream: build them in a little-endian uint64, keep the low bytes.
+    # 8 elements = `bits` bytes: the low bytes of a little-endian uint64.
     for start in range(0, rows, _ROW_CHUNK):
         lanes = q[start : start + _ROW_CHUNK].reshape(-1, cols // 8, 8)
         acc = lanes[..., 0].astype("<u8")
@@ -299,7 +298,7 @@ def quantize_dense_affine(
     scale = round_to_bf16((hi - bias) / levels)
     flat = scale == 0
     safe_scale = np.where(flat, np.float32(1.0), scale).astype(np.float32)
-    # One float32 temporary, updated in place (same ops and order as rint((g - bias) / scale) -> 0 -> clip).
+    # In place, same ops and order as before: output stays byte-identical.
     q = np.subtract(g, bias[..., None], dtype = np.float32)
     np.divide(q, safe_scale[..., None], out = q)
     np.rint(q, out = q)
