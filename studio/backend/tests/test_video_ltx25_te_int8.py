@@ -274,3 +274,48 @@ def test_validate_load_request_accepts_int8_and_off_and_refuses_other_schemes():
         backend.validate_load_request(
             "Lightricks/LTX-2.5-Diffusers", model_kind = "pipeline", text_encoder_quant = "fp8"
         )
+
+
+def test_streamed_encode_matches_cpu_and_restores_weights():
+    """A per-module streamed encode gives the same hidden states as an encode on the host weights, leaves every weight
+    on the host afterwards, and _encode_device only picks it when the whole model does not fit but one module does."""
+    import torch
+
+    from core.inference import video_ltx25_te_worker as W
+
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Embedding(50, 16), torch.nn.Linear(16, 32), torch.nn.GELU(), torch.nn.Linear(32, 16))
+    ids = torch.randint(0, 50, (2, 7))
+    with torch.inference_mode():
+        ref = model(ids)
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    with torch.inference_mode(), W._StreamedWeights(model, dev):
+        out = model(ids.to(dev)).cpu()
+    assert torch.equal(out, ref) or torch.allclose(out, ref, atol = 1e-5)
+    assert all(p.device.type == "cpu" for p in model.parameters())
+    assert not any(hasattr(m, "_unsloth_stream_saved") for m in model.modules())
+    assert W._largest_module_mib(model) == 0  # < 1 MiB modules
+
+
+def test_encode_device_streams_when_only_one_module_fits(monkeypatch):
+    import torch
+
+    from core.inference import video_ltx25_te_worker as W
+
+    class Big(torch.nn.Module):
+        pass
+
+    model = Big()
+    monkeypatch.setattr(W, "_weights_mib", lambda m: 22811)
+    monkeypatch.setattr(W, "_largest_module_mib", lambda m: 1920)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda d = None: (14000 << 20, 23034 << 20))
+    cfg = {"device": "cuda:0", "resident": False, "budget_mib": 21000}
+    assert W._encode_device(cfg, model, server_reserved_mib = 6000) == "stream:cuda:0"
+    monkeypatch.setenv(W.STREAM_ENV, "0")
+    assert W._encode_device(cfg, model, server_reserved_mib = 6000) == "cpu"
+    monkeypatch.delenv(W.STREAM_ENV)
+    monkeypatch.setattr(W, "_weights_mib", lambda m: 1000)
+    assert W._encode_device(cfg, model, server_reserved_mib = 6000) == "cuda:0"
+    monkeypatch.setattr(W, "_weights_mib", lambda m: 22811)
+    monkeypatch.setattr(W, "_largest_module_mib", lambda m: 9000)
+    assert W._encode_device(cfg, model, server_reserved_mib = 6000) == "cpu"

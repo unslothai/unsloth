@@ -6,6 +6,7 @@ must import nothing heavy at module level"""
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
 import traceback
@@ -554,7 +555,78 @@ def _encode_device(
         room = allowed if room is None else min(room, allowed)
     if room is None:
         return device if kind == "cuda" else "cpu"
-    return device if room >= need else "cpu"
+    if room >= need:
+        return device
+    # The whole encoder does not fit, but one module at a time does: stream the weights through the card (a few GB/s
+    # of host-to-device copies) instead of running a 12B encoder on the CPU (minutes per prompt).
+    if kind == "cuda" and not _stream_disabled() and room >= _largest_module_mib(model) * 2 + ENCODE_MARGIN_MIB:
+        return STREAM_PREFIX + device
+    return "cpu"
+
+
+# ``_encode_device`` answer for a per-module streamed encode on the named device.
+STREAM_PREFIX = "stream:"
+STREAM_ENV = "UNSLOTH_LTX25_TE_STREAM"
+
+
+def _stream_disabled() -> bool:
+    return (os.environ.get(STREAM_ENV) or "").strip().lower() in ("0", "false", "no", "off")
+
+
+def _own_tensors(module: Any) -> list:
+    return [t for t in list(module.parameters(recurse = False)) + list(module.buffers(recurse = False)) if t is not None]
+
+
+def _largest_module_mib(model: Any) -> int:
+    """The biggest weight set one module holds by itself; a model that cannot be walked never streams."""
+    modules = getattr(model, "modules", None)
+    if not callable(modules):
+        return 1 << 30
+    best = 0
+    for module in modules():
+        best = max(best, sum(t.numel() * t.element_size() for t in _own_tensors(module)))
+    return best >> 20
+
+
+class _StreamedWeights:
+    """For one encode: every module's own weights go to ``device`` just before its forward and back to the host copy
+    right after (the host tensors are kept, so nothing is copied back). Only modules the forward runs are moved."""
+
+    def __init__(self, model: Any, device: Any):
+        self.model, self.device, self.handles = model, device, []
+
+    def __enter__(self):
+        import torch
+
+        def pre(module, _args):
+            saved = []
+            for t in _own_tensors(module):
+                if t.device.type == "cpu":
+                    saved.append((t, t.data))
+                    t.data = t.data.to(self.device, non_blocking = True)
+            module._unsloth_stream_saved = saved
+
+        def post(module, _args, _out):
+            for t, host in getattr(module, "_unsloth_stream_saved", ()):
+                t.data = host
+            module._unsloth_stream_saved = ()
+
+        for module in self.model.modules():
+            if _own_tensors(module):
+                self.handles.append(module.register_forward_pre_hook(pre))
+                self.handles.append(module.register_forward_hook(post))
+        self._torch = torch
+        return self
+
+    def __exit__(self, *exc):
+        for h in self.handles:
+            h.remove()
+        for module in self.model.modules():
+            for t, host in getattr(module, "_unsloth_stream_saved", ()):
+                t.data = host
+            if hasattr(module, "_unsloth_stream_saved"):
+                del module._unsloth_stream_saved
+        return False
 
 
 def _memory_stats(device: str) -> dict:
@@ -645,11 +717,14 @@ def _encode_on(
         add_special_tokens = True,
         return_tensors = "pt",
     )
-    onloaded = not resident and device != "cpu"
+    streamed = str(device).startswith(STREAM_PREFIX)
+    if streamed:
+        device = str(device)[len(STREAM_PREFIX):]
+    onloaded = not resident and device != "cpu" and not streamed
     if onloaded:
         model.to(device)
     try:
-        with torch.inference_mode():
+        with torch.inference_mode(), (_StreamedWeights(model, device) if streamed else contextlib.nullcontext()):
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
@@ -665,7 +740,7 @@ def _encode_on(
         accel = getattr(torch, kind, None) if kind in ("cuda", "xpu") else None
         if accel is not None and accel.is_available():
             accel.empty_cache()
-    return embeds_host, mask_host, device
+    return embeds_host, mask_host, (STREAM_PREFIX + device) if streamed else device
 
 
 def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) -> None:
