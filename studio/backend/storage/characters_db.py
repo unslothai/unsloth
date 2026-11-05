@@ -612,14 +612,34 @@ def get_chat_scene(thread_id: str) -> Optional[dict]:
     return _scene_from_rows(scene, cast_rows, thread_id)
 
 
+class NoSpeakerLeft(ValueError):
+    """A group change that would leave every member muted."""
+
+
+def _merge_settings(stored: dict, patch: dict) -> dict:
+    """``patch`` over ``stored``: None clears a key, and a nested object (the author's note) merges field by field."""
+    merged = dict(stored)
+    for key, value in patch.items():
+        if value is None:
+            merged.pop(key, None)
+        elif isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = {**merged[key], **value}
+        else:
+            merged[key] = value
+    return merged
+
+
 def update_chat_scene(
     thread_id: str,
     *,
-    cast: Optional[list[dict]] = None,
+    add: Optional[list[str]] = None,
+    remove: Optional[list[str]] = None,
+    mute: Optional[dict[str, bool]] = None,
     persona_id: Optional[str] = None,
     persona_set: bool = False,
     settings: Optional[dict] = None,
 ) -> Optional[dict]:
+    """Applies one edit to the stored scene, so edits from several tabs or queued writes compose."""
     with _connect("BEGIN IMMEDIATE") as conn:
         if conn.execute("SELECT 1 FROM chat_threads WHERE id = ?", (thread_id,)).fetchone() is None:
             return None
@@ -627,55 +647,52 @@ def update_chat_scene(
             "SELECT * FROM chat_scene WHERE thread_id = ?", (thread_id,)
         ).fetchone()
         now = now_ms()
-        if scene is None:
-            conn.execute(
-                "INSERT INTO chat_scene (thread_id, persona_id, settings_json, updated_at) VALUES (?, NULL, '{}', ?)",
-                (thread_id, now),
-            )
-        if persona_set:
-            conn.execute(
-                "UPDATE chat_scene SET persona_id = ?, updated_at = ? WHERE thread_id = ?",
-                (persona_id, now, thread_id),
-            )
-        if settings is not None:
-            # A patch over what is stored, so an edit from one tab keeps what another tab saved; None clears.
-            row = conn.execute(
-                "SELECT settings_json FROM chat_scene WHERE thread_id = ?", (thread_id,)
-            ).fetchone()
-            merged = _loads(row[0], {}) if row else {}
-            for key, value in settings.items():
-                if value is None:
-                    merged.pop(key, None)
-                else:
-                    merged[key] = value
-            conn.execute(
-                "UPDATE chat_scene SET settings_json = ?, updated_at = ? WHERE thread_id = ?",
-                (_dumps(merged), now, thread_id),
-            )
-        if cast is not None:
-            if len(cast) > MAX_CAST:
-                raise LimitReached(f"A chat can have up to {MAX_CAST} characters.")
-            ids = [member["characterId"] for member in cast]
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
+        stored = _loads(scene["settings_json"], {}) if scene else {}
+        conn.execute(
+            "INSERT OR REPLACE INTO chat_scene (thread_id, persona_id, settings_json, updated_at)"
+            " VALUES (?, ?, ?, ?)",
+            (
+                thread_id,
+                persona_id if persona_set else (scene["persona_id"] if scene else None),
+                _dumps(_merge_settings(stored, settings) if settings else stored),
+                now,
+            ),
+        )
+        if add or remove or mute:
+            rows = conn.execute(
+                "SELECT character_id, muted FROM chat_cast WHERE thread_id = ? ORDER BY position, character_id",
+                (thread_id,),
+            ).fetchall()
+            cast = {row["character_id"]: bool(row["muted"]) for row in rows}
+            for character_id in remove or []:
+                cast.pop(character_id, None)
+            added = [i for i in dict.fromkeys(add or []) if i not in cast]
+            if added:
+                placeholders = ",".join("?" for _ in added)
                 known = {
                     row[0]
                     for row in conn.execute(
-                        f"SELECT id FROM characters WHERE id IN ({placeholders})", ids
+                        f"SELECT id FROM characters WHERE id IN ({placeholders})", added
                     )
                 }
-                missing = [i for i in ids if i not in known]
-                if missing:
+                if any(i not in known for i in added):
                     raise LookupError("character")
+                cast.update((i, False) for i in added)
+            # A member another tab removed has nothing left to mute.
+            cast.update({i: bool(v) for i, v in (mute or {}).items() if i in cast})
+            if len(cast) > MAX_CAST:
+                raise LimitReached(f"A chat can have up to {MAX_CAST} characters.")
+            if len(cast) > 1 and all(cast.values()):
+                raise NoSpeakerLeft("A group chat needs at least one character who is not muted.")
             conn.execute("DELETE FROM chat_cast WHERE thread_id = ?", (thread_id,))
-            for position, member in enumerate(cast):
+            for position, (character_id, muted) in enumerate(cast.items()):
                 conn.execute(
-                    "INSERT OR REPLACE INTO chat_cast (thread_id, character_id, position, muted) VALUES (?, ?, ?, ?)",
-                    (thread_id, member["characterId"], position, 1 if member.get("muted") else 0),
+                    "INSERT INTO chat_cast (thread_id, character_id, position, muted) VALUES (?, ?, ?, ?)",
+                    (thread_id, character_id, position, 1 if muted else 0),
                 )
-                conn.execute(
-                    "UPDATE characters SET last_chat_at = ? WHERE id = ?",
-                    (now, member["characterId"]),
+            if added:
+                conn.executemany(
+                    "UPDATE characters SET last_chat_at = ? WHERE id = ?", [(now, i) for i in added]
                 )
     return get_chat_scene(thread_id)
 

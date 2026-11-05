@@ -219,17 +219,19 @@ export async function getChatScene(threadId: string): Promise<ChatScene | null> 
   return json(response, "Could not load the chat's characters");
 }
 
-export type SettingsPatch = { [K in keyof SceneSettings]?: SceneSettings[K] | null };
+/** One edit applied on top of the stored scene, so edits from several tabs compose. */
+export interface ScenePatch {
+  add?: string[];
+  remove?: string[];
+  mute?: Record<string, boolean>;
+  personaId?: string | null;
+  /** Merged into the stored settings: null clears a key, and the author's note merges field by field. */
+  settings?: {
+    [K in keyof SceneSettings]?: SceneSettings[K] | null;
+  };
+}
 
-export async function updateChatScene(
-  threadId: string,
-  patch: {
-    cast?: { characterId: string; muted?: boolean }[];
-    personaId?: string | null;
-    /** Merged into the stored settings; null clears a key. */
-    settings?: SettingsPatch;
-  },
-): Promise<ChatScene> {
+export async function updateChatScene(threadId: string, patch: ScenePatch): Promise<ChatScene> {
   return json(
     await authFetch(`${CHARACTERS_API}/chats/${encodeURIComponent(threadId)}`, { method: "PUT", ...body(patch) }),
     "Could not update the chat",

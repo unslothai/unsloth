@@ -101,7 +101,8 @@ export type ChatView = "chat" | "stage" | "novel";
 
 export interface SceneSettings {
   scenario?: string;
-  authorsNote?: { text: string; depth: number };
+  /** Fields merge one by one on the server, so either can be missing. */
+  authorsNote?: { text?: string; depth?: number };
   replyOrder?: ReplyOrder;
   allowSelfReplies?: boolean;
   view?: ChatView;

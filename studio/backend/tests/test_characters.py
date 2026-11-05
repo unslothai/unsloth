@@ -439,7 +439,8 @@ def test_scene_updates_cast_persona_and_settings(client):
     updated = client.put(
         f"/api/characters/chats/{thread_id}",
         json = {
-            "cast": [{"characterId": b["id"]}, {"characterId": a["id"], "muted": True}],
+            "add": [b["id"]],
+            "mute": {a["id"]: True},
             "settings": {
                 "replyOrder": "list",
                 "authorsNote": {"text": "Keep it short.", "depth": 2},
@@ -449,15 +450,13 @@ def test_scene_updates_cast_persona_and_settings(client):
     )
     assert updated.status_code == 200, updated.text
     scene = updated.json()
-    assert [m["characterId"] for m in scene["cast"]] == [b["id"], a["id"]]
-    assert scene["cast"][1]["muted"] is True
+    assert [m["characterId"] for m in scene["cast"]] == [a["id"], b["id"]]
+    assert scene["cast"][0]["muted"] is True
     assert scene["settings"]["authorsNote"] == {"text": "Keep it short.", "depth": 2}
     assert scene["settings"]["view"] == "novel"
     assert client.get(f"/api/characters/chats/{thread_id}").json()["settings"]["view"] == "novel"
     assert (
-        client.put(
-            f"/api/characters/chats/{thread_id}", json = {"cast": [{"characterId": "missing"}]}
-        ).status_code
+        client.put(f"/api/characters/chats/{thread_id}", json = {"add": ["missing"]}).status_code
         == 404
     )
     assert (
@@ -685,7 +684,26 @@ def test_scene_settings_merge_so_tabs_keep_each_others_edits(client):
         f"/api/characters/chats/{thread_id}", json = {"settings": {"view": "stage"}}
     ).json()
     assert scene["settings"] == {**note, "view": "stage"}
+    url = f"/api/characters/chats/{thread_id}"
+    depth = client.put(url, json = {"settings": {"authorsNote": {"depth": 5}}}).json()
+    assert depth["settings"]["authorsNote"] == {"text": "Rain.", "depth": 5}
     cleared = client.put(
         f"/api/characters/chats/{thread_id}", json = {"settings": {"authorsNote": None}}
     )
     assert cleared.json()["settings"] == {"view": "stage"}
+
+
+def test_cast_edits_apply_by_id_and_keep_a_group_speaker(client):
+    ids = [
+        client.post("/api/characters", json = {"name": n}).json()["id"] for n in ("Ann", "Bo", "Cy")
+    ]
+    a, b, c = ids
+    thread_id = client.post("/api/characters/chats", json = {"characterIds": ids}).json()["threadId"]
+    url = f"/api/characters/chats/{thread_id}"
+    # Two tabs, each from its own stale view: both edits survive.
+    client.put(url, json = {"remove": [a]})
+    scene = client.put(url, json = {"mute": {b: True, a: True}}).json()
+    assert [(m["characterId"], m["muted"]) for m in scene["cast"]] == [(b, True), (c, False)]
+    assert client.put(url, json = {"mute": {c: True}}).status_code == 409
+    assert client.get(url).json()["cast"][1]["muted"] is False
+    assert client.put(url, json = {"remove": [c]}).status_code == 200

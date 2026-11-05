@@ -27,10 +27,10 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { startCharacterChat } from "../actions";
-import { updateCharacter } from "../api";
+import { updateCharacter, type ScenePatch } from "../api";
 import { Portrait } from "../components/portrait";
 import { useCharactersStore } from "../store";
-import type { Character, ReplyOrder, SceneSettings } from "../types";
+import type { Character, ReplyOrder } from "../types";
 import { CharacterPickerDialog } from "./character-picker";
 import { PromptInspectorDialog } from "./prompt-inspector";
 import { useAskBridge } from "./ask-bridge";
@@ -59,7 +59,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   const { scene, cast, group } = thread;
   const settings = scene.settings;
 
-  async function patch(update: Parameters<ReturnType<typeof useCharactersStore.getState>["patchScene"]>[1]) {
+  async function patch(update: ScenePatch) {
     try {
       await useCharactersStore.getState().patchScene(threadId, update);
     } catch (error) {
@@ -67,11 +67,9 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
     }
   }
   const members = [...scene.cast].sort((a, b) => a.position - b.position);
-  // A group needs someone left to answer: with every member muted, a sent message has no speaker.
+  // The server refuses a group with every member muted; these only disable the buttons that would.
   const leavesNoSpeaker = (next: { muted: boolean }[]) => next.length > 1 && next.every((m) => m.muted);
-  type CastEdit = { characterId: string; muted: boolean };
-  // Only the changed keys: patchScene merges them into the latest settings when the write runs.
-  const setSettings = (next: Partial<SceneSettings>) => void patch({ settings: next });
+  const setSettings = (next: NonNullable<ScenePatch["settings"]>) => void patch({ settings: next });
 
   return (
     <div className="flex flex-col gap-5 pb-2" data-testid="roleplay-panel">
@@ -81,15 +79,6 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
           {cast.map((character) => {
             const member = members.find((m) => m.characterId === character.id);
             const muted = Boolean(member?.muted);
-            // Checked again when the write runs: an earlier queued edit may have muted the others.
-            const guarded = (edit: (list: CastEdit[]) => CastEdit[]) => (list: CastEdit[]) => {
-              const next = edit(list);
-              return leavesNoSpeaker(next) ? list : next;
-            };
-            const toggle = guarded((list) =>
-              list.map((m) => (m.characterId === character.id ? { ...m, muted: !m.muted } : m)),
-            );
-            const remove = guarded((list) => list.filter((m) => m.characterId !== character.id));
             return (
               <li key={character.id} className="group/member flex items-center gap-2.5 rounded-xl py-1 pl-1 pr-1 hover:bg-nav-surface-hover">
                 <Portrait
@@ -118,14 +107,14 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
                     <IconAction
                       label={muted ? t("characters.panel.unmute", { name: character.name }) : t("characters.panel.mute", { name: character.name })}
                       icon={muted ? VolumeMute01Icon : VolumeHighIcon}
-                      disabled={leavesNoSpeaker(toggle(members))}
-                      onClick={() => void patch({ cast: toggle })}
+                      disabled={leavesNoSpeaker(members.map((m) => (m.characterId === character.id ? { muted: !muted } : m)))}
+                      onClick={() => void patch({ mute: { [character.id]: !muted } })}
                     />
                     <IconAction
                       label={t("characters.panel.remove", { name: character.name })}
                       icon={Cancel01Icon}
-                      disabled={leavesNoSpeaker(remove(members))}
-                      onClick={() => void patch({ cast: remove })}
+                      disabled={leavesNoSpeaker(members.filter((m) => m.characterId !== character.id))}
+                      onClick={() => void patch({ remove: [character.id] })}
                     />
                   </>
                 ) : null}
@@ -190,7 +179,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
         hint={t("characters.panel.sceneHint")}
         placeholder={t("characters.panel.scenePlaceholder")}
         value={settings.scenario ?? ""}
-        onSave={(scenario) => setSettings({ scenario: scenario || undefined })}
+        onSave={(scenario) => setSettings({ scenario: scenario || null })}
       />
 
       <div className="flex flex-col gap-1.5">
@@ -199,21 +188,13 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
           hint={t("characters.panel.authorsNoteHint")}
           placeholder={t("characters.panel.authorsNotePlaceholder")}
           value={settings.authorsNote?.text ?? ""}
-          onSave={(text) =>
-            void patch({
-              settings: (current) => ({
-                authorsNote: text ? { text, depth: current.authorsNote?.depth ?? 4 } : undefined,
-              }),
-            })
-          }
+          onSave={(text) => setSettings({ authorsNote: text ? { text } : null })}
         />
         <label className="flex items-center gap-2 self-end text-ui-12 text-nav-fg-muted">
           {t("characters.panel.noteDepth")}
           <DepthInput
             value={settings.authorsNote?.depth ?? 4}
-            onSave={(depth) =>
-              void patch({ settings: (current) => ({ authorsNote: { text: current.authorsNote?.text ?? "", depth } }) })
-            }
+            onSave={(depth) => setSettings({ authorsNote: { depth } })}
           />
         </label>
       </div>
@@ -239,12 +220,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
         onClose={() => setAdding(false)}
         onPick={(ids) => {
           setAdding(false);
-          void patch({
-            cast: (current) => [
-              ...current,
-              ...ids.filter((id) => !current.some((m) => m.characterId === id)).map((characterId) => ({ characterId, muted: false })),
-            ],
-          });
+          void patch({ add: ids });
         }}
       />
       <PromptInspectorDialog open={inspecting} threadId={threadId} onClose={() => setInspecting(false)} />

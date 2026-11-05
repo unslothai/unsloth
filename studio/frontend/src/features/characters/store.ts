@@ -9,8 +9,9 @@ import {
   listCharacters,
   listPersonas,
   updateChatScene,
+  type ScenePatch,
 } from "./api";
-import type { Character, ChatScene, Persona, SceneSettings } from "./types";
+import type { Character, ChatScene, Persona } from "./types";
 
 type LoadState = "idle" | "loading" | "ready" | "error";
 
@@ -33,18 +34,8 @@ interface CharactersState {
   removePersona: (id: string) => void;
   loadScene: (threadId: string, force?: boolean) => Promise<ChatScene | null>;
   setScene: (scene: ChatScene) => void;
-  patchScene: (
-    threadId: string,
-    patch: {
-      // A function runs on the scene as the previous write left it, so queued edits do not undo each other.
-      cast?: CastEdit[] | ((current: CastEdit[]) => CastEdit[]);
-      personaId?: string | null;
-      settings?: SceneSettings | ((current: SceneSettings) => SceneSettings);
-    },
-  ) => Promise<ChatScene>;
+  patchScene: (threadId: string, patch: ScenePatch) => Promise<ChatScene>;
 }
-
-type CastEdit = { characterId: string; muted: boolean };
 
 const inflightScenes = new Map<string, Promise<ChatScene | null>>();
 const sceneWrites = new Map<string, Promise<unknown>>();
@@ -168,29 +159,13 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
       chatIndex: { ...state.chatIndex, [scene.threadId]: scene.cast.map((m) => m.characterId) },
     })),
   patchScene: (threadId, patch) => {
-    // One write at a time per chat, each merged into the settings the previous one left, so two
-    // quick edits (a note and the view) never undo each other.
+    // The server applies each edit to what it has stored; writes go one at a time per chat so the
+    // scene kept here is always the answer to the latest one.
     const previous = sceneWrites.get(threadId) ?? Promise.resolve();
     const write = previous
       .catch(() => undefined)
       .then(async () => {
-        const { cast: castEdit, settings: settingsEdit, ...rest } = patch;
-        const latest = get().scenes[threadId];
-        const base = latest?.settings ?? {};
-        const edit = typeof settingsEdit === "function" ? settingsEdit(base) : settingsEdit;
-        // Only the keys this edit touches: the server merges them, so another tab's saved keys survive.
-        const settings = edit
-          ? Object.fromEntries(Object.entries(edit).map(([key, value]) => [key, value ?? null]))
-          : undefined;
-        const current = [...(latest?.cast ?? [])]
-          .sort((a, b) => a.position - b.position)
-          .map((m) => ({ characterId: m.characterId, muted: m.muted }));
-        const cast = typeof castEdit === "function" ? castEdit(current) : castEdit;
-        const scene = await updateChatScene(threadId, {
-          ...rest,
-          ...(cast ? { cast } : {}),
-          ...(settings ? { settings } : {}),
-        });
+        const scene = await updateChatScene(threadId, patch);
         sceneWriteGen.set(threadId, (sceneWriteGen.get(threadId) ?? 0) + 1);
         get().setScene(scene);
         return scene;

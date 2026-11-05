@@ -272,7 +272,7 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
   // Notes at a depth attach to the nearest user turn at or above that depth.
   const injections: { depth: number; text: string }[] = [];
   const note = input.scene.authorsNote;
-  if (note?.text.trim()) injections.push({ depth: note.depth, text: macro(note.text) });
+  if (note?.text?.trim()) injections.push({ depth: note.depth ?? 4, text: macro(note.text) });
   if (speaker.depthPrompt?.prompt.trim()) {
     injections.push({ depth: speaker.depthPrompt.depth, text: macro(speaker.depthPrompt.prompt) });
   }

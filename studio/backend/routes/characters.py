@@ -118,13 +118,6 @@ class SceneSettings(BaseModel):
     view: Optional[Literal["chat", "stage", "novel"]] = None
 
 
-class CastMember(BaseModel):
-    model_config = ConfigDict(extra = "forbid")
-
-    characterId: str = Field(max_length = 64)
-    muted: bool = False
-
-
 class CharacterChatCreate(BaseModel):
     model_config = ConfigDict(extra = "forbid")
 
@@ -144,10 +137,17 @@ class CharacterChatCreate(BaseModel):
     ] = Field(default = None, max_length = db.MAX_CAST)
 
 
+CharacterId = Annotated[str, Field(max_length = 64)]
+
+
 class SceneUpdate(BaseModel):
+    """One edit, applied on top of the stored scene: settings merge (null clears), cast changes are by id."""
+
     model_config = ConfigDict(extra = "forbid")
 
-    cast: Optional[list[CastMember]] = Field(default = None, max_length = db.MAX_CAST)
+    add: list[CharacterId] = Field(default_factory = list, max_length = db.MAX_CAST)
+    remove: list[CharacterId] = Field(default_factory = list, max_length = db.MAX_CAST)
+    mute: dict[CharacterId, bool] = Field(default_factory = dict, max_length = db.MAX_CAST)
     personaId: Optional[str] = Field(default = None, max_length = 64)
     settings: Optional[SceneSettings] = None
 
@@ -485,7 +485,9 @@ def update_chat_scene(
     try:
         scene = db.update_chat_scene(
             thread_id,
-            cast = [m.model_dump() for m in payload.cast] if payload.cast is not None else None,
+            add = payload.add,
+            remove = payload.remove,
+            mute = payload.mute,
             persona_id = payload.personaId,
             persona_set = "personaId" in payload.model_fields_set,
             settings = payload.settings.model_dump(exclude_unset = True)
@@ -494,7 +496,7 @@ def update_chat_scene(
         )
     except LookupError:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND) from None
-    except db.LimitReached as exc:
+    except (db.LimitReached, db.NoSpeakerLeft) as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from None
     if scene is None:
         raise HTTPException(status_code = 404, detail = "Chat not found")
