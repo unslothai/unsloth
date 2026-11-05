@@ -340,7 +340,9 @@ def test_torch_is_rocm_prefers_imported_torch(monkeypatch):
 
 def test_unsloth_gates_llm_flash_attention_on_the_marker():
     # The training side reads the marker in its hip branch, before probing flash_attn.
-    source = (Path(__file__).resolve().parents[3] / "unsloth" / "models" / "_utils.py").read_text()
+    source = (Path(__file__).resolve().parents[3] / "unsloth" / "models" / "_utils.py").read_text(
+        encoding = "utf-8"
+    )
     hip_branch = source.split('elif DEVICE_TYPE == "hip":', 1)[1].split("elif DEVICE_TYPE ==", 1)[0]
     gate = hip_branch.index(f'os.environ.get("{rfa.DIFFUSION_ONLY_ENV}") == "1"')
     assert gate < hip_branch.index('_package_available("flash_attn")')
