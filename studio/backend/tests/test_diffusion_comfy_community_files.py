@@ -418,6 +418,28 @@ def test_family_entries():
     ) == (25, 7.0)
 
 
+def test_a_local_anima_load_gets_the_anima_defaults():
+    from core.inference.diffusion import _generation_defaults_for
+    from core.inference.diffusion_families import detect_family
+
+    anima = detect_family("", override = "anima")
+    local = "/models/Anima-Base-v1.0-Diffusers"
+    expected = {"steps": 30, "guidance": 4.0}
+    # The defaults row is keyed by circlestone-labs/..., which a local folder never names.
+    assert _generation_defaults_for(local, None, local, family = anima) == expected
+    assert (
+        _generation_defaults_for("/models/comfy", "anima-v1.safetensors", local, family = anima)
+        == expected
+    )
+    sdxl = detect_family("", override = "sdxl")
+    assert _generation_defaults_for(
+        "/models/sdxl",
+        "animagineXL40_v4Opt.safetensors",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        family = sdxl,
+    ) == {"steps": 25, "guidance": 7.0}
+
+
 def test_scheduler_overrides_switch_to_beta_sigmas():
     pytest.importorskip("diffusers")
     pytest.importorskip("scipy")  # diffusers' beta sigmas need it

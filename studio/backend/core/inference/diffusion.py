@@ -1943,6 +1943,18 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
     return index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None
 
 
+def _family_default_ids(fam: Any) -> tuple:
+    """What a header-matched family puts ahead of the file and repo names when picking generation defaults. FLUX.3: the
+    names cannot tell its variants apart (BFL's ComfyUI base files are flux3_image_klein_*.safetensors, no "base", and a
+    base file can sit on the distilled repo's companions). Anima: its row is keyed by its base repo, since a bare
+    "anima" matches Animagine XL files, and a local folder never names that repo."""
+    if is_flux3_family(fam):
+        return (fam.name,)
+    if is_anima_family(fam):
+        return (fam.base_repo,)
+    return ()
+
+
 def _generation_defaults_for(
     repo_id: Optional[str],
     gguf_filename: Optional[str],
@@ -1953,17 +1965,12 @@ def _generation_defaults_for(
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        # FLUX.3 first: the variant check has matched the checkpoint to the family, while the names cannot tell the
-        # variants apart (BFL's ComfyUI base files are flux3_image_klein_*.safetensors, no "base", and a base file can
-        # sit on the distilled repo's companions).
-        identifiers = (
+        identifiers = _family_default_ids(family) + (
             gguf_filename,
             content_variant_hint(repo_id, gguf_filename),
             repo_id,
             base_repo,
         )
-        if is_flux3_family(family):
-            identifiers = (family.name,) + identifiers
         steps, guidance = generation_params_with_grid(grid, *identifiers)
     except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
         return None
@@ -10291,8 +10298,7 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
-                            # FLUX.3's family names its variant; its file names may not (see _generation_defaults_for).
-                            *((fam.name,) if is_flux3_family(fam) else ()),
+                            *_family_default_ids(fam),
                             gguf_filename,
                             content_variant_hint(repo_id, gguf_filename),
                             repo_id,
@@ -10705,7 +10711,7 @@ class DiffusionBackend:
                         )
                         try:
                             plan_steps, _ = default_generation_params(
-                                *((fam.name,) if is_flux3_family(fam) else ()),
+                                *_family_default_ids(fam),
                                 gguf_filename,
                                 content_variant_hint(repo_id, gguf_filename),
                                 repo_id,
