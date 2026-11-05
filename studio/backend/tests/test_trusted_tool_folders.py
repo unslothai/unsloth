@@ -98,18 +98,30 @@ def test_no_folders_is_todays_behaviour(folder, monkeypatch):
     assert _asks(folder / "run.sh") is True
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason = "Windows folds path case")
-def test_windows_matches_the_folder_in_any_case(folder):
+@pytest.mark.skipif(sys.platform != "win32", reason = "Windows drive, UNC and case spellings")
+def test_windows_spellings(folder):
+    drive, rest = os.path.splitdrive(str(folder / "run.sh"))
     assert _asks(str(folder / "run.sh").upper()) is False
+    assert _asks(str(folder / "run.sh").lower()) is False
+    assert _asks((folder / "run.sh").as_posix()) is False
     assert _asks(str(folder / "run.sh").lower(), writing = True) is True
+    # Other spellings of the same file are not matched lexically, so they keep asking.
+    for spelling in (
+        "\\\\?\\" + str(folder / "run.sh"),
+        f"\\\\localhost\\{drive[0]}${rest}",
+        drive + rest.lstrip("\\"),
+        rest,
+    ):
+        assert _asks(spelling) is True, spelling
 
 
+# Forward slashes: an unquoted backslash is an escape to Git Bash, so `C:\a\b` runs `C:ab`.
 @pytest.mark.parametrize(
     "command",
     ["{t}/run.sh", "bash {t}/run.sh --flag", "php {t}/script.php", "cat {t}/run.sh"],
 )
 def test_terminal_runs_from_the_folder_without_a_prompt(folder, command):
-    command = command.format(t = folder)
+    command = command.format(t = folder.as_posix())
     gate._silent_roots_cache = None
     assert tools.is_high_risk_tool_call("terminal", {"command": command}) is False
     for mode in ("auto", "off"):
@@ -128,7 +140,7 @@ def test_terminal_runs_from_the_folder_without_a_prompt(folder, command):
     ["echo x > {t}/run.sh", "cp payload {t}/run.sh", "{t}/../escape.sh", "{t}x/run.sh"],
 )
 def test_terminal_writes_and_escapes_still_ask(folder, command):
-    command = command.format(t = folder)
+    command = command.format(t = folder.as_posix())
     gate._silent_roots_cache = None
     assert tools.is_high_risk_tool_call("terminal", {"command": command}) is True
     assert needs_tool_confirmation(
@@ -143,8 +155,9 @@ def test_terminal_writes_and_escapes_still_ask(folder, command):
 
 def test_python_runs_from_the_folder_but_writing_there_asks(folder):
     gate._silent_roots_cache = None
-    run = f"import subprocess\nsubprocess.run([{str(folder / 'run.sh')!r}])"
-    write = f"open({str(folder / 'run.sh')!r}, 'w').write('x')"
+    script = (folder / "run.sh").as_posix()
+    run = f"import subprocess\nsubprocess.run([{script!r}])"
+    write = f"open({script!r}, 'w').write('x')"
     assert tools.is_high_risk_tool_call("python", {"code": run}) is False
     assert tools.is_high_risk_tool_call("python", {"code": write}) is True
 
@@ -159,7 +172,8 @@ def test_only_the_owners_own_chats_get_the_folders(folder, account):
     try:
         assert trusted.trusted_tool_folders_for_caller() == ()
         gate._silent_roots_cache = None
-        assert tools.is_high_risk_tool_call("terminal", {"command": f"{folder}/run.sh"}) is True
+        command = f"{folder.as_posix()}/run.sh"
+        assert tools.is_high_risk_tool_call("terminal", {"command": command}) is True
     finally:
         reset_account(token)
         gate._silent_roots_cache = None
