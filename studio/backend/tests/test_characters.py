@@ -480,6 +480,16 @@ def test_malformed_cards_are_read_or_refused_cleanly():
         cards.parse_card_file(b"PK\x03\x04garbage", "broken.charx")
 
 
+def test_a_named_lorebook_is_refused_not_imported_as_a_character():
+    for entries in ({"0": {"uid": 0, "key": ["Gull Rock"], "content": "A lighthouse."}}, [{"keys": ["a"], "content": "b"}]):
+        book = {"name": "Saltmere Harbor", "entries": entries}
+        with pytest.raises(cards.CardError, match = "lorebook"):
+            cards.parse_card_file(json.dumps(book).encode(), "harbor-lore.json")
+    # A V1 card keeps importing even with a stray top-level entries key.
+    card = {"name": "Vee", "description": "A card.", "entries": []}
+    assert cards.parse_card_file(json.dumps(card).encode(), "vee.json").fields["name"] == "Vee"
+
+
 def test_export_survives_a_damaged_portrait():
     truncated = _png()[:-12]  # no IEND
     exported = cards.export_png({"name": "Cut"}, truncated)

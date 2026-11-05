@@ -34,10 +34,14 @@ const TITLES = new Set([
   "lieutenant", "lt", "sergeant", "sgt", "officer", "agent", "father", "sister", "brother", "master", "madam",
 ]);
 
+export function isTitle(word: string): boolean {
+  return TITLES.has(word.toLowerCase().replace(/\.$/, ""));
+}
+
 /** What a character is called in passing: the first word of the name that is not a title. */
 export function shortName(name: string): string {
   const words = name.trim().split(/\s+/).filter(Boolean);
-  const word = words.find((w) => !TITLES.has(w.toLowerCase().replace(/\.$/, ""))) ?? words[0] ?? "";
+  const word = words.find((w) => !isTitle(w)) ?? words[0] ?? "";
   return word || name.trim();
 }
 
@@ -48,7 +52,6 @@ function escape(value: string): string {
 /** Members named in the text, in the order they are first named: full name, short name, surname, or a title only they hold. */
 export function mentionedIds(text: string, cast: SpeakerCandidate[]): string[] {
   const words = (member: SpeakerCandidate) => member.name.trim().split(/\s+/).filter(Boolean);
-  const isTitle = (word: string) => TITLES.has(word.toLowerCase().replace(/\.$/, ""));
   // A title calls its character only when one character has it ("Captain, you've gone quiet").
   const titleCount = new Map<string, number>();
   for (const member of cast) {

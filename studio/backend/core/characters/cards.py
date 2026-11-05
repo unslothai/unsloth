@@ -342,10 +342,27 @@ def card_data(card: dict) -> tuple[dict, str]:
     return card, "chara_card_v1"
 
 
+_CARD_TEXT_KEYS = (
+    "description",
+    "personality",
+    "scenario",
+    "first_mes",
+    "mes_example",
+    "char_persona",
+    "char_greeting",
+    "example_dialogue",
+    "world_scenario",
+)
+
+
 def normalize_card(card: dict) -> dict[str, Any]:
     if not isinstance(card, dict):
         raise CardError("Not a character card.")
     data, _spec = card_data(card)
+    # A lorebook has its entries at the top and none of a card's text; one with a name would
+    # otherwise import as an empty character.
+    if "entries" in card and data is card and not any(card.get(key) for key in _CARD_TEXT_KEYS):
+        raise CardError("This file is a lorebook, not a character card.")
     name = _text(data.get("name") or card.get("name") or card.get("char_name")).strip()
     if not name:
         if "entries" in card:

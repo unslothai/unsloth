@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 import { openImageViewer } from "@/components/image-viewer";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";
 import { fetchImage } from "./api";
+import { isTitle } from "./prompt/speakers";
 
 type Kind = "character" | "persona";
 
@@ -96,7 +97,10 @@ export function nameHue(name: string): number {
 }
 
 export function initials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
+  // "Inspector Theo Lindqvist" is TL, not IL.
+  const all = name.trim().split(/\s+/).filter(Boolean);
+  const start = all.findIndex((word) => !isTitle(word));
+  const words = start > 0 ? all.slice(start) : all;
   if (words.length === 0) return "?";
   const first = [...words[0]][0] ?? "";
   const second = words.length > 1 ? ([...words[words.length - 1]][0] ?? "") : "";
