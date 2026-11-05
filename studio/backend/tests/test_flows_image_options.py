@@ -588,7 +588,7 @@ def test_loras_on_a_quantized_build_reload_it_with_them_baked_in(monkeypatch):
     status = {
         "loaded": True,
         "repo_id": KREA["repo"],
-        "resolved": {"transformer_quant": {"value": "int8"}},
+        "resolved": {"transformer_quant": {"requested": "int8", "value": "int8"}},
         "baked_loras": [],
     }
     ctx = _StatusCtx(status)

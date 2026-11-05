@@ -1048,18 +1048,24 @@ RESIDENT_BUILD_KEYS = (
     "family_override",
     "gpu_ids",
 )
-# Status reports what engaged, and an automatic pick is tuned where an explicit one takes the defaults (a static
-# cache's schedule; an automatic fp8 text encoder keeps CLIP-L dense, an explicit one casts it): only an explicit ask
-# is sent back, so an automatic one is made again. A text encoder left dense stays dense.
-ASKED_BUILD_KEYS = ("transformer_cache", "attention_backend", "text_encoder_quant")
+# Status reports what engaged, and an automatic pick is tuned or gated where an explicit one is not (a static cache's
+# schedule; an automatic fp8 text encoder keeps CLIP-L dense, an explicit one casts it; an explicit fp8 transformer is
+# refused under balanced offload, an automatic one engages there): only an explicit ask is sent back, so an automatic
+# one is made again. A text encoder left dense stays dense.
+ASKED_BUILD_KEYS = (
+    "transformer_cache",
+    "attention_backend",
+    "text_encoder_quant",
+    "transformer_quant",
+)
 
 
 def resident_build_knobs(status: dict) -> dict:
     """The load settings of the image model ``status`` (``/images/status``) reports, as a load request takes
-    them: per setting, the first the request accepts of the transformer's engaged precision, the reported value
-    (only the explicit ask where an automatic pick is tuned) and the explicit ask. Unset, a setting falls back to the
-    automatic policy: a dense text encoder would reload as int8, a cache asked "off" as the family's auto cache, a
-    family picked by hand as the one the file detects as."""
+    them: per setting, the first the request accepts of its explicit ask and its reported value (none where an
+    automatic pick is tuned, so it is made again). Unset, a setting falls back to the automatic policy: a dense text
+    encoder would reload as int8, a cache asked "off" as the family's auto cache, a family picked by hand as the one
+    the file detects as."""
     from models.inference import DiffusionLoadRequest
 
     repo = str(status.get("repo_id") or "")
@@ -1076,13 +1082,11 @@ def resident_build_knobs(status: dict) -> dict:
             reported = None
         else:
             reported = status.get(key)
-        candidates = [
-            # An "auto" transformer precision that engaged fp8 reloads as fp8: the bake needs the quantized build.
-            record.get("value") if key == "transformer_quant" else None,
-            record.get("requested") if key == "text_encoder_quant" else None,
-            reported,
-            record.get("requested"),
-        ]
+        candidates = (
+            [record.get("requested"), reported]
+            if key in ASKED_BUILD_KEYS
+            else [reported, record.get("requested")]
+        )
         for value in candidates:
             if value is None or value == "":
                 continue

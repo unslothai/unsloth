@@ -308,7 +308,11 @@ def test_flows_own_lora_bake_reload_keeps_the_variant_record(monkeypatch):
     monkeypatch.setattr(_common, "_BAKED_LORAS", {})
     monkeypatch.setattr(gpu_arbiter, "load_count", lambda owner = None: counts.get(owner, 0))
     # An auto GGUF pick served as an int8 build: LoRAs are baked in by a second load.
-    status = {"loaded": True, "repo_id": repo, "resolved": {"transformer_quant": {"value": "int8"}}}
+    status = {
+        "loaded": True,
+        "repo_id": repo,
+        "resolved": {"transformer_quant": {"requested": "int8", "value": "int8"}},
+    }
     model = {"repo": repo, "variant": "Q4_K_M"}
     loras = [{"id": "someone/flux2-lora", "weight": 1.0}]
     per_node = []
@@ -397,7 +401,7 @@ def _run_baked_nodes(monkeypatch, sets, placement):
                 return {
                     "loaded": bool(held),
                     "repo_id": repo,
-                    "resolved": {"transformer_quant": {"value": "int8"}},
+                    "resolved": {"transformer_quant": {"requested": "int8", "value": "int8"}},
                 }
             if path == "/api/inference/images/generate":
                 specs = [(r["id"], r["weight"]) for r in (json.get("loras") or [])]
@@ -502,7 +506,8 @@ def test_streamed_lora_refusal_is_tagged_through_the_flows_caller():
 @pytest.mark.parametrize("named", [None, {"repo": "someone/flux2-finetune-GGUF"}])
 def test_a_streamed_reload_rebuilds_the_resident_build(monkeypatch, named):
     # The node names the resident repo without its quant, or names nothing: either way the reload is the
-    # resident build (its exact file, precision, memory and speed settings), not the repo's defaults.
+    # resident build (its exact file, precision, memory and speed settings), not the repo's defaults. An automatic
+    # precision that engaged fp8 is asked automatically again: an explicit fp8 is refused under balanced offload.
     repo = "someone/flux2-finetune-GGUF"
     loads = []
 
@@ -541,7 +546,6 @@ def test_a_streamed_reload_rebuilds_the_resident_build(monkeypatch, named):
         "memory_mode": "low_vram",
         "speed_mode": "max",
         "text_encoder_quant": "int8",
-        "transformer_quant": "fp8",
     }
 
 
@@ -575,7 +579,7 @@ def test_a_reload_keeps_a_dense_text_encoder_dense():
         "text_encoder_quant": None,
         "resolved": {
             "text_encoder_quant": {"value": "off"},
-            "transformer_quant": {"value": "int8"},
+            "transformer_quant": {"requested": "int8", "value": "int8"},
         },
     }
     knobs = _common.resident_build_knobs(status)
