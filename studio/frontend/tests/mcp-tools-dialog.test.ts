@@ -205,6 +205,11 @@ test("tool changes flip at once, and a late reply can't undo a newer change", ()
   assert.match(save, /const request = \+\+toolsRequest\.current;/);
   assert.match(save, /if \(request === toolsRequest\.current\) \{\s+setSettings\(next\);/);
   assert.doesNotMatch(SECTION, /toolsSaving|saving=\{/);
+  // Saves are queued, so two quick flips of one tool reach the server in click order.
+  assert.match(
+    save,
+    /const save = toolsQueue\.current\.then\(\(\) => updateMcpTools\(states\)\);\s+toolsQueue\.current = save\.catch\(\(\) => undefined\);/,
+  );
 });
 
 test("a rejected tool change resyncs and shows the error in the dialog", () => {

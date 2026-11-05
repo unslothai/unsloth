@@ -73,6 +73,8 @@ export function McpAccessSection({
   const [toolsOpen, setToolsOpen] = useState(false);
   // Newest tool change; an older reply arriving late must not undo a newer optimistic flip.
   const toolsRequest = useRef(0);
+  // Saves go one at a time: the server may finish two in-flight writes in either order.
+  const toolsQueue = useRef<Promise<unknown>>(Promise.resolve());
   const [toolsError, setToolsError] = useState<string | null>(null);
   const sectionRef = useRef<HTMLDivElement | null>(null);
   const scrollTarget = useSettingsDialogStore((s) => s.scrollTarget);
@@ -159,7 +161,9 @@ export function McpAccessSection({
         : current,
     );
     try {
-      const next = await updateMcpTools(states);
+      const save = toolsQueue.current.then(() => updateMcpTools(states));
+      toolsQueue.current = save.catch(() => undefined);
+      const next = await save;
       if (request === toolsRequest.current) {
         setSettings(next);
       }
