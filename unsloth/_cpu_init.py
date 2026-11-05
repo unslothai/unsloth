@@ -22,8 +22,7 @@ DEVICE_COUNT = 0
 
 install_cpu_training_defaults()
 
-# The GPU route installs this from models/_utils.py: every_n_layers (dict or keyword, any transformers version)
-# kept across FastCPUModel's own gradient_checkpointing_enable re-calls (get_peft_model, for_training).
+# Same every_n_layers / offload router the GPU route installs from models/_utils.py.
 from ._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
 
 patch_gradient_checkpointing_enable_kwargs()

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""transformers' gradient_checkpointing_enable(every_n_layers = N, offload = ...) under Unsloth, on any transformers
-version and on both import routes (unsloth/models/_utils.py on GPUs, unsloth/_cpu_init.py on CPU-only hosts).
-Imports only functools / inspect at module level (transformers lazily), so the CPU route can install it without the
-GPU model stack."""
+"""gradient_checkpointing_enable(every_n_layers, offload) for both import routes (GPU _utils.py, CPU _cpu_init.py).
+Imports transformers lazily so the CPU route avoids the GPU model stack."""
 
 import functools
 import inspect

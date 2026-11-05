@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""every_n_layers on a CPU-only host: `import unsloth` loads unsloth/_cpu_init.py (zoo FastCPUModel), not
-unsloth/models/_utils.py, so it needs the same gradient_checkpointing_enable router the GPU route installs."""
+"""every_n_layers on a CPU-only host, where `import unsloth` loads _cpu_init.py instead of models/_utils.py."""
 
 from __future__ import annotations
 
