@@ -3602,6 +3602,48 @@ def test_an_image_row_through_mlx_lm_joins_the_batch_at_its_last_token(monkeypat
     session.close()
 
 
+@pytest.mark.parametrize("limit", [None, 16])
+def test_an_image_row_through_mlx_lm_is_refused_when_its_expanded_prompt_fills_the_window(
+    monkeypatch, limit
+):
+    from core.inference import mlx_inference
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    inserted = []
+    generator = SimpleNamespace(
+        insert = lambda prompts, **kw: inserted.append(kw) or [len(inserted)],
+        remove = lambda *_a, **_k: {},
+        close = lambda: None,
+    )
+    generate = types.ModuleType("mlx_lm.generate")
+    generate.BatchGenerator = lambda *_a, **_k: generator
+    _zoo_image_prefill(monkeypatch, prefill_image_prompt = lambda *_a: [1, 5, 5, 2])
+    backend = mlx_inference.MLXInferenceBackend()
+    backend._model, backend._tokenizer = SimpleNamespace(), SimpleNamespace(eos_token_ids = [2])
+    backend._is_vlm, backend._reads_vision = False, True
+    backend._make_row_cache = lambda: ["cache"]
+    plan = SimpleNamespace(
+        prompt = "P", max_tokens = limit, sampler = None, processors = (), streamed = None, think_prefix = ""
+    )
+    backend._plan_text_row = lambda messages, **_kw: plan
+    with monkeypatch.context() as patch:
+        patch.setitem(sys.modules, "mlx_lm.generate", generate)
+        session = mlx_inference._TextBatchSession(backend, width = 2)
+    request = {
+        "messages": [{"role": "user", "content": "hi"}],
+        "image": object(),
+        "max_new_tokens": limit,
+    }
+    backend._served_context = 4
+    with pytest.raises(ContextBudgetExceeded):
+        session.admit(request, 0)
+    assert inserted == []
+    backend._served_context = 5
+    session.admit(request, 1)
+    assert [kw["max_tokens"] for kw in inserted] == [[limit or 1]]
+    session.close()
+
+
 @pytest.mark.parametrize("ends", [None, "length", "stop"])
 def test_a_row_whose_own_processor_fails_leaves_and_its_neighbour_decodes_on(monkeypatch, ends):
     import numpy

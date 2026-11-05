@@ -4821,6 +4821,8 @@ class _TextBatchSession:
             prefix, remainder, cache_key = all_tokens[:-1], all_tokens[-1:], None
             if row_kwargs["max_new_tokens"] is None:
                 plan.max_tokens = backend._unset_generation_budget(plan.prompt, all_tokens)
+            else:
+                backend._prompt_within_window(plan.prompt, all_tokens)
         row = _TextBatchRow(
             handle = handle,
             plan = plan,
