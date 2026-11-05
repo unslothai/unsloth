@@ -1597,8 +1597,7 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
-# 26B-A4B / 31B generate after an empty thought channel their template omits from history; final-turn reasoning fills it.
-_gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
+# 26B-A4B / 31B generate after an empty thought channel their template omits from history; with thinking off, model turns without reasoning get it.
 gemma4_empty_thought_template = gemma4_thinking_template.replace(
     "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n",
     "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n"

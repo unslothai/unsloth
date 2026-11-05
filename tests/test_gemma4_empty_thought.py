@@ -25,7 +25,6 @@ def _load():
     wanted_assign = {
         "gemma4_template",
         "gemma4_thinking_template",
-        "_gemma4_model_turn",
         "gemma4_empty_thought_template",
         "GEMMA4_TEMPLATE_NAMES",
         "gemma4_empty_thought_ollama",
