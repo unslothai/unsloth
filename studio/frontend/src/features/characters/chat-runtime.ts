@@ -33,7 +33,6 @@ export interface CharacterRun {
   messages: ThreadMessage[];
   /** One message as this run sends it. */
   shape: <M extends { id: string }>(message: M) => M;
-  /** False for a hidden turn left out of what is sent (see BuiltPrompt.sent). */
   sends: (messageId: string) => boolean;
   stop: string[];
   /** Stamped on the reply as `metadata.custom.roleplay`. */
@@ -122,7 +121,7 @@ export async function prepareCharacterRun(args: {
   await ensureLoaded();
   let cast = castOf(scene, useCharactersStore.getState().characters);
   if (cast.length < scene.cast.length) {
-    // A member added on another device is not in this tab's library yet; a partial cast would drop them from the prompt.
+    // A member added elsewhere is not in this tab's library yet.
     const refreshed = await store.refresh().then(
       () => true,
       () => false,

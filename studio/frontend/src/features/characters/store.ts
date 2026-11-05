@@ -159,8 +159,7 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
       chatIndex: { ...state.chatIndex, [scene.threadId]: scene.cast.map((m) => m.characterId) },
     })),
   patchScene: (threadId, patch) => {
-    // The server applies each edit to what it has stored; writes go one at a time per chat so the
-    // scene kept here is always the answer to the latest one.
+    // One write at a time per chat, so the scene kept here answers the latest edit.
     const previous = sceneWrites.get(threadId) ?? Promise.resolve();
     const write = previous
       .catch(() => undefined)

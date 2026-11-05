@@ -336,7 +336,7 @@ def delete_character(character_id: str) -> bool:
         ]
         cursor = conn.execute("DELETE FROM characters WHERE id = ?", (character_id,))
         deleted = cursor.rowcount > 0
-        # The cascade must not leave a group with every member muted (see NoSpeakerLeft).
+        # The cascade must not leave a group with every member muted.
         for thread_id in threads:
             rows = conn.execute(
                 "SELECT character_id, muted FROM chat_cast WHERE thread_id = ? ORDER BY position, character_id",

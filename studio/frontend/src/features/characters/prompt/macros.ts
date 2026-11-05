@@ -19,8 +19,7 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
-// Card text reaches these regexes on the UI thread, so none may have adjacent overlapping quantifiers:
-// "{{" or "{{roll:d1" followed by a long whitespace run would otherwise backtrack polynomially.
+// Trimmed first: \s* on both sides of a long whitespace run backtracks polynomially.
 function roll(spec: string, random: () => number): string {
   const match = /^(\d*)d(\d+)\s*([+-]\s*\d+)?$/i.exec(spec.trim());
   if (!match) {
@@ -105,8 +104,7 @@ export function applyMacros(text: string, context: MacroContext): string {
     }
     return whole;
   });
-  // {{trim}} removes the whitespace around it; {{noop}} disappears. Split rather than /\s*{{trim}}\s*/g,
-  // which is quadratic on a long whitespace run.
+  // Split rather than /\s*{{trim}}\s*/g, which is quadratic on a long whitespace run.
   const pieces = out.split(/\{\{\s*trim\s*\}\}/i);
   const trimmed = pieces
     .map((piece, index) => {

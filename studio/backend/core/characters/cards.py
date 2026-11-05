@@ -659,8 +659,7 @@ def build_card_v2(character: dict) -> dict:
 def build_card_v3(character: dict) -> dict:
     data = _overlay(character, _base_data(character))
     data.setdefault("group_only_greetings", [])
-    # The export carries only the portrait, so a CHARX archive's own files are not referenced, and
-    # the main icon is the file itself (ccdefault:).
+    # Only the portrait is exported: drop references into a CHARX archive; the main icon is the file itself.
     kept = [
         asset
         for asset in (data.get("assets") if isinstance(data.get("assets"), list) else [])

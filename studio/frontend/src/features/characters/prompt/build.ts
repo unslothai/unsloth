@@ -117,7 +117,6 @@ export function stripSpeakerPrefix(text: string, name: string): string {
   return text.replace(new RegExp(`^\\s*["“]?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*:(?:\\*\\*)?\\s*`, "i"), "");
 }
 
-/** A stored reply as history replays it: no leading "Name:", and in a group the speaker's name in front. */
 export function replayedReply(text: string, name: string, group: boolean, recorded = name): string {
   // The name the reply was written under goes too, or a renamed character replays as "Nova: Rin: Hello".
   const body = stripSpeakerPrefix(stripSpeakerPrefix(text, recorded), name).trim();
@@ -135,10 +134,7 @@ export function replyNameOf(
 
 type ContentPart = { type: string; text?: string };
 
-/**
- * A message with its text swapped for the prompt's version. A reply with tool calls between its texts
- * keeps that order, which tool replay relies on, and only its first text takes the speaker formatting.
- */
+/** Tool replay relies on a reply's text/tool order, so only its first text is reformatted. */
 export function shapeReplayMessage<M extends { role: string; content: unknown }>(
   message: M,
   text: string,
@@ -248,8 +244,7 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     .join("\n\n");
 
   const history = input.history;
-  // A hidden turn answered by no reply (a character without a greeting) would put two user turns in
-  // a row, which strict templates reject; it is left out of what is sent.
+  // An unanswered hidden turn (no greeting) would put two user turns in a row, which strict templates reject.
   const sent = history.map(
     (entry, index) =>
       !(entry.meta?.kind === "opening" || entry.meta?.kind === "turn") || history[index + 1]?.role !== "user",
