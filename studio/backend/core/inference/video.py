@@ -277,6 +277,7 @@ from .video_families import (
     validate_video_flow_controls,
     validate_video_keyframe_conditioning,
     validate_video_reference_conditioning,
+    validate_video_fps,
     validate_video_request_shape,
     video_custom_size_bounds,
     video_family_prequant_available,
@@ -12127,7 +12128,11 @@ class VideoBackend:
                 if self._generate_job_active:
                     raise RuntimeError(VIDEO_GENERATION_BUSY_MSG)
                 validate_video_request_shape(
-                    state.family, width = width, height = height, num_frames = run_num_frames
+                    state.family,
+                    width = width,
+                    height = height,
+                    num_frames = run_num_frames,
+                    fps = fps,
                 )
                 if before_commit is not None:
                     before_commit()
@@ -12484,6 +12489,7 @@ class VideoBackend:
                     shift = _resolved_inputs.flow_shift
                     audio_shift = _resolved_inputs.audio_flow_shift
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
+                validate_video_fps(fam, fps)
                 out_fps = (
                     fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
                 )
@@ -14286,6 +14292,10 @@ class VideoBackend:
                 "guidance": default_guidance,
                 "num_frames": fam.default_num_frames,
                 "fps": fam.default_fps,
+                "fps_range": list(fam.fps_range) if fam.fps_range else None,
+                "fps_choices": list(fam.fps_choices),
+                "min_num_frames": max(int(fam.frame_offset), int(fam.min_num_frames)),
+                "max_num_frames": fam.max_num_frames,
                 "frame_step": fam.frame_step,
                 "frame_offset": fam.frame_offset,
                 "duration_presets": list(fam.duration_presets),
