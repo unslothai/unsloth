@@ -5090,6 +5090,19 @@ def _pick_model_to_auto_start(
     )
 
 
+def _picker_server_is_idle(base: str, key: str) -> bool:
+    status = _inference_status(base, key)
+    if isinstance(status, dict) and status.get("yours") is False:
+        _fail(_OTHER_ACCOUNT_RESIDENT)
+    if not isinstance(status, dict) or not all(
+        isinstance(status.get(field), list) for field in ("loaded", "loading")
+    ):
+        _fail(
+            "Couldn't verify whether Unsloth has a resident model. Retry or pass --model explicitly."
+        )
+    return not (status["loaded"] or status["loading"] or status.get("active_model"))
+
+
 def _pick_model_for_idle_server(
     base: str,
     key: str,
@@ -5105,8 +5118,8 @@ def _pick_model_for_idle_server(
     models = _loaded_models(base, key)
     if any(m.get("loaded") is not False and m.get("task") is None for m in models):
         return None
-    # Another account's resident is not listed to this key; a pick would evict it unasked, so keep the error that says so.
-    if _inference_status(base, key).get("yours") is False:
+    # The listing hides other accounts' models. Only the status endpoint can confirm an idle slot.
+    if not _picker_server_is_idle(base, key):
         return None
     try:
         account = _http_json("GET", f"{base}/api/auth/account", key)
@@ -5119,7 +5132,7 @@ def _pick_model_for_idle_server(
         account.get(field) for field in ("account_id", "username", "role")
     ):
         return None
-    return _ask_for_local_model(
+    picked = _ask_for_local_model(
         gguf_only,
         "No model is loaded in Unsloth. Pick one on this device to load:",
         gguf_variant,
@@ -5127,6 +5140,10 @@ def _pick_model_for_idle_server(
         base = base,
         key = key,
     )
+    # The user can leave the prompt open while another session starts loading.
+    if not _picker_server_is_idle(base, key):
+        _fail("The model state changed while the picker was open. Run the command again.")
+    return picked
 
 
 def _connect(

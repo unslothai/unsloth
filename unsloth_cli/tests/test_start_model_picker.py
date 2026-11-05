@@ -3,6 +3,7 @@
 
 """`unsloth start` with no --model and nothing loaded: a terminal run picks a model on the device."""
 
+import urllib.error
 from types import SimpleNamespace
 
 import pytest
@@ -70,7 +71,9 @@ def _empty_server(
     ):
         if url.split("?")[0].endswith("/api/inference/status") and not fake_studio.state["models"]:
             fake_studio.append((method, url, payload))
-            return dict(status or {})
+            if isinstance(status, Exception):
+                raise status
+            return {"active_model": None, "loaded": [], "loading": []} if status is None else status
         if url.endswith("/api/inference/load") and not fake_studio.state["models"]:
             # fake_studio compares against the first resident, which an empty server lacks.
             fake_studio.state["models"] = [{"id": "placeholder"}]
@@ -187,6 +190,43 @@ def test_another_accounts_model_is_not_evicted_by_a_prompt(fake_studio, picker, 
     assert result.exit_code == 1
     assert "belongs to another account" in result.output
     assert picker["listed"] == 0
+    assert _loads(fake_studio) == []
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        TimeoutError("status timed out"),
+        urllib.error.HTTPError("http://localhost/status", 503, "unavailable", None, None),
+        {"error": "API endpoint not found"},
+        {},
+        {"loaded": [], "loading": ["pending"]},
+    ],
+)
+def test_idle_picker_requires_verified_empty_status(fake_studio, picker, monkeypatch, status):
+    _empty_server(fake_studio, monkeypatch, status = status)
+    picker["answers"] = ["2"]
+
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+
+    assert _loads(fake_studio) == []
+    assert picker["listed"] == 0
+    assert result.exit_code == 1
+
+
+def test_idle_picker_rechecks_after_a_selection(fake_studio, picker, monkeypatch):
+    status = {"loaded": [], "loading": []}
+    _empty_server(fake_studio, monkeypatch, status = status)
+
+    def answer(prompt):
+        status["yours"] = False
+        return "2"
+
+    monkeypatch.setattr("builtins.input", answer)
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert result.exit_code == 1
+    assert "belongs to another account" in result.output
+    assert picker["listed"] == 1
     assert _loads(fake_studio) == []
 
 
