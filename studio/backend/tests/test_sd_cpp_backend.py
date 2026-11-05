@@ -1677,6 +1677,87 @@ def test_cpu_backend_restart_happens_once_per_load(monkeypatch):
     assert len(servers) == 2
 
 
+# A render that failed when VRAM another process took after the load left too little: the output a Studio run on
+# an A100 printed with the free memory squeezed to 2 GiB after the load.
+_RENDER_SHORT_OF_DEVICE_MEMORY = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] MOSS-Image segment 2/43 (moss_image.layers.1) failed during weight preparation --- ggml_runner.cpp:903\n"
+    "[E] diffusion model compute failed --- diffusion_engine.cpp:2825\n"
+    "[E] sampling for image 1/1 failed after 0.86s --- image.cpp:906\n"
+    "[W] model manager cannot make enough memory available on CUDA0: need 1223.37 MB device / 759.59 MB budget, "
+    "available 1187.75 MB device / 6144.17 MB budget --- model_manager.cpp:2101"
+)
+_RENDER_CUDA_OOM = (
+    "sd-server generation failed: generation_failed: generate_image returned no results\n"
+    "Last output:\n"
+    "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 2304.00 MiB on device 0: "
+    "cudaMalloc failed: out of memory"
+)
+
+
+@pytest.mark.parametrize("error", [_RENDER_SHORT_OF_DEVICE_MEMORY, _RENDER_CUDA_OOM])
+def test_a_render_short_of_device_memory_restarts_the_server_and_retries(monkeypatch, error):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    servers[0].img_gen_error = RuntimeError(error)
+
+    out = b.generate(prompt = "a fox", width = 256, height = 256, steps = 4, seed = 3)
+
+    assert len(out["images"]) == 1
+    assert len(servers) == 2 and servers[0].stopped is True
+    # The same server, planned again: same build, files, placement flags and speed, nothing added.
+    assert servers[1].binary == servers[0].binary
+    assert servers[1].started["files"] is servers[0].started["files"]
+    assert list(servers[1].started["offload"]) == list(servers[0].started["offload"])
+    assert servers[1].started["native_speed"] == servers[0].started["native_speed"]
+    assert not servers[1].started["extra_args"]
+    assert b._state is not None and b._state.server is servers[1] and b._state.device == "cuda"
+
+
+def test_the_memory_respawn_happens_once_per_load(monkeypatch):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    servers[0].img_gen_error = RuntimeError(_RENDER_SHORT_OF_DEVICE_MEMORY)
+    b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(servers) == 2
+
+    servers[1].img_gen_error = RuntimeError(_RENDER_SHORT_OF_DEVICE_MEMORY)
+    with pytest.raises(RuntimeError, match = "failed during weight preparation"):
+        b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(servers) == 2
+
+    # A new load earns a fresh one.
+    _run_server_load(monkeypatch, b, servers, device = "cuda")
+    assert b._memory_respawned is False
+
+
+@pytest.mark.parametrize(
+    "device,error",
+    [
+        (
+            "cuda",
+            "sd-server generation failed: generation_failed: generate_image returned no results",
+        ),
+        (
+            "cuda",
+            "sd-server generation failed: x: boom\nLast output:\n[E] host malloc failed: out of memory",
+        ),
+        ("cpu", _RENDER_SHORT_OF_DEVICE_MEMORY),
+    ],
+)
+def test_no_memory_respawn_without_a_device_memory_failure_off_cpu(monkeypatch, device, error):
+    b = SdCppDiffusionBackend()
+    servers: list = []
+    _run_server_load(monkeypatch, b, servers, device = device)
+    servers[0].img_gen_error = RuntimeError(error)
+    with pytest.raises(RuntimeError):
+        b.generate(prompt = "x", steps = 4, seed = 1)
+    assert len(servers) == 1
+
+
 def test_server_death_without_the_abort_signature_is_not_retried(monkeypatch):
     b = SdCppDiffusionBackend()
     servers: list = []
