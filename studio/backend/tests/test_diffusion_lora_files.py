@@ -137,6 +137,50 @@ def test_kron_adapter_row_slice_for_a_fused_qkv_factor():
     assert torch.allclose(block(x), x @ (base.weight + torch.kron(w1, w2)[12:24]).T, atol = 1e-10)
 
 
+def test_a_failed_lokr_allocation_leaves_the_layer_alone():
+    class _OutOfMemory:
+        def to(self, **_kwargs):
+            raise RuntimeError("CUDA out of memory")
+
+    block = _Block()
+    base = block.proj["q"]
+    with pytest.raises(RuntimeError, match = "out of memory"):
+        lf.KronAdapter(block, base, torch.randn(4, 3), _OutOfMemory(), 1.0)
+    assert block.proj["q"] is base
+
+
+def test_the_moss_loader_keeps_the_adapter_metadata(tmp_path):
+    pytest.importorskip("diffusers")
+    import json
+    from types import SimpleNamespace
+
+    from safetensors.torch import save_file
+
+    from core.inference.diffusion_moss_image import MOSSImagePipeline
+
+    path = tmp_path / "moss.safetensors"
+    meta = {"transformer.r": 2, "transformer.lora_alpha": 8}
+    save_file(
+        {
+            "transformer.layers.0.proj.q.lora_A.weight": torch.randn(2, 4),
+            "transformer.layers.0.proj.q.lora_B.weight": torch.randn(4, 2),
+        },
+        str(path),
+        metadata = {"lora_adapter_metadata": json.dumps(meta)},
+    )
+    calls = []
+    pipe = SimpleNamespace(
+        transformer = SimpleNamespace(load_lora_adapter = lambda sd, **kw: calls.append((sd, kw)))
+    )
+    MOSSImagePipeline.load_lora_weights(pipe, str(path), adapter_name = "m")
+    ((state, kwargs),) = calls
+    assert sorted(state) == [
+        "transformer.layers.0.proj.q.lora_A.weight",
+        "transformer.layers.0.proj.q.lora_B.weight",
+    ]
+    assert kwargs["metadata"] == meta
+
+
 def test_peft_loads_around_an_existing_lokr_wrapper():
     """A LoRA added after a LoKR on one layer: PEFT injects into the bare Linear, then the wrapper goes back on."""
     pytest.importorskip("peft")

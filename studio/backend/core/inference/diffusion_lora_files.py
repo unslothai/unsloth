@@ -210,6 +210,16 @@ class KronAdapter:
         import torch
 
         cls = kron_linear_class()
+        base = _base_layer(module)
+        device = _device_of(base)
+        dtype = _dtype_of(base)
+        self.alpha_scale = float(alpha_scale)
+        # Allocated before the layer is swapped, so a failure (OOM) leaves the model as it was.
+        buffers = (
+            w1.to(device = device, dtype = dtype),
+            w2.to(device = device, dtype = dtype),
+            torch.tensor(self.alpha_scale, dtype = torch.float32, device = device),
+        )
         if not isinstance(module, cls):
             parent, attr = _parent_of(root, module)
             wrapper = cls(module)
@@ -217,22 +227,9 @@ class KronAdapter:
             module = wrapper
         self.wrapper = module
         self.root = root
-        base = module.get_base_layer()
-        device = _device_of(base)
-        dtype = _dtype_of(base)
         self.prefix = f"kron{len(module.slots)}"
-        self.alpha_scale = float(alpha_scale)
-        module.register_buffer(
-            self.prefix + "_w1", w1.to(device = device, dtype = dtype), persistent = False
-        )
-        module.register_buffer(
-            self.prefix + "_w2", w2.to(device = device, dtype = dtype), persistent = False
-        )
-        module.register_buffer(
-            self.prefix + "_scale",
-            torch.tensor(self.alpha_scale, dtype = torch.float32, device = device),
-            persistent = False,
-        )
+        for suffix, tensor in zip(("_w1", "_w2", "_scale"), buffers):
+            module.register_buffer(self.prefix + suffix, tensor, persistent = False)
         module.slots.append((self.prefix, rows))
 
     def set_weight(self, weight: float) -> None:
