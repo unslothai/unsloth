@@ -17,7 +17,7 @@ import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tests/studio/playwright_mac_tab_capabilities.py"
-APPEARANCE_STORE = REPO / "studio/frontend/src/features/settings/stores/appearance-custom-store.ts"
+APPEARANCE_STORE = REPO / "studio/frontend/src/features/settings/lib/appearance-customization.ts"
 APP_SIDEBAR = REPO / "studio/frontend/src/components/app-sidebar.tsx"
 
 BASE = "http://127.0.0.1:18893"

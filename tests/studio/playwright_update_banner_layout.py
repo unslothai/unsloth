@@ -379,7 +379,7 @@ SPOT = SCOPE == "spot"
 # At the 20px font size below 384px the action row wraps; 320x480 has a rail cap between the two
 # card heights, which is what clipped Copy command.
 FONT_SCALE_VIEWPORTS = [(921, 534), (390, 500), (320, 480)]
-# Mirrors appearance-custom-store.ts; kept in step by test_update_release_notes.py.
+# Mirrors lib/appearance-customization.ts and appearance-custom-store.ts; kept in step by test_update_release_notes.py.
 UI_FONT_SIZE_MAX = 20
 UI_FONT_SIZE_DEFAULT = 15
 UI_FONT_SIZE_CSS_BASE = 16

@@ -10,6 +10,7 @@ REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "studio/frontend/src"
 INDEX_CSS = (SRC / "index.css").read_text(encoding = "utf-8")
 STORE = (SRC / "features/settings/stores/appearance-custom-store.ts").read_text(encoding = "utf-8")
+RULES = (SRC / "features/settings/lib/appearance-customization.ts").read_text(encoding = "utf-8")
 SELECT = (SRC / "components/ui/select.tsx").read_text(encoding = "utf-8")
 UTILS = (SRC / "lib/utils.ts").read_text(encoding = "utf-8")
 
@@ -57,7 +58,7 @@ def test_preference_writes_a_scale_not_the_root_font_size():
 
 def test_css_default_scale_matches_the_store_default():
     """Derives the CSS default scale from the store's px default so the two cannot drift apart."""
-    rng = re.search(r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", STORE)
+    rng = re.search(r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", RULES)
     assert rng is not None
     base = re.search(r"const UI_FONT_SIZE_CSS_BASE = (\d+);", STORE)
     assert base is not None

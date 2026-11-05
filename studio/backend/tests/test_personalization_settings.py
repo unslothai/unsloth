@@ -105,7 +105,7 @@ def test_customization_defaults():
         ("darkMode", True),
         ("guidedTour", True),
         ("profile", False),
-        ("appearance", False),
+        ("appearance", True),
         ("resources", False),
         ("chat", False),
         ("connections", False),
@@ -158,7 +158,7 @@ def test_customization_sidebar_menu_normalized():
         ("api", True),
         ("darkMode", True),
         ("profile", False),
-        ("appearance", False),
+        ("appearance", True),
         ("resources", False),
         ("chat", False),
         ("connections", False),
@@ -190,7 +190,7 @@ def _sidebar_nav(items):
     return {"appearance": {"customization": {"sidebarNav": items}}}
 
 
-# Mirrors SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in appearance-custom-store.ts.
+# Mirrors SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in lib/appearance-customization.ts.
 FRONTEND_SHIPPED_SIDEBAR_NAV = [
     ("hub", True),
     ("projects", True),

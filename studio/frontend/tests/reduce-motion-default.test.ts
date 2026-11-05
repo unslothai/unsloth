@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 test("reduce motion defaults to off, and System and On stay selectable", () => {
-	const store = readFileSync(new URL("../src/features/settings/stores/appearance-custom-store.ts", import.meta.url), "utf8");
+	const store = readFileSync(new URL("../src/features/settings/lib/appearance-customization.ts", import.meta.url), "utf8");
 	assert.match(store, /reduceMotion: "off",\n/);
-	assert.match(store, /source\.reduceMotion === "on" \|\| source\.reduceMotion === "system"\n\s*\? source\.reduceMotion\n\s*: "off",/);
+	assert.match(store, /reduceMotion: readChoice\(\s*source\.reduceMotion,\s*\["system", "on", "off"\],\s*"off",/);
 });

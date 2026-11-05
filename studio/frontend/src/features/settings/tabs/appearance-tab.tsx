@@ -41,6 +41,7 @@ import { SettingsRow } from "../components/settings-row";
 import { SidebarMenuCustomizer } from "../components/sidebar-menu-customizer";
 import { SidebarNavCustomizer } from "../components/sidebar-nav-customizer";
 import { SettingsSection } from "../components/settings-section";
+import { ThemeFileSection } from "../appearance-theme/ui/theme-file-section";
 import { ThemeSegmented } from "../components/theme-segmented";
 import { gpuRenderingNotes } from "../gpu-rendering-notes";
 import { useGpuRenderingSetting } from "../hooks/use-gpu-rendering-setting";
@@ -324,6 +325,8 @@ export function AppearanceTab() {
           </SettingsRow>
         ))}
       </SettingsSection>
+
+      <ThemeFileSection />
 
       {isTauri ? (
         <SettingsSection title={t("settings.appearance.gpuRendering.sectionTitle")}>

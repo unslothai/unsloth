@@ -63,7 +63,7 @@ TABS = [
 
 _SIGNED_OUT_PATHS = ("/login", "/change-password")
 
-# Only rows pinned by default (SIDEBAR_NAV_DEFAULT_PINNED, appearance-custom-store.ts) carry a
+# Only rows pinned by default (SIDEBAR_NAV_DEFAULT_PINNED, lib/appearance-customization.ts) carry a
 # data-testid. test_inline_row_ids_match_the_frontends_default_pinned_set keeps this in sync.
 INLINE_ROW_IDS = ("hub", "projects", "library", "images", "train")
 # The Projects row yields to the Projects section once projects load (app-sidebar.tsx).
