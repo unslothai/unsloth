@@ -126,7 +126,9 @@ def check_reply_paint(page) -> None:
     expect(second).to_have_css("contain", "paint")
     assert first.evaluate("e => e.scrollWidth > e.clientWidth"), "fixture has no wide reply"
     expect(first).to_have_css("contain", "none")
-    assert viewport.evaluate("v => v.scrollWidth > v.clientWidth"), "wide reply lost its horizontal scroll range"
+    assert viewport.evaluate(
+        "v => v.scrollWidth > v.clientWidth"
+    ), "wide reply lost its horizontal scroll range"
 
 
 def main() -> int:
