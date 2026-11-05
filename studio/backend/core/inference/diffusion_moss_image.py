@@ -696,8 +696,13 @@ class MOSSImagePipeline(DiffusionPipeline):
         adapter_name: Optional[str] = None,
         **_kwargs,
     ):
+        metadata = None
         if not isinstance(state_dict, dict):
+            from diffusers.utils.state_dict_utils import _load_sft_state_dict_metadata
             from safetensors.torch import load_file
+
+            # lora_alpha / rank of a diffusers-saved adapter live only in the file's metadata.
+            metadata = _load_sft_state_dict_metadata(str(state_dict))
             state_dict = load_file(str(state_dict))
         converted = {}
         for key, value in state_dict.items():
@@ -707,7 +712,7 @@ class MOSSImagePipeline(DiffusionPipeline):
                     break
             converted["transformer." + key] = value
         self.transformer.load_lora_adapter(
-            converted, adapter_name = adapter_name, prefix = "transformer"
+            converted, adapter_name = adapter_name, prefix = "transformer", metadata = metadata
         )
 
     def set_adapters(
