@@ -57,7 +57,6 @@ def test_a_blank_mask_answers_no_rows_without_a_child(monkeypatch, probe, mask):
     for _ in range(3):
         assert LlamaCppBackend._get_gpu_memory_nvml() == []
     assert probe() == 0
-    # Readers of the inventory see nothing under a blank mask either way.
     assert LlamaCppBackend._child_visibility_for([0, 1]) == "0,1"
 
 
