@@ -224,7 +224,9 @@ def test_ready_is_seen_soon_after_listening_line(monkeypatch):
     print(
         f"bind -> ready lag: median {median * 1000:.1f} ms, all {[round(x * 1000) for x in lags]}"
     )
-    assert median < 0.1, lags
+    # The line comes just before the bind, so the first probe can hit a closed port; Windows takes
+    # a few hundred ms to refuse a loopback connect, so there it only has to beat the old 0.5 s poll.
+    assert median < (0.5 if os.name == "nt" else 0.1), lags
 
 
 def test_timer_still_drives_polls_without_log_lines():
