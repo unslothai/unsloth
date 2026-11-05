@@ -585,7 +585,7 @@ def _overlay(character: dict, data: dict) -> dict:
         data[key] = character.get(_camel(key), "") or ""
     data["alternate_greetings"] = list(character.get("alternateGreetings") or [])
     data["tags"] = list(character.get("tags") or [])
-    extensions = dict(data.get("extensions") or {})
+    extensions = dict(data["extensions"]) if isinstance(data.get("extensions"), dict) else {}
     extensions.update(character.get("extensions") or {})
     extensions["talkativeness"] = character.get("talkativeness", 0.5)
     extensions["fav"] = bool(character.get("favorite"))

@@ -81,8 +81,11 @@ export function RoleplaySpeakerBar() {
     abort.current = new AbortController();
     try {
       const origin = threadId!;
+      const typed = aui.composer().getState().text;
       const text = await writeMyReply(origin, aui.thread().getState().messages, abort.current.signal);
-      if (text && useChatRuntimeStore.getState().activeThreadId === origin) aui.composer().setText(text);
+      // Only into the same chat, and never over what the user typed while it was being written.
+      const untouched = aui.composer().getState().text === typed;
+      if (text && untouched && useChatRuntimeStore.getState().activeThreadId === origin) aui.composer().setText(text);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         toast.error(t("characters.chat.writeFailed"), { description: error instanceof Error ? error.message : String(error) });

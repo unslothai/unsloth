@@ -734,3 +734,12 @@ def test_deleting_the_only_unmuted_member_keeps_a_group_speaker(client):
     client.put(url, json = {"mute": {ids[1]: True, ids[2]: True}})
     assert client.delete(f"/api/characters/{ids[0]}").status_code == 204
     assert [m["muted"] for m in client.get(url).json()["cast"]] == [False, True]
+
+
+def test_a_card_with_malformed_extensions_still_exports(client):
+    card = {**V2, "data": {**V2["data"], "extensions": "broken"}}
+    imported = _import(client, json.dumps(card).encode(), "odd.json").json()["character"]
+    for fmt in ("json", "png"):
+        assert (
+            client.get(f"/api/characters/{imported['id']}/export?format={fmt}").status_code == 200
+        )
