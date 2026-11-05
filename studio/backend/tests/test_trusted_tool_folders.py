@@ -99,6 +99,17 @@ def test_a_folder_too_large_to_check_is_not_granted(folder, monkeypatch):
     assert os_sandbox.trusted_tool_folder_roots() == ()
 
 
+def test_the_scan_stops_at_the_cap_inside_one_directory(folder, monkeypatch):
+    monkeypatch.setattr(os_sandbox, "_TRUSTED_FOLDER_SCAN_LIMIT", 5)
+    for index in range(50):
+        (folder / f"f{index}.txt").write_text("x")
+    seen = []
+    real = gate._references_sensitive_path
+    monkeypatch.setattr(gate, "_references_sensitive_path", lambda p: seen.append(p) or real(p))
+    assert os_sandbox._holds_a_nested_credential(str(folder)) is True
+    assert len(seen) <= 5
+
+
 def test_a_folder_with_a_credential_at_its_top_is_not_trusted(folder):
     (folder / ".env").write_text("KEY=x")
     assert os_sandbox.trusted_tool_folder_roots() == ()

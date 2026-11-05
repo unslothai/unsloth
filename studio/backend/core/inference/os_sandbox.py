@@ -739,19 +739,32 @@ def grantable_trusted_roots(candidates) -> tuple[str, ...]:
 
 
 def _holds_a_nested_credential(folder: str) -> bool:
-    """A tree too large to check counts as holding one."""
+    """A tree too large to check counts as holding one. scandir, not walk: walk lists a whole
+    directory before the cap could stop it."""
     from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
     from .tool_path_approval import _references_sensitive_path
 
-    names = {*_CREDENTIAL_BASENAMES, *approval_names}
+    # Casefolded: a case-insensitive volume opens TOKEN as token.
+    names = {name.casefold() for name in (*_CREDENTIAL_BASENAMES, *approval_names)}
     seen = 0
-    for top, dirs, files in os.walk(folder):
-        for name in (*dirs, *files):
-            seen += 1
-            if seen > _TRUSTED_FOLDER_SCAN_LIMIT:
-                return True
-            if name in names or _references_sensitive_path(os.path.join(top, name)):
-                return True
+    pending = [folder]
+    while pending:
+        try:
+            entries = os.scandir(pending.pop())
+        except OSError:  # unreadable here is unreadable in the sandbox too
+            continue
+        with entries:
+            for entry in entries:
+                seen += 1
+                if seen > _TRUSTED_FOLDER_SCAN_LIMIT:
+                    return True
+                if entry.name.casefold() in names or _references_sensitive_path(entry.path):
+                    return True
+                try:
+                    if entry.is_dir(follow_symlinks = False):
+                        pending.append(entry.path)
+                except OSError:
+                    continue
     return False
 
 
