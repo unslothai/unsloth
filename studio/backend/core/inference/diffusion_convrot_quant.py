@@ -1125,8 +1125,7 @@ def unlisted_device_ok(index: int, stock_quant: Any = None) -> bool:
     if ok:
         _H16_DEVICE[index] = h16
         _ROTQ_HANDLE = _rotq_op()
-        # the SwiGLU prologue rides on rotq_h16 (one kernel instead of SiLU, multiply, rotation and act quant): the
-        # listed archs probe it beside their dense tile; an unlisted card probes it once, on top of the same kernel
+        # SwiGLU prologue fused into rotq_h16; unlisted cards probe it once per device
         sw = False
         if rotquant_swiglu_enabled() and _swiglu_op() is not None:
             if index not in _UNLISTED_SWIGLU:
