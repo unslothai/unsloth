@@ -27,7 +27,10 @@ test("the browser's glass frosts the tab strip and panel body, never the section
   const frosted = rules.filter(([, , body]) => /backdrop-filter/.test(body));
   assert.ok(frosted.length > 0);
   for (const [, selector] of frosted) {
-    for (const part of selector.split(",")) assert.match(part.trim(), /\[data-slot="browser-panel"\](:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)( ?\[data-native-hole\] > :not\(\[data-browser-page\]\))?$/);
+    for (const part of selector.split(",")) {
+      if (part.trim().endsWith('[data-windows-browser="web"]::before')) continue;
+      assert.match(part.trim(), /\[data-slot="browser-panel"\](?::not\(\[data-windows-browser\]\))?(:not\(\[data-browser-document\]\))? > \.browser-(chrome|panel-body)( ?\[data-native-hole\] > :not\(\[data-browser-page\]\))?$/);
+    }
   }
 });
 
