@@ -47,7 +47,7 @@ def _refusal(real: str) -> "str | None":
         return "a drive or filesystem root"
     if os.path.normcase(real) in os_sandbox._never_a_model_library() or is_denied_system_path(real):
         return "a system folder, your home folder, or the folder holding every home"
-    if any(os_sandbox._paths_overlap(real, root) for root in os_sandbox.studio_state_roots()):
+    if os_sandbox.overlaps_studio_state(real):
         return "Unsloth's own data folder, or a folder holding it"
     # The sandbox would drop it at launch, so saving it would report trust that never applies.
     if not os_sandbox.grantable_trusted_roots((real,)):

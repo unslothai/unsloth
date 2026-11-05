@@ -278,6 +278,16 @@ class TestSaving:
             trusted.set_trusted_tool_folders([str(folder)])
         assert store == {}
 
+    @pytest.mark.skipif(sys.platform not in ("darwin", "win32"), reason = "case-insensitive volumes")
+    def test_refuses_the_studio_home_in_another_case(self, scratch, monkeypatch, store):
+        home = scratch / "studio-home"
+        (home / "auth").mkdir(parents = True)
+        monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(home))
+        with pytest.raises(ValueError, match = "Unsloth"):
+            trusted.set_trusted_tool_folders([str(scratch / "STUDIO-HOME")])
+        assert os_sandbox.grantable_trusted_roots((str(scratch / "STUDIO-HOME"),)) == ()
+        assert store == {}
+
     def test_refuses_a_file(self, scratch, store):
         path = scratch / "tool.sh"
         path.write_text("x")

@@ -733,8 +733,19 @@ _TRUSTED_FOLDER_SCAN_LIMIT = 5000
 
 def grantable_trusted_roots(candidates) -> tuple[str, ...]:
     """Granted whole, so any sandboxed call could read a credential anywhere inside, not only at the top."""
+    state = studio_state_roots()
     return tuple(
-        root for root in _grantable_read_roots(candidates) if not _holds_a_nested_credential(root)
+        root
+        for root in _grantable_read_roots(candidates)
+        if not overlaps_studio_state(root, state) and not _holds_a_nested_credential(root)
+    )
+
+
+def overlaps_studio_state(path: str, state = None) -> bool:
+    """Case-insensitive where the volume is: macOS realpath keeps the spelling it was given."""
+    return any(
+        _is_within(path, root) or _is_within(root, path)
+        for root in (studio_state_roots() if state is None else state)
     )
 
 
