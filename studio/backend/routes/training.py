@@ -2619,6 +2619,7 @@ async def start_training(
 
         # The hook runs only once start guards pass -> VRAM freed iff training starts.
         from core.inference.gpu_arbiter import GpuLeaseHeldError, SegmenterStillRunningError
+        from core.training.provenance import ExactResumeResourcesUnavailable
         from routes.training_vram import ManagedEngineStillRunning
         from utils.transformers_version import SidecarSwapInProgress
 
@@ -3599,8 +3600,7 @@ def _free_gpu_for_diffusion_training() -> None:
     """Free GPU residents before the diffusion trainer spawns its own SDXL pipeline. The trainer
     subprocess loads a full SDXL pipeline; an export worker, a resident Images pipeline or loaded
     chat models would keep their VRAM and OOM the run. Mirrors the LLM start path's pre-spawn
-    cleanup. Best-effort: failing to free one resident never blocks the start, but a GPU lease taken after the
-    route's first check does (a RuntimeError, so the route answers 409)."""
+    cleanup. Best-effort: failing to free one resident never blocks the start."""
     from core.inference import gpu_arbiter
 
     gpu_arbiter.raise_if_leased()

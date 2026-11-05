@@ -217,3 +217,37 @@ def test_a_base_pane_transcription_turns_the_lora_back_on_afterwards():
     list(backend.generate_whisper_response(audio))
 
     assert seen == [True, False]
+
+
+def test_a_plain_request_after_a_base_model_one_gets_the_lora_back():
+    peft = pytest.importorskip("peft")
+    import torch
+    from core.inference.inference import InferenceBackend
+
+    class _Lora:
+        disabled = False
+
+        def disable_adapter_layers(self):
+            self.disabled = True
+
+        def enable_adapter_layers(self):
+            self.disabled = False
+
+    class _Peft(peft.PeftModel):
+        def __init__(self):
+            torch.nn.Module.__init__(self)
+            self.base_model = _Lora()
+
+    model = _Peft()
+    backend = InferenceBackend.__new__(InferenceBackend)
+    backend.active_model_name = "lora"
+    backend.models = {"lora": {"model": model}}
+    # A benchmark's adapter-off baseline, then a chat queued before its next candidate request.
+    backend._apply_adapter_state(False)
+    assert model.base_model.disabled
+    backend._apply_adapter_state(None)
+    assert not model.base_model.disabled
+    # Turned on again by a request, a plain one leaves it as it is.
+    backend._apply_adapter_state(True)
+    backend._apply_adapter_state(None)
+    assert not model.base_model.disabled

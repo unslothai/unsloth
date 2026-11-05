@@ -1136,6 +1136,49 @@ def test_a_window_over_joined_splits_of_unknown_size_counts_the_rows_each_has(mo
     assert [r["q"] for r in rows] == ["train98", "train99", "validation0", "validation1"]
 
 
+def test_a_loops_frozen_test_questions_never_reach_a_later_rounds_training(monkeypatch):
+    from core.flows import loop as loop_rounds
+
+    rows = [{"prompt": f"question number {i}", "response": f"a{i}"} for i in range(10)]
+    monkeypatch.setattr(
+        training,
+        "_load_table",
+        _as_table(lambda dataset, token, end, start = 0: list(reversed(rows))),
+    )
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    frozen = loop_rounds.questions(rows[:3])
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data"},
+        loop_rounds.EXCLUDE_INPUT: {"column": "", "questions": frozen},
+    }
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.parquet"))
+    assert train and not {r["prompt"] for r in train} & set(frozen)
+
+
+def test_frozen_test_questions_are_read_through_the_benchmarks_prompt_column(monkeypatch):
+    from core.flows import loop as loop_rounds
+
+    rows = [{"ticket": f"my payment failed on day {i}", "queue": "billing"} for i in range(10)]
+    monkeypatch.setattr(
+        training, "_load_table", _as_table(lambda dataset, token, end, start = 0: list(rows))
+    )
+    monkeypatch.setattr("core.training.account_jobs.managed_account", lambda: False)
+    ctx = _Ctx(_recipe_routes([]), holdout_percent = 10)
+    frozen = loop_rounds.questions(rows[:4], "ticket")
+    assert len(frozen) == 4
+    ctx.inputs = {
+        "dataset": {"kind": "dataset", "source": "hf", "ref": "org/data"},
+        loop_rounds.EXCLUDE_INPUT: {"column": "ticket", "questions": frozen},
+    }
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    train = next(rows for name, rows in _uploads(ctx).items() if name.endswith("-train.parquet"))
+    assert train and not {r["ticket"] for r in train} & set(frozen)
+
+
 def test_the_previous_chat_model_is_put_back_with_its_own_context_and_precision(monkeypatch):
     loads = []
 
@@ -1401,3 +1444,252 @@ def test_a_csv_grpo_set_reads_its_first_row_as_training_does(tmp_path, monkeypat
     assert row["question"] == "00123"
     config = {"objective": "grpo", "rl_system_prompt": "Reason, then answer."}
     assert training.trained_system_prompt(config, row) == "Reason, then answer."
+
+
+def test_a_template_mapping_names_no_per_row_system_column():
+    # A plain role mapping trains each row's own system column.
+    assert training.mapping_facts({"rule": "system", "q": "user", "a": "assistant"}) == {
+        "system_column": "rule",
+        "user_columns": ["q"],
+        "user_join": "turns",
+        "answer_columns": ["a"],
+    }
+    # Any `__` metadata selects the template mapping, which drops the system column: every row got
+    # `__system_prompt` instead.
+    mapping = {"rule": "system", "q": "user", "a": "assistant", "__system_prompt": "Be brief."}
+    assert training.mapping_facts(mapping) == {
+        "system_column": "",
+        "user_columns": ["q"],
+        "user_join": "lines",
+        "answer_columns": ["a"],
+    }
+    assert training.trained_system_prompt({"custom_format_mapping": mapping}) == "Be brief."
+    labels = {"label": {"0": "neg", "1": "pos"}}
+    assert training.mapping_facts({"rule": "system", "__label_mapping": labels}) == {
+        "system_column": "",
+        "label_mapping": labels,
+    }
+    assert training.mapping_facts(None) == {}
+
+
+def test_an_sft_input_role_is_recorded_as_the_system_column():
+    # SFT's formatter reads `input` as the system message, as it reads `system`.
+    mapping = {"instruction": "instruction", "input": "input", "output": "output"}
+    facts = {"user_columns": ["instruction"], "answer_columns": ["output"]}
+    assert training.mapping_facts(mapping) == {
+        "system_column": "input",
+        "user_join": "turns",
+        **facts,
+    }
+    # An Alpaca format makes it the Alpaca input instead, part of the question.
+    assert training.mapping_facts(mapping, "alpaca") == {
+        "system_column": "",
+        "user_join": "alpaca",
+        "input_columns": ["input"],
+        **facts,
+    }
+    # RL objectives read only the literal role.
+    assert training.mapping_facts(mapping, "auto", "grpo") == {"system_column": ""}
+    assert training.mapping_facts({"q": "prompt", "rule": "system"}, "auto", "grpo") == {
+        "system_column": "rule",
+        "user_columns": ["q"],
+        "user_join": "turns",
+    }
+
+
+def test_the_input_role_is_trained_and_benchmarked_as_the_system_message():
+    from datasets import Dataset
+
+    from utils.datasets.dataset_utils import _apply_user_mapping
+
+    mapping = {"instruction": "instruction", "input": "input", "output": "output"}
+    row = {"instruction": "Which word?", "input": "Always answer with GREEN.", "output": "GREEN"}
+    trained = _apply_user_mapping(Dataset.from_list([row]), mapping)[0]["conversations"]
+    column = training.mapping_facts(mapping)["system_column"]
+    assert trained[0] == {"role": "system", "content": row[column]}
+
+
+def test_automatic_formatting_s_roles_reach_the_checkpoint():
+    from datasets import Dataset
+
+    from utils.datasets.dataset_utils import format_dataset
+
+    row = {
+        "context": "The parcel is being held in customs at the border.",
+        "question": "Where is the parcel?",
+        "answer": "customs",
+    }
+    mapping = training.auto_mapping(row)
+    trained = format_dataset(Dataset.from_list([row]))["dataset"][0]["conversations"]
+    facts = training.mapping_facts(mapping)
+    # The column training sent as the system message is the one Benchmark asks with.
+    system = [t for t in trained if t["role"] == "system"]
+    assert system and row[facts["system_column"]] == system[0]["content"]
+    assert facts["user_columns"] == ["question"] and facts["answer_columns"] == ["answer"]
+    # A row in a known format names no roles of its own.
+    assert training.auto_mapping({"instruction": "a", "output": "b"}) == {}
+
+
+def test_grpo_prompt_and_answer_roles_reach_the_checkpoint():
+    assert training.mapping_facts({"ticket": "prompt", "queue": "answer"}, "auto", "grpo") == {
+        "system_column": "",
+        "user_columns": ["ticket"],
+        "user_join": "turns",
+        "answer_columns": ["queue"],
+    }
+
+
+@pytest.mark.parametrize(
+    "objective, row, facts",
+    [
+        (
+            # An explicit conversation format reads the messages column, not a kept seed column.
+            "sft:chatml",
+            {
+                "messages": [
+                    {"role": "user", "content": "Capital of France?"},
+                    {"role": "assistant", "content": "Paris"},
+                ],
+                "prompt": "Seed text the recipe kept",
+            },
+            {"conversation_column": "messages"},
+        ),
+        (
+            "sft:sharegpt",
+            {
+                "conversations": [
+                    {"from": "human", "value": "Capital of France?"},
+                    {"from": "gpt", "value": "Paris"},
+                ],
+                "prompt": "Seed text the recipe kept",
+            },
+            {"conversation_column": "conversations"},
+        ),
+        (
+            "dpo",
+            {"prompt": "Greet me", "chosen": "Hello!", "rejected": "No."},
+            {"user_columns": ["prompt"], "answer_columns": ["chosen"]},
+        ),
+        (
+            "sft",
+            {
+                "context": "The parcel is being held in customs at the border.",
+                "question": "Where is the parcel?",
+                "answer": "customs",
+            },
+            {"system_column": "context", "user_columns": ["question"]},
+        ),
+    ],
+)
+def test_the_checkpoint_names_the_columns_training_read(monkeypatch, objective, row, facts):
+    import studio_mcp.tools.jobs as jobs
+
+    async def run_folder(caller, out):
+        return "run-1", None
+
+    monkeypatch.setattr(jobs, "_run_folder", run_folder)
+    monkeypatch.setattr(training, "POLL_S", 0)
+    # No column fields set: the roles are the ones training found in the rows.
+    monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
+    objective, _, format_type = objective.partition(":")
+    ctx = _Ctx(None, objective = objective, **({"format_type": format_type} if format_type else {}))
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.on_cancel = lambda fn: None
+    ctx.check_cancelled = lambda: None
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "j1"}
+        if path == "/api/train/status":
+            return {
+                "job_id": "j1",
+                "training_phase": "completed",
+                "phase": "completed",
+                "details": {"step": 1, "total_steps": 1, "loss": 1.0, "output_dir": "/x/run-1"},
+            }
+        if path == "/api/train/metrics":
+            return {"loss_history": [1.0]}
+        raise AssertionError(path)
+
+    ctx.routes = routes
+    checkpoint = asyncio.run(training.finetune(ctx))["checkpoint"]
+    assert {k: checkpoint.get(k) for k in facts} == facts
+
+
+def test_a_loop_s_seed_bookkeeping_never_reaches_training(monkeypatch):
+    from core.flows import loop as loop_rounds
+
+    assert training.LOOP_SEED_FIELDS == loop_rounds.FIELDS
+    rows = [
+        {
+            "question": f"Which queue handles ticket {i}?",
+            "answer": "billing",
+            "origin": "failure" if i % 2 else "fresh",
+            "failed_prompt": "Which queue?" if i % 2 else "",
+            "failed_reference": "billing" if i % 2 else "",
+            "failed_output": "a long wrong answer the model gave last round" if i % 2 else "",
+        }
+        for i in range(20)
+    ]
+    monkeypatch.setattr("hub.utils.host_paths.cache_reference", lambda p: f"cache:{p}")
+    monkeypatch.setitem(globals(), "ROWS", rows)
+    started = []
+    ctx = _Ctx(_recipe_routes(started), holdout_percent = 10)
+    with pytest.raises(RuntimeError, match = "started"):
+        asyncio.run(training.finetune(ctx))
+    for name, uploaded in _uploads(ctx).items():
+        assert all(set(r) == {"question", "answer"} for r in uploaded), name
+    # Automatic formatting then reads the question and the answer, every round.
+    trained = next(r for n, r in _uploads(ctx).items() if n.endswith("-train.jsonl"))
+    assert training.auto_mapping(trained[0]) == {"question": "user", "answer": "assistant"}
+
+
+@pytest.mark.parametrize("objective", ["grpo", "dpo", "orpo"])
+def test_an_rl_alpaca_row_is_benchmarked_with_its_input(monkeypatch, objective):
+    import studio_mcp.tools.jobs as jobs
+
+    from core.flows.nodes.benchmark import mapped_question
+
+    row = {
+        "instruction": "Translate to French",
+        "input": "The weather is lovely today.",
+        "output": "Il fait beau.",
+        "answer": "Il fait beau.",
+        "chosen": "Il fait beau.",
+        "rejected": "Bonjour.",
+    }
+
+    async def run_folder(caller, out):
+        return "run-1", None
+
+    monkeypatch.setattr(jobs, "_run_folder", run_folder)
+    monkeypatch.setattr(training, "POLL_S", 0)
+    monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
+    ctx = _Ctx(None, objective = objective)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.on_cancel = lambda fn: None
+    ctx.check_cancelled = lambda: None
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "j1"}
+        if path == "/api/train/status":
+            return {
+                "job_id": "j1",
+                "training_phase": "completed",
+                "phase": "completed",
+                "details": {"step": 1, "total_steps": 1, "loss": 1.0, "output_dir": "/x/run-1"},
+            }
+        if path == "/api/train/metrics":
+            return {"loss_history": [1.0]}
+        raise AssertionError(path)
+
+    ctx.routes = routes
+    facts = asyncio.run(training.finetune(ctx))["checkpoint"]
+    spec = {
+        "columns": facts["user_columns"],
+        "join": facts.get("user_join"),
+        "inputs": facts.get("input_columns"),
+    }
+    # format_rl_dataset asks "instruction\n\ninput"; Benchmark and the Loop rebuild the same.
+    assert mapped_question(row, spec) == "Translate to French\n\nThe weather is lovely today."

@@ -440,3 +440,40 @@ def test_a_local_vision_set_trains_again_since_its_images_are_not_hashed(tmp_pat
     Ctx.inputs = {"dataset": {"kind": "dataset", "source": "local", "ref": "uploads/a/t.jsonl"}}
     Ctx.params = {**Ctx.params, "task": "text"}
     assert asyncio.run(training.finetune_cache_material(Ctx())) is not None
+
+
+def test_continuing_from_a_checkpoint_keys_on_that_checkpoints_weights(tmp_path, monkeypatch):
+    import asyncio
+
+    from core.flows.registry import FlowNodeError
+
+    weights = {"run-1": "aaa"}
+
+    async def material(ctx, *args):
+        return {}
+
+    async def source(ctx, checkpoint):
+        if checkpoint["name"] not in weights:
+            raise FlowNodeError("gone")
+        return f"/out/{checkpoint['name']}", True
+
+    async def model(ctx, path):
+        return {"base_model_files": weights[path.rsplit("/", 1)[-1]]}
+
+    monkeypatch.setattr(training, "dataset_material", material)
+    monkeypatch.setattr(training, "checkpoint_source", source)
+    monkeypatch.setattr(training, "_model_material", model)
+
+    class Ctx:
+        caller = None
+        inputs = {"start": {"kind": "checkpoint", "name": "run-1", "base_model": "owner/model"}}
+        params = {"base_model": "owner/model"}
+
+    first = asyncio.run(training.finetune_cache_material(Ctx()))
+    assert first["start"] == {"base_model_files": "aaa"}
+    # The source run was resumed and its adapter changed in place: train again.
+    weights["run-1"] = "bbb"
+    assert asyncio.run(training.finetune_cache_material(Ctx())) != first
+    # A checkpoint that cannot be found cannot be keyed.
+    Ctx.inputs = {"start": {"kind": "checkpoint", "name": "run-9"}}
+    assert asyncio.run(training.finetune_cache_material(Ctx())) is None

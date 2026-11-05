@@ -33,7 +33,8 @@ from core.flows import capabilities
 from core.flows import model_settings
 from core.flows import caller as flow_caller
 from core.flows.cache import cache_key
-from core.flows.compiler import FOR_EACH, RECIPE_PARAM, CompileError, Plan, compile_flow
+from core.flows import loop as loop_rounds
+from core.flows.compiler import FOR_EACH, LOOP, RECIPE_PARAM, CompileError, Plan, compile_flow
 from core.flows.registry import CACHE_HOOKS, FlowCancelled, FlowNodeError, load_handlers
 from core.flows.schema import MAX_FOREACH_ITEMS, MAX_GPU_OPS_PER_RUN, MAX_RUN_SECONDS
 from storage import flows_db
@@ -813,6 +814,7 @@ class FlowEngine:
         self._gpu_lock: Optional[GpuLease] = None
         self._warming: dict[tuple, asyncio.Task] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._seed_uploads: dict[tuple[str, str], dict] = {}
         self.handlers: Optional[dict] = None
         self.mint_key: Callable[[AccountContext], tuple[str, Optional[int]]] = (
             flow_caller.mint_run_key
@@ -1754,6 +1756,9 @@ class FlowEngine:
         spec = plan.specs[nid]
         overrides = rs.input_overrides.get(nid, {})
         inputs: dict[str, Any] = {}
+        if loop_rounds.EXCLUDE_INPUT in overrides:
+            # Not a port: a Loop's frozen test questions, which its Fine-tune keeps out of training.
+            inputs[loop_rounds.EXCLUDE_INPUT] = overrides[loop_rounds.EXCLUDE_INPUT]
         for port in spec["inputs"]:
             pid = port["id"]
             if pid in overrides:
@@ -1835,6 +1840,29 @@ class FlowEngine:
 
         if spec["type"] == FOR_EACH:
             await self._for_each(rs, nid, env, inputs, params, iteration)
+            return
+        if spec["type"] == LOOP:
+            ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
+            try:
+                await self._rounds(rs, nid, env, ctx, iteration)
+            except (FlowCancelled, asyncio.CancelledError):
+                env.values[nid] = SKIPPED
+                rs.set_status(nid, "cancelled")
+                self._record(rs, nid, "cancelled", None, None, iteration)
+            except Exception as exc:
+                env.values[nid] = SKIPPED
+                if rs.cancelled:
+                    rs.set_status(nid, "cancelled")
+                else:
+                    if not isinstance(exc, FlowNodeError):
+                        logger.exception("flows: %s (%s) failed", nid, spec["type"])
+                    rs.node(nid).error = (
+                        str(exc)
+                        if isinstance(exc, FlowNodeError)
+                        else f"{spec['title']} failed: {exc}"
+                    )
+                    rs.set_status(nid, "failed")
+                self._record(rs, nid, rs.node(nid).status, None, rs.node(nid).error, iteration)
             return
 
         ctx = NodeContextImpl(self, rs, nid, spec, params, inputs, seed, iteration)
@@ -2222,6 +2250,350 @@ class FlowEngine:
             message = f"{len(failed_body)} step(s) failed" if failed_body else None,
         )
 
+    async def _dataset_rows(self, ctx: NodeContextImpl, value: Any) -> list[dict]:
+        if isinstance(value, list):
+            return [r for r in value if isinstance(r, dict)]
+        if isinstance(value, dict) and isinstance(value.get("rows"), list):
+            return [r for r in value["rows"] if isinstance(r, dict)]
+        if not isinstance(value, dict) or value.get("kind") != "dataset" or not value.get("ref"):
+            return []
+        from core.flows.nodes.data import recipe_rows
+        from core.flows.nodes.training import _load_rows
+
+        from core.training.account_jobs import account_hf_token
+
+        if value.get("source") == "recipe" and value.get("job_id"):
+            return await recipe_rows(ctx, str(value["job_id"]))
+        token = account_hf_token(getattr(ctx.caller, "hf_token", None))
+        return await asyncio.to_thread(_load_rows, value, token, None)
+
+    async def _upload_rows(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
+        from core.flows.nodes.data import upload_rows
+        return await upload_rows(ctx, rows, name)
+
+    async def _seed_upload(self, ctx: NodeContextImpl, rows: list[dict], name: str) -> dict:
+        """Identical seed rows reuse one upload, so the recipe step's cache can hand back the same
+        dataset: two Loops on the same flow seed share round 1 and with it the probe/test split."""
+        from core.flows.nodes.data import local_seed_path
+
+        key = (
+            ctx._rs.account.account_id,
+            hashlib.sha256(json.dumps(rows, sort_keys = True).encode()).hexdigest(),
+        )
+        found = self._seed_uploads.get(key)
+        if found is not None:
+            try:
+                local_seed_path(found["ref"])
+                return dict(found)
+            except FlowNodeError:
+                pass
+        found = await self._upload_rows(ctx, rows, name)
+        self._seed_uploads[key] = found
+        while len(self._seed_uploads) > 256:
+            self._seed_uploads.pop(next(iter(self._seed_uploads)))
+        return dict(found)
+
+    async def _rounds(
+        self, rs: RunState, nid: str, env: Env, ctx: NodeContextImpl, iteration: Optional[tuple]
+    ) -> None:
+        """Run the Loop's body once per round. The score step runs twice a round, on the probe rows and
+        on the test rows; only the probe run's failures reach the next round's seed."""
+        plan = rs.plan
+        params = ctx.params
+        edge = plan.feedback[nid]
+        scorer, fail_port = edge["source"], edge["source_port"]
+        seed_node, seed_port = edge["target"], edge["target_port"]
+        held_port, held_src = next(
+            (port["id"], src)
+            for port in plan.specs[scorer]["inputs"]
+            if port["type"] == "dataset"
+            for src in plan.inputs[scorer].get(port["id"], ())
+            if src[1] == "holdout"
+        )
+        body = plan.body_order(nid)
+        after: set[str] = set()
+        stack = [scorer]
+        while stack:
+            for nxt in plan.consumers.get(stack.pop(), ()):
+                if nxt in body and nxt not in after:
+                    after.add(nxt)
+                    stack.append(nxt)
+        before = [b for b in body if b != scorer and b not in after]
+        rounds = max(1, min(int(params.get("rounds") or 3), 20))
+        target = float(params.get("target") if params.get("target") is not None else 90)
+        feed = params.get("feedback") is not False
+        failure_percent = int(
+            params.get("failure_percent")
+            if params.get("failure_percent") is not None
+            else loop_rounds.FAILURE_PERCENT
+        )
+        per_failure = int(params.get("per_failure") or loop_rounds.PER_FAILURE)
+        # The rows the recipe step will make, its catalog default included, as its own run reads them.
+        seed_rows = int(param_values(plan.specs[seed_node], plan.nodes[seed_node]).get("rows") or 5)
+        scorer_params = plan.nodes[scorer].get("params") or {}
+        in_percent = plan.specs[scorer]["type"] in loop_rounds.PERCENT_SCORERS
+        rs.set_status(nid, "running")
+        history: list[dict] = []
+        failures: list[dict] = []
+        probe = test = None
+        test_rows: list[dict] = []
+        best: Optional[dict] = None
+        stopped = "max_rounds"
+        # Steps with an unwired Continue from input keep training last round's checkpoint.
+        carry = [
+            b
+            for b in before
+            if params.get("continue_rounds") is not False
+            and any(
+                p["id"] == "start" and p["type"] == "checkpoint" for p in plan.specs[b]["inputs"]
+            )
+            and not plan.inputs[b].get("start")
+        ]
+        if carry and await asyncio.to_thread(_adapters_restart):
+            # Apple Silicon's trainer starts every LoRA run on the base model: continuing an
+            # adapter would be refused in round 2, so each round trains from the base instead.
+            lora = [
+                b
+                for b in carry
+                if (plan.nodes[b].get("params") or {}).get("training_type") != "full"
+            ]
+            if lora:
+                rs.emit(
+                    "node.log",
+                    nid,
+                    {
+                        "level": "warning",
+                        "message": "This Mac trains each LoRA round from the base model; adapters do not carry over",
+                    },
+                )
+            carry = [b for b in carry if b not in lora]
+        last: dict[str, dict] = {}
+        saved = {
+            k: dict(rs.input_overrides.get(k, {})) for k in (seed_node, scorer, held_src[0], *carry)
+        }
+
+        def override(node: str, port: str, value: Any) -> None:
+            rs.input_overrides[node] = {**rs.input_overrides.get(node, saved[node]), port: value}
+
+        async def score(split: dict, layer: Env, key: tuple) -> dict:
+            override(scorer, held_port, split)
+            await self._run_scope(rs, [scorer], layer, key)
+            produced = layer.values.get(scorer)
+            if not isinstance(produced, dict):
+                raise FlowNodeError(rs.node(scorer).error or "The score step did not finish")
+            return produced
+
+        # The question column: the score step's setting, else the one its failures report it asked
+        # (a column training read as the system message is not it).
+        asked_col: Any = str(scorer_params.get("prompt_column") or "")
+        # The column each row's own system message came from, as the score step reports it.
+        asked_system: Any = ""
+        try:
+            for r in range(rounds):
+                if rs.cancelled:
+                    break
+                rs.progress(
+                    nid,
+                    {
+                        "fraction": r / rounds,
+                        "step": r + 1,
+                        "total": rounds,
+                        "phase": f"Round {r + 1} of {rounds}",
+                    },
+                )
+                key = (*(iteration or ()), r)
+                child = Env(env)
+                child.values[nid] = {}
+                rows = loop_rounds.seed_rows(
+                    failures if feed else [],
+                    seed_rows,
+                    failure_percent,
+                    asked_col,
+                    str(scorer_params.get("reference_column") or ""),
+                    per_failure,
+                )
+                fed = sum(1 for row in rows if row["origin"] == "failure")
+                seed = await self._seed_upload(ctx, rows, f"loop-{nid}-round-{r + 1}")
+                override(seed_node, seed_port, seed)
+                for b in carry:
+                    if b in last:
+                        override(b, "start", last[b])
+                if test_rows:
+                    # The frozen test questions never train a later round, wherever the recipe puts them.
+                    column = asked_col
+                    override(
+                        held_src[0],
+                        loop_rounds.EXCLUDE_INPUT,
+                        {
+                            "column": column,
+                            "system": asked_system,
+                            "questions": loop_rounds.questions(test_rows, column, asked_system),
+                        },
+                    )
+                # The scored Fine-tune's start, not whichever trainer comes first.
+                continued = (
+                    last[held_src[0]].get("name")
+                    if held_src[0] in carry and held_src[0] in last
+                    else None
+                )
+                await self._run_scope(rs, before, child, key)
+                if rs.cancelled:
+                    break
+                broken = next((b for b in before if rs.node(b).status == "failed"), None)
+                if broken:
+                    raise FlowNodeError(
+                        f"Round {r + 1}: {plan.specs[broken]['title']} failed: {rs.node(broken).error or 'see its node'}"
+                    )
+                if probe is None:
+                    produced = child.get(held_src[0])
+                    held = produced.get(held_src[1]) if isinstance(produced, dict) else None
+                    if not held:
+                        raise FlowNodeError(
+                            "Round 1 produced no held-out rows to score; set Hold out % on Fine-tune"
+                        )
+                    probe_rows, test_rows = loop_rounds.split_holdout(
+                        await self._dataset_rows(ctx, held),
+                        int(params.get("probe_percent") or 50),
+                        int(params.get("split_seed") or 0),
+                    )
+                    if not probe_rows or not test_rows:
+                        raise FlowNodeError(
+                            "The Loop needs at least 2 held-out rows: one to probe, one to test"
+                        )
+                    # The score step reads at most its Max rows: each split is cut to that once, so
+                    # every round scores, counts and records exactly the rows it was given.
+                    limit = _scorer_row_limit(plan.specs[scorer], scorer_params)
+                    if limit and (len(probe_rows) > limit or len(test_rows) > limit):
+                        rs.emit(
+                            "node.log",
+                            nid,
+                            {
+                                "level": "warning",
+                                "message": f"{plan.specs[scorer]['title']} scores at most {limit} rows, "
+                                f"so each round probes and tests the first {limit} of each split",
+                            },
+                        )
+                        probe_rows, test_rows = probe_rows[:limit], test_rows[:limit]
+                    probe = {
+                        **await self._upload_rows(ctx, probe_rows, f"loop-{nid}-probe"),
+                        "split": "probe",
+                    }
+                    test = {
+                        **await self._upload_rows(ctx, test_rows, f"loop-{nid}-test"),
+                        "split": "test",
+                    }
+                probe_out = await score(probe, Env(child), (*key, 0))
+                fed_back = probe_out.get(fail_port)
+                if not asked_col and isinstance(fed_back, dict):
+                    reported = fed_back.get("prompt_column")
+                    # A dict: the several mapped columns Benchmark built each question from.
+                    asked_col = reported if isinstance(reported, dict) else str(reported or "")
+                if not asked_system and isinstance(fed_back, dict):
+                    reported = fed_back.get("system_column")
+                    # A list: several columns made each row's system message.
+                    asked_system = reported if isinstance(reported, list) else str(reported or "")
+                test_layer = Env(child)
+                test_out = await score(test, test_layer, (*key, 1))
+                if after:
+                    await self._run_scope(
+                        rs, [b for b in body if b in after], test_layer, (*key, 1)
+                    )
+                found = probe_out.get(fail_port)
+                failures = loop_rounds.drop_test_rows(
+                    await self._dataset_rows(ctx, found),
+                    test_rows,
+                    asked_col,
+                    asked_system,
+                )
+                entry = {
+                    "round": r + 1,
+                    "test_score": loop_rounds.as_percent(test_out.get("score"), in_percent),
+                    "probe_score": loop_rounds.as_percent(probe_out.get("score"), in_percent),
+                    "rows_from_failures": fed,
+                    "probe_failures": len(failures),
+                    "probe_rows": probe.get("rows"),
+                    "test_rows": test.get("rows"),
+                    "continued_from": continued,
+                }
+                for b in carry:
+                    produced = child.values.get(b)
+                    if isinstance(produced, dict) and isinstance(produced.get("checkpoint"), dict):
+                        last[b] = produced["checkpoint"]
+                # The Fine-tune whose held-out rows were scored, not whichever trainer comes first.
+                trained = child.values.get(held_src[0])
+                checkpoint = (
+                    trained["checkpoint"]
+                    if isinstance(trained, dict) and isinstance(trained.get("checkpoint"), dict)
+                    else None
+                )
+                # A score that left rows out (the model or judge errored on them) is not comparable:
+                # it can neither win the round nor meet the target.
+                results = test_out.get("results")
+                errored = results.get("errored") if isinstance(results, dict) else None
+                if isinstance(errored, int) and errored > 0:
+                    entry["test_errored"] = errored
+                    rs.emit(
+                        "node.log",
+                        nid,
+                        {
+                            "level": "warning",
+                            "message": f"Round {r + 1}: {errored} test rows errored, so its score does not count",
+                        },
+                    )
+                scored = results.get("scored") if isinstance(results, dict) else None
+                if isinstance(scored, int) and scored + (
+                    errored if isinstance(errored, int) else 0
+                ) < len(test_rows):
+                    # Rows the score step never read would make its score a part of the split's.
+                    entry["test_errored"] = len(test_rows) - scored
+                counted = entry["test_score"] is not None and not entry.get("test_errored")
+                history.append(entry)
+                if counted and (best is None or entry["test_score"] > best["test_score"]):
+                    best = {**entry, "checkpoint": checkpoint}
+                rs.partial(
+                    nid, {"port": "history", "value": list(history), "step": r + 1, "total": rounds}
+                )
+                if counted and entry["test_score"] >= target:
+                    stopped = "target"
+                    break
+        finally:
+            for node, kept in saved.items():
+                if kept:
+                    rs.input_overrides[node] = kept
+                else:
+                    rs.input_overrides.pop(node, None)
+        if rs.cancelled:
+            env.values[nid] = SKIPPED
+            rs.set_status(nid, "cancelled")
+            return
+        outputs = {
+            "score": best["test_score"] if best else None,
+            "history": {
+                "rounds": history,
+                "stopped": stopped,
+                "target": target,
+                "feedback": feed,
+                "continue": bool(carry),
+                # Same id, same test rows: runs that share it are scored on the same split.
+                "split": hashlib.sha256(
+                    json.dumps(test_rows, sort_keys = True, default = str).encode()
+                ).hexdigest()[:12]
+                if test_rows
+                else None,
+            },
+            "checkpoint": best["checkpoint"] if best else None,
+        }
+        message = (
+            f"Reached {best['test_score']:g}% in round {best['round']}"
+            if stopped == "target" and best
+            else (
+                f"Best {best['test_score']:g}% (round {best['round']}), target {target:g}%"
+                if best
+                else None
+            )
+        )
+        self._finish(rs, nid, env, outputs, "done", iteration, message = message)
+
     async def _bake(self, rs: RunState) -> None:
         baked: dict[str, dict] = {}
         refs: dict[str, dict] = {}
@@ -2362,6 +2734,20 @@ def _origin(account: AccountContext, kind: Optional[str]) -> dict:
     return {"kind": kind or "ui", "owner": account.is_owner}
 
 
+def _scorer_row_limit(spec: dict, params: dict) -> Optional[int]:
+    """The most rows a Loop's score step reads (Benchmark's Max rows, within its range), else None."""
+    found = next((p for p in spec.get("params") or [] if p["id"] == "max_rows"), None)
+    if found is None:
+        return None
+    try:
+        value = int(params.get("max_rows") or found.get("default") or 0)
+    except (TypeError, ValueError):
+        return None
+    if found.get("max") is not None:
+        value = min(value, int(found["max"]))
+    return value if value > 0 else None
+
+
 def _implicit_local_model(recipe: Any) -> bool:
     """A compiled recipe with a model on the local provider: it runs on whichever copy and quant
     Chat holds (blank or "local" is Chat's model; a named one is checked against it by repo only)."""
@@ -2378,6 +2764,15 @@ def _implicit_local_model(recipe: Any) -> bool:
         isinstance(mc, dict) and mc.get("provider") in local
         for mc in recipe.get("model_configs") or []
     )
+
+
+def _adapters_restart() -> bool:
+    """Whether this machine's trainer refuses to continue a LoRA adapter (Apple Silicon's MLX)."""
+    try:
+        from core.training.training import should_use_mlx_training_backend
+        return bool(should_use_mlx_training_backend())
+    except Exception:
+        return False
 
 
 def _local_fingerprint(path: str) -> Optional[list]:

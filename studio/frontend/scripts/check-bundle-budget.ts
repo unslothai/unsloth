@@ -430,6 +430,20 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
+  // The control heights and API page round (#15232) adds 2,639 B raw / 717 B transfer, mostly its token table,
+  // regenerate and tooltip strings in the eager locales (6,945,181 -> 6,947,820 B raw, 2,095,616 -> 2,096,333 B
+  // transfer against 6eeb690f8d, one machine and build, 105 chunks). Raised by that growth.
+  // The run settings dropdown per model (#15247: saved settings store, dropdown, pencil and Reset to Default)
+  // adds 9.9 KB raw / 3.2 KB transfer inside the eager model config page: 6,787.4 -> 6,797.3 KB raw, 2,047.9 ->
+  // 2,051.1 KB transfer against d4be247222, one machine and build, Node 26, 105 chunks. Raised by that growth.
+  // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
+  // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
+  // build, Node 26, 105 chunks). Raised by that growth.
+  // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
+  // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
+  // 4db3eaeb55, Node 24, 99 chunks).
+  // The Evals tab on the Benchmarks page (#12521) adds 6,058 B raw / 1,585 B transfer, its strings in the eager en
+  // locale; its runtime driver is a React.lazy chunk. Raised by that on top of main.
   // Flows: +12,232 B raw / +6,300 B transfer over 1610b38cc4 (shared startup chunks); Flows itself stays lazy.
   // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
   // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
@@ -451,8 +465,10 @@ export const BUDGET = {
   // into their own startup chunks (2,173 B raw / 2,046 B transfer), and the lazy recipe forms split index.min the
   // same way (904 B raw / 184 B transfer). Raised by that growth.
   // Merged onto #15604 (4cc2a30280): this PR's budget plus that growth.
-  transferBytes: 2_115_130,
-  rawBytes: 7_002_423,
+  // Benchmark and Loop on top of #15611 (42e5f7afd) measure 6,843.0 KB raw / 2,068.1 KB transfer
+  // (Node 26, 123 chunks): the Benchmark card look and Loop frame join the eager editor. Raised to that.
+  transferBytes: 2_118_400,
+  rawBytes: 7_008_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

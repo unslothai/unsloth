@@ -59,6 +59,22 @@ GRPO_SETTINGS = {
 EXPORT_QUANTS = {"q4_k_m": "Q4_K_M", "q5_k_m": "Q5_K_M", "q8_0": "Q8_0", "f16": "F16"}
 
 
+async def checkpoint_source(ctx: NodeContext, checkpoint: dict) -> tuple[str, bool]:
+    """Where to continue from and whether it is a LoRA. A Fine-tune checkpoint carries its run name
+    only, so the path and the kind come from the checkpoint listing; a Full Finetuning run is a
+    plain model, which the adapter preflight would refuse."""
+    if checkpoint.get("output_dir"):
+        return str(checkpoint["output_dir"]), checkpoint.get("adapter") is not False
+    from studio_mcp import checkpoints as named
+
+    name = str(checkpoint.get("name") or "")
+    try:
+        found = await named.resolve(ctx.caller, name)
+    except Exception as exc:
+        raise FlowNodeError(f"The checkpoint {name!r} to continue from was not found") from exc
+    return found.path, found.peft_type is not None
+
+
 def _picked_cache(cache: Any) -> dict:
     """The On device copy the base model was picked from: train on those weights, as the Train page
     does. A path missing here (a flow from another machine) falls back to the plain repo."""
@@ -93,6 +109,18 @@ async def finetune(ctx: NodeContext) -> dict:
     if not config["model_name"]:
         raise FlowNodeError("Name the base model to fine-tune")
     config.update(_picked_cache(params.get("base_model_cache")))
+    base_model = config["model_name"]
+    start = ctx.inputs.get("start")
+    if isinstance(start, dict) and start.get("kind") == "checkpoint":
+        # Keep training that LoRA instead of stacking a new one on the base model.
+        path, adapter = await checkpoint_source(ctx, start)
+        config["model_name"] = path
+        # Its own weights: an On device pick of the base model's copy does not apply.
+        config.pop("model_known_cached", None)
+        config.pop("model_local_path", None)
+        if adapter:
+            config["model_format"] = "adapter"
+        base_model = str(start.get("base_model") or base_model)
     config.update(TASK_FLAGS.get(str(params.get("task") or "text"), {}))
     if params.get("num_epochs") not in (None, ""):
         config["num_epochs"] = int(params["num_epochs"])
@@ -102,7 +130,7 @@ async def finetune(ctx: NodeContext) -> dict:
             config[key] = int(params[key])
     if str(params.get("project_name") or "").strip():
         config["project_name"] = str(params["project_name"]).strip()
-    method_fields(params, config)
+    method_fields(params, config, base_model)
     lora_fields(params, config)
     schedule_fields(params, config, ctx.seed)
     memory_fields(params, config, objective)
@@ -269,18 +297,71 @@ async def finetune(ctx: NodeContext) -> dict:
     if holdout:
         metrics["train_rows"] = dataset.get("rows")
         metrics["holdout_rows"] = holdout["rows"]
-    checkpoint = {"kind": "checkpoint", "name": run, "base_model": config["model_name"]}
+    checkpoint = {"kind": "checkpoint", "name": run, "base_model": base_model}
     row = None
-    if objective == "grpo":
+    mapping = config.get("custom_format_mapping")
+    automatic = objective == "sft" and not mapping and config.get("format_type") in (None, "auto")
+    # A conversation format, chosen or detected, reads a whole-conversation column.
+    chat = (
+        objective == "sft"
+        and not mapping
+        and config.get("format_type")
+        in (
+            None,
+            "auto",
+            "chatml",
+            "sharegpt",
+        )
+    )
+    rl_mapping = mapping if isinstance(mapping, dict) else None
+    if objective != "sft" or chat:
         from core.training.account_jobs import account_hf_token
 
-        # Whether a prompt carried its own system message is in the rows: read the first, as the
-        # formatter saw it (an Arrow column holds one type, so one row tells text from conversation).
+        # Whether a prompt carried its own system message, and which roles automatic formatting
+        # gave the columns, is in the rows: read the first, as the formatter saw it (an Arrow
+        # column holds one type, so one row tells text from conversation).
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         row = await asyncio.to_thread(_first_row, dataset, token)
     system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
+    conversation = None
+    if automatic:
+        mapping = await asyncio.to_thread(auto_mapping, row)
+    if chat:
+        conversation = await asyncio.to_thread(auto_conversation, row)
+    alpaca_input = False
+    if objective != "sft" and isinstance(row, dict):
+        from core.training.rl import _IGNORE_ROLE, resolve_role_columns
+        try:
+            # The columns GRPO, DPO or ORPO read, mapped or found by name.
+            found = resolve_role_columns(
+                list(row), objective, mapping if isinstance(mapping, dict) else None
+            )
+            # As format_rl_dataset asks an Alpaca row: its instruction, then its unmapped input.
+            alpaca_input = (
+                found.get("prompt") == "instruction"
+                and "input" in row
+                and "input" not in found.values()
+                and (mapping or {}).get("input") != _IGNORE_ROLE
+            )
+            mapping = {
+                **{c: r for r, c in found.items()},
+                **{k: v for k, v in (mapping or {}).items() if str(k).startswith("__")},
+            }
+        except (KeyError, ValueError):
+            pass
+    facts = mapping_facts(mapping, config.get("format_type"), objective)
+    if conversation:
+        # The column of whole conversations training read, whatever other columns the rows keep.
+        facts["conversation_column"] = conversation
+    if alpaca_input:
+        facts.update(user_join = "alpaca", input_columns = ["input"])
+    if objective in ("grpo", "dpo", "orpo"):
+        # Benchmark shapes the held-out rows with training's own RL formatter: implicit prompts,
+        # one-message cells and assistant prefills read as they trained.
+        facts.update(rl_objective = objective, rl_mapping = rl_mapping)
+    checkpoint.update(facts)
     return {
         "checkpoint": checkpoint,
         "metrics": metrics,
@@ -288,15 +369,22 @@ async def finetune(ctx: NodeContext) -> dict:
     }
 
 
-def method_fields(params: dict, config: dict) -> None:
-    """Method, precision, sequence length and learning rates, as the Train page sends them."""
+def method_fields(
+    params: dict,
+    config: dict,
+    base_model: Optional[str] = None,
+) -> None:
+    """Method, precision, sequence length and learning rates, as the Train page sends them. ``base_model``
+    is the model a continued checkpoint was trained on, since ``model_name`` is then its folder."""
     method = str(params.get("training_type") or "lora")
     config["training_type"] = TRAINING_TYPES.get(method, TRAINING_TYPES["lora"])
     if method == "lora":
         config["load_in_4bit"] = params.get("load_in_4bit") is not False
     else:
         # Full trains in 16-bit; CPT loads 4-bit only for a pre-quantized checkpoint, like the Train page.
-        config["load_in_4bit"] = method == "cpt" and "4bit" in config["model_name"].lower()
+        config["load_in_4bit"] = (
+            method == "cpt" and "4bit" in (base_model or config["model_name"]).lower()
+        )
     config["max_seq_length"] = int(params.get("max_seq_length") or 2048)
     lr = params.get("learning_rate")
     config["learning_rate"] = "2e-4" if lr in (None, "") else str(lr)
@@ -384,6 +472,97 @@ def drafter_request(params: dict) -> dict:
         "learning_rate": float(lr) if lr not in (None, "") and float(lr) > 0 else None,
         "draft_steps": int(params.get("drafter_draft_steps") or 3),
     }
+
+
+def auto_conversation(row: Any) -> Optional[str]:
+    """The column of whole conversations (``messages``, ``conversations``) automatic formatting
+    reads, or None."""
+    if not isinstance(row, dict) or not row:
+        return None
+    try:
+        from datasets import Dataset
+
+        from utils.datasets.format_detection import detect_dataset_format
+        found = detect_dataset_format(Dataset.from_list([row]))
+    except Exception:
+        return None
+    column = found.get("chat_column")
+    return column if found.get("format") in ("sharegpt", "chatml") and column in row else None
+
+
+def auto_mapping(row: Any) -> dict:
+    """The roles automatic formatting gives the columns of rows in no known format (``context`` as
+    the system message, say), read off the first row as the formatter reads it; {} otherwise."""
+    if not isinstance(row, dict) or not row:
+        return {}
+    try:
+        from datasets import Dataset
+
+        from utils.datasets.format_detection import (
+            detect_custom_format_heuristic,
+            detect_dataset_format,
+        )
+
+        rows = Dataset.from_list([row])
+        if detect_dataset_format(rows)["format"] != "unknown":
+            return {}
+        return detect_custom_format_heuristic(rows) or {}
+    except Exception:
+        return {}
+
+
+# RL roles as the chat roles Benchmark asks with: the preferred answer is the reference.
+_RL_AS_CHAT = {"prompt": "user", "answer": "assistant", "chosen": "assistant", "system": "system"}
+
+
+def mapping_facts(
+    mapping: Any,
+    format_type: Any = "auto",
+    objective: Any = "sft",
+) -> dict:
+    """How training read the rows, so Benchmark asks and scores the hold-out the same way: each
+    row's own system message (none when the mapping names no system column), and the names
+    numeric labels became."""
+    if not isinstance(mapping, dict) or not mapping:
+        return {}
+    from utils.datasets.dataset_utils import _TO_CHATML
+
+    if (objective or "sft") != "sft":
+        # RL formats its rows itself: a dataset format setting does not apply.
+        format_type = "auto"
+    # Any `__` metadata selects the template mapping, which drops system columns: its one system
+    # prompt is `__system_prompt`, the checkpoint's system_prompt. An Alpaca format makes a system
+    # column the Alpaca input, part of the question.
+    templated = any(str(k).startswith("__") for k in mapping) or format_type == "alpaca"
+    if (objective or "sft") == "sft":
+        # SFT's formatter reads role aliases: an `input` column is the system message.
+        roles = {c: _TO_CHATML.get(role) for c, role in mapping.items() if isinstance(role, str)}
+    else:
+        roles = {c: _RL_AS_CHAT.get(role) for c, role in mapping.items() if isinstance(role, str)}
+    per_row = [] if templated else [c for c, role in roles.items() if role == "system"]
+    facts = {"system_column": per_row[0] if per_row else ""}
+    if len(per_row) > 1 and (objective or "sft") == "sft":
+        # SFT sends each of them as a system message, in order.
+        facts["system_columns"] = per_row
+    # The columns that made each row's question and answer: several user columns are one
+    # message per column, or one message of their lines under the template mapping. The
+    # Alpaca format joins them as its instruction, and its system columns as its input.
+    users = [c for c, role in roles.items() if role == "user"]
+    answers = [c for c, role in roles.items() if role == "assistant"]
+    if format_type == "alpaca":
+        inputs = [c for c, role in roles.items() if role == "system"]
+        if users:
+            facts.update(user_columns = users, user_join = "alpaca")
+        if inputs:
+            facts["input_columns"] = inputs
+    elif users:
+        facts.update(user_columns = users, user_join = "lines" if templated else "turns")
+    if answers:
+        facts["answer_columns"] = answers
+    labels = mapping.get("__label_mapping")
+    if isinstance(labels, dict) and labels:
+        facts["label_mapping"] = labels
+    return facts
 
 
 def trained_system_prompt(config: dict, row: Optional[dict] = None) -> str:
@@ -623,7 +802,21 @@ async def finetune_cache_material(ctx: NodeContext) -> Optional[dict]:
     found = await dataset_material(ctx)
     if found is None:
         return None
-    base = str(ctx.params.get("base_model") or "").strip()
+    start = ctx.inputs.get("start")
+    if isinstance(start, dict) and start.get("kind") == "checkpoint":
+        # Continued from a checkpoint: its own weights (and the base a LoRA loads under) are what
+        # trains, so they key the result; resumed and changed in place, it trains again.
+        try:
+            path, _ = await checkpoint_source(ctx, start)
+        except FlowNodeError:
+            return None
+        model = await _model_material(ctx, path)
+        if model is None:
+            return None
+        found["start"] = model
+        base = ""
+    else:
+        base = str(ctx.params.get("base_model") or "").strip()
     if base:
         model = await _model_material(ctx, base)
         if model is None:
@@ -1070,6 +1263,20 @@ async def _off_thread(ctx: NodeContext, fn: Any, *args: Any) -> Any:
             ctx.check_cancelled()
 
 
+# core.flows.loop.EXCLUDE_INPUT, named here so this module imports nothing from the Loop.
+EXCLUDE_INPUT = "_loop_test_questions"
+
+
+# core.flows.loop.FIELDS, the columns a Loop's seed rows carry (with their "origin").
+LOOP_SEED_FIELDS = ("failed_prompt", "failed_reference", "failed_output")
+
+
+def _without_loop_fields(row: Any) -> Any:
+    if not isinstance(row, dict) or not all(k in row for k in LOOP_SEED_FIELDS):
+        return row
+    return {k: v for k, v in row.items() if k not in LOOP_SEED_FIELDS and k != "origin"}
+
+
 async def holdout_split(
     ctx: NodeContext, dataset: dict, percent: int, seed: int
 ) -> tuple[dict, dict]:
@@ -1100,6 +1307,14 @@ async def holdout_split(
             raise
         except Exception as exc:
             raise FlowNodeError(f"Could not read the dataset to hold rows out: {exc}") from None
+    # A Loop's seed bookkeeping (which question failed, what the model answered) rides through a
+    # recipe that keeps its seed columns: never training data, nor a column automatic formatting
+    # could take for the question or the answer.
+    if table is None:
+        rows = [_without_loop_fields(r) for r in rows]
+    elif all(c in table.column_names for c in LOOP_SEED_FIELDS):
+        drop = [c for c in (*LOOP_SEED_FIELDS, "origin") if c in table.column_names]
+        table = table.remove_columns(drop)
     count = len(rows) if table is None else len(table)
     held_ids = holdout_row_ids(count, percent, seed)
     if not held_ids:
@@ -1108,6 +1323,20 @@ async def holdout_split(
     kept = [i for i in range(count) if i not in held]
     name = str(dataset.get("ref") or "dataset").replace("/", "-")
     tag = f"{name}-holdout{percent}-seed{seed}"
+    exclude = ctx.inputs.get(EXCLUDE_INPUT)
+    if exclude:
+        # In a Loop's later rounds: a question frozen into its test split never trains, at any position.
+        from core.flows import loop as loop_rounds
+
+        row = (lambda i: rows[i]) if table is None else (lambda i: table[i])
+        before = len(kept)
+        kept = [i for i in kept if loop_rounds.without_questions([row(i)], exclude)]
+        if before > len(kept):
+            ctx.log(
+                f"Left {before - len(kept)} test question(s) of the Loop out of training", "info"
+            )
+        if not kept:
+            raise FlowNodeError("Every training row asks one of the Loop's test questions")
     if table is None:
         train = await upload_rows(ctx, [rows[i] for i in kept], f"{tag}-train")
         holdout = await upload_rows(ctx, [rows[i] for i in held_ids], f"{tag}-holdout")

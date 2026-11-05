@@ -635,8 +635,8 @@ export const useDocStore = create<DocState>((set, get) => {
           if (duplicate) return null;
           const occupiesInput =
             replaceSingleInput &&
-            edge.kind === "data" &&
-            existing.kind === "data" &&
+            edge.kind !== "flow" &&
+            existing.kind !== "flow" &&
             existing.target === edge.target &&
             existing.target_port === edge.target_port;
           const occupiesFlowOut =
@@ -1133,7 +1133,7 @@ function removeReroutes(
   };
 }
 
-function frameAt(
+export function frameAt(
   graph: DocGraph,
   pos: [number, number],
   skip: ReadonlySet<string> = new Set(),

@@ -197,7 +197,8 @@ async def recipe_group(ctx: NodeContext) -> dict:
             raise FlowNodeError(refused)
     local = local_model(body)
     if local:
-        # The preset names a model: it is loaded here, under the GPU lease, as Recipe Studio's Run does.
+        # The preset names a model: it is loaded here, under the GPU lease, as Recipe Studio's Run does
+        # (something earlier in the run, a Benchmark or a Loop round, may have swapped the Chat model).
         # The main slot: the job's local provider reaches only Chat's main model.
         await ctx.ensure_model("chat", local, primary = True)
     # Validate against the seed it will run on: its columns are what the prompts read.

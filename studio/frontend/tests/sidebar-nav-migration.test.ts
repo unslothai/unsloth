@@ -113,7 +113,7 @@ test("a customized version-5 sidebar keeps its order and only gains the rows add
   );
   assert.deepEqual(
     customization.sidebarNav.map((item) => item.id),
-    [...customizedV5.map((item) => item.id), "library", "audio", "flows", "tasks"],
+    [...customizedV5.map((item) => item.id), "library", "audio", "flows", "tasks", "benchmarks"],
   );
   assert.equal(customization.sidebarNav.find((item) => item.id === "audio")?.pinned, false);
   assert.equal(customization.sidebarNav.find((item) => item.id === "flows")?.pinned, true, "Flows arrives pinned");

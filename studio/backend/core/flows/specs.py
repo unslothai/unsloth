@@ -833,6 +833,58 @@ NODE_SPECS: list[dict] = [
         icon = "repeat",
     ),
     spec(
+        "logic.loop",
+        "Loop",
+        "logic",
+        "Repeat the steps in this node's group for a few rounds: generate, train, score. A dashed "
+        "feeds-the-next-round wire carries the score step's failures into the next round's recipe "
+        "seed. Round 1's held-out rows split once into probe rows (their failures feed back) and test "
+        "rows (never fed back; their score decides when to stop). Up to a quarter of each round's seed "
+        "rows rewrite failures, at most two per distinct failure (near-copies count once), so a round "
+        "with few failures stays mostly fresh rows.",
+        outputs = [
+            out("score", "number", "Best test score"),
+            out("history", "json", "Rounds"),
+            out("checkpoint", "checkpoint", "Best checkpoint"),
+        ],
+        params = [
+            P("rounds", "int", 3, "Rounds", min = 1, max = 20),
+            P("target", "number", 90, "Target test score %", min = 0, max = 100),
+            P("feedback", "bool", True, "Feed failures into the next round"),
+            P("continue_rounds", "bool", True, "Continue from last round"),
+            P(
+                "failure_percent",
+                "int",
+                25,
+                "Seed rows from failures %",
+                min = 0,
+                max = 100,
+                advanced = True,
+            ),
+            P("per_failure", "int", 2, "Rewrites per failure", min = 1, max = 10, advanced = True),
+            P(
+                "probe_percent",
+                "int",
+                50,
+                "Held-out rows used as probe %",
+                min = 1,
+                max = 99,
+                advanced = True,
+            ),
+            P(
+                "split_seed",
+                "int",
+                3407,
+                "Probe/test split seed",
+                min = 0,
+                max = 2**31 - 1,
+                advanced = True,
+            ),
+        ],
+        cacheable = False,
+        icon = "repeat",
+    ),
+    spec(
         "logic.merge",
         "First Available",
         "logic",
@@ -1531,8 +1583,12 @@ NODE_SPECS: list[dict] = [
         "train.finetune",
         "Fine-tune",
         "data",
-        "Fine-tune a model on a dataset (SFT, or GRPO, DPO and ORPO), optionally holding out rows to score later. Waits for training to finish.",
-        inputs = [inp("dataset", "dataset")],
+        "Fine-tune a model on a dataset (SFT, or GRPO, DPO and ORPO), optionally holding out rows to score later. Waits for training to finish. "
+        "Wire a checkpoint into Continue from to keep training that LoRA instead of starting from the base model.",
+        inputs = [
+            inp("dataset", "dataset"),
+            inp("start", "checkpoint", "Continue from", optional = True),
+        ],
         outputs = [
             out("checkpoint", "checkpoint"),
             out("metrics", "json"),
@@ -2191,6 +2247,63 @@ NODE_SPECS: list[dict] = [
         side_effect = True,
         cacheable = True,
         icon = "dumbbell",
+    ),
+    spec(
+        "train.benchmark",
+        "Benchmark",
+        "data",
+        "Score a checkpoint or a model on held-out rows or an lm-eval task. lm-eval tasks score a GGUF: wire "
+        "Fine-tune into Export Model (GGUF) and Export Model into Model. Runs also show on the Benchmarks Evals tab.",
+        inputs = [
+            inp("checkpoint", "checkpoint", "Checkpoint", optional = True),
+            inp("model", "model", "Model", optional = True),
+            inp("dataset", "dataset", "Rows to score", optional = True),
+        ],
+        outputs = [
+            out("score", "number", "Score %"),
+            out("results", "dataset", "Per-row results"),
+            out("failures", "dataset", "Failed rows"),
+        ],
+        params = [
+            P(
+                "task",
+                "select",
+                "Recipe held-out",
+                "Task",
+                options = [
+                    "Recipe held-out",
+                    "HellaSwag",
+                    "ARC-Challenge",
+                    "WinoGrande",
+                    "GSM8K",
+                    "MMLU",
+                    "TruthfulQA MC1",
+                ],
+            ),
+            P(
+                "scorer",
+                "select",
+                "Reference match",
+                "Scorer",
+                options = ["Reference match", "LLM judge"],
+            ),
+            P("max_rows", "int", 20, "Max rows", min = 1, max = 200),
+            P(
+                "model",
+                "model",
+                None,
+                "Model (blank = the wired checkpoint, else the loaded model)",
+                model_kind = "chat",
+            ),
+            P("prompt_column", "text", "", "Prompt column (blank = detect)", advanced = True),
+            P("reference_column", "text", "", "Reference column (blank = detect)", advanced = True),
+            P("compare_base", "bool", True, "Also score with the adapter off", advanced = True),
+            P("rubric", "textarea", "", "Judge criteria (LLM judge)", advanced = True),
+            P("system_prompt", "textarea", "", "System prompt", advanced = True),
+        ],
+        lane = "gpu",
+        side_effect = True,
+        icon = "flask",
     ),
     spec(
         "train.export",
