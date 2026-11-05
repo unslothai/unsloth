@@ -922,6 +922,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_finished"
         " ON scheduled_task_runs(finished_at)"
     )
+    # ON DELETE SET NULL from chat_threads scans the child table per deleted thread without it.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_scheduled_task_runs_thread ON scheduled_task_runs(thread_id)"
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_runs (
@@ -1093,6 +1097,16 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_research_runs_lease "
         "ON research_runs(status, lease_expires_at)"
     )
+    # FK child columns: each deleted thread/message otherwise full-scans research_runs.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_research_runs_thread ON research_runs(thread_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_user_message "
+        "ON research_runs(user_message_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_research_runs_assistant_message "
+        "ON research_runs(assistant_message_id)"
+    )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_research_sources_run ON research_sources(run_id, id)"
     )
@@ -1154,6 +1168,21 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_thread_status "
         "ON chat_generation_runs(thread_id, status)"
+    )
+    # FK child columns: each deleted chat message otherwise scans every run (and its request_json) twice.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_user_message "
+        "ON chat_generation_runs(user_message_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_assistant_message "
+        "ON chat_generation_runs(assistant_message_id)"
+    )
+    # Partial on the reconcile sweep's exact status list, so the periodic sweep skips terminal rows.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_chat_generation_runs_active "
+        "ON chat_generation_runs(created_at, id) "
+        "WHERE status IN ('queued','running','cancelling')"
     )
     conn.execute(
         """
