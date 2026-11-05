@@ -337,8 +337,7 @@ def _add_lora_dX(dX, y_dB, A, S, mask, p):
 
 
 def _grad_needed(ctx, index):
-    # Per forward input: a frozen LoRA factor gets no gradient GEMM. A handcrafted ctx without the flags
-    # computes every gradient, as before.
+    # A ctx without the flags (handcrafted) computes every gradient.
     needs = getattr(ctx, "needs_input_grad", None)
     return needs is None or index >= len(needs) or bool(needs[index])
 
@@ -348,8 +347,7 @@ def _t(x):
 
 
 def _lora_AB_grads(X, mask, p, y_dB, A, B, dY, S, need_A, need_B):
-    # d_A = S * Xd.t() @ (dY @ B.t()), d_B = S * (A.t() @ Xd.t()) @ dY, Xd = X through the LoRA dropout mask;
-    # A and B here are the transposed factors. None for a factor that needs no gradient.
+    # A, B transposed; Xd = X through the LoRA dropout mask. None for a frozen factor.
     if not (need_A or need_B):
         return None, None
     d_A = d_B = None
@@ -385,8 +383,7 @@ def _shared_lora_backward(
 ):
     # LoRA grads of projections sharing X and S: X is read once for all d_A and A @ X.t(), and dX starts
     # as S * dB @ A.t() for the base GEMMs to accumulate onto. Each d_A.t() is a row block of one buffer.
-    # need_A / need_B (per projection, default all): a frozen factor's gradient is None; with every A frozen
-    # the d_A GEMM is skipped, with every B frozen the A @ X.t() and d_B GEMMs. dX is unchanged.
+    # need_A / need_B: per projection (default all); a frozen factor's gradient is None.
     need_A = (True,) * len(As) if need_A is None else need_A
     need_B = (True,) * len(Bs) if need_B is None else need_B
     A_rows = torch.cat([A.t() for A in As], 0)
@@ -698,7 +695,7 @@ class LoRA_MLP(torch.autograd.Function):
         if down_mask is not None:
             h = _dropout_replay(h, down_mask, down_p)
 
-        # Forward inputs 3 / 4, 8 / 9, 13 / 14: gate, up and down A / B.
+        # Forward input indices of gate / up / down A, B.
         need_gateA, need_gateB, need_upA, need_upB, need_downA, need_downB = (
             _grad_needed(ctx, i) for i in (3, 4, 8, 9, 13, 14)
         )
@@ -1150,7 +1147,7 @@ class LoRA_QKV(torch.autograd.Function):
 
         QA, QB, KA, KB, VA, VB = QA.t(), QB.t(), KA.t(), KB.t(), VA.t(), VB.t()
 
-        # Forward inputs 3 / 4, 8 / 9, 13 / 14: Q, K and V A / B.
+        # Forward input indices of Q / K / V A, B.
         need_QA, need_QB, need_KA, need_KB, need_VA, need_VB = (
             _grad_needed(ctx, i) for i in (3, 4, 8, 9, 13, 14)
         )
@@ -1409,7 +1406,6 @@ class LoRA_W(torch.autograd.Function):
 
         y_dB = dY @ B.t()
 
-        # d_A = X.t() @ (dY @ B.t()), d_B = (A.t() @ X.t()) @ dY, both scaled by S; forward inputs 3 / 4.
         d_A, d_B = _lora_AB_grads(
             X, mask, ctx.dropout_p, y_dB, A, B, dY, S, _grad_needed(ctx, 3), _grad_needed(ctx, 4)
         )

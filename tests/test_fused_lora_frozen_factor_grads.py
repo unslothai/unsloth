@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""Fused LoRA backward with a frozen A or B (LoRA-FA, partially frozen adapters): the frozen factor's gradient GEMMs
-are skipped, and dX plus every remaining gradient are bit for bit those of the all-trainable backward."""
+"""Fused LoRA backward skips a frozen A / B's GEMMs; dX and the other gradients stay bit for bit."""
 
 import itertools
 
@@ -95,7 +94,6 @@ def test_lora_w_frozen_factor_skips_its_gemm_and_keeps_the_rest(dtype, dropout_p
             assert torch.equal(dA, dA_ref)
         if trainable[1]:
             assert torch.equal(dB, dB_ref)
-        # d_A is one GEMM; d_B two (A @ X.t(), then @ dY).
         assert n == n_ref - (0 if trainable[0] else 1) - (0 if trainable[1] else 2), (
             trainable,
             n,
@@ -132,7 +130,6 @@ def test_lora_qkv_frozen_factors_keep_the_rest_bit_for_bit(dtype):
     ),
 )
 def test_shared_backward_skips_frozen_factor_gemms(need_A, need_B):
-    # The fused path shared by gate / up and Q / K / V (CUDA only through the Functions; called directly here).
     g = torch.Generator().manual_seed(3)
     X = torch.randn(10, 48, generator = g)
     As = [torch.randn(48, 8, generator = g) for _ in range(3)]
@@ -148,6 +145,5 @@ def test_shared_backward_skips_frozen_factor_gemms(need_A, need_B):
         assert (got is None) != need
         if need:
             assert torch.equal(got, ref)
-    # 3 dY @ B.t() and the dX GEMM always; one d_A GEMM; A @ X.t() plus one GEMM per trainable B.
     expected = 3 + 1 + (1 if any(need_A) else 0) + ((1 + sum(need_B)) if any(need_B) else 0)
     assert counter.count == expected, (counter.count, expected)
