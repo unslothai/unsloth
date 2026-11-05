@@ -947,10 +947,11 @@ async function dispatchQueuedPrompt(
   if (!isActivePromptQueueItem(run, item, generation)) {
     return;
   }
-  // recheck loading after the document probe.
+  // recheck loading after the document probe; a group's next speaker can also start during it.
   if (
     hasIndexingDocuments ||
     item.target.roundPending() ||
+    isPromptQueueTargetRunning(item.target, useChatRuntimeStore.getState().runningByThreadId) ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
   ) {
     promptQueueActiveRunIds.delete(run.id);
