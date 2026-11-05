@@ -414,6 +414,42 @@ def test_a_live_install_lock_skips_the_import_until_it_goes(tripwire, tmp_path):
     assert tripwire.hit
 
 
+def test_a_module_still_initialising_on_another_thread_is_waited_for(
+    tripwire, tmp_path, monkeypatch
+):
+    import threading
+    import types
+
+    pkg = tmp_path / "pkg" / "usearch"
+    pkg.mkdir(parents = True)
+    (pkg / "__init__.py").write_text("", encoding = "utf-8")
+    (pkg / "index.py").write_text(
+        "import _hnsw_gate\n_hnsw_gate.started.set()\n_hnsw_gate.release.wait(30)\nIndex = object\n",
+        encoding = "utf-8",
+    )
+    gate = types.ModuleType("_hnsw_gate")
+    gate.started, gate.release = threading.Event(), threading.Event()
+    monkeypatch.setitem(sys.modules, "_hnsw_gate", gate)
+    monkeypatch.syspath_prepend(str(tmp_path / "pkg"))
+    try:
+        importer = threading.Thread(target = lambda: __import__("usearch.index"), daemon = True)
+        importer.start()
+        assert gate.started.wait(30) and "usearch.index" in sys.modules
+        got = []
+        reader = threading.Thread(target = lambda: got.append(vec_ann.usearch()), daemon = True)
+        reader.start()
+        reader.join(0.5)
+        assert not got, "returned the module before its body finished"
+        gate.release.set()
+        reader.join(30)
+        importer.join(30)
+        assert got and getattr(got[0], "Index", None) is object
+    finally:
+        gate.release.set()
+        for name in [m for m in sys.modules if m.split(".")[0] == "usearch"]:
+            del sys.modules[name]
+
+
 def test_an_exact_cached_waiting_scope_moves_to_hnsw_when_the_pair_lands(
     rag_conn, no_pair, monkeypatch
 ):

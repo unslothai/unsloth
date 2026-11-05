@@ -7,6 +7,7 @@ build. Pure numpy + usearch: no SQLite here; ``vec_cache`` decides when an index
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import logging
 import os
@@ -62,9 +63,13 @@ def _install_in_progress() -> bool:
 
 def usearch():
     """The usearch.index module, or None when the wheel is missing or does not load on this machine."""
-    loaded = sys.modules.get("usearch.index")
-    if loaded is not None:
-        return loaded
+    if "usearch.index" in sys.modules:
+        # Already loaded in process (the probe gate passed then): go through the import system, which
+        # waits on the module lock while another thread is still running the module's body.
+        try:
+            return importlib.import_module("usearch.index")
+        except Exception:  # noqa: BLE001
+            return None
     if _probe_failed() or _install_in_progress():
         return None
     try:
