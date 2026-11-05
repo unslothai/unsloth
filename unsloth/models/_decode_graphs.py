@@ -28,8 +28,7 @@ FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
 FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
-# A new capture costs about 3 eager decode steps on a T4 (Qwen3-0.6B; 3-6 new tokens with alternating
-# batch sizes ran 5-58% slower than eager, 8 tokens 1.25x faster): only capture with this many steps left.
+# T4 Qwen3-0.6B: 3-6 new tokens ran 5-58% slower graphed, 8 tokens 1.25x faster.
 CAPTURE_MIN_STEPS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_CAPTURE_MIN_STEPS", "6"))
 # Captured steps (one per batch size / autocast state) kept per model.
 MAX_GRAPHS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_MAX", "8"))
@@ -202,8 +201,7 @@ def _call_bytes(
 
 
 def _allocator(device):
-    """(allocated, reserved, peak allocated) from one allocator read: memory_allocated() and friends each
-    rebuild and flatten the whole stats dict."""
+    """(allocated, reserved, peak allocated) from one stats read."""
     try:
         stats = torch.cuda.memory_stats_as_nested_dict(device)
         return (
@@ -255,21 +253,16 @@ def _kept_buffers(model, key, rows):
 
 
 def can_replay(max_len, prompt):
-    """Whether a call may replay a captured step: the first decode step after the prefill always runs
-    eagerly, so at most 2 new tokens never replay. max_len 0 (unknown) may."""
+    """The first decode step is always eager, so <= 2 new tokens never replay; 0 (unknown) may."""
     return not max_len or max_len - prompt > 2
 
 
 def kept_graph(model, bsz):
-    """Whether a captured decode step for batch size bsz is kept (a call can replay it, no capture)."""
     return any(key[0] == bsz for state in _states(model) for key in state.graphs)
 
 
 def short_call(model, max_len, prompt, bsz):
-    """Whether graph mode only costs this generate() call (planning, graph-sized buffers, per-step
-    checks): it cannot replay a step, or nothing is kept for its decode batch and a capture would have
-    fewer than CAPTURE_MIN_STEPS steps left (worth_capturing() at the first graphed step). Such a call
-    decodes eagerly. An unknown length (0) is never short."""
+    """Too short to win back a capture unless a graph of its batch is kept: decode eagerly."""
     if not max_len:
         return False
     left = max_len - prompt - 1
@@ -277,7 +270,7 @@ def short_call(model, max_len, prompt, bsz):
 
 
 def graphable(model):
-    """Whether this model type can take the graphed decode step; others decode eagerly in graph mode."""
+    """Other model types always decode eagerly, so planning them only costs."""
     return getattr(getattr(model, "config", None), "model_type", None) in _SUPPORTED_MODEL_TYPES
 
 
@@ -292,8 +285,7 @@ def plan_call(
 ):
     """("graph", token) or ("eager", None). Releases kept graphs / buffers first if the call would not
     fit beside them; still too big runs eagerly up front rather than relying on the OOM redo. `bsz` is
-    the expanded decode batch (decode_batch()). eager: a call that runs eagerly anyway (short_call())
-    only makes room, uncounted."""
+    the expanded decode batch (decode_batch()). eager: only makes room, uncounted."""
     global EAGER_UNFIT
     device = getattr(input_ids, "device", None)
     if (
@@ -314,9 +306,9 @@ def plan_call(
     full = estimate if measured is None else max(estimate, MEASURED_MARGIN * measured)
     kept, reused = _kept_buffers(model, (bsz, dtype, device), rows)
     if eager:
-        # Eager decode allocates fresh buffers: no graph extra and no credit for a kept graph cache.
+        # Eager decode uses fresh buffers: no graph extra, no kept-cache credit.
         full, reused = CALIB_WORK * (kv + work), 0
-    # Credit at most the KV the estimate counts: a larger kept cache cannot also cover the prefill work.
+    # Cap credit at this call's KV: a larger kept cache cannot also cover prefill.
     reused = min(reused, kv)
     need = full - reused
     free = _free_bytes(device)
@@ -386,8 +378,8 @@ HELD = "_unsloth_decode_held"
 
 
 def generate_with_fallback(model, generate, graphs, args, kwargs):
-    """On a graph-mode OOM, free graphs and redo once eagerly. A caller's streamer / past_key_values /
-    stopping_criteria / logits_processor may hold state from the failed attempt, so those re-raise instead."""
+    """On a graph-mode OOM, free graphs and redo once eagerly; caller streamer / past_key_values /
+    stopping_criteria / logits_processor may hold failed-attempt state, so those re-raise."""
     global _OOM_WARNED, EAGER_REDOS
     try:
         return generate(*args, **kwargs)
@@ -634,8 +626,7 @@ def start_generation(max_len):
 
 
 def worth_capturing(kv_len):
-    """Whether a decode step at cache length kv_len has CAPTURE_MIN_STEPS steps left in this generate()
-    call (MAX_LEN_HINT = prompt + max_new_tokens). Unknown length (0, e.g. a hand-written loop): yes."""
+    """CAPTURE_MIN_STEPS steps left at kv_len; unknown length (0): yes."""
     if MAX_LEN_HINT <= 0:
         return True
     return MAX_LEN_HINT - kv_len + 1 >= CAPTURE_MIN_STEPS
@@ -1043,7 +1034,6 @@ def decode_step(
     key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span)
     step = state.graphs.get(key)
     if step is None and not worth_capturing(kv_len):
-        # Too few steps left to win back a capture: this step and the rest of the call run eagerly.
         state.eager_steps += 1
         state.short_skips += 1
         return None

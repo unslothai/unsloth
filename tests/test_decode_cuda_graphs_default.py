@@ -281,7 +281,6 @@ def test_training_forward_without_for_training_frees_generate_memory(runtime):
 
 
 def _gen_tokens(model, tok, prompts, new):
-    # No returned cache (return_dict_in_generate hands the decode buffers over, so nothing is kept).
     enc = tok(prompts, return_tensors = "pt", padding = True).to("cuda")
     out = model.generate(
         **enc, max_new_tokens = new, min_new_tokens = new, do_sample = False,
@@ -292,9 +291,7 @@ def _gen_tokens(model, tok, prompts, new):
 
 @rl_default
 def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
-    """Alternating batch sizes with few new tokens: a call too short to win back a capture
-    (short_call()) decodes eagerly without graph buffers for its batch; a short call of the kept
-    batch replays it; the kept graph stays valid across the eager calls. Tokens equal eager."""
+    """Short calls decode eagerly unless their batch is kept; tokens equal eager."""
     if not G._STUDIO_DEFAULT_OK:
         pytest.skip("the plain generate() default stays eager on native Windows")
     model, tok = _load()
@@ -317,14 +314,14 @@ def test_short_calls_decode_eagerly_and_keep_the_kept_graph(runtime):
     check("two", two, 24)
     before = _Stats(model)()
     assert before["captures"] > 0 and batches() == {2}, (before, batches())
-    check("one", one, 4)  # nothing kept for batch 1, 3 steps left: eager
+    check("one", one, 4)
     after = _Stats(model)()
     assert after["captures"] == before["captures"] and after["replays"] == before["replays"], (
         before,
         after,
     )
     assert batches() == {2}, batches()
-    check("two", two, 4)  # batch 2 is kept: replays without a capture
+    check("two", two, 4)
     short = _Stats(model)()
     assert short["captures"] == before["captures"] and short["replays"] > before["replays"], (
         before,

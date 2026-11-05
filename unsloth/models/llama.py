@@ -3085,10 +3085,8 @@ def unsloth_fast_generate(self, *args, **kwargs):
                 )
                 short = _decode_graphs.short_call(self, max_len, int(ids.shape[1]), bsz)
                 if short and _decode_graphs.HELD not in self.__dict__:
-                    # Too short to win back graph mode: decode eagerly, as before, without planning.
                     plan, token = "eager", None
                 else:
-                    # A short call beside kept graphs only makes room for itself.
                     plan, token = _decode_graphs.plan_call(
                         self, ids, dtype, KV_CACHE_INCREMENT, max_len, bsz = bsz, eager = short,
                     )  # fmt: skip

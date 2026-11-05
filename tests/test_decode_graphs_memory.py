@@ -483,9 +483,6 @@ def test_keep_only_keeps_the_batch_size_decode_used(G):
 
 @pytest.mark.parametrize("model_type", ["mistral", "qwen2", "gemma", "gemma2"])
 def test_a_model_type_that_never_graphs_keeps_eager_oom_and_planning(G, model_type):
-    """Mistral / Qwen2 / Gemma reach plain generate() with graph mode on but always decode eagerly: an
-    OOM there raises once as before (no redo, no CUDA-graph warning) and the plan neither estimates nor
-    releases nor counts an unfit call."""
     model = _Model()
     model.config.model_type = model_type
     model.keep(1, 2816)
@@ -513,8 +510,6 @@ def test_a_model_type_that_never_graphs_keeps_eager_oom_and_planning(G, model_ty
     [(0, 32, True), (33, 32, False), (34, 32, False), (35, 32, True), (288, 32, True)],
 )
 def test_a_call_too_short_to_replay_a_step_is_known(G, max_len, prompt, replays):
-    """The first decode step after a prefill always runs eagerly, so a call with at most 2 new tokens
-    never replays a captured step; an unknown length (0) may."""
     assert G.can_replay(max_len, prompt) is replays
 
 
@@ -529,8 +524,7 @@ def _generate_fn():
 
 
 def test_generate_runs_a_short_call_eagerly_when_nothing_is_kept():
-    """Graph mode only costs a short call (plan, graph-sized buffers): with no kept graphs it decodes
-    eagerly, as before, without planning. Reads llama.py (importing unsloth needs an accelerator)."""
+    """Reads llama.py: importing unsloth needs an accelerator."""
     import ast
 
     gen = _generate_fn()
@@ -546,7 +540,6 @@ def test_generate_runs_a_short_call_eagerly_when_nothing_is_kept():
 
 
 def test_generate_runs_a_short_call_beside_kept_graphs_eagerly():
-    """Beside kept graphs a short call only makes room (plan_call(eager=short)) and still decodes eagerly."""
     import ast
 
     text = ast.unparse(_generate_fn())
@@ -568,9 +561,6 @@ def _keep_graph(model, bsz):
     ],
 )  # fmt: skip
 def test_a_short_call_decodes_eagerly_unless_a_graph_of_its_batch_is_kept(G, new, kept, short):
-    """3-6 new tokens with alternating batch sizes ran 5-58% slower in graph mode on a T4: a call with
-    fewer than CAPTURE_MIN_STEPS steps left at its first graphed step decodes eagerly, unless a captured
-    step of its decode batch is kept (replayed, no capture). At most 2 new tokens never replay."""
     model = _Model()
     if kept is not None:
         _keep_graph(model, kept)
@@ -580,7 +570,6 @@ def test_a_short_call_decodes_eagerly_unless_a_graph_of_its_batch_is_kept(G, new
 
 
 def test_a_short_call_matches_the_capture_break_even(G):
-    """short_call() and worth_capturing() agree at the first graphed step (cache length prompt + 2)."""
     model = _Model()
     for new in range(3, 40):
         G.start_generation(32 + new)
@@ -602,24 +591,19 @@ def test_a_short_call_beside_kept_graphs_only_makes_room(G):
 
 
 def test_capture_only_when_enough_steps_are_left(G):
-    # prompt 32 + 8 new tokens: the step at cache length 35 produces token 3 and leaves 6 steps.
     G.start_generation(32 + 8)
     try:
         assert G.CAPTURE_MIN_STEPS == 6
         assert G.worth_capturing(35) is True
         assert G.worth_capturing(36) is False
-        # 3-4 new tokens never reach the break-even: those calls decode eagerly.
         G.start_generation(32 + 4)
         assert not any(G.worth_capturing(kv) for kv in range(33, 37))
     finally:
         G.end_generation()
-    # No length hint (a hand-written decode loop): capture as before.
     assert G.worth_capturing(10_000) is True
 
 
 def test_decode_step_skips_only_a_new_capture():
-    """decode_step consults worth_capturing() only when no graph is kept for the step's key: a kept graph
-    of this shape still replays however few steps are left."""
     import ast
 
     tree = ast.parse(_SOURCE.read_text(encoding = "utf-8"))
@@ -639,7 +623,6 @@ def test_an_eager_short_call_gets_no_credit_for_a_kept_graph_cache(G):
     model = _Model()
     model.keep(16, 8192)
     rows, kv, work = G._call_bytes(model.config, 16, 64, torch.float16, 512, 66)
-    # A long earlier call's kept cache, larger than this call's whole estimate (stand-in tensors are tiny).
     G._kept_buffers = lambda model, key, rows: (True, int(4 * (kv + work)))
     G._free_bytes = lambda device: int(0.5 * G.CALIB_WORK * (kv + work))
     assert G.plan_call(model, _ids(16, 64), torch.float16, 512, 66, eager = True) == ("eager", None)
