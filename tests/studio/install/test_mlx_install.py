@@ -110,7 +110,6 @@ def _repair_specs():
 
 # The MLX grammar engine slot (11d) runs after the harness stops; it shares the Apple Silicon gate.
 _GRAMMAR_ENGINE_SLOT = 1
-# install_python_stack step 11e (optional HNSW pair), spent on every platform.
 _HNSW_SLOT = 1
 
 

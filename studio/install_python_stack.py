@@ -11025,8 +11025,7 @@ def _installed_index_digest() -> "str | None":
         return None
     digest = hashlib.sha256()
     for name in sorted(index):
-        # Studio installs the optional HNSW pair later at runtime too (--no-deps, so it can neither
-        # cause nor clear another package's conflict): it must not void the recorded evidence.
+        # The HNSW pair is also installed at runtime (--no-deps): must not void the evidence.
         if name in _HNSW_DISTRIBUTIONS:
             continue
         digest.update(f"{name}=={index[name][0]}\n".encode("utf-8"))
@@ -11739,8 +11738,7 @@ def _hnsw_auto_install_disabled() -> bool:
 
 
 def _hnsw_prebuilt_step() -> None:
-    """11e. The optional HNSW pair (usearch + numkong) for gigantic RAG scopes, hash-pinned by
-    install_hnsw_prebuilt.py. Never fails the install: RAG keeps exact / vec0 search without it."""
+    """11e. Optional HNSW pair; never fails the install (RAG falls back to exact search)."""
     if _hnsw_auto_install_disabled():
         _progress("HNSW search (disabled)")
         _record_step("hnsw-prebuilt", "disabled")
@@ -12637,7 +12635,7 @@ def install_python_stack() -> int:
             except SystemExit:
                 _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
 
-    # 11e. Optional HNSW pair, every platform and both torch modes, outside skip_base.
+    # 11e. Every platform and torch mode, outside skip_base.
     _hnsw_prebuilt_step()
 
     # 12. Patch metadata for single-env compatibility

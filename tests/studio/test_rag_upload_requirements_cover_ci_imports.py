@@ -25,7 +25,6 @@ def _pins(path):
 
 
 def _hnsw_extra_pins():
-    # usearch left studio.txt for the optional hnsw extra; the upload harness still pins it.
     text = PYPROJECT.read_text(encoding = "utf-8")
     block = re.search(r"^hnsw = \[(.*?)^\]", text, re.M | re.S).group(1)
     return {

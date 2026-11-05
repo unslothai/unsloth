@@ -2392,8 +2392,7 @@ function Get-RocmPinStaleTags {
     }
 }
 
-# The optional HNSW pair is the one thing a skipped (current) Python stack leaves unchecked: an
-# earlier offline or failed attempt. --check-only is local, so a ready pair costs no network.
+# A skipped (current) Python stack leaves the HNSW pair unchecked; --check-only is offline.
 function Invoke-HnswBackfill {
     $_hnswInstaller = Join-Path $PSScriptRoot "install_hnsw_prebuilt.py"
     if (@('0', 'false', 'no', 'off') -contains "$env:RAG_VEC_ANN_AUTO_INSTALL".Trim().ToLower() -or

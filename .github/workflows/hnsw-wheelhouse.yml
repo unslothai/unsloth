@@ -1,8 +1,5 @@
-# Mirrors the HNSW pair (usearch + numkong) that studio/install_hnsw_prebuilt.py installs, byte for
-# byte from PyPI, so Studio and Desktop can fetch it where PyPI is blocked. Every wheel is checked
-# against the committed catalog (studio/hnsw_prebuilt_pins.json), which stays the trust anchor: the
-# installer verifies the same sha256 whichever host served the bytes. Dispatch only; `publish: false`
-# by default.
+# Mirrors the HNSW pair from PyPI for PyPI-blocked networks; studio/hnsw_prebuilt_pins.json stays the
+# trust anchor (the installer checks the same sha256 whichever host served the bytes).
 name: HNSW wheelhouse
 
 on:
@@ -107,8 +104,7 @@ jobs:
           name: hnsw-wheelhouse
           path: wheelhouse
 
-      # --latest=false on both paths: this tag is a wheelhouse, not a product release, and the
-      # repository's latest release is what the installers and the Desktop updater resolve to.
+      # --latest=false: installers and the Desktop updater resolve the latest release.
       - name: Create or update the release
         shell: bash
         env:
@@ -125,6 +121,5 @@ jobs:
           else
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --latest=false
           fi
-          # --clobber is safe: the catalog pins the bytes, so a re-upload is identical.
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
             wheelhouse/*.whl wheelhouse/index.txt wheelhouse/SHA256SUMS

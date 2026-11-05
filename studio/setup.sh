@@ -2411,8 +2411,7 @@ install_python_stack() {
     python "$SCRIPT_DIR/install_python_stack.py"
 }
 
-# The optional HNSW pair is the one thing a skipped (current) Python stack leaves unchecked: an earlier
-# offline or failed attempt. --check-only is local, so a ready pair costs no network on an update.
+# A skipped (current) Python stack leaves the HNSW pair unchecked; --check-only is offline.
 _hnsw_backfill() {
     case "${RAG_VEC_ANN_AUTO_INSTALL:-1}" in 0|false|no|off) return 0 ;; esac
     local _installer="$SCRIPT_DIR/install_hnsw_prebuilt.py" _status

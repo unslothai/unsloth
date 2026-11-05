@@ -293,13 +293,11 @@ class TestStepTotals:
         # no-torch case also gets the runtime-deps slot an update announces separately. Both also
         # carry the diffusers main slot (11c), which is spent on every path including opting out.
         # causal-conv1d and mamba-ssm have no slot: they install when a model needs them.
-        # Every platform also spends the optional HNSW slot (11e).
         assert _base_total(IS_WINDOWS = True) == 19
         assert _base_total(IS_WINDOWS = True, NO_TORCH = True) == 17
 
     @pytest.mark.parametrize(
         "flags,total",
-        # Each includes the optional HNSW slot (11e).
         [
             ({}, 19),  # Linux, torch
             ({"NO_TORCH": True}, 17),  # Linux, GGUF-only (incl. the no-torch runtime step)

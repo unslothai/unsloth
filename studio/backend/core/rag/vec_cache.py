@@ -122,10 +122,8 @@ _entries: OrderedDict[tuple, _Entry] = OrderedDict()
 _ann: OrderedDict[tuple, _AnnEntry] = OrderedDict()
 _stale_files: set[str] = set()
 _too_big: dict[tuple, int] = {}
-# HNSW build failures, apart from _too_big: a build that failed is never retried at the same epoch, even once
-# the pair arrives.
+# A failed HNSW build is never retried at the same epoch (it takes minutes).
 _ann_failed: dict[tuple, tuple] = {}
-# Scopes big enough for HNSW that found the pair missing; rescheduled when the on-demand fetch succeeds.
 _awaiting_ann: set[tuple] = set()
 _bytes = 0
 _lock = threading.Lock()
@@ -176,7 +174,6 @@ def _publish(
         return
     if entry.nbytes > _budget():
         # A scope that outgrew the exact cache through appends moves to HNSW now, not at its next write.
-        # _build fetches the pair on demand when it is missing.
         if entry.n >= _ann_min_rows() and ann_wanted() and key not in _building:
             _schedule(key)
         else:
@@ -443,12 +440,10 @@ def _build(key: tuple) -> None:
                 try:
                     _build_ann(np, conn, key, epoch)
                 except Exception:
-                    # A build takes minutes: never retry it at the same epoch.
                     with _lock:
                         _ann_failed[key] = epoch
                     raise
                 return
-            # Exact / vec0 answer meanwhile; the fetch is requested after the snapshot closes.
             with _lock:
                 _awaiting_ann.add(key)
             fetch_pair = True
@@ -471,7 +466,7 @@ def _build(key: tuple) -> None:
         conn.close()
         if fetch_pair:
             hnsw_runtime.request(_on_ann_available)
-            # The fetch may have landed while this build ran (its callback found nothing to clear yet).
+            # The fetch may have finished before _awaiting_ann was set.
             if vec_ann.usearch() is not None:
                 _on_ann_available()
     entry = _Entry(epoch, n, store, store.nbytes(_avg_id(store, n)))
@@ -481,13 +476,11 @@ def _build(key: tuple) -> None:
 
 
 def _on_ann_available() -> None:
-    """The on-demand fetch made the pair importable: rebuild the scopes that were waiting for it."""
     with _lock:
         waiting = list(_awaiting_ann)
         _awaiting_ann.clear()
         for key in waiting:
             _too_big.pop(key, None)
-            # An exact entry that fits keeps answering (exact and already in RAM); HNSW takes over when it drops.
             if key not in _entries:
                 _schedule(key)
 

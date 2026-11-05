@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Fetch the HNSW pair on demand: run install_hnsw_prebuilt.py once per process in the background when a scope
-first needs HNSW and the pair is missing. Never raises; search keeps the exact / vec0 paths meanwhile."""
+"""Fetch the HNSW pair on demand in the background (install_hnsw_prebuilt.py). Never raises."""
 
 from __future__ import annotations
 
@@ -103,7 +102,6 @@ def _hidden():
 
 
 def _run_installer() -> dict:
-    """The installer's JSON result; ``{"status": "failed", ...}`` for anything unparseable."""
     script = _installer()
     if script is None:
         return {"status": "unsupported", "detail": "install_hnsw_prebuilt.py not found"}
@@ -172,7 +170,6 @@ def _attempt() -> None:
 
 
 def reset() -> None:
-    """Forget settled results and backoff; for tests."""
     global _inflight, _retry_after, _final, last
     with _lock:
         _inflight = False

@@ -2,10 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Installs the prebuilt usearch + numkong pair (RAG's HNSW tier) into a Studio interpreter; wheels are
-sha256-checked against the in-tree hnsw_prebuilt_pins.json, whichever host served them; the pair is probed
-in a child interpreter before it counts. Never builds from source. Exit 0 for every outcome (2 bad
-arguments; 1 with --strict unless the pair is ready); --json prints one status object last."""
+"""Installs the sha256-pinned usearch + numkong pair (hnsw_prebuilt_pins.json), probed in a child interpreter.
+Exit 0 for every outcome (2 bad arguments; 1 with --strict unless ready); --json prints one status object last."""
 
 from __future__ import annotations
 
@@ -189,7 +187,6 @@ def wheel_tags(filename: str) -> set[str]:
 
 
 def select(tags: list[str], catalog: dict) -> dict[str, dict | None]:
-    """{package: catalog wheel} by the interpreter's own tag preference; None where nothing fits."""
     out: dict[str, dict | None] = {}
     for name, pkg in catalog["packages"].items():
         by_tag: dict[str, dict] = {}
@@ -281,8 +278,7 @@ def _verified(path: Path, wheel: dict) -> bool:
 
 
 def _sources(wheel: dict, catalog: dict) -> list[tuple[str, str]]:
-    # PyPI first, as for every other Studio package; our mirror serves PyPI-blocked networks. An explicit
-    # UNSLOTH_HNSW_MIRROR (enterprise mirror) goes first. Same pinned bytes either way.
+    # PyPI, then our mirror; UNSLOTH_HNSW_MIRROR replaces ours and goes first. Same pinned bytes.
     own = os.environ.get("UNSLOTH_HNSW_MIRROR", "").strip()
     mirror = own or catalog.get("mirror", "")
     out = []
@@ -306,7 +302,6 @@ def _fetch(url: str, dest: Path, deadline: float) -> None:
 def obtain(
     wheel: dict, catalog: dict, cache: Path, deadline: float, network: bool
 ) -> tuple[Path, str]:
-    """A verified local copy of ``wheel``: the cache first, then each allowed source. Bad bytes are deleted."""
     cache.mkdir(parents = True, exist_ok = True)
     path = cache / wheel["filename"]
     if path.exists():
@@ -349,7 +344,6 @@ def _uv() -> str | None:
 
 
 def _pip_cmd(python: str, verb: str, args: list[str]) -> list[list[str]]:
-    """uv first, then the interpreter's own pip."""
     cmds = []
     uv = _uv()
     if uv:
@@ -388,7 +382,6 @@ def _run_first(cmds: list[list[str]], timeout: float) -> None:
             return
         tail = (proc.stderr or proc.stdout).strip().splitlines()[-1:] or [f"exit {proc.returncode}"]
         errors.append(f"{os.path.basename(cmd[0])}: {tail[0][:300]}")
-    # Every attempt: the uv error is the useful one when the pip fallback only says pip is missing.
     raise RuntimeError("; ".join(errors) or "no installer available")
 
 
@@ -398,9 +391,7 @@ def probe(
     timeout: float = _PROBE_TIMEOUT,
     want: str = PAIR_STR,
 ) -> tuple[bool | None, str]:
-    """(True, "") works, (False, why) broken, (None, why) inconclusive: no marker, no uninstall.
-
-    A failure is confirmed by a second run: a false negative costs the pair for FAILED_RETRY_S."""
+    """(True, "") works, (False, why) broken, (None, why) inconclusive. A failure is confirmed by a rerun."""
     ok, why = _probe_once(python, extra_path, timeout, want)
     if ok is False:
         again, why_again = _probe_once(python, extra_path, timeout, want)
@@ -462,7 +453,6 @@ def _pair_installed(info: dict) -> bool:
 
 
 def _want(info: dict) -> str:
-    """Versions the probe asserts: ours exactly, or none for a pair installed by other means."""
     return PAIR_STR if all(info["installed"].get(n) == v for n, v in PAIR) else ""
 
 

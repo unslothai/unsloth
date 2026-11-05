@@ -535,7 +535,7 @@ def snapshot(venv_python: pathlib.Path) -> dict:
 
     state["uv_cache_marker"] = _digest(studio_home / "cache" / "uv-cache-dir")
     state["no_torch_marker"] = (venv / ".unsloth-no-torch").is_file()
-    # The optional HNSW pair's probe record: a no-op update reads it, never rewrites it.
+    # A no-op update must not rewrite the HNSW probe marker.
     hnsw_marker = venv / ".unsloth-hnsw.json"
     state["hnsw_marker"] = (
         (_digest(hnsw_marker), hnsw_marker.stat().st_mtime_ns) if hnsw_marker.is_file() else None

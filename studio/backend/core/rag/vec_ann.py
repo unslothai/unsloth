@@ -30,14 +30,13 @@ MARKER = ".unsloth-hnsw.json"
 
 
 def hnsw_fingerprint() -> str:
-    """This interpreter's identity as install_hnsw_prebuilt records it in the marker."""
     return hashlib.sha1(f"{sys.prefix}|{sys.version}|{platform.machine()}".encode()).hexdigest()[
         :16
     ]
 
 
 def _probe_failed() -> bool:
-    """The installer's subprocess probe recorded that this pair crashes or fails here: never import it in-process."""
+    """The installer's subprocess probe saw this pair crash here: never import it in-process."""
     try:
         with open(os.path.join(sys.prefix, MARKER), encoding = "utf-8") as fh:
             marker = json.load(fh)
