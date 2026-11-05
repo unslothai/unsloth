@@ -66,6 +66,9 @@ import pytest
 os.environ.setdefault("UNSLOTH_NVIDIA_LIBRARY_PROBE", "0")
 # A fake CPU host must not take the Vulkan route through this machine's real GPUs.
 os.environ.setdefault("UNSLOTH_VULKAN_DEVICE_PROBE", "0")
+# Installer tests mock subprocess, not downloads: the optional HNSW step (install_python_stack 11e,
+# setup's fast path) must not fetch or install the usearch pair into this venv.
+os.environ.setdefault("RAG_VEC_ANN_AUTO_INSTALL", "0")
 
 
 @pytest.fixture(autouse = True)

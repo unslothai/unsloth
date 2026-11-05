@@ -68,6 +68,30 @@ def test_s3_sdk_is_only_in_the_s3_extra():
     )
 
 
+def test_hnsw_pair_is_only_in_the_hnsw_extra():
+    # Optional native pair: a target without a wheel must never fail the default install.
+    from packaging.requirements import Requirement
+
+    project = _load_pyproject()["project"]
+    extras = project["optional-dependencies"]
+    pinned = {
+        Requirement(entry).name.lower(): str(Requirement(entry).specifier)
+        for entry in extras["hnsw"]
+    }
+    assert pinned == {"usearch": "==2.26.6", "numkong": "==7.8.6"}
+    assert all("python_version >= " in entry for entry in extras["hnsw"])
+    no_torch = REPO_ROOT / "studio" / "backend" / "requirements" / "no-torch-runtime.txt"
+    default_requirements = (
+        project["dependencies"]
+        + extras["studio"]
+        + _requirement_lines(STUDIO_TXT)
+        + _requirement_lines(no_torch)
+    )
+    assert not set(pinned).intersection(
+        Requirement(entry).name.lower() for entry in default_requirements
+    )
+
+
 def test_huggingface_extra_contains_no_diffusers_vcs_reference():
     from packaging.requirements import Requirement
 

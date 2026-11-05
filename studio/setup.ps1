@@ -2394,6 +2394,28 @@ function Get-RocmPinStaleTags {
 
 # Bounded python -c probe: a wedged torch import or Intel driver init would hang forever.
 # Both streams drain async; .Error keeps stderr since callers decide venv fate on it. Mirrors install.ps1.
+# The optional HNSW pair is the one thing a skipped (current) Python stack leaves unchecked: an
+# earlier offline or failed attempt. --check-only is local, so a ready pair costs no network.
+function Invoke-HnswBackfill {
+    $_hnswInstaller = Join-Path $PSScriptRoot "install_hnsw_prebuilt.py"
+    if (@('0', 'false', 'no', 'off') -contains "$env:RAG_VEC_ANN_AUTO_INSTALL".Trim().ToLower() -or
+        -not (Test-Path -LiteralPath $_hnswInstaller)) {
+        return
+    }
+    $_hnswStatus = ""
+    try {
+        $_hnswStatus = ((& python $_hnswInstaller --check-only --json 2>$null | Select-Object -Last 1) | ConvertFrom-Json).status
+    } catch {}
+    if ($_hnswStatus -and @('already', 'disabled', 'unsupported', 'offline') -notcontains $_hnswStatus) {
+        $_hnswResult = "failed"
+        try {
+            $_hnswResult = ((& python $_hnswInstaller --json --timeout 300 2>$null | Select-Object -Last 1) | ConvertFrom-Json).status
+        } catch {}
+        if ($_hnswResult -eq "ready") { step "HNSW search" "ready" } else { step "HNSW search" "$_hnswResult" "Yellow" }
+    }
+    $global:LASTEXITCODE = 0
+}
+
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
     # TimedOut separates "never answered" from "answered with a failure".
@@ -8856,6 +8878,7 @@ if (Test-SetupScriptReplaced) {
 
 } else {
     step "python" "dependencies up to date"
+    Invoke-HnswBackfill
     $ErrorActionPreference = $prevEAP
 }
 Complete-FrontendBuildBackground -IfDone
