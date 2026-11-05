@@ -65,6 +65,7 @@ studio = [
     "node_prebuilt_pins.json",
     "lemonade_prebuilt_pins.json",
     "q4nx_converter_pins.json",
+    "hnsw_prebuilt_pins.json",
     "src-tauri/icons/icon.icns",
     "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
