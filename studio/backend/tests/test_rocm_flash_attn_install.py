@@ -197,8 +197,7 @@ def test_skip_reason_is_linux_only():
     assert rfa.install_skip_reason(platform = "win32", hip_version = "7.1", gfx_codes = ["gfx1151"])
     assert rfa.install_skip_reason(platform = "darwin", hip_version = "7.1", gfx_codes = ["gfx1151"])
     assert (
-        rfa.install_skip_reason(platform = "linux", hip_version = "7.1", gfx_codes = ["gfx1151"])
-        is None
+        rfa.install_skip_reason(platform = "linux", hip_version = "7.1", gfx_codes = ["gfx1151"]) is None
     )
     # A mixed host installs when any visible card is RDNA3/4.
     assert (
@@ -248,7 +247,13 @@ def test_installer_import_probe_uses_it(ips, monkeypatch):
 # --- runtime env default -------------------------------------------------------------------------
 
 
-def _fake_specs(monkeypatch, *, flash_attn = True, extension = False, hip = True):
+def _fake_specs(
+    monkeypatch,
+    *,
+    flash_attn = True,
+    extension = False,
+    hip = True,
+):
     specs = {
         "flash_attn": flash_attn,
         "flash_attn_2_cuda": extension,
