@@ -258,10 +258,7 @@ def test_generic_ulysses_matches_one_process(kind, implementation, packed):
 
 
 def _compiled_rows_worker(rank, world, kind, implementation, out_dir):
-    """Decoder layers compiled once (torch.compile per layer, as the CPU route's UNSLOTH_CPU_COMPILE=1 and block
-    compile do), then two packed rows with the same shapes but different document lengths: each row's gradients
-    must match one process on that row's documents, so a graph traced on the first row cannot keep its
-    boundaries for the second."""
+    """Per-layer compiled model, two same-shape packed rows with different documents: each must match one process."""
     ad.HAS_FLASH_ATTENTION = False
     ad.HAS_XFORMERS = False
     model = _model(kind, implementation)
@@ -271,7 +268,6 @@ def _compiled_rows_worker(rank, world, kind, implementation, out_dir):
     manager = _manager(world, rank)
     manager.attach_attention_hooks(model)
     ids, labels = _batch(True)
-    # Same row length and document count: the graph traced on the first row is reused for the second.
     for lengths in ([6, 7, 3], [3, 9, 4]):
         model.zero_grad(set_to_none = True)
         count = _reference(model, ids, labels, lengths)
