@@ -1,24 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Answer engine discovery probes with JSON, or with a 404, but never with the app.
-
-Probes for engine endpoints used to land on main.py's SPA catch-all, so ``GET /props`` returned 200 and a page
-of HTML. That is worse than a 404: a probe reads the status before the body. Served here: ``/props``,
-``/v1/props``, ``/version``, a passthrough to the resident llama-server for ``GET /metrics``, ``GET /slots``,
-``POST /tokenize`` and ``POST /detokenize`` (#11705), owner only, and Open WebUI's llama.cpp model management
-(``GET /models``, ``POST /models/load``, ``POST /models/unload``, #10610). Everything else in llama-server's
-table gets an explicit 404, on its real method as well as GET.
-
-Deliberately NOT served: Ollama's ``/api/tags`` and ``/api/show``. Answering them makes a client select Ollama
-and then fail on ``/api/chat``, which Studio does not implement; the reporting user's client instead fell back
-to the OpenAI surface and worked. Advertising a protocol we do not have is the HTML 200 again, one layer up.
-"""
+"""Engine probes answer JSON or 404, never SPA HTML: /props, /v1/props, /version, owner-only GET
+/metrics, GET /slots, POST /tokenize, POST /detokenize, GET /models, POST /models/load,
+/models/unload; other llama-server routes 404; Ollama /api/tags and /api/show not served."""
 
 from __future__ import annotations
 
 import asyncio
 import functools
+import threading
 from typing import Any, Optional
 
 import httpx
@@ -34,8 +25,7 @@ logger = get_logger(__name__)
 router = APIRouter()
 
 
-# llama-server's table (tools/server/server.cpp) minus /props, so the set is complete
-# rather than growing per complaint. Bare only, so it cannot shadow /api/ or /v1/.
+# llama-server route table minus /props; bare paths only, so it cannot shadow /api/ or /v1/
 _ENGINE_PROBE_PATHS = frozenset(
     {
         "apply-template",
@@ -164,9 +154,7 @@ def _server_props() -> dict:
     if public_id:
         props["model_path"] = public_id
 
-    # These describe the CHILD's route table and web UI, not ours: Studio launches with --metrics, so
-    # endpoint_metrics arrives true while public /metrics 404s here (tools/server/server-context.cpp puts all three
-    # flags in the payload).
+    # These describe the child's routes/UI, not ours (Studio passes --metrics).
     for _child_only in ("ui", "ui_settings", "cors_proxy_enabled"):
         props.pop(_child_only, None)
     props["endpoint_props"] = False
@@ -174,8 +162,7 @@ def _server_props() -> dict:
     props["endpoint_slots"] = passthrough and props.get("endpoint_slots") is True
     props["endpoint_metrics"] = passthrough and props.get("endpoint_metrics") is True
 
-    # Only when llama-server owns the resident model: with MLX loaded, reading the
-    # unloaded llama backend describes a serving model as having no context or slots.
+    # With MLX loaded, the unloaded llama backend would report no context or slots.
     if llama_loaded:
         props.setdefault("default_generation_settings", {})
         settings = props["default_generation_settings"]
@@ -195,8 +182,7 @@ def _server_props() -> dict:
     return props
 
 
-# Slash forms too: FastAPI's redirect never fires. The catch-all fully matches "/props/" and returns
-# index.html; routes/inference.py registers "/v1/models/" likewise.
+# Slash forms too: the catch-all would serve index.html for "/props/".
 @router.get("/props", include_in_schema = False)
 @router.get("/props/", include_in_schema = False)
 @router.get("/v1/props", include_in_schema = False)
@@ -234,7 +220,11 @@ def _upstream_client() -> httpx.AsyncClient:
 
 
 def _engine_error(status_code: int, message: str) -> JSONResponse:
-    error_type = "unavailable_error" if status_code == 503 else "not_found_error"
+    # llama-server: not_found_error is 404 only; a rejected body is invalid_request_error.
+    if status_code == 400:
+        error_type = "invalid_request_error"
+    else:
+        error_type = "unavailable_error" if status_code == 503 else "not_found_error"
     return JSONResponse(
         status_code = status_code,
         content = {"error": {"code": status_code, "message": message, "type": error_type}},
@@ -249,6 +239,9 @@ async def _forward_to_llama_server(request: Request, path: str) -> Response:
     # Unload flips is_loaded before clearing _port; "127.0.0.1:None" raises InvalidURL, not HTTPError.
     port = getattr(llama_backend, "_port", None)
     if not getattr(llama_backend, "is_loaded", False) or not port:
+        mlx_backend = _inference()._active_mlx_backend() if path == "tokenize" else None
+        if mlx_backend is not None:
+            return await _mlx_tokenize(request, mlx_backend)
         return _engine_error(503, "No llama.cpp model is loaded")
     url = f"http://127.0.0.1:{port}/{path}"
     headers = dict(llama_backend._auth_headers or {})
@@ -275,6 +268,53 @@ async def _forward_to_llama_server(request: Request, path: str) -> Response:
     )
 
 
+async def _mlx_tokenize(request: Request, backend) -> Response:
+    """llama-server's ``POST /tokenize`` for a resident MLX model, which lm-eval's gguf backend
+    calls before scoring with ``/v1/completions`` logprobs: specials parsed, BOS only with
+    ``add_special``."""
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    content = body.get("content") if isinstance(body, dict) else None
+    # llama-server's tokenize_mixed accepts mixed arrays of strings and ids.
+    if not isinstance(content, (str, list)):
+        return _engine_error(400, "'content' must be a string or an array")
+    if body.get("with_pieces"):
+        return _engine_error(400, "'with_pieces' is not supported for MLX models")
+    # Specials are always parsed, so refuse rather than ignore: GGUF would tokenize differently.
+    if body.get("parse_special") is False:
+        return _engine_error(400, "'parse_special': false is not supported for MLX models")
+
+    add_special = body.get("add_special") is True
+    pieces = [content] if isinstance(content, str) else list(content)
+
+    # Resolution polls this event; without it an abandoned request pins a worker thread.
+    cancel = threading.Event()
+
+    def tokenize():
+        # Only a leading string gets specials, so a leading id (dropped after) tokenizes without.
+        prompt = pieces if add_special else [0, *pieces]
+        ids = backend.resolve_completion_prompt(prompt, cancel_event = cancel)["ids"]
+        return ids if add_special else ids[1:]
+
+    watcher = asyncio.create_task(_inference()._await_disconnect_then_cancel(request, cancel))
+    try:
+        tokens = await asyncio.to_thread(tokenize)
+    except ValueError as exc:
+        if any(piece != "" for piece in pieces):
+            return _engine_error(400, str(exc))
+        tokens = []  # llama-server answers empty content with an empty list
+    except RuntimeError:
+        # Unloaded since selection: an unavailable engine, not a server fault.
+        return _engine_error(503, "No llama.cpp model is loaded")
+    except InterruptedError:
+        return _engine_error(499, "Request cancelled.")
+    finally:
+        await _inference()._stop_local_disconnect_cancel_watcher(watcher)
+    return JSONResponse({"tokens": tokens})
+
+
 def _make_passthrough(path: str):
     async def passthrough(request: Request, current_subject: str = Depends(get_current_subject)):
         return await _forward_to_llama_server(request, path)
@@ -296,9 +336,7 @@ for _method, _path in sorted(_PASSTHROUGH_ROUTES):
 @router.get("/version", include_in_schema = False)
 @router.get("/version/", include_in_schema = False)
 async def studio_version(current_subject: str = Depends(get_current_subject)):
-    """Bare /version only: Ollama spells it /api/version, and answering there is part
-    of claiming to be Ollama."""
-    # Threaded like /props: the first call resolves the version.
+    """Threaded like /props because the first call resolves the version."""
     return {"version": await asyncio.to_thread(_studio_version)}
 
 
@@ -521,9 +559,7 @@ async def _probe_not_found():
     raise HTTPException(status_code = 404, detail = "API endpoint not found")
 
 
-# Without these a POST hit the GET-only catch-all and returned 405, reading as "exists, wrong method". HEAD is
-# here because Starlette does not admit it on a GET route (measured, fastapi 0.141.1); GET stays with the catch-all
-# so its asset lookup wins, and OPTIONS is untouched for CORS preflight.
+# Else POST hits the GET-only catch-all and 405s. GET stays out so assets win; HEAD is not admitted
 _PROBE_DENIED_METHODS = ["HEAD", "POST", "PUT", "PATCH", "DELETE"]
 
 

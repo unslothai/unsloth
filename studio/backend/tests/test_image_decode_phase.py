@@ -59,7 +59,6 @@ def test_a_pipe_with_no_decoder_is_a_no_op():
 def test_generate_progress_reports_the_phase():
     from core.inference.diffusion import _GenState
 
-    # Published before the pre-denoise setup, so it starts in "encode", not "denoise".
     gen = _GenState(total_steps = 40)
     assert gen.phase == "encode"
 
@@ -74,7 +73,7 @@ def test_generate_progress_reports_the_phase():
     gen.step, gen.phase = 40, "decode"
     progress = DiffusionBackend.generate_progress(_Backend())
     assert progress["phase"] == "decode"
-    # The route returns this model; a field it lacks is dropped silently and the UI never sees it.
+    # Fields missing from the response model are dropped silently.
     from models.inference import DiffusionGenerateProgressResponse
 
     assert DiffusionGenerateProgressResponse(**progress).phase == "decode"

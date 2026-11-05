@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Per-family training recipes for text-diffusion language models.
-
-A profile names the checkpoints it handles (``model_types`` / ``architectures``), how they load, which
-LoRA targets are safe, and the training objective. ``DiffusionTrainer`` calls ``profile.compute_loss``
-on ordinary SFT batches (``input_ids``, ``attention_mask``, ``labels`` with -100 outside the response).
-"""
+"""Per-family diffusion recipes; compute_loss gets SFT batches with labels -100 outside the response."""
 
 from dataclasses import dataclass, field
 from typing import Optional

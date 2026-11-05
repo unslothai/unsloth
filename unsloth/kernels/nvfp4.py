@@ -81,10 +81,10 @@ def _nvfp4_dequant_kernel(
     rows,
     half_cols,
     scale_cols,
-    BLOCK_R: tl.constexpr,
-    BLOCK_C: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
+    BLOCK_R: tl.constexpr,  # rows per program
+    BLOCK_C: tl.constexpr,  # cols per program
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
 ):
     r = tl.program_id(0) * BLOCK_R + tl.arange(0, BLOCK_R)
     if INT64_OFFSETS:
@@ -193,12 +193,12 @@ def _nvfp4_weight_tile(
     stride_pc,
     stride_sr,
     stride_sc,
-    BLOCK_R: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    OUT_DTYPE: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
-    MASK_PAD: tl.constexpr,
+    BLOCK_R: tl.constexpr,  # rows per program
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    OUT_DTYPE: tl.constexpr,  # output dtype
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     # Rounded like dense: E2M1 * (block scale / global scale) in fp32, then one cast; out-of-range decodes to 0.
     c = k0 // 2 + tl.arange(0, BLOCK_K // 2)
@@ -251,13 +251,13 @@ def _nvfp4_matmul_fwd_kernel(
     stride_yn,
     stride_ys,
     k_per_split,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    GROUP_M: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
-    MASK_PAD: tl.constexpr,
+    BLOCK_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    GROUP_M: tl.constexpr,  # M tiles per swizzle group
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     # Split K writes fp32 partials [split, M, N], summed in a fixed order afterwards (deterministic).
     pid = tl.program_id(0)
@@ -339,13 +339,13 @@ def _nvfp4_matmul_dx_kernel(
     stride_dk,
     stride_ds,
     n_per_split,
-    BLOCK_M: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    GROUP_M: tl.constexpr,
-    SCALE_E4M3_BYTES: tl.constexpr,
-    INT64_OFFSETS: tl.constexpr,
-    MASK_PAD: tl.constexpr,
+    BLOCK_M: tl.constexpr,  # block size along M (rows)
+    BLOCK_N: tl.constexpr,  # block size along N (out features)
+    BLOCK_K: tl.constexpr,  # block size along K (in features)
+    GROUP_M: tl.constexpr,  # M tiles per swizzle group
+    SCALE_E4M3_BYTES: tl.constexpr,  # scales stored as raw e4m3 bytes
+    INT64_OFFSETS: tl.constexpr,  # int64 offsets past 2**31
+    MASK_PAD: tl.constexpr,  # mask partial tiles (N or K ragged)
 ):
     pid = tl.program_id(0)
     split_id = tl.program_id(1)
@@ -488,7 +488,8 @@ def _fused_ok(
         and packed.dtype == torch.uint8
         and packed.dim() == 2
         and packed.shape[0] > 0
-        and (mode in _FUSED_FORCE or (inner % 64 == 0 and packed.shape[0] % 64 == 0))
+        # N and K both 64 aligned (inner is N for dX); unaligned dX is up to 2.8x slower.
+        and (mode in _FUSED_FORCE or (packed.shape[0] % 64 == 0 and packed.shape[1] % 32 == 0))
         and not _is_transposed_view(packed)
         and scale.dtype in (torch.float8_e4m3fn, torch.float32, torch.float16, torch.bfloat16)
         and scale.dim() == 2
@@ -527,7 +528,8 @@ def _fused_config(
 ):
     """(BLOCK_M, BLOCK_OUT, BLOCK_RED, num_warps, num_stages, split) for an [M, k_red] @ [k_red, n_out] product."""
     index = device.index or 0
-    stages = 2 if _device_capability(index) < (8, 0) else 3
+    capability = _device_capability(index)
+    stages = 2 if capability < (8, 0) else 3
     if M <= 16:
         bm, bo, br, warps = (16, 128, 64, 4) if dx else (16, 64, 128, 4)
     elif M <= 64:
@@ -537,6 +539,9 @@ def _fused_config(
     else:
         bm, bo, br, warps = 128, 64, 64, 4
     tiles = triton.cdiv(M, bm) * triton.cdiv(n_out, bo)
+    # sm89 dX up to 32 rows: an output that fills every SM by itself is 11-17% faster unsplit (L4; A100 is not).
+    if dx and M <= 32 and capability == (8, 9) and tiles >= _sm_count(index):
+        return bm, bo, br, warps, stages, 1
     # Split under four waves; fp32 partials capped at 1/8 of the 16 bit weight.
     split = 1
     while (
@@ -550,8 +555,11 @@ def _fused_config(
 
 
 @triton.jit
-def _split_sum_kernel(partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr):
-    # Fixed-order sum of the split partials (determinism), one cast.
+def _split_sum_kernel(
+    partial_ptr, out_ptr, numel, SPLIT: tl.constexpr, BLOCK: tl.constexpr
+):  # SPLIT split-K partials, BLOCK block size
+    # Fixed-order sum of the split partials (determinism), one cast. SPLIT stays constexpr: the unrolled
+    # static_range is 13-34% faster than a runtime loop, and SPLIT is only ever 2, 4, 8 or 16.
     offs = tl.program_id(0).to(tl.int64) * BLOCK + tl.arange(0, BLOCK)
     mask = offs < numel
     acc = tl.load(partial_ptr + offs, mask = mask, other = 0.0)
@@ -683,6 +691,18 @@ def _nvfp4_matmul_bwd(
     return torch.matmul(grad, nvfp4_dequantize(packed, scale, global_scale, grad.dtype))
 
 
+_AUTOCAST_CASTS = (torch.float16, torch.bfloat16, torch.float32)
+
+
+def _autocast_operand(X):
+    # Cast outside the opaque op so fused, dense and fake impl all return the autocast dtype.
+    if X.is_cuda and X.dtype in _AUTOCAST_CASTS and torch.is_autocast_enabled("cuda"):
+        dtype = torch.get_autocast_dtype("cuda")
+        if dtype != X.dtype:
+            return X.to(dtype)
+    return X
+
+
 class NVFP4Linear_matmul(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -693,12 +713,13 @@ class NVFP4Linear_matmul(torch.autograd.Function):
         global_scale,
         bias = None,
     ):
-        output = _nvfp4_matmul_fwd(X, packed, scale, global_scale)
+        X_mm = _autocast_operand(X)
+        output = _nvfp4_matmul_fwd(X_mm, packed, scale, global_scale)
         if bias is not None:
             output = output + bias
-            # A float32 bias promotes; cast back only then (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
-            if output.dtype != X.dtype:
-                output = output.to(X.dtype)
+            # Cast to the compute dtype only if a fp32 bias promoted (a no-op .to() aliases, zeroing dX under torch 2.11 compile).
+            if output.dtype != X_mm.dtype:
+                output = output.to(X_mm.dtype)
         ctx.save_for_backward(packed, scale, global_scale)
         ctx.bias_grad = bias is not None and bias.requires_grad
         ctx.dtype = X.dtype

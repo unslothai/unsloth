@@ -1,15 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""GGUF export must find its output, or fail honestly (#7897).
-
-save_pretrained_gguf already returns the files it wrote, but export_gguf discarded
-that and guessed: cwd, new subdirs of the save dir, and a `<checkpoint>_gguf` dir.
-A GGUF written anywhere else, as a Windows local base-model path caused, was
-invisible, and the export still reported success over an empty directory.
-
-Reuses the harness in test_export_absolute_paths.py.
-"""
+"""export_gguf uses the paths save_pretrained_gguf returns and fails when none exist."""
 
 from __future__ import annotations
 
@@ -106,6 +98,7 @@ def _hub_doubles(export_mod, monkeypatch, calls: dict):
             repo_type,
             allow_patterns = None,
             ignore_patterns = None,
+            delete_patterns = None,
         ):
             calls["upload"] = folder_path
 
@@ -131,19 +124,16 @@ def _gguf(path: Path, payload: bytes = b"GGUF") -> Path:
     return path
 
 
-# _reported_gguf_files: the "is this build telling us anything?" contract.
-
-
 @pytest.mark.parametrize(
     "result",
     [
         None,  # pre-2025.10 unsloth / non-main process
         "some/path",  # save_method="lora" returns a str
-        ("path", True, False),  # hypothetical legacy tuple
-        {},  # dict without the key
+        ("path", True, False),
+        {},
         {"gguf_files": None},
         {"gguf_files": "not-a-list"},
-        {"gguf_files": []},  # empty == "nothing to say"
+        {"gguf_files": []},
         {"gguf_files": [123]},  # malformed entry -> distrust all
     ],
     ids = [
@@ -169,9 +159,9 @@ def test_reported_files_filters_missing_and_non_gguf(monkeypatch, tmp_path):
         {
             "gguf_files": [
                 str(real),
-                str(tmp_path / "a" / "deleted.gguf"),  # unlinked by cleanup
-                str(tmp_path / "a" / "notes.txt"),  # not a gguf
-                str(tmp_path / "a"),  # a directory
+                str(tmp_path / "a" / "deleted.gguf"),
+                str(tmp_path / "a" / "notes.txt"),
+                str(tmp_path / "a"),
             ]
         }
     )
@@ -185,9 +175,6 @@ def test_reported_files_accepts_future_keys(monkeypatch, tmp_path):
         {"gguf_files": [str(real)], "some_future_field": 1, "is_vlm": True}
     )
     assert out == [str(real)]
-
-
-# Table B: where the fake exporter puts its output.
 
 
 def test_gguf_beside_base_model_is_relocated(monkeypatch, tmp_path):
@@ -216,7 +203,7 @@ def test_zero_files_is_a_failure_not_a_silent_success(monkeypatch, tmp_path):
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             Path(model_save_path).mkdir(parents = True)
             _gguf(tmp_path / "elsewhere" / "MyModel.Q5_K_M.gguf")
-            return None  # legacy build
+            return None
 
     _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
     success, message, output_path = backend.export_gguf(str(save_dir), "q5_k_m")
@@ -238,7 +225,7 @@ def test_nested_gguf_is_rescued_before_rmtree(monkeypatch, tmp_path):
             gguf_dir = Path(str(tmp) + "_gguf") / "shards"
             for i in (1, 2, 3):
                 _gguf(gguf_dir / f"MyModel-{i:05d}-of-00003.gguf")
-            return None  # exercise the fallback path
+            return None
 
     _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
     success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
@@ -253,13 +240,7 @@ def test_nested_gguf_is_rescued_before_rmtree(monkeypatch, tmp_path):
 
 
 def test_hidden_gguf_is_reported_not_none(monkeypatch, tmp_path):
-    """An empty model stem produced '.Q5_K_M.gguf'; glob.glob could not see it.
-
-    A reporting defect, not file loss: the flatten pass uses Path.glob, which does
-    match dot-leading names, so the file was in place while the log said "(none)".
-    Still bites, because zero-files is now a failure: reverting the listing to
-    glob.glob would fail this export outright.
-    """
+    """Dot-leading GGUF names need Path.glob, since glob.glob misses them and zero files now fails."""
 
     class _Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
@@ -402,7 +383,7 @@ def test_materialized_imatrix_is_not_exported_as_a_model(monkeypatch, tmp_path):
             quantization_method,
             imatrix_file = None,
         ):
-            # _materialize_imatrix copies into the model dir, renaming .gguf_file -> .gguf.
+            # _materialize_imatrix renames .gguf_file -> .gguf in the model dir
             _gguf(Path(model_save_path) / "imatrix_unsloth.gguf", b"IMATRIX")
             quant = _gguf(Path(f"{model_save_path}_gguf") / "MyModel.Q5_K_M.gguf")
             return {"gguf_files": [str(quant)]}
@@ -496,8 +477,7 @@ def test_modelfile_relocation_failure_does_not_fail_the_export(monkeypatch, tmp_
     assert not (save_dir / "Modelfile").exists()
 
 
-# The upstream imatrix lives in a Hub repo, so the local export needs the token too -- without
-# disturbing the push path, which already passes it explicitly.
+# the upstream imatrix lives in a Hub repo, so the local export needs the token too
 
 
 def _imatrix_model(accepts_token: bool, calls: dict):
@@ -668,7 +648,6 @@ def test_imatrix_export_supported_probes_unsloth_zoo_for_kwargs_only_bindings(
     def positional_only(save_directory, tokenizer, quantization_method):
         pass
 
-    # A build that names the argument needs no zoo probe at all.
     assert module._imatrix_export_supported(named) is True
     assert module._imatrix_export_supported(positional_only) is False
 
@@ -690,7 +669,6 @@ def test_imatrix_disabled_explicitly_does_not_forward_the_token(monkeypatch, tmp
     )
 
     assert success is True, message
-    # Neither the credential nor the disabled flag itself is forwarded.
     assert calls["save"] == {"imatrix_file": None, "token": None}
 
 
@@ -748,10 +726,6 @@ def test_disabled_imatrix_does_not_reach_an_older_exporter(monkeypatch, tmp_path
     assert calls["save"] == "q4_k_m"
 
 
-# A probe that says "supported" must be right about the call it authorises, and the
-# materialized imatrix must stay an input under whichever name the filesystem gave it.
-
-
 def test_a_positional_only_imatrix_parameter_is_not_support(monkeypatch, tmp_path):
     """Named is not passable by keyword, and every call site passes one."""
     module, _b, _s, _cwd = _backend(monkeypatch, tmp_path, object())
@@ -796,7 +770,7 @@ _NFD = unicodedata.normalize("NFD", "im\u00e4trix")
     [
         ("imatrix_unsloth.gguf", "/x/imatrix_unsloth.gguf_file"),
         (f"{_NFD}.gguf", f"/x/{_NFC}.gguf_file"),  # APFS stores NFD, the request carried NFC
-        (f"{_NFC}.gguf", f"/x/{_NFD}.gguf_file"),  # and the other way round
+        (f"{_NFC}.gguf", f"/x/{_NFD}.gguf_file"),
     ],
 )
 def test_the_materialized_imatrix_is_never_exported_as_a_model(

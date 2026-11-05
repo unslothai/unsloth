@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Extra edge-case coverage for the bootstrap-pw cross-origin gate.
-Companion to ``test_index_bootstrap_origin.py``: IPv6 netlocs, opaque origins
-(``data:``, ``blob:``), comma-joined multi-Origin headers, and the
-``localhost`` vs ``127.0.0.1`` distinct-origin rule.
-"""
+"""Bootstrap origin gate edge cases: IPv6 netlocs, opaque origins; localhost and 127.0.0.1 differ."""
 
 from unittest.mock import MagicMock
 

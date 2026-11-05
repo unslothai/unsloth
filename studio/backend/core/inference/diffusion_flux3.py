@@ -1,22 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""FLUX.3 Image Klein: a classic pipeline face over Diffusers' modular FLUX.3 blocks.
-
-Diffusers ships FLUX.3 only as a Modular Diffusers workflow (``Flux3DistilledAutoBlocks`` for the
-16-step flow-map checkpoint, ``Flux3AutoBlocks`` for the undistilled base), and the repos carry a
-``modular_model_index.json`` instead of a ``model_index.json``. The image backend drives every
-other family through a ``DiffusionPipeline``: placement (``to`` / model and group offload), the
-step callback (progress, cancel), the decode-phase hook and the scheduler swap all address
-``pipe.<component>``. ``Flux3KleinPipeline`` is that face: it registers the same component
-objects the blocks run, so offload hooks, compiled or quantised replacements and a swapped
-scheduler reach the blocks unchanged, and its ``__call__`` takes the keywords the generate path
-passes.
-
-The component objects are loaded per subfolder (``text_encoder`` also carries the Qwen3-VL
-processor), so only ``transformer/``, ``text_encoder/`` and ``vae/`` are ever read; the repo-root
-BFL single file and ``ae.safetensors`` and the ``variants/`` quantised packages are not.
-"""
+"""FLUX.3 pipeline facade over Modular Diffusers blocks; reads only transformer/, text_encoder/, vae/."""
 
 from __future__ import annotations
 
@@ -26,6 +11,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from loggers import get_logger
+
+from . import diffusion_cond_blocks as cond_blocks
 
 logger = get_logger(__name__)
 
@@ -188,9 +175,8 @@ class _Flux3Interrupted(Exception):
 
 
 # Each reference is scaled to this area before the VAE, aspect kept, Lanczos: ComfyUI's
-# ``ReferenceMultiLatent`` with the templates' ``["resize", 1]`` (1.0 megapixels), and the BFL
-# reference's multi-reference rule (each <= 1 MiP). Diffusers alone only downsizes above 16 MiP, so
-# a phone photo would otherwise be encoded at full size. The 16-px grid crop stays with the blocks.
+# ``ReferenceMultiLatent`` ``["resize", 1]`` and BFL's multi-reference rule. Diffusers alone keeps a
+# single reference up to 4 MiP (16 MiP before 0.42.0); the 16-px grid fit stays with the blocks.
 REFERENCE_AREA = 1024 * 1024
 
 
@@ -399,13 +385,20 @@ class _Flux3KleinPipelineMixin:
                         if negatives is None
                         else negatives[call_index if len(negatives) > 1 else 0]
                     )
-                with self._step_hooks(
-                    mp,
-                    callback_on_step_end,
-                    num_inference_steps = int(num_inference_steps),
-                    first_call = call_index == 0,
-                ):
-                    out = mp(**kwargs, output = "images")
+                # The base model's text and reference streams run once per call, not once per step and branch.
+                transformer = getattr(self, "transformer", None)
+                if not self.is_distilled:
+                    cond_blocks.begin_render(transformer)
+                try:
+                    with self._step_hooks(
+                        mp,
+                        callback_on_step_end,
+                        num_inference_steps = int(num_inference_steps),
+                        first_call = call_index == 0,
+                    ):
+                        out = mp(**kwargs, output = "images")
+                finally:
+                    cond_blocks.end_render(transformer)
                 images.extend(out if isinstance(out, list) else [out])
         except _Flux3Interrupted:
             images = []
@@ -560,6 +553,9 @@ def load_flux3_pipeline(
     reason = flux3_family_blocks_mismatch(family_name, blocks, repo_id)
     if reason is not None:
         raise ValueError(reason)
+    if blocks == FLUX3_BASE_BLOCKS:
+        # Before the speed layer: a whole-step CUDA graph binds the class forward when it is built.
+        cond_blocks.prepare(transformer)
     # The scheduler is the block graph's own (shift 6.93, the reference timestep shift); the repos ship none.
     scheduler = flux3_blocks(blocks).init_pipeline().scheduler
     return flux3_pipeline_class()(

@@ -1,20 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The bar abstains when a pass-through arg means the estimate no longer
-// describes the launch. That policy is only as good as its spelling list, and
-// llama.cpp accepts several spellings for most of these flags.
-//
-// Three review rounds in a row found an alias missing here -- -dev, --cpu-moe,
-// --draft-max, -ctkd, --swa-checkpoints -- and each was fixed by appending one
-// more string, which is a fix that lasts until the next alias. So this reads the
-// backend's own frozensets, which are what the launch actually honours, and
-// fails when one of them contains a flag the frontend would not act on.
-//
-// It deliberately does NOT require the two sides to be equal. The frontend lists
-// are a superset by design: they also carry flags no single backend set groups
-// together. The invariant is one-directional -- everything the backend parses in
-// these groups must be recognised here.
+// Reads the backend's frozensets so any alias the launch honours must be recognised here.
+// One-directional: the frontend lists are a superset by design.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -35,14 +23,7 @@ const {
 
 const BACKEND = new URL("../../backend/", import.meta.url);
 
-/**
- * The string literals of a `frozenset({...})` assignment in the backend source.
- *
- * Parsed rather than imported because there is no Python runtime here, and
- * duplicated rather than skipped because a test that silently passes when it
- * cannot find its subject is worse than no test: the miss it is guarding
- * against looks exactly like success.
- */
+/** Parsed, not imported (no Python runtime); a missing set fails rather than passing silently. */
 function frozensetLiterals(source: string, name: string): string[] {
   const start = source.indexOf(name);
   assert.ok(start >= 0, `${name} is gone from the backend; update this test`);
@@ -111,9 +92,6 @@ test("the batch and ubatch spellings are covered", () => {
 });
 
 test("the three policies stay disjoint in intent", () => {
-  // A flag that both moves the load and resizes its cache would be ambiguous
-  // about why the bar abstained. They abstain identically today, so this is
-  // about keeping the reasons legible rather than about behaviour.
   const resident = new Set(RESIDENT_ADDING_ARGS);
   for (const flag of PLACEMENT_OWNING_ARGS) {
     assert.ok(
@@ -124,8 +102,7 @@ test("the three policies stay disjoint in intent", () => {
 });
 
 test("every drafter-selecting spelling makes the bar abstain", () => {
-  // A hand-named drafter is weights plus a cache nothing here priced, and the
-  // flags are last-wins, so any accepted spelling means the launch opens one.
+  // Flags are last-wins, so any accepted spelling opens a drafter nothing priced.
   for (const name of ["_LOCAL_DRAFT_FLAGS", "_HF_DRAFT_FLAGS"]) {
     for (const flag of frozensetLiterals(LLAMA_CPP, name)) {
       assert.ok(
@@ -137,10 +114,7 @@ test("every drafter-selecting spelling makes the bar abstain", () => {
 });
 
 test("underscore spellings are classified like their dashed twins", () => {
-  // llama.cpp accepts both, and the backend normalises underscores to dashes
-  // before parsing. Comparing raw tokens let a single spelling slip past ALL
-  // THREE predicates at once, which is a hole in the policy rather than a
-  // missing entry in one list -- so this checks the normalisation, not a list.
+  // The backend normalises underscores to dashes, so check normalisation, not a list.
   const cases: [string, (a: string[]) => boolean][] = [
     ["--gpu_layers", extraArgsOwnPlacement],
     ["--ctx_size", extraArgsShapeKvCache],
@@ -149,13 +123,9 @@ test("underscore spellings are classified like their dashed twins", () => {
   for (const [flag, predicate] of cases) {
     assert.ok(predicate([flag]), `${flag} was not recognised`);
     assert.ok(predicate([`${flag}=4`]), `${flag}=4 was not recognised`);
-    // The dashed twin must still work, so normalisation did not replace one
-    // spelling with the other.
     const dashed = flag.replace(/_/g, "-");
     assert.ok(predicate([dashed]), `${dashed} stopped being recognised`);
   }
-  // A short option keeps its underscores: only long options are normalised, so
-  // this must not start matching things that are not flags at all.
   assert.equal(extraArgsOwnPlacement(["not_a_flag"]), false);
   assert.equal(extraArgsOwnPlacement(["--temp", "0.7"]), false);
 });

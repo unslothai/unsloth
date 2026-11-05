@@ -129,9 +129,9 @@ def test_stop_does_not_signal_a_reused_pid(monkeypatch, tmp_path):
 
     result = _run_stop(studio_mod)
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert killed == []
-    assert not (tmp_path / "studio-8901-8550.pid").exists()
+    assert (tmp_path / "studio-8901-8550.pid").exists()
 
 
 def test_stop_signals_a_live_server_whose_pid_has_a_stale_record(monkeypatch, tmp_path):
@@ -237,9 +237,9 @@ def test_stop_does_not_signal_a_reused_pid_recorded_in_both_files(monkeypatch, t
 
     result = _run_stop(studio_mod)
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert killed == []
-    assert not list(tmp_path.glob("*.pid"))
+    assert len(list(tmp_path.glob("*.pid"))) == 2
 
 
 def test_pid_identity_check_trusts_the_record_without_psutil(monkeypatch):
@@ -265,7 +265,7 @@ def test_pid_identity_check_uses_the_recorded_start_time(monkeypatch):
     assert studio_mod._pid_is_studio_server(8550, [999.0]) is False
 
 
-def test_stop_drops_a_record_whose_start_time_no_longer_matches(monkeypatch, tmp_path):
+def test_stop_keeps_a_live_record_whose_start_time_no_longer_matches(monkeypatch, tmp_path):
     studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
     monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
 
@@ -281,9 +281,9 @@ def test_stop_drops_a_record_whose_start_time_no_longer_matches(monkeypatch, tmp
 
     result = _run_stop(studio_mod)
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert killed == []
-    assert not (tmp_path / "studio-8901-8550.pid").exists()
+    assert (tmp_path / "studio-8901-8550.pid").exists()
     assert "invalid pid file" not in result.output.lower()
 
 
@@ -359,7 +359,7 @@ def test_stop_continues_after_one_server_fails_to_stop(monkeypatch, tmp_path):
 
     result = _run_stop(studio_mod)
 
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    combined = result.output or ""
     assert result.exit_code == 1, combined
     assert 8600 not in live
     assert "8550" in combined
@@ -411,7 +411,7 @@ def test_stop_keeps_a_record_it_cannot_read(monkeypatch, tmp_path):
     result = _run_stop(studio_mod)
 
     assert path.exists(), "an unreadable record must not be deleted"
-    assert "cannot read" in (result.output + (result.stderr or "")).lower()
+    assert "cannot read" in result.output.lower()
 
 
 def test_stop_does_not_claim_success_when_the_only_record_is_unreadable(monkeypatch, tmp_path):
@@ -430,7 +430,7 @@ def test_stop_does_not_claim_success_when_the_only_record_is_unreadable(monkeypa
     result = _run_stop(studio_mod)
 
     assert result.exit_code == 1, "an unreachable server is not a successful stop"
-    output = result.output + (result.stderr or "")
+    output = result.output
     assert "no running unsloth server" not in output.lower()
     assert killed == []
 
@@ -485,3 +485,56 @@ def test_a_record_whose_pid_is_not_ascii_digits_is_discarded(monkeypatch, tmp_pa
 
     assert result.exit_code == 0, result.output
     assert not (tmp_path / "studio-8901-1.pid").exists()
+
+
+@pytest.mark.parametrize(
+    "body, actual",
+    [
+        ("8550\n1000.0\n127.0.0.1\nlinux:boot:123\n", 4600.0),
+        ("8550\n1000.0\n127.0.0.1", 999.0),
+    ],
+    ids = ["stable-clock-shift", "legacy-one-second-boundary"],
+)
+def test_stop_recognizes_a_live_record_after_an_epoch_shift(monkeypatch, tmp_path, body, actual):
+    from studio.backend.utils import pid_records
+
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {8550})
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
+    monkeypatch.setattr(pid_records, "linux_process_identity", lambda pid: "linux:boot:123")
+    monkeypatch.setitem(
+        sys.modules,
+        "psutil",
+        SimpleNamespace(Process = lambda pid: SimpleNamespace(create_time = lambda: actual)),
+    )
+    (tmp_path / "studio-8901-8550.pid").write_text(body, encoding = "utf-8")
+    result = _run_stop(studio_mod)
+    assert result.exit_code == 0, result.output
+    assert killed == [8550]
+
+
+def test_windows_failed_liveness_probe_preserves_the_record(monkeypatch):
+    import subprocess
+
+    studio_mod = _studio()
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        subprocess, "run", lambda *args, **kwargs: SimpleNamespace(stdout = "", returncode = 1)
+    )
+    assert studio_mod._pid_alive(8550) is True
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason = "needs /proc for the stable identity")
+def test_stop_drops_a_record_whose_stable_identity_proves_pid_reuse(monkeypatch, tmp_path):
+    import os
+
+    studio_mod, _live, killed = _install(monkeypatch, tmp_path, alive = {os.getpid()})
+    monkeypatch.setattr(studio_mod, "_pid_is_studio_server", _REAL_IS_STUDIO_SERVER)
+    boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding = "ascii").strip()
+    record = tmp_path / f"studio-8901-{os.getpid()}.pid"
+    record.write_text(f"{os.getpid()}\n111.5\n127.0.0.1\nlinux:{boot}:1\n", encoding = "utf-8")
+
+    result = _run_stop(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert killed == []
+    assert not record.exists()

@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The run's mean loss must not be reported as the final step's loss.
-
-HF logs the end-of-run summary as {"train_runtime": ..., "train_loss": <mean>}
-with no "loss" key. `logs.get("loss", logs.get("train_loss"))` therefore fell back
-to the mean and published it at the same global_step as the real last step, so:
-
-  - the loss chart gained points stacked on the final step, the last of them the
-    run average (a 30 step run charted 33 points, ending 0.3205, 0.3205, 0.3834),
-  - `final_loss` on /api/train/runs became the average while
-    /api/models/checkpoints reported the true last-step loss for the same run,
-  - the UI stat card showed the average, so loss appeared to jump on the last step.
-"""
+"""train_loss is the run mean, so it must not be published as the final step's loss."""
 
 from __future__ import annotations
 
@@ -63,7 +52,6 @@ def test_series_ignores_repeats_at_the_same_step():
 
 def test_series_never_ends_on_the_average():
     h = _History()
-    # The exact tail a 30 step run produced before the fix.
     for step, loss in [(30, 0.3205), (30, 0.3205), (30, 0.3834), (30, 0.3834)]:
         h.offer(step, loss)
     assert h.steps == [30]
@@ -85,16 +73,13 @@ def test_normal_monotonic_run_is_unchanged():
 
 
 def test_the_shipped_call_sites_no_longer_fall_back_to_train_loss():
-    # Guard the actual source: the fallback is what caused this.
     for rel in ("core/training/trainer.py", "core/training/worker.py"):
         text = (_BACKEND / rel).read_text(encoding = "utf-8")
         assert 'logs.get("loss", logs.get("train_loss", None))' not in text, rel
 
 
 def test_the_terminal_summary_still_reports_elapsed_time():
-    # The summary record has no step loss, so the progress filter dropped it; the
-    # elapsed time it carries (final eval, checkpoint save, best-model reload) is the
-    # run's real duration and must still reach the parent.
+    # the summary record has no step loss but carries the run's real elapsed time
     import sys
     from pathlib import Path
 
@@ -166,8 +151,7 @@ def test_a_lossless_mid_run_record_is_still_dropped():
 
 
 def test_an_early_stopped_run_still_reports_its_duration():
-    # Stopping at step 12 of 30 still produces HF's lossless summary; the step
-    # comparison alone would discard it and finalize the run with stale timing.
+    # an early stop still produces HF's summary; a step comparison alone would drop it
     import sys
     from pathlib import Path
 

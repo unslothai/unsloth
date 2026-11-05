@@ -195,7 +195,7 @@ const MODALITY_ICONS: Record<DatasetModality, IconSvgElement> = {
   video: FlimSlateIcon,
 };
 
-const THUMB = 12;
+const THUMB = "var(--hub-range-thumb)";
 const SLIDER_FG =
   "[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_68%,var(--background))] dark:[--hub-slider-fg:color-mix(in_oklab,var(--foreground)_86%,var(--background))]";
 const RANGE_FILL = "bg-(--hub-slider-fg)";
@@ -248,7 +248,7 @@ function RangeStops({
   const edge = (i: number) =>
     i === 0 ? { left: 0 } : i === last ? { right: 0 } : undefined;
   const at = (i: number) =>
-    `calc(${THUMB / 2}px + (100% - ${THUMB}px) * ${i / last})`;
+    `calc(${THUMB} / 2 + (100% - ${THUMB}) * ${i / last})`;
   const chip = (i: number) => spec.labels[i] ?? spec.format(spec.stops[i]);
   return (
     <fieldset>
@@ -276,11 +276,7 @@ function RangeStops({
         )}
       </legend>
       {/* Inset by an end pill's overhang, so the pills line up with the labels above. */}
-      {/* Ends at the thumb's edge, which doesn't scale with the h-4 root, so the gap below matches. */}
-      <div
-        style={{ marginBottom: `calc((${THUMB}px - var(--spacing) * 4) / 2)` }}
-        className={cn("relative mx-4.5 pt-7", SLIDER_FG)}
-      >
+      <div className={cn("hub-range relative mx-4.5 pt-7", SLIDER_FG)}>
         <div aria-hidden={true} className="absolute inset-x-0 top-0 h-5">
           {spec.labels.map((label, i) =>
             label === null && !covered(i) ? null : (
@@ -294,7 +290,7 @@ function RangeStops({
                   !edge(i) && "-translate-x-1/2",
                   covered(i)
                     ? cn(
-                        "-mx-1 -my-0.5 rounded-md px-1 py-0.5 font-semibold text-background",
+                        "-mx-1 -my-0.5 rounded-full px-1 py-0.5 font-semibold text-background",
                         RANGE_FILL,
                       )
                     : "text-muted-foreground",
@@ -320,9 +316,9 @@ function RangeStops({
               [spec.max]: next[1] === last ? undefined : spec.stops[next[1]],
             });
           }}
-          className="group/range relative flex h-4 w-full touch-none select-none items-center"
+          className="group/range relative flex h-(--hub-range-thumb) w-full touch-none select-none items-center"
         >
-          <SliderPrimitive.Track className="relative h-[3px] w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
+          <SliderPrimitive.Track className="relative h-(--hub-range-track) w-full grow rounded-full bg-[color-mix(in_oklab,var(--foreground)_calc(4%*var(--contrast-wash-gain,1)),transparent)]">
             {spec.stops.map((_, i) =>
               // Under the range, which covers them where it runs, so its fill stays unbroken.
               i === 0 || i === last ? null : (
@@ -344,9 +340,8 @@ function RangeStops({
               key={thumb === 0 ? "min" : "max"}
               aria-label={`${thumb === 0 ? "Minimum" : "Maximum"} ${spec.label.toLowerCase()}`}
               aria-valuetext={chip(index)}
-              style={{ width: THUMB, height: THUMB }}
               className={cn(
-                "relative block cursor-grab rounded-full outline-none transition-shadow duration-150 hover:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] focus-visible:shadow-[0_0_0_8px_color-mix(in_srgb,var(--hub-slider-fg)_18%,transparent)] active:cursor-grabbing active:shadow-[0_0_0_10px_color-mix(in_srgb,var(--hub-slider-fg)_22%,transparent)]",
+                "relative block size-(--hub-range-thumb) cursor-grab rounded-full ring-(--hub-slider-fg)/20 outline-none focus-visible:ring-4 active:cursor-grabbing",
                 RANGE_FILL,
               )}
             />

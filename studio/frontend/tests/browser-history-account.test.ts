@@ -14,7 +14,7 @@ const localStorage = {
 };
 Object.assign(globalThis, {
   localStorage,
-  window: { localStorage, location: { protocol: "http:" }, addEventListener: (_: string, flush: () => void) => flushes.push(flush) },
+  window: { localStorage, location: { protocol: "http:" }, addEventListener: (type: string, flush: () => void) => type === "pagehide" && flushes.push(flush) },
 });
 
 register("./helpers/browser-store-resolver.mjs", import.meta.url);

@@ -1,19 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Ephemeral web-RAG for deep research auto-read.
-
-Deep research auto-reads the top search results so synthesis is grounded in page text rather
-than short snippets. Whole pages make a small local model loop on boilerplate, so scraped pages
-go through the *same* retrieval pipeline the knowledge base uses and only the most relevant
-passages are folded into the evidence.
-
-Nothing here re-implements chunking, embedding, retrieval, ranking, or rendering; it wires
-Unsloth's existing KB components to the live scrape. The only difference from a persisted KB is
-the corpus: pages are ingested under a unique throwaway scope deleted in a ``finally`` block, so
-an auto-read never pollutes a user's knowledge base, like the per-thread attachment RAG already
-does on the same store.
-"""
+"""Deep research auto-read web RAG: pages go in a throwaway scope deleted in finally, not the KB."""
 
 from __future__ import annotations
 
@@ -58,14 +46,7 @@ def retrieve_web_chunks(
     overlap: int | None = None,
     model_name: str | None = None,
 ) -> tuple[str, list[dict]]:
-    """Ingest scraped pages into an ephemeral RAG scope, hybrid-retrieve the passages most
-    relevant to ``query``, and return ``(rendered_chunks, sources)`` using Unsloth's KB
-    formatter.
-
-    ``pages`` is a list of dicts with ``text`` (required) and optional ``title`` / ``url``
-    (``title`` becomes the ``<chunk source>``). Returns ``("", [])`` when there is nothing
-    usable or RAG is unavailable, so the caller can fall back to snippet evidence. The scope
-    is always deleted before returning, so nothing is left in the store."""
+    """Ingests pages into a throwaway scope that is always deleted; empty result means use snippets."""
     query = (query or "").strip()
     if not query or top_n <= 0 or not pages or not rag_db.RAG_AVAILABLE:
         return "", []
@@ -95,8 +76,7 @@ def retrieve_web_chunks(
             )
             if not chunks:
                 continue
-            # The identity must come from the encode that produced these vectors: a concurrent ST failure
-            # swaps the process embedder, and reading it after the fact labels the page with the wrong space.
+            # Take identity from the encode that made these vectors; reading it later can label the wrong space.
             vectors, identity = embeddings.encode_with_identity(
                 [chunk.text for chunk in chunks], model_name = model, normalize = True
             )

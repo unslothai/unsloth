@@ -32,7 +32,6 @@ for _p in (str(_BACKEND_ROOT), str(_REPO_ROOT / "scripts")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-# Fixed prompt set so the LPIPS mean is not hostage to a single composition.
 PROMPTS = [
     "A cozy reading nook by a rain-streaked window, warm lamplight, a cat asleep on a stack of books",
     "A lone lighthouse on a rocky cliff at sunset, dramatic clouds, crashing waves, highly detailed",
@@ -48,19 +47,12 @@ _FAMILIES: dict[str, dict[str, Any]] = {
 }
 
 _CONFIGS: dict[str, dict[str, Any]] = {
-    # bit-exact reference: everything off / native / dense
     "reference": dict(te = "none", speed = "off", attn = "native", cache = "off"),
-    # non-compile floor: eager patches + attention auto-upgrade
     "eager": dict(te = "none", speed = "eager", attn = "auto", cache = "off"),
-    # default dense tier (regional compile), uncached
     "compile": dict(te = "none", speed = "default", attn = "auto", cache = "off"),
-    # max tier (max-autotune regional compile + TF32 + fused QKV), uncached
     "speedmax": dict(te = "none", speed = "max", attn = "auto", cache = "off"),
-    # default tier + explicit FBCache (auto engages it only on the max tier)
     "fbcache": dict(te = "none", speed = "default", attn = "auto", cache = "fbcache"),
-    # FBCache without compile: isolates the cache's drift from the compile floor
     "fbcache_eager": dict(te = "none", speed = "eager", attn = "auto", cache = "fbcache"),
-    # TE quant isolation on the bit-exact stack: the conditioning perturbation ALONE
     "te_fp8dyn": dict(te = "fp8_dynamic", speed = "off", attn = "native", cache = "off"),
     "te_fp8": dict(te = "fp8", speed = "off", attn = "native", cache = "off"),
 }
@@ -178,7 +170,6 @@ def _apply_levers(
     engaged: dict[str, Any] = {"te": None, "attn": None, "cache": None, "speed_optims": {}}
 
     if cfg["te"] != "none":
-        # Returns (mode, reason, status) now; this bench only reports the mode that engaged.
         engaged["te"] = quantize_text_encoders(
             pipe, tgt, mode = cfg["te"], family = fam_obj.name, logger = logger
         ).mode
@@ -363,7 +354,6 @@ def main() -> None:
     pipe.to("cuda")
     weights_gb = _alloc_gb()
 
-    # Warmup pays the one-time compile / cuDNN autotune outside the timed runs.
     wt0 = time.perf_counter()
     _generate(
         pipe,

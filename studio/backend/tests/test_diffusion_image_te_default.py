@@ -414,7 +414,9 @@ def test_automatic_default_budgets_dense_when_the_hub_cannot_answer(monkeypatch)
 def test_automatic_default_budgets_int8_once_the_hub_lists_the_file(monkeypatch):
     scale, _ = _budget(monkeypatch, _auto_int8(), listed = (_QWEN25VL_INT8[1],))
     explicit, _ = _budget(monkeypatch, "int8")
-    assert scale == explicit < 1.0
+    # The automatic pick takes the int8 file only, so it is priced at that file; an explicit int8 keeps the fp8
+    # ceiling of the file it may fall back to.
+    assert scale == tpq.te_int8_convrot_budget_scale(_fam("qwen-image")) < explicit < 1.0
 
 
 def test_automatic_default_budgets_int8_when_the_file_is_cached_without_asking_the_hub(monkeypatch):

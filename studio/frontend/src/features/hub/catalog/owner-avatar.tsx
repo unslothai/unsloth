@@ -13,10 +13,10 @@ import {
 type AvatarSize = "xs" | "sm" | "md" | "lg";
 
 const SIZES: Record<AvatarSize, string> = {
-  xs: "size-5 rounded-[8px] text-ui-9",
-  sm: "size-7 rounded-[10px] text-ui-11",
-  md: "size-9 rounded-[12px] text-ui-13",
-  lg: "size-12 rounded-[15px] text-ui-16",
+  xs: "size-5 rounded-sm text-ui-9",
+  sm: "size-7 rounded-sm text-ui-11",
+  md: "size-9 rounded-md text-ui-13",
+  lg: "size-12 rounded-lg text-ui-16",
 };
 
 const UNSLOTH_OWNER_LOGO: ProviderLogo = {
@@ -57,19 +57,11 @@ export function OwnerAvatar({
   remote = true,
 }: {
   owner: string;
-  /**
-   * Repo name (after `owner/`). For an eligible owner (currently "unsloth"),
-   * renders the matched upstream provider's logo instead of the HF profile pic
-   * (e.g. an Unsloth Qwen2.5 re-upload shows the Qwen logo).
-   */
+  /** Repo name after `owner/`; for eligible owners renders the upstream provider's logo. */
   repoName?: string;
   size?: AvatarSize;
   className?: string;
-  /**
-   * When false, never fetch the owner's HF profile picture; show a local
-   * provider logo or colored-initial tile instantly. Virtualized list rows pass
-   * `false` to avoid a per-row request storm; the inspector keeps `true`.
-   */
+  /** False skips the HF profile fetch; virtualized rows pass false to avoid request storms. */
   remote?: boolean;
 }) {
   const providerLogo = resolveOwnerProviderLogo(owner, repoName);
@@ -158,7 +150,6 @@ function ProviderLogoTile({
     );
   }
 
-  // mono treatments paint a silhouette via CSS mask; host text color drives its color.
   const colorClass =
     provider.treatment === "mono-black" ? "text-black" : "text-foreground";
   return (

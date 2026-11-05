@@ -797,6 +797,23 @@ def test_the_window_mask_is_built_once_per_shape(monkeypatch):
     attention_dispatch._WINDOW_MASK_CACHE.clear()
 
 
+def test_an_inference_mode_window_mask_is_not_served_to_training():
+    """Eval under inference_mode then a training step of the same shape: the cached mask must not
+    be an inference tensor, which SDPA backends that save the mask cannot keep for backward."""
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+    cpu = torch.device("cpu")
+    with torch.inference_mode():
+        evaluated = attention_dispatch._windowed_causal_mask(6, 6, 3, cpu)
+        assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is evaluated
+    trained = attention_dispatch._windowed_causal_mask(6, 6, 3, cpu)
+    assert not torch.is_inference(trained)
+    assert torch.equal(trained, evaluated)
+    assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is trained
+    with torch.inference_mode():
+        assert attention_dispatch._windowed_causal_mask(6, 6, 3, cpu) is trained
+    attention_dispatch._WINDOW_MASK_CACHE.clear()
+
+
 def test_the_outgoing_window_mask_is_freed_before_its_replacement(monkeypatch):
     """A shape change must not hold two dense masks at once. Dynamic-length training walks
     through shapes, and at 32K each mask is 1 GiB on top of the construction temporaries."""

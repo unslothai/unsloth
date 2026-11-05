@@ -12,7 +12,6 @@ and loading it back must restore every rank's shard.
 from __future__ import annotations
 
 import os
-import socket
 import types
 
 import pytest
@@ -28,9 +27,8 @@ if not dist.is_available() or not dist.is_gloo_available():
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _build():

@@ -1,5 +1,5 @@
 {
- "lock_sha256": "4776befb11c7f7e44467524b56dacd833c0ed44df7c936c036e05dcc96d35c51",
+ "lock_sha256": "67f8bb26d23ae01b24d56c50ce16556bffdbeb4771104b0da6c5f1b9abd86fae",
  "requires": {
   "aiohappyeyeballs": [
    ">=2.5.0"
@@ -595,7 +595,7 @@
   "bitsandbytes": 60651714,
   "blobfile": 75413,
   "build": 31179,
-  "certifi": 136983,
+  "certifi": 136464,
   "cffi": 221824,
   "charset-normalizer": 223149,
   "click": 125251,

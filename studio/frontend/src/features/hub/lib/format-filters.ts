@@ -36,7 +36,6 @@ export function matchesFormat(
     return normalized === "gguf";
   }
   if (formatFilter === "mlx") return normalized === "mlx";
-  // NPU models come from Lemonade's catalog, never from a Hub repo or the disk scan.
   if (formatFilter === "npu") return false;
   // Where a model came from, not its format: the On Device list checks the row's source.
   if (formatFilter === "unsloth") return false;
@@ -102,6 +101,17 @@ export function matchesRecommended(
   return format !== null && checkpointQuantFormats.includes(format);
 }
 
+/** Recommended for an image / video model: also full-precision checkpoints, since diffusers repos are the main way to run them. */
+export function matchesRecommendedDiffusion(
+  result: { id: string; isGguf: boolean; quantMethod?: string },
+  checkpointQuantFormats: readonly string[],
+): boolean {
+  return (
+    matchesRecommended(result, checkpointQuantFormats) ||
+    checkpointQuantFormat(result) === null
+  );
+}
+
 // Recommended browsing lists every GGUF but only checkpoints with more than this many likes.
 export const MIN_RECOMMENDED_CHECKPOINT_LIKES = 30;
 
@@ -123,7 +133,6 @@ export function hasRecommendedCheckpointLikes(result: {
 // name since the search listing often omits the quant config.
 const NON_FINETUNABLE_NAME =
   /(?:^|[-_/.])(?:fp8|nvfp4|mxfp4|w4a16|w8a8|w8a16|int4|int8|gptq|awq|mobile|litert|tflite)(?:[-_/.]|$)/i;
-// Quant methods Unsloth can fine-tune: full precision (none) or bitsandbytes.
 const FINETUNABLE_QUANT = new Set(["bitsandbytes", "bnb", "bnb_4bit"]);
 
 export function isUnslothFinetunable(result: {

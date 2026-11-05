@@ -122,9 +122,8 @@ set_aside() {
 
 shopt -s dotglob nullglob
 
-# unsloth-studio-update renames src to .src-prev.* and the staged tree into place; a kill
-# between the two leaves the previous tree as the only copy, so put it back before the
-# loop below prunes the home's src link as dangling.
+# A killed unsloth-studio-update can leave .src-prev.* as the only copy; restore it before
+# the loop prunes the src link.
 if [ ! -e "$APP/src" ]; then
     prev=("$APP"/.src-prev.*)
     if [ "${#prev[@]}" -eq 1 ] && [ -d "${prev[0]}" ]; then
@@ -165,10 +164,7 @@ for target in "$HOME_DIR"/*; do
     esac
 done
 
-# A killed update (docker stop ends in SIGKILL) can leave its previous tree beside src
-# and half-replaced packages; unsloth-studio-update keeps a record beside src until the
-# update is committed. Finish that restore here, before supervisord starts Studio on the
-# unverified tree. The home is linked by now, so the updater finds the venv.
+# Finish a killed update's rollback before supervisord starts Studio.
 if [ -s "$APP/.src-update.rollback" ]; then
     updater="${UNSLOTH_STUDIO_UPDATER:-/usr/local/bin/unsloth-studio-update}"
     if [ -x "$updater" ]; then

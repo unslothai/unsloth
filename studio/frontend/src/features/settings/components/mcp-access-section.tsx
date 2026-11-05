@@ -10,11 +10,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
-import { usePlatformStore } from "@/config/env";
-import { translate, useT } from "@/i18n";
-import { cn } from "@/lib/utils";
 import { McpServerIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { usePlatformStore } from "@/config/env";
+import { translate, useT } from "@/i18n";
+import { isTauri } from "@/lib/api-base";
+import { cn } from "@/lib/utils";
 import {
   type ReactElement,
   useEffect,
@@ -40,10 +41,7 @@ import {
   hasMcpSnippet,
 } from "./mcp-agent-snippet";
 import { SettingsRow } from "./settings-row";
-import {
-  readUseTunnelPref,
-  subscribeUseTunnelPref,
-} from "./tunnel-preference";
+import { readUseTunnelPref, subscribeUseTunnelPref } from "./tunnel-preference";
 
 const ENV_FORCE = "UNSLOTH_STUDIO_ENABLE_MCP";
 const MCP_AGENTS = SUPPORTED_AGENTS.filter((agent) => hasMcpSnippet(agent.id));
@@ -133,7 +131,11 @@ export function McpAccessSection({
   // match the server address shown by the API examples.
   const origin = typeof window !== "undefined" ? window.location.origin : "";
   const base =
-    useTunnel && cloudflareUrl ? cloudflareUrl : (serverUrl ?? origin);
+    useTunnel && cloudflareUrl
+      ? cloudflareUrl
+      : isTauri
+        ? (serverUrl ?? origin)
+        : origin;
   const snippet = settings?.enabled
     ? (buildMcpSnippet(agent, base, os, apiKey) ??
       buildMcpSnippet(agent, settings.url, os, apiKey))
@@ -141,41 +143,30 @@ export function McpAccessSection({
   const agentDetails = detailsFor(agent);
 
   return (
-    <section
+    <div
       data-settings-label={t("settings.apiKeys.mcp.title")}
-      className="overflow-hidden rounded-lg border border-border/70"
+      className="flex min-w-0 flex-col"
     >
-      <div className="flex items-start gap-3 bg-muted/30 p-4">
-        <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
-          <HugeiconsIcon
-            icon={McpServerIcon}
-            className="size-4 text-foreground"
-          />
-        </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <h2 className="settings-heading text-base font-semibold font-heading">
-            {t("settings.apiKeys.mcp.title")}
-          </h2>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            {t("settings.apiKeys.mcp.description")}
-          </p>
-        </div>
-      </div>
-
       {error ? (
-        <p className="border-t border-border/60 px-4 py-2.5 text-xs leading-snug text-destructive">
-          {error}
-        </p>
+        <p className="pt-2 text-xs leading-snug text-destructive">{error}</p>
       ) : null}
 
       {settings ? (
-        <div className="border-t border-border/60 px-4 py-1">
+        <>
           <SettingsRow
-            label={t("settings.apiKeys.mcp.enable")}
+            icon={
+              <HugeiconsIcon
+                icon={McpServerIcon}
+                strokeWidth={1.75}
+                className="size-[calc(18px*var(--ui-space-scale,1))]"
+              />
+            }
+            label={t("settings.apiKeys.mcp.title")}
+            hint={t("settings.apiKeys.mcp.enableDescription")}
             description={
               settings.forcedByEnv
                 ? t("settings.apiKeys.mcp.lockedByEnv", { name: ENV_FORCE })
-                : t("settings.apiKeys.mcp.enableDescription")
+                : t("settings.apiKeys.mcp.description")
             }
           >
             <Switch
@@ -269,8 +260,8 @@ export function McpAccessSection({
               </div>
             </>
           ) : null}
-        </div>
+        </>
       ) : null}
-    </section>
+    </div>
   );
 }

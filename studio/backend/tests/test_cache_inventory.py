@@ -1,12 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Only caches may be deleted, and only ones this backend resolved itself.
-
-The purge takes a cache KEY and turns it into a directory here, so these tests
-cover the two halves that keep that honest: the sizing that decides what the UI
-offers, and every refusal that stands between a key and an rmtree.
-"""
 
 import os
 import sys
@@ -35,12 +29,7 @@ def _write(path: Path, text: str = "x") -> Path:
 
 @pytest.fixture
 def isolated_caches(tmp_path, monkeypatch):
-    """Point every resolver at tmp_path, so no test can reach a real cache.
-
-    The host running these tests has real HF_HOME / XDG_CACHE_HOME values, and
-    the resolvers are supposed to honour exactly those, so the isolation has to
-    be as complete as it is here.
-    """
+    "Isolate every cache resolver from host data."
     from utils import cache_cleanup, hf_cache_settings
 
     hf_home = tmp_path / "hf"
@@ -52,8 +41,6 @@ def isolated_caches(tmp_path, monkeypatch):
     monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
     monkeypatch.setattr(hf_cache_settings, "known_hf_cache_homes", lambda: [hf_home])
     monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [hf_home / "hub"])
-    # The compiled cache is cleared through cache_cleanup's own ownership model,
-    # which test_cache_cleanup covers; here it must simply not reach a real one.
     monkeypatch.setattr(cache_cleanup, "_cleanable_cache_dirs", lambda: [])
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "xdg"))
@@ -76,14 +63,9 @@ def isolated_caches(tmp_path, monkeypatch):
     ):
         monkeypatch.setenv(key, str(tmp_path / name))
     monkeypatch.delenv("MPLCONFIGDIR", raising = False)
-    # Sizes are memoized for a minute in production; a test must never read one
-    # another test measured.
     monkeypatch.setattr(cache_inventory, "_size_cache", {})
     monkeypatch.setattr(cache_inventory, "_size_epochs", {})
     return hf_home
-
-
-# --- sizing ---------------------------------------------------------------
 
 
 def test_a_cache_is_sized_from_its_own_bytes(tmp_path, monkeypatch, isolated_caches):
@@ -93,7 +75,6 @@ def test_a_cache_is_sized_from_its_own_bytes(tmp_path, monkeypatch, isolated_cac
     entry = describe_cache(definition_for("uv"))
     assert entry["present"] is True
     assert entry["size_bytes"] == 150
-    # Top-level entries: the file and the directory, not every leaf below it.
     assert entry["entry_count"] == 2
     assert entry["purgeable"] is True
 
@@ -133,8 +114,6 @@ def test_the_inventory_totals_exclude_the_opt_in_caches(tmp_path, isolated_cache
     assert by_key["hf_hub"]["opt_in"] is True
     assert by_key["hf_hub"]["size_bytes"] == 900
     assert inventory["total_bytes"] == 1000
-    # Reclaimable is what a bulk purge would actually free, so the cache whose
-    # deletion re-downloads models is not in it.
     assert inventory["reclaimable_bytes"] == 100
 
 
@@ -144,9 +123,6 @@ def test_every_key_the_api_exposes_has_a_definition():
         assert definition_for(key).key == key
 
 
-# --- refusals -------------------------------------------------------------
-
-
 @pytest.mark.parametrize("raw", ["/", "/home", os.path.expanduser("~")])
 def test_a_root_at_or_near_the_filesystem_root_is_refused(raw):
     with pytest.raises(CachePurgeRefused):
@@ -154,9 +130,6 @@ def test_a_root_at_or_near_the_filesystem_root_is_refused(raw):
 
 
 def test_a_shallow_root_is_refused_even_when_nothing_protects_it(tmp_path):
-    # One component below the anchor ("/mnt", "C:\\Users"): not a protected
-    # location, a real directory, and never a cache. The depth rule is the only
-    # thing between a variable pointed there and an rmtree of the contents.
     shallow = Path(*tmp_path.parts[:2])
     if not shallow.is_dir() or shallow.is_symlink() or len(shallow.parts) != 2:
         pytest.skip(f"no shallow non-symlink directory to test with ({shallow})")
@@ -220,9 +193,6 @@ def test_an_unknown_key_deletes_nothing_from_the_valid_ones(tmp_path, isolated_c
     assert kept.exists()
 
 
-# --- deletion behaviour ---------------------------------------------------
-
-
 def test_a_purge_empties_the_root_without_removing_it(tmp_path, isolated_caches):
     root = tmp_path / "uv"
     _write(root / "a.bin", "a" * 100)
@@ -280,7 +250,6 @@ def test_clearing_the_hub_cache_is_asked_for_by_itself(tmp_path, isolated_caches
     purge_caches(["hf_hub"])
     assert not blob.exists()
     assert (isolated_caches / "hub").is_dir()
-    # The token lives in the cache HOME, one level above the hub cache.
     assert token.exists()
 
 
@@ -304,18 +273,7 @@ def test_a_refused_root_reports_itself_and_deletes_nothing(tmp_path, monkeypatch
 
 @pytest.fixture
 def only_the_configured_compiled_cache(monkeypatch, tmp_path):
-    """Keep the compiled-cache clear off any install-tree cache of this checkout.
-
-    cache_cleanup's own ownership model stays in force: that is the thing under
-    test here, and re-deriving it in cache_inventory is exactly what this
-    feature must not do.
-
-    _configured_cache_dirs also offers the CWD, and importing unsloth creates a
-    compiled cache there, so these run from a directory that has none. Skipping
-    on one instead meant they never ran at all.
-    """
     from utils import cache_cleanup
-
     monkeypatch.setattr(cache_cleanup, "_CACHE_DIRS", [])
     monkeypatch.chdir(tmp_path)
 
@@ -338,7 +296,6 @@ def test_the_compiled_cache_is_cleared_through_the_module_that_owns_it(
     result = purge_caches(["unsloth_compiled"])
     assert result["results"][0]["errors"] == []
     assert not generated.exists()
-    # The marker is rewritten, so the next cleanup still knows the directory is ours.
     assert (compiled / cache_cleanup.CACHE_MARKER).is_file()
 
 
@@ -372,8 +329,6 @@ def test_the_root_of_a_purged_cache_is_never_the_deletion_target(tmp_path, isola
     before = root.stat().st_ino
     purge_caches(["uv"])
     assert root.is_dir()
-    # Same directory, not a recreated one: nothing recreates it with different
-    # ownership or permissions.
     assert root.stat().st_ino == before
 
 
@@ -381,15 +336,11 @@ def test_a_purge_forgets_the_size_it_measured_before_it(tmp_path, isolated_cache
     _write(tmp_path / "uv" / "a.bin", "a" * 100)
     assert build_inventory()["total_bytes"] == 100
     result = purge_caches(["uv"])
-    # The inventory the purge returns cannot still offer the 100 bytes it just
-    # deleted, even though the memo was warm.
     assert result["inventory"]["total_bytes"] == 0
     assert build_inventory()["total_bytes"] == 0
 
 
 def test_the_compiled_cache_is_never_swept_up_by_a_bulk_purge():
-    """A bulk purge may cost a recompile or a re-download, not a running job: a
-    worker imports generated modules from here long after it started."""
     definition = definition_for("unsloth_compiled")
     assert definition.opt_in is True
 
@@ -401,22 +352,18 @@ def test_the_compiled_cache_is_never_swept_up_by_a_bulk_purge():
     }
     assert "unsloth_compiled" not in bulk
 
-    # ...and it is still individually purgeable, or the row would be dead.
     entry = next(e for e in inventory["caches"] if e["key"] == "unsloth_compiled")
     assert entry["opt_in"] is True
 
 
 def test_a_junctioned_cache_root_is_refused_like_a_symlink(tmp_path, monkeypatch):
-    """Only IO_REPARSE_TAG_SYMLINK sets S_IFLNK, so is_symlink() is False for a
-    junction while realpath() follows it and the TARGET would be emptied."""
     target = tmp_path / "somewhere" / "deep"
     target.mkdir(parents = True)
     kept = _write(target / "not-a-cache.txt", "mine")
     junction = tmp_path / "cache"
     junction.mkdir()
 
-    # os.path.isjunction is the 3.12+ answer and is always False on POSIX, so
-    # the platform test is what a Windows host would report here.
+    # isjunction is always False on POSIX, so the platform test is what matters.
     monkeypatch.setattr(os.path, "isjunction", lambda path: Path(path) == junction, raising = False)
     assert not junction.is_symlink()
 
@@ -429,7 +376,6 @@ def test_a_junctioned_cache_root_is_refused_like_a_symlink(tmp_path, monkeypatch
 def test_a_bulk_clear_cannot_reach_an_opt_in_cache_nested_in_another_root(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """HF_DATASETS_CACHE below UV_CACHE_DIR would otherwise go with the outer root."""
     uv = tmp_path / "uv"
     datasets = uv / "hf-datasets"
     _write(uv / "wheels" / "wheel.whl", "w" * 10)
@@ -444,7 +390,6 @@ def test_a_bulk_clear_cannot_reach_an_opt_in_cache_nested_in_another_root(
     assert dataset_file.exists()
     assert result["freed_bytes"] == 0
 
-    # ...and the nested cache is still clearable when it is the one asked for.
     purge_caches(["hf_datasets"])
     assert not dataset_file.exists()
 
@@ -452,8 +397,6 @@ def test_a_bulk_clear_cannot_reach_an_opt_in_cache_nested_in_another_root(
 def test_an_explicit_hub_cache_outside_a_hub_folder_stays_clearable(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """HF_HUB_CACHE=/mnt/hf-cache makes the DISPLAY home the hub itself, and
-    protecting it there guards no credential: the token lives in the HF home."""
     from utils import hf_cache_settings
 
     hub = tmp_path / "hf-cache"
@@ -467,18 +410,113 @@ def test_an_explicit_hub_cache_outside_a_hub_folder_stays_clearable(
     described = describe_cache(definition_for("hf_hub"))
     assert described["purgeable"] is True, described["blocked_reason"]
 
-    # ...and the HF home that holds the token is still refused.
     with pytest.raises(CachePurgeRefused):
         assert_purgeable_root(isolated_caches)
 
 
-# --- resolvers ------------------------------------------------------------
+@pytest.mark.parametrize("shared_blob", [False, True])
+def test_an_active_hub_nested_in_a_remembered_hub_stays_clearable(
+    tmp_path, monkeypatch, isolated_caches, shared_blob
+):
+    from utils import hf_cache_settings
+
+    old_hub = isolated_caches / "hub"
+    active = old_hub / "new-downloads"
+    old_blob = _write(old_hub / "models--test--old" / "blobs" / "weights", "o" * 256)
+    active_blob = _write(active / "models--test--active" / "blobs" / "weights", "a" * 128)
+    if shared_blob:
+        os.link(active_blob, old_blob.parent / "shared")
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        active, active, isolated_caches / "xet", "environment", "HF_HUB_CACHE"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old_hub])
+
+    described = describe_cache(definition_for("hf_hub"))
+    assert described["purgeable"] is True, described["blocked_reason"]
+    assert described["size_bytes"] == 384
+    assert described["clear_size_bytes"] == (0 if shared_blob else 128)
+    assert described["clear_entry_count"] == 1
+
+    rows = {row["name"]: row for row in cache_inventory.cache_breakdown("hf_hub")["entries"]}
+    assert set(rows) == {"models--test--old", "models--test--active"}
+    assert rows["models--test--active"]["size_bytes"] == 128
+    assert rows["models--test--active"]["cache_path"] == str(
+        (active / "models--test--active").resolve()
+    )
+
+    purge_caches(["hf_hub"])
+    assert not active_blob.exists()
+    assert old_blob.exists()
+
+
+@pytest.mark.parametrize("depth", [1, 3])
+def test_a_nested_hub_breakdown_walks_each_active_directory_once(
+    monkeypatch, isolated_caches, depth
+):
+    from utils import hf_cache_settings
+
+    old_hub = isolated_caches / "hub"
+    active = old_hub.joinpath(*(["nested"] * depth))
+    blob = _write(active / "models--test--active" / "blobs" / "weights", "a" * 128)
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        active, active, isolated_caches / "xet", "environment", "HF_HUB_CACHE"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old_hub])
+    scandir = os.scandir
+    visits = []
+
+    def tracked_scandir(path):
+        visits.append(Path(path))
+        return scandir(path)
+
+    monkeypatch.setattr(cache_inventory.os, "scandir", tracked_scandir)
+    rows = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    assert visits.count(blob.parent) == 1
+    assert sum(row["size_bytes"] for row in rows) == 128
+    assert any(row.get("repo_id") == "test/active" for row in rows)
+
+
+def test_a_growing_nested_hub_does_not_offer_more_bytes_than_it_measured(
+    monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+
+    old_hub = isolated_caches / "hub"
+    active = old_hub / "new-downloads"
+    _write(old_hub / "models--test--old" / "blobs" / "weights", "o" * 256)
+    active_blob = _write(active / "models--test--active" / "blobs" / "weights", "a" * 128)
+    paths = hf_cache_settings.HuggingFaceCachePaths(
+        active, active, isolated_caches / "xet", "environment", "HF_HUB_CACHE"
+    )
+    monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: paths)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old_hub])
+    measure = cache_inventory._measure_root
+    scandir = os.scandir
+    visits = []
+
+    def tracked_scandir(path):
+        visits.append(Path(path))
+        return scandir(path)
+
+    def grow_after_measure(root, **kwargs):
+        result = measure(root, **kwargs)
+        if root == old_hub:
+            active_blob.write_text("a" * 1024, encoding = "utf-8")
+        return result
+
+    monkeypatch.setattr(cache_inventory, "_measure_root", grow_after_measure)
+    monkeypatch.setattr(cache_inventory.os, "scandir", tracked_scandir)
+    described = describe_cache(definition_for("hf_hub"))
+    assert described["size_bytes"] == 384
+    assert described["clear_size_bytes"] == 128
+    assert visits.count(active_blob.parent) == 1
 
 
 def test_the_inductor_cache_follows_the_account_name_torch_uses(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """A container with no USER puts torch's cache at torchinductor_root, not _0."""
     import tempfile
 
     monkeypatch.delenv("TORCHINDUCTOR_CACHE_DIR", raising = False)
@@ -498,8 +536,6 @@ def test_the_inductor_cache_follows_the_account_name_torch_uses(
 def test_the_vllm_cache_is_vllms_own_default_on_every_platform(
     tmp_path, monkeypatch, isolated_caches, platform
 ):
-    """vllm/envs.py is XDG_CACHE_HOME or ~/.cache then "vllm", which the platform
-    convention matches on Linux only."""
     import sys as _sys
 
     monkeypatch.delenv("VLLM_CACHE_ROOT", raising = False)
@@ -514,11 +550,7 @@ def test_the_vllm_cache_honours_xdg_because_vllm_does(tmp_path, monkeypatch, iso
     assert cache_inventory._vllm_dirs() == [tmp_path / "xdg" / "vllm"]
 
 
-# --- what a refusal costs -------------------------------------------------
-
-
 def test_a_refused_root_is_never_walked(tmp_path, monkeypatch, isolated_caches):
-    """Or the Resources tab measures it recursively on every open."""
     outputs = tmp_path / "outputs"
     monkeypatch.setattr(
         cache_inventory, "protected_trees", lambda: {Path(os.path.realpath(outputs))}
@@ -543,8 +575,6 @@ def test_a_refused_root_is_never_walked(tmp_path, monkeypatch, isolated_caches):
 def test_a_cache_anywhere_under_the_documents_folder_is_refused(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """A protected TREE, not only a protected path: an inherited
-    UV_CACHE_DIR=~/Documents/archive would otherwise be reported purgeable."""
     from utils.paths import storage_roots
 
     documents = tmp_path / "Documents"
@@ -560,8 +590,6 @@ def test_a_cache_anywhere_under_the_documents_folder_is_refused(
 
 
 def test_a_junction_inside_a_cache_is_not_walked(tmp_path, monkeypatch, isolated_caches):
-    """is_dir() sees a directory and is_symlink() no link, so descending sizes the
-    junction's target, and one pointing at an ancestor never terminates."""
     root = tmp_path / "uv"
     _write(root / "real.bin", "r" * 10)
     _write(root / "wheels" / "junction" / "elsewhere.bin", "z" * 4096)
@@ -571,14 +599,9 @@ def test_a_junction_inside_a_cache_is_not_walked(tmp_path, monkeypatch, isolated
     assert entry["size_bytes"] == 10
 
 
-# --- reporting ------------------------------------------------------------
-
-
 def test_a_compiled_cache_that_survives_the_clear_says_so(
     tmp_path, monkeypatch, only_the_configured_compiled_cache
 ):
-    """cache_cleanup swallows every failure, so a read-only directory looked
-    identical to a clean clear and the UI said so."""
     from utils import cache_cleanup
 
     compiled = tmp_path / "compiled_cache"
@@ -595,7 +618,6 @@ def test_a_compiled_cache_that_survives_the_clear_says_so(
 
 
 def test_purging_a_hub_cache_invalidates_the_hugging_face_scans(tmp_path, isolated_caches):
-    """Or the picker keeps listing deleted models for the scan's TTL."""
     from hub.utils import inventory_scan
 
     _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
@@ -603,7 +625,6 @@ def test_purging_a_hub_cache_invalidates_the_hugging_face_scans(tmp_path, isolat
     purge_caches(["hf_hub"])
     assert inventory_scan.hf_cache_scans_epoch() > before
 
-    # ...and a cache that holds no repository does not disturb it.
     steady = inventory_scan.hf_cache_scans_epoch()
     _write(tmp_path / "uv" / "wheel.whl", "w" * 10)
     purge_caches(["uv"])
@@ -613,8 +634,6 @@ def test_purging_a_hub_cache_invalidates_the_hugging_face_scans(tmp_path, isolat
 def test_a_pattern_limited_cache_nested_in_another_root_is_sheltered(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """MPLCONFIGDIR keeps matplotlibrc, which is why its own clear is
-    pattern-limited, so an outer root must not take it whole."""
     uv = tmp_path / "uv"
     config = uv / "matplotlib"
     _write(uv / "wheels" / "wheel.whl", "w" * 10)
@@ -629,7 +648,6 @@ def test_a_pattern_limited_cache_nested_in_another_root_is_sheltered(
     assert kept.exists()
     assert result["freed_bytes"] == 0
 
-    # ...and its own clear still takes the cache files and leaves the config.
     purge_caches(["matplotlib"])
     assert kept.exists()
     assert not fonts.exists()
@@ -638,8 +656,6 @@ def test_a_pattern_limited_cache_nested_in_another_root_is_sheltered(
 def test_a_cache_home_left_behind_is_protected_but_never_purged(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """An API key may append to that history through an endpoint the purge route
-    itself refuses, so only the ACTIVE home is a purge root."""
     from utils import hf_cache_settings
 
     previous = tmp_path / "old-home"
@@ -655,7 +671,6 @@ def test_a_cache_home_left_behind_is_protected_but_never_purged(
         lambda: [isolated_caches / "hub", previous / "hub"],
     )
     monkeypatch.delenv("HF_ASSETS_CACHE", raising = False)
-    # What initialize_hf_cache_environment leaves behind at startup.
     monkeypatch.setenv("HF_HOME", str(isolated_caches))
 
     assets = describe_cache(definition_for("hf_assets"))
@@ -667,13 +682,11 @@ def test_a_cache_home_left_behind_is_protected_but_never_purged(
     assert not mine.exists()
     assert theirs.exists()
 
-    # ...and a home that was left behind is still refused outright.
     with pytest.raises(CachePurgeRefused):
         assert_purgeable_root(previous)
 
 
 def test_the_pip_cache_is_the_one_pip_reports(tmp_path, monkeypatch, isolated_caches):
-    """pip.conf moves the cache and Studio's pip calls do not pass --isolated."""
     import subprocess as real_subprocess
 
     from utils import cache_inventory as module
@@ -709,15 +722,12 @@ def test_the_pip_probe_runs_once_and_survives_a_failure(tmp_path, monkeypatch, i
     assert module._probe_tool_cache_dir("pip", probe) is None
     assert module._probe_tool_cache_dir("pip", probe) is None
     assert len(calls) == 1
-    # ...and the platform default still answers, so the row does not vanish.
     assert module._pip_dirs() == [tmp_path / "xdg" / "pip"]
 
 
 def test_the_child_caches_follow_the_real_home_not_the_displayed_one(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """An explicit HF_HUB_CACHE makes cache_home the hub's PARENT, so the display
-    home misses the real assets and datasets and offers somebody else's."""
     from utils import hf_cache_settings
 
     project = tmp_path / "project"
@@ -745,7 +755,6 @@ def test_the_child_caches_follow_the_real_home_not_the_displayed_one(
 def test_a_measurement_that_began_before_a_purge_is_not_remembered(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """Or it offers space already gone for the rest of the memo window."""
     root = tmp_path / "uv"
     _write(root / "wheel.whl", "w" * 100)
     definition = definition_for("uv")
@@ -754,7 +763,6 @@ def test_a_measurement_that_began_before_a_purge_is_not_remembered(
     assert before_the_purge["size_bytes"] == 100
 
     def measure_then_purge(_definition):
-        # The purge lands while this walk is still running.
         for child in root.iterdir():
             child.unlink()
         cache_inventory.invalidate_cache_size("uv")
@@ -767,8 +775,6 @@ def test_a_measurement_that_began_before_a_purge_is_not_remembered(
 
 
 def test_the_pip_probe_asks_the_child_for_utf8(tmp_path, monkeypatch, isolated_caches):
-    """A redirected child takes the locale encoding, so a non-ASCII cache path
-    comes back mangled and resolves to nothing."""
     import subprocess as real_subprocess
 
     from utils import cache_inventory as module
@@ -794,8 +800,6 @@ def test_the_pip_probe_asks_the_child_for_utf8(tmp_path, monkeypatch, isolated_c
 def test_a_scoped_dataset_fallback_override_is_not_a_purge_root(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """cache_safe points HF_DATASETS_CACHE there mid-load, in this process, while
-    load_dataset writes Arrow files and lock state into it."""
     from utils.paths import storage_roots
 
     studio_cache = tmp_path / "studio-cache"
@@ -804,7 +808,6 @@ def test_a_scoped_dataset_fallback_override_is_not_a_purge_root(
     stable = _write(isolated_caches / "datasets" / "cached.arrow", "s" * 10)
     monkeypatch.setattr(storage_roots, "cache_root", lambda: studio_cache)
     monkeypatch.setenv("HF_HOME", str(isolated_caches))
-    # The override is live, exactly as it is while the fallback load runs.
     monkeypatch.setenv("HF_DATASETS_CACHE", str(fallback))
 
     entry = describe_cache(definition_for("hf_datasets"))
@@ -825,8 +828,6 @@ def test_a_scoped_dataset_fallback_override_is_not_a_purge_root(
 def test_the_matplotlib_cache_is_where_matplotlib_puts_it(
     tmp_path, monkeypatch, isolated_caches, platform, name, expected, patterned
 ):
-    """get_cachedir takes the XDG branch for linux and freebsd only; elsewhere it
-    is ~/.matplotlib, which is get_configdir() too, so only cache entries go."""
     import sys as _sys
 
     from utils import cache_inventory as module
@@ -842,7 +843,6 @@ def test_the_matplotlib_cache_is_where_matplotlib_puts_it(
 
 
 def test_the_cuda_cache_is_roaming_appdata_on_windows(tmp_path, monkeypatch, isolated_caches):
-    """The CUDA guide's default is %APPDATA%, which is Roaming, not Local."""
     import sys as _sys
 
     from utils import cache_inventory as module
@@ -861,8 +861,6 @@ def test_the_cuda_cache_is_roaming_appdata_on_windows(tmp_path, monkeypatch, iso
 
 
 def test_numbas_user_wide_fallback_cache_is_reported(tmp_path, monkeypatch, isolated_caches):
-    """__pycache__ next to the source is not ours, but UserWideCacheLocator's
-    AppDirs("numba", appauthor = False).user_cache_dir is."""
     monkeypatch.delenv("NUMBA_CACHE_DIR", raising = False)
     root = tmp_path / "xdg" / "numba"
     _write(root / "somemodule.nbi", "n" * 30)
@@ -873,8 +871,6 @@ def test_numbas_user_wide_fallback_cache_is_reported(tmp_path, monkeypatch, isol
 
 
 def test_the_studio_executables_directory_is_refused(tmp_path, monkeypatch, isolated_caches):
-    """Descendants of the studio home are deliberately allowed, since the caches
-    live there, so the shim and the managed executables need naming."""
     from utils.paths import storage_roots
 
     studio = tmp_path / "studio"
@@ -888,7 +884,6 @@ def test_the_studio_executables_directory_is_refused(tmp_path, monkeypatch, isol
     purge_caches(["uv"])
     assert shim.exists()
 
-    # ...and nothing below it either.
     monkeypatch.setenv("UV_CACHE_DIR", str(binaries / "vendor"))
     (binaries / "vendor").mkdir()
     with pytest.raises(CachePurgeRefused):
@@ -896,7 +891,6 @@ def test_the_studio_executables_directory_is_refused(tmp_path, monkeypatch, isol
 
 
 def test_the_npm_cache_follows_npmrc(tmp_path, monkeypatch, isolated_caches):
-    """No environment variable carries it, and the backend launches npm for MCP."""
     import shutil as real_shutil
     import subprocess as real_subprocess
 
@@ -920,7 +914,6 @@ def test_the_npm_cache_follows_npmrc(tmp_path, monkeypatch, isolated_caches):
 
 
 def test_a_probe_that_answers_with_a_relative_path_is_ignored(monkeypatch, isolated_caches):
-    """npm prints "undefined" rather than failing when it has no answer."""
     import subprocess as real_subprocess
 
     from utils import cache_inventory as module
@@ -935,8 +928,6 @@ def test_a_probe_that_answers_with_a_relative_path_is_ignored(monkeypatch, isola
 
 
 def test_the_recorded_install_uv_cache_is_reported(tmp_path, monkeypatch, isolated_caches):
-    """The seeded UV_CACHE_DIR is not always the one updates fill: an installer
-    that used a warm cache elsewhere records it, and the CLI obeys the record."""
     from utils.paths import storage_roots
 
     studio_cache = tmp_path / "studio-cache"
@@ -969,7 +960,6 @@ def test_a_blank_or_missing_uv_marker_adds_nothing(tmp_path, monkeypatch, isolat
 
 
 def test_the_studio_temporary_workspace_is_refused(tmp_path, monkeypatch, isolated_caches):
-    """tmp_root() is not a cache: decoding and training read files back from it."""
     from utils.paths import storage_roots
 
     workspace = tmp_path / "unsloth-studio"
@@ -986,8 +976,6 @@ def test_the_studio_temporary_workspace_is_refused(tmp_path, monkeypatch, isolat
 
 
 def test_two_cold_probes_do_not_race_into_the_fallback(tmp_path, monkeypatch, isolated_caches):
-    """Recording the miss before the probe finished had the second cold request
-    read it as a finished failure and show the fallback path."""
     import subprocess as real_subprocess
     import threading
 
@@ -1020,8 +1008,6 @@ def test_two_cold_probes_do_not_race_into_the_fallback(tmp_path, monkeypatch, is
 
 
 def test_the_inductor_row_ignores_the_diffusion_override(tmp_path, monkeypatch, isolated_caches):
-    """begin() repoints TORCHINDUCTOR_CACHE_DIR while a model is resident and
-    restore() puts it back, so a row that followed it and the clear disagree."""
     import getpass
     import tempfile
 
@@ -1043,7 +1029,6 @@ def test_the_inductor_row_ignores_the_diffusion_override(tmp_path, monkeypatch, 
     purge_caches(["torch_inductor"])
     assert transient.exists()
 
-    # ...and an ordinary override is still followed.
     elsewhere = tmp_path / "my-inductor"
     _write(elsewhere / "fx.bin", "e" * 10)
     monkeypatch.setenv("TORCHINDUCTOR_CACHE_DIR", str(elsewhere))
@@ -1051,8 +1036,6 @@ def test_the_inductor_row_ignores_the_diffusion_override(tmp_path, monkeypatch, 
 
 
 def test_a_configured_token_path_is_protected(tmp_path, monkeypatch, isolated_caches):
-    """HF_TOKEN_PATH is read instead of <home>/token and can name a file inside a
-    clearable cache."""
     assets = tmp_path / "mnt-hf"
     token = _write(assets / "token", "hf_secret")
     _write(assets / "blob", "a" * 10)
@@ -1068,8 +1051,6 @@ def test_a_configured_token_path_is_protected(tmp_path, monkeypatch, isolated_ca
 def test_a_purge_waits_for_the_downloads_writing_into_the_cache(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """A download writes blobs, locks and partials straight into the hub cache,
-    which is why the per-repository deletes refuse for this reason too."""
     from utils import cache_inventory as module
 
     blob = _write(isolated_caches / "hub" / "models--org--model" / "blob", "m" * 10)
@@ -1085,8 +1066,6 @@ def test_a_purge_waits_for_the_downloads_writing_into_the_cache(
 
 
 def test_the_hub_cache_is_reserved_in_both_registries(monkeypatch):
-    """A dataset download snapshot_downloads its datasets-- entries into the same
-    hub root, so a job in either registry has to hold the purge off."""
     from hub.utils import download_registry
     from utils import cache_inventory as module
 
@@ -1106,9 +1085,6 @@ def test_the_hub_cache_is_reserved_in_both_registries(monkeypatch):
 
     models, datasets = _Registry(), _Registry()
     monkeypatch.setattr(download_registry, "get_models_registry", lambda: models)
-    # The purge reserves datasets through the SERVICE, not the singleton, so that a
-    # managed-account install holds every per-account registry and not just the owner's.
-    # Same stub, attached at the seam the code actually uses.
     monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: datasets)
     from hub.services.datasets import downloads as dataset_downloads
 
@@ -1121,21 +1097,17 @@ def test_the_hub_cache_is_reserved_in_both_registries(monkeypatch):
     module._release_downloads(reserved)
     assert (models.held, datasets.held) == (0, 0)
 
-    # A dataset job alone still holds off the hub clear...
     datasets.free = False
     reserved, busy = module._reserve_downloads("hf_hub")
     assert busy is not None
-    # ...and the models reservation it had already taken is handed back.
     assert (models.held, datasets.held) == (0, 0)
 
-    # A cache no download writes into is not gated on one.
     assert module._reserve_downloads("uv") == ([], None)
 
 
 def test_one_blocked_root_does_not_put_the_others_out_of_reach(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """purge_cache skips a refused root and carries on, so the row has to say so."""
     from utils.paths import storage_roots
 
     studio_cache = tmp_path / "studio-cache"
@@ -1159,7 +1131,6 @@ def test_one_blocked_root_does_not_put_the_others_out_of_reach(
 
 
 def test_two_cold_reads_of_one_cache_walk_it_once(tmp_path, monkeypatch, isolated_caches):
-    """Simultaneous misses would each pay a cold walk for the same answer."""
     import threading
 
     from utils import cache_inventory as module
@@ -1199,8 +1170,6 @@ def test_two_cold_reads_of_one_cache_walk_it_once(tmp_path, monkeypatch, isolate
 def test_a_forced_read_does_not_take_a_walk_that_began_before_it(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """Recheck asks for a fresh look, and a walk already running when the request
-    arrived read the cache before whatever the user changed."""
     import threading
 
     from utils import cache_inventory as module
@@ -1227,7 +1196,6 @@ def test_a_forced_read_does_not_take_a_walk_that_began_before_it(
     )
     first.start()
     assert started.wait(5)
-    # The cache changes under the walk that is already running.
     for child in root.iterdir():
         child.unlink()
     forced = threading.Thread(
@@ -1245,8 +1213,6 @@ def test_a_forced_read_does_not_take_a_walk_that_began_before_it(
 def test_the_child_caches_ignore_a_studio_selected_models_folder(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """It moves the hub and xet caches, not HF_HOME, so the token, assets and
-    datasets stay at the platform default."""
     from utils import hf_cache_settings
 
     chosen = tmp_path / "MyModels"
@@ -1270,7 +1236,6 @@ def test_the_child_caches_ignore_a_studio_selected_models_folder(
 
 
 def test_the_npx_cache_is_cleared_with_the_package_cache(tmp_path, monkeypatch, isolated_caches):
-    """<cache>/_npx is npm's cache as much as _cacache is; the logs are not."""
     npm = tmp_path / "npm"
     package = _write(npm / "_cacache" / "index-v5" / "entry", "c" * 20)
     executable = _write(npm / "_npx" / "abc123" / "node_modules" / "server.js", "x" * 30)
@@ -1287,8 +1252,6 @@ def test_the_npx_cache_is_cleared_with_the_package_cache(tmp_path, monkeypatch, 
 
 
 def test_a_purge_holds_the_registry_against_a_download_claimed_after_the_check(tmp_path):
-    """The reservation closes the check-then-delete race, which is why
-    begin_delete exists for the per-repository path."""
     from hub.utils.download_registry import DownloadRegistry
 
     registry = DownloadRegistry()
@@ -1297,20 +1260,16 @@ def test_a_purge_holds_the_registry_against_a_download_claimed_after_the_check(t
     assert claimed is False
     assert state == "deleting"
 
-    # Counted, so two caches sharing this registry nest rather than releasing early.
     assert registry.begin_cache_purge() is True
     registry.end_cache_purge()
     assert registry.claim_repository_owner("org/model", object())[0] is False
     registry.end_cache_purge()
     assert registry.claim_repository_owner("org/model", object())[0] is True
 
-    # ...and a purge is refused while that owner holds the repository.
     assert registry.begin_cache_purge() is False
 
 
 def test_the_xet_cache_is_reserved_like_the_hub(monkeypatch):
-    """Both download services pass the active xet cache into their claim, so a
-    worker is fetching chunks into it while a clear would be emptying it."""
     from hub.utils import download_registry
     from utils import cache_inventory as module
 
@@ -1327,9 +1286,6 @@ def test_the_xet_cache_is_reserved_like_the_hub(monkeypatch):
 
     models, datasets = _Registry(), _Registry()
     monkeypatch.setattr(download_registry, "get_models_registry", lambda: models)
-    # The purge reserves datasets through the SERVICE, not the singleton, so that a
-    # managed-account install holds every per-account registry and not just the owner's.
-    # Same stub, attached at the seam the code actually uses.
     monkeypatch.setattr(download_registry, "get_datasets_registry", lambda: datasets)
     from hub.services.datasets import downloads as dataset_downloads
 
@@ -1343,7 +1299,6 @@ def test_the_xet_cache_is_reserved_like_the_hub(monkeypatch):
 
 
 def test_a_repository_delete_and_a_whole_cache_purge_exclude_each_other():
-    """Both are removing files from the same root, in either order."""
     from hub.utils.download_registry import DownloadRegistry
 
     registry = DownloadRegistry()
@@ -1360,8 +1315,6 @@ def test_a_repository_delete_and_a_whole_cache_purge_exclude_each_other():
 def test_a_running_training_job_holds_off_the_model_cache_clears(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """A spawned trainer gets the same HF_HUB_CACHE and HF_XET_CACHE and calls
-    snapshot_download and load_dataset itself, outside every registry here."""
     import core.training as training_module
     from utils import cache_inventory as module
 
@@ -1382,7 +1335,6 @@ def test_a_running_training_job_holds_off_the_model_cache_clears(
     assert result["errors"] == ["Stop the training run before clearing this cache."]
     for key in ("hf_xet", "hf_datasets"):
         assert module._training_refusal(key) is not None
-    # A cache no worker of ours writes into is not gated on a run.
     assert module._training_refusal("uv") is None
     purge_caches(["uv"])
     assert not wheel.exists()
@@ -1395,8 +1347,6 @@ def test_a_running_training_job_holds_off_the_model_cache_clears(
 def test_the_torch_extensions_cache_repeats_the_name_on_windows(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """get_default_build_root() is user_cache_dir(appname = "torch_extensions")
-    with no appauthor, which torch/_appdirs defaults to the app name."""
     from utils import cache_inventory as module
 
     monkeypatch.delenv("TORCH_EXTENSIONS_DIR", raising = False)
@@ -1412,8 +1362,6 @@ def test_the_torch_extensions_cache_repeats_the_name_on_windows(
 
 
 def test_a_diffusion_run_holds_off_the_model_cache_clears(monkeypatch):
-    """Diffusion jobs are tracked apart from the LLM trainer, and their worker
-    loads the base model from the same hub and xet caches."""
     import core.training as training_module
     from core.training import diffusion_training_service
     from utils import cache_inventory as module
@@ -1438,9 +1386,6 @@ def test_a_diffusion_run_holds_off_the_model_cache_clears(monkeypatch):
 def test_a_compiled_cache_the_clear_would_refuse_says_so_on_the_row(
     tmp_path, monkeypatch, only_the_configured_compiled_cache
 ):
-    """It is cleared through its own module, so the standard gate never saw it:
-    the row offered a button that _purge_unsloth_compiled always refused, and
-    walked a protected tree the ordinary path is careful not to."""
     from utils import cache_cleanup
     from utils.paths import storage_roots
 
@@ -1464,12 +1409,6 @@ def test_a_compiled_cache_the_clear_would_refuse_says_so_on_the_row(
 def test_moving_the_models_folder_forgets_the_old_roots_sizes(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """The memo is keyed by cache, not by path, so nothing about a new root evicts it.
-
-    A browser hides this by forcing a refresh off the inventory-version event. An API-key
-    caller may change the folder and read the inventory but may not pass refresh=true, so
-    without this it reads the previous volume's figures for the rest of the TTL.
-    """
     from utils import cache_inventory as module
 
     _write(tmp_path / "hub" / "blob", "b" * 40)
@@ -1479,7 +1418,6 @@ def test_moving_the_models_folder_forgets_the_old_roots_sizes(
     )
     assert module._described(definition, refresh = False)["size_bytes"] == 40
 
-    # The folder moves. Same key, different directory, and the walk would now answer 7.
     monkeypatch.setattr(
         cache_inventory, "describe_cache", lambda target: {"key": target.key, "size_bytes": 7}
     )
@@ -1490,7 +1428,6 @@ def test_moving_the_models_folder_forgets_the_old_roots_sizes(
 
 
 def test_setting_the_cache_home_invalidates_the_inventory(monkeypatch):
-    """Wired into set_hf_cache_home, not merely available to it. The real function is called."""
     import hub.utils.hf_cache_state as hf_cache_state
     import hub.utils.inventory_scan as inventory_scan
     import storage.studio_db as studio_db
@@ -1511,17 +1448,11 @@ def test_setting_the_cache_home_invalidates_the_inventory(monkeypatch):
 
 
 def test_bytes_still_linked_from_outside_are_not_called_reclaimable(tmp_path, isolated_caches):
-    """uv's default link mode on Windows is hardlink: an installed environment's files ARE
-    links into this cache, so unlinking the cache copy frees nothing.
-
-    Counting them anyway is how a reclaimable total, and the freed_bytes a purge reports,
-    came to overstate by the size of the installed packages.
-    """
     root = tmp_path / "uv"
     shared = _write(root / "archive" / "wheel.so", "w" * 800)
     venv = tmp_path / "venv" / "lib"
     venv.mkdir(parents = True)
-    os.link(shared, venv / "wheel.so")  # the installed environment, outside the cache
+    os.link(shared, venv / "wheel.so")
     _write(root / "archive" / "own.bin", "o" * 20)
 
     entry = describe_cache(definition_for("uv"))
@@ -1545,12 +1476,6 @@ def test_a_purge_reports_only_the_bytes_it_actually_freed(tmp_path, isolated_cac
 
 
 def test_a_whole_hub_clear_waits_for_a_loaded_model(monkeypatch, isolated_caches):
-    """Deleting ONE repo already runs the inference load-state guards.
-
-    Emptying the whole cache is every repo at once, so skipping them was the wider action with
-    the weaker check. sd.cpp re-reads its companion VAE and text-encoder files for every
-    generation, so this breaks a model loaded long before the clear, not only one mid-load.
-    """
     import hub.services.models.deletion as deletion
 
     monkeypatch.setattr(
@@ -1563,7 +1488,6 @@ def test_a_whole_hub_clear_waits_for_a_loaded_model(monkeypatch, isolated_caches
 
 
 def _idle_dictation(monkeypatch, **state):
-    """Point the guard's dictation probe at a stated load state."""
     from core.inference import stt_registry
 
     resident = {"model": None, "engine": None, "device": None, "loading": False}
@@ -1572,11 +1496,7 @@ def _idle_dictation(monkeypatch, **state):
 
 
 def test_a_whole_hub_clear_waits_for_a_loaded_dictation_model(monkeypatch):
-    """Dictation is the fifth backend, and stt_sidecar keeps its checkpoints in the same hub
-    cache this clear empties. The four backends the guard already asks cannot see it, so a
-    resident Whisper worker would have had its snapshot unlinked from under it."""
     from hub.services.models.deletion import any_model_load_blocks_cache_clear
-
     _idle_dictation(monkeypatch, model = "openai/whisper-large-v3", engine = "transformers")
 
     assert any_model_load_blocks_cache_clear() == (
@@ -1585,10 +1505,7 @@ def test_a_whole_hub_clear_waits_for_a_loaded_dictation_model(monkeypatch):
 
 
 def test_a_whole_hub_clear_waits_for_a_loading_dictation_model(monkeypatch):
-    """A sidecar still starting is the worse case, not the safer one: the snapshot is being read
-    right now. Mirrors the Images / Video loading_repo_ids branch."""
     from hub.services.models.deletion import any_model_load_blocks_cache_clear
-
     _idle_dictation(monkeypatch, loading = True)
 
     assert any_model_load_blocks_cache_clear() == (
@@ -1597,8 +1514,7 @@ def test_a_whole_hub_clear_waits_for_a_loading_dictation_model(monkeypatch):
 
 
 def test_idle_dictation_does_not_block_a_hub_clear(monkeypatch):
-    """The negative control. Without it the two tests above pass against a guard that refuses
-    every clear, which is the opposite of the behaviour being added."""
+    "An idle sidecar is the negative control for guards that refuse every clear."
     from hub.services.models.deletion import any_model_load_blocks_cache_clear
 
     _idle_dictation(monkeypatch)
@@ -1607,9 +1523,6 @@ def test_idle_dictation_does_not_block_a_hub_clear(monkeypatch):
 
 
 def test_an_unreachable_dictation_probe_does_not_block_a_hub_clear(monkeypatch):
-    """Fail open on ACQUIRE, like every other backend here: a sidecar that cannot be asked is not
-    holding anything this process can see. cache_inventory still fails CLOSED on a raising guard,
-    which test_an_unverifiable_load_state_refuses_rather_than_clears covers."""
     from core.inference import stt_registry
     from hub.services.models.deletion import any_model_load_blocks_cache_clear
 
@@ -1622,10 +1535,6 @@ def test_an_unreachable_dictation_probe_does_not_block_a_hub_clear(monkeypatch):
 
 
 def test_a_whole_hub_clear_waits_for_a_chat_load_that_has_not_spawned_yet(monkeypatch):
-    """chat_load_active's own docstring: is_active covers a live llama-server process, which an
-    HF-backed load does not have until its GGUF finished downloading. Those minutes are exactly
-    when the bytes are arriving, and they come through hf_hub_download_with_xet_fallback rather
-    than the download registry, so the purge's own reservation does not cover them either."""
     from core.inference import llama_cpp
     from hub.services.models.deletion import any_model_load_blocks_cache_clear
 
@@ -1638,10 +1547,6 @@ def test_a_whole_hub_clear_waits_for_a_chat_load_that_has_not_spawned_yet(monkey
 
 
 def test_a_whole_hub_clear_waits_for_a_draining_image_load(monkeypatch):
-    """A cancelled diffusers load leaves loading_repo_ids() immediately but keeps its repos in
-    draining_repo_ids() while the worker thread reads on inside _prefetch_files, holding no lock.
-    _diffusion_blocks_delete already refuses on that, and emptying the whole cache is every repo
-    at once, so it cannot ask less than the per-repository path does."""
     import types
 
     from hub.services.models.deletion import any_model_load_blocks_cache_clear
@@ -1663,8 +1568,6 @@ def test_a_whole_hub_clear_waits_for_a_draining_image_load(monkeypatch):
 
 
 def test_an_unverifiable_load_state_refuses_rather_than_clears(monkeypatch, isolated_caches):
-    """Not being able to tell whether weights are in use is not permission to unlink them.
-    The per-repo path answers 503 for the same reason."""
     import hub.services.models.deletion as deletion
 
     def _raise():
@@ -1679,8 +1582,6 @@ def test_an_unverifiable_load_state_refuses_rather_than_clears(monkeypatch, isol
 def test_a_cache_the_environment_is_symlinked_into_is_not_offered(
     tmp_path, monkeypatch, isolated_caches
 ):
-    """uv help sync: clearing the cache under UV_LINK_MODE=symlink "will break all installed
-    packages". A bulk clear is meant to cost a re-download at worst, never a broken install."""
     _write(tmp_path / "uv" / "archive" / "pkg" / "__init__.py", "x")
     site = tmp_path / "site-packages"
     site.mkdir()
@@ -1718,17 +1619,11 @@ def test_an_ordinary_uv_cache_is_still_offered(tmp_path, isolated_caches):
 
 
 def test_a_partial_purge_reports_only_what_it_actually_removed(tmp_path, isolated_caches):
-    """rmtree can delete some children and then hit a permission error or a file that moved.
-
-    The whole subtree is measured before the removal, so without subtracting the survivors the
-    toast claimed bytes that are still on disk, which is the one thing a "freed" figure must
-    not do.
-    """
     root = tmp_path / "uv"
     _write(root / "tree" / "gone.bin", "g" * 100)
     stubborn = root / "tree" / "stays"
     _write(stubborn / "kept.bin", "k" * 40)
-    stubborn.chmod(0o500)  # the delete of its child fails, the directory survives
+    stubborn.chmod(0o500)
     try:
         outcome = empty_cache_root(root)
     finally:
@@ -1740,13 +1635,6 @@ def test_a_partial_purge_reports_only_what_it_actually_removed(tmp_path, isolate
 
 
 def test_a_curated_dataset_import_holds_off_a_model_cache_clear():
-    """The curated import calls load_dataset and snapshot_download directly.
-
-    It is not a managed download and not a training run, so it claimed nothing and a Clear of
-    hf_hub, hf_xet or hf_datasets passed every guard: begin_cache_purge asks about jobs, owners
-    and deletes, and this was none of the three. The snapshot then went out from under the copy
-    and the import failed in front of the user.
-    """
     from hub.utils.download_registry import get_datasets_registry
 
     registry = get_datasets_registry()
@@ -1757,14 +1645,12 @@ def test_a_curated_dataset_import_holds_off_a_model_cache_clear():
         assert registry.begin_cache_purge() is False
     finally:
         registry.release_repository_owner("some/curated-set", owner)
-    # And once it is done, the clear is allowed again.
     assert registry.begin_cache_purge() is True
     registry.end_cache_purge()
 
 
 def test_the_import_route_takes_that_claim_and_gives_it_back():
-    """The interlock has to be reached, not merely available. The route is checked as source
-    because driving the import needs the network and a real dataset repo."""
+    "Inspect the route as source because executing its import requires a real dataset and network."
     import ast
     import inspect
 
@@ -1779,26 +1665,18 @@ def test_the_import_route_takes_that_claim_and_gives_it_back():
     }
     assert "claim_repository_owner" in calls
     assert "release_repository_owner" in calls
-    # Released in a finally, or a failed import leaves the cache reserved for the process's life.
     start = source.index("claim_repository_owner")
     tail = source[start:]
     assert "finally:" in tail[: tail.index("release_repository_owner")]
 
 
 def test_every_account_dataset_registry_is_reserved_by_a_purge(monkeypatch):
-    """A managed-account install has one dataset registry PER ACCOUNT, not one in total.
-
-    _account_registry() builds a fresh DownloadRegistry the first time each account downloads,
-    so reserving only the singleton left every other account's download invisible to the purge,
-    which would then remove files under its worker.
-    """
     from hub.services.datasets import downloads as dataset_downloads
     from hub.utils import download_registry
 
     other = download_registry.DownloadRegistry()
     monkeypatch.setitem(dataset_downloads._account_registries, "account-2", other)
 
-    # A download running for that OTHER account.
     granted, _ = other.claim_repository_owner("some/set", object())
     assert granted
 
@@ -1808,12 +1686,6 @@ def test_every_account_dataset_registry_is_reserved_by_a_purge(monkeypatch):
 
 
 def test_a_registry_created_during_a_purge_is_born_reserved(monkeypatch):
-    """The other half: an account whose first download starts AFTER the purge began.
-
-    Reserving the registries that exist at the moment the purge starts is not enough, because
-    _account_registry() mints new ones on demand. The existing code already carries _deleting
-    into a new registry for exactly this reason; the purge count rides along the same way.
-    """
     from hub.services.datasets import downloads as dataset_downloads
     from hub.utils import download_registry
 
@@ -1823,7 +1695,277 @@ def test_a_registry_created_during_a_purge_is_born_reserved(monkeypatch):
         fresh = download_registry.DownloadRegistry()
         for _ in range(dataset_downloads._purging):
             fresh.begin_cache_purge()
-        # Born reserved: it must refuse to hand work out while the purge is still running.
         assert fresh.claim_repository_owner("late/set", object()) == (False, "deleting")
     finally:
         dataset_downloads.end_cache_purge()
+
+
+def test_hf_occupancy_is_measured_even_when_documents_clear_is_forbidden(
+    tmp_path, monkeypatch, isolated_caches
+):
+    hub = isolated_caches / "hub"
+    _write(hub / "models--org--model" / "blobs" / "weights", "x" * 123)
+    monkeypatch.setattr(cache_inventory, "protected_trees", lambda: {isolated_caches})
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 123
+    assert entry["purgeable"] is False
+    assert entry["clear_size_bytes"] == 0
+    assert "protected folder" in entry["blocked_reason"]
+    assert (hub / "models--org--model" / "blobs" / "weights").exists()
+
+
+def test_hf_history_counts_storage_without_widening_clear(tmp_path, monkeypatch, isolated_caches):
+    from utils import hf_cache_settings
+
+    active = isolated_caches / "hub"
+    previous = tmp_path / "previous" / "hub"
+    mine = _write(active / "models--org--active" / "blobs" / "weight", "a" * 15)
+    kept = _write(previous / "models--org--old" / "blobs" / "weight", "b" * 27)
+    monkeypatch.setattr(
+        hf_cache_settings, "known_hf_hub_caches", lambda: [active, previous, active]
+    )
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 42
+    assert entry["clear_size_bytes"] == 15
+    assert entry["paths"] == [str(active)]
+    assert len(entry["measured_paths"]) == 2
+    purge_caches(["hf_hub"])
+    assert not mine.exists()
+    assert kept.exists()
+
+
+def test_hf_breakdown_is_on_demand_and_includes_incomplete_blobs(
+    tmp_path, monkeypatch, isolated_caches
+):
+    hub = isolated_caches / "hub"
+    _write(hub / "models--org--model" / "blobs" / "weight.incomplete", "a" * 120)
+    _write(hub / "datasets--org--data" / "snapshots" / "revision" / "data.json", "b" * 25)
+    called = []
+    original = cache_inventory.cache_breakdown
+    monkeypatch.setattr(
+        cache_inventory, "cache_breakdown", lambda key: (called.append(key), original(key))[1]
+    )
+    describe_cache(definition_for("hf_hub"))
+    assert called == []
+    entries = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    assert [entry["size_bytes"] for entry in entries] == [120, 25]
+    assert entries[0]["name"] == "models--org--model"
+    with pytest.raises(ValueError):
+        cache_inventory.cache_breakdown("../outside")
+
+
+def test_hf_measurement_does_not_walk_a_protected_root(tmp_path, monkeypatch, isolated_caches):
+    from utils import hf_cache_settings
+
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [tmp_path])
+    monkeypatch.setattr(cache_inventory, "protected_paths", lambda: {tmp_path})
+    walked = []
+    monkeypatch.setattr(
+        cache_inventory, "_measure_root", lambda root, **kwargs: (walked.append(root) or 0, 0)
+    )
+    describe_cache(definition_for("hf_hub"))
+    assert tmp_path not in walked
+
+
+def test_hf_shared_file_occupies_space_even_when_clear_cannot_reclaim_it(tmp_path, isolated_caches):
+    cached = _write(isolated_caches / "hub" / "models--org--shared" / "blobs" / "weight", "w" * 800)
+    os.link(cached, tmp_path / "installed-weight")
+
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 800
+    assert entry["clear_size_bytes"] == 0
+    assert cache_inventory.cache_breakdown("hf_hub")["entries"][0]["size_bytes"] == 800
+
+
+def test_hf_history_deduplicates_shared_inodes_and_walks_each_root_once(
+    tmp_path, monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+
+    active = isolated_caches / "hub"
+    previous = tmp_path / "old" / "hub"
+    shared = _write(active / "models--org--shared" / "blobs" / "weight", "w" * 800)
+    previous_blob = previous / "models--org--copy" / "blobs" / "weight"
+    previous_blob.parent.mkdir(parents = True)
+    os.link(shared, previous_blob)
+    _write(active / "models--org--unique" / "blobs" / "weight", "u" * 25)
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, previous])
+    walked = []
+    measure = cache_inventory._measure_root
+    monkeypatch.setattr(
+        cache_inventory,
+        "_measure_root",
+        lambda root, **kwargs: (walked.append(root), measure(root, **kwargs))[1],
+    )
+
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 825
+    assert entry["clear_size_bytes"] == 25
+    assert walked.count(active) == walked.count(previous) == 1
+    breakdown = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    assert sum(row["size_bytes"] for row in breakdown) == 825
+    purge_caches(["hf_hub"])
+    assert previous_blob.read_text(encoding = "utf-8") == "w" * 800
+
+
+def test_empty_active_hf_cache_has_no_clearable_entries_despite_history(
+    tmp_path, monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+
+    previous = tmp_path / "old" / "hub"
+    _write(previous / "models--org--old" / "blobs" / "weight", "w" * 80)
+    monkeypatch.setattr(
+        hf_cache_settings, "known_hf_hub_caches", lambda: [isolated_caches / "hub", previous]
+    )
+    entry = describe_cache(definition_for("hf_hub"))
+    assert entry["size_bytes"] == 80
+    assert entry["entry_count"] == 1
+    assert entry["clear_entry_count"] == 0
+    assert entry["clear_size_bytes"] == 0
+
+
+def test_system_cache_accounting_matches_system_volume_when_studio_is_elsewhere(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from utils.paths import storage_roots
+
+    system = Path(os.path.abspath(os.sep))
+    studio = tmp_path / "studio-on-another-disk"
+    real_stat = Path.stat
+
+    def stat(path, *args, **kwargs):
+        if path == system:
+            return SimpleNamespace(st_dev = 1)
+        if path == studio:
+            return SimpleNamespace(st_dev = 2)
+        return real_stat(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "stat", stat)
+        patch.setattr(storage_roots, "studio_root", lambda: studio)
+        assert cache_inventory._system_disk_device() == 1
+
+    ledger = cache_inventory._OccupancyLedger()
+    ledger.add(SimpleNamespace(st_dev = 1, st_ino = 10, st_size = 100), system / "old-model")
+    ledger.add(SimpleNamespace(st_dev = 2, st_ino = 20, st_size = 200), studio / "new-model")
+    monkeypatch.setattr(cache_inventory, "_system_disk_device", lambda: 1)
+    monkeypatch.setattr(
+        cache_inventory.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(total = 1000 if Path(path) == system else 2000, free = 100),
+    )
+    assert cache_inventory._system_disk_occupancy(ledger) == 100
+
+
+def test_distinct_device_ids_in_the_same_pool_still_count_as_system_storage(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    system = Path(os.path.abspath(os.sep))
+    ledger = cache_inventory._OccupancyLedger()
+    ledger.add(SimpleNamespace(st_dev = 1, st_ino = 10, st_size = 100), system / "cached")
+    ledger.add(SimpleNamespace(st_dev = 2, st_ino = 20, st_size = 200), tmp_path / "data" / "cached")
+    ledger.add(SimpleNamespace(st_dev = 3, st_ino = 30, st_size = 300), tmp_path / "unknown" / "cached")
+    monkeypatch.setattr(cache_inventory, "_system_disk_device", lambda: 1)
+
+    def usage(path):
+        if Path(path) == tmp_path / "unknown":
+            raise PermissionError("unreadable device")
+        return SimpleNamespace(total = 10**12, free = 10**11 - (1024 if Path(path) != system else 0))
+
+    monkeypatch.setattr(cache_inventory.shutil, "disk_usage", usage)
+    assert cache_inventory._system_disk_occupancy(ledger) == 300
+
+
+def test_hf_model_breakdown_actions_name_one_exact_known_cache_copy(
+    tmp_path, monkeypatch, isolated_caches
+):
+    from utils import hf_cache_settings
+    from hub.utils.hf_cache_state import scoped_delete_root
+
+    active = isolated_caches / "hub"
+    old = tmp_path / "previous" / "hub"
+    for root in (active, old):
+        _write(root / "models--Org--Model" / "blobs" / "weight", "model")
+    _write(active / "models--gpt2" / "blobs" / "weight", "standalone")
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, old])
+
+    rows = cache_inventory.cache_breakdown("hf_hub")["entries"]
+    copies = [row for row in rows if row.get("repo_id") == "Org/Model"]
+    assert len(copies) == 2
+    assert {row["cache_path"] for row in copies} == {
+        str(root / "models--Org--Model") for root in (active, old)
+    }
+    for row in rows:
+        assert row["delete_allowed"] is True
+        assert row["repo_type"] == "model"
+        assert row["cache_path"] == row["path"]
+        assert (
+            scoped_delete_root("model", row["repo_id"], row["cache_path"])
+            == Path(row["cache_path"]).parent
+        )
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        ".locks",
+        "datasets--Org--Data",
+        "spaces--Org--Space",
+        "models--",
+        "models----Model",
+        "models--Org--Model--nested",
+        "models--Org--bad..name",
+        "models--Org--Model.git",
+    ],
+)
+def test_hf_breakdown_never_offers_model_actions_for_non_model_or_malformed_rows(
+    tmp_path, isolated_caches, name
+):
+    _write(isolated_caches / "hub" / name / "data", "cache")
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+    assert "repo_id" not in row and "cache_path" not in row
+
+
+def test_hf_breakdown_does_not_turn_a_model_shaped_file_into_a_delete_action(isolated_caches):
+    _write(isolated_caches / "hub" / "models--Org--File", "not a repository directory")
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+
+
+def test_hf_breakdown_actions_are_confined_to_hub_approved_roots(
+    tmp_path, monkeypatch, isolated_caches
+):
+    outside = tmp_path / "not-a-known-cache"
+    _write(outside / "models--Org--Model" / "blobs" / "weight", "unrelated")
+    monkeypatch.setattr(cache_inventory, "_measurement_roots", lambda _definition: [outside])
+    row = cache_inventory.cache_breakdown("hf_hub")["entries"][0]
+    assert row["delete_allowed"] is False
+    assert "cache_path" not in row
+
+
+def test_hf_breakdown_does_not_offer_model_actions_inside_xet_cache(isolated_caches):
+    _write(isolated_caches / "xet" / "models--Org--Model" / "data", "xet")
+    row = cache_inventory.cache_breakdown("hf_xet")["entries"][0]
+    assert row["delete_allowed"] is False
+
+
+@pytest.mark.parametrize("link_kind", ["symlink", "junction"])
+def test_model_action_identity_refuses_links_even_to_valid_named_directories(
+    tmp_path, monkeypatch, isolated_caches, link_kind
+):
+    from types import SimpleNamespace
+
+    root = isolated_caches / "hub"
+    directory = root / "models--Org--Model"
+    directory.mkdir()
+    entry = SimpleNamespace(
+        name = directory.name,
+        path = str(directory),
+        is_symlink = lambda: link_kind == "symlink",
+        is_dir = lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(cache_inventory, "_is_junction", lambda _path: link_kind == "junction")
+    assert cache_inventory._model_cache_action(root, entry) == {"delete_allowed": False}

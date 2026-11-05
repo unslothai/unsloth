@@ -11,7 +11,6 @@ from core.inference.llama_cpp import LlamaCppBackend
 def _resume_backend(tmp_path, n_slots = 1):
     backend = LlamaCppBackend()
     backend._healthy = True
-    # No-op lifecycle methods so the atexit cleanup can kill the fake quietly.
     backend._process = SimpleNamespace(
         poll = lambda: None,
         terminate = lambda: None,
@@ -47,6 +46,7 @@ class _Resp:
 
 
 def test_save_returns_none_when_slot_save_disabled(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._slot_save_dir = None
     monkeypatch.setattr(
@@ -59,6 +59,7 @@ def test_save_returns_none_when_slot_save_disabled(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_prompt_cache_disabled(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._prompt_cache_disabled = True
     monkeypatch.setattr(
@@ -117,7 +118,7 @@ def test_save_unlinks_empty_slot_and_returns_none(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     assert backend.save_slots_for_resume() is None
-    assert list(tmp_path.glob("resume-*.bin")) == []  # empty-slot file removed
+    assert list(tmp_path.glob("resume-*.bin")) == []
 
 
 def test_save_cap_breach_discards_all_files(monkeypatch, tmp_path):
@@ -130,7 +131,7 @@ def test_save_cap_breach_discards_all_files(monkeypatch, tmp_path):
         return _Resp(200, {"n_saved": 40, "n_written": 100})
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
-    assert backend.save_slots_for_resume() is None  # 200 bytes > 150 cap
+    assert backend.save_slots_for_resume() is None
     assert list(tmp_path.glob("resume-*.bin")) == []
 
 
@@ -145,7 +146,7 @@ def test_save_transport_error_aborts_remaining_slots(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     assert backend.save_slots_for_resume() is None
-    assert len(calls) == 1  # no retries against a dead server
+    assert len(calls) == 1
 
 
 def test_save_transport_error_unlinks_partial_file(monkeypatch, tmp_path):
@@ -168,7 +169,7 @@ def test_fingerprint_tracks_lora_sidecar_rewrite(tmp_path):
     backend._extra_args = ["--lora", str(adapter)]
 
     before = backend._slot_launch_fingerprint()
-    adapter.write_bytes(b"v2-different")  # re-exported adapter, same path
+    adapter.write_bytes(b"v2-different")
     assert backend._slot_launch_fingerprint() != before
 
     backend._extra_args = [f"--lora={adapter}"]
@@ -194,7 +195,6 @@ def test_sidecar_files_parse_csv_and_colon_scale(tmp_path):
     files = backend._sidecar_weight_files()
     assert str(a) in files and str(b) in files
 
-    # Windows drive letter must not be mistaken for a scale separator.
     backend._extra_args = ["--lora-scaled", "C:\\adapters\\a.gguf:0.75"]
     assert "C:\\adapters\\a.gguf" in backend._sidecar_weight_files()
     backend._extra_args = ["--lora", "C:\\adapters\\a.gguf"]
@@ -208,7 +208,7 @@ def test_fingerprint_tracks_colon_scaled_adapter_rewrite(tmp_path):
     backend._extra_args = ["--lora-scaled", f"{adapter}:0.5"]
 
     before = backend._slot_launch_fingerprint()
-    adapter.write_bytes(b"v2-different")  # re-exported adapter, same path
+    adapter.write_bytes(b"v2-different")
     assert backend._slot_launch_fingerprint() != before
 
 
@@ -217,7 +217,7 @@ def test_fingerprint_tracks_effective_context_length(tmp_path):
     backend._effective_context_length = 8192
 
     before = backend._slot_launch_fingerprint()
-    backend._effective_context_length = 4096  # auto-fit landed smaller on reload
+    backend._effective_context_length = 4096
     assert backend._slot_launch_fingerprint() != before
 
 
@@ -260,16 +260,17 @@ def test_gguf_file_identity_covers_split_shards(tmp_path):
     st1, st2 = os.stat(first), os.stat(second)
     assert before == ((st1.st_size, st1.st_mtime_ns), (st2.st_size, st2.st_mtime_ns))
 
-    second.write_bytes(b"rewritten")  # sibling changes, primary untouched
+    second.write_bytes(b"rewritten")
     after = backend._gguf_file_identity(str(first))
     assert after is not None and after != before
-    assert after[0] == before[0]  # primary shard unchanged
+    assert after[0] == before[0]
 
     second.unlink()
-    assert backend._gguf_file_identity(str(first)) is None  # missing shard
+    assert backend._gguf_file_identity(str(first)) is None
 
 
 def test_save_skipped_when_user_disabled_prompt_cache(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._extra_args = ["--no-cache-prompt"]
     monkeypatch.setattr(
@@ -282,6 +283,7 @@ def test_save_skipped_when_user_disabled_prompt_cache(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_env_disables_prompt_cache(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     monkeypatch.setenv("LLAMA_ARG_CACHE_PROMPT", "0")
     monkeypatch.setattr(
@@ -292,7 +294,7 @@ def test_save_skipped_when_env_disables_prompt_cache(monkeypatch, tmp_path):
     )
     assert backend.save_slots_for_resume() is None
     monkeypatch.delenv("LLAMA_ARG_CACHE_PROMPT")
-    monkeypatch.setenv("LLAMA_ARG_NO_CACHE_PROMPT", "1")  # legacy negative form
+    monkeypatch.setenv("LLAMA_ARG_NO_CACHE_PROMPT", "1")
     assert backend.save_slots_for_resume() is None
 
 
@@ -323,7 +325,6 @@ def test_user_cache_prompt_overrides_studio_no_cache_flag(monkeypatch, tmp_path)
         raising = False,
     )
     assert backend.save_slots_for_resume() is not None
-    # Last flag wins when both appear in extras.
     backend._extra_args = ["--cache-prompt", "--no-cache-prompt"]
     assert backend.save_slots_for_resume() is None
 
@@ -341,7 +342,7 @@ def test_save_stops_writing_once_cap_exceeded(monkeypatch, tmp_path):
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     assert backend.save_slots_for_resume() is None
-    assert len(calls) == 2  # cap blown after slot 1; slot 2 never attempted
+    assert len(calls) == 2
     assert list(tmp_path.glob("resume-*.bin")) == []
 
 
@@ -357,7 +358,7 @@ def test_save_aborts_between_slots_when_no_longer_idle(monkeypatch, tmp_path):
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
     aborts = iter([False, True, True])
     manifest = backend.save_slots_for_resume(should_abort = lambda: next(aborts))
-    assert len(calls) == 1  # slots 1 and 2 skipped
+    assert len(calls) == 1
     assert manifest is not None
     assert [e["id"] for e in manifest["slots"]] == [0]
 
@@ -414,8 +415,6 @@ def test_restore_transport_error_stops_early(monkeypatch, tmp_path):
 
 
 def test_save_deletes_orphan_on_malformed_response(monkeypatch, tmp_path):
-    # A 200 that writes a file but returns a non-numeric counter must be cleaned
-    # up like any other save failure, not left orphaned holding chat KV.
     backend = _resume_backend(tmp_path)
     _fake_disk(monkeypatch)
 
@@ -442,23 +441,21 @@ def test_save_deletes_orphan_on_non_dict_response(monkeypatch, tmp_path):
 
 
 def test_save_cap_uses_actual_file_size_not_reported_bytes(monkeypatch, tmp_path):
-    # A binary under-reporting n_written must not slip past the disk cap: the
-    # cap is enforced against the bytes actually on disk.
+    # The disk cap is enforced on actual bytes on disk, not the reported n_written.
     backend = _resume_backend(tmp_path)
     _fake_disk(monkeypatch)
     monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 150)
 
     def fake_post(url, **kwargs):
         (tmp_path / kwargs["json"]["filename"]).write_bytes(b"x" * 200)
-        return _Resp(200, {"n_saved": 5, "n_written": 1})  # under-reported
+        return _Resp(200, {"n_saved": 5, "n_written": 1})
 
     monkeypatch.setattr(llama_cpp.httpx, "post", fake_post, raising = False)
-    assert backend.save_slots_for_resume() is None  # 200 real bytes > 150 cap
+    assert backend.save_slots_for_resume() is None
     assert list(tmp_path.glob("resume-*.bin")) == []
 
 
 def test_save_skipped_when_estimate_exceeds_cap(monkeypatch, tmp_path):
-    # An estimate over the cap skips before writing any slot at all.
     backend = _resume_backend(tmp_path)
     backend._estimate_kv_cache_bytes = lambda *a, **k: 1 << 40
     monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 1 << 20)
@@ -512,6 +509,7 @@ def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch,
 
 
 def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 4096
     backend._kv_key_length = 256
@@ -528,8 +526,8 @@ def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
 
 
 def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
-    # phi3 reports a window but no key/value length, and llama.cpp runs it
-    # non-SWA, so the compact-SWA skip must not catch it.
+    # phi3 has a window but no key/value length and runs non-SWA in llama.cpp.
+    _fake_disk(monkeypatch)
     backend = _resume_backend(tmp_path)
     backend._sliding_window = 262144
     backend._kv_key_length = None
@@ -548,10 +546,8 @@ def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):
-    # The GGUF/sidecars were swapped on disk after the server loaded them, so the
-    # live KV belongs to the old weights: refuse to persist it (no POST at all).
     backend = _resume_backend(tmp_path)
-    backend._slot_loaded_identity = ((("stale", 0),), ())  # != current identity
+    backend._slot_loaded_identity = ((("stale", 0),), ())
     _fake_disk(monkeypatch)
     monkeypatch.setattr(
         llama_cpp.httpx,
@@ -563,7 +559,6 @@ def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):
 
 
 def test_save_proceeds_when_load_identity_matches(monkeypatch, tmp_path):
-    # Matching load-time snapshot: the save runs normally.
     backend = _resume_backend(tmp_path)
     backend._slot_loaded_identity = (
         backend._gguf_file_identity(backend._gguf_path),
@@ -582,12 +577,11 @@ def test_save_proceeds_when_load_identity_matches(monkeypatch, tmp_path):
 
 
 def test_save_skipped_when_estimate_unavailable_and_low_disk(monkeypatch, tmp_path):
-    # A 0 estimate means metadata was insufficient, not a zero-byte cache: the save
-    # must demand room for the whole cap, not just 1 GiB, on a low-disk host.
+    # A 0 estimate means unknown, so the save must require room for the whole cap.
     backend = _resume_backend(tmp_path)
-    backend._estimate_kv_cache_bytes = lambda *a, **k: 0  # metadata unavailable
-    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 8 << 30)  # 8 GiB cap
-    _fake_disk(monkeypatch, free = 2 << 30)  # 2 GiB free < 8 + 1 GiB required
+    backend._estimate_kv_cache_bytes = lambda *a, **k: 0
+    monkeypatch.setattr(llama_cpp, "_SLOT_SAVE_MAX_BYTES", 8 << 30)
+    _fake_disk(monkeypatch, free = 2 << 30)
     monkeypatch.setattr(
         llama_cpp.httpx,
         "post",
@@ -595,3 +589,25 @@ def test_save_skipped_when_estimate_unavailable_and_low_disk(monkeypatch, tmp_pa
         raising = False,
     )
     assert backend.save_slots_for_resume() is None
+
+
+def test_every_slot_save_test_fakes_the_disk():
+    # save_slots_for_resume skips on low free disk, so a test that leaves it to the host passes or fails
+    # with the runner's disk: a save test goes red there, and a skip test can pass for the wrong reason.
+    import ast
+    import inspect
+    import sys
+
+    module = sys.modules[__name__]
+    tree = ast.parse(inspect.getsource(module))
+    unfaked = []
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_"):
+            calls = {
+                n.func.attr if isinstance(n.func, ast.Attribute) else getattr(n.func, "id", "")
+                for n in ast.walk(node)
+                if isinstance(n, ast.Call)
+            }
+            if "save_slots_for_resume" in calls and "_fake_disk" not in calls:
+                unfaked.append(node.name)
+    assert not unfaked, f"call _fake_disk(monkeypatch) first: {unfaked}"

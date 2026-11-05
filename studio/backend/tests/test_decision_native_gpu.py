@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stock Clef-Flash Q8_0 through Studio's Decision API on a real llama-server, against FastDecisionModel.
-
-Needs a CUDA GPU, LLAMA_SERVER_PATH (a llama.cpp b11443 or newer build, e.g. Studio's prebuilt) and
-ggml-org/Clef-Flash-GGUF at the pinned revision in UNSLOTH_TEST_CLEF_GGUF_CACHE (a hub cache dir).
-The PyTorch reference (Cloudflare/clef-flash, bf16) runs in its own process: Unsloth patches
-transformers process-wide.
-"""
+"""Needs CUDA and LLAMA_SERVER_PATH; PyTorch runs separately because Unsloth patches transformers."""
 
 import base64
 import io

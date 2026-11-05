@@ -1,21 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""
-S3 dataset loader.
-
-Downloads dataset files (parquet / json / jsonl / csv) from an AWS S3 bucket
-to a local temp directory so the existing local-file dataset path can consume
-them. boto3 is an optional dependency installed on the first S3 load if missing.
-
-Audio keys download too, keeping their prefix-relative layout, and audio values in
-JSON/JSONL/CSV manifests are rewritten to the local paths (``datasets.Audio`` opens path
-strings verbatim). Parquet manifests are not rewritten: their paths must already resolve.
-
-The S3 config dict mirrors ``models.training.S3Config.model_dump()`` (snake_case
-keys): bucket, region, prefix, access_key_id, secret_access_key, use_iam_role.
-Credentials are read once to build the client and never logged or persisted.
-"""
+"""S3 dataset download to a local temp dir; boto3 is optional and installed on first S3 load if
+missing; audio paths in JSON/JSONL/CSV manifests rewritten to local; parquet paths must already
+resolve; credentials never logged or persisted"""
 
 from __future__ import annotations
 
@@ -77,11 +65,7 @@ def boto3_available() -> bool:
 
 
 def _build_s3_client(s3_config: dict):
-    """Create a boto3 S3 client from the config dict.
-
-    Uses explicit access keys when provided, otherwise falls back to the
-    default credential chain (IAM role / instance profile / env / shared creds).
-    """
+    """Explicit keys win; otherwise the default credential chain (IAM role, env, shared files)."""
     require_explicit_credentials({"s3_dataset": s3_config})
     import boto3
 
@@ -118,9 +102,7 @@ def _list_dataset_keys(client, bucket: str, prefix: Optional[str]) -> list[str]:
                 continue
             if key.lower().endswith(SUPPORTED_EXTENSIONS + _AUDIO_EXTENSIONS):
                 keys.append(key)
-    # A Mac sync uploads Finder metadata under the shard's own extension and
-    # _validate_single_extension_family cannot see it, so a key is dropped only when the object it
-    # would describe is in the same listing.
+    # Drop an AppleDouble key only when the object it describes is in the same listing.
     return drop_shadowed_appledouble_names(keys)
 
 
@@ -207,13 +189,12 @@ def _key_relative_to_prefix(key: str, prefix: Optional[str]) -> str:
     return key.lstrip("/")
 
 
-def _download_structured(
-    client, bucket: str, prefix: Optional[str], keys: list[str], target_dir: str, cancel_callback
+def _structured_local_paths(
+    prefix: Optional[str], keys: list[str], target_dir: str
 ) -> dict[str, str]:
-    """Download ``keys`` mirroring their prefix-relative layout. Returns key -> local path."""
+    """Map ``keys`` to local paths mirroring their prefix-relative layout."""
     local_by_key: dict[str, str] = {}
     for key in keys:
-        _raise_if_cancelled(cancel_callback)
         relative = _key_relative_to_prefix(key, prefix)
         parts = [part for part in relative.split("/") if part not in ("", ".")]
         # ".." is a legal S3 key segment: refuse rather than write above target_dir.
@@ -222,11 +203,15 @@ def _download_structured(
                 f"S3 key {key!r} contains '..' or empty path segments and cannot "
                 "be downloaded into the dataset directory."
             )
-        local_path = _contained_local_path(target_dir, parts)
-        os.makedirs(os.path.dirname(local_path) or target_dir, exist_ok = True)
-        _download_one(client, bucket, key, local_path, cancel_callback)
-        local_by_key[key] = local_path
+        local_by_key[key] = _contained_local_path(target_dir, parts)
     return local_by_key
+
+
+def _download_structured(client, bucket: str, local_by_key: dict[str, str], cancel_callback):
+    for key, local_path in local_by_key.items():
+        _raise_if_cancelled(cancel_callback)
+        os.makedirs(os.path.dirname(local_path), exist_ok = True)
+        _download_one(client, bucket, key, local_path, cancel_callback)
 
 
 def _rewrite_audio_references(
@@ -235,8 +220,9 @@ def _rewrite_audio_references(
     bucket: str,
     prefix: Optional[str],
 ) -> None:
-    """Rewrite audio values naming a downloaded key (prefix-relative, ``s3://`` URI, or
-    manifest-relative) to its local path; anything else is left as written."""
+    """Rewrite audio values naming an audio key (prefix-relative, ``s3://`` URI, or
+    manifest-relative) to its local path; anything else is left as written. A value whose
+    prefix- and manifest-relative readings name different keys is refused."""
     lookup: dict[str, str] = {}
     for key, local_path in audio_local_by_key.items():
         lookup[_key_relative_to_prefix(key, prefix)] = local_path
@@ -251,10 +237,15 @@ def _rewrite_audio_references(
             if not isinstance(value, str) or not value.lower().endswith(_AUDIO_EXTENSIONS):
                 return None
             direct = lookup.get(value)
-            if direct is not None:
-                return direct
             relative_to_manifest = os.path.normpath(os.path.join(manifest_dir, value))
-            return lookup.get(relative_to_manifest.replace(os.sep, "/"))
+            relative = lookup.get(relative_to_manifest.replace(os.sep, "/"))
+            if direct is not None and relative is not None and direct != relative:
+                raise ValueError(
+                    f"Ambiguous audio reference {value!r} in S3 manifest {manifest_key!r}: "
+                    "it matches different prefix-relative and manifest-relative files. "
+                    "Use './' for a manifest-relative path or a full 's3://' URI."
+                )
+            return direct if direct is not None else relative
 
         if manifest_path.lower().endswith(".csv"):
             _rewrite_csv_manifest(manifest_path, resolve)
@@ -298,9 +289,11 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
             for row in rows:
                 f.write(json.dumps(row, ensure_ascii = False) + "\n")
         return
-    if not isinstance(data, list):
-        return  # column-oriented JSON
-    for row in data:
+    # A single JSON Lines record also parses as a complete JSON object.
+    # Keep its object shape while applying the same rewrite as multi-row manifests.
+    if not isinstance(data, (dict, list)):
+        return
+    for row in [data] if isinstance(data, dict) else data:
         _rewrite_row(row, resolve)
     with open(manifest_path, "w", encoding = "utf-8") as f:
         json.dump(data, f, ensure_ascii = False)
@@ -375,14 +368,13 @@ def prepare_s3_dataset_download(
 
         local_files: list[str] = []
         if audio_keys:
-            manifest_local_by_key = _download_structured(
-                client, bucket, prefix, keys, target_dir, cancel_callback
-            )
-            audio_local_by_key = _download_structured(
-                client, bucket, prefix, audio_keys, target_dir, cancel_callback
-            )
-            local_files = list(manifest_local_by_key.values())
+            manifest_local_by_key = _structured_local_paths(prefix, keys, target_dir)
+            audio_local_by_key = _structured_local_paths(prefix, audio_keys, target_dir)
+            _download_structured(client, bucket, manifest_local_by_key, cancel_callback)
+            # Rewrite before the audio download so a bad manifest fails without fetching it.
             _rewrite_audio_references(manifest_local_by_key, audio_local_by_key, bucket, prefix)
+            _download_structured(client, bucket, audio_local_by_key, cancel_callback)
+            local_files = list(manifest_local_by_key.values())
         else:
             used_paths: set[str] = set()
             for key in keys:

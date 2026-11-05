@@ -6,7 +6,6 @@ import type {
   TransformersUpgradePhase,
 } from "../types";
 
-/** Which ways out the consent dialog offers, besides Cancel. */
 export interface UpgradeDialogActions {
   /** A released version, or transformers main, can be installed. */
   installable: boolean;
@@ -14,8 +13,6 @@ export interface UpgradeDialogActions {
   fromMain: boolean;
   /** Only transformers main ships the architecture and its version is unknown. */
   devOnly: boolean;
-  /** Offer "Continue with custom code": the model's own modeling code loads it on the
-   *  transformers already installed, so the caller's trust_remote_code gate is a way out. */
   customCode: boolean;
 }
 
@@ -56,7 +53,7 @@ export function upgradeDialogActions({
     installable,
     fromMain,
     devOnly: !installable && Boolean(upgrade?.supported_in_main),
-    // Never mid-install: the install is running and this button would abandon it.
+    // Never mid-install: this button would abandon it.
     customCode: trustRemoteCodeFallback && phase !== "installing",
   };
 }

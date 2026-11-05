@@ -93,7 +93,6 @@ const PATH_ID = "/home/santiago/Temp-GGUF/qwen38/UD-IQ3_XXS";
 const PATH_KEY = `${PATH_ID}:UD-IQ3_XXS`;
 
 test("a forget clears the server entry, then every record it reports, then refetches", async () => {
-  // A listed key that left the map for another reason is not read as forgotten once it reports.
   const state = trace(
     () => Promise.resolve(answer([PATH_KEY, PATH_ID])),
     true,
@@ -116,7 +115,6 @@ test("a server that reports nothing still forgets the clicked key here", async (
   assert.deepEqual(state.removedLocal, [[PATH_KEY]]);
 });
 
-// Without this an old backend leaves the snapshot record, and the next load applies it.
 test("a server that reports nothing is read off the map it returns", async () => {
   const repoKey = "unsloth/Repo-GGUF:Q4_K_M";
   const snapshotKey =
@@ -136,7 +134,6 @@ test("a server that reports nothing is read off the map it returns", async () =>
   assert.deepEqual(state.removedLocal, [[repoKey, snapshotKey]]);
 });
 
-// Another client re-saved the row under the server's casing mid-forget; it is still held.
 test("a listed key the map still holds under another spelling is not read as cleared", async () => {
   const state = trace(
     () =>
@@ -188,11 +185,10 @@ test("a browser copy that could not be deleted is reported, not swallowed", asyn
   await forgetModelOverride(PATH_KEY, state.deps);
 
   assert.deepEqual(state.errors, [FORGET_MODEL_OVERRIDE_LOCAL_FAILED]);
-  // The server entry is gone whatever the browser did, so the list still refetches.
   assert.equal(state.reloads, 1);
 });
 
-// A quant can name a directory or a whole filename stem (is_qualified_gguf_variant_key in
+// A quant can name a directory or a filename stem (is_qualified_gguf_variant_key in
 // hub/utils/gguf.py); the key still joins on one colon.
 test("a path-qualified variant splits off the repo it belongs to", async () => {
   const state = trace();
@@ -250,8 +246,6 @@ function respond(status: number, body: unknown): void {
       }),
   );
 }
-
-// The local half of a forget: the records this browser drops for the keys a server reports.
 
 test("every reported key's record goes, whichever spelling it uses", () => {
   store.clear();
@@ -387,9 +381,6 @@ test("a record a newer build wrote is left behind and reported", () => {
   );
 });
 
-// The settings page's forget, mirrored through syncModelOverride.
-
-/** syncModelOverride is fire-and-forget; its cleanup lands after the response is read. */
 function settled(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
 }
@@ -443,7 +434,6 @@ test("a mirrored forget drops the records the server reports", async () => {
   assert.equal(listPerModelConfigs().length, 0);
 });
 
-// The settings page deletes its own record before the mirror answers; cleanup carries on past it.
 test("a mirrored forget from the settings page still drops the other spellings", async () => {
   store.clear();
   savePerModelConfig(SNAPSHOT_PATH, QUANT, SAVED);

@@ -48,8 +48,7 @@ STUDIO_ALPACA_CHAT_TEMPLATE = (
 
 _TEMPLATE_ERROR_COLUMN = "__chat_template_error"
 
-# Rows per batch when scanning or filtering the error column, so neither pass
-# materialises the whole column in Python.
+# Rows per batch for error-column scans/filters, so neither pass materialises the whole column.
 _ERROR_SCAN_BATCH = 10_000
 
 _TEMPLATE_PROBE_ROWS = 8
@@ -213,7 +212,7 @@ def _row_tools(tools):
     return normalized
 
 
-def _sharegpt_tool_turns(conversation, content = "", probe = False):
+def _sharegpt_tool_turns(conversation, content = "", probe = False,):
     """Map ShareGPT ``function_call`` / ``observation`` turns to OpenAI tool turns, and the
     markers ``probe`` put in place of each call's arguments and each result; the conversation
     itself when it has neither role."""
@@ -321,7 +320,7 @@ def _one_call_per_message(turns):
     return split if len(split) != len(turns) else turns
 
 
-def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True):
+def _render_conversation(tokenizer, conversation, tools = None, fallback_without_tools = True,):
     candidates = []
     # None content for DeepSeek-style templates; one call per message for Llama 3.x and gpt-oss.
     for content in ("", None):
@@ -364,6 +363,54 @@ def _thinking_as_reasoning_content(tokenizer, conversation):
     ]
 
 
+def _render_with_empty_call_content(tokenizer, messages, tools_kwargs):
+    # Unsloth's qwen3 reads content unguarded; kept only if unique per-call probes render, as names may appear elsewhere.
+    from core.inference.chat_template_helpers import _normalize_tool_call_arguments
+
+    def is_null_call(message):
+        return isinstance(message, dict) and message.get("tool_calls") and message.get("content") is None
+
+    def filled(markers = None):
+        turns = []
+        for message in messages:
+            if not is_null_call(message):
+                turns.append(message)
+                continue
+            calls = message["tool_calls"]
+            if markers is not None:
+                calls = []
+                for call in message["tool_calls"]:
+                    markers.append(f"unslothname{len(markers)}end")
+                    markers.append(f"unslothcall{len(markers)}end")
+                    function = {**call["function"], "name": markers[-2]}
+                    function["arguments"] = json.dumps({"probe": markers[-1]})
+                    calls.append({**call, "function": function})
+            turns.append({**message, "content": "", "tool_calls": calls})
+        return turns
+
+    null_calls = [message for message in messages if is_null_call(message)]
+    if not null_calls or not all(
+        isinstance(message["tool_calls"], list)
+        and all(isinstance(call, dict) and isinstance(call.get("function"), dict) for call in message["tool_calls"])
+        for message in null_calls
+    ):
+        return None
+    markers = []
+    probe = filled(markers)
+    for normalize in (_normalize_tool_call_arguments, lambda turns: turns):
+        try:
+            shown = tokenizer.apply_chat_template(
+                normalize(probe), tokenize = False, add_generation_prompt = False, **tools_kwargs
+            )
+            if all(marker in shown for marker in markers):
+                return tokenizer.apply_chat_template(
+                    normalize(filled()), tokenize = False, add_generation_prompt = False, **tools_kwargs
+                )
+        except Exception:
+            continue
+    return None
+
+
 def _render_messages(tokenizer, conversation, tools = None, fallback_without_tools = True):
     from core.inference.chat_template_helpers import _normalize_tool_call_arguments
 
@@ -384,6 +431,9 @@ def _render_messages(tokenizer, conversation, tools = None, fallback_without_too
             # allow DeepSeek V3 None content; prefer cleaned errors when loaders add None keys.
             if first_error is None:
                 first_error = error
+    text = _render_with_empty_call_content(tokenizer, _drop_none_values(conversation), tools_kwargs)
+    if text is not None:
+        return text
     if tools and fallback_without_tools:
         return _render_messages(tokenizer, conversation)
     raise first_error
@@ -412,7 +462,7 @@ def _template_render_stats(tokenizer, rows):
     return rendered, advertised, tool_rows
 
 
-def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS):
+def _sample_template_rows(dataset, chat_column, limit = _TEMPLATE_PROBE_ROWS,):
     """sample finite datasets evenly, adding one missed sparse tool row; stream from the front."""
     n_rows = len(dataset) if hasattr(dataset, "__len__") else 0
     sampled = []
@@ -550,10 +600,7 @@ def apply_chat_template_to_dataset(
     num_proc = None,
     progress_callback = None,
 ):
-    """Apply the chat template to a dataset based on its format, returning a dict with the dataset, success status, warnings and errors.
-
-    ``dataset_info`` is the output of format_dataset() with metadata. ``custom_prompt_template`` is deprecated and non-None values are rejected, because Studio cannot persist a matching inference template. ``add_eos_token`` appends the tokenizer's eos_token to each ChatML text (Alpaca text always gets one), ``remove_bos_prefix`` strips a leading '<bos>' (Gemma and friends), ``custom_format_mapping`` maps custom columns to the standard format, and ``batch_size`` / ``num_proc`` control processing.
-    """
+    """Rejects a non-None custom_prompt_template: Studio cannot persist a matching inference template."""
     dataset = dataset_info["dataset"]
     final_format = dataset_info["final_format"]
     chat_column = dataset_info["chat_column"]
@@ -675,18 +722,24 @@ def apply_chat_template_to_dataset(
 
         tokenizer = get_training_chat_template(tokenizer, model_name, final_format)
 
+        preamble, alpaca_body = DEFAULT_ALPACA_TEMPLATE.split("\n\n", 1)
+
         def _format_alpaca(examples):
             texts = []
-            for i in range(len(examples["instruction"])):
-                fields = {
-                    "instruction": examples["instruction"][i],
-                    "input": examples.get("input", [""] * len(examples["instruction"]))[i],
-                    "output": examples["output"][i]
-                }
-                fields = {key: cell_text(value) for key, value in fields.items()}
+            instructions = examples["instruction"]
+            n = len(instructions)
+            inputs = examples["input"] if "input" in examples else [""] * n
+            systems = examples.get("system")
+            if systems is None:
+                systems = [None] * n
+            for instruction, input_, output, system in zip(
+                instructions, inputs, examples["output"], systems
+            ):
+                if not (isinstance(system, str) and system.strip()):
+                    system = preamble
 
-                text = DEFAULT_ALPACA_TEMPLATE.format(
-                    fields["instruction"], fields["input"], fields["output"]
+                text = system + "\n\n" + alpaca_body.format(
+                    cell_text(instruction), cell_text(input_), cell_text(output)
                 )
                 if not text.endswith(eos_token):
                     text += eos_token
@@ -703,12 +756,8 @@ def apply_chat_template_to_dataset(
             is_iterable = is_streaming_dataset(dataset)
 
             if not is_iterable:
-                from utils.hardware import dataset_map_num_proc
-                if num_proc is None or type(num_proc) is not int:
-                    num_proc = dataset_map_num_proc()
-                else:
-                    num_proc = dataset_map_num_proc(num_proc)
-                dataset_map_kwargs['num_proc'] = num_proc
+                from utils.hardware import light_map_num_proc
+                dataset_map_kwargs['num_proc'] = light_map_num_proc(dataset, num_proc)
                 dataset_map_kwargs['desc'] = "Applying template to Alpaca format"
 
             formatted_dataset = _map_with_pickle_fallback(dataset, _format_alpaca, dataset_map_kwargs)
@@ -848,11 +897,7 @@ def apply_chat_template_to_dataset(
                     _keep_streamed_row, input_columns = [error_column]
                 ).remove_columns(error_column)
             elif len(formatted_dataset):
-                # Everything here stays Arrow-side and batched. Reading the error column
-                # into a Python list, or building one index per surviving row, costs a
-                # measured 85 MB at 2M rows (70 MB of it the index list) and scales
-                # linearly, so a dataset of tens of millions of mostly valid rows could be
-                # killed during formatting.
+                # Stay Arrow-side and batched: Python lists here OOM on huge datasets.
                 n_total = len(formatted_dataset)
                 kept = formatted_dataset.filter(
                     lambda row_errors: [not row_error for row_error in row_errors],

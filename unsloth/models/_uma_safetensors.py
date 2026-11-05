@@ -1,19 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""Faster safetensors weight loading on unified-memory (integrated) GPUs.
-
-A direct ``safe_open(..., device=<cuda>)`` on CUDA/HIP UMA GPUs (AMD APUs,
-NVIDIA GB10 Spark) misses torch's fast pinned-DMA path: the mmap-backed
-safetensors buffers aren't recognized, so it falls to a slow per-tensor copy
-with page faults. Cloning each tensor into a normal torch CPU allocation before
-moving it restores the fast path; outputs are bit-identical.
-
-CUDA/HIP only, and only for loads that pass a CUDA device to ``safe_open``
-directly: Intel XPU iGPUs and the CPU-open + later ``.to()`` flows (e.g. bnb /
-HQQ quantized loads) keep the stock path until they can be validated on real
-hardware.
-"""
+"""Direct safe_open(device=cuda) on CUDA/HIP UMA GPUs: clone tensors to CPU before moving (bit-
+identical); CPU-open then .to() (bnb/HQQ) and XPU keep stock path."""
 
 import os
 import functools

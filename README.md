@@ -124,6 +124,7 @@ unsloth start claude --model unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL
 | Hermes Agent | `unsloth start hermes` |
 | Pi | `unsloth start pi` |
 | OpenClaw | `unsloth start openclaw` |
+| Mistral Vibe | `unsloth start vibe` |
 
 ## 📥 Install
 Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/download)**, the desktop app; **[Unsloth Studio](https://unsloth.ai/docs/new/studio/)**, the web UI; or **Unsloth Core**, the code based version.
@@ -160,6 +161,8 @@ Unsloth can be used in three ways: **[Unsloth Desktop](https://unsloth.ai/downlo
     <td><a href='https://github.com/unslothai/unsloth/releases/latest/download/Unsloth-Desktop-Windows-ARM64.exe'>Download</a></td>
   </tr>
 </table>
+
+To choose Desktop's local HTTP port, set `UNSLOTH_DESKTOP_PORT=9000` in the environment that launches the app, then fully quit and reopen Desktop. Unset or empty keeps the default port 8888. If the selected port is busy, Desktop tries the next 20 ports. Choose a port between 1024 and 65515; Desktop rejects ranges containing a browser-restricted port. This setting applies to Desktop, including backend restarts after updates; it does not change the web UI's `unsloth studio -p` option or the separate LAN access port.
 
 ### Unsloth Studio (web UI)
 

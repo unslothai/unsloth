@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// generation-recovery-monotonic.test.ts holds the rule. This holds the wiring,
-// because the rule is enforced at exactly one place: the object a recovery
-// publish hands to `view.thread().import`. Deleting the call there restores the
-// rewind while leaving every behavioural test green, so the call site is pinned
-// rather than trusted.
+// Pins the call site: removing it keeps every behavioural test green.
 
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -47,10 +43,6 @@ const propertyName = (property: ts.ObjectLiteralElementLike): string => {
   return name !== undefined && ts.isIdentifier(name) ? name.text : "";
 };
 
-/**
- * The object literals the publish builds for the thread import: the ones that
- * set both a `content` and a `status`, which is the message body swap.
- */
 const publishedMessageObjects = (
   root: ts.Node,
 ): ts.ObjectLiteralExpression[] => {

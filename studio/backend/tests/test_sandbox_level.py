@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Sandbox Low/High: Low runs Python and Terminal on software safeguards only.
-
-High is the behaviour before the level existed. Low never probes or uses the OS sandbox, so its
-calls count as not isolated: "off" asks before their risky calls. Full access overrides both.
-"""
+"""Sandbox Low runs Python and Terminal on software safeguards only; its calls count as not isolated."""
 
 import ast
 import asyncio

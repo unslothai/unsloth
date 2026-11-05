@@ -48,6 +48,23 @@ def _wait_gate_source() -> str:
     return gate
 
 
+# Inlined, not copied: it builds the llama-server half of the /load payload these scenarios assert on.
+LOAD_REQUEST = _source_path("studio/frontend/src/features/chat/lib/load-request.ts")
+
+
+def _load_request_source() -> str:
+    """The load-request module with its imports dropped; PREAMBLE supplies serverTuningLoadPayload."""
+    source = "\n".join(
+        line
+        for line in LOAD_REQUEST.read_text(encoding = "utf-8").splitlines()
+        if not line.startswith(
+            ("import ", "  type ServerTuningValues,", "  serverTuningLoadPayload,", "} from ")
+        )
+    )
+    assert "export function llamaServerLoadFields(" in source
+    return source
+
+
 # Short so no scenario waits out the real 30s cap; the shipped value is asserted in
 # tests/studio/test_chat_mount_cli_load_adoption.py.
 PONYFILLS = """
@@ -110,6 +127,8 @@ export type Scenario = {
   tokenDecision: string | null;
   /** false = the backend platform probe has not landed yet. */
   platformFetched: boolean;
+  /** true = the backend answered but deferred hardware detection. */
+  detectionDeferred: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -545,6 +564,7 @@ function unreportedWindowMaxTokens(g: boolean, held: number) { return g ? held :
 function resolveManualAutoCtxPin(..._a: any[]) { return null; }
 async function ensureGpuDeviceCache() {}
 function reconcilePersistedGpuIds(ids: any) { return ids; }
+function reconcileTensorSplit(..._a: any[]) { return null; }
 function saveSpeculativeType(_x: any) {}
 function persistGpuMemoryModeOnLoad(..._a: any[]) {}
 function reasoningCapsFromLoad(_x: any) { return {}; }
@@ -580,6 +600,8 @@ const usePlatformStore = {
     // Server-reported unless a scenario says the probe has not landed.
     fetched: SCENARIO.platformFetched !== false,
     isChatOnly: () => SCENARIO.chatOnly === true,
+    capabilitiesUnknown: () =>
+      SCENARIO.platformFetched === false || SCENARIO.detectionDeferred === true,
   }),
 };
 function isMlxId(value: string) {
@@ -877,7 +899,7 @@ def _build_harness(run_dir: Path):
     # Any mention, not just a call; comments are stripped first.
     code = re.sub(r"/\*.*?\*/", "", body, flags = re.S)
     code = re.sub(r"//[^\n]*", "", code)
-    preamble = PREAMBLE + PONYFILLS + _wait_gate_source()
+    preamble = PREAMBLE + PONYFILLS + _wait_gate_source() + _load_request_source()
     missing = sorted(
         name
         for name in imported
@@ -1671,6 +1693,15 @@ def test_a_provisional_platform_does_not_hide_cached_non_gguf_rows():
     """Before the probe lands the chatOnly flag is a browser guess."""
     out = _run(
         "scenario({ chatOnly: true, platformFetched: false,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert _loaded_paths(out) == ["org/st"]
+
+
+def test_a_deferred_hardware_verdict_does_not_hide_cached_non_gguf_rows():
+    """Deferred detection reports a provisional chat_only, not a measurement."""
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true,"
         " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
     )
     assert _loaded_paths(out) == ["org/st"]

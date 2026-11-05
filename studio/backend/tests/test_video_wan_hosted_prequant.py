@@ -47,7 +47,10 @@ def test_t2v_a14b_seeds_both_experts_from_their_own_files(scheme):
     tag = scheme.upper()
     assert f"Wan2.2-T2V-A14B-{tag}.pt" in _names(sources["transformer"])
     # Expert 2 is served by its own row only: falling back to expert 1's name would load the wrong weights.
-    assert _names(sources["transformer_2"]) == (f"Wan2.2-T2V-A14B-{tag}-2.pt",)
+    assert _names(sources["transformer_2"]) == (
+        f"Wan2.2-T2V-A14B-{tag}-2.safetensors",
+        f"Wan2.2-T2V-A14B-{tag}-2.pt",
+    )
     assert sources["transformer_2"].location == "unsloth/Wan2.2-T2V-A14B-FP8"
 
 

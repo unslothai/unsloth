@@ -37,10 +37,10 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   BookOpen02Icon,
   ColumnInsertIcon,
-  Delete02Icon,
   Download01Icon,
   MoreHorizontalIcon,
   NewReleasesIcon,
@@ -213,14 +213,13 @@ export function ThreadSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
         <SidebarGroup className="flex-1 px-4">
-          {/* Recents label with export-all menu */}
           <div className="flex items-center justify-between px-2 py-1.5">
             <span className="text-xs font-medium text-muted-foreground/80">Recents</span>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  className="flex items-center justify-center rounded-sm p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
+                  className="flex items-center justify-center rounded-full p-0.5 text-muted-foreground hover:bg-accent focus:outline-none focus-visible:ring-0"
                   title="Export options"
                 >
                   <HugeiconsIcon icon={MoreHorizontalIcon} className="size-3.5" />
@@ -278,7 +277,7 @@ export function ThreadSidebar({
                   >
                     {item.isFork ? (
                       <span
-                        className="mr-1 rounded-sm bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
+                        className="mr-1 rounded-full bg-primary/10 px-1.5 py-0.5 text-ui-10 font-semibold uppercase tracking-wide text-primary"
                         title="Forked from another chat"
                       >
                         fork
@@ -319,7 +318,7 @@ export function ThreadSidebar({
                         className="text-destructive focus:text-destructive"
                         onSelect={() => void handleDelete(item)}
                       >
-                        <HugeiconsIcon icon={Delete02Icon} className="mr-2 size-4" />
+                        <HugeiconsIcon icon={TrashIcon} className="mr-2 size-4" />
                         Delete
                       </DropdownMenuItem>
                     </DropdownMenuContent>
@@ -340,7 +339,7 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/studio/chat"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 corner-squircle rounded-md px-2 py-1.5 text-xs font-medium text-primary bg-primary/10 transition-colors hover:bg-primary/20"
+          className="flex items-center gap-2 rounded-full px-2 py-1.5 text-xs font-medium text-foreground bg-wash-10 transition-colors hover:bg-wash-20"
         >
           <HugeiconsIcon icon={BookOpen02Icon} className="size-4 shrink-0" strokeWidth={2} />
           <span>Learn more in docs</span>
@@ -349,14 +348,13 @@ export function ThreadSidebar({
           href="https://unsloth.ai/docs/new/changelog"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          className="flex items-center gap-2 rounded-full px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           <HugeiconsIcon icon={NewReleasesIcon} className="size-4 shrink-0" strokeWidth={2} />
           <span>What&apos;s new</span>
         </a>
       </SidebarFooter>
 
-      {/* Rename dialog */}
       <Dialog open={renamingItem !== null} onOpenChange={(open) => { if (!open) setRenamingItem(null); }}>
         <DialogContent
           className="corner-squircle dialog-soft-surface sm:max-w-sm"

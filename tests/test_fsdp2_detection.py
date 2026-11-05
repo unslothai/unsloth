@@ -9,7 +9,6 @@ from __future__ import annotations
 import ast
 import importlib.util
 import os
-import socket
 from pathlib import Path
 
 import pytest
@@ -42,8 +41,27 @@ def _load_launch():
 
 @pytest.fixture(autouse = True)
 def _clean_env(monkeypatch):
+    # apply_unsloth_fsdp2_launch_env writes os.environ directly, which monkeypatch does not undo for
+    # keys that were absent; restore the whole environment so nothing leaks into later test files.
+    saved = dict(os.environ)
     for key in _ENV:
         monkeypatch.delenv(key, raising = False)
+    # These tests cover the accelerate FSDP2 launch; UNSLOTH_FSDP2=1 alone now selects Unsloth's native
+    # fully_shard wrap (test_native_backend_exports_nothing).
+    monkeypatch.setenv("UNSLOTH_FSDP2_BACKEND", "accelerate")
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
+def test_native_backend_exports_nothing(monkeypatch, launch):
+    monkeypatch.delenv("UNSLOTH_FSDP2_BACKEND")
+    monkeypatch.setenv("UNSLOTH_FSDP2", "1")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    assert launch.unsloth_fsdp2_native_requested()
+    assert launch.fsdp_version_from_env() == 2
+    assert launch.apply_unsloth_fsdp2_launch_env() is False
+    assert "ACCELERATE_USE_FSDP" not in os.environ and "FSDP_VERSION" not in os.environ
 
 
 @pytest.fixture
@@ -118,7 +136,7 @@ def test_reshard_after_forward_switch(monkeypatch, launch, value, expected):
 
 def _fake_accelerate(monkeypatch, launch, tmp_path, source):
     (tmp_path / "utils").mkdir()
-    (tmp_path / "utils" / "fsdp_utils.py").write_text(source)
+    (tmp_path / "utils" / "fsdp_utils.py").write_text(source, encoding = "utf-8")
     spec = importlib.util.spec_from_file_location("accelerate", tmp_path / "__init__.py")
     spec.submodule_search_locations = [str(tmp_path)]
     monkeypatch.setattr(launch.importlib.util, "find_spec", lambda name: spec)
@@ -241,9 +259,8 @@ def test_a_built_accelerator_is_authoritative(monkeypatch):
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _rank_worker(rank, port, out_dir):
@@ -271,7 +288,7 @@ def _rank_worker(rank, port, out_dir):
         everyone = [None, None]
         dist.all_gather_object(everyone, mine)
         if rank == 0:
-            with open(os.path.join(out_dir, "ranks.json"), "w") as f:
+            with open(os.path.join(out_dir, "ranks.json"), "w", encoding = "utf-8") as f:
                 json.dump(everyone, f)
     finally:
         dist.destroy_process_group()
@@ -286,7 +303,7 @@ def test_every_rank_reads_the_same_fsdp2_launch(tmp_path):
     import torch.multiprocessing as mp
 
     mp.spawn(_rank_worker, args = (_free_port(), str(tmp_path)), nprocs = 2, join = True)
-    ranks = json.loads((tmp_path / "ranks.json").read_text())
+    ranks = json.loads((tmp_path / "ranks.json").read_text(encoding = "utf-8"))
     assert ranks[0] == ranks[1] == [2, "true", "TRANSFORMER_BASED_WRAP"]
 
 

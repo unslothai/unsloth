@@ -32,9 +32,8 @@ if [[ -n "${SSH_KEY:-${PUBLIC_KEY:-}}" ]] && (( UNSLOTH_STUDIO_PORT == 22 )); th
     printf "\033[1;31mERROR:\033[0m UNSLOTH_STUDIO_PORT=22 is sshd's port inside the container when SSH_KEY or PUBLIC_KEY is set.\n" >&2
     exit 1
 fi
-# JupyterLab starts first and wins the bind, so Studio silently falls back to an unpublished
-# port. Compared as traitlets does, via int(): whitespace, leading zeros, a leading + and
-# underscores ("08000", " 8000", "8_000") all bind 8000.
+# JupyterLab binds first, so Studio would silently move; compare ports via int() as
+# traitlets does.
 jupyter_port_digits="${JUPYTER_PORT//[[:space:]_]/}"
 jupyter_port_digits="${jupyter_port_digits#+}"
 if [[ "$jupyter_port_digits" =~ ^[0-9]+$ ]] && (( 10#$jupyter_port_digits == UNSLOTH_STUDIO_PORT )); then
@@ -53,9 +52,8 @@ export UNSLOTH_STUDIO_STOP_WAIT_S=$(( 10#$UNSLOTH_STUDIO_SHUTDOWN_STOP_TIMEOUT_S
 export UNSLOTH_STUDIO_HOME="${UNSLOTH_STUDIO_HOME:-/opt/unsloth-studio}"
 export UNSLOTH_JUPYTER_CLOUDFLARE="${UNSLOTH_JUPYTER_CLOUDFLARE:-0}"
 
-# SSH login shells lack the `docker run -e` vars. Secrets are excluded on purpose,
-# and every value is shlex.quote()d because this file is sourced by every login shell.
-# The ROCm prefixes are the image's ROCBLAS_USE_HIPBLASLT and a user's HSA_OVERRIDE_GFX_VERSION.
+# SSH login shells lack the `docker run -e` vars. Secrets excluded; values shlex.quote()d
+# because every login shell sources this file.
 python - > /etc/profile.d/unsloth_env.sh <<'PY' || true
 import os, re, shlex
 keep   = re.compile(r"^(HF_|CUDA_|NCCL_|HSA_|HIP_|ROCM_|ROCR_|ROCBLAS_|JUPYTER_|UNSLOTH_|WANDB_|TRITON_)|^PATH$")
@@ -96,15 +94,8 @@ EOF
           && "${UNSLOTH_SKIP_NOTEBOOK_SYNC:-0}" != "1" \
           && "${_view_dir}" == "${_root_dir}/"* ]]; then
         _view_rel="${_view_dir#${_root_dir}/}"
-        # default_url must be set on BOTH ServerApp and LabApp, or the lab app
-        # overrides ServerApp back to /lab.
-        #
-        # repr() rather than interpolation into a heredoc: a double quote in the
-        # path closed the string literal and made jupyter_lab_config.py a
-        # SyntaxError, so the documented override stopped the service starting,
-        # and a backslash silently changed the path. Both are legal POSIX
-        # characters. Values arrive via the environment, like the password block
-        # above, so the shell side needs no quoting either.
+        # default_url must be set on BOTH ServerApp and LabApp. repr() via env, not heredoc
+        # interpolation, so quotes or backslashes in the path cannot break the config.
         UNSLOTH_VIEW_REL="${_view_rel}" UNSLOTH_VIEW_DIR="${_view_dir}" \
         python - >> "${JUPYTER_CONFIG_DIR}/jupyter_lab_config.py" <<'PY'
 import os
@@ -147,10 +138,8 @@ if [[ "${UNSLOTH_SKIP_BRANDING_CHECK:-0}" != "1" ]]; then
 fi
 
 export UNSLOTH_JUPYTER_NOTE="${JUPYTER_NOTE}"  # for the ready summary (studio-password)
-# UNSLOTH_STUDIO_PASSWORD only sets the initial admin password, and `unsloth studio`
-# exits 1 when handed one after that. So it goes to a root-only file that
-# unsloth-studio-run consumes while nothing is stored, and never into supervisord's
-# environment, where every respawn of the studio program would see it again.
+# UNSLOTH_STUDIO_PASSWORD only sets the initial password and `unsloth studio` exits 1 when
+# given one later, so it goes to a root-only file, never supervisord's environment.
 INITIAL_FILE="${UNSLOTH_STUDIO_INITIAL_PASSWORD_FILE:-/run/unsloth/studio-initial-password}"
 rm -f "$INITIAL_FILE"
 if unsloth-studio-run --stored; then
