@@ -309,7 +309,6 @@ def test_block_swap_under_tp_or_pp_is_unverified(clean_env, axis, size):
     ],
 )
 def test_block_swap_refusal_on_a_gated_layout_names_offload_layers(clean_env, layout):
-    # Supported without block swap, refused with it in default mode: the message must name the knob.
     query = caps.Query(trainer = "sft", torch = (2, 13), **layout)
     assert caps.cell_status(query)[0] == "supported"
     query = dataclasses.replace(query, block_swap = True)

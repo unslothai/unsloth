@@ -947,7 +947,7 @@ def _moe_cells():
 
 
 class _AboveOne:
-    """Every axis size above 1: parallel_env accepts any positive size, so a gate on (2, 4, 8) misses 3 or 16."""
+    """Any size above 1: parallel_env accepts any positive size, so (2, 4, 8) would miss 3 or 16."""
 
     def __contains__(self, size):
         return isinstance(size, int) and size > 1
