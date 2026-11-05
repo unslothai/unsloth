@@ -530,6 +530,80 @@ def test_xlsx_reads_shared_inline_dates_and_gaps(tmp_path):
     )
 
 
+def _xlsx_strings(path, runs, cached):
+    return _zip(
+        path,
+        {
+            "xl/workbook.xml": f'<workbook {S}><sheets><sheet name="Text" sheetId="1" r:id="rId1"/></sheets></workbook>',
+            "xl/_rels/workbook.xml.rels": f'<Relationships {REL}><Relationship Id="rId1" Target="worksheets/sheet1.xml"/></Relationships>',
+            "xl/sharedStrings.xml": f"<sst {S}><si>{runs}</si></sst>",
+            "xl/worksheets/sheet1.xml": f'<worksheet {S}><sheetData><row r="1">'
+            '<c r="A1" t="s"><v>0</v></c>'
+            f'<c r="B1" t="inlineStr"><is>{runs}</is></c>'
+            f'<c r="C1" t="str"><f>A1</f><v>{cached}</v></c>'
+            '<c r="D1"><v>42</v></c><c r="E1" t="e"><v>#VALUE!</v></c>'
+            "</row></sheetData></worksheet>",
+        },
+    )
+
+
+@pytest.mark.parametrize("strict", [False, True])
+@pytest.mark.parametrize(
+    "encoded, expected",
+    [
+        ("First_x000D_\nSecond_x0009_End", "First\r\nSecond\tEnd"),
+        ("Smile _xD83D__xDE00_", "Smile \U0001f600"),
+        ("_x005F_x000D_", "_x000D_"),
+        ("_x005f_x005F_x000D_", "_x005F_x000D_"),
+        ("&amp;_x0041_ _xZZZZ_", "&A _xZZZZ_"),
+        ("_X0000_ _x00aB_ _x005F_x0041_", "_X0000_ \u00ab _x0041_"),
+        ("A_xD83D_B_xDE00_C", "A\ufffdB\ufffdC"),
+        ("plain text", "plain text"),
+    ],
+)
+def test_xlsx_decodes_escaped_cell_strings(tmp_path, strict, encoded, expected):
+    path = _xlsx_strings(tmp_path / "text.xlsx", f"<t>{encoded}</t>", encoded)
+    if strict:
+        path = _strict(path, tmp_path / "strict.xlsx")
+    assert office_formats.xlsx(str(path)) == [
+        (f"Sheet: Text\n{expected} | {expected} | {expected} | 42 | #VALUE!", None)
+    ]
+
+
+def test_xlsx_decodes_each_run_before_joining_surrogate_pairs(tmp_path):
+    runs = (
+        "<r><t>_x00</t></r><r><t>0D_</t></r>"
+        "<r><t>_xD83D_</t></r><r><t>_xDE00_</t></r>"
+        "<rPh><t>ignored_x0041_</t></rPh>"
+    )
+    path = _xlsx_strings(tmp_path / "rich.xlsx", runs, "cached")
+    assert (
+        _text(path) == "Sheet: Text\n_x000D_\U0001f600 | _x000D_\U0001f600 | cached | 42 | #VALUE!"
+    )
+
+
+@pytest.mark.parametrize("extension", [".xlsx", ".xlsm", ".xltx", ".xltm"])
+def test_escaped_xlsx_uploads_are_searchable(rag_home, stub_embeddings, tmp_path, extension):
+    if not rag_db.rag_available():
+        pytest.skip("sqlite-vec unavailable here")
+    encoded = "Zebra_x006D_arker _xD83D__xDE00_"
+    source = _xlsx_strings(tmp_path / f"escaped{extension}", f"<t>{encoded}</t>", encoded)
+    stored, filename, _hash = _save_upload(
+        UploadFile(file = io.BytesIO(source.read_bytes()), filename = source.name)
+    )
+    scope = store.thread_scope("escaped-office")
+    doc_id, job = ingestion.start_ingestion(
+        scope, None, "escaped-office", filename, stored, background = False
+    )
+    assert ingestion.get_job_status(job)["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        assert store.get_document(conn, doc_id)["status"] == "completed"
+        assert store.search_lexical(conn, scope, "zebramarker", 5)
+    finally:
+        conn.close()
+
+
 def test_pptx_reads_slides_in_order_with_tables_and_notes(tmp_path):
     pages = parsers.parse(str(build_pptx(tmp_path / "deck.pptx")))
     assert [(p.page_number, p.text) for p in pages] == [
