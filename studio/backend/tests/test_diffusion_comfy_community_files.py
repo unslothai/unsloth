@@ -260,6 +260,63 @@ def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monke
         assert buf.dtype == ref_buf.dtype and torch.equal(buf, ref_buf), name
 
 
+class _AnimaScheduler:
+    def step(
+        self,
+        noise_pred,
+        t,
+        latents,
+        return_dict = False,
+    ):
+        return (latents + 1,)
+
+
+class _AnimaModular:
+    def __init__(self):
+        self.scheduler = _AnimaScheduler()
+        self.transformer = None
+
+    def __call__(
+        self,
+        output = None,
+        **kwargs,
+    ):
+        latents = 0
+        for i in range(kwargs["num_inference_steps"]):
+            latents = self.scheduler.step(None, 1000 - i, latents)[0]
+        return [f"img:{kwargs['prompt']}"] * kwargs["num_images_per_prompt"]
+
+
+def test_every_anima_render_frees_the_offload_hooks():
+    # diffusers' contract for enable_model_cpu_offload: else the VAE stays on the GPU into the next image.
+    from core.inference.diffusion_anima import _AnimaPipelineMixin
+
+    class Face(_AnimaPipelineMixin):
+        def __init__(self):
+            self._interrupt = False
+            self.mp = _AnimaModular()
+            self.freed = 0
+
+        def modular_pipeline(self):
+            return self.mp
+
+        def _set_guidance(self, mp, guidance_scale):
+            pass
+
+        def maybe_free_model_hooks(self):
+            self.freed += 1
+
+    def interrupt(pipe, i, t, kwargs):
+        pipe._interrupt = True
+        return kwargs
+
+    face = Face()
+    assert face(prompt = "a", num_inference_steps = 2).images == ["img:a"]
+    assert face.freed == 1
+    assert face(prompt = "a", num_inference_steps = 3, callback_on_step_end = interrupt).images == []
+    assert face.freed == 2
+
+
 def test_every_anima_image_is_its_own_generation_chunk():
     # One modular call per image (as FLUX.3), so each image is its own chunk.
     from core.inference.diffusion import _generation_chunks
