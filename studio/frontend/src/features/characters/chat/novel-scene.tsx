@@ -4,9 +4,9 @@
 import { useBackgroundStore } from "@/features/chat-background";
 import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
-import { nameHue, viewPicture } from "../images";
+import { viewPicture } from "../images";
 import { shortName } from "../prompt/speakers";
 import { useStageFocus } from "../stage-focus";
 import type { Character } from "../types";
@@ -147,23 +147,18 @@ function NovelFigure({
 export function NovelNameplate({ threadId, cast }: { threadId: string | null; cast: Character[] }) {
   const { focus, speaking } = useStageFocus(threadId, cast);
   if (!focus) return null;
-  const hue = nameHue(focus.name);
-  const style: CSSProperties = {
-    background: `linear-gradient(135deg, hsl(${hue} 52% 46%), hsl(${(hue + 28) % 360} 56% 36%))`,
-  };
   return (
     <div
       key={focus.id}
-      className="pointer-events-none absolute -top-4 left-[clamp(1rem,6%,3.5rem)] z-20 flex items-center gap-2.5 rounded-full py-1.5 pl-4 pr-4 text-white shadow-[0_10px_24px_-10px_rgb(0_0_0/0.6)] ring-1 ring-white/20 animate-in fade-in-0 slide-in-from-bottom-1 duration-300"
-      style={style}
+      className="pointer-events-none absolute -top-4 left-[clamp(1rem,6%,3.5rem)] z-20 flex items-center gap-2 rounded-full bg-background py-1.5 pl-4 pr-4 text-foreground shadow-[0_8px_20px_-10px_rgb(0_0_0/0.45)] ring-1 ring-border animate-in fade-in-0 slide-in-from-bottom-1 duration-300 dark:bg-card dark:ring-white/10"
       data-testid="novel-nameplate"
     >
-      <span className="font-heading text-ui-15 font-semibold tracking-[-0.01em]">{focus.name}</span>
+      <span className="font-heading text-ui-15 font-semibold tracking-[-0.01em]">{shortName(focus.name)}</span>
       {speaking ? (
         <span className="flex gap-0.5" aria-hidden={true}>
-          <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.3s]" />
-          <span className="size-1 animate-bounce rounded-full bg-white/90 [animation-delay:-0.15s]" />
-          <span className="size-1 animate-bounce rounded-full bg-white/90" />
+          <span className="size-1 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.3s]" />
+          <span className="size-1 animate-bounce rounded-full bg-muted-foreground [animation-delay:-0.15s]" />
+          <span className="size-1 animate-bounce rounded-full bg-muted-foreground" />
         </span>
       ) : null}
     </div>
