@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 import * as formatFastApiError from "../src/lib/format-fastapi-error.ts";
@@ -61,4 +62,15 @@ test("an older backend without the route reads as absent", async () => {
   await assert.rejects(api.loadTrustedToolFolders("fallback"), {
     name: "SettingsRouteAbsentError",
   });
+});
+
+test("Save stays disabled until the stored list has loaded", () => {
+  const tab = readFileSync(
+    new URL("../src/features/settings/tabs/sandbox-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  const section = tab.slice(tab.indexOf("function TrustedFoldersSection()"));
+  // A failed load leaves `saved` null; an enabled Save would send [] over the stored folders.
+  assert.match(section, /const unsaveable =\s*saved === null \|\|/);
+  assert.match(section, /disabled=\{saving \|\| unsaveable\}/);
 });

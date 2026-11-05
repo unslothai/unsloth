@@ -1009,8 +1009,9 @@ function TrustedFoldersSection() {
   }, [t]);
 
   if (saved === null && error === null) return null;
-  const unchanged =
-    saved !== null && parseTrustedFolders(draft).join("\n") === saved.join("\n");
+  // Not loaded means not known: saving then would replace the stored list with the empty draft.
+  const unsaveable =
+    saved === null || parseTrustedFolders(draft).join("\n") === saved.join("\n");
   const save = () => {
     setSaving(true);
     updateTrustedToolFolders(
@@ -1047,7 +1048,7 @@ function TrustedFoldersSection() {
             onChange={(event) => setDraft(event.target.value)}
             className="font-mono text-xs"
           />
-          <Button variant="outline" size="sm" disabled={saving || unchanged} onClick={save}>
+          <Button variant="outline" size="sm" disabled={saving || unsaveable} onClick={save}>
             {saving ? t("common.saving") : t("common.save")}
           </Button>
         </div>
