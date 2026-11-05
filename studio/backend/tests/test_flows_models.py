@@ -521,7 +521,10 @@ def test_a_streamed_reload_rebuilds_the_resident_build(monkeypatch, named):
         "gguf_filename": "flux2-finetune-Q8_0.gguf",
         "base_repo": "black-forest-labs/FLUX.2-klein-4B",
         "transformer_quant": "auto",
-        "resolved": {"transformer_quant": {"value": "fp8"}},
+        "resolved": {
+            "transformer_quant": {"value": "fp8"},
+            "text_encoder_quant": {"requested": "int8", "value": "int8"},
+        },
         "text_encoder_quant": "int8",
         "memory_mode": "low_vram",
         "speed_mode": "max",
@@ -577,6 +580,11 @@ def test_a_reload_keeps_a_dense_text_encoder_dense():
     }
     knobs = _common.resident_build_knobs(status)
     assert knobs["text_encoder_quant"] == "off" and knobs["transformer_quant"] == "int8"
+    # An automatic fp8 text encoder (T5 cast, CLIP-L kept dense) is asked automatically again: an explicit fp8
+    # would cast CLIP-L too.
+    status.update(text_encoder_quant = "fp8")
+    status["resolved"]["text_encoder_quant"] = {"requested": None, "value": "fp8"}
+    assert "text_encoder_quant" not in _common.resident_build_knobs(status)
 
 
 def test_a_reload_keeps_the_supplied_text_encoder_and_vae_files():

@@ -1047,18 +1047,18 @@ RESIDENT_BUILD_KEYS = (
     "transformer_cache",
     "family_override",
 )
-# Reloaded as the precision that engaged, so an "auto" that engaged fp8 stays fp8.
-ENGAGED_BUILD_KEYS = ("transformer_quant", "text_encoder_quant")
-# Status reports what engaged, and an automatic pick is tuned (a static cache's schedule) where an explicit one takes
-# the defaults: only an explicit ask is sent back, so an automatic one is made again.
-ASKED_BUILD_KEYS = ("transformer_cache", "attention_backend")
+# Status reports what engaged, and an automatic pick is tuned where an explicit one takes the defaults (a static
+# cache's schedule; an automatic fp8 text encoder keeps CLIP-L dense, an explicit one casts it): only an explicit ask
+# is sent back, so an automatic one is made again. A text encoder left dense stays dense.
+ASKED_BUILD_KEYS = ("transformer_cache", "attention_backend", "text_encoder_quant")
 
 
 def resident_build_knobs(status: dict) -> dict:
     """The load settings of the image model ``status`` (``/images/status``) reports, as a load request takes
-    them: per setting, the first the request accepts of its engaged precision, its reported value and its explicit
-    ask. Unset, a setting falls back to the automatic policy: a dense text encoder would reload as int8, a cache
-    asked "off" as the family's auto cache, a family picked by hand as the one the file detects as."""
+    them: per setting, the first the request accepts of the transformer's engaged precision, the reported value
+    (only the explicit ask where an automatic pick is tuned) and the explicit ask. Unset, a setting falls back to the
+    automatic policy: a dense text encoder would reload as int8, a cache asked "off" as the family's auto cache, a
+    family picked by hand as the one the file detects as."""
     from models.inference import DiffusionLoadRequest
 
     repo = str(status.get("repo_id") or "")
@@ -1066,14 +1066,20 @@ def resident_build_knobs(status: dict) -> dict:
     knobs: dict = {}
     for key in RESIDENT_BUILD_KEYS:
         record = resolved.get(key) if isinstance(resolved.get(key), dict) else {}
-        candidates = [
-            record.get("value") if key in ENGAGED_BUILD_KEYS else None,
+        if key == "family_override":
             # The family the load built (detected or picked): the same file can fit a sibling family.
-            status.get("family")
-            if key == "family_override"
-            else None
-            if key in ASKED_BUILD_KEYS
-            else status.get(key),
+            reported = status.get("family")
+        elif key == "text_encoder_quant":
+            reported = "off" if str(record.get("value") or "").lower() == "off" else None
+        elif key in ASKED_BUILD_KEYS:
+            reported = None
+        else:
+            reported = status.get(key)
+        candidates = [
+            # An "auto" transformer precision that engaged fp8 reloads as fp8: the bake needs the quantized build.
+            record.get("value") if key == "transformer_quant" else None,
+            record.get("requested") if key == "text_encoder_quant" else None,
+            reported,
             record.get("requested"),
         ]
         for value in candidates:
