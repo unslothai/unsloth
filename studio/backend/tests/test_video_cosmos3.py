@@ -1420,6 +1420,44 @@ def test_a_variable_frame_rate_clip_is_resampled_by_timestamp():
     assert _indexes(frames) == [0, 2, 4, 5, 5]
 
 
+def test_a_long_timestamp_gap_is_refused_even_when_the_rate_hides_it(monkeypatch):
+    pytest.importorskip("av")
+    from core.inference import video_minimax_h3
+
+    real_open = video_minimax_h3._open_reference_media
+
+    class _Stream:
+        def __init__(self, stream):
+            self._stream = stream
+            self.average_rate = 1000  # reported far above the timestamped rate
+            self.guessed_rate = None
+
+    class _Container:
+        def __init__(self, container):
+            self._container = container
+            self.streams = types.SimpleNamespace(video = [_Stream(container.streams.video[0])])
+
+        def decode(self, **kwargs):
+            return self._container.decode(**kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return self._container.__exit__(*exc)
+
+    monkeypatch.setattr(
+        video_minimax_h3,
+        "_open_reference_media",
+        lambda av_mod, blob: _Container(real_open(av_mod, blob)),
+    )
+    monkeypatch.setattr(vc3, "CONTINUATION_MAX_SECONDS", 0.5)
+    clip = _vfr_clip([0, 20, 40, 60, 80, 900])
+    with pytest.raises(ValueError, match = "longer than 0.5 seconds"):
+        vc3.decode_continuation_clip(clip, keep = "first", fps = 24, count = 5)
+    vc3.decode_continuation_clip(_vfr_clip([0, 20, 40, 60, 80, 400]), keep = "first", fps = 24, count = 5)
+
+
 def test_short_long_and_unreadable_clips_are_refused(monkeypatch):
     with pytest.raises(ValueError, match = "has 4"):
         vc3.decode_continuation_clip(_clip(4), keep = "last", fps = 24, count = 5)

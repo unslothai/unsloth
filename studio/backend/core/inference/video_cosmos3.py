@@ -257,7 +257,14 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
         try:
             for index, frame in enumerate(container.decode(video = 0)):
                 decoded = index + 1
-                if decoded > max_source_frames:
+                stamp = frame.time if frame.time is not None else index / source_fps
+                if origin is None:
+                    origin = stamp
+                # Count and timestamps both: a VFR clip's average rate can understate a long gap.
+                if (
+                    decoded > max_source_frames
+                    or stamp - origin + 1 / source_fps > CONTINUATION_MAX_SECONDS + 1e-6
+                ):
                     raise ValueError(
                         f"The clip to continue runs longer than {CONTINUATION_MAX_SECONDS:g} seconds. Trim it first."
                     )
@@ -267,9 +274,6 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
                         f"{CONTINUATION_MAX_SIDE} px a side."
                     )
                 # "first" still decodes to the end, so both ends are held to the same limits.
-                stamp = frame.time if frame.time is not None else index / source_fps
-                if origin is None:
-                    origin = stamp
                 if held is not None:
                     _take(held, max(stamp - origin, 0.0))
                 held = frame
