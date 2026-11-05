@@ -98,6 +98,8 @@ export interface VideoStatus {
   supports_first_frame?: boolean;
   supports_last_frame?: boolean;
   supports_references?: boolean;
+  // Cosmos3-Nano: keeps frames from one end of an uploaded clip and generates what follows.
+  supports_video_continuation?: boolean;
   h3_task?: string | null;
   defaults?: VideoGenerationDefaults | null;
   // One or two sentences on how the loaded model reads prompts; null when it has no tip.
@@ -216,7 +218,12 @@ export interface VideoGenerateRequest {
   // Video schedule shift, and the audio one (Diffusers engine only).
   flow_shift?: number;
   audio_flow_shift?: number;
+  // Clip to continue (status supports_video_continuation) and which end of it to keep.
+  continuation_video?: string;
+  continuation_keep?: VideoContinuationKeep;
 }
+
+export type VideoContinuationKeep = "last" | "first";
 
 export interface GalleryVideo {
   id: string;

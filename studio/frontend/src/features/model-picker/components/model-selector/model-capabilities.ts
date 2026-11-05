@@ -35,7 +35,8 @@ const IMAGE_GEN_TAGS = new Set([
   "image-text-to-image",
   "inpainting",
 ]);
-// Only tags the Video page can run; video-to-video is absent (backend takes reference images).
+// Only tags the Video page can run. video-to-video stays out: no family runs an arbitrary
+// video-to-video repo, and Cosmos3-Nano's clip continuation is gated on its status, not a Hub tag.
 const VIDEO_GEN_TAGS = new Set([
   "text-to-video",
   "image-to-video",

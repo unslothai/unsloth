@@ -719,6 +719,8 @@ async def generate_video(
         )
         from core.inference.video_minimax_h3 import is_h3_native
         from core.inference.video_families import (
+            snap_num_frames,
+            validate_video_continuation,
             validate_video_flow_controls,
             validate_video_keyframe_conditioning,
             validate_video_reference_conditioning,
@@ -754,6 +756,12 @@ async def generate_video(
         )
         validate_video_flow_controls(
             fam, request.flow_shift, request.audio_flow_shift, engine = engine
+        )
+        validate_video_continuation(
+            fam,
+            has_video = bool(request.continuation_video),
+            keep = request.continuation_keep,
+            num_frames = snap_num_frames(fam, request.num_frames or fam.default_num_frames),
         )
 
     # Before the backend is resolved: the requested model may be the one this brings up.
@@ -792,6 +800,8 @@ async def generate_video(
         reference_image_size = request.reference_image_size,
         flow_shift = request.flow_shift,
         audio_flow_shift = request.audio_flow_shift,
+        continuation_video = request.continuation_video,
+        continuation_keep = request.continuation_keep,
         live_preview = request.live_preview,
     )
     # Authorize the reservation-pinned token: a gap load must not render weights of another account.

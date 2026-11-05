@@ -209,3 +209,78 @@ def seam_safe_tile_strides(pipe: Any, height: int, width: int):
         for (tile_key, stride_key), (tile, stride) in zip(keys, old):
             setattr(vae, tile_key, tile)
             setattr(vae, stride_key, stride)
+
+
+# Same caps as a MiniMax-H3 reference video and a keyframe image: 15 s of source, 4096 px a side.
+CONTINUATION_MAX_SECONDS = 15.0
+CONTINUATION_MAX_SIDE = 4096
+
+
+def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
+    """The ``count`` frames at the ``keep`` end of an uploaded clip, as RGB PIL images on the output's ``fps`` clock.
+
+    Frames land on that clock by whole-frame drop and duplicate, so the kept frames play at the rate the rest of the
+    clip is generated at; a clip already at ``fps`` passes through unchanged."""
+    import collections
+    import math
+
+    import av
+
+    from .video_minimax_h3 import _open_reference_media
+
+    picked: Any = [] if keep == "first" else collections.deque(maxlen = count)
+    try:
+        container = _open_reference_media(av, blob)
+    except av.error.FFmpegError as exc:
+        raise ValueError("That clip could not be read as a video.") from exc
+    with container:
+        if not container.streams.video:
+            raise ValueError("That clip carries no video track.")
+        stream = container.streams.video[0]
+        source_fps = float(stream.average_rate or stream.guessed_rate or fps)
+        if source_fps <= 0:
+            source_fps = float(fps)
+        max_source_frames = math.floor(CONTINUATION_MAX_SECONDS * source_fps + 1e-6)
+        next_target = 0
+        decoded = 0
+        try:
+            for index, frame in enumerate(container.decode(video = 0)):
+                decoded = index + 1
+                if decoded > max_source_frames:
+                    raise ValueError(
+                        f"The clip to continue runs longer than {CONTINUATION_MAX_SECONDS:g} seconds. Trim it first."
+                    )
+                if max(frame.width, frame.height) > CONTINUATION_MAX_SIDE:
+                    raise ValueError(
+                        f"The clip to continue is {frame.width}x{frame.height}; the limit is "
+                        f"{CONTINUATION_MAX_SIDE} px a side."
+                    )
+                while int(next_target * source_fps / fps) <= index:
+                    picked.append(frame)
+                    next_target += 1
+                if keep == "first" and len(picked) >= count:
+                    break
+        except av.error.FFmpegError as exc:
+            raise ValueError("That clip could not be decoded.") from exc
+        frames = [frame.to_image().convert("RGB") for frame in list(picked)[:count]]
+    if len(frames) < count:
+        raise ValueError(
+            f"Continuing a clip keeps its {keep} {count} frames at {fps} fps, but this one has "
+            f"{len(frames)} ({decoded} decoded). Use a longer clip."
+        )
+    return frames
+
+
+def fit_continuation_frames(frames: list, width: int, height: int) -> list:
+    """Centre-crop each frame to the canvas aspect; the pipeline resizes onto the canvas itself, so a clip already at
+    the canvas aspect passes through untouched (as it would to ``Cosmos3OmniPipeline(video=...)``)."""
+    if not frames:
+        return frames
+    src_w, src_h = frames[0].size
+    crop_w = min(src_w, round(src_h * width / height))
+    crop_h = min(src_h, round(src_w * height / width))
+    if (crop_w, crop_h) == (src_w, src_h):
+        return frames
+    left, top = (src_w - crop_w) // 2, (src_h - crop_h) // 2
+    box = (left, top, left + crop_w, top + crop_h)
+    return [frame.crop(box) for frame in frames]

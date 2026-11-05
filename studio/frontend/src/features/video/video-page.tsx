@@ -237,6 +237,12 @@ import {
 import { ReferenceImageEditor } from "@/components/image-crop-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
+  CONTINUATION_KEEP_OPTIONS,
+  continuationLengthError,
+  continuationRequest,
+  supportsVideoContinuation,
+} from "./video-continuation";
+import {
   defaultReferenceVideoTrim,
   H3_REFERENCE_MAX_SECONDS,
   referenceVideoTrimError,
@@ -245,6 +251,7 @@ import {
 import {
   type GalleryVideo,
   type VideoGenerateProgress,
+  type VideoContinuationKeep,
   type VideoReferenceVideo,
   type VideoLoadProgress,
   type VideoLoadRequest,
@@ -466,6 +473,7 @@ const CONDITIONING_LABELS: Record<string, string> = {
   l2va: "To end frame",
   fl2va: "Start to end frame",
   ref2va: "From references",
+  v2v: "Continued a clip",
 };
 
 function clipMeta(video: GalleryVideo): string {
@@ -1234,6 +1242,9 @@ function VideoGenerator({
   // MiniMax-H3 keyframes as data URLs: the frame the clip starts from, the frame it ends on, or both.
   const [firstFrame, setFirstFrame] = useState<string | null>(null);
   const [lastFrame, setLastFrame] = useState<string | null>(null);
+  // Cosmos3-Nano: a clip to continue, and which end of it the new clip starts from.
+  const [continuationClip, setContinuationClip] = useState<ReferenceMedia | null>(null);
+  const [continuationKeep, setContinuationKeep] = useState<VideoContinuationKeep>("last");
   const [keyframeAspect, setKeyframeAspect] = useState<[number, number] | null>(null);
   // Separate lists preserve Ref2VA's image, video, then audio request order.
   const [referenceImages, setReferenceImages] = useState<StagedReferenceImage[]>([]);
@@ -1524,6 +1535,10 @@ function VideoGenerator({
     if (status?.loaded && !supportsFirstFrame) setFirstFrame(null);
     if (status?.loaded && !supportsLastFrame) setLastFrame(null);
   }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
+  const supportsContinuation = supportsVideoContinuation(status);
+  useEffect(() => {
+    if (status?.loaded && !supportsContinuation) setContinuationClip(null);
+  }, [status?.loaded, supportsContinuation]);
   useEffect(() => {
     if (status?.loaded && !supportsReferences) {
       setReferenceImages([]);
@@ -3612,6 +3627,12 @@ function VideoGenerator({
         return;
       }
     }
+    const stagedClip = supportsContinuation ? continuationClip : null;
+    const lengthError = stagedClip ? continuationLengthError(numFrames) : null;
+    if (lengthError) {
+      toast.error(lengthError);
+      return;
+    }
     // Pinned now, even if random, so the recipe records it.
     let resolvedSeed: number | undefined;
     if (seed.trim()) {
@@ -3678,6 +3699,7 @@ function VideoGenerator({
           canPickAudioFlowShift && audioFlowShift != null && audioFlowShift !== defaultAudioFlowShift
             ? audioFlowShift
             : undefined,
+        ...continuationRequest(supportsContinuation, stagedClip?.dataUrl, continuationKeep),
         live_preview: livePreview,
       });
     } catch (err) {
@@ -3718,6 +3740,9 @@ function VideoGenerator({
     audioFlowShift,
     defaultAudioFlowShift,
     canPickAudioFlowShift,
+    supportsContinuation,
+    continuationClip,
+    continuationKeep,
     startGenPoll,
     resyncAfterGenerateRefusal,
   ]);
@@ -4080,6 +4105,8 @@ function VideoGenerator({
               <p className="text-xs leading-snug text-muted-foreground">
                 {supportsReferences
                   ? "Generate a video from a prompt and reference pictures, videos or audio"
+                  : supportsContinuation
+                    ? "Generate a video from a prompt, animate a start frame, or continue a clip"
                   : supportsLastFrame
                     ? "Generate a video from a prompt, or from a start and end frame"
                     : supportsFirstFrame
@@ -4144,7 +4171,10 @@ function VideoGenerator({
                     <span className="text-ui-11 text-muted-foreground/70">Start frame</span>
                     <ImageDropzone
                       value={firstFrame}
-                      onChange={setFirstFrame}
+                      onChange={(next) => {
+                        setFirstFrame(next);
+                        if (next) setContinuationClip(null);
+                      }}
                       label="Click or drop"
                       removeLabel="Remove start frame"
                     />
@@ -4155,7 +4185,10 @@ function VideoGenerator({
                     <span className="text-ui-11 text-muted-foreground/70">End frame</span>
                     <ImageDropzone
                       value={lastFrame}
-                      onChange={setLastFrame}
+                      onChange={(next) => {
+                        setLastFrame(next);
+                        if (next) setContinuationClip(null);
+                      }}
                       label="Click or drop"
                       removeLabel="Remove end frame"
                     />
@@ -4446,6 +4479,63 @@ function VideoGenerator({
                     </SelectContent>
                   </Select>
                 </Field>
+              )}
+            </div>
+          )}
+
+          {supportsContinuation && (
+            <div className="grid gap-2" data-testid="video-continuation">
+              <span className="flex items-center gap-1 text-xs font-medium text-muted-foreground">
+                Continue a clip
+                <InfoHint>
+                  Optional, and instead of a start frame. The new clip starts on 5 frames of this
+                  one and generates what happens next; describe that in the prompt. Up to 15
+                  seconds. Its frames are matched to the frame rate and centre-cropped to the
+                  resolution below.
+                </InfoHint>
+              </span>
+              <ReferenceMediaPicker
+                kind="video"
+                value={continuationClip}
+                label="Clip to continue"
+                onChange={(next) => {
+                  setContinuationClip(next);
+                  if (next) {
+                    setFirstFrame(null);
+                    setLastFrame(null);
+                  }
+                }}
+              />
+              {continuationClip && (
+                <>
+                  <video
+                    controls={true}
+                    muted={true}
+                    preload="metadata"
+                    src={continuationClip.dataUrl}
+                    className="max-h-36 w-full rounded-lg bg-black object-contain"
+                  />
+                  <Field
+                    label="Continue"
+                    hint="Last frames carries the clip on from where it ends. First frames keeps its opening and generates a different take of what follows."
+                  >
+                    <Select
+                      value={continuationKeep}
+                      onValueChange={(v) => setContinuationKeep(v as VideoContinuationKeep)}
+                    >
+                      <SelectTrigger aria-label="Which end of the clip to continue from">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CONTINUATION_KEEP_OPTIONS.map((option) => (
+                          <SelectItem key={option.value} value={option.value}>
+                            {option.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </>
               )}
             </div>
           )}

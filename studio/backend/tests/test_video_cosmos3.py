@@ -1287,3 +1287,192 @@ def test_generate_renders_and_exports_at_the_chosen_fps(cosmos3_runtime, repo, f
     with pytest.raises(vf.VideoShapeError, match = "frame rate"):
         backend.generate(prompt = "p", steps = 1, fps = bad)
     assert backend.generate_progress()["active"] is False
+
+
+# Video continuation (Cosmos3-Nano only): keep frames from one end of a clip, generate what follows.
+
+
+def _clip(count, fps = 24, size = (208, 120)):
+    """An mp4 whose frame i is solid gray 20*i, so a decoded frame names its source index."""
+    av = pytest.importorskip("av")
+    import io
+
+    import numpy as np
+
+    for codec in ("libx264", "mpeg4"):
+        buf = io.BytesIO()
+        try:
+            with av.open(buf, "w", format = "mp4") as container:
+                stream = container.add_stream(codec, rate = fps)
+                stream.width, stream.height = size
+                stream.pix_fmt = "yuv420p"
+                if codec == "libx264":
+                    stream.options = {"qp": "0"}
+                for i in range(count):
+                    pixels = np.full((size[1], size[0], 3), (20 * i) % 256, np.uint8)
+                    for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format = "rgb24")):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+        except av.error.FFmpegError:
+            continue
+        return buf.getvalue()
+    pytest.skip("PyAV has no mp4 video encoder")
+
+
+def _clip_url(*args, **kwargs):
+    import base64
+
+    return "data:video/mp4;base64," + base64.b64encode(_clip(*args, **kwargs)).decode()
+
+
+def _indexes(frames):
+    import numpy as np
+
+    return [int(round(float(np.asarray(f).mean()) / 20)) for f in frames]
+
+
+def test_only_nano_continues_a_clip():
+    assert {f.name for f in vf._FAMILIES if f.supports_video_continuation} == {
+        "cosmos3-nano"
+    }
+
+
+@pytest.mark.parametrize(
+    "name, kwargs, error, fragment",
+    [
+        ("cosmos3-nano", dict(has_video = True), None, None),
+        ("cosmos3-nano", dict(has_video = True, keep = "first", num_frames = 9), None, None),
+        ("cosmos3-nano", dict(has_video = False), None, None),
+        ("cosmos3-edge", dict(has_video = False), None, None),
+        ("cosmos3-edge", dict(has_video = True), ValueError, "takes no input video"),
+        ("wan2.2-ti2v-5b", dict(has_video = True), ValueError, "takes no input video"),
+        ("cosmos3-nano", dict(has_video = False, keep = "last"), ValueError, "needs a"),
+        ("cosmos3-nano", dict(has_video = True, keep = "middle"), ValueError, "'last' or 'first'"),
+        ("cosmos3-nano", dict(has_video = True, has_keyframes = True), ValueError, "start frame"),
+        ("cosmos3-nano", dict(has_video = True, has_references = True), ValueError, "references"),
+        ("cosmos3-nano", dict(has_video = True, num_frames = 5), vf.VideoShapeError, "more than 5"),
+    ],
+)
+def test_continuation_rules(name, kwargs, error, fragment):
+    if error is None:
+        vf.validate_video_continuation(_fam(name), **kwargs)
+        return
+    with pytest.raises(error, match = fragment):
+        vf.validate_video_continuation(_fam(name), **kwargs)
+
+
+@pytest.mark.parametrize(
+    "count, source_fps, fps, keep, expected",
+    [
+        (12, 24, 24, "last", [7, 8, 9, 10, 11]),
+        (12, 24, 24, "first", [0, 1, 2, 3, 4]),
+        # Resampled onto the output clock: 48 fps source at 24 fps keeps every other frame.
+        (12, 48, 24, "last", [2, 4, 6, 8, 10]),
+        (12, 12, 24, "first", [0, 0, 1, 1, 2]),
+        (5, 24, 24, "last", [0, 1, 2, 3, 4]),
+    ],
+)
+def test_the_clip_keeps_five_frames_from_the_chosen_end(count, source_fps, fps, keep, expected):
+    frames = vc3.decode_continuation_clip(
+        _clip(count, fps = source_fps), keep = keep, fps = fps, count = 5
+    )
+    assert _indexes(frames) == expected
+    assert all(f.mode == "RGB" and f.size == (208, 120) for f in frames)
+
+
+def test_short_long_and_unreadable_clips_are_refused(monkeypatch):
+    with pytest.raises(ValueError, match = "has 4"):
+        vc3.decode_continuation_clip(_clip(4), keep = "last", fps = 24, count = 5)
+    monkeypatch.setattr(vc3, "CONTINUATION_MAX_SECONDS", 0.5)
+    with pytest.raises(ValueError, match = "longer than 0.5 seconds"):
+        vc3.decode_continuation_clip(_clip(13), keep = "last", fps = 24, count = 5)
+    vc3.decode_continuation_clip(_clip(12), keep = "last", fps = 24, count = 5)
+    monkeypatch.setattr(vc3, "CONTINUATION_MAX_SIDE", 200)
+    with pytest.raises(ValueError, match = "208x120"):
+        vc3.decode_continuation_clip(_clip(6), keep = "first", fps = 24, count = 5)
+    with pytest.raises(ValueError, match = "could not be"):
+        vc3.decode_continuation_clip(b"not a video", keep = "last", fps = 24, count = 5)
+
+
+def test_frames_are_cropped_to_the_canvas_aspect_only_when_it_differs():
+    from PIL import Image
+
+    same = [Image.new("RGB", (1664, 960))]
+    assert vc3.fit_continuation_frames(same, 832, 480)[0] is same[0]
+    wide = [Image.new("RGB", (1280, 720))]
+    assert vc3.fit_continuation_frames(wide, 832, 480)[0].size == (1248, 720)
+    tall = [Image.new("RGB", (720, 720))]
+    assert vc3.fit_continuation_frames(tall, 832, 480)[0].size == (720, 415)
+
+
+def test_status_offers_continuation_on_nano_only(cosmos3_runtime):
+    assert VideoBackend().status()["supports_video_continuation"] is False
+    for repo, offered in ((NANO, True), (EDGE, False)):
+        assert _loaded(repo)[1]["supports_video_continuation"] is offered
+
+
+@pytest.mark.parametrize(
+    "keep, size, canvas, expected",
+    [
+        (None, None, (832, 480), [7, 8, 9, 10, 11]),
+        ("first", None, (832, 480), [0, 1, 2, 3, 4]),
+        ("last", (1280, 720), (1280, 720), [7, 8, 9, 10, 11]),
+    ],
+)
+def test_nano_passes_the_kept_frames_to_the_pipeline(cosmos3_runtime, keep, size, canvas, expected):
+    backend, _status = _loaded(NANO)
+    pipe = backend._state.pipe
+    request = {"continuation_video": _clip_url(12), "num_frames": 33, "steps": 2, "seed": 0}
+    if keep:
+        request["continuation_keep"] = keep
+    if size:
+        request["width"], request["height"] = size
+    result = backend.generate(prompt = "the robot keeps walking", **request)
+    passed = pipe.passed
+    assert passed["condition_video_keep"] == (keep or "last") and "image" not in passed
+    assert _indexes(passed["video"]) == expected
+    # 208x120 is the 832x480 aspect; at 1280x720 it is centre-cropped to 16:9 and the pipeline resizes it.
+    assert {f.size for f in passed["video"]} == {(208, 120) if canvas == (832, 480) else (208, 117)}
+    assert (passed["width"], passed["height"], passed["num_frames"]) == (*canvas, 33)
+    assert result["conditioning"] == "v2v"
+    backend.generate(prompt = "p", steps = 1)
+    assert not {"video", "condition_video_keep"} & set(pipe.passed)
+
+
+def test_begin_generate_resolves_the_clip_before_reserving(cosmos3_runtime):
+    backend, _status = _loaded(NANO)
+    with pytest.raises(vf.VideoShapeError, match = "more than 5"):
+        backend.begin_generate(prompt = "p", continuation_video = _clip_url(12), num_frames = 5)
+    with pytest.raises(ValueError, match = "has 3"):
+        backend.begin_generate(prompt = "p", continuation_video = _clip_url(3))
+    with pytest.raises(ValueError, match = "start frame"):
+        backend.begin_generate(
+            prompt = "p", continuation_video = _clip_url(12), first_frame = _data_url(64, 64)
+        )
+    assert backend._state.pipe.passed is None and backend.generate_progress()["active"] is False
+
+
+def test_edge_refuses_a_clip_without_rendering(cosmos3_runtime):
+    backend, _status = _loaded(EDGE)
+    for call in (backend.begin_generate, backend.generate):
+        with pytest.raises(ValueError, match = "takes no input video"):
+            call(prompt = "p", steps = 2, continuation_video = _clip_url(12))
+    assert backend._state.pipe.passed is None and backend.generate_progress()["active"] is False
+
+
+def test_the_request_model_keeps_continuation_apart_from_keyframes_and_references():
+    from pydantic import ValidationError
+
+    from models.inference import VideoGenerateRequest
+
+    ok = VideoGenerateRequest(prompt = "p", continuation_video = "data:,x", continuation_keep = "first")
+    assert ok.continuation_keep == "first"
+    for extra, fragment in (
+        ({"continuation_keep": "last"}, "needs a continuation_video"),
+        ({"continuation_video": "x", "first_frame": "x"}, "cannot be combined"),
+        ({"continuation_video": "x", "reference_images": ["x"]}, "cannot be combined"),
+        ({"continuation_video": "x", "continuation_keep": "middle"}, "last"),
+    ):
+        with pytest.raises(ValidationError, match = fragment):
+            VideoGenerateRequest(prompt = "p", **extra)
