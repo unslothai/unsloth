@@ -514,7 +514,11 @@ async def _recipe_heldout(
     users = [c for c in facts.get("user_columns") or [] if isinstance(c, str)]
     inputs = [c for c in facts.get("input_columns") or [] if isinstance(c, str)]
     users = users if users and all(c in columns for c in [*users, *inputs]) else []
-    # Several columns make the question: the Loop rebuilds it from this to know a row by it.
+    # The template mapping and the Alpaca format read each cell through the label and SQuAD
+    # conversions; a plain role mapping reads it as its text.
+    converted = facts.get("user_join") in ("lines", "alpaca")
+    # Several columns make the question (or one read through those conversions): the Loop rebuilds
+    # it from this to know a row by it.
     mapped = (
         {
             "columns": users,
@@ -522,7 +526,9 @@ async def _recipe_heldout(
             "inputs": inputs,
             "labels": facts.get("label_mapping"),
         }
-        if len(users) > 1 or (users and inputs)
+        # One column under the template mapping or Alpaca format still reads its cell as training
+        # does there (a SQuAD answer's text, a label's name).
+        if len(users) > 1 or (users and inputs) or (users and converted)
         else None
     )
     answers = [c for c in facts.get("answer_columns") or [] if isinstance(c, str)]
@@ -555,7 +561,7 @@ async def _recipe_heldout(
         prompt_col = ALPACA_PROMPT
         columns = [c for c in columns if c != "input"]
     named_reference = str(ctx.params.get("reference_column") or "").strip()
-    if not named_reference and len(answers) == 1:
+    if not named_reference and len(answers) == 1 and not converted:
         reference_col = answers[0]
     elif not named_reference and answers:
         labels = facts.get("label_mapping")

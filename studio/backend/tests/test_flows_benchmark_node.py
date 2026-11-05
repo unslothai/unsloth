@@ -1071,7 +1071,8 @@ def test_a_question_mapped_from_several_columns_is_asked_whole(monkeypatch):
             assert asked == user
         else:
             assert asked == user[0]["content"]
-        assert spec["reference_column"] == "answer"
+        answer = [t["content"] for t in trained if t["role"] == "assistant"]
+        assert [spec["rows"][0][spec["reference_column"]]] == answer
 
 
 def test_an_alpaca_mapping_asks_its_instruction_with_its_input(monkeypatch):
@@ -1147,3 +1148,33 @@ def test_every_mapped_system_column_reaches_the_system_message(monkeypatch):
     assert spec["prompt_column"] == "question"
     # The Loop knows each row by all of it.
     assert out["failures"]["system_column"] == ["policy", "secret"]
+
+
+def test_a_template_mapping_s_one_answer_column_is_read_as_training_reads_it(monkeypatch):
+    from datasets import Dataset
+
+    from core.benchmark.recipe_heldout import run_benchmark
+    from core.flows.nodes.training import mapping_facts
+    from utils.datasets.dataset_utils import _apply_user_mapping
+
+    row = {"question": "Capital of France?", "answer": {"text": ["Paris"]}}
+    mapping = {"question": "user", "answer": "assistant", "__system_prompt": "Be brief."}
+    trained = _apply_user_mapping(Dataset.from_list([row]), mapping)[0]["conversations"]
+    assert trained[-1]["content"] == "Paris"
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(row)]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", **mapping_facts(mapping)}
+    asyncio.run(benchmark.benchmark(ctx))
+    spec = sent[0]["recipe"]
+    # The exact training answer passes.
+    result = run_benchmark({**spec, "with_baseline": False}, chat = lambda target, messages: "Paris")
+    assert result["candidate"]["passed"] == 1

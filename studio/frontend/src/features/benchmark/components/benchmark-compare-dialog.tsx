@@ -24,25 +24,7 @@ import {
   type BenchmarkRunSummary,
   getBenchmarkRunDetail,
 } from "../api/benchmark-api";
-
-const ACCURACY_LIKE_RE = /(em|exact|strict|flexible|acc|f1|match|score)/i;
-
-function isDisplayMetric(m: { name: string }): boolean {
-  const lower = m.name.toLowerCase().trim();
-  const skip = new Set([
-    "sample_len",
-    "num_samples",
-    "n_samples",
-    "effective_samples",
-    "alias",
-    "name",
-    "bootstrap_iters",
-  ]);
-  if (skip.has(lower) || lower.startsWith("sample_len")) {
-    return false;
-  }
-  return true;
-}
+import { ACCURACY_LIKE_RE, isDisplayMetric, pickPrimaryMetric } from "../lib/compare-metrics";
 
 function isRatioScore(m: { name: string; score: number }): boolean {
   return ACCURACY_LIKE_RE.test(m.name) && m.score >= 0 && m.score <= 1;
@@ -81,15 +63,6 @@ function formatDate(iso: string): string {
   } catch {
     return iso;
   }
-}
-
-function pickPrimaryMetric(
-  metrics: BenchmarkRunMetric[],
-): BenchmarkRunMetric | undefined {
-  return (
-    metrics.find((m) => isDisplayMetric(m) && ACCURACY_LIKE_RE.test(m.name)) ??
-    metrics.find(isDisplayMetric)
-  );
 }
 
 interface CompareDialogProps {
@@ -198,7 +171,10 @@ export function CompareDialog({
               }}
             >
               {loadedDetails.map((detail) => {
-                const primary = pickPrimaryMetric(detail.metrics);
+                const primary = pickPrimaryMetric(
+                  detail.metrics,
+                  selectedRuns.find((r) => r.id === detail.id)?.default_metric,
+                );
                 const accuracy =
                   detail.total_count > 0
                     ? (
