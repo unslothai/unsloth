@@ -954,6 +954,13 @@ def _subagent_model_id(
             )
         if status.get("is_gguf"):
             variant = status.get("gguf_variant")
+    elif _MLX_PRECISION_FOLDER_RE.fullmatch(str(variant).strip()):
+        # The API resolves no :folder suffix for an MLX resident (bf16 reads as a GGUF quant), so pin nothing.
+        try:
+            if _model_status(base, key, model_id).get("is_mlx"):
+                variant = None
+        except Exception:
+            pass
     if variant and _is_hub_model_id(model_id):
         return _display_model_spec(model_id, str(variant))
     if variant:

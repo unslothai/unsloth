@@ -1322,7 +1322,6 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
 
 
 def test_subagent_model_id_keeps_a_bare_id_for_an_mlx_folder(monkeypatch):
-    # The API resolves no :folder suffix for an MLX resident (bf16 reads as a GGUF quant), so pin nothing.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -1330,6 +1329,9 @@ def test_subagent_model_id_keeps_a_bare_id_for_an_mlx_folder(monkeypatch):
     )
     entry = {"id": "mlx-community/Qwen3-4B"}
     assert start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B"
+    # An explicit folder, inline or by flag, would 404 the same way.
+    assert start._subagent_model_id(BASE, "key", entry, f"{entry['id']}:bf16", None) == entry["id"]
+    assert start._subagent_model_id(BASE, "key", entry, entry["id"], "bf16") == entry["id"]
 
 
 def _kept_model_status(url):
