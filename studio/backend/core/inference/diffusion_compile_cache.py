@@ -244,8 +244,8 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
-    # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
-    "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
+    # Unset = auto for NVFP4 models; "off" (not a bare "0", which protects step 0) disables it.
+    "UNSLOTH_NVFP4_PROTECT_STEPS": "protect:auto",
 }
 _OFF_WORDS = ("0", "off", "false", "no", "none")
 _ON_WORDS = ("1", "on", "true", "yes", "force")
@@ -269,6 +269,11 @@ def _switch_value(name: str, default: str) -> Optional[str]:
         except ValueError:
             return None
         return None if count == default.partition(":")[2] else count
+    if default.startswith("protect:"):
+        from .diffusion_nvfp4_protect import protect_steps_env
+
+        value = protect_steps_env() or "off"
+        return None if value == default.partition(":")[2] else value
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None

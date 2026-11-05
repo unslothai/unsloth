@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Denoise steps that run W4A16 instead of W4A4; set must be measured per model, so off unless named."""
+"""Denoise steps that run W4A16 instead of W4A4. A model that owns FlashInfer NVFP4 layers defaults to ``auto`` (step 0
+plus the last step on short schedules): lower LPIPS vs bf16 on Z-Image-Turbo, FLUX.1-schnell and Wan2.2-TI2V-5B for
+0.7-2.6% of render time. UNSLOTH_NVFP4_PROTECT_STEPS=off turns it off; any other value is used as given."""
 
 from __future__ import annotations
 
@@ -15,6 +17,9 @@ PROTECT_STEPS_ENV = "UNSLOTH_NVFP4_PROTECT_STEPS"
 
 AUTO = "auto"
 AUTO_HEAD_FRACTION = 0.08
+# What a model with protect-capable NVFP4 layers runs when the env is unset. Modules without such layers keep the
+# unarmed global controller, so their graphs and logs are unchanged.
+DEFAULT_MODEL_SPEC = AUTO
 
 ALL = "all"
 
@@ -22,8 +27,20 @@ _OFF_TOKENS = ("", "off", "none", "0-none", "false", "no")
 
 
 def protect_steps_env() -> str:
+    """The explicit setting: ``""`` when unset or off (a bare ``0`` is step 0, not off)."""
     raw = os.environ.get(PROTECT_STEPS_ENV, "").strip().lower()
     return "" if raw in _OFF_TOKENS else raw
+
+
+def protect_steps_explicit() -> bool:
+    return bool(os.environ.get(PROTECT_STEPS_ENV, "").strip())
+
+
+def model_protect_spec() -> str:
+    """The schedule for a model that owns NVFP4 layers: the env when set, a configured global schedule, else auto."""
+    if protect_steps_explicit():
+        return protect_steps_env()
+    return protect_controller().spec or DEFAULT_MODEL_SPEC
 
 
 def parse_protect_steps(spec: Any, total_steps: int) -> tuple:
@@ -282,7 +299,7 @@ def attach_controller(module: Any, controller: NVFP4StepController) -> int:
 
 def attach_own_controller(module: Any) -> Optional[NVFP4StepController]:
     """Per-model controller, so concurrent image and video renders never move each other's steps."""
-    ctl = NVFP4StepController(protect_controller().spec)
+    ctl = NVFP4StepController(model_protect_spec())
     return ctl if attach_controller(module, ctl) else None
 
 

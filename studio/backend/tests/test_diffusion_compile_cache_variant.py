@@ -140,9 +140,14 @@ def test_graph_switches_key_apart_only_off_their_default(monkeypatch, name, defa
     elif rows:
         flipped = "1"
     else:
-        flipped = {"on": "0", "off": "1", "auto": "0", "raw": "torchao", "raw:auto": "torchao"}[
-            default
-        ]
+        flipped = {
+            "on": "0",
+            "off": "1",
+            "auto": "0",
+            "raw": "torchao",
+            "raw:auto": "torchao",
+            "protect:auto": "off",
+        }[default]
     monkeypatch.setenv(name, flipped)
     assert _key(m, quant) != k0
     assert name in cc.model_fingerprint(transformer = m, quant = quant, **_FP_KW)["switches"]
@@ -212,13 +217,21 @@ def test_a_bundle_saved_for_one_variant_is_a_miss_for_the_other(monkeypatch, tmp
     cc.restore(again)
 
 
-def test_protect_steps_auto_is_not_its_default(monkeypatch):
+def test_protect_steps_auto_is_its_default_and_off_or_step_0_key_apart(monkeypatch):
     m = _int8()
     k0 = _key(m)
     monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "auto")
-    assert _key(m) != k0
+    assert _key(m) == k0
     monkeypatch.setenv("UNSLOTH_NVFP4_BACKEND", "auto")
-    assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "auto"}
+    assert cc.graph_switches() == {}
+    monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "off")
+    k_off = _key(m)
+    assert k_off != k0
+    assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "off"}
+    # A bare 0 protects step 0: it must not share the off (or the auto) bundle.
+    monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "0")
+    assert _key(m) not in (k0, k_off)
+    assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "0"}
 
 
 def test_a_dequantizing_weight_property_is_never_read():
