@@ -49,14 +49,18 @@ def test_a_refused_hosted_encoder_is_reported_per_component(monkeypatch):
     )
     assert got == ()
     assert set(failures) == {"text_encoder"}
-    assert REPO in failures["text_encoder"] and "RepositoryNotFoundError" in failures["text_encoder"]
+    assert (
+        REPO in failures["text_encoder"] and "RepositoryNotFoundError" in failures["text_encoder"]
+    )
 
 
 def test_the_failure_maps_to_the_automatic_scheme_only():
     fam = types.SimpleNamespace(te_prequant_repos = (("fp8", "text_encoder", REPO),))
     failures = {"text_encoder": f"{REPO}: RepositoryNotFoundError: 401"}
     assert auto_te_fetch_failure(fam, "fp8", failures) == failures["text_encoder"]
-    assert auto_te_fetch_failure(fam, "int8", failures) is None  # another scheme was never asked for
+    assert (
+        auto_te_fetch_failure(fam, "int8", failures) is None
+    )  # another scheme was never asked for
     assert auto_te_fetch_failure(fam, None, failures) is None  # not an automatic pick
     assert auto_te_fetch_failure(fam, "fp8", {}) is None  # fetched fine
     assert auto_te_fetch_failure(types.SimpleNamespace(), "fp8", failures) is None
@@ -65,7 +69,9 @@ def test_the_failure_maps_to_the_automatic_scheme_only():
 def test_a_fetched_encoder_records_nothing(monkeypatch):
     import utils.hf_xet_fallback as xet
 
-    monkeypatch.setattr(xet, "hf_hub_download_with_xet_fallback", lambda repo, name, tok, **kw: "/x/" + name)
+    monkeypatch.setattr(
+        xet, "hf_hub_download_with_xet_fallback", lambda repo, name, tok, **kw: "/x/" + name
+    )
     monkeypatch.setattr(tpq, "te_candidate_is_readable", lambda name: True)
     failures: dict = {}
     got = VideoBackend._fetch_te_prequant(

@@ -374,7 +374,9 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
 
 
-def auto_te_fetch_failure(fam: Any, scheme: Optional[str], failures: Optional[dict]) -> Optional[str]:
+def auto_te_fetch_failure(
+    fam: Any, scheme: Optional[str], failures: Optional[dict]
+) -> Optional[str]:
     """Why an automatic text-encoder ``scheme`` cannot engage: its family's hosted pre-cast encoder for that scheme
     could not be fetched (``failures`` from ``_fetch_te_prequant``). None when it was fetched or never asked for."""
     if not scheme or not failures:
