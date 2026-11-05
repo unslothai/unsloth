@@ -8,9 +8,12 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { useShortcut, useShortcutLabel } from "@/features/settings";
+import {
+  useShortcut,
+  useShortcutLabel,
+} from "@/features/settings/hooks/use-shortcut";
 import { useT } from "@/i18n";
-import { Add01Icon, InternetIcon } from "@hugeicons/core-free-icons";
+import { InternetIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
 import { EnterFullViewIcon } from "./icons";
@@ -26,8 +29,15 @@ function openNewTab(fullView = false) {
   if (fullView) state.setFullView(true);
 }
 
-/** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view. Hidden while the panel is open; its shortcuts still work. */
-export function BrowserToggleButton({ active = true }: { active?: boolean }) {
+/** The chat header's new tab button: a click opens a tab beside the chat, hovering offers full view.
+ *  Hidden while the panel is open, unless `hideWhenOpen` is false: a project's overlay may not be showing it. */
+export function BrowserToggleButton({
+  active = true,
+  hideWhenOpen = true,
+}: {
+  active?: boolean;
+  hideWhenOpen?: boolean;
+}) {
   const t = useT();
   const open = useBrowserStore((state) => state.open);
   const newTabShortcut = useShortcutLabel("newBrowserTab");
@@ -51,14 +61,13 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
     },
     { enabled: active },
   );
-  // The open panel toggles full view itself.
   useShortcut(
     "toggleBrowserFullView",
     (event) => {
       event.preventDefault();
       openTab(true);
     },
-    { enabled: active && !open },
+    { enabled: active && !(hideWhenOpen && open) },
   );
   const clearTimer = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
@@ -85,7 +94,7 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
     timer.current = null;
     setMenuOpen(false);
   }, [open]);
-  if (open) return null;
+  if (hideWhenOpen && open) return null;
   const label = t("browser.newTab");
   const onMouse = (handler: () => void) => (event: { pointerType: string }) => {
     if (event.pointerType === "mouse") handler();
@@ -124,15 +133,20 @@ export function BrowserToggleButton({ active = true }: { active?: boolean }) {
         className="browser-menu library-actions-menu w-56"
       >
         <DropdownMenuItem onSelect={() => openTab()}>
-          <HugeiconsIcon icon={Add01Icon} strokeWidth={1.75} className="size-icon" />
+          <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
           {label}
-          {newTabShortcut ? <DropdownMenuShortcut>{newTabShortcut}</DropdownMenuShortcut> : null}
+          {newTabShortcut ? <DropdownMenuShortcut className="text-ui-11">{newTabShortcut}</DropdownMenuShortcut> : null}
         </DropdownMenuItem>
         <DropdownMenuItem onSelect={() => openTab(true)}>
-          <HugeiconsIcon icon={EnterFullViewIcon} strokeWidth={1.75} className="size-icon" />
+          {/* Its corner marks sit inside the box, so at the shared size it reads smaller than the plus. */}
+          <HugeiconsIcon
+            icon={EnterFullViewIcon}
+            strokeWidth={1.75}
+            className="size-[calc(var(--icon-size)*1.2)] -mx-[calc(var(--icon-size)*0.1)]"
+          />
           {t("browser.newTabFullView")}
           {fullViewShortcut ? (
-            <DropdownMenuShortcut>{fullViewShortcut}</DropdownMenuShortcut>
+            <DropdownMenuShortcut className="text-ui-11">{fullViewShortcut}</DropdownMenuShortcut>
           ) : null}
         </DropdownMenuItem>
       </DropdownMenuContent>

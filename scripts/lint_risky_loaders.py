@@ -325,8 +325,7 @@ def _unpinned_fetches(calls: list, git_commands: list) -> list:
             and _keyword(call, "revision") is None
         ):
             found.append((call, "hub-download-loaded-as-code"))
-    # Written-out git commands, passed directly or held in a variable first. A pin is a git
-    # command that moves to a revision, not any string that mentions one.
+    # A pin is a git command that moves to a revision, not any string mentioning one.
     if not any(set(words) & PIN_WORDS for _, words in git_commands):
         found += [
             (node, "git-clone-unpinned") for node, words in git_commands if words[1:2] == ["clone"]
@@ -371,9 +370,8 @@ def scan_file(path: Path, relative: str) -> list:
         tree = ast.parse(source, filename = str(path))
     except (SyntaxError, ValueError, MemoryError, RecursionError) as error:
         if path.suffix == ".ipynb":
-            # A notebook mid-edit need not parse as one module; failing the build on it would be noise.
             return []
-        # Unparsed is unchecked, and reporting it clean is the bypass this gate exists to avoid.
+        # Unparsed is unchecked; reporting it clean would be a bypass.
         raise SystemExit(f"{relative}: could not be parsed ({error.__class__.__name__})")
     found = []
     imports = []
@@ -387,7 +385,6 @@ def scan_file(path: Path, relative: str) -> list:
             if isinstance(child, _TRUST_SHAPES):
                 shape = _trust_remote_code(child)
                 if shape:
-                    # A function default is keyed on the signature, not the whole body.
                     subject = child.args if isinstance(child, _FUNCTIONS) else child
                     entry = _key(relative, "trust-remote-code", shape, subject)
                     entry["line"] = child.lineno
@@ -414,7 +411,6 @@ def scan_file(path: Path, relative: str) -> list:
             stack.append((child, owner))
 
     table = _imports(ast.Module(body = imports, type_ignores = []))
-    # Insertion order, so findings print in the same order on every run.
     for owner in list(calls_by_owner) + [o for o in git_by_owner if o not in calls_by_owner]:
         calls = [(call, _qualified(call.func, table)) for call in calls_by_owner.get(owner, ())]
         for call, qualified in calls:
@@ -484,7 +480,6 @@ def main() -> int:
     if arguments.self_test:
         return self_test()
     if arguments.update and arguments.paths:
-        # --update rewrites the whole baseline, so a partial scan would drop every other entry.
         parser.error("--update rewrites the whole baseline; run it without --paths")
 
     document = json.loads(BASELINE_PATH.read_text(encoding = "utf-8"))
@@ -492,7 +487,7 @@ def main() -> int:
     baseline_rel = BASELINE_PATH.relative_to(REPO_ROOT).as_posix()
 
     if arguments.update:
-        # Carry reasons over, so a reviewed entry never silently becomes an unreviewed one.
+        # Carry reasons over so a reviewed entry never becomes unreviewed.
         reasons = {_identity(e): e.get("reason", "") for e in document["entries"]}
         document["entries"] = sorted(
             (
@@ -554,7 +549,6 @@ def main() -> int:
     # Fewer calls than allowed counts too, so a removed duplicate cannot make room for a new one.
     stale = sorted(k for k in allowed if observed.get(k, 0) < allowed[k])
     if stale:
-        # An entry outliving its call site would re-permit whatever lands on that digest next.
         print(f"{len(stale)} baseline entr(y/ies) match fewer calls than recorded:\n")
         for f, r, s, d in stale:
             print(f"  {f}  [{r}] {s}  {d}")

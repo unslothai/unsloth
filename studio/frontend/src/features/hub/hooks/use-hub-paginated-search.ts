@@ -25,22 +25,18 @@ const INITIAL: HfPaginatedState<never> = {
   hasMore: false,
   error: null,
 };
-// listModels returns up to 500 models per fetch, so a bigger batch just walks
-// the in-memory page (essentially free) and fills the viewport in one commit.
+// listModels returns up to 500 per fetch, so a larger batch just walks the in-memory page.
 const BATCH = 48;
 const MAX_RAW_ITEMS_PER_BATCH = BATCH * 4;
 type BusyKind = "initial" | "more";
 
 /**
- * Min gap between fetchMore() calls. Sibling observers can fire in one tick and
- * React commits the in-flight flag asynchronously, so this caps the worst case
- * at one request per window. A blocked call queues a trailing-edge fire so
- * filters that starve the visible list keep paginating instead of dead-locking.
+ * Min gap between fetchMore() calls, since sibling observers can fire in one tick. A blocked
+ * call queues a trailing-edge fire so starved filters keep paginating.
  */
 const MIN_FETCH_INTERVAL_MS = 350;
 
-// Preserved results older than this refetch on re-enable so the feed can't lag the Hub. Reset by
-// every successful pull (idle time only). Mirrors the modelInfo TTL in hf-cache.ts.
+// Mirrors the modelInfo TTL in hf-cache.ts.
 const STALE_AFTER_MS = 5 * 60 * 1000;
 
 export async function pullBatch<T>(
@@ -56,9 +52,7 @@ export async function pullBatch<T>(
       return { items, done: true, scanned };
     }
     scanned += 1;
-    // mapItem already returns null to mean "skip", so a throw is the same answer arriving the hard
-    // way. Letting it out marked the generator dead over an item next() had already handed us, and
-    // every restart then hit the same row at the same position.
+    // A throw from mapItem means skip; letting it out kills the generator on the same row every restart.
     let mapped: T | null = null;
     try {
       mapped = mapItem(result.value);
@@ -76,8 +70,7 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
-// The SDK appends the request URL to its message, and for a proxied request
-// that URL carries the user's search query, which some pickers render raw.
+// The SDK message includes the request URL, which carries the user's search query.
 function hubErrorText(err: unknown, fallback: string): string {
   return err instanceof Error
     ? sanitizeHubErrorMessage(err.message)
@@ -99,8 +92,7 @@ export function useHubPaginatedSearch<T>(
 } {
   const enabled = options?.enabled ?? true;
   const [retryNonce, setRetryNonce] = useState(0);
-  // An async generator that throws is closed: the next next() resolves done
-  // without a request, so a failed page cannot be resumed, only restarted.
+  // A thrown async generator is closed, so a failed page can only be restarted.
   const iterDeadRef = useRef(false);
   const queryKey = useMemo(
     () => ({ createIter, mapItem, retryNonce }),
@@ -117,30 +109,21 @@ export function useHubPaginatedSearch<T>(
 
   const iterRef = useRef<AsyncGenerator<unknown> | null>(null);
   const versionRef = useRef(0);
-  // Aborts the live iterator's in-flight fetches; the prior one is aborted and replaced when a new
-  // query supersedes the feed so the abandoned listing stops fetching and priming the cache.
   const abortRef = useRef<AbortController | null>(null);
 
-  // Identity of the last-fetched query. A fetch (re)starts only when one of these
-  // changes, never just on `enabled` toggling, which keeps tab switches instant.
+  // Restart only when the query identity changes, never on `enabled`, so tab switches stay instant.
   const loadedFactoryRef = useRef<typeof createIter | null>(null);
   const loadedMapItemRef = useRef<typeof mapItem | null>(null);
   const loadedNonceRef = useRef(-1);
   const loadedAtRef = useRef(0);
 
-  // Synchronous in-flight guard. Set before any setState so back-to-back fetchMore() calls can't
-  // both pass the gate while React batches the commit. Cleared in finally() of the matching pull.
+  // Synchronous guard set before any setState so back-to-back calls cannot both pass.
   const busyRef = useRef(false);
   const busyKindRef = useRef<BusyKind | null>(null);
   const busyTokenRef = useRef(0);
-  // Timestamp of the last accepted request; with the trailing-edge timer below,
-  // enforces at most one accepted request per MIN_FETCH_INTERVAL_MS.
   const lastFireAtRef = useRef(0);
-  // Pending trailing-edge fire (idempotent) so a time-gated request isn't lost
-  // when no later DOM event would re-trigger us.
+  // Trailing-edge fire so a time-gated request is not lost when no later event re-triggers.
   const trailingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // One follow-up request queued behind an in-flight "load more" pull; scroll
-  // observers fire repeatedly at the bottom but only one should wait.
   const queuedAfterBusyRef = useRef(false);
   const queuedWhileHiddenRef = useRef(false);
 
@@ -178,8 +161,7 @@ export function useHubPaginatedSearch<T>(
         busyRef.current = false;
         busyKindRef.current = null;
       }
-      // `error` is deliberately preserved: disabling the feed must not erase why
-      // the last attempt failed, leaving only a generic "you're offline" panel.
+      // Keep `error` so disabling the feed does not erase why the last attempt failed.
       setState((prev) =>
         prev.isLoading || prev.isLoadingMore
           ? {
@@ -270,7 +252,6 @@ export function useHubPaginatedSearch<T>(
     clearDeferredFetch,
   ]);
 
-  // A thrown generator is closed, so continuing needs a new one.
   const needsRestart = useCallback(() => iterDeadRef.current, []);
 
   const retry = useCallback(() => {
@@ -283,9 +264,6 @@ export function useHubPaginatedSearch<T>(
       queuedWhileHiddenRef.current = false;
       return false;
     }
-    // Synchronous in-flight gate before any setState so concurrent fires from
-    // sibling observers all see the same truth and only one proceeds, closing
-    // the race window React's batched commit opens.
     if (busyRef.current) {
       if (busyKindRef.current === "more" && stateRef.current.isLoadingMore) {
         if (queuedAfterBusyRef.current) return false;
@@ -295,9 +273,7 @@ export function useHubPaginatedSearch<T>(
       return false;
     }
 
-    // A generator that threw is finished; hasMore stays true only to keep the
-    // footer and its error. Pulling again returns done, which clears both, so
-    // the auto-fill would swallow the failure. Only a restart resumes.
+    // A thrown generator would return done and clear hasMore, swallowing the error; only restart resumes.
     if (iterDeadRef.current) {
       queuedAfterBusyRef.current = false;
       queuedWhileHiddenRef.current = false;
@@ -323,7 +299,6 @@ export function useHubPaginatedSearch<T>(
     const elapsed = now - lastFireAtRef.current;
 
     if (elapsed < MIN_FETCH_INTERVAL_MS) {
-      // Trailing-edge schedule: calls during the window collapse to one timer.
       if (trailingTimerRef.current === null) {
         trailingTimerRef.current = setTimeout(
           () => {
@@ -360,15 +335,13 @@ export function useHubPaginatedSearch<T>(
           scannedCount: prev.scannedCount + scanned,
           isLoadingMore: false,
           hasMore: !done,
-          // Clear any error left by a prior failed page.
           error: null,
         }));
       })
       .catch((err) => {
         if (versionRef.current !== v || isAbortError(err)) return;
         shouldScheduleFollowUp = false;
-        // The generator threw, so it is finished. Keep the rows and hasMore so
-        // the footer survives, but record that continuing now needs a restart.
+        // Keep rows and hasMore so the footer survives; continuing needs a restart.
         iterDeadRef.current = true;
         setState((prev) => ({
           ...prev,

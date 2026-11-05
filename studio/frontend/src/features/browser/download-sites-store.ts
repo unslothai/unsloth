@@ -6,8 +6,10 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { accountDatabaseName } from "@/lib/account-transition";
+import { syncAcrossWindows } from "@/lib/sync-across-windows";
 
-export type DownloadSiteDecision = "allow" | "block";
+/** "allowAll": files that can run programs too, which "allow" still asks about. */
+export type DownloadSiteDecision = "allow" | "allowAll" | "block";
 
 interface DownloadSitesState {
   sites: Record<string, DownloadSiteDecision>;
@@ -33,3 +35,4 @@ export const useDownloadSitesStore = create<DownloadSitesState>()(
     },
   ),
 );
+syncAcrossWindows(useDownloadSitesStore);

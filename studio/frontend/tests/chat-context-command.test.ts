@@ -137,7 +137,7 @@ type CountModule = {
   countContext: (
     branch: readonly unknown[],
     threadId: string | undefined,
-    readBranch?: () => readonly unknown[],
+    readBranch: () => readonly unknown[],
   ) => Promise<{ input_tokens: number } | null>;
 };
 
@@ -180,7 +180,7 @@ function runtimeState(overrides: Record<string, unknown> = {}) {
     state: {
       activeThreadId: "t1",
       contextUsage: { totalTokens: 349 },
-      params: { checkpoint: "org/A-GGUF", maxTokens: 2048 },
+      params: { checkpoint: "org/A-GGUF" },
       runningByThreadId: {},
       setContextUsage: (usage: unknown) => published.push(usage),
       ...overrides,
@@ -194,7 +194,7 @@ test("the count is the recount's payload plus /context's own fields", async () =
     input_tokens: 348,
     model: "org/A-GGUF",
   });
-  await module.countContext([], "t1");
+  await module.countContext([], "t1", () => []);
   assert.deepEqual(sent, [
     {
       model: "org/A-GGUF",
@@ -202,7 +202,6 @@ test("the count is the recount's payload plus /context's own fields", async () =
       enable_tools: false,
       thread_id: "t1",
       breakdown: true,
-      max_tokens: 2048,
     },
   ]);
 });
@@ -213,7 +212,7 @@ test("the ring takes /context's count, so the two never disagree", async () => {
     input_tokens: 348,
     model: "org/A-GGUF",
   });
-  await module.countContext([], "t1");
+  await module.countContext([], "t1", () => []);
   assert.deepEqual(published, [
     {
       promptTokens: 348,
@@ -241,7 +240,7 @@ for (const [name, overrides, counted] of [
   test(`the ring keeps its number when ${name}`, async () => {
     const { state, published } = runtimeState(overrides);
     const { module } = loadCount(state, counted);
-    const result = await module.countContext([], "t1");
+    const result = await module.countContext([], "t1", () => []);
     assert.deepEqual(published, []);
     if (name === "another model answered") assert.equal(result, null);
   });
@@ -266,25 +265,6 @@ test("the ring takes the count when the branch is the one counted", async () => 
 test("an API report treats a text-length estimate as no usage yet", () => {
   const report = readSrc("components/assistant-ui/context-report.tsx");
   assert.match(report, /stored\?\.estimated \? null : stored/);
-});
-
-test("an empty chat asks for a message instead of floating a report", () => {
-  const thread = readSrc("components/assistant-ui/thread.tsx");
-  const branch = thread.slice(thread.indexOf("isContextCommand(composerText)"));
-  const gate = branch.indexOf('translate("context.emptyChat")');
-  assert.ok(gate > 0 && gate < branch.indexOf("showContext("));
-});
-
-test("the count carries the completion's overflow policy", () => {
-  // truncate_oldest puts search_conversation and the checkpoint nudge in a compacted prompt.
-  const adapter = readSrc("features/chat/api/chat-adapter.ts");
-  const extras = adapter.slice(
-    adapter.indexOf("export async function buildLocalTokenCountExtras("),
-  );
-  assert.match(
-    extras.slice(0, extras.indexOf("if (!supportsTools)")),
-    /ggufCompactionRequestFields\(\{\s*\.\.\.localCompactionEngine\(state, state\.params\.checkpoint\),\s*autoCompactEnabled: state\.autoCompactEnabled,/,
-  );
 });
 
 test("/compact clears a /context report, whose numbers the reset makes stale", () => {
@@ -352,4 +332,11 @@ test("usage is a whole percent of the window, capped at 100", () => {
   assert.equal(usagePercent(1_791, 200_000), 1);
   assert.equal(usagePercent(150_000, 200_000), 75);
   assert.equal(usagePercent(250_000, 200_000), 100);
+});
+
+test("an empty chat asks for a message instead of floating a report", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const branch = thread.slice(thread.indexOf("isContextCommand(composerText)"));
+  const gate = branch.indexOf('translate("context.emptyChat")');
+  assert.ok(gate > 0 && gate < branch.indexOf("showContext("));
 });

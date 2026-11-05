@@ -80,6 +80,13 @@ def _raw_text_loader_for_backend(
     )
 
 
+def _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, path):
+    loader = _raw_text_loader_for_backend(
+        RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
+    )
+    return loader.load_from_file(path)
+
+
 def _train_with_legacy_save_control(trainer, is_mlx):
     if not is_mlx:
         return trainer.train()
@@ -186,6 +193,16 @@ def _build_sft_config(SFTConfig, args, is_mlx, bf16_supported):
         dataset_num_proc = 2,
         packing = args.packing,
     )
+    if getattr(args, "context_parallel_size", 1) > 1:
+        config_kwargs["context_parallel_size"] = args.context_parallel_size
+        config_kwargs["context_parallel_backend"] = getattr(
+            args, "context_parallel_backend", "ring"
+        )
+        config_kwargs["context_parallel_rotate_method"] = getattr(
+            args, "context_parallel_rotate_method", "allgather"
+        )
+        # Required under CP; older transformers releases default it to False.
+        config_kwargs["average_tokens_across_devices"] = True
     if is_mlx:
         if args.per_device_eval_batch_size != 4:
             print("Warning: --per_device_eval_batch_size is ignored on MLX without eval data.")
@@ -269,13 +286,11 @@ def run(args):
     def load_dataset_smart(args):
         from transformers.utils import strtobool
         if args.raw_text_file:
-            loader = _raw_text_loader_for_backend(
-                RawTextDataLoader, tokenizer, is_mlx, args.chunk_size, args.stride
+            dataset = _load_raw_text_file(
+                RawTextDataLoader, tokenizer, is_mlx, args, args.raw_text_file
             )
-            dataset = loader.load_from_file(args.raw_text_file)
         elif args.dataset.endswith((".txt", ".md", ".json", ".jsonl")):
-            loader = _raw_text_loader_for_backend(RawTextDataLoader, tokenizer, is_mlx)
-            dataset = loader.load_from_file(args.dataset)
+            dataset = _load_raw_text_file(RawTextDataLoader, tokenizer, is_mlx, args, args.dataset)
         else:
             use_modelscope = strtobool(os.environ.get("UNSLOTH_USE_MODELSCOPE", "False"))
             if use_modelscope:
@@ -462,6 +477,28 @@ if __name__ == "__main__":
         "--packing",
         action = "store_true",
         help = "Enable padding-free sample packing via TRL's bin packer.",
+    )
+    training_group.add_argument(
+        "--context_parallel_size",
+        type = int,
+        default = 1,
+        help = "Ranks per context parallel group (torchrun, PyTorch >= 2.7).",
+    )
+    training_group.add_argument(
+        "--context_parallel_backend",
+        type = str,
+        default = "ring",
+        choices = ["ring", "ulysses"],
+        help = "Context parallel attention backend: ring (SDPA ring attention) or ulysses "
+        "(all-to-all over heads; keeps packing and the usual attention kernels, needs heads "
+        "divisible by the size).",
+    )
+    training_group.add_argument(
+        "--context_parallel_rotate_method",
+        type = str,
+        default = "allgather",
+        choices = ["allgather", "alltoall"],
+        help = "How ring attention rotates KV shards between ranks.",
     )
 
     report_group = parser.add_argument_group("📊 Report Options")

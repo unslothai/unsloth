@@ -152,14 +152,7 @@ def test_build_dataset_download_leaves_no_temp_file_when_export_fails(tmp_path: 
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("export blew up")),
     )
 
-    # A private system temp dir, not the shared one. The claim is "the failed export unlinked
-    # what it created", and reading that off $TMPDIR made it a claim about the whole box: the
-    # siblings in this file each leave a NamedTemporaryFile(suffix = ".jsonl") in flight until
-    # their own finally runs, and CI shards this suite with `-n 4 --dist loadgroup`, so a
-    # sibling on another worker could put a .jsonl there between the two reads and fail this
-    # test for something it does not measure. Pointing tempfile.tempdir at a directory only
-    # this test can reach makes the reading exact instead of merely usually-quiet, and lets
-    # the assertion be "nothing at all" rather than "the same set as a moment ago".
+    # Private tempdir: siblings on other xdist workers leave .jsonl files in the shared one.
     system_temp = tmp_path / "system-temp"
     system_temp.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(system_temp))
@@ -275,7 +268,6 @@ def test_download_job_dataset_route_uses_artifact_path(monkeypatch, tmp_path: Pa
 
     monkeypatch.setattr(jobs_route, "build_dataset_download", fake_build_dataset_download)
     monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
-    # These tests are about who may fetch the link, not about what the export is called.
     monkeypatch.setattr(
         jobs_route,
         "download_filename",
@@ -329,7 +321,6 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
             self.calls: list[tuple[int, int]] = []
 
         def get_status(self, job_id: str):
-            # A preview run: completed, but with nothing persisted to export from.
             return {"status": "completed", "artifact_path": None}
 
         def get_dataset(
@@ -353,7 +344,6 @@ def test_build_in_memory_job_dataset_download_pages_all_rows(monkeypatch, tmp_pa
         artifact_path = None,
         filename = "big-run",
     )
-    # Called directly, so the response's background unlink never runs: take the file away here.
     try:
         assert response.filename == "big-run.jsonl"
         assert fake_manager.calls == [
@@ -397,7 +387,6 @@ def _download_app(monkeypatch, tmp_path: Path, jobs_route):
 
     monkeypatch.setattr(jobs_route, "build_dataset_download", fake_build_dataset_download)
     monkeypatch.setattr(jobs_route, "get_job_manager", lambda: _FakeManager())
-    # These tests are about who may fetch the link, not about what the export ends up called.
     monkeypatch.setattr(
         jobs_route,
         "download_filename",
@@ -427,9 +416,7 @@ def test_download_link_is_minted_over_the_bearer_and_used_without_one(monkeypatc
     url = "/api/data-recipe" + minted.json()["path"]
     assert token not in url
 
-    # No Authorization header at all, the way the browser fetches it.
     assert client.get(url).status_code == 200
-    # And the header still works on its own, for an API client.
     assert (
         client.get(
             "/api/data-recipe/jobs/job-1/download",
@@ -466,7 +453,6 @@ def test_download_route_refuses_an_unsigned_or_repointed_link(monkeypatch, tmp_p
         ).status_code
         == 401
     )
-    # A session JWT is not a download link, however valid it is as a bearer.
     assert (
         client.get(
             "/api/data-recipe/jobs/job-1/download",
@@ -481,7 +467,6 @@ def test_download_route_refuses_an_unsigned_or_repointed_link(monkeypatch, tmp_p
         headers = {"Authorization": f"Bearer {token}"},
     ).json()["path"]
     signed = parse_qs(urlparse(url).query)["token"][0]
-    # Every parameter the export reads is signed, so the artifact cannot be swapped for another.
     assert (
         client.get(
             "/api/data-recipe/jobs/job-1/download",
@@ -765,6 +750,146 @@ def test_jsonl_export_stays_a_plain_file_without_images(tmp_path: Path, monkeypa
         file_path.unlink(missing_ok = True)
 
 
+def _schema_transform_artifact(tmp_path: Path, monkeypatch) -> Path:
+    dataset_path = tmp_path / "recipe-datasets" / "job-schema-transform"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"question": "Q1", "answer": "A1"}])
+    _write_parquet_rows(
+        dataset_path / "processors-files" / "chat_format",
+        [
+            {
+                "messages": [
+                    {"role": "user", "content": "Q1"},
+                    {"role": "assistant", "content": "A1"},
+                ]
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+    return dataset_path
+
+
+def test_jsonl_export_includes_schema_transform_output(tmp_path: Path, monkeypatch):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+
+    from core.data_recipe.export import download_filename
+
+    assert (
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "run")
+        == "run.jsonl.zip"
+    )
+    file_path, media_type, download_name = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "run",
+    )
+    try:
+        assert (media_type, download_name) == ("application/zip", "run.jsonl.zip")
+        with zipfile.ZipFile(file_path) as archive:
+            names = sorted(archive.namelist())
+            rows = archive.read("run.jsonl").decode("utf-8")
+            transformed = archive.read("processors/chat_format.jsonl").decode("utf-8")
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["processors/chat_format.jsonl", "run.jsonl"]
+    assert json.loads(rows.strip()) == {"question": "Q1", "answer": "A1"}
+    assert json.loads(transformed.strip()) == {
+        "messages": [
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+        ]
+    }
+
+
+def test_parquet_export_includes_schema_transform_output(tmp_path: Path, monkeypatch):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "parquet",
+        filename_stem = "run",
+    )
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            names = sorted(archive.namelist())
+    finally:
+        file_path.unlink(missing_ok = True)
+    assert names == ["batch_00000.parquet", "processors/chat_format/batch_00000.parquet"]
+
+
+@pytest.mark.parametrize(
+    ("export_format", "expected"),
+    [
+        (
+            "jsonl",
+            [
+                "images/a.png",
+                "processors/alpaca.jsonl",
+                "processors/chat_format.jsonl",
+                "run.jsonl",
+            ],
+        ),
+        (
+            "parquet",
+            [
+                "batch_00000.parquet",
+                "images/a.png",
+                "processors/alpaca/batch_00000.parquet",
+                "processors/chat_format/batch_00000.parquet",
+            ],
+        ),
+    ],
+)
+def test_export_includes_every_schema_transform_beside_images(
+    tmp_path: Path, monkeypatch, export_format: str, expected: list[str]
+):
+    dataset_path = _schema_transform_artifact(tmp_path, monkeypatch)
+    _write_parquet_rows(dataset_path / "processors-files" / "alpaca", [{"instruction": "Q1"}])
+    (dataset_path / "images").mkdir()
+    (dataset_path / "images" / "a.png").write_bytes(b"png")
+
+    file_path, _, _ = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = export_format,
+        filename_stem = "run",
+    )
+    try:
+        with zipfile.ZipFile(file_path) as archive:
+            assert sorted(archive.namelist()) == expected
+            if export_format == "jsonl":
+                alpaca = archive.read("processors/alpaca.jsonl").decode("utf-8")
+                assert json.loads(alpaca.strip()) == {"instruction": "Q1"}
+    finally:
+        file_path.unlink(missing_ok = True)
+
+
+def test_jsonl_export_stays_plain_when_no_transform_wrote_shards(tmp_path: Path, monkeypatch):
+    dataset_path = tmp_path / "recipe-datasets" / "job-empty-transform"
+    _write_parquet_rows(dataset_path / "parquet-files", [{"question": "Q1"}])
+    (dataset_path / "processors-files" / "empty").mkdir(parents = True)
+    (dataset_path / "processors-files" / "preview.parquet").write_bytes(b"not a folder")
+    monkeypatch.setattr(
+        "core.data_recipe.export._resolve_recipe_artifact_path",
+        lambda artifact_path: dataset_path,
+    )
+
+    from core.data_recipe.export import download_filename
+
+    assert (
+        download_filename(artifact_path = str(dataset_path), export_format = "jsonl", stem = "run")
+        == "run.jsonl"
+    )
+    file_path, media_type, download_name = build_dataset_download(
+        artifact_path = str(dataset_path),
+        export_format = "jsonl",
+        filename_stem = "run",
+    )
+    file_path.unlink(missing_ok = True)
+    assert (media_type, download_name) == ("application/x-ndjson", "run.jsonl")
+
+
 def test_jsonl_reader_preserves_columns_named_like_old_reader_helpers(tmp_path: Path):
     from core.data_recipe.export import _write_jsonl_from_parquet
 
@@ -960,7 +1085,6 @@ def test_to_preview_jsonable_row_converts_each_column(tmp_path: Path):
     row = {"path": str(picture), "label": "keep-me"}
     assert to_preview_jsonable_row(row) == row
     assert to_preview_jsonable_row([row, row]) == [row, row]
-    # A column that really is an image dict is still rendered as a preview payload.
     cell = to_preview_jsonable_row({"image": {"path": str(picture)}})["image"]
     assert cell["type"] == "image" and cell["mime"] == "image/jpeg"
 
@@ -977,3 +1101,124 @@ def test_a_column_named_file_row_number_also_survives(tmp_path: Path):
         "filename": "a.png",
         "label": "x",
     }
+
+
+def _general_path(row):
+    from core.data_recipe import export
+    return export._json_dumps_value(export._sanitize_json_value(row))
+
+
+def _encode_or_error(fn, row):
+    try:
+        return fn(row)
+    except Exception as exc:
+        return f"{type(exc).__name__}: {exc}"
+
+
+def _random_value(rng, depth = 0):
+    import datetime
+    import enum
+    from decimal import Decimal
+
+    numpy = pytest.importorskip("numpy")
+    pandas = pytest.importorskip("pandas")
+
+    class Text(str):
+        pass
+
+    class Level(enum.IntEnum):
+        LOW = 1
+
+    leaves = [
+        lambda: rng.choice(
+            ["", "plain", "café \U0001f600", 'q"uo\\te\n\t\r\x00\x1f', "  ", "\ud800"]
+        ),
+        lambda: rng.choice([0, -1, 2**63, -(2**70), True, False, None]),
+        lambda: rng.choice(
+            [0.0, -0.0, 1.5, 1e300, 5e-324, 0.1 + 0.2, float("nan"), float("inf"), -float("inf")]
+        ),
+        lambda: Decimal(rng.choice(["1.20", "0E-8", "-0", "1E+3", "NaN", "Infinity", "-12.3400"])),
+        lambda: rng.choice([b"", b"\x00\xff", bytearray(b"ab")]),
+        lambda: rng.choice(
+            [
+                datetime.datetime(2026, 1, 2, 3, 4, 5, 6),
+                datetime.date(2026, 1, 2),
+                datetime.time(1, 2),
+            ]
+        ),
+        lambda: rng.choice(
+            [
+                numpy.float32(1.1),
+                numpy.float64("nan"),
+                numpy.int64(7),
+                numpy.bool_(True),
+                numpy.str_("np"),
+            ]
+        ),
+        lambda: rng.choice([pandas.NA, pandas.NaT, pandas.Timestamp("2026-01-02 03:04:05")]),
+        lambda: rng.choice([Text("sub"), Level.LOW, numpy.arange(3), (1, "t"), {"one"}]),
+    ]
+    if depth < 3 and rng.random() < 0.3:
+        if rng.random() < 0.5:
+            return [_random_value(rng, depth + 1) for _ in range(rng.randint(0, 3))]
+        keys = ["k", "é", 1, True, None, "1", 1.5]
+        return {rng.choice(keys): _random_value(rng, depth + 1) for _ in range(rng.randint(0, 3))}
+    return rng.choice(leaves)()
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_json_dumps_row_writes_what_the_general_path_writes(seed):
+    import random
+    rng = random.Random(seed)
+    for _ in range(1500):
+        plain_only = rng.random() < 0.4
+        row = {}
+        for index in range(rng.randint(0, 8)):
+            value = _random_value(rng)
+            if plain_only and not _is_plain_for_test(value):
+                value = rng.choice(["text", 3, 2.5, None, [1, "a"], {"n": {"m": [True]}}])
+            key = (
+                rng.choice([1, "1", True, None])
+                if rng.random() < 0.03
+                else rng.choice([f"c{index}", "café", 'k"\n'])
+            )
+            row[key] = value
+        assert _encode_or_error(_json_dumps_row, row) == _encode_or_error(_general_path, row), row
+
+
+def _is_plain_for_test(value):
+    from core.data_recipe import export
+    try:
+        return export._is_plain_json(value)
+    except export._TooDeep:
+        return False
+
+
+@pytest.mark.parametrize("depth", [31, 32, 33, 400, 2000])
+def test_json_dumps_row_matches_the_general_path_at_any_depth(depth):
+    plain = [] if depth % 2 else {}
+    node = plain
+    for _ in range(depth):
+        child = []
+        node.append(child) if isinstance(node, list) else node.update(k = child)
+        node = child
+    for row in ({"deep": plain}, {"deep": plain, "when": float("nan")}):
+        assert _encode_or_error(_json_dumps_row, row) == _encode_or_error(_general_path, row)
+
+
+def test_a_plain_row_is_written_without_the_per_value_walk(monkeypatch):
+    from core.data_recipe import export
+
+    calls = []
+    monkeypatch.setattr(export, "to_jsonable", lambda value: calls.append(value) or value)
+    row = {
+        "question": "Qé",
+        "n": 3,
+        "score": 0.5,
+        "ok": True,
+        "tags": ["a", None],
+        "meta": {"x": 1},
+    }
+
+    assert _json_dumps_row(row) == json.dumps(row, ensure_ascii = False)
+    assert calls == []

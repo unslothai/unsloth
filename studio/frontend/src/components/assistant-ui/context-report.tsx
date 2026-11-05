@@ -8,6 +8,7 @@ import {
   deriveContextView,
   externalModelContextLength,
   formatTokenCountFull,
+  getSeverityColor,
   isExternalModelId,
   shownContextReport,
   usagePercent,
@@ -93,24 +94,29 @@ const Header: FC<{ summary: string; onDismiss: () => void }> = ({
   );
 };
 
-const UsageBar: FC<{ percent: number; markAt?: number }> = ({
-  percent,
+const UsageBar: FC<{ used: number; window: number; markAt?: number }> = ({
+  used,
+  window,
   markAt,
-}) => (
-  <div className="relative" aria-hidden={true}>
-    <Progress
-      value={percent}
-      className="h-1"
-      indicatorClassName="bg-[color-mix(in_oklab,var(--foreground)_calc(45%*var(--contrast-wash-gain,1)),transparent)]"
-    />
-    {markAt != null ? (
-      <div
-        className="absolute -inset-y-0.5 w-px bg-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-wash-gain,1)),transparent)]"
-        style={{ left: `${markAt * 100}%` }}
+}) => {
+  // Unrounded, as the header ring reads it, so the two change color together.
+  const percent = Math.min(100, (used / window) * 100);
+  return (
+    <div className="relative" aria-hidden={true}>
+      <Progress
+        value={percent}
+        className="h-1"
+        indicatorClassName={getSeverityColor(percent).bar}
       />
-    ) : null}
-  </div>
-);
+      {markAt != null ? (
+        <div
+          className="absolute -inset-y-0.5 w-px bg-[color-mix(in_oklab,var(--foreground)_calc(60%*var(--contrast-wash-gain,1)),transparent)]"
+          style={{ left: `${markAt * 100}%` }}
+        />
+      ) : null}
+    </div>
+  );
+};
 
 /** A local model: the backend splits the prompt it would send. */
 const LocalCount: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
@@ -203,7 +209,7 @@ const ApiTotal: FC<{ checkpoint: string; onDismiss: () => void }> = ({
         }
         onDismiss={onDismiss}
       />
-      {percent != null ? <UsageBar percent={percent} /> : null}
+      {used != null && window ? <UsageBar used={used} window={window} /> : null}
       <p className="text-muted-foreground text-xs">
         {t("context.apiNoBreakdown")}
       </p>
@@ -220,7 +226,11 @@ const Breakdown: FC<{ view: ContextView }> = ({ view }) => {
   };
   return (
     <>
-      <UsageBar percent={view.percent} markAt={view.compactAt?.share} />
+      <UsageBar
+        used={view.used}
+        window={view.window}
+        markAt={view.compactAt?.share}
+      />
       <dl className="grid grid-cols-[1fr_auto] gap-x-6 gap-y-1">
         {view.segments.map(({ key, tokens }) => (
           <Row

@@ -45,6 +45,15 @@ def test_studio_default_exposes_cloudflare_option_default_off():
     assert getattr(opt, "default", "missing") is None
 
 
+@pytest.mark.parametrize("command", ["run", "studio_default"])
+def test_cloudflare_help_names_the_saved_auto_start_setting(command):
+    import inspect
+
+    help_text = inspect.signature(getattr(_studio(), command)).parameters["cloudflare"].default.help
+    assert "Start automatically" in help_text
+    assert "--no-cloudflare forces both off" in help_text
+
+
 class _ExecCaptured(SystemExit):
     def __init__(self, argv):
         super().__init__(0)

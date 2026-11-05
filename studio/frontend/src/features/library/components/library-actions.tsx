@@ -15,19 +15,16 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   ArrowTurnBackwardIcon,
-  Delete02Icon,
   Download01Icon,
   Edit03Icon,
-  Folder01Icon,
-  FolderAddIcon,
-  FolderExportIcon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
+import { Folder01Icon, FolderAddIcon, FolderClosedIcon, FolderExportIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { MessageCircleIcon, StarPointedIcon } from "@/lib/hugeicons-derived";
+import { MessageCircleIcon, StarPointedIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { useMemo, useState } from "react";
 import type { LibraryFolder } from "../api";
-import { isDeletable, isFileItem, isModelItem } from "../file-kind";
+import { hasImagePreview, isDeletable, isFileItem, isModelItem } from "../file-kind";
 import { type LibraryTarget, useLibraryActions } from "../actions-context";
 import { useLibraryOrigin } from "../origin";
 import { canReveal, revealInFolder, useRevealLabel } from "../reveal";
@@ -35,8 +32,6 @@ import { OVERLAY_CONTROL } from "../surface";
 
 const ICON = "size-icon";
 
-/** Folders a target can move into, depth-first with their nesting depth. A folder is never offered
- *  itself or anything under it. */
 function moveDestinations(
   folders: LibraryFolder[],
   target: LibraryTarget,
@@ -120,6 +115,12 @@ export function LibraryActionsMenu({
           <HugeiconsIcon icon={MessageCircleIcon} strokeWidth={1.75} className={ICON} />
           {t(item && isModelItem(item) ? "library.menu.chatWithModel" : "library.menu.chatAboutThis")}
         </DropdownMenuItem>
+        {item && hasImagePreview(item) && (
+          <DropdownMenuItem onSelect={() => actions.editImage(item)}>
+            <HugeiconsIcon icon={Edit03Icon} strokeWidth={1.75} className={ICON} />
+            {t("library.menu.editImage")}
+          </DropdownMenuItem>
+        )}
         {origin && (
           <DropdownMenuItem onSelect={origin.open}>
             <HugeiconsIcon icon={ArrowTurnBackwardIcon} strokeWidth={1.75} className={ICON} />
@@ -176,7 +177,7 @@ export function LibraryActionsMenu({
                 onSelect={() => actions.moveTo(target, folder.id)}
                 style={{ paddingLeft: `${12 + depth * 14}px` }}
               >
-                <HugeiconsIcon icon={Folder01Icon} strokeWidth={1.75} className={ICON} />
+                <HugeiconsIcon icon={FolderClosedIcon} strokeWidth={1.75} className={ICON} />
                 <span className="truncate">{folder.name}</span>
               </DropdownMenuItem>
             ))}
@@ -184,7 +185,7 @@ export function LibraryActionsMenu({
         </DropdownMenuSub>
         {(!item || isDeletable(item)) && (
           <DropdownMenuItem variant="destructive" onSelect={() => actions.remove(target)}>
-            <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className={ICON} />
+            <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className={ICON} />
             {target.kind === "folder" ? t("library.menu.deleteFolder") : t("common.delete")}
           </DropdownMenuItem>
         )}

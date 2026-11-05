@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Coarse per-IP sliding-window rate limit for the public ``/p`` preview chat.
-
-A signed link stops ref guessing, but anyone with a link can still drive GPU
-generation. This bounds sustained abuse from a single source. In-process and
-single-worker only (like the login limiter in ``routes/auth.py``); Unsloth runs as
-one uvicorn process, so a shared store isn't needed.
-"""
+"""Per-IP sliding-window rate limit for the public /p preview chat; in-process, single-worker only."""
 
 from __future__ import annotations
 
@@ -49,9 +43,7 @@ def check_rate_limit(key: str) -> int:
             if len(_buckets) >= _MAX_BUCKETS:
                 _evict_aged(now)
             if len(_buckets) >= _MAX_BUCKETS:
-                # Table is full of currently-active clients. Fail closed: deny the
-                # new key rather than evict a live bucket (which would hand out a
-                # rate-limit reset). Pathological only (>= _MAX_BUCKETS live IPs).
+                # Table full of live clients: fail closed rather than evict (an eviction resets the limit).
                 return max(1, int(_WINDOW_SECONDS))
             bucket = _buckets[key] = deque()
         _prune(bucket, now)

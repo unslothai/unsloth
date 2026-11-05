@@ -21,7 +21,6 @@ from utils.hardware import hardware as hw
 def _host_serves_non_gguf(monkeypatch):
     """Pin the host-capability gates: these tests are about the config rules, not this machine."""
     monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", lambda: True)
-    # the device, not the helper, so a test setting DEVICE for itself still wins.
     monkeypatch.setattr(hw, "DEVICE", hw.DeviceType.CUDA, raising = False)
 
 
@@ -48,7 +47,7 @@ def _classifies(info, config: dict):
     return resolver._is_generative_chat_config(Path(info.path), config)
 
 
-# ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit from #10951: a language-only MLX conversion, vision_config gone.
+# A language-only MLX conversion with vision_config removed.
 REPORTED_CONFIG = {
     "architectures": ["Qwen3_5MoeForConditionalGeneration"],
     "model_type": "qwen3_5_moe",
@@ -58,7 +57,7 @@ REPORTED_CONFIG = {
     "vision_start_token_id": 151652,
     "vision_end_token_id": 151653,
 }
-# caslca/Qwen3.8-27B-mlx-uniform-4bit, the working control from the same report: it kept vision_config.
+# The working control: same family, vision_config kept.
 CONTROL_CONFIG = {
     "architectures": ["Qwen3_5ForConditionalGeneration"],
     "model_type": "qwen3_5",
@@ -126,7 +125,6 @@ def test_a_text_seq2seq_is_still_refused(tmp_path, architecture, model_type):
 @pytest.mark.parametrize(
     ("name", "config"),
     [
-        # transformers 5.17 ClvpConfig: text_config and no modality key, on a ForConditionalGeneration name.
         (
             "clvp",
             {
@@ -173,7 +171,7 @@ def test_a_text_config_counts_beside_a_modality_sibling(tmp_path, partner):
 def test_text_config_is_not_recorded_as_a_modality_key():
     assert "text_config" not in resolver._VISUAL_TOKEN_ID_KEYS
     assert not resolver._config_declares_multimodality({"text_config": {"hidden_size": 1}})
-    # "text" is not a modality word either, or the word match would readmit it by the back door.
+    # Otherwise the word match would readmit text_config.
     assert "text" not in resolver._MODALITY_KEY_WORDS
 
 

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import ts from "typescript";
+import ts from "@typescript/typescript6";
 import { registerBundlerResolver } from "./helpers/kit.ts";
 
 registerBundlerResolver();
@@ -67,6 +67,15 @@ test("kimi-k3 replays reasoning whatever the preserve toggle says; k2.6 does not
     assert.equal(
       evaluate(providerSupportsPreserveThinking, {providerType: "kimi"}, {preserveThinking: enabled}, true, "kimi-k2.6").replay,
       false,
+    );
+  }
+});
+
+test("minimax replays reasoning whatever the preserve toggle says", () => {
+  for (const enabled of [true, false]) {
+    assert.deepEqual(
+      evaluate(providerSupportsPreserveThinking, {providerType: "minimax"}, {preserveThinking: enabled}, true, "MiniMax-M3.1-Flash"),
+      {replay: true, fields: {}},
     );
   }
 });

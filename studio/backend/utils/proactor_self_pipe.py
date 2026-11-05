@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-# CPython's proactor _loop_self_reading re-posts its self-pipe read without checking EOF, so once a loopback filter
-# (AdGuard after sleep) closes the peer, every read returns b"" and the loop pins a core. Unfixed through CPython 3.14.
+# CPython's proactor self-pipe read ignores EOF, so a closed peer (AdGuard) pins a core.
 
 from __future__ import annotations
 

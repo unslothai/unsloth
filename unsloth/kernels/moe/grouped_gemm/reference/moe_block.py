@@ -96,8 +96,7 @@ class Qwen3MoeFusedGroupedGEMMBlock(Qwen3MoeGroupedGEMMBlock):
         hidden_states = hidden_states.view(-1, hidden_dim)
 
         router_logits, routing_weights, selected_experts = self.run_router(hidden_states)
-        # Tokens per expert and the token-order to expert-order gather indices: auxiliary structs, not
-        # recorded in the autograd graph.
+        # Tokens per expert and token-to-expert gather indices are auxiliary structs, not recorded in the autograd graph.
         token_counts_by_expert, gather_indices = self.get_token_counts_and_gather_indices(
             selected_experts
         )

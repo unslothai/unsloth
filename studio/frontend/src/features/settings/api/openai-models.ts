@@ -12,10 +12,7 @@ import {
 
 export type { AudioApiModel, OpenAIModel };
 
-/**
- * The chat-capable models this server can serve: `/v1/models` also lists image,
- * video and speech-to-text models, which `/v1/chat/completions` cannot resolve.
- */
+/** Chat-capable only: /v1/models also lists image, video and STT models. */
 export async function listOpenAIModels(): Promise<OpenAIModel[]> {
   const res = await authFetch("/v1/models");
   if (!res.ok) {

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { Download01Icon, SentIcon, StopIcon } from "@hugeicons/core-free-icons";
+import { Download01Icon } from "@hugeicons/core-free-icons";
+import { StopIcon } from "@/lib/media-control-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ import { formatRelativeShort } from "@/features/hub/lib/format";
 import { audioModelLabel, formatClipDuration } from "../audio-workspace-utils";
 import { AUDIO_WORKFLOWS, type AudioWorkflowId } from "../workflows";
 import { Waveform } from "./waveform";
+import { ArrowUpIcon } from "lucide-react";
 
 export type ClipSendHandlers = Partial<Record<AudioWorkflowId, () => void>>;
 
@@ -33,8 +35,7 @@ export function ClipSendToMenu({ handlers }: { handlers: ClipSendHandlers }) {
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger>
-        <HugeiconsIcon
-          icon={SentIcon}
+        <ArrowUpIcon
           strokeWidth={1.75}
           className="size-icon"
         />
@@ -47,7 +48,7 @@ export function ClipSendToMenu({ handlers }: { handlers: ClipSendHandlers }) {
   );
 }
 
-const CARD_CLASS = "w-full max-w-xl gap-3 px-5 py-4";
+const CARD_CLASS = "w-full max-w-xl gap-3 rounded-2xl px-5 py-4";
 
 /** never autoplays; a new clip focuses its play button once. */
 export function ClipCard({
@@ -75,7 +76,6 @@ export function ClipCard({
   status?: string;
   focusOnMount?: boolean;
   onFocused?: () => void;
-  /** Replaces the waveform player, e.g. Edit's Original/Edited or Convert's Source/Converted compare. */
   player?: ReactNode;
 }) {
   const focusPlay = (element: HTMLDivElement | null) => {

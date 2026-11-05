@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The owner's switch for managed-account provider base URLs on private addresses (#11382).
-
-Default off, so every installation keeps the refusal that shipped. Turned on, the three places that
-enforce it -- the validator, the pinned transport and the recipe egress guard -- all stand down
-together, because a connection that saves and then fails at send time is worse than one that never
-saved. Cloud metadata endpoints stay refused either way, and the shared-host environment opt-in
-outranks the switch.
-"""
+"""Private provider URLs stay refused by default; the switch relaxes all three checks together."""
 
 import threading
 
@@ -34,7 +27,7 @@ METADATA_URLS = [
 
 @pytest.fixture(autouse = True)
 def _clean_resolver_state(monkeypatch, tmp_path):
-    # Isolated per test: the real setter would otherwise write to the machine's own installation.
+    # Isolated per test, or the real setter writes to the machine's own installation.
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
     monkeypatch.setattr(studio_db, "_schema_ready", set())
     monkeypatch.delenv(setting.BLOCK_PRIVATE_ENV, raising = False)
@@ -68,7 +61,6 @@ def test_a_managed_account_is_refused_by_default(monkeypatch, as_alice, url):
     with pytest.raises(ValueError) as refusal:
         providers.validate_provider_base_url(url)
     assert "public-network provider base URLs" in str(refusal.value)
-    # The person reading this cannot lift it themselves, so it says who can.
     assert "Settings > Accounts" in str(refusal.value)
 
 
@@ -126,7 +118,6 @@ def settings_client():
     app = FastAPI()
     app.include_router(settings_routes.router)
     app.dependency_overrides[settings_routes.get_current_subject] = lambda: "unsloth"
-    # An interactive owner at the console, which is what the write requires.
     app.dependency_overrides[settings_routes.authenticated_via_api_key] = lambda: False
     with TestClient(app, raise_server_exceptions = False) as client:
         yield client
@@ -196,7 +187,6 @@ def test_the_recipe_egress_guard_narrows_rather_than_standing_down(monkeypatch, 
         guarded = socket.getaddrinfo
         assert guarded is not original
 
-        # A LAN answer is what the switch bought; the metadata answer is not.
         monkeypatch.setattr(
             service.socket if hasattr(service, "socket") else socket,
             "getaddrinfo",
@@ -219,15 +209,13 @@ def test_the_recipe_guard_follows_a_later_flip(monkeypatch, as_alice):
 
     original = socket.getaddrinfo
     monkeypatch.setattr(socket, "getaddrinfo", original)
-    # The real store: the guard closed over the function it imported, so rebinding that name
-    # proves nothing about a running worker.
+    # Use the real store: the guard closed over the imported function, so rebinding proves nothing.
     setting.set_managed_private_provider_urls_allowed(True)
     try:
         service.install_public_egress_guard()
         guarded = socket.getaddrinfo
         assert guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
 
-        # The owner turns it off while this worker is still running.
         setting.set_managed_private_provider_urls_allowed(False)
         with pytest.raises(socket.gaierror) as refusal:
             guarded("192.168.1.50", 8000, type = socket.SOCK_STREAM)
@@ -286,7 +274,46 @@ def test_a_link_local_provider_that_saves_can_also_be_dialled(monkeypatch, as_al
     assert saved == "http://printer.local:8000/v1"
     assert provider_address_excluding_metadata(saved) == "169.254.3.7"
 
-    # The metadata service itself, and a literal anywhere in the range, still refused.
     for literal in ("http://169.254.169.254/v1", "http://169.254.3.7/v1"):
         with pytest.raises(ValueError):
             provider_address_excluding_metadata(literal)
+
+
+def _hf_seed(endpoint):
+    return {"seed_config": {"source": {"seed_type": "hf", "path": "a/b", "endpoint": endpoint}}}
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+@pytest.mark.parametrize("url", PRIVATE_URLS + METADATA_URLS + ["https://hub.example.com"])
+def test_a_managed_hf_seed_endpoint_must_be_this_servers(monkeypatch, as_alice, url, allowed):
+    # Validate reads the seed in the API process, outside the recipe worker's egress guard, and the
+    # HF client follows redirects, so even a public HTTPS endpoint could bounce to an internal one.
+    from routes.data_recipe.jobs import _resolve_seed_endpoint
+
+    _allow(monkeypatch, allowed)
+    with pytest.raises(Exception) as refusal:
+        _resolve_seed_endpoint(_hf_seed(url))
+    assert getattr(refusal.value, "status_code", None) == 403
+
+
+def test_hf_seed_endpoints_that_stay_allowed(monkeypatch, as_alice):
+    from routes.data_recipe.jobs import _resolve_seed_endpoint
+
+    _allow(monkeypatch, False)
+    monkeypatch.setenv("HF_ENDPOINT", "http://127.0.0.1:9700")
+    # Blank resolves to this server's own endpoint, and naming that endpoint is the same thing.
+    for typed in (None, "", "http://127.0.0.1:9700", "http://127.0.0.1:9700/"):
+        recipe = _hf_seed(typed)
+        _resolve_seed_endpoint(recipe)
+        assert recipe["seed_config"]["source"]["endpoint"] in (
+            "http://127.0.0.1:9700",
+            "http://127.0.0.1:9700/",
+        )
+    # The owner may name any endpoint, a private mirror included.
+    token = bind_account(OWNER)
+    try:
+        recipe = _hf_seed("http://192.168.1.50:8080")
+        _resolve_seed_endpoint(recipe)
+        assert recipe["seed_config"]["source"]["endpoint"] == "http://192.168.1.50:8080"
+    finally:
+        reset_account(token)

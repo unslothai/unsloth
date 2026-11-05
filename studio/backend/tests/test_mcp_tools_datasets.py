@@ -5,6 +5,8 @@ import json
 
 from fastapi.responses import JSONResponse
 
+from hub.utils.host_paths import cache_reference
+
 from .mcp_harness import call_to, queries, run_tool
 
 PAYLOADS = {
@@ -65,10 +67,20 @@ def _call(
 def test_list_names_datasets_without_their_paths(monkeypatch):
     result, _studio = _call(monkeypatch, {"action": "list"})
     assert result["structuredContent"] == {
-        "local": [{"id": "my-chats", "label": "My chats", "source": "local", "rows": 120}],
+        "local": [
+            {
+                "id": "my-chats",
+                "label": "My chats",
+                "source": "local",
+                "rows": 120,
+                "ref": cache_reference("/srv/unsloth/datasets/my-chats"),
+            }
+        ],
         "cached": [{"repo_id": "mlabonne/FineTome-100k", "size_bytes": 1024}],
         "format": None,
         "download": None,
+        "uploaded": None,
+        "image_dataset": None,
     }
     assert "/srv" not in json.dumps(result)
 

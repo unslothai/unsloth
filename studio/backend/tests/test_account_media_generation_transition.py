@@ -39,7 +39,6 @@ def test_first_managed_account_cannot_evict_an_owner_generation_started_single_u
     token = bind_account(OWNER)
     try:
         with account_access.media_generation("diffusion"):
-            # The owner creates the first managed account mid-generation.
             multi["value"] = True
             with pytest.raises(arb.GpuBusyForAnotherAccountError):
                 run_as(BOB, arb.acquire_for, arb.CHAT, lambda: None)

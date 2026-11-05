@@ -16,7 +16,6 @@ _BACKEND = Path(__file__).resolve().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-# Stub the optional deps routes/__init__ pulls in, so this module imports standalone.
 _loggers_stub = _types.ModuleType("loggers")
 _loggers_stub.get_logger = lambda name: logging.getLogger(name)
 sys.modules.setdefault("loggers", _loggers_stub)
@@ -142,13 +141,8 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
         assert field in self._stamp_block(), f"{field} is never recorded on the resident"
 
     def _status_for(self, monkeypatch, entry):
-        """The non-GGUF status payload for a resident stamped with `entry`.
-
-        Driven through the route rather than read out of its source: the spelling of the
-        read is not the contract, the published field is. An earlier version asserted the
-        literal `model_info.get(...)` line and broke on #8125, which kept publishing the
-        same field from the same stamped key through a coercion helper.
-        """
+        """Asserts the published field through the route, not the source spelling, which a refactor
+        changed."""
         import asyncio
 
         backend = _Backend(entry)
@@ -171,8 +165,6 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
             },
         )
         monkeypatch.setattr(inference_route, "load_inference_config", lambda _model: None)
-        # Unrelated to the stamped settings, and it re-derives from the model card, which
-        # would put a Hub request in the middle of a status unit test.
         monkeypatch.setattr(
             inference_route, "_resolve_loaded_trust_remote_code", lambda *_a, **_k: False
         )
@@ -247,11 +239,8 @@ class TestNonGgufStatusReportsWhatTheLoadAskedFor:
     def test_a_requested_context_length_is_published_only_when_it_is_a_count(
         self, monkeypatch, requested, published
     ):
-        """0 is an answer -- size it yourself -- so it must survive; junk must not.
-
-        A bool is not a count even though `int(True)` is 1, and a negative is not one
-        either; a numeric string still is, since the stamp is read back off JSON.
-        """
+        """0 means size it yourself and must survive; bools and negatives are rejected, numeric
+        strings kept."""
         response = self._status_for(monkeypatch, {"max_seq_length_requested": requested})
 
         assert response.requested_context_length == published

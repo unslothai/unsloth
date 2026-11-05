@@ -1,14 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The frontend half of the round-5 review: three ways the bar reported a
-// confident "fits" for a load that would not fit.
-//
-// Each case here failed before its fix, and each is a false NEGATIVE -- the bar
-// staying quiet when it should warn. That direction matters more than the
-// opposite one: a spurious warning is an annoyance, while a missing one is the
-// whole feature failing silently at the moment it was supposed to earn its keep.
-
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -23,9 +15,7 @@ const { computeModelMemory, extraArgsShapeKvCache } = await import(
 const GB = 1024 ** 3;
 
 test("a drafter's fixed weights cannot be auto-fitted away", () => {
-  // 24 GiB card at the default fraction. Target weights fit alone; target plus
-  // an 8 GiB drafter do not, and no shorter context can recover that -- the
-  // drafter's weights are resident whatever the context length is.
+  // Drafter weights are resident at any context length, so no shorter context helps.
   const segments = computeModelMemory({
     weightsBytes: 14 * GB,
     specBytes: 9 * GB,
@@ -43,9 +33,6 @@ test("a drafter's fixed weights cannot be auto-fitted away", () => {
 });
 
 test("auto-fit still softens a purely context-driven overage", () => {
-  // The counterpart, so the fix above does not simply warn on everything: with
-  // no fixed speculative cost the KV term alone is reducible, and an unpinned
-  // row must stay quiet exactly as it did before.
   const segments = computeModelMemory({
     weightsBytes: 14 * GB,
     kvBytes: 20 * GB,
@@ -57,9 +44,7 @@ test("auto-fit still softens a purely context-driven overage", () => {
 });
 
 test("context checkpoints are not charged against the card", () => {
-  // llama.cpp keeps SWA checkpoint snapshots in host heap, so a VRAM bar that
-  // counts them warns OOM over memory that never reaches the GPU. Modelled the
-  // way the hook does it: the host share subtracted from the cache figure.
+  // llama.cpp keeps SWA checkpoints in host heap, so they are not VRAM.
   const kvBytes = 18 * GB;
   const kvCheckpointBytes = 12 * GB;
   const onCard = computeModelMemory({
@@ -85,23 +70,16 @@ test("context checkpoints are not charged against the card", () => {
 });
 
 test("KV-shaping pass-through args are recognised", () => {
-  // --swa-full replaces a sliding window with a full-context cache, so a bar
-  // priced from the structured controls alone is describing a different load.
   assert.equal(extraArgsShapeKvCache(["--swa-full"]), true);
   assert.equal(extraArgsShapeKvCache(["--ctx-size=131072"]), true);
   assert.equal(extraArgsShapeKvCache(["-ub", "2048"]), true);
-  // Placement flags are a separate category with its own guard; this one must
-  // not claim them, or the two abstention reasons become indistinguishable.
   assert.equal(extraArgsShapeKvCache(["--verbose"]), false);
   assert.equal(extraArgsShapeKvCache([]), false);
   assert.equal(extraArgsShapeKvCache(null), false);
 });
 
 test("a mixed shared-memory host is judged on dedicated VRAM only", () => {
-  // A 24 GiB discrete card beside a Vulkan iGPU reporting 12 GiB of free system
-  // RAM. `sharedMemory` is every(), so it reads false here and the dedicated-vs-
-  // combined choice is the only thing standing between this model and a wrong
-  // verdict: 26 GiB fits the 36 GiB combined figure and does not fit the card.
+  // sharedMemory is every(), so false here: 26 GiB fits the 36 GiB combined figure, not the card.
   const combined = computeModelMemory({
     weightsBytes: 26 * GB,
     gpuGb: 36,
@@ -121,10 +99,7 @@ test("a mixed shared-memory host is judged on dedicated VRAM only", () => {
 });
 
 test("a CPU-resident launch draws no VRAM bar", () => {
-  // Inherited placement (LLAMA_ARG_DEVICE=none) makes the planner report zero
-  // GPU bytes. That is an answer, not a missing one, and a `||` fallback used to
-  // swap it for the segment sum and draw pressure for a load that touches no
-  // card at all.
+  // Zero planner GPU bytes is an answer; a `||` fallback would replace it.
   const segments = computeModelMemory({
     weightsBytes: 8 * GB,
     kvBytes: 2 * GB,
@@ -136,10 +111,7 @@ test("a CPU-resident launch draws no VRAM bar", () => {
 });
 
 test("the planner's total wins over the segment sum", () => {
-  // The segments are assembled from separate fields and can only include what
-  // this file knows to ask for; the planner's figure already counts the terms it
-  // does not. A total below the sum still has to be taken, or the delegation is
-  // decorative.
+  // The planner total counts terms the segments cannot, so a lower total must still win.
   const segments = computeModelMemory({
     weightsBytes: 10 * GB,
     kvBytes: 4 * GB,
@@ -151,9 +123,6 @@ test("the planner's total wins over the segment sum", () => {
 });
 
 test("KV-shaping recognises the flags that override structured settings", () => {
-  // --flash-attn off changes the cache LAYOUT, and an extras --spec-type beats
-  // the structured speculative mode outright, so both make the priced figure
-  // describe a different launch.
   assert.equal(extraArgsShapeKvCache(["--flash-attn", "off"]), true);
   assert.equal(extraArgsShapeKvCache(["-fa", "off"]), true);
   assert.equal(extraArgsShapeKvCache(["--spec-type", "draft-mtp"]), true);
@@ -161,9 +130,6 @@ test("KV-shaping recognises the flags that override structured settings", () => 
 });
 
 test("an auto-fitted row does not paint red for a context it will not open", () => {
-  // Priced at the native context, which the loader will reduce. The textual
-  // verdict was already suppressed; the bar itself was not, so a model that
-  // loads fine showed a full destructive bar and an over-budget readout.
   const segments = computeModelMemory({
     weightsBytes: 8 * GB,
     kvBytes: 40 * GB,
@@ -181,8 +147,6 @@ test("an auto-fitted row does not paint red for a context it will not open", () 
 });
 
 test("a pinned row still reports the pressure it really has", () => {
-  // The counterpart: with a context the user pinned there is no fitting to come,
-  // so an over-budget total must still read as over budget.
   const segments = computeModelMemory({
     weightsBytes: 8 * GB,
     kvBytes: 40 * GB,
@@ -196,10 +160,7 @@ test("a pinned row still reports the pressure it really has", () => {
 });
 
 test("a pinned context still warns even when nothing was pinned in the UI", () => {
-  // An inherited LLAMA_ARG_CTX_SIZE is kept by the loader, not fitted, so the
-  // route reports it as pinned. Before that flag existed the frontend read
-  // "auto-fitted" from the absence of a saved context, which both suppressed the
-  // overage and drew only the floor: a comfortable fit for a launch that OOMs.
+  // An inherited LLAMA_ARG_CTX_SIZE is kept by the loader, so it is reported as pinned.
   const inherited = computeModelMemory({
     weightsBytes: 8 * GB,
     kvBytes: 40 * GB,

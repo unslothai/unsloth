@@ -11,15 +11,8 @@
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-"""Fine-tune a model's native MTP head so its speculative drafts match the fine-tuned model.
+"""Train a model's native MTP head so merged / GGUF exports carry a head matching the fine-tune."""
 
-transformers drops `mtp.*` on load, and the merged export copies the stock head through
-unchanged, so after fine-tuning the head drafts for the old model. `get_mtp_head` loads the
-head from the checkpoint and attaches it; `UnslothMTPTrainer` trains it against the frozen
-model; every merged / GGUF save then writes the trained head instead of the stock one.
-"""
-
-# The trainer names resolve lazily through __getattr__ (they need a recent unsloth_zoo).
 __all__ = ["get_mtp_head", "attach_saved_mtp_head"]
 
 import functools
@@ -41,7 +34,6 @@ def _zoo_speculative():
 
 
 def _checkpoint_source(model):
-    """The repo id / folder the weights came from, looked up through PEFT wrappers."""
     holders, seen, stack = [], set(), [model]
     while stack:
         holder = stack.pop()
@@ -55,8 +47,7 @@ def _checkpoint_source(model):
             )
             if child is not None:
                 stack.append(child)
-    # ModelScope loads keep the repo id in the config and the downloaded weights on the inner
-    # model, under any PEFT wrapper: the snapshot wins over every holder's config.
+    # ModelScope: the local snapshot wins over every holder's config repo id.
     for holder in holders:
         snapshot = holder.__dict__.get("_unsloth_modelscope_snapshot")
         if isinstance(snapshot, str) and os.path.isdir(snapshot):
@@ -69,7 +60,6 @@ def _checkpoint_source(model):
 
 
 def _loaded_revision(model, source, revision):
-    """The commit the weights were loaded from, so a Hub lookup reads that head, not the default branch's."""
     if revision is not None or not isinstance(source, str) or os.path.isdir(source):
         return revision
     return getattr(getattr(model, "config", None), "_commit_hash", None)
@@ -84,13 +74,8 @@ def get_mtp_head(
 ):
     """Load the model's native MTP head, attach it to `model`, and return it.
 
-    source: repo id or folder holding the original `mtp.*` tensors. Defaults to the
-        checkpoint the model was loaded from; pass the original repo when that checkpoint
-        was re-saved without its head.
-    random_init: start from random weights instead (for checkpoints without a head).
-    dtype: head parameter dtype, float32 by default (the head is small; the target stays as loaded).
-    Without `source` / `random_init`, a head already attached (e.g. re-attached from beside a
-    reloaded adapter) is returned as is.
+    source: repo id / folder with the `mtp.*` tensors (default: the loaded checkpoint).
+    random_init: random weights, for checkpoints without a head. dtype: default float32.
     """
     import torch
 
@@ -117,7 +102,6 @@ def get_mtp_head(
             {"prefix": "mtp." if family == "qwen3_5" else "", "num_layers": 1, "source": source},
         )
     elif isinstance(source, str) and os.path.isfile(os.path.join(source, "mtp_head.safetensors")):
-        # A head trained earlier and saved beside a LoRA adapter.
         from unsloth_zoo.speculative.stitch import load_saved_mtp_head
         state_dict, info = load_saved_mtp_head(source)
     else:
@@ -132,7 +116,6 @@ def get_mtp_head(
     device = parts["embed_tokens"].weight.device
     extra = {}
     if family != "qwen3_5":
-        # Head-serialized embedding / lm_head copies equal to the target's are not held twice.
         extra = dict(
             target_embed = parts["embed_tokens"].weight,
             target_lm_head = parts["lm_head"].weight,
@@ -158,18 +141,85 @@ def get_mtp_head(
     return head
 
 
-def _takes_push_to_hub(fn):
-    # Unsloth's loaders wrap save_pretrained as (self, *args, **kwargs); read the wrapped one.
+def _inner_save_fn(fn):
     if getattr(fn, "__name__", "") == "unsloth_model_save_pretrained":
         fn = getattr(getattr(fn, "__self__", None), "original_model_save_pretrained", fn)
+    return fn
+
+
+def _takes_push_to_hub(fn):
     try:
-        return "push_to_hub" in inspect.signature(fn).parameters
+        return "push_to_hub" in inspect.signature(_inner_save_fn(fn)).parameters
     except (TypeError, ValueError):
         return False
 
 
+def _selected_adapters(fn, save_directory, args, kwargs):
+    try:
+        bound = inspect.signature(_inner_save_fn(fn)).bind_partial(save_directory, *args, **kwargs)
+    except (TypeError, ValueError):
+        return kwargs.get("selected_adapters")
+    return bound.arguments.get("selected_adapters")
+
+
+def _active_adapters(model):
+    try:
+        names = model.active_adapters
+        names = names() if callable(names) else names
+    except Exception:
+        names = None
+    if not names:
+        names = getattr(model, "active_adapter", None)
+    if isinstance(names, str):
+        names = [names]
+    return set(names) if names else None
+
+
+def _is_transformers_native_peft(model):
+    if not getattr(model, "_hf_peft_config_loaded", False):
+        return False
+    try:
+        from peft import PeftModel
+    except Exception:
+        return True
+    return not isinstance(model, PeftModel)
+
+
+def _fresh_adapter_dirs(
+    model,
+    save_directory,
+    started,
+    selected = None,
+):
+    """(name, folder) adapters this save wrote. PEFT: `default` in "", others in `<name>/`;
+    transformers' `add_adapter`: only the active adapter, in ""."""
+    config = getattr(model, "peft_config", None)
+    if _is_transformers_native_peft(model):
+        active = _active_adapters(model) or {"default"}
+        adapter_config = os.path.join(save_directory, "adapter_config.json")
+        if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
+            return [(name, "") for name in sorted(active)]
+        return []
+    names = list(selected) if selected is not None else list(config or {})
+    if not names:
+        names = ["default"]
+    out = []
+    for name in names:
+        folder = "" if name == "default" else name
+        adapter_config = os.path.join(save_directory, folder, "adapter_config.json")
+        if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
+            out.append((name, folder))
+    return out
+
+
+def _drop_stale_head(folder):
+    from ..save import _is_main_rank
+    stale = os.path.join(folder, "mtp_head.safetensors")
+    if _is_main_rank() and os.path.isfile(stale):
+        os.remove(stale)
+
+
 def _wrap_save_pretrained(model):
-    """Plain `save_pretrained` keeps the trained head too: beside a LoRA adapter, else in the checkpoint."""
     original = model.save_pretrained
     if getattr(original, "_unsloth_saves_mtp_head", False):
         return
@@ -189,11 +239,9 @@ def _wrap_save_pretrained(model):
             and kwargs.get("safe_serialization", True) is False
             and not hasattr(model, "peft_config")
         ):
-            # The head is stitched into safetensors checkpoints only; refuse before writing.
             raise ValueError(
                 "Unsloth: a model with a trained MTP head saves as safetensors; drop `safe_serialization = False`."
             )
-        # PEFT's save_pretrained has no push_to_hub (its push_to_hub saves into a folder, then uploads it).
         push = bool(kwargs.get("push_to_hub")) and _takes_push_to_hub(original)
         if not internal:
             _refuse_mtp_variant(model, kwargs.get("variant"))
@@ -207,14 +255,29 @@ def _wrap_save_pretrained(model):
         result = original(save_directory, *args, **kwargs)
         if internal or not os.path.isdir(save_directory):
             return result
-        adapter_config = os.path.join(save_directory, "adapter_config.json")
-        # Written by this save, not left over from an adapter saved here before.
-        if os.path.isfile(adapter_config) and os.path.getmtime(adapter_config) >= started - 1:
-            files = (
-                ["mtp_head.safetensors"]
-                if _save_mtp_head_beside_adapter(model, save_directory)
-                else []
-            )
+        selected = _selected_adapters(original, save_directory, args, kwargs)
+        if selected is not None and not list(selected):
+            return result
+        adapter_dirs = _fresh_adapter_dirs(model, save_directory, started, selected)
+        if adapter_dirs:
+            files = []
+            active = _active_adapters(model) if getattr(model, "peft_config", None) else None
+            combined = active is not None and len(active) > 1
+            if combined:
+                print(
+                    f"Unsloth: adapters {sorted(active)} are active together, so the trained MTP head "
+                    "belongs to their combination and is not saved beside any single adapter."
+                )
+            for name, folder in adapter_dirs:
+                if combined or (active is not None and name not in active):
+                    _drop_stale_head(os.path.join(save_directory, folder))
+                    continue
+                if _save_mtp_head_beside_adapter(model, os.path.join(save_directory, folder)):
+                    files.append(
+                        "/".join(
+                            filter(None, (folder.replace(os.sep, "/"), "mtp_head.safetensors"))
+                        )
+                    )
         else:
             report = _stitch_mtp_head(model, save_directory)
             files = list(report["files_touched"]) if report else []
@@ -235,7 +298,6 @@ def _wrap_save_pretrained(model):
 
 
 def attach_saved_mtp_head(model, directory):
-    """Re-attach a head saved beside an adapter folder; None when the folder has none."""
     if not isinstance(directory, str) or not os.path.isfile(
         os.path.join(directory, "mtp_head.safetensors")
     ):

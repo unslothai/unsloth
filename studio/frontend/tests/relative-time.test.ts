@@ -6,9 +6,7 @@ import test from "node:test";
 
 import { formatRelativeTime } from "../src/i18n/relative-time.ts";
 
-// Listed by hand rather than imported from messages.ts, which reaches
-// locale-store.ts and its extensionless imports that node cannot resolve.
-// check-parity.ts enumerates the same set for the same reason.
+// Hand-listed like check-parity.ts: messages.ts has extensionless imports node cannot resolve.
 const LOCALE_LIST = [
   "en",
   "zh-CN",
@@ -25,9 +23,6 @@ const LOCALE_LIST = [
   "ar",
 ] as const;
 
-// Callers produce minutes up to 59, hours up to 23, months up to 12, and
-// unbounded day and year counts. The sweep below checks values 1 through 60
-// for every unit, covering the bounded ranges and representative larger counts.
 const AR_PAST_MARKER = /^قبل/;
 
 const UNITS: Intl.RelativeTimeFormatUnit[] = [
@@ -53,9 +48,7 @@ test("a past time never reads as a future time", () => {
 });
 
 test("Arabic past months keep the past marker", () => {
-  // CLDR's ar month-short past pattern for the "few" plural category (3-10)
-  // carries خلال ("in"); formatRelativeTime falls back to the long style so
-  // every magnitude keeps قبل ("ago").
+  // CLDR ar month-short past for "few" uses "in", so formatRelativeTime falls back to long style.
   for (const value of [1, 2, 3, 5, 10, 11, 12]) {
     assert.match(
       formatRelativeTime("ar", -value, "month"),
@@ -66,8 +59,7 @@ test("Arabic past months keep the past marker", () => {
 });
 
 test("non-finite values return empty text instead of throwing", () => {
-  // An unparseable timestamp reaches the callers as NaN. format() answers
-  // non-finite input with a RangeError, which would unmount the tree.
+  // format() throws RangeError on NaN, which would unmount the tree.
   for (const value of [
     Number.NaN,
     Number.POSITIVE_INFINITY,

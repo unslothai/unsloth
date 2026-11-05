@@ -101,7 +101,7 @@ test("past the limit the body is never buffered and the file is offered outside 
   await settle();
   assert.equal(cancelled(), true);
   assert.deepEqual(opened, []);
-  assert.deepEqual(toasts, ["message:scan.pdf is too large to preview in Studio"]);
+  assert.deepEqual(toasts, ["message:scan.pdf is too large to preview in Unsloth"]);
   // No Content-Length: the size is still checked once read.
   toasts.length = 0;
   serve(LIMIT + 1, "");

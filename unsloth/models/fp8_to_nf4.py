@@ -10,13 +10,8 @@
 # GNU Affero General Public License for more details.
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
-"""Load a block-FP8 checkpoint straight into bitsandbytes NF4 (``load_in_4bit = True``).
-
-The fp8 block is parked off the config so transformers runs a bnb 4bit load; each FP8 tensor is
-dequantized inside its weight converter right before bnb quantizes it, so only one converter's
-tensors are ever 16-bit and NF4 is bit-identical to loading the dequantized checkpoint. The
-checkpoint's ``modules_to_not_convert`` stay out of bitsandbytes.
-"""
+"""Block-FP8 checkpoint to bnb NF4 (load_in_4bit); each FP8 tensor dequantized just before
+quantizing (bit-identical); modules_to_not_convert stay out of bitsandbytes."""
 
 import contextvars
 import copy
@@ -48,8 +43,7 @@ _ENV_QUANTIZE_ALL = "UNSLOTH_FP8_TO_NF4_QUANTIZE_16BIT"
 
 # None outside a load; True / False once the outermost from_pretrained has looked at its call.
 _EXPLICIT_4BIT = contextvars.ContextVar("unsloth_explicit_load_in_4bit", default = None)
-# Configs armed inside the outermost from_pretrained; disarmed when it returns or raises, so an
-# exception before the load's own restore (prefetch, device-map planning) cannot leak a stripped config.
+# Disarmed on return or raise, so an early exception cannot leak a stripped config.
 _ARMED_CONFIGS = contextvars.ContextVar("unsloth_fp8_to_nf4_armed_configs", default = None)
 
 _FP8_DTYPES = tuple(
@@ -572,8 +566,7 @@ def _build_classes():
         ):
             self.generic = generic
             self.stack = stack
-            # (patterns in merge order, concat dim): replaces MergeModulelist + Concatenate by writing
-            # each expert straight into the final stack, the only 16-bit tensor ever held.
+            # (patterns in merge order, concat dim): replaces MergeModulelist + Concatenate by writing each expert into the final stack, the only 16-bit tensor held.
             self.fuse = fuse
 
         def _fused(
@@ -1009,9 +1002,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
         _unsloth_fp8_kept = 0
 
         def __init__(self, quantization_config, **kwargs):
-            # The device-map planner builds this from the rewritten config without `pre_quantized`
-            # (transformers' own load always passes it). An armed load quantizes at runtime, so size
-            # its expert merges in the load dtype, not as packed 4bit (a 4x smaller transient).
+            # The planner omits `pre_quantized`; an armed load quantizes at runtime, so size in load dtype.
             if "pre_quantized" not in kwargs and _ARMED_CONFIGS.get():
                 kwargs["pre_quantized"] = False
             super().__init__(quantization_config, **kwargs)
@@ -1036,9 +1027,10 @@ def install_fp8_to_nf4_quantizer() -> bool:
                     _keep_fp8_embeddings(model, plan["modules_to_convert"])
             return super()._process_model_before_weight_loading(model, **kwargs)
 
-        def update_weight_conversions(self, weight_conversions):
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            # transformers 5.21+ also passes the model.
             if self._unsloth_fp8_plan is None or _STATE is None:
-                return super().update_weight_conversions(weight_conversions)
+                return super().update_weight_conversions(weight_conversions, *args, **kwargs)
             model = self._unsloth_fp8_model
             self._unsloth_fp8_model = None
             # Here, not before loading: only now are the caller's key_mapping renamings known.
@@ -1091,7 +1083,7 @@ def install_fp8_to_nf4_quantizer() -> bool:
                 )
             )
             self._unsloth_fp8_rebuilt = rebuilt_from
-            return super().update_weight_conversions(updated)
+            return super().update_weight_conversions(updated, *args, **kwargs)
 
         def _process_model_after_weight_loading(self, model, **kwargs):
             global _STATE
