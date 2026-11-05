@@ -11347,8 +11347,7 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
 
 def test_mlx_precision_folder_pattern_matches_the_backend():
     source = (
-        Path(start.__file__).resolve().parents[2]
-        / "studio/backend/hub/utils/snapshot_filters.py"
+        Path(start.__file__).resolve().parents[2] / "studio/backend/hub/utils/snapshot_filters.py"
     ).read_text()
     namespace = {}
     exec(source[source.index("PRECISION_FOLDER_SOURCE =") :].split("\n)\n")[0] + "\n)", namespace)
