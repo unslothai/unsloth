@@ -258,9 +258,7 @@ def test_generic_ulysses_matches_one_process(kind, implementation, packed):
 
 
 def _fullgraph_packed_worker(rank, world, kind, implementation, out_dir):
-    """Decoder layers compiled with fullgraph = True: a packed row (with a padding tail to the cp multiple) must
-    trace through the Ulysses exchange and the whole-sequence mask without a graph break, and match one process
-    on the documents."""
+    """fullgraph-compiled layers: a packed row with a padding tail traces with no graph break and matches one process."""
     ad.HAS_FLASH_ATTENTION = False
     ad.HAS_XFORMERS = False
     model = _model(kind, implementation)
@@ -304,7 +302,7 @@ def test_compiled_packed_ulysses_has_no_graph_break(kind, implementation):
 
 
 def test_whole_sequence_mask_keeps_the_padding_tail_apart():
-    # cu_seqlens cover 15 of 16 tokens: the 16th (padding to the cp multiple) is a segment of its own.
+    # Token 16 (padding past cu_seqlens[-1]) is its own segment.
     mask = uh._whole_sequence_mask(
         16,
         torch.device("cpu"),

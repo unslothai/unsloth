@@ -344,8 +344,8 @@ def _refuse_non_causal(module, is_causal = None) -> None:
 
 def _whole_sequence_mask(total, device, dtype, window, cu_seqlens):
     """Additive [1, 1, T, T] mask over the gathered sequence: causal, the sliding window (key > query - window,
-    as transformers' masks), and packed documents closed off from one another (tokens past cu_seqlens[-1], the
-    padding to the cp multiple, form one more segment)."""
+    as transformers' masks), and packed documents closed off from one another (padding past
+    cu_seqlens[-1] is one more segment)."""
     idx = torch.arange(total, device = device)
     allowed = idx[None, :] <= idx[:, None]
     if window is not None:
@@ -432,8 +432,7 @@ def _ulysses_hf_attention(
     elif implementation == "sdpa" and cu_seqlens is None and window is None:
         mask = None  # sdpa's is_causal path
     else:
-        # The dense mask puts the padding tail past the last document in a segment of its own, with no
-        # data-dependent check (that check graph-broke every compiled packed attention call).
+        # No data-dependent padding check here: it graph-broke compiled packed attention.
         mask = _whole_sequence_mask(total, query.device, query.dtype, window, cu_seqlens)
     out, _ = attention_fn(shard, query, key, value, mask, **kwargs)
     # [B, T, H / N, D] -> [B, T / N, H, D]
