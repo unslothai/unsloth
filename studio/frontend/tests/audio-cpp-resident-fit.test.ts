@@ -210,6 +210,11 @@ test("the picker judges audio.cpp variants on the card its load lands on", () =>
     /audioCppCardGb\(gpu, audioDevice === "cpu"\)/,
   );
   assert.match(pickers, /const audioCardGb = useContext\(AudioCppCard\);/);
+  // A CPU RAM load (card 0) shows no GPU figure to run.
+  assert.match(
+    pickers,
+    /const residentGb = audioCardGb > 0 \? v\.estimated_resident_gb : null;/,
+  );
   assert.doesNotMatch(pickers, /audioCppRowFit\([^)]*memoryTotalGb\)/);
   assert.match(
     readSrc("features/audio/audio-page.tsx"),

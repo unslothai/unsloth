@@ -2020,6 +2020,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
   expander: DeviceRowExpanderProps;
 }) {
   const callbacks = useDeviceExpanderCallbacks(actions, optionKey);
+  const audioCardGb = useContext(AudioCppCard);
   const variant = sole.variant;
   const expectedBytes = ggufVariantExpectedBytes(variant);
   // Should never be partial, but if it is, state what is on disk rather than load a torn file.
@@ -2053,7 +2054,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
             meta={[
               "GGUF",
               formatBytes(variant.size_bytes),
-              variant.estimated_resident_gb
+              variant.estimated_resident_gb && audioCardGb > 0
                 ? `${residentGbLabel(variant.estimated_resident_gb)} to run`
                 : null,
             ]
@@ -3213,6 +3214,8 @@ function GgufVariantExpander({
           effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getVariantFit(v);
         const oom = fit === "oom";
+        // A CPU RAM load never needs it on a GPU.
+        const residentGb = audioCardGb > 0 ? v.estimated_resident_gb : null;
         const expectedBytes = ggufVariantExpectedBytes(v);
         const variantContext = ggufVariantContextLength(v, nativeContext);
         // This row's own dependency group, never the listing's.
@@ -3284,16 +3287,16 @@ function GgufVariantExpander({
                   diffusionLoad ? mediaGgufPickerStatus(fit) : fit
                 }
               />
-              {v.estimated_resident_gb ? (
+              {residentGb ? (
                 <ResidentText
-                  value={residentGbLabel(v.estimated_resident_gb)}
+                  value={residentGbLabel(residentGb)}
                   className={RESIDENT_COLUMN}
                 />
               ) : null}
               <span
                 className={cn(
                   "font-mono text-ui-10 text-muted-foreground tabular-nums",
-                  v.estimated_resident_gb ? RESIDENT_SIZE_COLUMN : null,
+                  residentGb ? RESIDENT_SIZE_COLUMN : null,
                 )}
               >
                 {companionBytes === null ? (
@@ -4972,7 +4975,7 @@ export function HubModelPicker({
             ggufParams ? formatCompact(ggufParams) : null,
             "GGUF",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
-            r.estimatedResidentGb
+            r.estimatedResidentGb && audioCardGb > 0
               ? `${residentGbLabel(r.estimatedResidentGb)} to run`
               : null,
           ]
