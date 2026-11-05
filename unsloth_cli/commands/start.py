@@ -3033,7 +3033,11 @@ def _attach_gguf_check(
             continue
         # Server answer from the load resolver settles the round, even empty: a root-blind lister can miss a file the load still finds.
         # MLX precision folders download on load, so the downloaded-only allow-list does not apply.
-        if isinstance(variants, list) and isinstance(info, dict) and info.get("variant_format") == "mlx":
+        if (
+            isinstance(variants, list)
+            and isinstance(info, dict)
+            and info.get("variant_format") == "mlx"
+        ):
             if variant and not _answer_offers_variant(variants, variant, strict = True):
                 _fail_gguf_variant_missing(candidate, variant, variants)
             _refuse_non_gguf(agent, candidate, base, key, variant)
