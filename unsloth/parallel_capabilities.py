@@ -946,6 +946,16 @@ def _moe_cells():
     return tuple(cells)
 
 
+class _AboveOne:
+    """Every axis size above 1: parallel_env accepts any positive size, so a gate on (2, 4, 8) misses 3 or 16."""
+
+    def __contains__(self, size):
+        return isinstance(size, int) and size > 1
+
+    def __iter__(self):
+        return iter(("2+",))
+
+
 # The refusal names the knob to turn off: dropping an axis is not the fix for a swapped model.
 _NO_BLOCK_SWAP = (
     "; load with offload_layers = 0 (and get_peft_model(offload_layers = 0)) to run this layout"
@@ -956,7 +966,7 @@ CELLS = (
     + (
         Cell(
             "block swap x tp",
-            {"block_swap": (True,), "tp": (2, 4, 8)},
+            {"block_swap": (True,), "tp": _AboveOne()},
             None,
             None,
             None,
@@ -965,7 +975,7 @@ CELLS = (
         ),
         Cell(
             "block swap x pp",
-            {"block_swap": (True,), "pp": (2, 4, 8)},
+            {"block_swap": (True,), "pp": _AboveOne()},
             None,
             None,
             None,

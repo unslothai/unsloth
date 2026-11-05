@@ -289,9 +289,10 @@ def test_block_swap_without_fsdp2_passes_the_rule():
     caps.check(query)
 
 
+@pytest.mark.parametrize("size", [2, 3, 16])
 @pytest.mark.parametrize("axis", ["tp", "pp"])
-def test_block_swap_under_tp_or_pp_is_unverified(clean_env, axis):
-    query = caps.Query(trainer = "sft", block_swap = True, **{axis: 2})
+def test_block_swap_under_tp_or_pp_is_unverified(clean_env, axis, size):
+    query = caps.Query(trainer = "sft", block_swap = True, **{axis: size})
     status, detail = caps.cell_status(query)
     assert status == "unverified" and f"block swap x {axis}" in detail
     caps.check(query)  # a single axis: runs outside strict mode
