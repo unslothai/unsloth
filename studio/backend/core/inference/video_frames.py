@@ -16,8 +16,10 @@ _FINITE_SLICE_ELEMS = 16 << 20
 NONFINITE_CHECK_ENV = "UNSLOTH_VIDEO_NONFINITE_CHECK"
 
 
-def device_uint8(frames: Any) -> Optional[Any]:
-    """(F, C, H, W) float frames in [0, 1] -> CPU uint8 (F, H, W, C); None when the fast path does not apply."""
+def device_uint8(frames: Any, prepare: Any = None) -> Optional[Any]:
+    """(F, C, H, W) float frames in [0, 1] -> CPU uint8 (F, H, W, C); None when the fast path does not apply.
+    ``prepare(piece, start)`` maps each raw frame slice first (the processor's denormalize), so its float temporaries
+    stay slice-sized instead of clip-sized."""
     import torch
 
     device = frames.device
@@ -40,7 +42,10 @@ def device_uint8(frames: Any) -> Optional[Any]:
     in_range = None
     try:
         for start in range(0, count, step):
-            piece = frames[start : start + step].to(torch.float32)
+            piece = frames[start : start + step]
+            if prepare is not None:
+                piece = prepare(piece, start)
+            piece = piece.to(torch.float32)
             # Range-checked per slice: a whole-clip reduction over the permuted view copies the clip first.
             lo, hi = torch.aminmax(piece)
             fits = (lo >= 0) & (hi <= 1)
@@ -175,6 +180,34 @@ def finite_video_decode(pipe: Any, attrs: "tuple[str, ...]" = ("vae",)) -> Itera
                 pass
 
 
+_FRAME_WISE_METHODS = ("postprocess", "_denormalize_conditionally", "denormalize")
+
+
+def _frame_wise_prepare(proc: Any, postprocess: Any, frames: Any, kwargs: dict) -> Any:
+    """``prepare`` for ``device_uint8`` running ``postprocess(slice, "pt")`` per frame slice, or None (whole clip).
+    Only for diffusers' own ``VaeImageProcessor`` postprocess / denormalize, which act on each frame alone; a
+    subclass or instance override may mix frames, so it keeps the whole-clip call."""
+    try:
+        from diffusers.image_processor import VaeImageProcessor
+    except Exception:  # noqa: BLE001
+        return None
+    own = vars(proc) if hasattr(proc, "__dict__") else {}
+    for name in _FRAME_WISE_METHODS:
+        if name in own or getattr(type(proc), name, None) is not getattr(VaeImageProcessor, name, None):
+            return None
+    if set(kwargs) - {"do_denormalize"}:
+        return None
+    flags = kwargs.get("do_denormalize")
+    if flags is None:
+        return lambda piece, _start: postprocess(piece, "pt")
+    if not isinstance(flags, (list, tuple)) or len(flags) < frames.shape[0]:
+        return None  # the whole-clip call keeps diffusers' own handling (or error)
+    flags = list(flags)
+    return lambda piece, start: postprocess(
+        piece, "pt", do_denormalize = flags[start : start + piece.shape[0]]
+    )
+
+
 @contextlib.contextmanager
 def uint8_video_frames(pipe: Any) -> Iterator[None]:
     """While active, ``pipe.video_processor``'s np / pil ``postprocess_video`` returns CPU uint8 (B, F, H, W, C), and
@@ -206,8 +239,14 @@ def uint8_video_frames(pipe: Any) -> Iterator[None]:
             return original(video, output_type, **kwargs)
         clips = []
         for batch in range(video.shape[0]):
-            # "pt" stops right after the denormalize the np / pil paths apply, on the same view they use.
-            clip = device_uint8(postprocess(video[batch].permute(1, 0, 2, 3), "pt", **kwargs))
+            # "pt" stops right after the denormalize the np / pil paths apply, on the same view they use; per frame
+            # slice when the processor is diffusers' frame-wise one, so no clip-sized float temporary is made.
+            frames = video[batch].permute(1, 0, 2, 3)
+            prepare = _frame_wise_prepare(proc, postprocess, frames, kwargs)
+            if prepare is not None:
+                clip = device_uint8(frames, prepare)
+            else:
+                clip = device_uint8(postprocess(frames, "pt", **kwargs))
             if clip is None:
                 return original(video, output_type, **kwargs)
             clips.append(clip)
