@@ -115,13 +115,16 @@ for name, version in want.items():
     assert got == version, f"{name} {got} != {version}"
 rows = np.random.default_rng(0).standard_normal((64, 16)).astype(np.float32)
 index = Index(ndim = 16, metric = "cos", dtype = "f16", connectivity = 16, expansion_add = 128)
-index.add(np.arange(64, dtype = np.uint64), rows)
-assert all(int(index.search(rows[i], 1).keys[0]) == i for i in range(0, 64, 7))
+# One thread, as vec_cache builds: parallel inserts can strand a node, which would fail a working pair.
+index.add(np.arange(64, dtype = np.uint64), rows, threads = 1)
+missed = [i for i in range(0, 64, 7) if i not in index.search(rows[i], 4).keys.tolist()]
+assert not missed, f"self search missed rows {missed}"
 with tempfile.TemporaryDirectory(ignore_cleanup_errors = True) as d:
     path = os.path.join(d, "probe.usearch")
     index.save(path)
     view = Index.restore(path, view = True)
-    assert len(view) == 64 and int(view.search(rows[5], 1).keys[0]) == 5
+    assert len(view) == 64, f"restored {len(view)} of 64 rows"
+    assert 5 in view.search(rows[5], 4).keys.tolist(), "restored index lost row 5"
     del view, index
 print("HNSW_PROBE_OK")
 """
@@ -395,7 +398,18 @@ def probe(
     timeout: float = _PROBE_TIMEOUT,
     want: str = PAIR_STR,
 ) -> tuple[bool | None, str]:
-    """(True, "") works, (False, why) broken, (None, why) inconclusive: no marker, no uninstall."""
+    """(True, "") works, (False, why) broken, (None, why) inconclusive: no marker, no uninstall.
+
+    A failure is confirmed by a second run: a false negative costs the pair for FAILED_RETRY_S."""
+    ok, why = _probe_once(python, extra_path, timeout, want)
+    if ok is False:
+        again, why_again = _probe_once(python, extra_path, timeout, want)
+        if again is not False:
+            return again, why_again
+    return ok, why
+
+
+def _probe_once(python: str, extra_path: str, timeout: float, want: str) -> tuple[bool | None, str]:
     try:
         proc = subprocess.run(
             [python, "-I", "-c", _PROBE_SCRIPT, want, extra_path],

@@ -407,3 +407,11 @@ def test_the_pinned_pair_installs_and_runs_on_this_interpreter(tmp_path):
     ok, reason = hp.probe(sys.executable, extra_path = str(target))
     assert ok, reason
     shutil.rmtree(target, ignore_errors = True)
+
+
+def test_a_probe_failure_must_repeat_before_it_counts(monkeypatch):
+    runs = iter([(False, "AssertionError: self search missed rows [7]"), (True, "")])
+    monkeypatch.setattr(hp, "_probe_once", lambda *a: next(runs))
+    assert hp.probe("py") == (True, "")
+    runs = iter([(False, "first"), (False, "second")])
+    assert hp.probe("py") == (False, "first")
