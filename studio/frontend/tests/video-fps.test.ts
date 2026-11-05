@@ -10,6 +10,7 @@ import test from "node:test";
 import type { VideoGenerationDefaults } from "../src/features/video/api.ts";
 import {
   resolveVideoFps,
+  restoredClipDuration,
   videoDurationOptions,
   videoFpsOptions,
 } from "../src/features/video/video-fps.ts";
@@ -127,4 +128,15 @@ test("the 256p presets and NVIDIA's 448x256 Jetson size pass the size check", ()
     assert.ok(isValidVideoSize(w, h, limits), `${w}x${h}`);
   }
   assert.ok(!isValidVideoSize(176, 176, limits));
+});
+
+test("a restored clip takes its frame count only when the loaded family's window offers it", () => {
+  const edgeAt24 = videoDurationOptions([3, 5, 6], 24, 4, 1, 53, 149);
+  // An Edge clip restores as it was.
+  assert.deepEqual(restoredClipDuration(edgeAt24, 121, 24), { frames: 121, seconds: 121 / 24 });
+  // A 189-frame Nano clip at 24 fps maps to Edge's nearest option, never 189.
+  assert.deepEqual(restoredClipDuration(edgeAt24, 189, 24), { frames: 145, seconds: 145 / 24 });
+  const edgeAt12 = videoDurationOptions([3, 5, 6], 12, 4, 1, 53, 149);
+  assert.deepEqual(restoredClipDuration(edgeAt12, 25, 12), { frames: 53, seconds: 53 / 12 });
+  assert.equal(restoredClipDuration([], 121, 24), null);
 });

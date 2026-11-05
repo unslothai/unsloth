@@ -143,7 +143,12 @@ import {
   videoDimOptions,
   videoSizeLimits,
 } from "./video-size";
-import { resolveVideoFps, videoDurationOptions, videoFpsOptions } from "./video-fps";
+import {
+  resolveVideoFps,
+  restoredClipDuration,
+  videoDurationOptions,
+  videoFpsOptions,
+} from "./video-fps";
 import { usePersistedChoice } from "@/hooks/use-persisted-choice";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
@@ -2391,9 +2396,17 @@ function VideoGenerator({
       setMatchSource(false);
       // A family with a frame-rate picker takes the clip's rate back; its duration options follow.
       if (fpsOptions?.includes(video.fps)) {
+        // The options at the clip's rate: its count only when this family's window takes it.
+        const option = restoredClipDuration(
+          videoDurationOptions(durationTargets, video.fps, frameStep, frameOffset, minFrames, maxFrames),
+          video.num_frames,
+          video.fps,
+        );
         setPickedFps(video.fps);
-        setDurationIntentSeconds(video.num_frames / video.fps);
-        setNumFrames(video.num_frames);
+        if (option) {
+          setDurationIntentSeconds(option.seconds);
+          setNumFrames(option.frames);
+        }
       } else if (durationOptions.some((o) => o.frames === video.num_frames)) {
         // Restore the frame count when it lies on the current lattice.
         setDurationIntentSeconds(video.num_frames / fps);
@@ -2401,7 +2414,7 @@ function VideoGenerator({
       }
       toast.success("Settings restored to inputs");
     },
-    [sizeLimits, durationOptions, fps, fpsOptions],
+    [sizeLimits, durationOptions, fps, fpsOptions, durationTargets, frameStep, frameOffset, minFrames, maxFrames],
   );
 
   // No periodic poll corrects a stale read, so only the newest ticket may write.
