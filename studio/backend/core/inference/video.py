@@ -667,8 +667,10 @@ def _ltx23_prequant_pick(
 
 def _decodes_untiled_when_fits(family: str, offload_policy: str, device: str, speed: str) -> bool:
     """Untiled when it fits (free memory read at decode time); not under sequential offload, nor on SPEED_OFF
-    (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px)."""
-    if device != "cuda" or offload_policy not in (
+    (bit-identical) except Cosmos3, whose reference pipeline decodes untiled (stock tiles seam at 480 / 832 px).
+    On a CPU host "fits" is usable host RAM: the stock tiles recompute their overlaps (Wan2.2 at 896x512: 15 tiles
+    covering 1.6x the frame's pixels), and the decode is the slowest stage there."""
+    if device not in ("cuda", "cpu") or offload_policy not in (
         OFFLOAD_NONE,
         OFFLOAD_MODEL,
         OFFLOAD_GROUP,
