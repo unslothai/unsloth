@@ -136,6 +136,7 @@ function NovelFigure({
           hasImage={character.hasAvatar}
           rev={character.avatarRev}
           variant="card"
+          cutout={true}
           className="novel-figure-picture size-full rounded-t-[40px]"
         />
       </span>

@@ -3,7 +3,7 @@
 
 import { cn } from "@/lib/utils";
 import type { CSSProperties, MouseEvent } from "react";
-import { initials, nameHue, useImageUrl } from "../images";
+import { initials, nameHue, useImageUrl, useIsCutout } from "../images";
 
 type PortraitProps = {
   kind?: "character" | "persona";
@@ -18,6 +18,8 @@ type PortraitProps = {
   label?: string;
   imageUrl?: string | null;
   dimmed?: boolean;
+  /** A picture on a transparent background shows whole, standing on the frame's bottom, with no tile behind it. */
+  cutout?: boolean;
 };
 
 /** A character's or persona's picture, or a tinted monogram when there is none. */
@@ -33,9 +35,11 @@ export function Portrait({
   label,
   imageUrl,
   dimmed,
+  cutout: allowCutout = false,
 }: PortraitProps) {
   const loaded = useImageUrl(kind, id, rev, hasImage && imageUrl === undefined);
   const url = imageUrl === undefined ? loaded : imageUrl;
+  const cutout = useIsCutout(url, allowCutout);
   const hue = nameHue(name);
   const style: CSSProperties = {
     background: `linear-gradient(150deg, hsl(${hue} 42% 62%), hsl(${(hue + 28) % 360} 46% 40%))`,
@@ -46,8 +50,9 @@ export function Portrait({
       alt=""
       draggable={false}
       className={cn(
-        "size-full object-cover",
-        variant === "avatar" ? "object-[50%_18%]" : "object-[50%_22%]",
+        "size-full",
+        cutout ? "object-contain object-bottom" : "object-cover",
+        !cutout && (variant === "avatar" ? "object-[50%_18%]" : "object-[50%_22%]"),
       )}
     />
   ) : (
@@ -63,7 +68,8 @@ export function Portrait({
     </span>
   );
   const classes = cn(
-    "relative block shrink-0 overflow-hidden bg-muted transition-[filter,opacity] [container-type:inline-size]",
+    "relative block shrink-0 overflow-hidden transition-[filter,opacity] [container-type:inline-size]",
+    !cutout && "bg-muted",
     dimmed && "opacity-55 grayscale-[35%]",
     className,
   );
@@ -78,13 +84,20 @@ export function Portrait({
           "cursor-zoom-in focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
         )}
         style={url ? undefined : style}
+        data-cutout={cutout || undefined}
       >
         {content}
       </button>
     );
   }
   return (
-    <span className={classes} style={url ? undefined : style} aria-label={label} role={label ? "img" : undefined}>
+    <span
+      className={classes}
+      style={url ? undefined : style}
+      aria-label={label}
+      role={label ? "img" : undefined}
+      data-cutout={cutout || undefined}
+    >
       {content}
     </span>
   );

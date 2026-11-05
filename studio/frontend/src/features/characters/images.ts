@@ -64,11 +64,80 @@ export function useImageUrl(
   return url;
 }
 
+const cutouts = new Map<string, Promise<boolean>>();
+const cutoutAnswers = new Map<string, boolean>();
+
+/**
+ * Whether a picture is a cut-out: a figure on a transparent background, judged from a small copy's top
+ * rows and side columns (the bottom edge often holds the figure). Opaque pictures answer false.
+ */
+export function isCutout(url: string): Promise<boolean> {
+  let known = cutouts.get(url);
+  if (!known) {
+    known = new Promise<boolean>((resolve) => {
+      const image = new Image();
+      image.onload = () => {
+        try {
+          const width = 32;
+          const height = 48;
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const context = canvas.getContext("2d", { willReadFrequently: true });
+          if (!context) return resolve(false);
+          context.drawImage(image, 0, 0, width, height);
+          const pixels = context.getImageData(0, 0, width, height).data;
+          let edge = 0;
+          let clear = 0;
+          for (let y = 0; y < height; y++) {
+            for (let x = 0; x < width; x++) {
+              if (y > 1 && x > 1 && x < width - 2) continue;
+              edge++;
+              if (pixels[(y * width + x) * 4 + 3] < 32) clear++;
+            }
+          }
+          resolve(clear / edge > 0.4);
+        } catch {
+          resolve(false);
+        }
+      };
+      image.onerror = () => resolve(false);
+      image.src = url;
+    }).then((answer) => {
+      cutoutAnswers.set(url, answer);
+      return answer;
+    });
+    cutouts.set(url, known);
+  }
+  return known;
+}
+
+/** isCutout for a picture on screen; false until it is known, and always false when not enabled. */
+export function useIsCutout(url: string | null, enabled: boolean): boolean {
+  const known = url && enabled ? cutoutAnswers.get(url) : false;
+  const [cutout, setCutout] = useState(known ?? false);
+  useEffect(() => {
+    const answer = url && enabled ? cutoutAnswers.get(url) : false;
+    setCutout(answer ?? false);
+    if (!url || answer !== undefined) return;
+    let live = true;
+    void isCutout(url).then((value) => {
+      if (live) setCutout(value);
+    });
+    return () => {
+      live = false;
+    };
+  }, [url, enabled]);
+  return cutout;
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     for (const url of resolved.values()) if (url) URL.revokeObjectURL(url);
     urls.clear();
     resolved.clear();
+    cutouts.clear();
+    cutoutAnswers.clear();
   });
 }
 

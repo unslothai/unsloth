@@ -6720,6 +6720,35 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 .novel-dialogue .aui-thread-viewport-footer {
   margin-top: calc(-28px * var(--ui-space-scale, 1));
 }
+/* A cut-out picture (transparent around the figure) stands in the scene: no rounded card, no side
+   fades, so the figure's own outline casts the shadow; its lower half still fades behind the panel. */
+.novel-figure-picture[data-cutout] {
+  border-radius: 0;
+  -webkit-mask-image: linear-gradient(to bottom, #000 62%, transparent 97%);
+  mask-image: linear-gradient(to bottom, #000 62%, transparent 97%);
+}
+/* In stage view it stands beside the conversation instead of filling a tile. */
+.stage-figure:has([data-cutout]) {
+  overflow: visible;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+}
+.stage-figure:has([data-cutout]) img {
+  filter: drop-shadow(0 22px 28px rgb(0 0 0 / .3));
+}
+.stage-figure:has([data-cutout]) figcaption {
+  background: none;
+  color: var(--foreground);
+}
+/* The name can fall over the figure, so it carries a halo in the page color instead of the tile's scrim. */
+.stage-figure:has([data-cutout]) figcaption * {
+  color: inherit;
+  text-shadow: 0 0 3px var(--background), 0 0 8px var(--background), 0 0 14px var(--background);
+}
+.stage-figure:has([data-cutout]) figcaption .animate-bounce {
+  background-color: var(--muted-foreground);
+}
 .novel-figure:focus-visible .novel-figure-picture {
   outline: 2px solid var(--ring);
   outline-offset: 3px;

@@ -65,7 +65,7 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
     >
       <figure
         key={focus.id}
-        className="relative min-h-0 overflow-hidden rounded-[26px] bg-muted shadow-[0_24px_60px_-30px_rgb(0_0_0/0.6)] animate-in fade-in-0 zoom-in-[0.985] duration-500 max-md:aspect-[2/3] max-md:h-full md:flex-1"
+        className="stage-figure relative min-h-0 overflow-hidden rounded-[26px] bg-muted shadow-[0_24px_60px_-30px_rgb(0_0_0/0.6)] animate-in fade-in-0 zoom-in-[0.985] duration-500 max-md:aspect-[2/3] max-md:h-full md:flex-1"
       >
         <button
           type="button"
@@ -80,6 +80,7 @@ function StagePanel({ threadId, cast }: { threadId: string | null; cast: Charact
             hasImage={focus.hasAvatar}
             rev={focus.avatarRev}
             variant="card"
+            cutout={true}
             className="size-full"
           />
         </button>
