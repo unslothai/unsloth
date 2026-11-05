@@ -614,6 +614,16 @@ def main() -> int:
     except BaseException as exc:  # noqa: BLE001
         if isinstance(exc, KeyboardInterrupt):
             raise
+        if args.require_auth and isinstance(exc, ImportError):
+            # The client never loaded, so the token was never tried: point at the install.
+            _log(f"kaggle client import failed ({type(exc).__name__}: {exc})")
+            print(
+                "::error title=Kaggle client import failed::the collector could not "
+                f"import the Kaggle client ({type(exc).__name__}: {exc}). The token was "
+                "never tried; fix the client install step. Nothing was collected or "
+                "reaped; dispatched kernels keep billing and their commits stay pending."
+            )
+            return finish(1)
         if args.require_auth:
             _log(f"kaggle auth failed ({type(exc).__name__}) and this pass requires it")
             print(

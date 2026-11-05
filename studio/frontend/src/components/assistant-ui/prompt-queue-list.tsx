@@ -6,8 +6,8 @@ import {
   CornerDownRightIcon,
   ListEndIcon,
 } from "lucide-react";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   DragDropVerticalIcon,
   Edit03Icon,
   MoreHorizontalIcon,
@@ -390,7 +390,7 @@ export function PromptQueueList({
                           setAnnouncement(t("promptQueue.announceRemoved"));
                       }}
                     >
-                      <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.8} />
+                      <HugeiconsIcon icon={TrashIcon} strokeWidth={1.8} />
                     </TooltipIconButton>
                     <NonModalDropdownMenu
                       trigger={(triggerRef) => (

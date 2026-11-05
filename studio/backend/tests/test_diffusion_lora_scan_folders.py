@@ -17,13 +17,17 @@ from core.inference import diffusion_lora as dl
 import storage.studio_db as studio_db
 
 _MARK = {"kind": "diffusion-lora"}
+_LORA_KEY = "unet.down.0.lora_A.weight"
+_MODEL_KEY = "model.layers.0.self_attn.q_proj.weight"
 
 
-def _safetensors(path, sidecar = None):
+def _safetensors(
+    path,
+    sidecar = None,
+    key = _LORA_KEY,
+):
     path.parent.mkdir(parents = True, exist_ok = True)
-    header = json.dumps(
-        {"unet.down.0.lora_A.weight": {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}
-    ).encode()
+    header = json.dumps({key: {"dtype": "F32", "shape": [1], "data_offsets": [0, 4]}}).encode()
     path.write_bytes(struct.pack("<Q", len(header)) + header + b"\0\0\0\0")
     if sidecar is not None:
         path.with_suffix(".json").write_text(json.dumps(sidecar))
@@ -80,10 +84,97 @@ def test_an_export_in_a_custom_folder_is_listed(catalog, tmp_path):
 
 def test_unmarked_weights_in_a_custom_folder_are_ignored(catalog, tmp_path):
     folder = tmp_path / "my-models"
-    _safetensors(folder / "model.safetensors")
-    _safetensors(folder / "notes.safetensors", sidecar = {"family": "sdxl"})
+    _safetensors(folder / "model.safetensors", key = _MODEL_KEY)
+    _safetensors(folder / "notes.safetensors", sidecar = {"family": "sdxl"}, key = _MODEL_KEY)
     register(str(folder))
     assert _local() == {}
+
+
+def test_a_third_party_lora_without_a_sidecar_is_listed(catalog, tmp_path):
+    folder = tmp_path / "my-models"
+    lora = _safetensors(folder / "pixel-art" / "style.safetensors", key = "lora_unet_down.alpha")
+    register(folder)
+    entry = _by_path(lora)
+    assert entry.display_name == "style" and entry.families == () and not entry.fine_tuned
+    assert dl.resolve_one(entry.id, 1.0).path == str(lora)
+
+
+@pytest.mark.parametrize(
+    "drop",
+    [
+        "style.safetensors",
+        "hub/style.safetensors",
+        "hub/loras/style.safetensors",
+        "loras/style.safetensors",
+    ],
+)
+def test_a_lora_dropped_in_the_models_folder_is_listed(catalog, tmp_path, monkeypatch, drop):
+    import utils.hf_cache_settings as settings
+
+    home = tmp_path / "models"
+    paths = type("Paths", (), {"cache_home": home, "hub_cache": home / "hub"})()
+    monkeypatch.setattr(settings, "get_hf_cache_paths", lambda: paths)
+    lora = _safetensors(home / drop)
+    _safetensors(home / "hub" / "models--a--b" / "snapshots" / "c" / "deep.safetensors")
+    assert [e.local_path for e in _local().values()] == [str(lora)]
+
+
+@pytest.mark.parametrize("registered", ["ComfyUI", "ComfyUI/models"])
+def test_loras_under_a_comfyui_folder_are_listed(catalog, tmp_path, registered):
+    models = tmp_path / "ComfyUI" / "models"
+    (models / "checkpoints").mkdir(parents = True)
+    lora = _safetensors(models / "loras" / "flux" / "style.safetensors")
+    register(tmp_path / registered)
+    assert [e.local_path for e in _local().values()] == [str(lora)]
+
+
+def test_loras_listed_in_extra_model_paths_yaml_are_listed(catalog, tmp_path, monkeypatch):
+    from hub.storage import scan_folders
+
+    monkeypatch.setattr(scan_folders, "_denied_path_prefixes", lambda: [])
+    root = tmp_path / "ComfyUI"
+    (root / "models" / "checkpoints").mkdir(parents = True)
+    lora = _safetensors(tmp_path / "shared" / "Lora" / "style.safetensors")
+    (root / "extra_model_paths.yaml").write_text(
+        f"a111:\n  base_path: {tmp_path / 'shared'}\n  loras: Lora\n"
+    )
+    register(root)
+    assert [e.local_path for e in _local().values()] == [str(lora)]
+
+
+def test_a_chat_adapter_in_a_custom_folder_stays_out_of_the_picker(catalog, tmp_path):
+    from hub.services.models.local_inventory import _scan_models_dir
+
+    folder = tmp_path / "my-models"
+    adapter = folder / "chat-lora"
+    _safetensors(adapter / "adapter_model.safetensors")
+    (adapter / "adapter_config.json").write_text(json.dumps({"peft_type": "LORA"}))
+    register(folder)
+    assert _local() == {}
+    assert [row.display_name for row in _scan_models_dir(folder)] == ["chat-lora"]
+
+
+def test_header_of_an_unchanged_lora_is_read_once(catalog, tmp_path, monkeypatch):
+    from core.inference import diffusion_content
+
+    folder = tmp_path / "my-models"
+    lora = _safetensors(folder / "style.safetensors")
+    register(folder)
+    reads = []
+    real = diffusion_content._read_safetensors_header
+    monkeypatch.setattr(
+        diffusion_content, "_read_safetensors_header", lambda p: reads.append(p) or real(p)
+    )
+    assert len(_local()) == len(_local()) == 1
+    assert reads == [str(lora)]
+
+
+def test_an_export_keeps_a_foreign_json_beside_an_identical_lora(catalog, tmp_path):
+    _safetensors(catalog / "style.safetensors")
+    dest = tmp_path / "out"
+    _safetensors(dest / "style.safetensors", sidecar = {"note": "mine"})
+    assert dl.export_local_lora("style", dest).name == "style-2.safetensors"
+    assert json.loads((dest / "style.json").read_text()) == {"note": "mine"}
 
 
 def test_custom_folder_ids_stay_stable_when_folders_change(catalog, tmp_path):
@@ -121,7 +212,10 @@ def test_marked_loras_are_not_listed_as_models(tmp_path, scanner):
     assert _scan_models_dir(folder) == []
     assert _scan_models_dir(tmp_path) == []
 
-    _safetensors(tmp_path / "checkpoint" / "model.safetensors")
+    _safetensors(tmp_path / "plain" / "style.safetensors")
+    assert _scan_models_dir(tmp_path) == []
+
+    _safetensors(tmp_path / "checkpoint" / "model.safetensors", key = _MODEL_KEY)
     assert [row.display_name for row in _scan_models_dir(tmp_path)] == ["checkpoint"]
 
 

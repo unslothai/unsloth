@@ -40,6 +40,7 @@ TE_KIND_CLASSES: dict[str, frozenset] = {
     "qwen3": frozenset({"Qwen3Model", "Qwen3ForCausalLM"}),
     "qwen2_5_vl": frozenset({"Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLModel"}),
     "qwen3_vl": frozenset({"Qwen3VLForConditionalGeneration", "Qwen3VLModel"}),
+    "qwen3_5": frozenset({"Qwen3_5Model", "Qwen3_5ForConditionalGeneration", "Qwen3_5ForCausalLM"}),
     "mistral3": frozenset({"Mistral3ForConditionalGeneration", "Mistral3Model"}),
     "llama": frozenset({"LlamaForCausalLM", "LlamaModel"}),
     "gemma2": frozenset({"Gemma2Model", "Gemma2ForCausalLM"}),
@@ -246,6 +247,9 @@ def classify_text_encoder(
     lm_prefix = "model.language_model." if has("model.language_model.layers.") else "model."
     if not has(lm_prefix + "layers."):
         return None
+    if has(lm_prefix + "layers.0.linear_attn."):
+        # Qwen3.5's layer 0 is gated-delta (no q_norm there), so the checks below would read it as Qwen2.5-VL.
+        return "qwen3_5"
     q_norm = has(lm_prefix + "layers.0.self_attn.q_norm.")
     if has(lm_prefix + "layers.0.pre_feedforward_layernorm."):
         return (
@@ -1196,6 +1200,7 @@ def load_override_modules(
     missing = [c for c in overrides.files if c not in overrides.modules]
     if not missing:
         return dict(overrides.modules)
+    from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
     from .diffusion_text_encoder_trim import family_trims_lm_head
 
     for component in missing:
@@ -1209,8 +1214,10 @@ def load_override_modules(
             cache_dir = cache_dir,
         )
         if component == COMPONENT_VAE:
+            # MOSS-Image decodes in fp32: a bf16 build first would round its weights.
+            vae_dtype = None if family == MOSS_IMAGE_FAMILY_NAME else dtype
             overrides.modules[component] = build_vae(
-                path, vae_cls = cls, config = config, dtype = dtype, logger = logger
+                path, vae_cls = cls, config = config, dtype = vae_dtype, logger = logger
             )
             continue
         trim = component == "text_encoder" and family_trims_lm_head(family)

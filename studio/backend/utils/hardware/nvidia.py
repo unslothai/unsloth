@@ -571,6 +571,12 @@ def _linux_nvidia_procfs_gpu_count() -> int:
     return len(entries)
 
 
+def has_nvidia_driver() -> bool:
+    return (
+        shutil.which(_nvidia_smi_executable()) is not None or _linux_nvidia_procfs_gpu_count() > 0
+    )
+
+
 # Native tensor-core support: FP8 from Ada / Hopper (sm_89), NVFP4 from Blackwell (sm_100, sm_120).
 _CHECKPOINT_QUANT_MIN_CAPABILITY = (("fp8", (8, 9)), ("nvfp4", (10, 0)))
 

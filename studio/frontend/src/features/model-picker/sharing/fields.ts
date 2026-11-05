@@ -48,6 +48,7 @@ export type SharedConfigKey = Exclude<
   | "mlxKvQuant"
   | "mlxInt8Prefill"
   | "mlxAnePrefill"
+  | "mlxFastVerify"
   | "mlxPleOffload"
   | "mlxExpertOffload"
   | "engine"

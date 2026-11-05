@@ -13,8 +13,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { audioCppSizeLabel } from "@/features/audio/audio-cpp-catalog";
-import { startSttDownload } from "@/features/chat";
-import { hfApiToken, listGgufVariants, useHfTokenStore } from "@/features/hub";
+import { startSttDownload } from "@/features/chat/adapters/studio-model-dictation-adapter";
+import {
+  hfApiToken,
+  useHfTokenStore,
+} from "@/features/hub/stores/hf-token-store";
+import { listGgufVariants } from "@/features/hub/inventory/api";
 import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";

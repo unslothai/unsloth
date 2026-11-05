@@ -179,10 +179,6 @@ function getPaletteServerSnapshot(): Palette {
   return "standard";
 }
 
-export function getPalette(): Palette {
-  return currentPalette;
-}
-
 export function setPalette(next: Palette): void {
   if (typeof window === "undefined") return;
   currentPalette = next;

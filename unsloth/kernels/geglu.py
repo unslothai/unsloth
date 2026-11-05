@@ -27,7 +27,12 @@ INT32_SAFETY_BUFFER = NUM_INT32_ELEMENTS - BLOCK_SIZE * SAFE_INT32_BUFFER_MULTIP
 
 @triton.jit
 def _exact_forward_kernel(
-    e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
+    e,
+    g,
+    h,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -69,7 +74,12 @@ def geglu_exact_forward_kernel(gate, up):
 
 @triton.jit
 def _exact_backward_kernel(
-    DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
+    DW,
+    e,
+    g,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
 ):
     """
     f = 1/2 * e * (1 + erf(1/sqrt(2) * e))
@@ -136,7 +146,12 @@ def geglu_exact_backward_kernel(DW, e, g):
 
 @triton.jit
 def _approx_forward_kernel(
-    e, g, h, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
+    e,
+    g,
+    h,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
 ):
     block_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -180,7 +195,12 @@ def geglu_approx_forward_kernel(gate, up):
 
 @triton.jit
 def _approx_backward_kernel(
-    DW, e, g, n_elements, BLOCK_SIZE: tl.constexpr, LONG_INDEXING: tl.constexpr
+    DW,
+    e,
+    g,
+    n_elements,
+    BLOCK_SIZE: tl.constexpr,
+    LONG_INDEXING: tl.constexpr,  # BLOCK_SIZE elements per program, LONG_INDEXING int64 offsets past 2**31
 ):
     """
     f = 1/2 * e * (1 + tanh( sqrt(2/pi) * x * (1 + 0.044715 * x^2 ) ))

@@ -255,17 +255,22 @@ def _marks_key(repo_id: str, commit: str) -> str:
 
 
 def _recorded_marks(repo_id: str, commit: Optional[str]) -> list[dict[str, Any]]:
+    return _recorded_marks_or_none(repo_id, commit) or []
+
+
+def _recorded_marks_or_none(repo_id: str, commit: Optional[str]) -> Optional[list[dict[str, Any]]]:
+    """The markers an earlier read recorded for this exact commit, or None when nothing is recorded."""
     import json
 
     path = _marks_record_path()
     if not commit or path is None:
-        return []
+        return None
     try:
         hit = json.loads(path.read_text(encoding = "utf-8")).get(_marks_key(repo_id, commit))
     except Exception:  # noqa: BLE001 - absent / unreadable record: nothing recorded
-        return []
+        return None
     if not isinstance(hit, list) or not all(_well_formed_marks(m) for m in hit):
-        return []
+        return None
     return [_marker_overrides(set(m.get("markers") or ())) for m in hit]
 
 
@@ -358,6 +363,10 @@ def _root_single_marks(
         # A cache-only load of a snapshot an online load already read keeps that read's verdict.
         return _recorded_marks(rid, commit)
     if commit:
+        # A commit is immutable, so what an earlier read recorded for it is the answer: no Hub round trips.
+        recorded = _recorded_marks_or_none(rid, commit)
+        if recorded is not None:
+            return recorded
         # Read the snapshot the record is keyed on, never a HEAD that moved past the staged copy.
         rev = {"revision": commit}
     try:
@@ -373,16 +382,23 @@ def _root_single_marks(
             for f in api.list_repo_files(rid, token = hf_token, **rev)
             if "/" not in f and f.lower().endswith(".safetensors")
         )
-        markers = [
-            sorted(
+
+        def _read(name: str) -> list[str]:
+            return sorted(
                 k
                 for k in api.parse_safetensors_file_metadata(
                     rid, name, token = hf_token, **rev
                 ).tensors
                 if k in ("v_pred", "ztsnr")
             )
-            for name in names
-        ]
+
+        # One header per root file, each two round trips: read them side by side, in name order.
+        if len(names) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers = min(8, len(names))) as pool:
+                markers = list(pool.map(_read, names))
+        else:
+            markers = [_read(name) for name in names]
     except Exception:  # noqa: BLE001 - offline / gated / odd: an earlier read of this snapshot, else the config
         return _recorded_marks(rid, commit)
     _record_marks(rid, commit, markers)
@@ -395,6 +411,7 @@ def pipeline_prediction_overrides(
     repo_id: Optional[str] = None,
     hf_token: Any = None,
     allow_network: bool = False,
+    precomputed_marks: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Scheduler overrides a diffusers SDXL pipeline directory asks for. Empty when it asks for none.
 
@@ -406,7 +423,11 @@ def pipeline_prediction_overrides(
     which never samples the terminal timestep that zero-SNR training exists for (the marker path
     sets ``trailing`` for the same reason)."""
     overrides: dict[str, Any] = {}
-    marks = _root_single_marks(root, repo_id, hf_token, allow_network)
+    marks = (
+        _root_single_marks(root, repo_id, hf_token, allow_network)
+        if precomputed_marks is None
+        else precomputed_marks
+    )
     if marks and marks[0] and all(m == marks[0] for m in marks):
         overrides.update(marks[0])
     config = config or {}
@@ -453,13 +474,48 @@ def apply_pipeline_prediction_type(
     repo_id: Optional[str] = None,
     hf_token: Any = None,
     allow_network: bool = False,
+    marks_future: Any = None,
 ) -> bool:
     """``apply_checkpoint_prediction_type`` for a diffusers pipeline directory
-    (``pipeline_prediction_overrides``). True when it changed; idempotent."""
+    (``pipeline_prediction_overrides``). True when it changed; idempotent. ``marks_future`` is a
+    ``start_root_single_marks`` read begun before the weights loaded; any failure of it reads again here."""
     config = getattr(getattr(pipe, "scheduler", None), "config", None)
+    precomputed = None
+    if marks_future is not None:
+        try:
+            precomputed = marks_future.result()
+        except Exception:  # noqa: BLE001 - the overlapped read failed: read it again in line
+            precomputed = None
     return _apply_scheduler_overrides(
         pipe,
-        pipeline_prediction_overrides(config, root, repo_id, hf_token, allow_network),
+        pipeline_prediction_overrides(
+            config, root, repo_id, hf_token, allow_network, precomputed_marks = precomputed
+        ),
         logger,
         "pipeline v-prediction",
     )
+
+
+def start_root_single_marks(
+    root: Optional[str],
+    repo_id: Optional[str] = None,
+    hf_token: Any = None,
+    allow_network: bool = False,
+) -> Any:
+    """``_root_single_marks`` on a daemon thread (the caller's context copied, so a pinned revision holds), so its Hub
+    header reads overlap the weight load. Returns a ``concurrent.futures.Future``."""
+    import contextvars
+    import threading
+    from concurrent.futures import Future
+
+    future: Future = Future()
+    ctx = contextvars.copy_context()
+
+    def _run() -> None:
+        try:
+            future.set_result(ctx.run(_root_single_marks, root, repo_id, hf_token, allow_network))
+        except BaseException as exc:  # noqa: BLE001 - handed to the waiter
+            future.set_exception(exc)
+
+    threading.Thread(target = _run, name = "sdxl-marks", daemon = True).start()
+    return future

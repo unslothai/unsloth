@@ -451,7 +451,8 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     # dynamic=True, no autotune: fast cold start, resolution-robust, avoids the CUDA-graph crash
     assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
     assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
-    assert applied["tf32"] is False and applied["fused_qkv"] is False
+    assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
+    assert applied["fused_qkv"] is False
     assert applied["compiled_dequant"] is False
     assert called == {"compiled_dequant": 0}
 
@@ -1155,6 +1156,24 @@ def test_unet_whole_compile_failure_degrades_to_eager(monkeypatch):
         pipe, _target(), is_gguf = False, family = _family(), speed_mode = SPEED_DEFAULT
     )
     assert applied["compiled"] is False
+
+
+@pytest.mark.parametrize("mode", [SPEED_DEFAULT, SPEED_MAX])
+def test_the_tf32_kill_switch(monkeypatch, mode):
+    torch = _stub_torch(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_TF32", "0")
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = _family(), speed_mode = mode
+    )
+    assert applied["tf32"] is False and torch.backends.cuda.matmul.allow_tf32 is False
+
+
+def test_the_eager_tier_leaves_tf32_off(monkeypatch):
+    torch = _stub_torch(monkeypatch)
+    applied = apply_speed_optims(
+        _Pipe(with_compile = True), _target(), is_gguf = False, family = _family(), speed_mode = SPEED_EAGER
+    )
+    assert applied["tf32"] is False and torch.backends.cuda.matmul.allow_tf32 is False
 
 
 def test_speed_max_tf32_only_on_cuda(monkeypatch):

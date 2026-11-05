@@ -32,11 +32,11 @@ def layernorm_forward(
     mu,
     Y_row_stride: tl.constexpr,  # n_cols
     X_row_stride: tl.constexpr,  # n_cols
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    HAS_BIAS: tl.constexpr = True,
+    n_cols: tl.constexpr,  # hidden size
+    eps: tl.constexpr,  # norm epsilon, per model
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # hidden next pow2
+    HAS_BIAS: tl.constexpr = True,  # bias present
 ):
     row_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -70,7 +70,16 @@ def layernorm_forward(
 
 @triton.jit
 def _layernorm_backward_row(
-    dY, dX, X, W_row, r, mu, row_idx, col_offsets, mask, n_cols: tl.constexpr
+    dY,
+    dX,
+    X,
+    W_row,
+    r,
+    mu,
+    row_idx,
+    col_offsets,
+    mask,
+    n_cols: tl.constexpr,  # hidden size
 ):
     # based on karpathy/llm.c; float32 matches torchtune's Fp32LayerNorm.
     dY_row = tl.load(dY + col_offsets, mask = mask, other = 0).to(tl.float32)
@@ -95,13 +104,13 @@ def layernorm_backward(
     b,
     r,
     mu,
-    dY_row_stride: tl.constexpr,
-    dX_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    eps: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    n_cols: tl.constexpr,  # hidden size
+    eps: tl.constexpr,  # norm epsilon, per model
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # hidden next pow2
 ):
     row_idx = tl.program_id(0)
     if LONG_INDEXING:
@@ -124,7 +133,7 @@ def layernorm_backward(
 
 
 # MIT 2023-2026 Songlin Yang et al.: dW/dB follow flash-linear-attention's layer_norm_bwd_kernel_row
-@triton.jit
+@triton.jit(do_not_specialize = ("n_rows", "rows_per_program"))
 def layernorm_backward_dw(
     dY,
     dX,
@@ -136,14 +145,14 @@ def layernorm_backward_dw(
     dB,
     n_rows,
     rows_per_program,
-    dY_row_stride: tl.constexpr,
-    dX_row_stride: tl.constexpr,
-    X_row_stride: tl.constexpr,
-    n_cols: tl.constexpr,
-    LONG_INDEXING: tl.constexpr,
-    BLOCK_SIZE: tl.constexpr,
-    TRAIN_W: tl.constexpr,
-    TRAIN_B: tl.constexpr,
+    dY_row_stride: tl.constexpr,  # dY row stride (hidden)
+    dX_row_stride: tl.constexpr,  # dX row stride (hidden)
+    X_row_stride: tl.constexpr,  # X row stride (hidden)
+    n_cols: tl.constexpr,  # hidden size
+    LONG_INDEXING: tl.constexpr,  # int64 offsets past 2**31
+    BLOCK_SIZE: tl.constexpr,  # hidden next pow2
+    TRAIN_W: tl.constexpr,  # weight grad partials
+    TRAIN_B: tl.constexpr,  # bias grad partials
 ):
     pid = tl.program_id(0)
     col_offsets = tl.arange(0, BLOCK_SIZE)
@@ -178,9 +187,15 @@ def layernorm_backward_dw(
         tl.store(dB + pid * n_cols + col_offsets, dB_acc, mask = mask)
 
 
-@triton.jit
+@triton.jit(do_not_specialize = ("n_programs",))
 def _layernorm_sum_partials(
-    partials, out0, out1, n_programs, n_cols, BLOCK_ROWS: tl.constexpr, BLOCK_COLS: tl.constexpr
+    partials,
+    out0,
+    out1,
+    n_programs,
+    n_cols,
+    BLOCK_ROWS: tl.constexpr,
+    BLOCK_COLS: tl.constexpr,  # BLOCK_ROWS partial rows per program, BLOCK_COLS columns per program
 ):
     # Not torch.sum: Inductor reorders it, so eager and compiled bytes would differ.
     which = tl.program_id(1)

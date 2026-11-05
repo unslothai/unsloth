@@ -86,6 +86,24 @@ def get_upload_limit_bytes() -> int:
     return upload_limit_bytes()
 
 
+AUDIO_INPUT_MAX_UPLOAD_MB_ENV = "UNSLOTH_STUDIO_AUDIO_MAX_UPLOAD_MB"
+
+
+def audio_input_max_bytes(limit_mb: int | None = None) -> int | None:
+    """Audio page upload cap: the upload setting, never under AUDIO_INPUT_MAX_BYTES.
+    UNSLOTH_STUDIO_AUDIO_MAX_UPLOAD_MB sets it exactly; 0 means no cap (None)."""
+    raw = os.environ.get(AUDIO_INPUT_MAX_UPLOAD_MB_ENV, "").strip()
+    try:
+        env_mb = int(raw) if raw else None
+    except ValueError:
+        env_mb = None
+    if env_mb == 0:
+        return None
+    if env_mb is not None and env_mb > 0:
+        return env_mb * _BYTES_PER_MB
+    return max(AUDIO_INPUT_MAX_BYTES, upload_limit_bytes(limit_mb))
+
+
 def upload_limit_label(limit_mb: int | None = None) -> str:
     return f"{limit_mb if limit_mb is not None else get_upload_limit_mb()}MB"
 

@@ -899,12 +899,25 @@ def _prewarm_token_counts(live: list) -> tuple:
     return tuple(sorted(counts)[:8])
 
 
+def _allocator_segments() -> list:
+    torch = _torch()
+    native = getattr(getattr(torch, "_C", None), "_cuda_memorySnapshot", None)
+    if native is None:
+        return torch.cuda.memory_snapshot()
+    # Avoid borrowed-reference corruption in the tuple API: pytorch/pytorch#201043.
+    try:
+        snapshot = native(None)
+    except TypeError:
+        snapshot = native()
+    return snapshot["segments"]
+
+
 def _pool_bytes(graph: Any) -> int:
     """Device bytes the graph's private pool holds (shared by every graph of the load), 0 if unreadable."""
     try:
         pool = tuple(graph.pool())
         total = 0
-        for seg in _torch().cuda.memory_snapshot():
+        for seg in _allocator_segments():
             if tuple(seg.get("segment_pool_id") or ()) == pool:
                 total += int(seg.get("total_size", 0))
         return total
@@ -1012,8 +1025,8 @@ def live_pool_free_bytes() -> int:
     try:
         free = 0
         cuda = _torch().cuda
-        device = cuda.current_device()  # the snapshot spans every card
-        for seg in cuda.memory_snapshot():
+        device = cuda.current_device()
+        for seg in _allocator_segments():
             if seg.get("device", device) != device:
                 continue
             if tuple(seg.get("segment_pool_id") or ()) in pools:

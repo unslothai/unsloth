@@ -403,6 +403,11 @@ def add_chunks(
     """Incrementally index one document's chunks into chunks + FTS5 + vec0.
     ``vectors`` parallels ``chunks``; optional ``regions`` (also parallel) holds
     per-chunk PDF highlight rects, stored as JSON."""
+    if len(vectors) != len(chunks):
+        # zip() below would silently drop the unpaired chunks from all three indexes.
+        raise ValueError(
+            f"{len(chunks)} chunks but {len(vectors)} vectors for document {document_id}"
+        )
     if len(vectors):
         rag_db.ensure_vec(conn, len(vectors[0]), document_id)
     epoch_before = vec_cache.read_epoch(conn, scope) if vec_cache.enabled() else None

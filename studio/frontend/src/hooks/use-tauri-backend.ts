@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { isTauri, setApiBase } from "@/lib/api-base";
+import { toast } from "@/lib/toast";
 import { invalidateHardwareInfo } from "@/hooks/use-hardware-info";
 import {
   MANAGED_ENVIRONMENT_BUSY,
@@ -146,8 +147,9 @@ export function useTauriBackend() {
   );
   // Dedupe step names (Strict Mode, event replay).
   const seenStepsRef = useRef(new Set<string>());
-  // Attached to a server we did not spawn, so we cannot stop it.
-  const [isExternalServer, setIsExternalServer] = useState(false);
+  // Port of the attached server we did not spawn.
+  const [externalServerPort, setExternalServerPort] = useState<number | null>(null);
+  const isExternalServer = externalServerPort !== null;
   const externalPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const externalPollAbortedRef = useRef(false);
   const environmentWaitRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -243,7 +245,7 @@ export function useTauriBackend() {
       }
       if (failures >= 3) {
         stopExternalServerPoll();
-        setIsExternalServer(false);
+        setExternalServerPort(null);
         setBackendError("External server is no longer responding");
       }
     }, 15_000);
@@ -312,7 +314,7 @@ export function useTauriBackend() {
           }
           setApiBase(preflight.port);
           portRef.current = preflight.port;
-          setIsExternalServer(true);
+          setExternalServerPort(preflight.port);
           setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           startExternalServerPoll(preflight.port);
@@ -325,20 +327,20 @@ export function useTauriBackend() {
           }
           setApiBase(preflight.port);
           portRef.current = preflight.port;
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           return;
         case "managed_ready":
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           setBackendStatus("starting");
           await startManagedServer();
           return;
         case "owned_stale":
         case "managed_stale":
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           if (
             preflight.reason === MANAGED_ENVIRONMENT_BUSY ||
@@ -361,7 +363,7 @@ export function useTauriBackend() {
           }
           return;
         case "external_conflict":
-          setIsExternalServer(false);
+          setExternalServerPort(null);
           stopExternalServerPoll();
           setBackendError(externalConflictMessage(preflight));
           return;
@@ -456,7 +458,7 @@ export function useTauriBackend() {
     seenStepsRef.current.clear();
     startingRef.current = false;
     portRef.current = null;
-    setIsExternalServer(false);
+    setExternalServerPort(null);
     stopExternalServerPoll();
     setLogs([]);
     clearBackendError();
@@ -503,24 +505,18 @@ export function useTauriBackend() {
   }
 
   async function runStopServer() {
-    if (isExternalServer) {
-      startingRef.current = false;
-      setIsExternalServer(false);
-      stopExternalServerPoll();
-      markServerStopIntent();
-      setBackendStatus("stopped");
-      return;
-    }
     const { invoke } = await import("@tauri-apps/api/core");
     // Record intent before the await (reaping can block ~15s); roll back if the stop fails.
     markServerStopIntent();
     try {
-      await invoke("stop_server");
+      await invoke("stop_server", { port: portRef.current });
     } catch (e) {
       clearServerStopIntent();
       throw e;
     }
     startingRef.current = false;
+    setExternalServerPort(null);
+    stopExternalServerPoll();
     setBackendStatus("stopped");
   }
 
@@ -576,7 +572,7 @@ export function useTauriBackend() {
     setProgressDetail(null);
     setElevationPackages([]);
     elevationResumeRef.current = null;
-    setIsExternalServer(false);
+    setExternalServerPort(null);
     stopExternalServerPoll();
     stopManagedEnvironmentWait();
     seenStepsRef.current.clear();
@@ -783,7 +779,9 @@ export function useTauriBackend() {
 
       register<void>("tray-toggle-server", () => {
         if (statusRef.current === "running") {
-          stopServer();
+          stopServer().catch((e) => {
+            toast.error("Could not stop the server", { description: String(e) });
+          });
         } else if (
           statusRef.current === "stopped" ||
           statusRef.current === "error"
@@ -827,6 +825,7 @@ export function useTauriBackend() {
 
   return {
     status, logs, error, installDiskFull, isExternalServer, closing,
+    externalServerPort,
     currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,

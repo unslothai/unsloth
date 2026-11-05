@@ -19,6 +19,7 @@ _UNSCOPED = {
     "test_streamed_scope_resets_on_error",
     "test_streamed_scope_does_not_leak_into_other_threads",
     "test_load_wraps_lookup_build_and_write_in_the_placement_scope",
+    "test_hosted_seed_load_runs_in_the_placement_scope",
 }
 
 
@@ -87,6 +88,19 @@ def test_load_wraps_lookup_build_and_write_in_the_placement_scope():
     ):
         i = src.index(call, src.index("with int8_text_stream_scope(not keeps_resident):"))
         assert "with int8_text_stream_scope(not keeps_resident):" in src[max(0, i - 400) : i], call
+
+
+def test_hosted_seed_load_runs_in_the_placement_scope():
+    import inspect
+
+    from core.inference import diffusion
+
+    src = inspect.getsource(diffusion.DiffusionBackend)
+    i = src.index("seeded = denoiser_prequant_pipe_kwargs(")
+    window = src[max(0, i - 600) : i]
+    assert "_seed_scope = int8_text_stream_scope(" in window
+    assert "not plan_keeps_transformer_resident(plan)" in window
+    assert "with _seed_scope:" in window
 
 
 def test_runtime_exclusions_drop_the_text_stream():

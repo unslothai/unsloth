@@ -670,6 +670,10 @@ class TrainingStartRequest(BaseModel):
         None,
         description = "Set by the server from the checkpoint files; a caller's value is replaced",
     )
+    decision_head: Optional[Literal["clef", "d1"]] = Field(
+        None,
+        description = "What a language model trains into: a Clef head, or a d1 on MLX for LFM3-VL and LFM3-Omni, the default there",
+    )
 
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
     wandb_token: Optional[str] = Field(None, description = "W&B token")

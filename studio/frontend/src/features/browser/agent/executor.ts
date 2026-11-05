@@ -8,7 +8,7 @@ import { authFetch } from "@/features/auth";
 import { openChatItemById, useChatNavigationStore, visibleChatItems } from "@/features/chat";
 import { getLocale, translate } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { isTauri } from "@/lib/api-base";
+import { isStudioUrl, isTauri } from "@/lib/api-base";
 import { unwrapRedirect } from "../address";
 import { captureHiddenPage, screenshotPage } from "../capture";
 import { useBrowserHistoryStore } from "../history-store";
@@ -17,7 +17,7 @@ import { isLoopbackUrl } from "../address";
 import { callNative, localOriginGranted, useNativeBrowser } from "../native-support";
 import { requestFrameAgent, sendFrameCommand } from "../page-frame";
 import { browserPanelAvailable } from "../panel-availability";
-import { type BrowserTab, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
+import { type BrowserEntry, type BrowserTab, browserFile, chatKeyOfThread, currentEntry, onChatAdopted, useBrowserStore } from "../store";
 import {
   type AgentStep,
   type Answer,
@@ -33,6 +33,7 @@ import {
 import { type Gate, type Question, type SitePolicy, gateElement, gateNavigation, hostOfUrl, navigationBlocks } from "./gate";
 import { type SiteRule, ruleFor } from "./permissions";
 import { type AgentAnswer, type ElementInfo, pageAgentSource } from "./page-agent";
+import { type FileTabKind, MAX_EDIT_BYTES, applyFileEdit, numberedLines } from "./file-tab";
 import { waitForPage } from "./page-wait";
 
 export type BrowserAction = {
@@ -55,6 +56,12 @@ export type BrowserAction = {
   fullPage?: boolean;
   query?: string;
   limit?: number;
+  tab?: number;
+  startLine?: number;
+  oldText?: string;
+  newText?: string;
+  replaceAll?: boolean;
+  content?: string;
   /** How long the server waits for this answer. */
   timeoutS?: number;
   policy: SitePolicy;
@@ -73,9 +80,9 @@ export type ActionContext = {
   signal?: AbortSignal;
 };
 
-type Run = ActionContext & { session: Session };
+type Run = ActionContext & { session: Session; inFile?: boolean };
 
-type Result = { ok: boolean; error?: string; url?: string; title?: string; text?: string; note?: string; image?: string };
+type Result = { ok: boolean; error?: string; url?: string; title?: string; file?: string; text?: string; note?: string; image?: string };
 
 const LOAD_TIMEOUT_MS = 30_000;
 const SETTLE_QUIET_MS = 350;
@@ -84,6 +91,8 @@ const FILL_QUIET_MAX_MS = 1_000;
 // A loaded page that opened no request has drawn what it will; content still on its way arrives by a request.
 const FILL_IDLE_QUIET_MS = 120;
 const PAGE_READY_MS = 4_000;
+const FILE_FRAME_TRY_MS = 1_500;
+const READ_OPS = new Set(["snapshot", "find", "status", "describe", "locate"]);
 const POST_TIMEOUT_MS = 15_000;
 const EXPIRED = "Not done: the action ran out of time, likely waiting for the user to answer in the panel. Ask them before trying again.";
 export const STOPPED = "The user stopped the browser agent. Do not use browser tools again unless they ask.";
@@ -92,6 +101,10 @@ const str = (value: unknown, max: number): string | undefined =>
   typeof value === "string" && value.length <= max ? value : undefined;
 const num = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+const whole = (value: unknown): number | undefined =>
+  typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+// browser_agent._MAX_FILE_EDIT_CHARS
+const MAX_EDIT_CHARS = 500_000;
 const strings = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string").slice(0, 100) : [];
 
@@ -122,6 +135,12 @@ export function parseBrowserAction(value: unknown): BrowserAction | null {
     fullPage: raw.full_page === true,
     query: str(raw.query, 256),
     limit: typeof raw.limit === "number" && Number.isInteger(raw.limit) ? raw.limit : undefined,
+    tab: whole(raw.tab),
+    startLine: whole(raw.start_line),
+    oldText: str(raw.old_text, MAX_EDIT_CHARS),
+    newText: str(raw.new_text, MAX_EDIT_CHARS),
+    replaceAll: raw.replace_all === true,
+    content: str(raw.content, MAX_EDIT_CHARS),
     timeoutS: typeof raw.timeout_s === "number" && raw.timeout_s > 0 ? Math.min(raw.timeout_s, 3600) : undefined,
     policy: { allowedDomains: strings(raw.allowed_domains), blockedDomains: strings(raw.blocked_domains) },
   };
@@ -305,7 +324,7 @@ function tabUrl(tab: BrowserTab): string {
  *  page works on in the background, with the user's own tabs left where they were. */
 function showTab(tab: BrowserTab, context: Run): void {
   // Kept from the start: the user can switch chats mid-run, and closing the panel then must leave it.
-  if (useNativeBrowser.getState().enabled) keepInBackground(tab.id);
+  if (useNativeBrowser.getState().enabled && currentEntry(tab).kind === "web") keepInBackground(tab.id);
   // Off screen it shows when the user goes back to that chat; their tabs here stay put. A chat on
   // screen without room for the panel isn't given one.
   const store = useBrowserStore.getState();
@@ -452,7 +471,8 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
     cursor,
     ...(cursor ? { cursorColor: cursorAccent(), cursorStill: reducedMotion() } : {}),
   };
-  const native = useNativeBrowser.getState().enabled;
+  // File previews are frames, never native views.
+  const native = useNativeBrowser.getState().enabled && currentEntry(tab).kind === "web";
   const started = Date.now();
   const fresh = () => {
     const base = nextBase;
@@ -472,8 +492,10 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>): Prom
         if (reply && !reply.installed) reply = await call(fresh(), pageAgentSource());
       }
     } else {
-      reply = await requestFrameAgent(tab.id, command);
-      if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource());
+      // Short tries for reads only: they are safe to repeat.
+      const wait = currentEntry(tab).kind === "file" && READ_OPS.has(String(request.op)) ? FILE_FRAME_TRY_MS : undefined;
+      reply = await requestFrameAgent(tab.id, command, undefined, wait);
+      if (reply && !reply.installed) reply = await requestFrameAgent(tab.id, fresh(), pageAgentSource(), wait);
     }
     const answer = reply?.installed ? checkedAnswer(reply.result) : null;
     if (answer) return answer;
@@ -578,6 +600,7 @@ async function askInPanel(question: Question, context: Run, remember = true): Pr
 
 async function observe(tab: BrowserTab, context: Run, note?: string, op: Record<string, unknown> = { op: "snapshot" }): Promise<Result> {
   const entry = currentEntry(tab);
+  if (entry.kind === "file") return observeFile(tab, entry, context, note, op);
   if (entry.kind !== "web") return { ok: false, error: "No web page is open. Use browser_navigate first." };
   if (tab.pageError || tab.nativeError) {
     return {
@@ -626,7 +649,7 @@ async function open(url: string, context: Run): Promise<BrowserTab | null> {
   const agent = agentTab(context);
   const existing = isLoopbackUrl(url)
     ? agent && localOriginGranted(agent.id, url) ? agent : grantedLocalTab(url, context.session.chat)
-    : agent && !onGrantedOrigin(agent) ? agent : undefined;
+    : agent && !onGrantedOrigin(agent) && currentEntry(agent).kind !== "file" ? agent : undefined;
   if (existing) {
     if (agentChat(context.session.chat).tabId !== existing.id) moveRun(context, existing.id);
     store.navigate(existing.id, { url, temporary: context.temporary }, { replace: false });
@@ -666,7 +689,12 @@ function stepOf(action: BrowserAction): AgentStep {
     case "history":
     case "move":
     case "drag":
+    case "tabs":
       return { kind: action.op, detail: "" };
+    case "read_file":
+      return { kind: "readFile", detail: "" };
+    case "edit_file":
+      return { kind: "editFile", detail: "" };
     default:
       return { kind: "read", detail: "" };
   }
@@ -678,8 +706,12 @@ function nameStep(chat: string, info: ElementInfo): void {
   patchAgentChat(chat, { step: { ...current, detail: info.name || info.role || current.detail } });
 }
 
-function permissions(context: Pick<ActionContext, "fullAccess">) {
-  const saved = useBrowserAgentStore.getState().permissions;
+function permissions(context: Pick<Run, "fullAccess" | "inFile">) {
+  const stored = useBrowserAgentStore.getState().permissions;
+  // Preview forms can't send (form-action 'none'); links are still gated.
+  const saved = context.inFile
+    ? { ...stored, defaults: { ...stored.defaults, actions: "allow" as const, unlabelled: "allow" as const } }
+    : stored;
   if (!context.fullAccess) return saved;
   const allow = (rule: SiteRule): SiteRule => ({
     browsing: rule.browsing === "block" ? "block" : "allow",
@@ -738,7 +770,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (agentChat(chat).stoppedRun === context.runKey) return { ok: false, error: STOPPED };
   if (signal?.aborted) return { ok: false, error: "the action expired before it could run." };
   // Off screen, only a native page can work on: a framed one runs in the panel.
-  if (!chatOnScreen(context) && !useNativeBrowser.getState().enabled) {
+  if (!PANEL_FREE.has(action.op) && !chatOnScreen(context) && !useNativeBrowser.getState().enabled) {
     return {
       ok: false,
       error:
@@ -751,36 +783,29 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   if (owner && owner !== context.runKey) {
     return { ok: false, error: "Another reply in this chat is using the browser right now. Wait for it to finish, or tell the user." };
   }
+  const front = owner ? null : frontTab(chat);
+  if (front && currentEntry(front).kind === "file" && agentChat(chat).tabId !== front.id) moveRun(context, front.id);
   patchAgentChat(chat, { working: true, runKey: context.runKey, step: stepOf(action) });
 
-  if (action.op === "navigate") {
-    const url = redirectEnd(action.url ?? "");
-    if (isLoopbackUrl(url) && !grantedLocalTab(url, chat)) {
-      const { host } = new URL(url);
-      return {
-        ok: false,
-        error: useNativeBrowser.getState().enabled
-          ? `${host} is on the user's computer, and the browser panel opens a local address only in the tab where the user types it in this chat's address bar. Ask the user to open it there first.`
-          : `${host} is a local address, and the browser only opens public sites.`,
-      };
-    }
-    const gate = gateNavigation(url, navigationContext(action, context));
-    const refused = await pass(gate, context);
-    if (refused) return { ok: false, error: refused };
-    admit(url, gate, context);
-    const since = Date.now();
-    const tab = await open(url, context);
-    if (!tab) return { ok: false, error: "the browser tab closed." };
-    return arrive(tab, url, action, context, since);
-  }
+  if (action.op === "navigate") return navigateTo(action.url ?? "", action, context);
 
   if (action.op === "history") return readHistory(action, context);
   if (action.op === "evaluate" && useBrowserAgentStore.getState().scriptAccess === "never") {
     return { ok: false, error: SCRIPTS_OFF };
   }
 
-  const shown = agentTab(context);
-  if (!shown) return { ok: false, error: "No page is open yet. Call browser_navigate first." };
+  if (action.op === "tabs") return listTabs(action, context);
+  if (action.op === "read_file" || action.op === "edit_file") {
+    const target = fileTab(context);
+    if (!target) return { ok: false, error: NO_FILE };
+    useBrowserStore.getState().revealIn(chat, target.id);
+    return action.op === "read_file" ? readFile(target, action.startLine ?? 1) : editFile(target, action, signal);
+  }
+
+  const shown = agentTab(context) ?? fileTab(context);
+  if (!shown) {
+    return { ok: false, error: "No page is open yet. Call browser_navigate first, or browser_tabs to work in a tab already open." };
+  }
   showTab(shown, context);
   // A kept page the cap closed reopens a beat later; its history flags are only good once it has.
   if (useNativeBrowser.getState().enabled && currentEntry(shown).kind === "web" && !hasNativeView(shown.id)) {
@@ -791,7 +816,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const before = tabUrl(tab);
 
   if (action.op === "back" || action.op === "forward" || action.op === "reload") {
-    const native = useNativeBrowser.getState().enabled;
+    const native = useNativeBrowser.getState().enabled && currentEntry(tab).kind === "web";
     const store = useBrowserStore.getState();
     const nativeMove = native && action.op !== "reload" && Boolean(tab.nativeHistory?.[action.op]);
     const step = action.op === "back" ? -1 : action.op === "forward" ? 1 : 0;
@@ -854,6 +879,19 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const here = tabUrl(ready);
   const moved = await stillAllowed(ready, action, context);
   if (moved) return { ok: false, error: moved };
+  const file = currentEntry(ready);
+  if (file.kind === "file") {
+    const preview = (await kindOf(file)) === "preview";
+    if (!preview && action.op !== "snapshot" && action.op !== "find" && action.op !== "screenshot") return { ok: false, error: NO_PAGE_IN_FILE };
+    if (action.op === "evaluate") return { ok: false, error: "scripts don't run in a file's preview; change the file with browser_edit_file instead." };
+    if (preview && action.op !== "snapshot" && action.op !== "find") {
+      if (!chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
+      context.inFile = true;
+      showPreview(ready);
+      const warm = await pageCall(ready, { op: "status" }).catch((error: Error) => ({ ok: false, error: error.message }));
+      if (!warm.ok) return { ok: false, error: warm.error ?? NO_PAGE_IN_FILE };
+    }
+  }
 
   switch (action.op) {
     case "snapshot":
@@ -895,27 +933,30 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
     return { ok: false, error: described.error ?? (point ? "nothing is at that point." : `${ref} could not be found.`) };
   }
   const info: ElementInfo = described.info;
+  const gated = gateable(info, context);
   if (action.op !== "press") nameStep(chat, action.op === "select" && info.option ? { ...info, name: info.option } : info);
   const gates: Gate[] = [];
-  if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, info, here, action.policy, permissions(context)));
+  if (action.op === "click" || action.op === "type") gates.push(gateElement(action.op, gated, here, action.policy, permissions(context)));
   const opaque = point ? opaqueGate(info, here, context) : null;
   if (opaque) gates.push(opaque);
   if (action.op === "select") {
     // The option the page will select: its value can differ from the label the user sees.
-    const chosen = info.role === "combobox" ? { ...info, name: info.option || action.value || "" } : info;
+    const chosen = info.role === "combobox" ? { ...gated, name: info.option || action.value || "" } : gated;
     // A card-expiry or other secret dropdown is the user's to fill, as its text field would be.
-    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", info, here, action.policy, permissions(context)));
+    if (info.tag === "select" || info.role === "combobox") gates.push(gateElement("type", gated, here, action.policy, permissions(context)));
     gates.push(gateElement("select", chosen, here, action.policy, permissions(context)));
   }
   // Enter or Space on a focused button or link is a click on it, so it asks what a click would.
   const activates = action.op === "press" && (action.key === "Enter" || action.key === "Space");
-  if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", info, here, action.policy, permissions(context)));
+  // The frame would follow a pressed link unchecked.
+  if (context.inFile && activates && info.role === "link") return { ok: false, error: "click the link instead of pressing a key on it." };
+  if (activates && !TEXT_ROLES.has(info.role)) gates.push(gateElement("click", gated, here, action.policy, permissions(context)));
   // Deleting is editing: a password or card field the agent can't type into it can't empty either.
   if (action.op === "press" && (action.key === "Backspace" || action.key === "Delete")) {
-    gates.push(gateElement("type", info, here, action.policy, permissions(context)));
+    gates.push(gateElement("type", gated, here, action.policy, permissions(context)));
     // Outside a text field it is an app's delete shortcut, asked like a Delete button.
     if (!TEXT_ROLES.has(info.role)) {
-      gates.push(gateElement("click", { ...info, name: `delete key on ${info.name || info.role}` }, here, action.policy, permissions(context)));
+      gates.push(gateElement("click", { ...gated, name: `delete key on ${info.name || info.role}` }, here, action.policy, permissions(context)));
     }
   }
   // Enter in a field sends its form, so it is held to what a submit button would be.
@@ -926,6 +967,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   // A link the page follows itself (a native view's click, Enter on a link) is gated before it
   // loads; the proxied frame's clicks come back as `navigate` and are gated below.
   const followsLink =
+    !context.inFile &&
     /^https?:/i.test(info.href) &&
     info.href.split("#")[0] !== here.split("#")[0] &&
     ((action.op === "click" && useNativeBrowser.getState().enabled) || (activates && info.role === "link"));
@@ -938,7 +980,7 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const wrapperGates = wrappers.map((url) => gateNavigation(url, navigationContext(action, context)));
   gates.push(...wrapperGates);
   // A form sending to another site carries what was typed there: a new site asks, as a navigation would.
-  const formAction = submits && info.formAction ? info.formAction : "";
+  const formAction = submits && gated.formAction ? gated.formAction : "";
   const formGate =
     formAction && hostOfUrl(formAction) !== hostOfUrl(here) ? gateNavigation(formAction, navigationContext(action, context)) : null;
   if (formAction) {
@@ -971,9 +1013,10 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
       op: "click",
       ref,
       ...(point ? { ...point, expect: described.hit ?? "", sig: described.sig ?? "" } : {}),
-      directLinks: !useNativeBrowser.getState().enabled,
+      directLinks: context.inFile === true || !useNativeBrowser.getState().enabled,
     });
     if (!clicked.ok) return { ok: false, error: clicked.error };
+    if (clicked.navigate && context.inFile) return openFromFile(clicked.navigate, action, context);
     if (clicked.navigate) {
       const pressedAt = Date.now();
       // A link: opened in this tab, under the same rules as any other address. Its href is read
@@ -1015,6 +1058,224 @@ async function perform(action: BrowserAction, context: Run): Promise<Result> {
   const now = tabUrl(after);
   if (now && now !== here) return arrive(after, here, action, context, since, note);
   return observe(after, context, note);
+}
+
+async function navigateTo(address: string, action: BrowserAction, context: Run): Promise<Result> {
+  const url = redirectEnd(address);
+  if (isLoopbackUrl(url) && !grantedLocalTab(url, context.session.chat)) {
+    const { host } = new URL(url);
+    return {
+      ok: false,
+      error: useNativeBrowser.getState().enabled
+        ? `${host} is on the user's computer, and the browser panel opens a local address only in the tab where the user types it in this chat's address bar. Ask the user to open it there first.`
+        : `${host} is a local address, and the browser only opens public sites.`,
+    };
+  }
+  const gate = gateNavigation(url, navigationContext(action, context));
+  const refused = await pass(gate, context);
+  if (refused) return { ok: false, error: refused };
+  admit(url, gate, context);
+  const since = Date.now();
+  const tab = await open(url, context);
+  if (!tab) return { ok: false, error: "the browser tab closed." };
+  return arrive(tab, url, action, context, since);
+}
+
+const PANEL_FREE = new Set(["tabs", "read_file", "edit_file"]);
+const NO_FILE = "No file is open in the browser panel. browser_tabs lists the tabs.";
+const NO_PAGE_IN_FILE =
+  "This tab shows a file with no page to act on. browser_read_file reads it and browser_edit_file changes it.";
+const OFF_SCREEN = "this chat's browser only runs while the chat is open here; ask the user to switch back to it.";
+
+type FileEntry = Extract<BrowserEntry, { kind: "file" }>;
+
+let readerModule: Promise<typeof import("./file-reader")> | null = null;
+const fileReader = () => {
+  readerModule ??= import("./file-reader");
+  return readerModule;
+};
+
+async function kindOf(entry: FileEntry): Promise<FileTabKind> {
+  return (await fileReader()).fileTabKind(entry);
+}
+
+const KIND_LABELS: Record<FileTabKind, string> = {
+  preview: "HTML or React, with a preview",
+  text: "text",
+  document: "document",
+  image: "image",
+  media: "audio or video",
+  other: "file",
+};
+
+async function fileHint(entry: FileEntry): Promise<string> {
+  const reader = await fileReader();
+  const kind = reader.fileTabKind(entry);
+  const hints: string[] = [];
+  if (kind === "preview") hints.push("Its preview works as a page: browser_snapshot, browser_click and browser_type act in it.");
+  if (kind === "image") hints.push(isTauri ? "browser_screenshot shows it." : "Looking at an image needs the desktop app.");
+  if (reader.editable(entry, kind)) hints.push("browser_read_file reads its source and browser_edit_file changes it.");
+  else if (kind === "document") hints.push("browser_read_file reads its text; it can't be edited here.");
+  else if (kind !== "image") hints.push("It has no text to read.");
+  return hints.join(" ");
+}
+
+function showPreview(tab: BrowserTab): void {
+  useBrowserStore.getState().setFileView(tab.id, { mode: "preview" });
+}
+
+function frontTab(chat: string): BrowserTab | null {
+  const store = useBrowserStore.getState();
+  const id = chat === store.chat ? store.activeTabId : store.chats[chat]?.activeTabId;
+  return store.tabs.find((tab) => tab.id === id && tab.chat === chat) ?? null;
+}
+
+function fileTab(context: Run): BrowserTab | null {
+  const agent = agentTab(context);
+  if (agent && currentEntry(agent).kind === "file") return agent;
+  const front = frontTab(context.session.chat);
+  if (!front || currentEntry(front).kind !== "file") return null;
+  moveRun(context, front.id);
+  return front;
+}
+
+/** Web tabs by site alone: a title is browsing history. */
+async function listTabs(action: BrowserAction, context: Run): Promise<Result> {
+  const { chat } = context.session;
+  const tabs = useBrowserStore.getState().tabs.filter((tab) => tab.chat === chat);
+  const where = (tab: BrowserTab) => `a web page on ${hostOfUrl(tabUrl(tab)) || "this computer"}`;
+  if (action.tab !== undefined) {
+    const tab = tabs[action.tab - 1];
+    if (!tab) return { ok: false, error: `There is no tab ${action.tab}; browser_tabs lists them.` };
+    const entry = currentEntry(tab);
+    if (entry.kind !== "web" && entry.kind !== "file") return { ok: false, error: "That tab has no page or file in it." };
+    if (agentChat(chat).tabId !== tab.id) moveRun(context, tab.id);
+    showTab(tab, context);
+    if (entry.kind === "web") return { ok: true, note: `Switched to tab ${action.tab}, ${where(tab)}. browser_snapshot reads it.` };
+    return { ok: true, file: entry.name, note: `Switched to tab ${action.tab}. ${await fileHint(entry)}` };
+  }
+  const agentId = agentChat(chat).tabId;
+  const frontId = frontTab(chat)?.id;
+  const rows = await Promise.all(
+    tabs.map(async (tab, index) => {
+      const entry = currentEntry(tab);
+      const what =
+        entry.kind === "file"
+          ? `File: ${entry.name} (${KIND_LABELS[await kindOf(entry)]})`
+          : entry.kind === "web"
+            ? `Web page on ${hostOfUrl(tabUrl(tab)) || "this computer"}`
+            : entry.kind === "internal"
+              ? `The browser's ${entry.page} page`
+              : "New tab";
+      const marks = [tab.id === agentId ? "the agent's tab" : "", tab.id === frontId ? "in front" : ""].filter(Boolean);
+      return `${index + 1}. ${what}${marks.length ? ` (${marks.join(", ")})` : ""}`;
+    }),
+  );
+  return { ok: true, text: rows.join("\n") || "No tabs are open.", note: rows.length ? "browser_tabs with tab switches to one." : undefined };
+}
+
+async function fileContent(tab: BrowserTab) {
+  const entry = currentEntry(tab);
+  const blob = entry.kind === "file" ? browserFile(entry.fileId) : undefined;
+  if (entry.kind !== "file" || !blob) return null;
+  const reader = await fileReader();
+  const kind = reader.fileTabKind(entry);
+  return { entry, blob, reader, kind, editable: reader.editable(entry, kind) };
+}
+
+async function readFile(tab: BrowserTab, start: number, note?: string): Promise<Result> {
+  const file = await fileContent(tab);
+  if (!file) return { ok: false, error: NO_FILE };
+  const { entry, blob, reader, kind } = file;
+  if (!file.editable && kind !== "document") return { ok: true, file: entry.name, note: [note, await fileHint(entry)].filter(Boolean).join(" ") };
+  let read: { text: string; cut: boolean };
+  try {
+    read = await reader.fileText(entry, blob, kind);
+  } catch {
+    return { ok: false, error: "the file's text could not be read." };
+  }
+  const lines = numberedLines(read.text, start);
+  const cut = read.cut ? "Only the start of this large file was read." : "";
+  return { ok: true, file: entry.name, text: lines.text, note: [note, lines.note, cut].filter(Boolean).join(" ") };
+}
+
+const MAX_FOUND_LINES = 40;
+
+async function findInFile(tab: BrowserTab, query: string, note: string): Promise<Result> {
+  const file = await fileContent(tab);
+  if (!file) return { ok: false, error: NO_FILE };
+  if (!file.editable && file.kind !== "document") return readFile(tab, 1, note);
+  let text: string;
+  try {
+    ({ text } = await file.reader.fileText(file.entry, file.blob, file.kind));
+  } catch {
+    return { ok: false, error: "the file's text could not be read." };
+  }
+  const wanted = query.toLowerCase();
+  const found: string[] = [];
+  const lines = text.split(/\r?\n/);
+  for (let index = 0; index < lines.length && found.length < MAX_FOUND_LINES; index++) {
+    const line = lines[index] ?? "";
+    if (line.toLowerCase().includes(wanted)) found.push(`${index + 1}\t${line.length > 500 ? `${line.slice(0, 500)} …` : line}`);
+  }
+  const summary = found.length ? `${found.length === MAX_FOUND_LINES ? "The first " : ""}${found.length} matching lines.` : `No line holds "${query}".`;
+  return { ok: true, file: file.entry.name, text: found.join("\n"), note: [note, summary].filter(Boolean).join(" ") };
+}
+
+async function editFile(tab: BrowserTab, action: BrowserAction, signal?: AbortSignal): Promise<Result> {
+  const file = await fileContent(tab);
+  if (!file) return { ok: false, error: NO_FILE };
+  const { entry, blob } = file;
+  if (!file.editable) {
+    return { ok: false, error: "only HTML, React, Markdown, code, text, SVG and CSV files can be edited here, not PDFs, documents, images or media." };
+  }
+  if (blob.size > MAX_EDIT_BYTES) return { ok: false, error: "this file is too large to edit here." };
+  const source = await blob.text();
+  const edited = applyFileEdit(source, { oldText: action.oldText, newText: action.newText, replaceAll: action.replaceAll, content: action.content });
+  if ("error" in edited) return { ok: false, error: edited.error };
+  if (edited.text === source) return { ok: true, file: entry.name, note: "The file already reads that way; nothing changed." };
+  if (signal?.aborted) return { ok: false, error: STOPPED };
+  const now = findTab(tab.id);
+  if (!now || currentEntry(now) !== entry) return { ok: false, error: "the tab changed while the file was being edited; read it again." };
+  useBrowserStore.getState().editFile(tab.id, new Blob([edited.text], { type: blob.type || entry.contentType }));
+  const changed = (action.newText ?? action.content ?? "").split("\n").length;
+  const shown = numberedLines(edited.text, Math.max(1, edited.line - 2)).text.split("\n").slice(0, Math.min(40, changed + 4));
+  return {
+    ok: true,
+    file: entry.name,
+    text: shown.join("\n"),
+    note: `Edited from line ${edited.line}. The panel shows the new version, and its Back button the one before.`,
+  };
+}
+
+async function observeFile(tab: BrowserTab, entry: FileEntry, context: Run, note: string | undefined, op: Record<string, unknown>): Promise<Result> {
+  if ((await kindOf(entry)) !== "preview") {
+    const about = [note, "This tab shows a file, not a page."].filter(Boolean).join(" ");
+    return op.op === "find" ? findInFile(tab, String(op.query ?? ""), about) : readFile(tab, 1, about);
+  }
+  if (!chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
+  showPreview(tab);
+  const answer = await pageCall(tab, op);
+  if (!answer.ok) return { ok: false, error: answer.error ?? "the page could not be read." };
+  const fresh = findTab(tab.id);
+  if (!fresh || fresh.loading || currentEntry(fresh) !== entry) {
+    return { ok: false, error: "the page changed while it was being read; take a snapshot again." };
+  }
+  // The agent can write this page, so its links are not the user's.
+  if (op.op === "snapshot" || op.op === "find") context.session.pageLinks = new Set();
+  const source = op.op === "snapshot" ? "This is a file's preview; browser_read_file and browser_edit_file work on its source." : "";
+  return { ok: true, file: entry.name, text: answer.text, note: [note, answer.note, source].filter(Boolean).join(" ") || undefined };
+}
+
+function openFromFile(url: string, action: BrowserAction, context: Run): Promise<Result> {
+  if (isStudioUrl(url)) {
+    return Promise.resolve({
+      ok: false,
+      error: "that link points at a file beside this one, which the panel doesn't have; link to a full web address, or edit the page.",
+    });
+  }
+  context.inFile = false;
+  return navigateTo(url, action, context);
 }
 
 /** `since`: when the action went out, so the wait covers the requests it started. */
@@ -1107,7 +1368,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
   for (const point of [from, end]) {
     const described = await pageCall(tab, { op: "describe", ref: "", ...point });
     if (!described.ok || !described.info) return { ok: false, error: described.error ?? "nothing is at that point." };
-    for (const gate of [gateElement("click", described.info, before, action.policy, permissions(context)), opaqueGate(described.info, before, context)]) {
+    for (const gate of [gateElement("click", gateable(described.info, context), before, action.policy, permissions(context)), opaqueGate(described.info, before, context)]) {
       if (!gate) continue;
       asked ||= gate.kind === "ask";
       const refused = await pass(gate, context);
@@ -1163,7 +1424,7 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
   if (at.x !== end.x || at.y !== end.y) return cancel("the drag stopped short; take a snapshot to see where things are.");
   if (!target?.ok || !target.info) return cancel(target?.error ?? "nothing is at the drag's end.");
   if (target.hit !== hits[1] || JSON.stringify(target.info) !== infos[1]) {
-    for (const gate of [gateElement("click", target.info, before, action.policy, permissions(context)), opaqueGate(target.info, before, context)]) {
+    for (const gate of [gateElement("click", gateable(target.info, context), before, action.policy, permissions(context)), opaqueGate(target.info, before, context)]) {
       if (!gate) continue;
       const refused = await pass(gate, context);
       if (refused) return cancel(refused);
@@ -1177,6 +1438,10 @@ async function dragBetween(tab: BrowserTab, action: BrowserAction, context: Run,
   const up = await pageCall(tab, { op: "pointer", phase: "up", ...end, expect: target.hit ?? "", sig: target.sig ?? "" });
   if (!up.ok) return cancel(up.error ?? CHANGED_UNDER_POINT);
   return afterward(tab, before, action, context, since, up.note);
+}
+
+function gateable(info: ElementInfo, context: Run): ElementInfo {
+  return context.inFile ? { ...info, formAction: "" } : info;
 }
 
 /** An unlabelled point (a canvas) may be a Buy button nothing can read: ask once per site per chat. */
@@ -1319,6 +1584,10 @@ async function observeLoaded(tab: BrowserTab, context: Run, since: number, note?
 }
 
 async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
+  const entry = currentEntry(tab);
+  const kind = entry.kind === "file" ? await kindOf(entry) : null;
+  if (entry.kind === "file" && kind === "image") return imageFile(entry);
+  if (entry.kind === "file" && !chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
   if (!isTauri) return { ok: false, error: "screenshots of the browser panel need the desktop app; use browser_snapshot." };
   // A page at work off screen is captured on its own; one on screen as the panel shows it.
   const hidden = !chatOnScreen(context) && hasNativeView(tab.id);
@@ -1326,29 +1595,59 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   const element = pages[pages.length - 1];
   if (!hidden && !element) return { ok: false, error: "the browser panel is not on screen." };
   // What the user typed into card, code and password fields stays out of the picture, as out of the text.
-  const masked = await pageCall(tab, { op: "mask", on: true }).catch(() => null);
+  const page = entry.kind === "web" || kind === "preview";
+  const masked: AgentAnswer | null = page ? await pageCall(tab, { op: "mask", on: true }).catch(() => null) : { ok: true };
   if (!masked?.ok) return { ok: false, error: "the page could not be prepared for a screenshot; use browser_snapshot." };
   let blob: Blob | null;
   try {
     await sleep(100);
     blob = hidden || !element ? await captureHiddenPage(tab) : await screenshotPage(tab, element);
   } finally {
-    await pageCall(tab, { op: "mask", on: false }).catch(() => null);
+    if (page) await pageCall(tab, { op: "mask", on: false }).catch(() => null);
   }
   if (!blob) return { ok: false, error: "the screenshot failed." };
   // A page that moved during the capture is one nobody checked or masked: no picture of it.
   const now = findTab(tab.id);
-  if (!now || now.loading || tabUrl(now) !== tabUrl(tab)) {
+  if (!now || now.loading || tabUrl(now) !== tabUrl(tab) || currentEntry(now) !== entry) {
     return { ok: false, error: "the page changed while the screenshot was taken; take a snapshot first." };
   }
   blob = await toPointScale(tab, context.session, blob, masked);
-  const image = await new Promise<string>((resolve, reject) => {
+  const image = await dataUrl(blob);
+  return { ok: true, url: tabUrl(tab), title: tab.title, ...(entry.kind === "file" ? { file: entry.name } : {}), image };
+}
+
+function dataUrl(blob: Blob): Promise<string> {
+  return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
-  return { ok: true, url: tabUrl(tab), title: tab.title, image };
+}
+
+// PNG: the server reads no SVG or AVIF.
+async function imageFile(entry: FileEntry): Promise<Result> {
+  const blob = browserFile(entry.fileId);
+  const url = blob ? URL.createObjectURL(blob) : null;
+  if (!url) return { ok: false, error: NO_FILE };
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const width = image.naturalWidth || 300;
+    const height = image.naturalHeight || 150;
+    const fit = Math.min(1, MAX_SHOT_EDGE / Math.max(width, height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(width * fit));
+    canvas.height = Math.max(1, Math.round(height * fit));
+    canvas.getContext("2d")?.drawImage(image, 0, 0, canvas.width, canvas.height);
+    const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+    return png ? { ok: true, file: entry.name, image: await dataUrl(png) } : { ok: false, error: "the image could not be read." };
+  } catch {
+    return { ok: false, error: "the image could not be read." };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 /** At CSS size within mcp_images.MAX_IMAGE_EDGE, so x and y read off it map back exactly. */

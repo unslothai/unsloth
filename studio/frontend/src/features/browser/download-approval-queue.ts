@@ -17,6 +17,8 @@ export type DownloadRequest = {
   label: string;
   name: string;
   dangerous: boolean;
+  /** From the browser agent's tab: asked under its own rules, so another file's answer never settles it. */
+  agent: boolean;
   resolve: (allow: boolean) => void;
 };
 
@@ -50,41 +52,54 @@ export function approveDownload(
     toast.error(translate("browser.downloadPrompt.blocked", { host: label }, getLocale()));
     return Promise.resolve(false);
   }
-  // A file that runs code always asks: a site's Always allow, or asking turned off, doesn't cover it.
-  const allowed =
-    agentRule === "allow" ||
-    (agentRule !== "ask" && (remembered === "allow" || !useBrowserPrefsStore.getState().askBeforeDownloading));
-  if (!dangerous && allowed) {
-    return Promise.resolve(true);
-  }
-  return ask(origin, label, shown, dangerous);
+  const prefs = useBrowserPrefsStore.getState();
+  // A file that runs code asks unless the user allowed those in particular, never on the agent's say.
+  const allowed = dangerous
+    ? agentRule == null && (remembered === "allowAll" || !prefs.askBeforeProgramDownloads)
+    : agentRule === "allow" ||
+      (agentRule !== "ask" && (remembered === "allow" || remembered === "allowAll" || !prefs.askBeforeDownloading));
+  if (allowed) return Promise.resolve(true);
+  return ask(origin, label, shown, dangerous, agentRule != null);
 }
 
-/** Picked from the context menu: no site answer applies, and only a file that runs code asks (with nothing to remember). */
+/** Picked from the context menu: no site answer applies, and only a file that runs code asks, unless those were allowed everywhere. */
 export function approveChosenDownload(url: string, name: string): Promise<boolean> {
   const shown = safeDownloadName(name);
-  if (!isDangerousDownload(shown)) return Promise.resolve(true);
+  if (!isDangerousDownload(shown) || !useBrowserPrefsStore.getState().askBeforeProgramDownloads) return Promise.resolve(true);
   return ask("", hostOf(url) || url.slice(0, 80), shown, true);
 }
 
-function ask(origin: string, label: string, name: string, dangerous: boolean): Promise<boolean> {
+function ask(origin: string, label: string, name: string, dangerous: boolean, agent = false): Promise<boolean> {
   return new Promise((resolve) =>
     useApprovalStore.setState((state) => ({
-      queue: [...state.queue, { origin, label, name, dangerous, resolve }],
+      queue: [...state.queue, { origin, label, name, dangerous, agent, resolve }],
     })),
   );
 }
 
-/** Ignored unless it's the download being asked about. Remembered, it also settles the site's other waiting downloads. */
-export function answerDownload(request: DownloadRequest, allow: boolean, remember: boolean): void {
+/** `true`: for this site. `"all"`: Download without asking anywhere; a Cancel isn't kept for every site. */
+export type RememberDownload = boolean | "all";
+
+/** Ignored unless it's the download being asked about. Remembered, it also settles the other waiting downloads it covers. */
+export function answerDownload(request: DownloadRequest, allow: boolean, remember: RememberDownload): void {
   const { queue } = useApprovalStore.getState();
   if (queue[0] !== request) return;
-  const kept = remember && request.origin !== "";
-  if (kept) useDownloadSitesStore.getState().setSite(request.origin, allow ? "allow" : "block");
-  // A remembered Allow settles the site's other waiting files, except ones that run code: each of those asks.
-  const answered = kept
-    ? queue.filter((other) => other === request || (other.origin === request.origin && !(allow && other.dangerous)))
-    : [request];
+  // Allowing a file that runs code is remembered for those too; allowing any other file isn't.
+  const programs = allow && request.dangerous;
+  const everywhere = remember === "all" && allow;
+  const site = remember === true && request.origin !== "";
+  if (site) useDownloadSitesStore.getState().setSite(request.origin, !allow ? "block" : programs ? "allowAll" : "allow");
+  if (everywhere) {
+    const prefs = useBrowserPrefsStore.getState();
+    prefs.setAskBeforeDownloading(false);
+    if (programs) prefs.setAskBeforeProgramDownloads(false);
+  }
+  const covered = (other: DownloadRequest) => !other.agent && !(allow && other.dangerous && !programs);
+  const answered = everywhere
+    ? queue.filter((other) => other === request || covered(other))
+    : site
+      ? queue.filter((other) => other === request || (other.origin === request.origin && covered(other)))
+      : [request];
   useApprovalStore.setState({ queue: queue.filter((other) => !answered.includes(other)) });
   for (const other of answered) other.resolve(allow);
 }

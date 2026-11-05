@@ -538,7 +538,10 @@ def test_host_load_runs_for_layers_or_streamed_embeddings_only():
 
 
 def _load_skip():
-    src = open(UTILS, encoding = "utf-8").read()
+    gc_kwargs = os.path.join(
+        os.path.dirname(os.path.dirname(UTILS)), "_gc_kwargs.py"
+    )  # _skip_aware_flag
+    src = open(UTILS, encoding = "utf-8").read() + "\n" + open(gc_kwargs, encoding = "utf-8").read()
     mod = ast.parse(src)
     names = ("_skip_aware_flag", "skip_checkpointing", "_gc_keep_layers_env")
     ns = {"find_decoder_layers": lambda m: m.layers, "os": os}

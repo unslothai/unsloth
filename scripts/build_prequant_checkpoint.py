@@ -74,7 +74,14 @@ def upload_destination(
     dispatches on the extension alone, so a safetensors build published as ``.pt`` is read as a
     pickle and a pickle published as ``.safetensors`` is read from a header it does not have. Either
     way the upload succeeds and the artifact is unopenable, after the hours the quantization took.
+
+    nvfp4 publishes safetensors only: Studio never resolves or opens an nvfp4 pickle.
     """
+    if (scheme or "").strip().lower() == "nvfp4" and not safetensors:
+        raise ValueError(
+            "nvfp4 checkpoints are published as .safetensors only (Studio never reads an nvfp4 "
+            "pickle); write --out as a .safetensors file"
+        )
     if override:
         wanted = ".safetensors" if safetensors else ".pt"
         if not override.lower().endswith(wanted):
@@ -216,6 +223,15 @@ def main(argv = None) -> int:
         "otherwise",
     )
     args = p.parse_args(argv)
+    if (args.scheme or "").strip().lower() == "nvfp4" and not str(args.out).lower().endswith(
+        ".safetensors"
+    ):
+        print(
+            "error: --scheme nvfp4 writes .safetensors only (Studio never reads an NVFP4 pickle); "
+            "give --out a .safetensors path",
+            flush = True,
+        )
+        return 2
 
     sys.path.insert(0, str(BACKEND))
     import torch

@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from models.inference import ValidateModelRequest
 
 
@@ -163,6 +165,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         gpu_layers,
         extra_args,
         diffusion_kind = True,
+        gpu_memory_mode = "manual",
     ):
         seen: list = []
 
@@ -172,7 +175,7 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         request = ValidateModelRequest(
             model_path = "someone/diffusion-gguf",
             llama_extra_args = extra_args,
-            gpu_memory_mode = "manual",
+            gpu_memory_mode = gpu_memory_mode,
             gpu_layers = gpu_layers,
         )
         config = SimpleNamespace(
@@ -246,6 +249,62 @@ class TestValidateTranslatesManualNgl(unittest.TestCase):
         ):
             asyncio.run(route.validate_model(request, current_subject = "test-user"))
         self.assertEqual(seen, [(request.gpu_layers, ["-ngl", "20"])])
+
+
+@pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+@pytest.mark.parametrize("value, layers", [("auto", -1), ("all", 2147483647)])
+@pytest.mark.parametrize("mode", ["auto", "manual"])
+def test_validate_preserves_gpu_layer_keyword_intent(flag, value, layers, mode):
+    route = _load_route_module("inf_route_ngl_keywords")
+    args = [flag, value]
+    seen = TestValidateTranslatesManualNgl()._validate(
+        route,
+        gpu_layers = 0,
+        extra_args = args,
+        diffusion_kind = False,
+        gpu_memory_mode = mode,
+    )
+    assert seen == ([(layers, [])] if mode == "manual" else [(0, args)])
+
+
+@pytest.mark.parametrize("value, layers", [("auto", -1), ("all", 2147483647)])
+@pytest.mark.parametrize("mode", ["auto", "manual"])
+def test_load_normalizes_gpu_layer_keywords_before_model_work(monkeypatch, value, layers, mode):
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from models.inference import LoadRequest
+    import routes.inference as route
+
+    seen = []
+
+    def capture(request, **kwargs):
+        seen.append((request.gpu_layers, request.llama_extra_args))
+        raise HTTPException(status_code = 418, detail = "stopped before model resolution")
+
+    async def no_ollama_lease(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(route, "_resolve_model_identifier_for_request", capture)
+    monkeypatch.setattr(route, "_lease_ollama_model_ref", no_ollama_lease)
+    monkeypatch.setattr(route, "_as_ollama_manifest_request", lambda request: request)
+    monkeypatch.setattr(route, "_as_local_scan_folder_request", lambda request, owner: request)
+    monkeypatch.setattr(route, "_repo_is_in_the_hub_cache", lambda model: None)
+    monkeypatch.setattr(route, "_hub_cache_footprint", lambda model: None)
+    monkeypatch.setattr(route, "_lora_base_already_in_the_hub_cache", lambda model: None)
+    monkeypatch.setattr(route, "_note_lora_base_fetched_with_a_request_token", lambda *a, **k: None)
+    args = ["-ngl", value]
+    request = LoadRequest(
+        model_path = "placeholder.gguf",
+        gpu_memory_mode = mode,
+        gpu_layers = 0,
+        llama_extra_args = args,
+    )
+
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(route._load_model_impl(request, Request({"type": "http", "headers": []}), "t"))
+
+    assert caught.value.status_code == 418
+    assert seen == ([(layers, [])] if mode == "manual" else [(0, args)])
 
 
 class TestValidateTranslatesManualTensorSplit(unittest.TestCase):

@@ -10,6 +10,8 @@ from typing import Any, Optional
 EVAL_SPLIT_CANDIDATES = ("eval", "validation", "valid", "val", "test")
 MIN_EVAL_ROWS = 16
 MIN_TOTAL_ROWS_FOR_EVAL = MIN_EVAL_ROWS * 2
+# Streaming eval has no __len__, so cap it or an unbounded eval iterates the whole source on every eval step.
+STREAMING_EVAL_MAX_SAMPLES = 500
 
 
 def evaluation_enabled(value: Any) -> bool:

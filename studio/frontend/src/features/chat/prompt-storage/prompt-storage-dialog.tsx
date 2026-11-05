@@ -23,10 +23,10 @@ import {
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
 
 import { cn } from "@/lib/utils";
+import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Bookmark02Icon,
-  Delete02Icon,
   Download01Icon,
+  LeftToRightListBulletIcon,
   Search01Icon,
   Cancel01Icon,
   Edit03Icon,
@@ -37,7 +37,6 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
-  LayoutListIcon,
   PlayIcon,
 } from "lucide-react";
 import { MarkdownPreview } from "@/components/markdown/markdown-preview";
@@ -115,7 +114,7 @@ import {
 } from "../utils/conversation-markdown";
 import { planChatItemSources } from "../utils/project-source-plan";
 import { stripSearchImageTokens } from "../search-images/search-images.ts";
-import { saveMarkdownAsProjectSource } from "@/features/rag";
+import { saveMarkdownAsProjectSource } from "@/features/rag/api/save-markdown-source";
 
 function newId(): string {
   return crypto.randomUUID().replace(/-/g, "").slice(0, 12);
@@ -241,15 +240,15 @@ async function loadConversationMessages(
     emptyMessage?: string;
     includeSiblings?: boolean;
     includeInstructions?: boolean;
+    liveBranch?: string[] | null;
   } = {},
 ) {
   const {
     emptyMessage = "No messages in this conversation to export.",
     includeSiblings = true,
     includeInstructions = true,
+    liveBranch = liveThreadBranch(threadId),
   } = options;
-  // read before awaiting storage so a chat switch cannot redirect the lookup
-  const liveBranch = liveThreadBranch(threadId);
   const [raw, instructions] = await Promise.all([
     listStoredChatMessages(threadId),
     includeInstructions ? chatInstructionsTurn(threadId) : [],
@@ -475,9 +474,13 @@ function messageToOpenAI(msg: { role: unknown; content: unknown; attachments?: u
 }
 
 // ShareGPT training JSONL (human/system/gpt turns).
-export async function exportConversationShareGPT(threadId: string): Promise<void> {
+export async function exportConversationShareGPT(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings("sharegpt"),
+    liveBranch,
   });
   if (!messages) return;
 
@@ -498,22 +501,30 @@ export async function exportConversationShareGPT(threadId: string): Promise<void
 }
 
 // OpenAI/ChatML JSONL: {"messages": [{"role","content"}, ...]} per conversation; Unsloth reads this as a ChatML dataset.
-export async function exportConversationRawJsonl(threadId: string): Promise<void> {
-  return exportConversationJsonl(threadId, "training");
+export async function exportConversationRawJsonl(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  return exportConversationJsonl(threadId, "training", liveBranch);
 }
 
-export async function exportConversationMessagesJsonl(threadId: string): Promise<void> {
-  return exportConversationJsonl(threadId, "messages");
+export async function exportConversationMessagesJsonl(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  return exportConversationJsonl(threadId, "messages", liveBranch);
 }
 
 async function exportConversationJsonl(
   threadId: string,
   layout: ConversationJsonlLayout,
+  liveBranch?: string[] | null,
 ): Promise<void> {
   const messages = await loadConversationMessages(threadId, {
     includeSiblings: exportFormatIncludesSiblings(
       layout === "training" ? "jsonl-raw" : "jsonl-messages",
     ),
+    liveBranch,
   });
   if (!messages) return;
 
@@ -526,8 +537,11 @@ async function exportConversationJsonl(
   );
 }
 
-export async function exportConversationCsv(threadId: string): Promise<void> {
-  const messages = await loadConversationMessages(threadId);
+export async function exportConversationCsv(
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> {
+  const messages = await loadConversationMessages(threadId, { liveBranch });
   if (!messages) return;
 
   const rows = ["role,content"];
@@ -547,7 +561,11 @@ export async function exportConversationCsv(threadId: string): Promise<void> {
 
 const loadDisplayedBranchMessages = (
   threadId: string,
-  options: { emptyMessage?: string; includeInstructions?: boolean } = {},
+  options: {
+    emptyMessage?: string;
+    includeInstructions?: boolean;
+    liveBranch?: string[] | null;
+  } = {},
 ) => loadConversationMessages(threadId, { ...options, includeSiblings: false });
 
 export const buildConversationMarkdownForThread =
@@ -556,13 +574,16 @@ export const buildConversationMarkdownForThread =
     renderMessage: messageToMarkdown,
   });
 
-export const exportConversationMarkdown = createConversationMarkdownExporter({
-  loadMessages: loadDisplayedBranchMessages,
+export const exportConversationMarkdown = (
+  threadId: string,
+  liveBranch?: string[] | null,
+): Promise<void> => createConversationMarkdownExporter<MessageRecord>({
+  loadMessages: (id) => loadDisplayedBranchMessages(id, { liveBranch }),
   renderMessage: messageToMarkdown,
   download: downloadBlob,
   exportBasename: conversationBasename,
   notifyNoContent: () => toast.info("No exportable content."),
-});
+})(threadId);
 
 // "skipped" must not stop a pair; "failed" already toasted, so stop.
 type SaveSourceOutcome = "saved" | "skipped" | "failed";
@@ -619,18 +640,22 @@ export async function saveChatItemAsProjectSource(
 }
 
 /** A sidebar row as one markdown document. Compare halves are named by model, since their order is not stable. */
-export async function buildChatItemMarkdown(item: {
-  id: string;
-  title: string;
-  type: string;
-}): Promise<string> {
+export async function buildChatItemMarkdown(
+  item: { id: string; title: string; type: string },
+  liveBranch?: string[] | null,
+): Promise<string> {
   const plans = planChatItemSources(
     item,
     item.type === "single" ? [] : await listStoredChatThreads({ pairId: item.id }),
   );
   return buildNamedConversationsMarkdown(
     plans,
-    buildConversationMarkdownForThread,
+    liveBranch === undefined
+      ? buildConversationMarkdownForThread
+      : createConversationMarkdownBuilder<MessageRecord>({
+          loadMessages: (id) => loadDisplayedBranchMessages(id, { liveBranch }),
+          renderMessage: messageToMarkdown,
+        }),
   );
 }
 
@@ -1724,7 +1749,7 @@ function PromptDetail({
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
         >
-          <HugeiconsIcon icon={Bookmark02Icon} className={cn("size-4", isPinned && "fill-primary")} />
+          <HugeiconsIcon icon={BookmarkIcon} className={cn("size-4", isPinned && "fill-primary")} />
         </button>
         <button
           type="button"
@@ -1741,7 +1766,7 @@ function PromptDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -2062,7 +2087,7 @@ function PromptListDetail({
           )}
           title={isPinned ? "Unpin from + menu" : "Pin to + menu"}
         >
-          <HugeiconsIcon icon={Bookmark02Icon} className={cn("size-4", isPinned && "fill-primary")} />
+          <HugeiconsIcon icon={BookmarkIcon} className={cn("size-4", isPinned && "fill-primary")} />
         </button>
         <button
           type="button"
@@ -2079,7 +2104,7 @@ function PromptListDetail({
           className="flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground hover:bg-destructive/10 hover:text-destructive transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted-foreground"
           title="Delete"
         >
-          <HugeiconsIcon icon={Delete02Icon} strokeWidth={1.75} className="size-4" />
+          <HugeiconsIcon icon={TrashIcon} strokeWidth={1.75} className="size-4" />
         </button>
         <div className="flex-1" />
         {dirty && (
@@ -2671,7 +2696,7 @@ export function PromptStorageDialog({
                       dirty={promptDrafts.has(entry.id)}
                       leading={
                         pinnedPromptIds.includes(entry.id) ? (
-                          <HugeiconsIcon icon={Bookmark02Icon} className="size-3 shrink-0 fill-primary text-primary" />
+                          <HugeiconsIcon icon={BookmarkIcon} className="size-3 shrink-0 fill-primary text-primary" />
                         ) : null
                       }
                       onSelect={() => {
@@ -2693,7 +2718,7 @@ export function PromptStorageDialog({
                       dirty={listDrafts.has(entry.id)}
                       leading={
                         pinnedListIds.includes(entry.id) ? (
-                          <HugeiconsIcon icon={Bookmark02Icon} className="size-3 shrink-0 fill-primary text-primary" />
+                          <HugeiconsIcon icon={BookmarkIcon} className="size-3 shrink-0 fill-primary text-primary" />
                         ) : null
                       }
                       onSelect={() => {
@@ -2757,7 +2782,7 @@ export function PromptStorageDialog({
                   />
                 ) : (
                   <EmptyDetail
-                    icon={<HugeiconsIcon icon={Bookmark02Icon} className="size-5 text-muted-foreground/40" />}
+                    icon={<HugeiconsIcon icon={BookmarkIcon} className="size-5 text-muted-foreground/40" />}
                     title={searchQuery.trim() ? `No prompts match “${searchQuery}”` : "No saved prompts yet"}
                     hint={searchQuery.trim() ? undefined : "Save prompts you use often for quick reuse"}
                     onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}
@@ -2798,7 +2823,7 @@ export function PromptStorageDialog({
                   />
                 ) : (
                   <EmptyDetail
-                    icon={<LayoutListIcon className="size-5 text-muted-foreground/40" />}
+                    icon={<HugeiconsIcon icon={LeftToRightListBulletIcon} className="size-5 text-muted-foreground/40" />}
                     title={searchQuery.trim() ? `No prompt lists match “${searchQuery}”` : "No prompt lists yet"}
                     hint={searchQuery.trim() ? undefined : "A prompt list queues a sequence of prompts for quick reuse"}
                     onClearSearch={searchQuery.trim() ? () => setSearchQuery("") : undefined}

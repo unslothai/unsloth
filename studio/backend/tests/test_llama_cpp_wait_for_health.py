@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 import threading
@@ -1517,22 +1516,6 @@ class TestHealthWaitMeasuresStalls:
         "time.sleep(60)\n"
     )
 
-    _MMAP_WORKER = (
-        "import mmap, os, sys, time\n"
-        "fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, 'O_BINARY', 0))\n"
-        "view = 16 << 20\n"
-        "end = time.monotonic() + float(sys.argv[2])\n"
-        "offset = 0\n"
-        "while time.monotonic() < end:\n"
-        "    if hasattr(os, 'posix_fadvise'):\n"
-        "        os.posix_fadvise(fd, 0, 0, os.POSIX_FADV_DONTNEED)\n"
-        "    with mmap.mmap(fd, view, access = mmap.ACCESS_READ, offset = offset) as m:\n"
-        "        sum(m[p] for p in range(0, view, mmap.PAGESIZE))\n"
-        "    offset = view - offset\n"
-        "    time.sleep(0.05)\n"
-        "time.sleep(60)\n"
-    )
-
     def _wait_on_child(
         self,
         monkeypatch,
@@ -1605,21 +1588,74 @@ class TestHealthWaitMeasuresStalls:
         assert ok is True
         assert elapsed >= 2.5
 
-    def test_mmap_page_ins_with_flat_resident_memory_count(self, monkeypatch, tmp_path):
-        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_MIN_CPU_FRACTION", 100.0)
-        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_MIN_BYTES", 1 << 40)
-        model = tmp_path / "model.gguf"
-        # Small writes avoid collapsing the file into 2 MiB cache folios.
-        with open(model, "wb") as f:
-            for _ in range(512):
-                f.write(os.urandom(64 << 10))
-        # Longer stall window: page faults use a flat threshold, so CPU starvation hits this test.
-        # Without fault progress the wait still dies at 1.5s, before the 2.5s health flip.
-        b, ok, elapsed = self._wait_on_child(
-            monkeypatch, [self._MMAP_WORKER, str(model), "3.0"], healthy_after = 2.5, timeout = 1.5
+    @pytest.mark.parametrize("faults_progress", [True, False])
+    def test_mmap_page_ins_with_flat_resident_memory_count(self, monkeypatch, faults_progress):
+        import contextlib
+        import psutil
+
+        module = sys.modules[LlamaCppBackend.__module__]
+        clock = _types.SimpleNamespace(now = 0.0)
+        fake_time = _types.SimpleNamespace(monotonic = lambda: clock.now)
+        monkeypatch.setattr(module, "time", fake_time)
+        monkeypatch.setattr(module, "_local_ssl_context", lambda: None)
+        monkeypatch.setattr(LlamaCppBackend, "_STARTUP_PROGRESS_SAMPLE_S", 0.1)
+        monkeypatch.setattr(
+            LlamaCppBackend, "_health_listener_is_ours", staticmethod(lambda p, port: True)
         )
-        assert ok is True
-        assert elapsed >= 2.5
+
+        class Event:
+            def clear(self):
+                pass
+
+            def wait(self, interval):
+                clock.now = round(clock.now + interval, 6)
+
+        fake_pid = (1 << 63) - 1
+        member = mock.Mock(pid = fake_pid)
+        member.children.return_value = []
+        member.oneshot.side_effect = contextlib.nullcontext
+        member.cpu_times.return_value = _types.SimpleNamespace(user = 1.0, system = 0.0)
+        member.io_counters.return_value = _types.SimpleNamespace(read_bytes = 100, read_chars = 100)
+        member.memory_info.side_effect = lambda: _types.SimpleNamespace(
+            rss = 1000, pfaults = 1000 + (round(clock.now * 10) * 128 if faults_progress else 0)
+        )
+        monkeypatch.setattr(psutil, "Process", lambda pid: member)
+        monkeypatch.setattr(
+            httpx, "get", lambda *a, **kw: mock.Mock(status_code = 200 if clock.now >= 2.5 else 503)
+        )
+        b = _make_backend()
+        b._process.pid = fake_pid
+        b._process.poll.return_value = None
+        b._health_probe_event = Event()
+        ok = b._wait_for_health(timeout = 1.5, interval = 0.1)
+        assert ok is faults_progress
+        if faults_progress:
+            assert clock.now >= 2.5
+            assert not b._health_wait_stalled
+        else:
+            assert clock.now == pytest.approx(1.5)
+            assert b._health_wait_stalled
+            assert any("no startup progress for 1.5s" in ln for ln in b._stdout_lines)
+
+    def test_page_fault_counters_from_platform_and_linux_stat(self, monkeypatch):
+        import io
+
+        member = _types.SimpleNamespace(pid = (1 << 63) - 1)
+        assert LlamaCppBackend._page_faults(member, _types.SimpleNamespace(pfaults = 71)) == 71
+        assert (
+            LlamaCppBackend._page_faults(member, _types.SimpleNamespace(num_page_faults = 93)) == 93
+        )
+        opened = []
+
+        def fake_open(path, mode):
+            opened.append((path, mode))
+            return io.BytesIO(
+                f"{member.pid} (name with ) in it) R 1 2 3 4 5 6 123 8 45 10".encode()
+            )
+
+        monkeypatch.setattr("builtins.open", fake_open)
+        assert LlamaCppBackend._page_faults(member, _types.SimpleNamespace()) == 168
+        assert opened == [(f"/proc/{member.pid}/stat", "rb")]
 
     def test_unreadable_counters_keep_the_fixed_deadline(self, monkeypatch):
         monkeypatch.setattr(LlamaCppBackend, "_startup_work_sample", staticmethod(lambda p: None))

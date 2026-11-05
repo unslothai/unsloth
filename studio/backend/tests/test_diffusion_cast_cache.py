@@ -291,3 +291,70 @@ def test_resident_device_module_is_read_back_bit_identical(pipe_dir):
     hit = CC.read(cand)
     for k, v in hit.state_dict().items():
         assert v.dtype == reference[k].dtype and torch.equal(_bits(v), _bits(reference[k])), k
+
+
+def test_source_cast_matches_the_live_module_cast_bit_for_bit(pipe_dir, tmp_path, monkeypatch):
+    """A component too big for host RAM is cast from its source shards one tensor at a time: the cached file is the
+    same file the live-module write produces (same key, same bytes), and reads back as the dense load."""
+    cand = _by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["transformer"]
+    path = CC.save_from_source(cand)
+    assert path is not None and C.path_in_cache(path)
+    from_source = Path(path).read_bytes()
+    hit = CC.read(_by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["transformer"])
+    assert hit is not None
+    dense = _dense(cand)
+    _identical(dense, hit)
+    # the live-module write of the same component, into a second cache root: identical bytes (bar the timestamp-free
+    # metadata, which is the same too)
+    monkeypatch.setenv(C.ENV_DIR, str(tmp_path / "cache_live"))
+    live = _by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["transformer"]
+    live_path = _save(live, dense)
+    assert live_path is not None
+    assert Path(live_path).read_bytes() == from_source
+
+
+def test_source_cast_refuses_a_class_its_shards_do_not_match(pipe_dir):
+    cand = _by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["transformer"]
+    cand.cls = (
+        diffusers.UNet2DModel
+    )  # a different architecture: names / shapes disagree with the shards
+    cand.config_path = str(pipe_dir / "transformer" / "config.json")
+    assert CC.save_from_source(cand) is None
+    # transformers components are not cast from source (their dense load is the small one)
+    te = _by_name(CC.candidates(pipe_dir, torch_dtype = FP16_DEFAULT))["text_encoder"]
+    assert CC.save_from_source(te) is None
+
+
+def test_source_cast_of_a_hunyuanvideo15_denoiser_reads_back_as_the_dense_load(tmp_path):
+    """The HunyuanVideo-1.5 case: its fp32 DiT (31 GB) does not fit a 31 GB host beside the converted encoder."""
+    torch.manual_seed(0)
+    model = diffusers.HunyuanVideo15Transformer3DModel(
+        in_channels = 9,
+        out_channels = 4,
+        num_attention_heads = 2,
+        attention_head_dim = 32,
+        num_layers = 1,
+        num_refiner_layers = 1,
+        mlp_ratio = 2.0,
+        text_embed_dim = 64,
+        text_embed_2_dim = 32,
+        image_embed_dim = 32,
+        rope_axes_dim = (8, 12, 12),
+        target_size = 64,
+    ).to(torch.float32)
+    root = tmp_path / "HunyuanVideo-1.5-tiny"
+    model.save_pretrained(root / "transformer", max_shard_size = "200KB")
+    (root / "model_index.json").write_text(
+        json.dumps(
+            {
+                "_class_name": "HunyuanVideo15Pipeline",
+                "transformer": ["diffusers", "HunyuanVideo15Transformer3DModel"],
+            }
+        )
+    )
+    cand = _by_name(CC.candidates(root, torch_dtype = FP16_DEFAULT))["transformer"]
+    assert len(cand.shards) > 1
+    assert CC.save_from_source(cand) is not None
+    hit = CC.read(_by_name(CC.candidates(root, torch_dtype = FP16_DEFAULT))["transformer"])
+    assert hit is not None
+    _identical(_dense(cand), hit)

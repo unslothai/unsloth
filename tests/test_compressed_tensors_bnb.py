@@ -13,6 +13,7 @@
 
 """Packed INT4/INT8 checkpoints load into bnb 4-bit; GPU tests match a bf16 decompress bit for bit."""
 
+import inspect
 import json
 import os
 import shutil
@@ -50,6 +51,14 @@ except Exception:
 from unsloth.models.compressed_tensors_bnb import _transformers_supports_weight_converters
 
 HAS_CONVERTERS = _transformers_supports_weight_converters()
+
+
+def _update_conversions(quantizer, conversions, model):
+    # transformers 5.21+ passes the model to the hook.
+    from transformers.quantizers.base import HfQuantizer
+    if "model" in inspect.signature(HfQuantizer.update_weight_conversions).parameters:
+        return quantizer.update_weight_conversions(conversions, model)
+    return quantizer.update_weight_conversions(conversions)
 
 
 def _w4a16(**overrides):
@@ -514,7 +523,7 @@ def test_the_planner_pass_does_not_consume_the_plan():
     assert getattr(config, UNSLOTH_COMPRESSED_TENSORS_ATTR, None) is plan
     second, model = preprocess()  # the real load
     assert second._unsloth_ct_config is not None
-    conversions = second.update_weight_conversions([])
+    conversions = _update_conversions(second, [], model)
     assert any(
         getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns
         for c in conversions
@@ -542,8 +551,8 @@ def test_armed_conversions_still_run_a_composed_subclass_hook(monkeypatch):
     marker = object()
 
     class MarkerBnb4BitHfQuantizer(Bnb4BitHfQuantizer):
-        def update_weight_conversions(self, weight_conversions):
-            return super().update_weight_conversions(weight_conversions) + [marker]
+        def update_weight_conversions(self, weight_conversions, *args, **kwargs):
+            return super().update_weight_conversions(weight_conversions, *args, **kwargs) + [marker]
 
     monkeypatch.setitem(
         quantizers_auto.AUTO_QUANTIZER_MAPPING, "bitsandbytes_4bit", MarkerBnb4BitHfQuantizer
@@ -574,7 +583,7 @@ def test_armed_conversions_still_run_a_composed_subclass_hook(monkeypatch):
         model, dtype = torch.bfloat16, device_map = None, checkpoint_files = []
     )
     assert quantizer._unsloth_ct_config is not None
-    conversions = quantizer.update_weight_conversions([])
+    conversions = _update_conversions(quantizer, [], model)
     assert marker in conversions
     assert any(
         getattr(c, "source_patterns", None) and "weight_packed$" in c.source_patterns

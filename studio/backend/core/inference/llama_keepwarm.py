@@ -51,6 +51,9 @@ _last_unloaded_model = None
 _last_unloaded_mlx = False
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
+# Slot saves of manually unloaded GGUFs, oldest first, until that GGUF loads again.
+_unload_kv: list = []
+_loaded_by = None
 # Process-wide, not per-loop: the backend slot is shared across every event loop.
 _lifecycle_lock = threading.Lock()
 
@@ -517,9 +520,19 @@ def model_load_gate():
 
 def note_model_loaded(backend = None) -> None:
     """Stamp activity and synchronously drop any reload stash."""
+    global _loaded_by
     _note_activity()
+    gguf = getattr(backend, "_gguf_path", None)
+    if gguf:
+        from utils.account_context import current_account_id
+        _loaded_by = (str(gguf), current_account_id())
     resume = take_kv_resume()
     _set_last_unloaded(None)
+    kept = _take_unload_kv(gguf)
+    if kept is not None and (resume is None or resume.get("gguf") != kept.get("gguf")):
+        resume, kept = kept, resume
+    if kept:
+        _delete_resume_files(kept)
     if resume is None:
         return
     if backend is not None:
@@ -570,15 +583,22 @@ def _delete_resume_files(manifest) -> None:
         pass
 
 
+def loaded_account(gguf) -> Optional[str]:
+    loaded = _loaded_by
+    return loaded[1] if gguf and loaded and loaded[0] == str(gguf) else None
+
+
 def _set_kv_resume(value) -> None:
     global _kv_resume
-    stale = None
+    stale = []
     with _lock:
         if _kv_resume is not None and _kv_resume is not value:
-            stale = _kv_resume
+            stale.append(_kv_resume)
         _kv_resume = value
-    if stale:
-        _delete_resume_files(stale)
+        if value is not None:
+            _trim_unload_kv(stale, keep_newest = False)
+    for old in stale:
+        _delete_resume_files(old)
 
 
 def take_kv_resume():
@@ -586,6 +606,50 @@ def take_kv_resume():
     with _lock:
         manifest, _kv_resume = _kv_resume, None
         return manifest
+
+
+def _resume_bytes(manifest) -> int:
+    total = 0
+    for entry in manifest.get("slots") or []:
+        with contextlib.suppress(OSError):
+            total += (Path(manifest.get("dir") or "") / str(entry.get("filename"))).stat().st_size
+    return total
+
+
+def _trim_unload_kv(stale: list, *, keep_newest: bool) -> None:
+    """Caller holds _lock. Evicts the oldest unload saves until every kept save fits the one cap."""
+    global _kv_resume
+    from core.inference.llama_cpp import _SLOT_SAVE_MAX_BYTES
+
+    def _kept_bytes() -> int:
+        resume = _resume_bytes(_kv_resume) if _kv_resume else 0
+        return resume + sum(map(_resume_bytes, _unload_kv))
+
+    while len(_unload_kv) > (1 if keep_newest else 0) and _kept_bytes() > _SLOT_SAVE_MAX_BYTES:
+        stale.append(_unload_kv.pop(0))
+    if keep_newest and _kv_resume is not None and _kept_bytes() > _SLOT_SAVE_MAX_BYTES:
+        stale.append(_kv_resume)
+        _kv_resume = None
+
+
+def stash_unload_kv(manifest) -> None:
+    with _lock:
+        stale = [m for m in _unload_kv if m.get("gguf") == manifest.get("gguf")]
+        _unload_kv[:] = [m for m in _unload_kv if m.get("gguf") != manifest.get("gguf")]
+        _unload_kv.append(manifest)
+        _trim_unload_kv(stale, keep_newest = True)
+    for old in stale:
+        _delete_resume_files(old)
+
+
+def _take_unload_kv(gguf):
+    if not gguf:
+        return None
+    with _lock:
+        for index, manifest in enumerate(_unload_kv):
+            if manifest.get("gguf") == str(gguf):
+                return _unload_kv.pop(index)
+    return None
 
 
 def purge_kv_resume(*, origin: Optional[str] = None) -> None:
@@ -597,8 +661,13 @@ def purge_kv_resume(*, origin: Optional[str] = None) -> None:
             _kv_resume = None
         else:
             resume = None
+        unloaded = [] if origin is not None else _unload_kv[:]
+        if origin is None:
+            _unload_kv.clear()
     if resume:
         _delete_resume_files(resume)
+    for manifest in unloaded:
+        _delete_resume_files(manifest)
 
 
 def restore_kv_resume(backend, manifest) -> None:

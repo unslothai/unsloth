@@ -16,7 +16,7 @@ import time
 from contextlib import contextmanager
 from functools import partial, wraps
 from importlib._bootstrap import _ModuleLockManager
-from typing import Optional
+from typing import Collection, Optional
 
 from loggers import get_logger
 
@@ -197,7 +197,7 @@ def _warm_transformers() -> None:
 
 
 def _warm_datasets() -> None:
-    # `import main` pulled it in; keep the first dataset op as cheap. Ungated: no torch needed.
+    # Independent of hardware detection; datasets may import shared libraries such as torch.
     importlib.import_module("datasets")
 
 
@@ -437,6 +437,21 @@ _STAGES = (
 )
 
 
+def _selected_stage_names(features: Collection[str]) -> set[str]:
+    """Dependencies are shared, but an unselected feature never gets its own warm stage."""
+    selected = set(features)
+    stages = set()
+    if selected.intersection({"hardware", "text", "media", "quantization"}):
+        stages.add("hardware")
+    if selected.intersection({"text", "media", "quantization"}):
+        stages.add("inference_backend")  # Dynamo must finish before any compile-stack consumer.
+    if "text" in selected:
+        stages.add("transformers")
+    if "datasets" in selected:
+        stages.add("datasets")
+    return stages
+
+
 START_GATE_MAX_WAIT_S = 2.0
 
 
@@ -452,27 +467,36 @@ def _wait_for_start_gate(gate: Optional[threading.Event]) -> None:
     )
 
 
-def _warm(epoch: Optional[int] = None, gate: Optional[threading.Event] = None) -> None:
+def _warm(
+    epoch: Optional[int] = None,
+    gate: Optional[threading.Event] = None,
+    features: Optional[frozenset[str]] = None,
+) -> None:
     _wait_for_start_gate(gate)
     started = time.perf_counter()
     if epoch is None:
         epoch = _detection_epoch()
+    # None preserves explicit legacy callers; startup always supplies its immutable selection.
+    stages = None if features is None else _selected_stage_names(features)
+    warm_quantization = features is None or "quantization" in features
     # The scope binds the epoch so a mid-stage shutdown discards this pass, not republishes DEVICE.
     with _owning_epoch(epoch):
         for name, fn in _STAGES:
+            if stages is not None and name not in stages:
+                continue
             if epoch is not None and _detection_epoch() != epoch:
                 # Before the first stage too: a shutdown between the epoch read and start().
                 logger.info("torch warm stopped before %s: its lifespan ended", name)
                 return
             # Only the real stage takes the epoch; a patched _STAGES entry is called bare.
             _run_stage(name, partial(fn, epoch) if fn is _warm_hardware else fn)
-            if name == "inference_backend":
-                # dynamo is imported by now, so the probe's imports cannot race its first import (#10350).
-                _kick_early_quant_probe()
             if epoch is not None and _detection_epoch() != epoch:
                 # Later stages reach get_device(), republishing DEVICE after teardown.
                 logger.info("torch warm stopped after %s: its lifespan ended", name)
                 return
+            if name == "inference_backend" and warm_quantization:
+                # Dynamo is ready and this lifespan still owns the work.
+                _kick_early_quant_probe()
     _status["finished"] = True
     _status["seconds"] = round(time.perf_counter() - started, 3)
     logger.info("torch warm finished in %.1fms", (time.perf_counter() - started) * 1000)
@@ -504,30 +528,37 @@ def _warm_after(
     previous: threading.Thread,
     epoch: Optional[int],
     gate: Optional[threading.Event] = None,
+    features: Optional[frozenset[str]] = None,
 ) -> None:
     """Wait out a retired warm, then warm for ``epoch``. One importer at a time."""
     previous.join()
-    _warm(epoch, gate)
+    _warm(epoch, gate, features)
 
 
-def start_background_warm(gate: Optional[threading.Event] = None) -> bool:
-    """A finished thread from an earlier lifespan does not count; shutdown cleared the state it warmed.
+def start_background_warm(
+    gate: Optional[threading.Event] = None, *, features: Optional[Collection[str]] = None
+) -> bool:
+    """Warm selected features; omitting features preserves an explicit caller's full warm.
 
+    A finished thread from an earlier lifespan does not count; shutdown cleared the state it warmed.
     ``gate``: reports started now, runs stages once set or after START_GATE_MAX_WAIT_S (utils/first_response_gate.py)."""
     global _thread
     if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return False
+    selection = None if features is None else frozenset(features)
+    if selection is not None and not _selected_stage_names(selection):
         return False
     global _thread_epoch
     # Epoch read before start(): reading it in the child would adopt the post-shutdown one.
     epoch = _detection_epoch()
     with _start_lock:
-        target, args = _warm, (epoch, gate)
+        target, args = _warm, (epoch, gate, selection)
         if _thread is not None:
             if _thread_epoch is not None and epoch == _thread_epoch:
                 return False
             if _thread.is_alive():
                 # Stale but mid-stage: hand off to a successor that joins it first, keeping one importer.
-                target, args = _warm_after, (_thread, epoch, gate)
+                target, args = _warm_after, (_thread, epoch, gate, selection)
             else:
                 _clear_finished_warm_locked()
         _thread = threading.Thread(
@@ -673,7 +704,21 @@ def _prewarm_quant_probe() -> None:
         logger.debug("quant smoke probe prewarm skipped: %r", exc)
 
 
-def prewarm_diffusers_if_image_models_exist() -> bool:
+def prewarm_quant_probe_if_image_models_exist() -> None:
+    """Fallback for a selected quantization check, including when early probing is disabled."""
+    if os.environ.get(DISABLE_ENV_VAR) == "1":
+        return
+    try:
+        if not _a_local_model_would_load_through_diffusers():
+            return
+    except Exception as exc:
+        logger.debug("quant smoke probe gate unavailable: %r", exc)
+        return
+    # Unlike the early hint, validate any persisted table against the current stack.
+    _prewarm_quant_probe()
+
+
+def prewarm_diffusers_if_image_models_exist(*, warm_quantization: bool = True) -> bool:
     """Runs after the warm joins so it cannot delay a stage; skipped once a load claims the window; opt out with UNSLOTH_STUDIO_DISABLE_DIFFUSERS_PREWARM=1."""
     global _diffusers_prewarmed
     if _diffusers_prewarmed:
@@ -767,8 +812,9 @@ def prewarm_diffusers_if_image_models_exist() -> bool:
             "diffusers prewarmed in %.0fms; the first image load skips that import",
             (time.perf_counter() - started) * 1000,
         )
-    # Outside the window: a child-process probe, not an import.
-    _prewarm_quant_probe()
+    # Outside the window: a child-process probe, not an import. Startup opts into it separately.
+    if warm_quantization:
+        _prewarm_quant_probe()
     return True
 
 

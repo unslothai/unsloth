@@ -24,9 +24,9 @@ import {
   Alert02Icon,
   Cancel01Icon,
   CancelCircleIcon,
+  UnavailableIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { BanIcon } from "lucide-react";
 import {
   type RefObject,
   useCallback,
@@ -548,7 +548,7 @@ export function ArtifactHtmlFrame({
                     setOutput(emptyCanvasConsole(code));
                   }}
                 >
-                  <BanIcon />
+                  <HugeiconsIcon icon={UnavailableIcon} strokeWidth={2} />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="tooltip-compact">

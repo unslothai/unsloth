@@ -486,6 +486,28 @@ def test_parse_gpu_layers_override(args, expected):
     assert parse_gpu_layers_override(args) == expected
 
 
+@pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+@pytest.mark.parametrize("value,expected", [("auto", -1), ("all", 2**31 - 1)])
+def test_gpu_layer_keywords_are_preserved_and_resolved(flag, value, expected):
+    args = [flag, value]
+    assert validate_extra_args(args) == args
+    assert parse_gpu_layers_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["-ngl", "all", "--gpu-layers", "auto"], -1),
+        (["-ngl", "auto", "--n-gpu-layers", "all"], 2**31 - 1),
+        (["-ngl", "all", "--gpu-layers", "0"], 0),
+        (["-ngl", "12", "--gpu-layers", "all"], 2**31 - 1),
+    ],
+)
+def test_gpu_layer_keywords_respect_last_override(args, expected):
+    assert validate_extra_args(args) == args
+    assert parse_gpu_layers_override(args) == expected
+
+
 @pytest.mark.parametrize(
     "args",
     [

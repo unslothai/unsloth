@@ -285,16 +285,13 @@ _PPO_FUSED_BLOCKS = (
         ("for update in range(1, args.num_total_batches + 1):",),
         _PPO_FUSED_IMPORT + ("for update in range(1, args.num_total_batches + 1):",),
     ),
-    # Rollouts without the stacked float32 generation scores.
     (
         ("query_responses, logitss = batch_generation(",),
         (
-            "query_responses, logitss = (",
-            "    batch_generation if _unsloth_ppo_route is None else _unsloth_ppo_batch_generation",
-            ")(",
+            "query_responses, logitss = _unsloth_ppo_batch_generation(",
+            "    _unsloth_ppo_route, batch_generation,",
         ),
     ),
-    # Rollout (old) log-probs: the policy forward + fused scorer the training pass uses.
     (
         (
             "logits = logitss[i : i + args.local_rollout_forward_batch_size]",
@@ -302,7 +299,7 @@ _PPO_FUSED_BLOCKS = (
             "del logits",
         ),
         (
-            "if _unsloth_ppo_route is not None:",
+            "if _unsloth_ppo_route is not None and logitss is None:",
             "    logprob = _unsloth_ppo_policy_logprobs(",
             "        _unsloth_ppo_route, forward, selective_log_softmax, model, query_response, response,",
             "        context_length, processing_class.pad_token_id, args.temperature + 1e-7,",
@@ -1665,6 +1662,28 @@ def _unsloth_grpo_autocast_forced_float32(self):
     if forced is None:
         forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
     return forced
+
+
+def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
+    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
+    recurrences mix packed rows (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed
+    self-verify. Zoo's grad PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    try:
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
+            return
+        unwrapped._unsloth_packing_boundary_checked = True
+        from unsloth.utils.packing import packing_boundary_blocker
+
+        config = getattr(unwrapped, "config", None)
+        blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+    except Exception:
+        return
+    if blocker is None:
+        return
+    unwrapped._unsloth_seq_packing_nograd_ok = False
+    unwrapped._unsloth_seq_packing_grad_ok = False
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True
 
 
 def _unsloth_grpo_autocast(self):
@@ -3322,11 +3341,16 @@ def _unsloth_vllm_merged_weight(module, weight):
                 delta = module.get_delta_weight(adapter).float()
             else:
                 continue
-            delta = delta.to(weight.device).reshape(weight.shape)
-            merged = delta if merged is None else merged + delta
+            device = weight.device if weight.device.type != "cpu" else delta.device
+            delta = delta.to(device).reshape(weight.shape)
+            merged = delta if merged is None else merged + delta.to(merged.device)
     if merged is None:
+        base = getattr(module, "base_layer", None)
+        state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+        if state is not None and weight.device != state.device:
+            return weight.data.to(state.device)
         return weight.data
-    return (weight.float() + merged).to(weight.dtype)
+    return (weight.to(merged.device).float() + merged).to(weight.dtype)
 
 
 def _unsloth_vllm_tuner_groups(model):
@@ -3350,6 +3374,8 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
     the base tensors and return {id(param): merged tensor}; the live parameters keep their exact bytes."""
     params = list(base.parameters(recurse = False))
     originals = [param.data for param in params]
+    fp8 = base.__dict__.get("_unsloth_fp8_lora")
+    fp8_saved = dict(fp8.__dict__) if fp8 is not None else None
     states = [
         (layer, list(getattr(layer, "merged_adapters", [])), dict(getattr(layer, "_caches", {})))
         for layer in layers
@@ -3372,6 +3398,9 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
             module.training = training
         for param, data in zip(params, originals):
             param.data = data
+        if fp8 is not None:
+            fp8.__dict__.clear()
+            fp8.__dict__.update(fp8_saved)
         for layer, merged_adapters, caches in states:
             if hasattr(layer, "merged_adapters"):
                 layer.merged_adapters[:] = merged_adapters
@@ -3691,6 +3720,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 vision_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            _unsloth_grpo_refuse_boundary_blind_packing(self, model)
 
             from unsloth_zoo.rl_replacements import (
                 chunked_hidden_states_selective_log_softmax,
@@ -4949,6 +4979,7 @@ UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
@@ -5068,6 +5099,8 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
+        # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
+        _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
             # verl's dual-clip default (clip_ratio_c = 3.0).
@@ -6413,11 +6446,12 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
             scaling = scaler.get_scale() if scaler is not None and scaler.is_enabled() else None,
             rows_per_chunk = int(rows) if rows.strip().isdigit() else None,
         )
-        try:
-            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
-            self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
-        except Exception:
-            pass
+        if not torch.compiler.is_compiling():
+            try:
+                self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+                self._unsloth_gkd_fused_calls = getattr(self, "_unsloth_gkd_fused_calls", 0) + 1
+            except Exception:
+                pass
         return loss
     loss, _entropy_sum, _n_valid = distillation_chunked_jsd(
         student_states,
@@ -6438,10 +6472,11 @@ def _unsloth_gkd_chunked_loss(self, model, inputs, num_items_in_batch, layout):
         temperature = 1.0,
         **jsd_kwargs,
     )
-    try:
-        self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_gkd_chunked_calls = getattr(self, "_unsloth_gkd_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return loss
 
 
@@ -6722,10 +6757,11 @@ def _unsloth_pref_chunked_forward(self, model, head, concatenated_batch, len_cho
         nll_loss = torch.tensor(0.0).to(self.accelerator.device)
     else:
         nll_loss = -(nll_per_token * chosen_nll_mask).sum() / chosen_nll_mask.sum()
-    try:
-        self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_pref_chunked_calls = getattr(self, "_unsloth_pref_chunked_calls", 0) + 1
+        except Exception:
+            pass
     # Stand-ins: TRL only reads chosen/rejected logits as .detach().mean().
     return (
         all_logps[:len_chosen],
@@ -6979,10 +7015,11 @@ def _unsloth_dpo_hidden_logps(self, chunked, hidden_states, labels, loss_mask):
         lm_head_bias = head.bias,
         return_mean_logits = True,
     )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return per_token_logps.to(labels.device), mean_logits.unsqueeze(-1).to(labels.device)
 
 
@@ -7145,10 +7182,11 @@ def _unsloth_dpo_loss_stats(
             return_is_top1 = not ref,
             entropy_requires_grad = False,
         )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     if ref:
         return out
     logps, entropy, mean_logits, is_top1 = out
@@ -7419,10 +7457,11 @@ def _unsloth_kto_hidden_logps(self, chunked, hidden_states, labels, label_pad_to
             return_mean_logits = True,
         )
         per_token_logps = per_token_logps[:, :-1]
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     completion_logps = (per_token_logps * mask).sum(-1)
     logits_sum = (mean_logits * head.weight.shape[0]).unsqueeze(-1)
     return completion_logps.to(out_device), logits_sum.to(out_device)
@@ -7640,10 +7679,11 @@ def _unsloth_fused_pass_logps(
             return_mean_logits = stats,
             entropy_requires_grad = False,
         )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     out = out if isinstance(out, tuple) else (out,)
     out = tuple(torch.nn.functional.pad(x, (0, width - n)) if n != width else x for x in out)
     if not stats:
@@ -8346,10 +8386,11 @@ def _unsloth_odpo_hidden_logps(
         logit_scale_divide = divide,
         logit_softcapping = softcap,
     )
-    try:
-        self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
-    except Exception:
-        pass
+    if not torch.compiler.is_compiling():
+        try:
+            self._unsloth_dpo_chunked_calls = getattr(self, "_unsloth_dpo_chunked_calls", 0) + 1
+        except Exception:
+            pass
     return logps.to(completion_ids.device)
 
 

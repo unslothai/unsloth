@@ -235,7 +235,7 @@ def test_untiled_block_scales_are_refused(tmp_path):
         cq.refuse_comfy_quant(path)
 
 
-@pytest.mark.parametrize("fmt", ["convrot_w4a4", "asym_w4a8_int8", "w6a8_int8", "brand_new"])
+@pytest.mark.parametrize("fmt", ["asym_w4a8_int8", "w6a8_int8", "brand_new"])
 def test_remaining_formats_keep_the_refusal(tmp_path, fmt):
     path = _save(
         tmp_path / "r.safetensors",

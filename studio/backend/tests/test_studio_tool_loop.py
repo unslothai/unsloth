@@ -2163,3 +2163,37 @@ def test_a_trailing_image_turn_takes_the_notice_as_a_text_part():
             ],
         }
     ]
+
+
+def test_deferred_mcp_schema_reaches_external_transports(monkeypatch, executed):
+    from core.inference import tool_loop_controller as controller_mod
+
+    search = _tool("mcp_tool_search")
+    ping = _tool("mcp__srv1__ping")
+    monkeypatch.setattr(controller_mod, "_mcp_tool_search_specs", lambda args: [ping])
+    monkeypatch.setattr(controller_mod, "_mcp_tool_spec", lambda name: ping)
+    transport = FakeTransport(
+        [
+            [
+                _sse(
+                    {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "search",
+                                "function": {
+                                    "name": "mcp_tool_search",
+                                    "arguments": '{"query":"ping"}',
+                                },
+                            }
+                        ]
+                    }
+                ),
+                _sse(finish = "tool_calls"),
+                _DONE,
+            ],
+            [_sse({"content": "ready"}), _sse(finish = "stop"), _DONE],
+        ]
+    )
+    _run(transport, tools = [search])
+    assert transport.requests[1]["tools"] == [search, ping]

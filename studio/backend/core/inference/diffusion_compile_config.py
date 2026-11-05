@@ -119,6 +119,20 @@ def apply() -> None:
     for (module_name, attr), value in knobs:
         cfg = _module(module_name)
         if cfg is not None:
+            if (module_name, attr) == ("torch.compiler.config", "cache_key_tag"):
+                current = getattr(cfg, attr, "")
+                value = ";".join(
+                    [
+                        p
+                        for p in _cache_tag_parts(current)
+                        if p and not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)
+                    ]
+                    + [
+                        p
+                        for p in _cache_tag_parts(value)
+                        if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)
+                    ]
+                )
             _write(cfg, attr, value)
     _applied.set(generation)
 
@@ -143,11 +157,35 @@ def _reset_for_tests() -> None:
 _STUDIO_CACHE_TAG_PREFIXES = ("unsloth_fp8_unit_scale=", "unsloth_nvfp4_act_quant=")
 
 
+def _cache_tag_parts(tag: str) -> list[str]:
+    # Unsloth/Zoo append comma-delimited kernel and correctness tags.
+    return tag.replace(",", ";").split(";")
+
+
 def canonical_compile_cache_tag(current: str, prefix: str, tag: str | None) -> str:
     """``prefix``'s token set to ``tag`` (None drops it); Studio's sorted so setter order never changes torch's cache key."""
-    parts = [p for p in current.split(";") if p and not p.startswith(prefix)]
+    parts = [p for p in _cache_tag_parts(current) if p and not p.startswith(prefix)]
     if tag:
         parts.append(prefix + tag)
     foreign = [p for p in parts if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
     owned = sorted(p for p in parts if p.startswith(_STUDIO_CACHE_TAG_PREFIXES))
     return ";".join(foreign + owned)
+
+
+def set_compile_cache_tag(prefix: str, tag: str | None) -> None:
+    cfg = _module("torch.compiler.config")
+    if cfg is None:
+        return
+    current = getattr(cfg, "cache_key_tag", None)
+    if not isinstance(current, str):
+        return
+    # Studio's patches outlive the load context. Keep their recorded tokens while
+    # preserving foreign tokens from the caller's context.
+    recorded_tag = get_knob("torch.compiler.config", "cache_key_tag", current)
+    current = ";".join(
+        [p for p in _cache_tag_parts(current) if not p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+        + [p for p in _cache_tag_parts(recorded_tag) if p.startswith(_STUDIO_CACHE_TAG_PREFIXES)]
+    )
+    set_knob(
+        "torch.compiler.config", "cache_key_tag", canonical_compile_cache_tag(current, prefix, tag)
+    )

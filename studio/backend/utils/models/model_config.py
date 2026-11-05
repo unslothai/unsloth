@@ -30,6 +30,8 @@ from hub.utils.hf_tokens import (
     cache_reads_authorized,
     call_with_anonymous_retry,
     collecting_hub_token_rejections,
+    note_saved_token_rejected,
+    saved_token_rejected,
     HUB_TOKEN_REJECTED_ERROR,
     hf_token_arg,
     is_rejected_credential_error,
@@ -43,6 +45,7 @@ from utils.training_runs import (
 from utils.audio_tokens import (
     AUDIO_TOKENIZER_CONFIG_PATHS as _AUDIO_TOKENIZER_CONFIG_PATHS,
     classify_audio_tokens as _check_token_patterns,
+    declares_audio_token as _declares_audio_token,
     is_audio_input_type,
     may_hold_audio_tokens as _may_hold_audio_tokens,
 )
@@ -57,7 +60,7 @@ from utils.models.gguf_metadata import (
 import structlog
 from loggers import get_logger
 import contextlib as _contextlib
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 import functools
 import os
 import platform
@@ -286,6 +289,13 @@ MODEL_NAME_MAPPING = {
         "unsloth/LFM2-1.2B",
         "LiquidAI/LFM2-1.2B",
         "unsloth/LFM2-1.2B-unsloth-bnb-4bit",
+    ],
+    "LiquidAI_LFM3-Omni-2B.yaml": [
+        "LiquidAI/LFM3-Omni-2B",
+        "LiquidAI/LFM3-1.7B",
+        "LiquidAI/LFM3-1.7B-Base",
+        "LiquidAI/LFM3-VL-2B",
+        "LiquidAI/LFM3-Audio-2B",
     ],
     "unsloth_llama-3-8b-bnb-4bit.yaml": [
         "unsloth/llama-3-8b",
@@ -1288,8 +1298,9 @@ _GGUF_LISTING_TIMEOUTS = (_HUB_MODEL_INFO_TIMEOUT, 30.0, 60.0)
 
 @_contextlib.contextmanager
 def shared_hub_model_info():
-    """Share a ``model_info`` response between the Hub probes here, per repo and credential."""
-    token = _hub_model_info_scope.set({})
+    """Share a ``model_info`` response between the Hub probes here, per repo and credential. A nested block joins the open one."""
+    open_scope = _hub_model_info_scope.get()
+    token = _hub_model_info_scope.set({} if open_scope is None else open_scope)
     try:
         yield
     finally:
@@ -1311,7 +1322,11 @@ def _hub_model_info(
     key = (repo_id, _token_fingerprint(hf_token))
     if scope is not None:
         if key in scope:
-            return scope[key]
+            info, rejected = scope[key]
+            if rejected:
+                # The read may have run before the caller's rejection scope opened.
+                note_saved_token_rejected(hf_token)
+            return info
         # Asked unconditionally so one response serves every probe; the listing needs sizes.
         files_metadata = True
 
@@ -1321,13 +1336,31 @@ def _hub_model_info(
         # Shared, so whichever probe reads first fixes the bound the rest inherit.
         "timeout": _HUB_MODEL_INFO_TIMEOUT if timeout is None else timeout,
     }
-    info = call_with_anonymous_retry(
-        lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
-    )
+    with collecting_hub_token_rejections():
+        info = call_with_anonymous_retry(
+            lambda token: hf_model_info(repo_id, **{**kwargs, "token": token}), hf_token
+        )
+        rejected = saved_token_rejected(hf_token)
 
     if scope is not None:
-        scope[key] = info
+        scope[key] = (info, rejected)
     return info
+
+
+def read_hub_model_info_ahead(repo_id: str, hf_token: HfTokenArg) -> Optional[threading.Thread]:
+    """Fill the open scope from a thread. Join it before the first probe; a failed read leaves the answer to that probe."""
+    if is_local_path(repo_id):
+        return None
+
+    def read():
+        try:
+            _hub_model_info(repo_id, hf_token)
+        except Exception as exc:
+            logger.debug("model_info read ahead failed for %s: %s", repo_id, exc)
+
+    thread = threading.Thread(target = copy_context().run, args = (read,), daemon = True)
+    thread.start()
+    return thread
 
 
 def _is_timeout_error(exc: BaseException) -> bool:
@@ -1788,6 +1821,32 @@ def _detect_audio_from_config(
         return None
 
 
+def _read_local_model_config(root: Path, missing_is_absent: bool) -> Optional[dict]:
+    """None when config.json cannot be read. A cache snapshot can hold the tokenizer without
+    it (a tokenizer-only download), so there a missing file is unknown, not absent, unless the
+    snapshot is an adapter repo, which never ships one."""
+    config_file = root / "config.json"
+    if not config_file.is_file():
+        return {} if missing_is_absent or (root / "adapter_config.json").is_file() else None
+    try:
+        config = json.loads(config_file.read_text(encoding = "utf-8-sig"))
+    except Exception:
+        return None
+    return config if isinstance(config, dict) else {}
+
+
+def _classify_audio_tokenizer(tok_config: dict, read_model_config) -> Tuple[Optional[str], bool]:
+    """(audio_type, known). A declared audio_token is audio input only with an audio encoder:
+    Gemma 4 26B/31B carry the token and none, so config.json decides, read only for that case."""
+    result = _check_token_patterns(tok_config)
+    if result or not _declares_audio_token(tok_config):
+        return result, True
+    model_config = read_model_config()
+    if model_config is None:
+        return None, False
+    return ("audio_vlm" if model_config.get("audio_config") else None), True
+
+
 def _detect_audio_from_tokenizer(
     model_name: str,
     hf_token: Optional[str] = None,
@@ -1797,6 +1856,8 @@ def _detect_audio_from_tokenizer(
     """Returns definitive False only on a transient read failure, so callers retry instead of caching."""
 
     read_any = False  # parsed at least one tokenizer_config -> a None is definitive
+    # A declared audio_token whose encoder config could not be read keeps every negative unknown.
+    unresolved = False
 
     # 1) Selected local directory or local HF cache first (works for gated/offline models)
     try:
@@ -1832,7 +1893,8 @@ def _detect_audio_from_tokenizer(
 
         current: list = []  # resolved lazily: only a negative answer needs it
         # Only a read standing in for the Hub copy has to prove the file whole.
-        may_answer_for_hub = not local_files_only and not is_local_path(model_name)
+        local_model = is_local_path(model_name)
+        may_answer_for_hub = not local_files_only and not local_model
         for root in roots:
             root_read: set = set()
             for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
@@ -1849,20 +1911,29 @@ def _detect_audio_from_tokenizer(
                             except Exception:
                                 continue
                             # Raw scan misses escaped markers (Go's encoding/json writes them), so decode first.
-                            result = _check_token_patterns(decoded)
+                            result, known = _classify_audio_tokenizer(
+                                decoded, lambda: _read_local_model_config(root, local_model)
+                            )
                             if result:
                                 return result, True
+                            if not known:
+                                unresolved = True
+                                continue
                         elif not raw.rstrip().endswith("}"):
                             continue
                         read_any = True
                         root_read.add(tok_path)
                         continue
-                    tok_config = json.loads(raw)
-                    read_any = True
-                    root_read.add(tok_path)
-                    result = _check_token_patterns(tok_config)
+                    result, known = _classify_audio_tokenizer(
+                        json.loads(raw), lambda: _read_local_model_config(root, local_model)
+                    )
                     if result:
                         return result, True
+                    if not known:
+                        unresolved = True
+                        continue
+                    read_any = True
+                    root_read.add(tok_path)
                 except Exception as e:
                     logger.debug(f"Could not read {tok_file} for {model_name}: {e}")
             # Negatives are cached for the process, so only answer negatively after reading every path.
@@ -1885,17 +1956,17 @@ def _detect_audio_from_tokenizer(
 
     # This raw requests.get ignores HF offline flags, so gate it explicitly.
     if local_files_only or _env_offline():
-        return None, read_any
+        return None, read_any and not unresolved
 
     # A filesystem path is not a repo id, so no Hub URL; the local read is the whole answer, or /loras blocks the event loop on timeouts.
     if is_local_path(model_name):
-        return None, read_any
+        return None, read_any and not unresolved
 
     try:
         import requests
         import os
     except Exception:
-        return None, read_any
+        return None, read_any and not unresolved
 
     # `False` is falsy, so `or` would reach past it to the ambient credential.
     token = None if is_anonymous(hf_token) else (hf_token or os.environ.get("HF_TOKEN"))
@@ -1908,6 +1979,21 @@ def _detect_audio_from_tokenizer(
     from utils.hf_endpoint import get_hf_endpoint
 
     hf_endpoint = get_hf_endpoint()
+
+    def _fetch_model_config() -> Optional[dict]:
+        url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/config.json"
+        try:
+            resp = requests.get(url, headers = headers, timeout = 15)
+            if resp.status_code == 404:
+                return {}
+            if not resp.ok:
+                return None
+            config = resp.json()
+        except Exception as e:
+            logger.debug(f"Could not fetch config.json for {model_name}: {e}")
+            return None
+        return config if isinstance(config, dict) else {}
+
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
         url = f"{hf_endpoint}/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
@@ -1927,13 +2013,16 @@ def _detect_audio_from_tokenizer(
             logger.debug(f"Bad tokenizer_config for {model_name}/{tok_path}: {e}")
             transient = True
             continue
-        read_any = True
-        result = _check_token_patterns(tok_config)
+        result, known = _classify_audio_tokenizer(tok_config, _fetch_model_config)
         if result:
             return result, True
+        if not known:
+            unresolved = True
+            continue
+        read_any = True
 
     # No audio tokens: definitive unless every attempt failed transiently.
-    return None, (read_any or not transient)
+    return None, (read_any or not transient) and not unresolved
 
 
 def _is_mmproj(filename: str) -> bool:
@@ -3632,8 +3721,25 @@ def clef_files_kind(has) -> Optional[str]:
     return None
 
 
+def is_d1_folder(folder: Path) -> bool:
+    try:
+        config = json.loads((folder / "config.json").read_text(encoding = "utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(config, dict):
+        return False
+    # Markers unsloth-zoo's d1 loader reads: d1-3B only in auto_map, d1-omni by model_type.
+    automodel = str((config.get("auto_map") or {}).get("AutoModel", ""))
+    return (
+        config.get("model_type") == "d1_omni"
+        or "D1Model" in (config.get("architectures") or ())
+        or automodel.endswith("D1Model")
+    )
+
+
 def clef_folder_kind(folder: Path) -> Optional[str]:
-    return clef_files_kind(lambda name: (folder / name).is_file())
+    kind = clef_files_kind(lambda name: (folder / name).is_file())
+    return kind or ("merged" if is_d1_folder(folder) else None)
 
 
 def _folder_decision_layout(folder: Path) -> Optional[str]:
@@ -3765,7 +3871,7 @@ def scan_trained_models(outputs_dir: Optional[str] = None) -> List[Tuple[str, st
     outputs_path = resolve_output_dir(outputs_dir)
 
     if not outputs_path.exists():
-        logger.warning(f"Outputs directory not found: {outputs_dir}")
+        logger.warning(f"Outputs directory not found: {outputs_path}")
         return trained_models
 
     try:
@@ -4265,6 +4371,8 @@ class ModelConfig:
     # Repo a refused-Hub cached GGUF came from, for the download interlock.
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
+    # A picked MLX precision folder's config, for route checks only; sizing needs the folder's weights.
+    config_dir: Optional[str] = None
     base_model: Optional[str] = None  # Base model (for LoRAs)
     # Set for a GGUF only audio.cpp runs; loads via the native-audio worker, never llama-server.
     audio_cpp: Optional[Any] = None
@@ -4755,6 +4863,7 @@ class ModelConfig:
 
         return cls(
             gguf_variant = precision_folder,
+            config_dir = check_model if precision_folder else None,
             identifier = identifier,
             display_name = display_name,
             path = path,

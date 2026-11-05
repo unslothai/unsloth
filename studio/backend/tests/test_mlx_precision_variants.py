@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import huggingface_hub.constants
 import pytest
 
 from hub.services.models import gguf_variants
@@ -263,6 +264,9 @@ def test_gguf_quant_names_never_resolve_as_folders(monkeypatch, variant):
     assert reads == []
 
 
+@pytest.mark.skipif(
+    huggingface_hub.constants.HF_HUB_OFFLINE, reason = "from_identifier's GGUF probe needs the Hub"
+)
 def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path):
     from utils.models import model_config
 
@@ -296,13 +300,14 @@ def test_model_config_carries_the_folder_and_classifies_it(monkeypatch, tmp_path
     config = model_config.ModelConfig.from_identifier(_REPO, gguf_variant = "6-bit")
     assert config.identifier == _REPO
     assert config.gguf_variant == "6-bit"
+    assert config.config_dir == str(folder)
     assert config.is_gguf is False
     assert checked == [str(folder)]
     assert fetched == ["6-bit/config.json"]
 
     checked.clear()
     plain = model_config.ModelConfig.from_identifier(_REPO)
-    assert plain.gguf_variant is None
+    assert plain.gguf_variant is None and plain.config_dir is None
     assert checked == [_REPO]
 
 
@@ -455,10 +460,11 @@ def test_a_resumed_folder_download_rebuilds_its_plan_from_the_manifest():
 
 
 def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
+    from core.inference import mlx_memory
     from routes import inference as ri
 
     folder = _cached_repo(monkeypatch, tmp_path, _REPO, "6-bit")
-    (folder / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
+    (folder / "config.json").write_text(json.dumps({"model_type": "raon1_mini"}))
     (folder / "model.safetensors").write_bytes(b"x")
     monkeypatch.setattr(ri, "_estimate_hf_cache_roots", lambda: [str(tmp_path / "hub")])
     config = SimpleNamespace(
@@ -470,9 +476,9 @@ def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
     )
     (folder.parent / "config.json").write_text(json.dumps({"model_type": "qwen3"}))
     (folder.parent / "model.safetensors").write_bytes(b"x")
-    assert ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit")) == str(
-        folder
-    )
+    picked = ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit"))
+    assert picked == str(folder)
+    assert mlx_memory._snapshot_config(picked)["model_type"] == "raon1_mini"
 
 
 @pytest.mark.parametrize("resident_folder, expected", [(None, "reuse"), ("6-bit", "load")])

@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { refreshDeviceTypeAfterSystemInfo } from "@/config/env";
 import { useEffect, useMemo, useState } from "react";
 import { disposableTimeoutSignal } from "../features/hub/lib/abort-signals";
 import {
@@ -114,6 +115,7 @@ export interface SystemInfoResponse {
 
 let cachedSystem: SystemInfoResponse | null = null;
 let systemFetchPromise: Promise<SystemInfoResponse | null> | null = null;
+let systemFetchProbesMedia = false;
 const systemSubscribers = new Set<(data: SystemInfoResponse) => void>();
 let vulkanRetrySubscribers = 0;
 let vulkanRetryId: number | null = null;
@@ -209,26 +211,35 @@ function scheduleVulkanRetry(): void {
 export async function fetchSystemInfo({
   force = false,
   refreshMemory = false,
-}: { force?: boolean; refreshMemory?: boolean } = {}): Promise<SystemInfoResponse | null> {
+  probeMedia = false,
+}: { force?: boolean; refreshMemory?: boolean; probeMedia?: boolean } = {}): Promise<SystemInfoResponse | null> {
   if (systemFetchPromise) {
-    if (!refreshMemory) return systemFetchPromise;
-    // An in-flight snapshot may predate the resident model.
+    if (!refreshMemory && (!probeMedia || systemFetchProbesMedia)) return systemFetchPromise;
+    // A resident-memory refresh or media probe needs more than an ordinary snapshot.
     await systemFetchPromise;
-    return fetchSystemInfo({ force, refreshMemory });
+    return fetchSystemInfo({ force, refreshMemory, probeMedia });
   }
-  if (!force && !refreshMemory && cachedSystem) return cachedSystem;
+  if (!force && !refreshMemory && !probeMedia && cachedSystem) {
+    refreshDeviceTypeAfterSystemInfo({ detectHardware: true });
+    return cachedSystem;
+  }
 
+  systemFetchProbesMedia = probeMedia;
   systemFetchPromise = (async () => {
     const timeout = disposableTimeoutSignal(SYSTEM_FETCH_TIMEOUT_MS);
     try {
+      const query = new URLSearchParams();
+      if (refreshMemory) query.set("refresh_memory", "true");
+      if (probeMedia) query.set("probe_media", "true");
       const res = await authFetch(
-        refreshMemory ? "/api/system?refresh_memory=true" : "/api/system",
+        query.size ? "/api/system?" + query.toString() : "/api/system",
         { signal: timeout.signal },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
 
       cachedSystem = { ...(data as SystemInfoResponse), status: "ready" };
+      refreshDeviceTypeAfterSystemInfo();
       systemSubscribers.forEach((subscriber) => subscriber(cachedSystem!));
       return cachedSystem;
     } catch {
@@ -236,6 +247,7 @@ export async function fetchSystemInfo({
     } finally {
       timeout.dispose();
       systemFetchPromise = null;
+      systemFetchProbesMedia = false;
       scheduleVulkanRetry();
     }
   })();

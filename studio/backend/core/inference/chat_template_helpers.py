@@ -106,7 +106,7 @@ _CONTROL_MARKUP = re.compile(
     # Bare-tag families. <s> and </s> (Llama-2 BOS/EOS) collide with HTML; kept, since a live document boundary beats a space in a rare <s>.
     r"|/?(?:(?:start|end)_of_turn|tool_(?:call|response)|tools|think|eos|bos|s|sop"
     r"|start_of_image|image_soft_token|audio_soft_token"
-    r"|arg_key|arg_value|function|parameter|param)>"
+    r"|arg_key|arg_value|function|parameter|param|minimax:tool_call)>"
     # Opener halves carry "=value", so the attribute form needs its own alternative beside function=
     r"|(?:function|parameter)=|(?:function|param(?:eter)?)\s+name=\""
     r"|(?:tool(?:_call|_response)?|channel|turn)\|>"
@@ -2812,6 +2812,22 @@ def apply_chat_template_for_generation(
     if reasoning_kwargs:
         attempts.append(dict(reasoning_kwargs))
     attempts.append({})
+    if reasoning_effort is not None:
+        from core.inference.llama_cpp import _fit_reasoning_effort_to_template
+
+        # Fit per attempt: sanitizing or a tools-less retry can switch tool_use to default.
+        attempts = [
+            {
+                **kw,
+                "reasoning_effort": _fit_reasoning_effort_to_template(
+                    "\n".join(_selected_chat_template_strings(tokenizer, kw.get("tools"))),
+                    reasoning_effort,
+                ),
+            }
+            if "reasoning_effort" in kw
+            else kw
+            for kw in attempts
+        ]
 
     # A tools=-less retry selects "default", so its messages need that template's profile.
     _fallback_markup = _UNPARSED

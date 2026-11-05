@@ -1,5 +1,11 @@
 {
  "auto_static_skip_by_base": {
+  "anima": {
+   "circlestone-labs/Anima-Base-v1.0-Diffusers": null
+  },
+  "chroma": {
+   "lodestones/Chroma1-HD": null
+  },
   "cosmos3-edge": {
    "nvidia/Cosmos3-Edge": null
   },
@@ -119,6 +125,14 @@
   }
  },
  "defaults": {
+  "anima": [
+   30,
+   4.0
+  ],
+  "chroma": [
+   26,
+   3.5
+  ],
   "cosmos3-edge": {
    "fields": [
     20,
@@ -303,6 +317,18 @@
   ]
  },
  "flags": {
+  "anima": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
+  "chroma": {
+   "cudnn_benchmark": true,
+   "filter_reduction_configs": false,
+   "filter_reduction_configs_archs": [],
+   "vae_fused_encoder": true
+  },
   "cosmos3-edge": {
    "cudnn_benchmark": false,
    "filter_reduction_configs": false,
@@ -974,6 +1000,206 @@
    },
    "page": "image",
    "preview_key": "qwen_image",
+   "te_int8_effective": "fp8"
+  },
+  "anima": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
+   "te_int8_effective": "fp8"
+  },
+  "chroma": {
+   "auto": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "auto_bf16_when_resident": null,
+   "bf16": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "convrot_default_on": false,
+   "fp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "int8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [
+     "norm",
+     "_mod",
+     "modulation",
+     "timestep_embed",
+     "guidance_embed",
+     "time_text_embed",
+     "pooled",
+     "time_embed"
+    ],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "mxfp8": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "nvfp4": {
+    "convrot_filename": null,
+    "convrot_repo": null,
+    "convrot_spec": [
+     0,
+     []
+    ],
+    "convrot_variant_repos": [],
+    "exclude": [],
+    "pad": [],
+    "runtime_quant": [],
+    "streamed_weight_only": [],
+    "zero_row": []
+   },
+   "page": "image",
+   "preview_key": null,
    "te_int8_effective": "fp8"
   },
   "cosmos3-edge": {
@@ -4304,6 +4530,12 @@
    }
   },
   "family_scheme_deny": {
+   "chroma": [
+    "fp8",
+    "int8",
+    "mxfp8",
+    "nvfp4"
+   ],
    "flux.3-klein": [
     "nvfp4"
    ],
@@ -4561,6 +4793,8 @@
    ]
   },
   "train_family_labels": {
+   "anima": "Anima",
+   "chroma": "Chroma",
    "flux.1": "FLUX.1-dev",
    "flux.2-dev": "FLUX.2-dev",
    "flux.2-klein": "FLUX.2 Klein",
@@ -4593,6 +4827,7 @@
    "black-forest-labs/flux.2-klein-9b",
    "black-forest-labs/flux.2-klein-base-4b",
    "black-forest-labs/flux.2-klein-base-9b",
+   "circlestone-labs/anima-base-v1.0-diffusers",
    "hidream-ai/hidream-i1-dev",
    "hidream-ai/hidream-i1-fast",
    "hidream-ai/hidream-i1-full",
@@ -4602,6 +4837,7 @@
    "ideogram-ai/ideogram-4-nf4-diffusers",
    "krea/krea-2-raw",
    "krea/krea-2-turbo",
+   "lodestones/chroma1-hd",
    "openmoss-team/moss-image-base",
    "openmoss-team/moss-image-sft",
    "qwen/qwen-image",

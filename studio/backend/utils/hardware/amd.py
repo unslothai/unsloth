@@ -655,6 +655,20 @@ def amd_kfd_gpu_gfx_targets(
     return targets
 
 
+def hsa_override_gfx_target() -> Optional[str]:
+    """Target ROCr presents for every GPU (11.0.0 -> gfx1100, 9.0.10 -> gfx90a), else None: unset,
+    per-node _<n> set, rejected by libhsakmt (sscanf "%u.%u.%u%c", major <= 63), or no one-digit name."""
+    if any(key.startswith("HSA_OVERRIDE_GFX_VERSION_") for key in os.environ):
+        return None
+    value = os.environ.get("HSA_OVERRIDE_GFX_VERSION", "").lstrip()
+    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value):
+        return None
+    major, minor, step = (int(part) for part in value.split("."))
+    if not 0 < major <= 63 or minor > 9 or step > 15:
+        return None
+    return f"gfx{major}{minor}{step:x}"
+
+
 def _amd_render_node_exists() -> bool:
     """Presence, not openability: /dev/kfd without /dev/dri passes every probe yet initialises nothing."""
     _unreadable = False

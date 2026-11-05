@@ -3244,6 +3244,10 @@ pub fn start_backend(
     shutdown: &ShutdownFlag,
     diagnostics_state: &DiagnosticsState,
 ) -> Result<u64, String> {
+    let port = crate::desktop_port::resolve_port(
+        port,
+        std::env::var_os(crate::desktop_port::PORT_ENV).as_deref(),
+    )?;
     let _runtime_launch_guard = acquire_studio_runtime_launch_guard()?;
 
     // Checked on the spawn path: a webview remount can start a backend while the job is disarmed.
@@ -4204,6 +4208,59 @@ fn stop_adopted_backend(
         "Adopted backend did not stop via exact-port HTTP shutdown; refusing PID fallback without verified port-to-PID binding"
             .to_string(),
     )
+}
+
+// An accepted shutdown first lets a training run save, within the backend's 120 s default budget.
+const ATTACHED_SHUTDOWN_WAIT: Duration = Duration::from_secs(130);
+
+pub fn stop_attached_backend(port: u16) -> Result<(), String> {
+    if !crate::desktop_backend_owner::port_is_listening_blocking(port, Duration::from_millis(150)) {
+        return Ok(());
+    }
+    if try_exact_port_http_shutdown(port, "Attached backend")
+        && wait_for_port_disconnect(port, ATTACHED_SHUTDOWN_WAIT)
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "The Unsloth server on port {port} did not stop. Stop it from the terminal that started it, then try again."
+    ))
+}
+
+#[cfg(test)]
+mod attached_backend_stop_tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn an_attached_port_with_nothing_on_it_is_already_stopped() {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        assert_eq!(stop_attached_backend(port), Ok(()));
+    }
+
+    #[test]
+    fn a_server_that_refuses_this_install_is_left_running() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let _ = stream.read(&mut [0u8; 4096]);
+                let _ = stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                );
+            }
+        });
+
+        assert!(stop_attached_backend(port).is_err());
+        assert!(crate::desktop_backend_owner::port_is_listening_blocking(
+            port,
+            Duration::from_millis(150)
+        ));
+    }
 }
 
 /// Graceful shutdown of owned backend handles.

@@ -45,6 +45,7 @@ from core.inference.diffusion_device import (
 from core.inference.diffusion_families import (
     krea2_raw_checkpoint,
     krea2_sd_cpp_flow_shift,
+    MOSS_IMAGE_FAMILY_NAME,
     DIFFUSION_CANCELLED_MSG,
     DIFFUSION_NOT_LOADED_MSG,
     DiffusionFamily,
@@ -2927,6 +2928,18 @@ def _estimate_eta(total_steps: int, step: int, first_step_at: float, now: float)
     return max(0.0, (total_steps - step) * per_step)
 
 
+def _request_extra_sample_args(state: Any) -> Optional[str]:
+    """Per-checkpoint ``extra_sample_args``: only MOSS-Image sends any (its negative-branch skip window)."""
+    if getattr(getattr(state, "family", None), "name", None) != MOSS_IMAGE_FAMILY_NAME:
+        return None
+    return sd_cpp_args_mod.moss_uncond_skip_sample_args(
+        getattr(state, "repo_id", None),
+        getattr(state, "display_repo_id", None),
+        getattr(state, "base_repo", None),
+        getattr(state, "gguf_filename", None),
+    )
+
+
 def _request_flow_shift(state: Any, width: int, height: int) -> Optional[float]:
     """The family's fixed ``--flow-shift``, except Krea 2 Raw, whose mu follows the output size."""
     if getattr(state.family, "name", None) == "krea-2" and krea2_raw_checkpoint(
@@ -4841,6 +4854,7 @@ class SdCppDiffusionBackend:
                     ],
                     qwen_image_layers = layers,
                     hires = hires_payload,
+                    extra_sample_args = _request_extra_sample_args(state),
                 )
                 try:
                     blobs = state.server.img_gen(
@@ -5150,6 +5164,9 @@ class SdCppDiffusionBackend:
         if state.sample_sigmas:
             sigmas = sd_cpp_sample_sigmas(state.sample_sigmas, int(steps))
             extra_args += ["--sigmas", ",".join(repr(float(x)) for x in sigmas)]
+        extra_sample_args = _request_extra_sample_args(state)
+        if extra_sample_args:
+            extra_args += ["--extra-sample-args", extra_sample_args]
 
         images = []
         seeds: list[int] = []

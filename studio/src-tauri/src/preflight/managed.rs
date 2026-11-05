@@ -1266,7 +1266,13 @@ pub(super) async fn probe_managed_bin(bin: PathBuf) -> ManagedProbe {
 
     // A cache miss overlaps both Python starts; one task, so the spawns take the guard in turn.
     let (cli_probe, capability_probe) = if cache_hit {
-        (help_probe.await, None)
+        let help = help_probe.await;
+        // The tree can change while `-h` runs; the cached answer holds only for the tree it was read under.
+        if matches!(help, Ok(true)) && managed_bin_fingerprint(&bin) != fingerprint_before {
+            (help, Some(probe_cli_capability(&bin).await))
+        } else {
+            (help, None)
+        }
     } else if let Some(capability) = launch.capability {
         drop(help_probe);
         (Ok(true), Some(Ok(Some(capability))))

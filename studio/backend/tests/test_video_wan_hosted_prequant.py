@@ -75,7 +75,7 @@ def test_nvfp4_rows_are_unchanged():
     assert (
         "nvfp4",
         "transformer_2",
-        "Wan2.2-T2V-A14B-transformer_2-NVFP4.pt",
+        "Wan2.2-T2V-A14B-transformer_2-NVFP4.safetensors",
     ) in a14b.prequant_filenames
 
 

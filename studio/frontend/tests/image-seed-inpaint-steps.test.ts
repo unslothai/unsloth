@@ -94,10 +94,8 @@ test("the Seed field has Random and Reuse last seed buttons", () => {
     page,
     /const runSeed = lastSeedOf\(res\.images\);\n\s+if \(runSeed !== null\) setSessionSeed\(runSeed\);/,
   );
-  // A HugeIcons glyph only this lazy page uses still lands in the eager icon chunk via the barrel
-  // and pushed the startup budget over, so both seed buttons draw lucide glyphs.
   assert.match(page, /<Shuffle className="size-4" strokeWidth=\{1\.5\} \/>/);
-  assert.match(page, /<HistoryIcon className="size-4" strokeWidth=\{1\.5\} \/>/);
+  assert.match(page, /<HugeiconsIcon icon=\{HistoryIcon\} className="size-4" strokeWidth=\{1\.5\} \/>/);
   assert.doesNotMatch(page, /Recycle01Icon/);
 });
 

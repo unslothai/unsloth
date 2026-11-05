@@ -25,6 +25,9 @@ export { SEARCH_ENGINES, type SearchEngineId } from "./address";
 export { useBrowserHistoryStore } from "./history-store";
 export { useNativeBrowser } from "./native-support";
 export { pinBrowserPage } from "./resize-pin";
+export { FloatingResizeHandles } from "./floating-frame";
+export { floatSurface } from "./floating-preview";
+export { closeOrFloatBrowser } from "./close-browser";
 export {
   type AnnotationScreenshots,
   type BookmarksToolbarMode,

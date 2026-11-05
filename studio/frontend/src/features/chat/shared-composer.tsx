@@ -33,7 +33,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { BulbIcon } from "@/lib/bulb-icon";
-import { AiSpeechIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, BookmarkIcon, FileSearchIcon } from "@/lib/hugeicons-derived";
 import { InternetGlyph } from "@/lib/internet-icon";
 import { MicIcon } from "@/lib/mic-icon";
 import { MenuTickIcon, Tick02Icon } from "@/lib/tick-icon";
@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
@@ -93,6 +94,8 @@ import {
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { CONVERSATION_MARKDOWN_LABEL } from "./utils/conversation-markdown";
 import { pasteClipboardFiles } from "./utils/clipboard-files";
+import { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+import { isPlainPasteChord, plainPasteStillCounts } from "./utils/pasted-text";
 import {
   composerDraftKey,
   latestDraft,
@@ -111,14 +114,13 @@ import type { ModelLifecycleLease } from "./utils/model-lifecycle-gate";
 import { useAui } from "@assistant-ui/react";
 import {
   ArrowUpIcon,
-  Columns2Icon,
 } from "lucide-react";
 import {
-  AttachmentIcon,
-  Bookmark02Icon,
+  Attachment01Icon,
   CodeIcon,
   Download01Icon,
-  Image03Icon,
+  ImageIcon,
+  LayoutTwoColumnIcon,
   McpServerIcon,
   Scroll01Icon,
   MoreHorizontalIcon,
@@ -148,6 +150,7 @@ import {
   type PromptListEntry,
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
+import { insertSavedPrompt } from "./prompt-storage/insert-prompt";
 import { McpComposerButton } from "./mcp-composer-button";
 import { SkillsComposerButton, useSkillsSwitch } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
@@ -193,6 +196,7 @@ import {
 } from "./compare-run-ownership";
 import {
   loadedContextForParams,
+  mergeBackendRecommendedInference,
   resolveExplicitCtxPin,
   resolveFitMaxSeqLength,
   retainedContextPin,
@@ -274,7 +278,7 @@ export type CompareMessagePart =
 
 export interface CompareHandle {
   append: (content: CompareMessagePart[]) => void;
-  appendMessage: (content: CompareMessagePart[]) => void;
+  appendMessage: (content: CompareMessagePart[]) => Promise<void>;
   startRun: () => void;
   cancel: () => void;
   isRunning: () => boolean;
@@ -455,15 +459,24 @@ export function RegisterCompareHandle({
         aui
           .thread()
           .append({ role: "user", content, createdAt: new Date() } as never),
-      appendMessage: (content) =>
-        aui
-          .thread()
-          .append({
-            role: "user",
-            content,
-            createdAt: new Date(),
-            startRun: false,
-          } as never),
+      appendMessage: (content) => {
+        const count = aui.thread().getState().messages.length;
+        aui.thread().append({
+          role: "user",
+          content,
+          createdAt: new Date(),
+          startRun: false,
+        } as never);
+        return new Promise<void>((resolve) => {
+          const landed = () => aui.thread().getState().messages.length > count;
+          if (landed()) return resolve();
+          const unsubscribe = aui.subscribe(() => {
+            if (!landed()) return;
+            unsubscribe();
+            resolve();
+          });
+        });
+      },
       startRun: () => {
         const msgs = aui.thread().getState().messages;
         const lastId = msgs.length > 0 ? msgs[msgs.length - 1].id : null;
@@ -624,6 +637,7 @@ export function SharedComposer({
 }): ReactElement {
   const t = useT();
   const sendShortcut = useChatPreferencesStore((s) => s.sendShortcut);
+  const richTextPaste = useChatPreferencesStore((s) => s.richTextPaste);
   const navigate = useNavigate();
   const handleExitCompare = useCallback(() => {
     if (onExitCompare) {
@@ -1338,8 +1352,12 @@ export function SharedComposer({
     [trackAttaching, addFilesUntracked],
   );
 
+  // Plain paste: a paste event carries no modifiers, so the chord is read from the keydown before it.
+  const plainPasteAtRef = useRef(0);
   const handleFilePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      const plainPaste = plainPasteStillCounts(plainPasteAtRef.current, performance.now());
+      plainPasteAtRef.current = 0;
       pasteClipboardFiles(
         event,
         (pasted) =>
@@ -1358,8 +1376,17 @@ export function SharedComposer({
             description: "Compare supports images and audio within the attachment size limits.",
           }),
       );
+      if (event.defaultPrevented || !richTextPaste || plainPaste) return;
+      const markdown = richPasteMarkdown(event.clipboardData);
+      if (markdown === null) return;
+      event.preventDefault();
+      const input = event.currentTarget;
+      insertAtCaret(input, markdown, (next, caret) => {
+        setCurrentText(next);
+        requestAnimationFrame(() => input.setSelectionRange(caret, caret));
+      });
     },
-    [trackAttaching, addFilesUntracked],
+    [trackAttaching, addFilesUntracked, richTextPaste, setCurrentText],
   );
 
   const removePendingImage = useCallback((id: string) => {
@@ -1801,6 +1828,7 @@ export function SharedComposer({
           mlx_kv_quant: ownConfig.mlxKvQuant ?? null,
           mlx_int8_prefill: ownConfig.mlxInt8Prefill ?? false,
           mlx_ane_prefill: ownConfig.mlxAnePrefill ?? false,
+          mlx_fast_verify: ownConfig.mlxFastVerify ?? false,
           mlx_ple_offload: ownConfig.mlxPleOffload ?? null,
           mlx_expert_offload: ownConfig.mlxExpertOffload ?? null,
           speculative_type: effectiveSpeculativeType,
@@ -1947,17 +1975,48 @@ export function SharedComposer({
         }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
+        const paneMaxTokensCap = replayMaxTokensCap(
+          loadedContextFields(resp).loadedContextLength ??
+            (!resp.is_gguf && effectiveMaxSeqLength > 0
+              ? effectiveMaxSeqLength
+              : null),
+        );
         store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          { maxTokensCap: paneMaxTokensCap },
+        );
+        const paneState = useChatRuntimeStore.getState();
+        const paneParams = paneState.params;
+        const paneQwenParams =
+          resp.supports_reasoning &&
+          paneState.activePresetSource === "builtin-default"
+            ? resolveQwenThinkingParams(
+                resp.model,
+                (resp.reasoning_always_on ?? false) || paneState.reasoningEnabled,
+              )
+            : null;
+        store.setParams(
           {
-            maxTokensCap: replayMaxTokensCap(
-              loadedContextFields(resp).loadedContextLength ??
-                (!resp.is_gguf && effectiveMaxSeqLength > 0
-                  ? effectiveMaxSeqLength
-                  : null),
-            ),
+            ...mergeBackendRecommendedInference({
+              current: paneParams,
+              response: resp,
+              modelId: resp.model,
+              presetSource: paneState.activePresetSource,
+              loadedContextLength: loadedContextFields(resp).loadedContextLength,
+            }),
+            ...paneQwenParams,
+            ...(targetIsGguf
+              ? {}
+              : {
+                  maxSeqLength: loadedContextForParams(
+                    loadedContextFields(resp).loadedContextLength,
+                    effectiveMaxSeqLength,
+                    paneParams.maxSeqLength,
+                  ),
+                }),
           },
+          { fromModelDefaults: true, maxTokensCap: paneMaxTokensCap },
         );
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
@@ -2062,17 +2121,6 @@ export function SharedComposer({
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
-        if (!targetIsGguf) {
-          const paneParams = useChatRuntimeStore.getState().params;
-          store.setParams({
-            ...paneParams,
-            maxSeqLength: loadedContextForParams(
-              loadedContextFields(resp).loadedContextLength,
-              effectiveMaxSeqLength,
-              paneParams.maxSeqLength,
-            ),
-          });
-        }
         loadedFromConfig = config != null;
         // /api/models/list can lag the model's actual state.
         const currentModels = useChatRuntimeStore.getState().models;
@@ -2108,8 +2156,10 @@ export function SharedComposer({
       const handle1 = handlesRef.current["model1"];
       const handle2 = handlesRef.current["model2"];
 
-      if (handle1) handle1.appendMessage(content);
-      if (handle2) handle2.appendMessage(content);
+      await Promise.all([
+        handle1?.appendMessage(content),
+        handle2?.appendMessage(content),
+      ]);
 
       const name1 = model1?.id ? compareModelDisplayName(model1.id) : "";
       const name2 = model2?.id ? compareModelDisplayName(model2.id) : "";
@@ -2525,7 +2575,7 @@ export function SharedComposer({
     savedPrompts: (
       <DropdownMenuSub>
         <DropdownMenuSubTrigger>
-          <HugeiconsIcon icon={Bookmark02Icon} strokeWidth={2} />
+          <HugeiconsIcon icon={BookmarkIcon} strokeWidth={2} />
           Saved prompts
         </DropdownMenuSubTrigger>
         <DropdownMenuSubContent
@@ -2536,7 +2586,7 @@ export function SharedComposer({
             <DropdownMenuItem
               key={`prompt:${p.id}`}
               onSelect={() => {
-                setCurrentText(p.text);
+                insertSavedPrompt(textareaRef.current, p.text, setCurrentText);
                 requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             >
@@ -2563,7 +2613,7 @@ export function SharedComposer({
         className="text-primary font-medium"
         onSelect={handleExitCompare}
       >
-        <Columns2Icon />
+        <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} />
         Compare chat
         <HugeiconsIcon icon={MenuTickIcon} strokeWidth={2} className="ml-auto" />
       </DropdownMenuItem>
@@ -2659,7 +2709,7 @@ export function SharedComposer({
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
         onUse={(t) => {
-          setCurrentText(t);
+          insertSavedPrompt(textareaRef.current, t, setCurrentText);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
         onRunList={runPromptList}
@@ -2686,7 +2736,7 @@ export function SharedComposer({
           className={`pointer-events-none absolute inset-0 z-20 flex flex-col items-center justify-center gap-1 overflow-hidden rounded-[inherit] bg-background/90 backdrop-blur-sm transition-opacity duration-150 dark:bg-card/90 ${dragging ? "opacity-100" : "opacity-0"}`}
         >
           <HugeiconsIcon
-            icon={AttachmentIcon}
+            icon={Attachment01Icon}
             strokeWidth={2}
             className="size-6 text-primary"
           />
@@ -2793,7 +2843,7 @@ export function SharedComposer({
                 onCloseAutoFocus={(event) => event.preventDefault()}
               >
                 <DropdownMenuItem onSelect={() => fileInputRef.current?.click()}>
-                  <HugeiconsIcon icon={AttachmentIcon} strokeWidth={2} />
+                  <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
                   Add photos &amp; files
                 </DropdownMenuItem>
                 {activeModel?.hasAudioInput && (
@@ -2865,7 +2915,7 @@ export function SharedComposer({
                     }
                     onSelect={() => setImageToolsEnabled(!imageToolsEnabled)}
                   >
-                    <HugeiconsIcon icon={Image03Icon} strokeWidth={2} />
+                    <HugeiconsIcon icon={ImageIcon} strokeWidth={2} />
                     Images
                     {imageToolsEnabled && !imageDisabled ? (
                       <HugeiconsIcon
@@ -2913,7 +2963,7 @@ export function SharedComposer({
               aria-label="Exit compare chat"
             >
               <PillGlyph>
-                <Columns2Icon className="size-[calc(14px*var(--ui-space-scale,1))]" />
+                <HugeiconsIcon icon={LayoutTwoColumnIcon} strokeWidth={2} className="size-[calc(14px*var(--ui-space-scale,1))]" />
               </PillGlyph>
               <span>Compare</span>
             </button>
@@ -2986,7 +3036,7 @@ export function SharedComposer({
               >
                 <PillGlyph>
                   <HugeiconsIcon
-                    icon={Image03Icon}
+                    icon={ImageIcon}
                     className="size-3.5"
                     strokeWidth={2}
                   />
@@ -3074,8 +3124,15 @@ export function SharedComposer({
                 onKeyDown={(event) => {
                   if (!skillMentions.onKeyDown(event)) onKeyDown(event);
                 }}
+                onKeyDownCapture={(event) => {
+                  plainPasteAtRef.current = isPlainPasteChord(event) ? performance.now() : 0;
+                }}
+                onKeyUpCapture={() => {
+                  plainPasteAtRef.current = 0;
+                }}
                 onPaste={handleFilePaste}
                 onBlur={() => {
+                  plainPasteAtRef.current = 0;
                   // Mac: switching input methods can fire compositionstart without a matching compositionend,
                   // leaving composingRef pinned. The OS always commits or cancels before focus is lost.
                   imeSessionOpenRef.current = false;

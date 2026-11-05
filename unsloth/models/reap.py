@@ -1114,13 +1114,3 @@ def raise_if_unsaved_reap(model):
             'expert. Call `reap_prune(..., save_directory = "pruned_model")` (or save the pruned '
             "model and load it again) before `get_peft_model`."
         )
-
-
-def _is_token_rows(dataset):
-    if isinstance(dataset, (list, tuple)) and dataset:
-        first = dataset[0]
-        return isinstance(first, (list, tuple)) or (
-            isinstance(first, dict) and "input_ids" in first
-        )
-    column_names = getattr(dataset, "column_names", None)
-    return bool(column_names) and "input_ids" in column_names

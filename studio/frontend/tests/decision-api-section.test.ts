@@ -22,7 +22,7 @@ const API_TAB = read("../src/features/settings/tabs/api-keys-tab.tsx");
 test("the API tab renders the section and search finds it", () => {
   const tabs = read("../src/features/settings/components/api-example-tabs.tsx");
   assert.match(API_TAB, /<ApiExamplesPanel/);
-  assert.match(tabs, /<DecisionApiSection showHeading=\{false\} \/>/);
+  assert.match(tabs, /<DecisionApiSection[\s\S]*?showHeading=\{false\}/);
   assert.match(tabs, /searchLabel: "settings\.apiKeys\.decisionApi\.title"/);
   assert.match(tabs, /data-settings-label=\{\s*entry\.searchLabel \? t\(entry\.searchLabel\) : undefined\s*\}/);
   assert.ok(

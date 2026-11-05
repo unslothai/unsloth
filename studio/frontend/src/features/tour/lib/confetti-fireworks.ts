@@ -5,7 +5,7 @@
 
 import type { CreateTypes as ConfettiInstance } from "canvas-confetti";
 
-import { prefersReducedMotion } from "@/features/settings";
+import { prefersReducedMotion } from "@/features/settings/stores/appearance-custom-store";
 
 type FireworksOpts = {
   durationMs?: number;

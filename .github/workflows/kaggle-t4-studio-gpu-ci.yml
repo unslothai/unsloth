@@ -122,7 +122,7 @@ jobs:
       head_sha: ${{ steps.ref.outputs.head_sha }}
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -135,7 +135,8 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==2.2.4'
+        # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
+        run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
       # --kernels 1: this leg pushes one kernel. budget-hours is the full reaper window (derived by the suite).
       # reserve-hours is 10 rather than the notebook leg's 20; both legs read the same account-wide quota,
@@ -156,7 +157,7 @@ jobs:
           else
             RESOLVED=''
             for attempt in 1 2 3; do
-              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" || true)"
+              LS="$(git ls-remote https://github.com/unslothai/unsloth "$UNSLOTH_REF" "${UNSLOTH_REF}^{}" || true)"
               PEELED="$(printf '%s\n' "$LS" | grep '\^{}$' | head -n1 | cut -f1)"
               if [ -n "$PEELED" ]; then
                 RESOLVED="$PEELED"
@@ -210,7 +211,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Harden runner (audit)
-        uses: step-security/harden-runner@dc2769abcc0fcfbadfc1df54081c1608579ef6b2  # v2.22.2
+        uses: step-security/harden-runner@46b06cea07f9e64621fdf066ba77ac6915163d43  # v2.22.3
         with:
           egress-policy: audit
 
@@ -223,7 +224,8 @@ jobs:
           python-version: '3.12'
 
       - name: Install the Kaggle client
-        run: python -m pip install --quiet 'kaggle==2.2.4'
+        # kaggle imports six without declaring it; python-dateutil 4.0 stopped pulling it in.
+        run: python -m pip install --quiet 'kaggle==2.2.4' 'six'
 
       # Resolve to a commit SHA, never a ref: it goes into the kernel slug and launch.py refuses refs.
       - name: Resolve the ref under test

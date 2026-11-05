@@ -13,13 +13,12 @@ import {
 
 import {
   PlusSignIcon,
-  Settings02Icon,
   Upload01Icon,
 } from "@hugeicons/core-free-icons";
 import { FolderAddIcon } from "@/lib/folder-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
-import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
+import { Settings01Icon, TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import {
   AlertDialog,
@@ -2125,7 +2124,7 @@ export function DiffusionTrainPanel({
                 <div className="grid gap-1.5">
                   <span className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
                     <HugeiconsIcon
-                      icon={Settings02Icon}
+                      icon={Settings01Icon}
                       className="size-[calc(18px*var(--ui-space-scale,1))] shrink-0"
                     />
                     Train settings

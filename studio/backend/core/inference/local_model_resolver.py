@@ -1024,6 +1024,9 @@ def index_generation() -> int:
 def invalidate_index(*, additions_only: bool = False) -> None:
     """Additions-only keeps known hits served during rebuild; any other invalidation revokes trust."""
     global _scan, _warm_pending, _generation
+    if not additions_only:
+        from hub.utils import partial_verdict_cache
+        partial_verdict_cache.invalidate()
     with _lock:
         now = time.monotonic()
         _generation += 1

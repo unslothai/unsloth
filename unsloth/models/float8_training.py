@@ -6,30 +6,76 @@ torchao.float8.Float8LinearConfig); with native FSDP2 convert before sharding.""
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 import torch
+
+
+def _load_precision():
+    """unsloth.precision; also when this file is loaded on its own (gloo test workers import it by path
+    without the unsloth package), from the sibling directory."""
+    try:
+        from .. import precision
+        return precision
+    except ImportError:
+        import importlib.util
+        import os
+        import sys
+
+        name = "_unsloth_precision_standalone"
+        if name in sys.modules:
+            return sys.modules[name]
+        root = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "precision"
+        )
+        spec = importlib.util.spec_from_file_location(
+            name, os.path.join(root, "__init__.py"), submodule_search_locations = [root]
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+_precision = _load_precision()
+_PRECISION_NAMES = _precision.FLOAT8_TRAINING_NAMES
+_check_precision_recipe = _precision.check_recipe
+_find_routers = _precision.find_routers
+_precision_measured_faster = _precision.measured_faster
+_precision_named_recipes = _precision.named_recipes
+_record_engagement = _precision.record
+_require_engagement = _precision.require
 
 __all__ = [
     "FLOAT8_TRAINING_RECIPES",
     "resolve_float8_training",
     "float8_training_filter",
     "convert_model_to_float8_training",
+    "resolve_fp8_lora",
+    "mark_fp8_lora",
+    "enable_fp8_lora",
+    "restore_fp8_lora_for_inference",
 ]
 
-FLOAT8_TRAINING_RECIPES = ("tensorwise",)
+# Names and gates come from the precision registry (unsloth/precision/recipes.py).
+FLOAT8_TRAINING_RECIPES = _precision_named_recipes("float8_training")
 
 # Named recipes run only where they were timed faster than bfloat16 at equal loss (Qwen3-1.7B / 4B full
 # finetuning). tensorwise: RTX PRO 6000 (12.0) 15% faster; L4 (8.9) NaN gradients with gradient
 # checkpointing. rowwise: 3% slower on the RTX PRO 6000 and 2% slower on the L4, so it is not offered by
 # name. Any other GPU needs an explicit torchao Float8LinearConfig.
-_MEASURED_FASTER = {"tensorwise": ((12, 0), (12, 1))}
+_MEASURED_FASTER = _precision_measured_faster("float8_training")
 
 # Never fp8: output heads (Unsloth's fused CE reads lm_head.weight directly), MoE routers (tiny, precision sensitive).
 _SKIP_NAME_PARTS = ("lm_head", "embed_out", "output_projection", "router")
 _SKIP_LEAF_NAMES = ("gate", "router", "score", "classifier")
 
 
-def resolve_float8_training(float8_training):
-    """`float8_training` kwarg -> recipe name or a torchao Float8LinearConfig; None when off."""
+def resolve_float8_training(float8_training, dtype = None):
+    """`float8_training` kwarg -> recipe name or a torchao Float8LinearConfig; None when off. A format the
+    precision registry knows but Unsloth cannot train (MXFP6, or one not built yet) raises with its reason,
+    before the model is loaded; `dtype` (the load dtype, None = auto) refuses float16 for formats whose
+    quantizer rejects it."""
     if float8_training is None or float8_training is False:
         return None
     if float8_training is True:
@@ -41,6 +87,16 @@ def resolve_float8_training(float8_training):
                 "Unsloth: float8_training = 'rowwise' trained slower than bfloat16 on every GPU it was "
                 "timed on (L4, RTX PRO 6000). Use float8_training = True (tensorwise), or pass "
                 "torchao.float8.Float8LinearConfig.from_recipe_name('rowwise') to force it."
+            )
+        if recipe not in FLOAT8_TRAINING_RECIPES and recipe in _PRECISION_NAMES:
+            # Raises PrecisionRefused (a ValueError) with the format's own reason.
+            _check_precision_recipe(
+                _PRECISION_NAMES[recipe], gpu = _precision.current_gpu_class(), input_dtype = dtype
+            )
+            raise ValueError(
+                f"Unsloth: float8_training = '{float8_training}' has not been measured faster than bfloat16 "
+                "on any GPU, so it is not offered by name. Pass "
+                f"torchao.float8.Float8LinearConfig.from_recipe_name({recipe!r}) to force it."
             )
         if recipe not in FLOAT8_TRAINING_RECIPES:
             raise ValueError(
@@ -80,6 +136,12 @@ def float8_training_filter(
     except Exception:
         pass
     size_recipe = _recipe_scaling(recipe)
+    # Routers found by shape beside an experts container (a router named `wg` or in remote code), on top of the
+    # name rules below.
+    try:
+        routers = frozenset(_find_routers(model))
+    except Exception:
+        routers = frozenset()
 
     def module_filter_fn(module, fqn):
         # Exact type: bitsandbytes / QAT / fp8 / PEFT linears subclass nn.Linear and must stay as they are.
@@ -87,7 +149,10 @@ def float8_training_filter(
             return False
         if id(module) in out_heads or any(p in fqn for p in _SKIP_NAME_PARTS):
             return False
-        if fqn.rsplit(".", 1)[-1] in _SKIP_LEAF_NAMES:
+        # A router found structurally can be a gating wrapper: its inner Linear is the router too.
+        if fqn.rsplit(".", 1)[-1] in _SKIP_LEAF_NAMES or any(
+            fqn == r or fqn.startswith(r + ".") for r in routers
+        ):
             return False
         weight = module.weight
         if not weight.is_floating_point() or weight.element_size() < 2 or not weight.requires_grad:
@@ -327,6 +392,16 @@ def convert_model_to_float8_training(
     converted = [name for name, m in model.named_modules() if isinstance(m, Float8Linear)]
     if dispatch_hooks:
         _reattach_dispatch_hooks(model, converted, dispatch_hooks)
+    name = (
+        recipe if isinstance(recipe, str) else "Float8LinearConfig(" + _recipe_scaling(recipe) + ")"
+    )
+    _record_engagement(model, "float8_training:" + name, len(converted))
+    # UNSLOTH_STRICT_ENGAGE=1 raises here instead of training in the original precision.
+    _require_engagement(
+        "float8_training",
+        len(converted),
+        "no eligible Linear layer: dims divisible by 16 and large enough",
+    )
     if not converted:
         import warnings
         warnings.warn(
@@ -338,4 +413,610 @@ def convert_model_to_float8_training(
         model._unsloth_float8_linears = converted
     except Exception:
         pass
+    return converted
+
+
+FP8_LORA_RECIPE = "fp8_lora_tensorwise"
+_FP8_LORA_BY_NAME = ("tensorwise",)
+_FP8_LORA_EXPLICIT = ("fp8_lora", FP8_LORA_RECIPE)
+
+
+def resolve_fp8_lora(
+    float8_training,
+    *,
+    dtype = None,
+    load_in_4bit = False,
+    load_in_8bit = False,
+    load_in_fp8 = False,
+    qat_scheme = None,
+    gpu = "current",
+):
+    """`float8_training` with LoRA / QLoRA -> FP8_LORA_RECIPE or None; refuses (PrecisionRefused, a ValueError)
+    before anything loads. `gpu` is a registry GPU class ('sm89', ...); 'current' reads the CUDA device."""
+    if float8_training is None or float8_training is False:
+        return None
+    refused = _precision.PrecisionRefused
+    if float8_training is True:
+        explicit = False
+    elif isinstance(float8_training, str) and float8_training.strip().lower() in (
+        _FP8_LORA_BY_NAME + _FP8_LORA_EXPLICIT
+    ):
+        explicit = float8_training.strip().lower() in _FP8_LORA_EXPLICIT
+    else:
+        raise ValueError(
+            f"Unsloth: float8_training = {float8_training!r} is a full finetuning recipe "
+            "(`full_finetuning = True`). With LoRA, float8_training = 'fp8_lora' (or True where it is "
+            "measured faster) runs the frozen base's forward and input gradient in fp8."
+        )
+    if load_in_4bit or load_in_8bit or (load_in_fp8 not in (False, None)):
+        raise refused(
+            "Unsloth: float8_training with LoRA quantizes a 16-bit base to fp8 itself; pass "
+            "load_in_4bit = False (and no load_in_8bit / load_in_fp8). QLoRA bases are already 4 / 8 bit."
+        )
+    if qat_scheme is not None:
+        raise refused(
+            "Unsloth: float8_training with LoRA and qat_scheme cannot be combined: QAT fake-quantizes the "
+            "base weight that fp8 LoRA would quantize."
+        )
+    if gpu == "current":
+        gpu = _precision.current_gpu_class()
+    if gpu is None:
+        raise refused(
+            "Unsloth: float8_training with LoRA needs an NVIDIA GPU with compute capability 8.9+ "
+            "(L4, RTX 40 / 50, RTX PRO 6000, H100, B200); no CUDA device is visible."
+        )
+    recipe = fp8_lora_recipe_for(gpu)
+    gate = _check_precision_recipe(recipe, gpu = gpu, input_dtype = dtype, mode = "lora")
+    if not explicit and gate.status != "named":
+        raise refused(
+            f"Unsloth: float8_training = {float8_training!r} with LoRA has not been measured faster than "
+            f"bfloat16 LoRA on {gpu} ({gate.status}), so it is not enabled by name there. Pass "
+            "float8_training = 'fp8_lora' to run the fp8 frozen base anyway."
+        )
+    if gate.status == "unprobed":
+        print(f"Unsloth: fp8 LoRA has not been tested on {gpu}; running it as requested.")
+    return recipe
+
+
+def fp8_lora_recipe_for(gpu):
+    """The frozen-base recipe the kernels run on this GPU class: per-token scales on sm120, tensorwise
+    elsewhere (UNSLOTH_FP8_LORA_SCALING overrides; kernels/fp8_lora.scaling_for_class is the one rule)."""
+    scaling = _load_fp8_lora_kernels().scaling_for_class(gpu)
+    return "fp8_lora_rowwise" if scaling == "row" else FP8_LORA_RECIPE
+
+
+def mark_fp8_lora(model, recipe):
+    """Remember the request on the loaded model; get_peft_model converts the LoRA bases. A model that is
+    already a PeftModel (an adapter repo was loaded, so get_peft_model is skipped) is converted now."""
+    if recipe is not None and model is not None:
+        try:
+            model._unsloth_fp8_lora_recipe = recipe
+        except Exception:
+            pass
+        if getattr(model, "peft_config", None):
+            enable_fp8_lora(model, recipe)
+    return model
+
+
+def _fp8_lora_request(model):
+    stack, seen = [model], set()
+    while stack and len(seen) < 8:
+        m = stack.pop()
+        if m is None or id(m) in seen:
+            continue
+        seen.add(id(m))
+        recipe = getattr(m, "_unsloth_fp8_lora_recipe", None)
+        if isinstance(recipe, str):
+            return recipe
+        stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
+    return None
+
+
+def _load_fp8_lora_kernels():
+    try:
+        from ..kernels import fp8_lora
+        return fp8_lora
+    except ImportError:
+        import importlib.util
+        import os
+        import sys
+
+        name = "_unsloth_fp8_lora_standalone"
+        if name in sys.modules:
+            return sys.modules[name]
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kernels", "fp8_lora.py"
+        )
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+def _merge_with_master(
+    self,
+    *args,
+    _unsloth_method = "merge",
+    **kwargs,
+):
+    base = getattr(self, "base_layer", None)
+    if base is not None:
+        _load_fp8_lora_kernels().restore_fp8_lora_master(base)
+    out = getattr(type(self), _unsloth_method)(self, *args, **kwargs)
+    state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+    if state is not None:
+        state._key = None
+        state.refresh(base.weight)
+    return out
+
+
+def _unload_fp8_lora(self, *args, **kwargs):
+    restore_fp8_lora_for_inference(self.model)
+    return type(self)._unload_and_optionally_merge(self, *args, **kwargs)
+
+
+def _has_variant(lora_module, adapter_name = None) -> bool:
+    """Variants may read the master directly or initialize tensors on its device."""
+    dora = getattr(lora_module, "use_dora", {}) or {}
+    variants = getattr(lora_module, "lora_variant", {}) or {}
+    if adapter_name is not None:
+        return bool(dora.get(adapter_name, False)) or adapter_name in variants
+    return any(dora.values()) or bool(variants)
+
+
+def _move_adapter_with_master(self, adapter_name, *args, **kwargs):
+    """Place adapters on the compute device; variants also need their master there."""
+    base = getattr(self, "base_layer", None)
+    state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+    if state is not None and state.offloaded and _has_variant(self, adapter_name):
+        _load_fp8_lora_kernels().restore_fp8_lora_master(base)
+    out = type(self)._move_adapter_to_device_of_base_layer(self, adapter_name, *args, **kwargs)
+    if state is None:
+        return out
+    state._key = None
+    state.refresh(base.weight)
+    if not state.offloaded:
+        return out
+    for name in tuple(getattr(self, "adapter_layer_names", ())) + tuple(
+        getattr(self, "other_param_names", ())
+    ):
+        layer = getattr(self, name, None)
+        if (
+            not isinstance(layer, (torch.nn.ModuleDict, torch.nn.ParameterDict))
+            or adapter_name not in layer
+        ):
+            continue
+        entry = layer[adapter_name]
+        tensors = list(entry.parameters()) if isinstance(entry, torch.nn.Module) else [entry]
+        if any(t.device.type == "meta" for t in tensors):
+            # low_cpu_mem_usage: PEFT leaves meta parameters for the checkpoint loader to materialize.
+            continue
+        if isinstance(entry, torch.nn.Module):
+            layer[adapter_name] = entry.to(state.device)
+        else:
+            layer[adapter_name] = torch.nn.Parameter(
+                entry.data.to(state.device), requires_grad = entry.requires_grad
+            )
+    return out
+
+
+def _restore_master_before_merge(lora_module):
+    import functools
+    import types
+
+    for method in ("merge", "unmerge"):
+        if method in lora_module.__dict__ or not callable(getattr(type(lora_module), method, None)):
+            continue
+        fn = functools.partial(_merge_with_master, _unsloth_method = method)
+        object.__setattr__(lora_module, method, types.MethodType(fn, lora_module))
+    move = "_move_adapter_to_device_of_base_layer"
+    if move not in lora_module.__dict__ and callable(getattr(type(lora_module), move, None)):
+        object.__setattr__(
+            lora_module, move, types.MethodType(_move_adapter_with_master, lora_module)
+        )
+
+
+_RAW_READS = {}
+
+
+def _reads_raw_weight(parent, leaf) -> bool:
+    """Direct weight readers bypass the patched forward, so their masters must stay resident."""
+    import inspect
+    import re
+
+    key = (type(parent), leaf)
+    if key not in _RAW_READS:
+        try:
+            source = inspect.getsource(type(parent))
+        except (OSError, TypeError):
+            source = ""
+        _RAW_READS[key] = re.search(rf"\b{re.escape(leaf)}\.weight\b", source) is not None
+    return _RAW_READS[key]
+
+
+def _mamba_raw_weight_leaf(model, name) -> bool:
+    parent_name, _, leaf = name.rpartition(".")
+    try:
+        parent = model.get_submodule(parent_name) if parent_name else model
+    except AttributeError:
+        return False
+    if _reads_raw_weight(parent, leaf):
+        return True
+    try:
+        from ._mamba_lora import _RAW_WEIGHT_LEAVES, _is_mamba_mixer
+    except Exception:
+        return False
+    # Unsloth's fused Mamba LoRA path builds W + delta from these leaves of any Mamba-style mixer.
+    return leaf in _RAW_WEIGHT_LEAVES and _is_mamba_mixer(parent)
+
+
+def _block_swapped_modules(model) -> set:
+    out = set()
+    for module in model.modules():
+        swapper = module.__dict__.get("_unsloth_block_swap")
+        if swapper is None or not isinstance(module, torch.nn.ModuleList):
+            continue
+        for index in getattr(swapper, "indices", ()) or ():
+            if 0 <= index < len(module):
+                out.update(id(m) for m in module[index].modules())
+    return out
+
+
+def _fp8_lora_owner(model):
+    getter = getattr(model, "get_base_model", None)
+    return getter() if getattr(model, "peft_config", None) and callable(getter) else model
+
+
+@lru_cache(maxsize = 128)
+def _fp8_lora_operator_code(code, names):
+    return code.replace(co_varnames = names + code.co_varnames[2:])
+
+
+@lru_cache(maxsize = 128)
+def _fp8_lora_proxy_code(name, receiver, value):
+    source = f"def forward({receiver}, {value}):\n    return {name}({receiver}, {value}={value})\n"
+    return compile(source, "<Unsloth FP8 forwarding contract>", "exec").co_consts[0]
+
+
+def _prepare_fp8_lora_operators(model, allow_cpu = False):
+    import inspect
+    import os
+    import types
+    from transformers.activations import ACT2FN
+    from ..kernels.fast_lora import apply_lora_mlp_swiglu
+    from ..kernels.rms_layernorm import fast_rms_layernorm
+    from unsloth_zoo.temporary_patches.common import unwrap_already_compiled
+
+    owner = _fp8_lora_owner(model)
+    if os.environ.get("UNSLOTH_FP8_LORA_FUSED_OPS", "1") == "0" or owner.__dict__.get(
+        "_unsloth_fp8_lora_kernel_forwards"
+    ):
+        return
+
+    def fingerprint(function):
+        if isinstance(function, types.CodeType):
+            code = function
+        elif isinstance(function, types.FunctionType):
+            code = function.__code__
+        else:
+            return None
+        return (
+            code.co_code,
+            code.co_consts,
+            code.co_names,
+            code.co_argcount,
+            code.co_kwonlyargcount,
+            code.co_posonlyargcount,
+            code.co_flags & (inspect.CO_VARARGS | inspect.CO_VARKEYWORDS),
+        )
+
+    def fused_mlp(self, X):
+        X = X.contiguous()
+        if X.ndim == 2:
+            return apply_lora_mlp_swiglu(self, X.unsqueeze(0), inplace = False).squeeze(0)
+        return apply_lora_mlp_swiglu(self, X, inplace = False)
+
+    def rms_equation(self, x):
+        dtype = x.dtype
+        x = x.to(torch.float32)
+        variance = x.pow(2).mean(-1, keepdim = True)
+        x = x * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * x.to(dtype)
+
+    def fused_rms(self, X):
+        if X.dtype not in (torch.float16, torch.bfloat16) or X.dtype != self.weight.dtype:
+            return rms_equation(self, X)
+        return fast_rms_layernorm(self, X)
+
+    def mlp_equation(self, x):
+        output = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return output
+
+    def mlp_expression(self, x):
+        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+
+    templates = (
+        (rms_equation, fused_rms),
+        (mlp_equation, fused_mlp),
+        (mlp_expression, fused_mlp),
+    )
+    cache = owner.__dict__.setdefault("_unsloth_fp8_lora_kernel_cache", {})
+    forwards = []
+    for module in model.modules():
+        if not type(module).__module__.startswith(
+            ("transformers.models.", "unsloth_compiled_module_")
+        ):
+            continue
+        for name in ("forward", "_old_forward"):
+            method = getattr(module, name, None)
+            function = getattr(method, "__func__", None)
+            if function is None or function.__code__.co_argcount != 2:
+                continue
+            equation = function
+            if type(module).__module__.startswith("unsloth_compiled_module_"):
+                name_forward = type(module).__name__ + "_forward"
+                if function.__code__.co_names != (name_forward,):
+                    continue
+                proxy = _fp8_lora_proxy_code(name_forward, *function.__code__.co_varnames[:2])
+                if fingerprint(function) != fingerprint(proxy):
+                    continue
+                equation = unwrap_already_compiled(function.__globals__.get(name_forward))
+            for template, kernel in templates:
+                # Match the installed native equation, including constants, before replacing it.
+                if fingerprint(equation) != fingerprint(template):
+                    continue
+                if function.__code__.co_argcount != 2:
+                    continue
+                if kernel is fused_mlp:
+                    activation = getattr(module, "act_fn", None)
+                    if type(activation) not in (type(ACT2FN["silu"]), torch.nn.SiLU):
+                        continue
+                    if (
+                        getattr(activation, "act", torch.nn.functional.silu)
+                        is not torch.nn.functional.silu
+                    ):
+                        continue
+                    projs = [
+                        getattr(module, part, None)
+                        for part in ("gate_proj", "up_proj", "down_proj")
+                    ]
+                    if any(
+                        getattr(getattr(proj, "base_layer", None), "bias", None) is not None
+                        for proj in projs
+                    ):
+                        continue
+                    states = [
+                        getattr(getattr(proj, "base_layer", None), "__dict__", {}).get(
+                            "_unsloth_fp8_lora"
+                        )
+                        for proj in projs
+                    ]
+                    if not all(
+                        state is not None and (allow_cpu or state.device.type == "cuda")
+                        for state in states
+                    ):
+                        continue
+                else:
+                    weight = getattr(module, "weight", None)
+                    if equation.__globals__.get("torch") is not torch or weight is None:
+                        continue
+                    if weight.dtype not in (torch.float16, torch.bfloat16):
+                        continue
+                    if not allow_cpu and weight.device.type != "cuda":
+                        continue
+                operator = apply_lora_mlp_swiglu if kernel is fused_mlp else fast_rms_layernorm
+                key = (id(module), name, function, operator, kernel.__code__)
+                replacement = cache.get(key)
+                if replacement is None:
+                    # Preserve native keyword names without a Python wrapper in each block.
+                    code = _fp8_lora_operator_code(
+                        kernel.__code__, function.__code__.co_varnames[:2]
+                    )
+                    replacement = types.FunctionType(
+                        code,
+                        kernel.__globals__,
+                        function.__name__,
+                        kernel.__defaults__,
+                        kernel.__closure__,
+                    )
+                    replacement = types.MethodType(replacement, method.__self__)
+                    # Reuse the binding across GRPO inference/training cycles to retain compiled graphs.
+                    cache[key] = replacement
+                forwards.append((module, name, module.__dict__.get(name)))
+                setattr(module, name, replacement)
+                break
+    owner.__dict__["_unsloth_fp8_lora_kernel_forwards"] = tuple(forwards)
+
+
+def _prepare_fp8_lora_loss(model):
+    import functools
+    import types
+
+    owner = _fp8_lora_owner(model)
+    if owner.__dict__.get("_unsloth_fp8_lora_loss_forwards"):
+        return
+    getter = getattr(owner, "get_output_embeddings", None)
+    if not callable(getter) or not isinstance(getter(), torch.nn.Module):
+        return
+    from unsloth_zoo.fused_losses import forward_adapter
+
+    original = forward_adapter.unsloth_fused_lm_head_loss
+
+    @functools.wraps(original)
+    def routed(hidden_states, lm_head, labels, *args, **kwargs):
+        # HF's fixed_cross_entropy ignores these flags; they must not select another loss.
+        kwargs.pop("output_attentions", None)
+        kwargs.pop("output_hidden_states", None)
+        return original(hidden_states, lm_head, labels, *args, **kwargs)
+
+    memo = {}
+
+    def isolate(function):
+        if not isinstance(function, types.FunctionType):
+            return function
+        if function in memo:
+            return memo[function]
+        memo[function] = function
+        inner = getattr(function, "__wrapped__", None)
+        changed_inner = isolate(inner)
+        closure = function.__closure__
+        # Decorators call their closure; changing __wrapped__ alone does not reroute them.
+        if changed_inner is not inner and closure:
+            closure = tuple(
+                types.CellType(changed_inner) if cell.cell_contents is inner else cell
+                for cell in closure
+            )
+        direct = (
+            "unsloth_fused_lm_head_loss" in function.__code__.co_names
+            and function.__globals__.get("unsloth_fused_lm_head_loss") is original
+        )
+        if not direct and closure == function.__closure__:
+            return function
+        namespace = function.__globals__
+        if direct:
+            namespace = {**namespace, "unsloth_fused_lm_head_loss": routed}
+            # Older Dynamo resolves named scopes through the original module instead of this copy.
+            namespace.pop("__name__", None)
+        replacement = types.FunctionType(
+            function.__code__,
+            namespace,
+            function.__name__,
+            function.__defaults__,
+            closure,
+        )
+        replacement.__dict__.update(function.__dict__)
+        for attribute in (
+            "__kwdefaults__",
+            "__annotations__",
+            "__qualname__",
+            "__module__",
+            "__doc__",
+        ):
+            setattr(replacement, attribute, getattr(function, attribute))
+        if changed_inner is not inner:
+            replacement.__wrapped__ = changed_inner
+        memo[function] = replacement
+        return replacement
+
+    forwards = []
+    for module in model.modules():
+        for name in ("forward", "_old_forward"):
+            method = getattr(module, name, None)
+            function = getattr(method, "__func__", method)
+            replacement = isolate(function)
+            if replacement is function:
+                continue
+            forwards.append((module, name, module.__dict__.get(name)))
+            if isinstance(method, types.MethodType):
+                replacement = types.MethodType(replacement, method.__self__)
+            setattr(module, name, replacement)
+    owner.__dict__["_unsloth_fp8_lora_loss_forwards"] = tuple(forwards)
+
+
+def restore_fp8_lora_for_inference(model):
+    owner = _fp8_lora_owner(model)
+    for module, name, method in owner.__dict__.pop("_unsloth_fp8_lora_kernel_forwards", ()):
+        if method is None:
+            module.__dict__.pop(name, None)
+        else:
+            setattr(module, name, method)
+    for module, name, method in owner.__dict__.pop("_unsloth_fp8_lora_loss_forwards", ()):
+        if method is None:
+            module.__dict__.pop(name, None)
+        else:
+            setattr(module, name, method)
+    bases = owner.__dict__.get("_unsloth_fp8_lora_bases", ())
+    if not bases:
+        return
+    kernels = _load_fp8_lora_kernels()
+    for module in bases:
+        kernels.detach_fp8_lora_base(module)
+    owner.__dict__["_unsloth_fp8_lora_bases"] = ()
+
+
+def enable_fp8_lora(
+    model,
+    recipe = None,
+    allow_cpu = False,
+):
+    """Attach the fp8 frozen-base state to every LoRA base nn.Linear (frozen, 16-bit, dims % 16, not a
+    high-precision layer). Returns the converted names. A no-op unless the model was loaded with it."""
+    recipe = recipe or _fp8_lora_request(model)
+    if recipe is None:
+        return []
+    kernels = _load_fp8_lora_kernels()
+    policy = _precision.get_recipe(recipe).hp_layers
+    try:
+        is_hp = _precision.hp_filter(model, policy)
+    except Exception:
+        is_hp = lambda module, fqn: False
+    converted, skipped = [], {}
+    uses = {}
+    for _, p in model.named_parameters(remove_duplicate = False):
+        uses[id(p)] = uses.get(id(p), 0) + 1
+    swapped = _block_swapped_modules(model)
+    offload = kernels.offload_supported()
+    offloaded = 0
+    for name, module in model.named_modules():
+        base = getattr(module, "base_layer", None)
+        if base is None or not hasattr(module, "lora_A") or not isinstance(base, torch.nn.Module):
+            continue
+        if is_hp(base, name + ".base_layer") or is_hp(module, name):
+            skipped[name] = "high precision layer"
+            continue
+        why = kernels.eligible_base(base)
+        if why is None and not allow_cpu:
+            state = base.__dict__.get("_unsloth_fp8_lora")
+            device = state.device if state is not None and state.offloaded else base.weight.device
+            if device.type != "cuda" or torch.version.hip is not None:
+                why = f"weight on {device}"
+            elif torch.cuda.get_device_capability(device) < (8, 9):
+                why = "compute capability below 8.9"
+        if why is None and id(base) in swapped:
+            why = "block-swapped layer"
+        if why is None and uses.get(id(base.weight), 0) > 1:
+            why = "weight shared with another module"
+        if why is not None:
+            skipped[name] = why
+            continue
+        reads_raw = _has_variant(module) or _mamba_raw_weight_leaf(model, name)
+        state = kernels.attach_fp8_lora_base(base, offload = offload and not reads_raw)
+        offloaded += int(state.offloaded)
+        _restore_master_before_merge(module)
+        converted.append(name)
+    if offloaded and torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    _fp8_lora_owner(model).__dict__["_unsloth_fp8_lora_bases"] = tuple(
+        module for module in model.modules() if "_unsloth_fp8_lora" in module.__dict__
+    )
+    detail = {"skipped": len(skipped)} if skipped else {}
+    if offloaded:
+        detail["master_offloaded"] = offloaded
+    _record_engagement(model, recipe, len(converted), detail = detail or None)
+    if not _require_engagement(recipe, len(converted), "no frozen 16-bit LoRA base Linear layers"):
+        print(
+            "Unsloth: float8_training with LoRA found no eligible base layers"
+            + (f" ({next(iter(skipped.values()))})" if skipped else "")
+            + "; training stays in 16 bit."
+        )
+    else:
+        print(f"Unsloth: fp8 LoRA base on {len(converted)} Linear layers.")
+    if converted:
+        _prepare_fp8_lora_loss(model)
+        _prepare_fp8_lora_operators(model)
+        import types
+        from peft.tuners.tuners_utils import BaseTuner
+
+        tuner = model if isinstance(model, BaseTuner) else getattr(model, "base_model", None)
+        unload = "_unload_and_optionally_merge"
+        if (
+            isinstance(tuner, BaseTuner)
+            and unload not in tuner.__dict__
+            and callable(getattr(type(tuner), unload, None))
+        ):
+            object.__setattr__(tuner, unload, types.MethodType(_unload_fp8_lora, tuner))
+    if converted and getattr(model, "_unsloth_block_compile_installed", False):
+        from ._block_compile import patch_block_compile
+        patch_block_compile(model)
     return converted

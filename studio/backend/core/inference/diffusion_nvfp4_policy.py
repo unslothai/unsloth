@@ -147,7 +147,10 @@ QWEN21_R020 = NVFP4Policy(
     policy_id = "qwen21_r020_v1",
     version = 1,
     family = "qwen-image-2.1",
-    base_repos = ("qwen/qwen-image-2.1",),
+    # Turbo is a distill of the same 32-block DiT (identical linear names and shapes) and quantizes its own weights at
+    # load (no hosted artifact). Without a policy every linear went nvfp4: LPIPS 0.10 against its bf16 render on a G4,
+    # where this assignment (ComfyUI arm, same layers) scored 0.011.
+    base_repos = ("qwen/qwen-image-2.1", "qwen/qwen-image-2.1-turbo"),
     rules = (
         Rule(suffix = "norm_out.linear", precision = PRECISION_NVFP4, expect = 1),
         *_per_block("attn.to_k", "transformer_blocks", (5, 7, 13) + tuple(range(15, 28))),

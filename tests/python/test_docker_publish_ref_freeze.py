@@ -39,6 +39,7 @@ def _shared_setup_1(bin_dir, manifest_digest_step, tmp_path):
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish.yml"
+ROCM_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "docker-publish-rocm.yml"
 
 RESOLVER_STEPS = ("unsloth_ref", "zoo_ref", "notebooks")
 
@@ -48,17 +49,26 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-@pytest.fixture(scope = "module")
-def steps() -> dict:
-    assert WORKFLOW.is_file(), f"missing {WORKFLOW}"
-    doc = yaml.safe_load(WORKFLOW.read_text(encoding = "utf-8"))
+def _resolver_steps(workflow: Path) -> dict:
+    assert workflow.is_file(), f"missing {workflow}"
+    doc = yaml.safe_load(workflow.read_text(encoding = "utf-8"))
     found = {}
     for step in doc["jobs"]["prepare"]["steps"]:
         if step.get("id") in RESOLVER_STEPS:
             found[step["id"]] = step["run"]
     missing = set(RESOLVER_STEPS) - set(found)
-    assert not missing, f"resolver steps missing from the prepare job: {missing}"
+    assert not missing, f"resolver steps missing from {workflow.name}'s prepare job: {missing}"
     return found
+
+
+@pytest.fixture(scope = "module")
+def steps() -> dict:
+    return _resolver_steps(WORKFLOW)
+
+
+@pytest.fixture(scope = "module", params = [WORKFLOW, ROCM_WORKFLOW], ids = ["cuda", "rocm"])
+def any_steps(request) -> dict:
+    return _resolver_steps(request.param)
 
 
 def test_the_workflow_never_pins_a_shell_so_bash_e_has_no_pipefail(steps: dict):
@@ -215,6 +225,7 @@ def _run_with_failing_ls_remote(script: str, tmp_path: Path):
 ZOO_TAG = "v2026.9.1"
 ZOO_MAIN_SHA = "1" * 40
 ZOO_TAG_SHA = "2" * 40
+ZOO_TAG_OBJECT_SHA = "3" * 40
 
 
 def _expand_tag_trigger(run: str) -> str:
@@ -224,46 +235,98 @@ def _expand_tag_trigger(run: str) -> str:
     return re.sub(r"\$\{\{[^}]*\}\}", "", run)
 
 
-def _run_zoo_step(script: str, tmp_path: Path, *, probe_exit: int):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(parents = True, exist_ok = True)
+def _tag_refs(tag: str, commit: str, tag_object: str | None) -> dict:
+    # An annotated tag advertises its own object plus a peeled `^{}` entry for the commit.
+    if tag_object is None:
+        return {f"refs/tags/{tag}": commit}
+    return {f"refs/tags/{tag}": tag_object, f"refs/tags/{tag}^{{}}": commit}
+
+
+def _write_fake_git(bin_dir: Path, refs: dict, probe_exit: int) -> None:
+    # Like real ls-remote, a pattern matches a ref equal to it or ending in "/<pattern>".
+    table = bin_dir / "remote_refs.tsv"
+    table.write_text("".join(f"{sha}\t{ref}\n" for ref, sha in refs.items()), encoding = "utf-8")
     stub = bin_dir / "git"
     stub.write_text(
         "#!/usr/bin/env bash\n"
+        '[ "$1" = "ls-remote" ] || exit 0\n'
+        "shift\n"
+        "pats=()\n"
         'for a in "$@"; do\n'
-        '  if [ "$a" = "--exit-code" ]; then\n'
+        '  case "$a" in\n'
+        "    --exit-code)\n"
         + (
-            '    echo "fatal: unable to access: Could not resolve host" >&2\n'
+            '      echo "fatal: unable to access: Could not resolve host" >&2\n'
             if probe_exit not in (0, 2)
             else ""
         )
-        + f"    exit {probe_exit}\n"
-        "  fi\n"
+        + f"      exit {probe_exit} ;;\n"
+        "    -*|*://*) ;;\n"
+        '    *) pats+=("$a") ;;\n'
+        "  esac\n"
         "done\n"
-        'if [ "${!#}" = "main" ]; then\n'
-        f'  printf "%s\\trefs/heads/main\\n" "{ZOO_MAIN_SHA}"\n'
-        "else\n"
-        f'  printf "%s\\trefs/tags/{ZOO_TAG}\\n" "{ZOO_TAG_SHA}"\n'
-        "fi\n"
+        "while IFS=$'\\t' read -r sha ref; do\n"
+        '  for p in "${pats[@]}"; do\n'
+        '    if [ "$ref" = "$p" ] || [[ "$ref" == */"$p" ]]; then\n'
+        '      printf "%s\\t%s\\n" "$sha" "$ref"\n'
+        "      break\n"
+        "    fi\n"
+        "  done\n"
+        f'done < "{table}"\n'
         "exit 0\n",
         encoding = "utf-8",
     )
     stub.chmod(0o755)
+
+
+def _run_resolver(
+    script: str,
+    tmp_path: Path,
+    refs: dict,
+    *,
+    env = None,
+    probe_exit: int = 2,
+):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents = True, exist_ok = True)
+    _write_fake_git(bin_dir, refs, probe_exit)
     out = tmp_path / "github_output"
     out.write_text("", encoding = "utf-8")
-    env = dict(os.environ)
-    env["PATH"] = f"{bin_dir}{os.pathsep}" + env["PATH"]
-    env["GITHUB_OUTPUT"] = str(out)
-    path = tmp_path / "zoo_step.sh"
-    path.write_text(_expand_tag_trigger(script), encoding = "utf-8")
+    full_env = dict(os.environ)
+    full_env["PATH"] = f"{bin_dir}{os.pathsep}" + full_env["PATH"]
+    full_env["GITHUB_OUTPUT"] = str(out)
+    for name in ("INPUT_REF", "TAG_REF", "PUSH_SHA", "IS_TAG", "TAG_NAME"):
+        full_env[name] = ""
+    full_env.update(env or {})
+    path = tmp_path / "resolver_step.sh"
+    path.write_text(script, encoding = "utf-8")
     res = subprocess.run(
         ["bash", "-e", str(path)],
         capture_output = True,
         text = True,
-        env = env,
+        env = full_env,
         timeout = 60,
     )
     return res, out.read_text(encoding = "utf-8")
+
+
+def _run_zoo_step(
+    script: str,
+    tmp_path: Path,
+    *,
+    probe_exit: int,
+    annotated: bool = False,
+):
+    refs = {"refs/heads/main": ZOO_MAIN_SHA}
+    refs.update(_tag_refs(ZOO_TAG, ZOO_TAG_SHA, ZOO_TAG_OBJECT_SHA if annotated else None))
+    # docker-publish.yml inlines the expressions; docker-publish-rocm.yml reads them from env.
+    return _run_resolver(
+        _expand_tag_trigger(script),
+        tmp_path,
+        refs,
+        env = {"IS_TAG": "true", "TAG_NAME": ZOO_TAG},
+        probe_exit = probe_exit,
+    )
 
 
 def test_an_unreachable_zoo_probe_fails_instead_of_taking_main(steps: dict, tmp_path: Path):
@@ -286,6 +349,69 @@ def test_a_present_zoo_tag_is_mirrored(steps: dict, tmp_path: Path):
     res, emitted = _run_zoo_step(steps["zoo_ref"], tmp_path, probe_exit = 0)
     assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
     assert emitted.strip() == f"ref={ZOO_TAG_SHA}", emitted
+
+
+# v0.1.911-beta and v0.1.912-beta were annotated: the steps froze the tag object's
+# sha, uv refused it ("does not match precise commit"), and neither image shipped.
+
+RELEASE_TAG = "v0.1.911-beta"
+RELEASE_COMMIT = "4" * 40
+RELEASE_TAG_OBJECT = "5" * 40
+OTHER_MAIN_SHA = "6" * 40
+
+_TAG_OBJECT_MSG = (
+    "froze the annotated tag's own object sha, which is not a commit: "
+    "`uv pip install pkg @ git+...@<that sha>` fails and the release never publishes"
+)
+
+
+def _release_refs(annotated: bool) -> dict:
+    refs = {"refs/heads/main": OTHER_MAIN_SHA}
+    refs.update(_tag_refs(RELEASE_TAG, RELEASE_COMMIT, RELEASE_TAG_OBJECT if annotated else None))
+    return refs
+
+
+@pytest.mark.parametrize("annotated", [True, False], ids = ["annotated", "lightweight"])
+def test_a_pushed_release_tag_freezes_unsloth_to_its_commit(
+    any_steps: dict, annotated: bool, tmp_path: Path
+):
+    res, emitted = _run_resolver(
+        _expand(any_steps["unsloth_ref"]),
+        tmp_path,
+        _release_refs(annotated),
+        env = {"TAG_REF": RELEASE_TAG},
+    )
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert emitted.strip() == f"ref={RELEASE_COMMIT}", f"{emitted.strip()!r}: {_TAG_OBJECT_MSG}"
+
+
+def test_an_annotated_zoo_tag_is_frozen_to_its_commit(any_steps: dict, tmp_path: Path):
+    res, emitted = _run_zoo_step(any_steps["zoo_ref"], tmp_path, probe_exit = 0, annotated = True)
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert emitted.strip() == f"ref={ZOO_TAG_SHA}", f"{emitted.strip()!r}: {_TAG_OBJECT_MSG}"
+
+
+def test_an_annotated_notebooks_ref_is_frozen_to_its_commit(any_steps: dict, tmp_path: Path):
+    res, emitted = _run_resolver(
+        _expand(any_steps["notebooks"]),
+        tmp_path,
+        _release_refs(annotated = True),
+        env = {"INPUT_REF": RELEASE_TAG},
+    )
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert emitted.strip() == f"commit={RELEASE_COMMIT}", f"{emitted.strip()!r}: {_TAG_OBJECT_MSG}"
+
+
+@pytest.mark.parametrize("step_id", ["unsloth_ref", "notebooks"])
+def test_a_branch_still_freezes_to_its_head(any_steps: dict, step_id: str, tmp_path: Path):
+    res, emitted = _run_resolver(
+        _expand(any_steps[step_id]),
+        tmp_path,
+        _release_refs(annotated = True),
+        env = {"INPUT_REF": "main"},
+    )
+    assert res.returncode == 0, f"stdout={res.stdout}\nstderr={res.stderr}"
+    assert emitted.strip().endswith(f"={OTHER_MAIN_SHA}"), emitted
 
 
 # `.tags[0]` on main is the mutable `:core`, which another run can retag.
