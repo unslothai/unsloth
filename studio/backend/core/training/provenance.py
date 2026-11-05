@@ -380,7 +380,11 @@ def exact_dataset_snapshot_for_commit(repo_id: Any, commit: Any) -> Optional[str
     return None
 
 
-def _local_dataset_source_snapshot(path_value: str, repo_id: str) -> Optional[tuple[str, str]]:
+def _local_dataset_source_snapshot(
+    path_value: str,
+    repo_id: str,
+    snapshot_memo: Optional[dict] = None,
+) -> Optional[tuple[str, str]]:
     if len(path_value) > 4096 or "\x00" in path_value:
         return None
     path = Path(path_value).expanduser()
@@ -391,7 +395,13 @@ def _local_dataset_source_snapshot(path_value: str, repo_id: str) -> Optional[tu
     for parent in path.parents:
         if parent.parent.name != "snapshots":
             continue
-        snapshot = exact_dataset_snapshot_path(str(parent), repo_id)
+        memo_key = ("path", str(parent))
+        if snapshot_memo is not None and memo_key in snapshot_memo:
+            snapshot = snapshot_memo[memo_key]
+        else:
+            snapshot = exact_dataset_snapshot_path(str(parent), repo_id)
+            if snapshot_memo is not None:
+                snapshot_memo[memo_key] = snapshot
         try:
             source_path = path.relative_to(parent).as_posix()
         except ValueError:
@@ -479,6 +489,11 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
 
     snapshots: set[str] = set()
     found_dataset = False
+    # Whole-snapshot validation depends only on the snapshot (or repo + commit), not on the
+    # data file, so validate each snapshot once per call instead of once per data file
+    # (K files cost ~K^2 file checks otherwise). Scoped to this call: no verdict outlives it,
+    # and every source still gets its own resolve + size check below.
+    snapshot_memo: dict = {}
     for value in datasets:
         for dataset in _loaded_dataset_objects(value):
             found_dataset = True
@@ -496,17 +511,20 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
                     or expected_size < 0
                 ):
                     return None, "dataset_revision_unattested"
-                local_source = _local_dataset_source_snapshot(source, repo_id)
+                local_source = _local_dataset_source_snapshot(source, repo_id, snapshot_memo)
                 if local_source is not None:
                     snapshot, source_path = local_source
                 else:
                     source_ref = _hf_dataset_source_ref(source)
                     if source_ref is None or source_ref[0].casefold() != repo_id.casefold():
                         return None, "dataset_source_unattested"
-                    snapshot = exact_dataset_snapshot_for_commit(
-                        repo_id,
-                        source_ref[1],
-                    )
+                    memo_key = ("commit", source_ref[1])
+                    if memo_key not in snapshot_memo:
+                        snapshot_memo[memo_key] = exact_dataset_snapshot_for_commit(
+                            repo_id,
+                            source_ref[1],
+                        )
+                    snapshot = snapshot_memo[memo_key]
                     source_path = source_ref[2]
                 resolved_source = (
                     _dataset_snapshot_file(snapshot, source_path) if snapshot is not None else None
