@@ -304,6 +304,8 @@ class RestyleRunner:
         self._loading: Any = None
         # Set once the clip is being published; a cancel after that point is refused, not half-honoured.
         self._publishing = False
+        # Held from before an upload is read until ``start``, so a second request is refused up front.
+        self._reservation: Optional[str] = None
 
     def owned_by(self, owner: Optional[str]) -> bool:
         return self._owner is not None and self._owner == owner
@@ -317,6 +319,18 @@ class RestyleRunner:
                 return {"active": bool(state.get("active")), "phase": None}
             return dict(state)
 
+    def reserve(self) -> str:
+        with self._lock:
+            if self._state.get("active") or self._reservation is not None:
+                raise RestyleBusy("A restyle is already running.")
+            self._reservation = uuid.uuid4().hex
+            return self._reservation
+
+    def release(self, reservation: str) -> None:
+        with self._lock:
+            if self._reservation == reservation:
+                self._reservation = None
+
     def _update(self, **fields: Any) -> None:
         self._state = {**self._state, **fields}
 
@@ -327,6 +341,7 @@ class RestyleRunner:
         frames: list[Any],
         seed: Optional[int] = None,
         owner: Optional[str] = None,
+        reservation: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate and claim the runner; the caller runs ``run`` on a worker thread."""
         if not (prompt or "").strip():
@@ -336,8 +351,9 @@ class RestyleRunner:
         count = snap_frame_count(len(frames))
         files = model_files()
         with self._lock:
-            if self._state.get("active"):
+            if self._state.get("active") or self._reservation not in (None, reservation):
                 raise RestyleBusy("A restyle is already running.")
+            self._reservation = None
             self._cancel.clear()
             self._publishing = False
             self._owner = owner
@@ -372,11 +388,12 @@ class RestyleRunner:
         kind: str,
         owner: Optional[str] = None,
     ) -> Optional[Path]:
-        if kind not in ("input", "output") or self._state.get("id") != job_id:
-            return None
-        if owner is not None and not self.owned_by(owner):
-            return None
-        path = self._workdir / f"{kind}.mp4" if self._workdir is not None else None
+        with self._lock:
+            if kind not in ("input", "output") or self._state.get("id") != job_id:
+                return None
+            if owner is not None and not self.owned_by(owner):
+                return None
+            path = self._workdir / f"{kind}.mp4" if self._workdir is not None else None
         return path if path is not None and path.is_file() else None
 
     def cancel(self, owner: Optional[str] = None) -> bool:

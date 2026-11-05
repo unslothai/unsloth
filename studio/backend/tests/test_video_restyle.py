@@ -416,3 +416,60 @@ def test_progress_waits_for_start_to_swap_owner_and_state(weights):
     runner._lock.release()
     reader.join(5)
     assert out == [{"active": False, "phase": None}]
+
+
+def test_reservation_refuses_a_second_upload_until_released(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    token = runner.reserve()
+    with pytest.raises(vr.RestyleBusy):
+        runner.reserve()
+    with pytest.raises(vr.RestyleBusy):
+        runner.start(prompt = "x", frames = _frames(5))
+    runner.release("someone-else")
+    with pytest.raises(vr.RestyleBusy):
+        runner.reserve()
+    runner.release(token)
+    other = runner.reserve()
+    assert runner.start(prompt = "x", frames = _frames(5), reservation = other)["id"]
+    runner.release(other)
+    with pytest.raises(vr.RestyleBusy):
+        runner.reserve()
+
+
+def test_route_refuses_before_reading_the_upload(weights, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import video_restyle as route
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    monkeypatch.setattr(vr, "runner", runner)
+    decoded = []
+    monkeypatch.setattr(vr, "frames_from_video", lambda data: decoded.append(data) or _frames(5))
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    client = TestClient(app)
+    token = runner.reserve()
+    files = [("video", ("a.mp4", b"x", "video/mp4"))]
+    res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
+    assert res.status_code == 409 and decoded == []
+    runner.release(token)
+    res = client.post("/api/inference/video/restyle", data = {"prompt": ""}, files = files)
+    assert res.status_code == 400 and len(decoded) == 1
+    # The failed request gave its reservation back.
+    runner.release(runner.reserve())
+
+
+def test_media_path_waits_for_start_to_swap_owner_and_state(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    out = []
+    runner._lock.acquire()
+    reader = threading.Thread(target = lambda: out.append(runner.media_path("old", "output", "bob")))
+    reader.start()
+    reader.join(0.2)
+    assert reader.is_alive() and out == []
+    runner._lock.release()
+    reader.join(5)
+    assert out == [None]

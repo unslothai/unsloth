@@ -53,6 +53,17 @@ async def _read_upload(request: Request) -> tuple[dict[str, Any], list[tuple[str
 
 @router.post("/video/restyle")
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
+    try:
+        reservation = video_restyle.runner.reserve()
+    except RestyleBusy as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    try:
+        return await _start_reserved(request, reservation)
+    finally:
+        video_restyle.runner.release(reservation)
+
+
+async def _start_reserved(request: Request, reservation: str):
     fields, files = await _read_upload(request)
     videos = [data for name, data in files if name.startswith("video:")]
     frames_in = [
@@ -77,6 +88,7 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
             frames = frames,
             seed = seed,
             owner = current_account_id(),
+            reservation = reservation,
         )
     except RestyleBusy as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
