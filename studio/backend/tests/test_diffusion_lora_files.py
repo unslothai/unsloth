@@ -300,7 +300,6 @@ def test_kohya_keys_resolve_to_the_layer_they_name(tmp_path):
 
 
 def test_a_file_needing_no_rewrite_loads_by_path(tmp_path):
-    # diffusers reads lora_alpha / rank from the file's metadata only when it opens the file itself.
     from safetensors.torch import save_file
 
     diffusers_format = tmp_path / "diffusers.safetensors"

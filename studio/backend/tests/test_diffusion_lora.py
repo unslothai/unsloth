@@ -511,7 +511,6 @@ def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
 
 
 def test_a_declined_quantize_keeps_the_dense_lora_path(monkeypatch):
-    # The bake marks the pipe before quantize_; a clean decline leaves it dense, so a new selection loads normally.
     import threading
 
     monkeypatch.setattr(
