@@ -257,6 +257,52 @@ def test_generic_ulysses_matches_one_process(kind, implementation, packed):
     _spawn(_parity_worker, 2, kind, implementation, packed, _OUT)
 
 
+def _compiled_rows_worker(rank, world, kind, implementation, out_dir):
+    """Per-layer compiled model, two same-shape packed rows with different documents: each must match one process."""
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _model(kind, implementation)
+    layers = model.model.layers
+    for layer in layers:
+        layer.compile(backend = "eager")  # dynamo alone: what is traced, not Inductor's numerics
+    manager = _manager(world, rank)
+    manager.attach_attention_hooks(model)
+    ids, labels = _batch(True)
+    for lengths in ([6, 7, 3], [3, 9, 4]):
+        model.zero_grad(set_to_none = True)
+        count = _reference(model, ids, labels, lengths)
+        reference = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+        model.zero_grad(set_to_none = True)
+        inputs = {
+            "input_ids": ids.clone(),
+            "labels": labels.clone(),
+            "packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32),
+        }
+        with manager.apply(inputs):
+            out = model(
+                input_ids = inputs["input_ids"],
+                position_ids = inputs["position_ids"],
+                packed_seq_lengths = inputs["packed_seq_lengths"],
+                use_cache = False,
+            )
+            _loss(out.logits, inputs["shift_labels"], count).backward()
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            grad = torch.zeros_like(param) if param.grad is None else param.grad.clone()
+            dist.all_reduce(grad)
+            want = reference.get(name, torch.zeros_like(param))
+            torch.testing.assert_close(
+                grad, want, rtol = 1e-4, atol = 1e-6, msg = f"{name} on documents {lengths}"
+            )
+
+
+@pytest.mark.parametrize("kind, implementation", [("qwen3", "sdpa"), ("gemma3", "eager")])
+def test_compiled_layers_follow_each_packed_row(kind, implementation):
+    _config(kind)
+    _spawn(_compiled_rows_worker, 2, kind, implementation, _OUT)
+
+
 @pytest.mark.parametrize(
     "kind, control",
     [("gemma3", "window_dropped"), ("gemma2", "softcap_dropped"), ("gpt_oss", "sinks_unsliced")],
@@ -303,3 +349,22 @@ def test_unsloth_fast_forwards_are_not_generic():
     assert not uh.is_hf_registry_attention(root.self_attn)
     assert not cp._generic_hf_attention(root)
     assert cp._supports_context_parallel(root, "ulysses")  # the fast Llama path, as before
+
+
+def test_ulysses_scope_restores_the_manager_when_packed_metadata_raises():
+    # Malformed lengths (empty here) raise while the packed metadata is built: the manager must not stay active.
+    from unsloth.utils.packing import get_packed_info_from_kwargs
+
+    manager = _manager(1, 0)
+    previous = cp._ACTIVE_MANAGER
+    inputs = {
+        "input_ids": torch.zeros(1, SEQ, dtype = torch.long),
+        "packed_seq_lengths": torch.tensor([], dtype = torch.int32),
+    }
+    with pytest.raises(ValueError):
+        with manager.apply(inputs):
+            get_packed_info_from_kwargs(
+                {"packed_seq_lengths": inputs["packed_seq_lengths"]}, torch.device("cpu")
+            )
+    assert cp._ACTIVE_MANAGER is previous
+    assert manager.packed_seq_lengths is None
