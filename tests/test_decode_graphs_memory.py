@@ -674,7 +674,9 @@ def test_cache_growth_cap_uses_the_planned_length():
 
     path = Path(_SOURCE).with_name("llama.py")
     tree = ast.parse(path.read_text(encoding = "utf-8"))
-    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate")
+    fn = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate"
+    )
     args = {}
     for node in ast.walk(fn):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
