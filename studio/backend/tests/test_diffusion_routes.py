@@ -689,6 +689,64 @@ def test_generate_pipeline_error_returns_sanitized_500(client, monkeypatch):
         assert leak not in detail
 
 
+def test_generate_native_job_failure_names_an_oom_from_its_log_tail(client, monkeypatch):
+    # sd-server's image job error is generic; the OOM is only in the log tail the message now carries
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[E] ggml: allocating 2304.00 MiB on device 0: cudaMalloc failed: out of memory"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("cudaMalloc", "2304", "generate_image"):
+        assert leak not in detail
+
+
+def test_generate_native_capacity_failure_names_the_memory_shortfall(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[W] model manager cannot make enough memory available on CUDA0: need 1051.34 MB "
+            "device / 1475.71 MB budget, available 939.34 MB device / unlimited budget\n"
+            "[E] MOSS-Image segment 12/26 failed during weight preparation\n"
+            "[E] sampling for image 1/1 failed after 15.80s"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    detail = resp.json()["detail"]
+    assert "ran out of memory" in detail
+    for leak in ("CUDA0", "1051", "segment"):
+        assert leak not in detail
+
+
+def test_generate_failure_tail_echoing_a_prompt_word_is_not_an_oom(client, monkeypatch):
+    backend = diffusion_module.get_diffusion_backend()
+    backend.loaded = True
+
+    def _fail(**kwargs):
+        raise RuntimeError(
+            "sd-server generation failed: generation_failed: generate_image returned no results\n"
+            "Last output:\n[I] prompt: a cozy room with a broom, zoomed in"
+        )
+
+    monkeypatch.setattr(backend, "generate", _fail)
+    resp = client.post("/api/inference/images/generate", json = {"prompt": "p"})
+    assert resp.status_code == 500
+    assert resp.json()["detail"] == "Image generation failed."
+
+
 def test_generate_native_process_death_names_the_engine_not_its_output(client, monkeypatch):
     # Metal hosts: the native renderer aborts inside its text encoder
     backend = diffusion_module.get_diffusion_backend()

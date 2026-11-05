@@ -231,6 +231,55 @@ def test_img_gen_failed_job_raises(patched):
         s.img_gen({"prompt": "x"})
 
 
+def test_img_gen_failure_carries_the_log_cause(patched):
+    # sd-server's own job error is generic; the cause is only in its output, and the route can only name
+    # the failure class (out of memory, abort) when the message carries it.
+    s = _server_with(
+        _FakePopen(),
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobF"}),
+            get = lambda url: _Resp(
+                200,
+                {
+                    "status": "failed",
+                    "error": {
+                        "code": "generation_failed",
+                        "message": "generate_image returned no results",
+                    },
+                },
+            ),
+        ),
+    )
+    s._tail.append("[I] generating image: 1/1 - seed 42")
+    s._tail.append(
+        "[E] ggml: ggml_backend_cuda_buffer_type_alloc_buffer: allocating 2304.00 MiB on device 0: "
+        "cudaMalloc failed: out of memory"
+    )
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    message = str(info.value)
+    assert message.startswith(
+        "sd-server generation failed: generation_failed: generate_image returned no results"
+    )
+    assert "Last output:" in message
+    assert "out of memory" in message
+
+
+def test_img_gen_failure_without_output_keeps_the_job_error(patched):
+    s = _server_with(
+        _FakePopen(),
+        _FakeClient(
+            post = lambda url, json: _Resp(202, {"id": "jobF"}),
+            get = lambda url: _Resp(
+                200, {"status": "failed", "error": {"code": "x", "message": "boom"}}
+            ),
+        ),
+    )
+    with pytest.raises(RuntimeError) as info:
+        s.img_gen({"prompt": "x"}, poll_interval = 0.0)
+    assert str(info.value) == "sd-server generation failed: x: boom"
+
+
 def test_img_gen_queue_full_raises(patched):
     popen = _FakePopen()
     s = _server_with(popen, _FakeClient(post = lambda url, json: _Resp(429, text = "busy")))
