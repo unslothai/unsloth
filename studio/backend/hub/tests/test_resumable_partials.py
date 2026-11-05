@@ -475,6 +475,7 @@ def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tm
 def test_ownership_that_cannot_be_established_is_an_objection(monkeypatch, tmp_path):
     """An owner that cannot be established is an objection, so an unknown owner never reads as ours."""
     monkeypatch.delattr(rp.os, "geteuid", raising = False)
+    monkeypatch.setattr(rp.os, "name", "posix")
     target = tmp_path / "partial"
     target.write_bytes(b"whoever wrote this")
     descriptor = os.open(target, os.O_RDONLY)
@@ -484,11 +485,10 @@ def test_ownership_that_cannot_be_established_is_an_objection(monkeypatch, tmp_p
         os.close(descriptor)
 
 
-def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
-    """Without fcntl or provable ownership the shared name stays off; os.name and fcntl are both faked."""
+def test_windows_byte_range_locks_count_as_exclusion(monkeypatch, tmp_path):
+    """No fcntl on Windows: filelock, and so huggingface_hub, locks there with msvcrt instead."""
     monkeypatch.setattr(rp, "_probe_dir", lambda _c = None: tmp_path)
     monkeypatch.setattr(rp, "_filesystem_is_local", lambda _d: True)
-    monkeypatch.setattr(rp.os, "name", "nt")
     real_import = builtins.__import__
 
     def without_fcntl(name, *args, **kwargs):
@@ -497,7 +497,57 @@ def test_windows_keeps_the_stock_writer(monkeypatch, tmp_path):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", without_fcntl)
-    assert rp._exclusion_is_provable() is False
+    held: list[int] = []
+
+    def locking(fd, mode, nbytes):
+        if held and locking.excludes:
+            raise OSError(errno.EACCES, "locked")
+        held.append(fd)
+
+    monkeypatch.setitem(sys.modules, "msvcrt", types.SimpleNamespace(locking = locking, LK_NBLCK = 2))
+    for excludes in (True, False):
+        rp.invalidate_probe_cache()
+        held.clear()
+        locking.excludes = excludes
+        assert rp._exclusion_is_provable() is excludes
+    assert not list(tmp_path.iterdir()), "the probe left its file behind"
+
+
+windows_only = pytest.mark.skipif(sys.platform != "win32", reason = "real Windows locks and owners")
+
+
+@windows_only
+def test_a_local_windows_cache_resumes_partials(tmp_path):
+    assert rp.can_restore_partials(tmp_path) is True
+
+
+@windows_only
+def test_a_partial_this_account_wrote_is_appended_to_on_windows(tmp_path):
+    target = tmp_path / "abc.incomplete"
+    target.write_bytes(b"mine")
+    descriptor = os.open(target, os.O_WRONLY | os.O_APPEND)
+    try:
+        assert rp._objection_to(descriptor) is None
+    finally:
+        os.close(descriptor)
+
+
+@windows_only
+def test_a_partial_another_account_owns_is_refused_on_windows(tmp_path):
+    import subprocess
+
+    target = tmp_path / "abc.incomplete"
+    target.write_bytes(b"planted")
+    # LocalSystem stands in for another account; changing the owner needs an administrator.
+    if subprocess.run(
+        ["icacls", str(target), "/setowner", "*S-1-5-18"], capture_output = True
+    ).returncode:
+        pytest.skip("cannot hand the file to another owner without administrator rights")
+    descriptor = os.open(target, os.O_WRONLY | os.O_APPEND)
+    try:
+        assert rp._objection_to(descriptor) == "owned by another user"
+    finally:
+        os.close(descriptor)
 
 
 def test_an_oversized_partial_is_restarted_rather_than_resumed(monkeypatch, tmp_path):
