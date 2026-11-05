@@ -271,7 +271,6 @@ def _switch_value(name: str, default: str) -> Optional[str]:
         return None if count == default.partition(":")[2] else count
     if default.startswith("protect:"):
         from .diffusion_nvfp4_protect import protect_steps_env
-
         value = protect_steps_env() or "off"
         return None if value == default.partition(":")[2] else value
     if default.startswith("raw"):

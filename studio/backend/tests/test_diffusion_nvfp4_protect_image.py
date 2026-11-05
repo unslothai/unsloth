@@ -318,7 +318,13 @@ def test_an_unarmed_load_keeps_its_graph_cap(monkeypatch):
 
 @pytest.mark.parametrize(
     "env,spec,steps",
-    [(None, "auto", (0, 8)), ("", "auto", (0, 8)), ("off", "", ()), ("0", "0", (0,)), ("all", "all", tuple(range(9)))],
+    [
+        (None, "auto", (0, 8)),
+        ("", "auto", (0, 8)),
+        ("off", "", ()),
+        ("0", "0", (0,)),
+        ("all", "all", tuple(range(9))),
+    ],
 )
 def test_a_model_with_nvfp4_layers_defaults_to_auto(monkeypatch, env, spec, steps):
     torch = pytest.importorskip("torch")
