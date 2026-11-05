@@ -1,0 +1,250 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""Hermetic: the restyle workflow's frame prep, Canny control, request body and runner; sd-server is faked."""
+
+from __future__ import annotations
+
+import base64
+import io
+import threading
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from core.inference import video_restyle as vr
+
+
+@pytest.fixture
+def weights(tmp_path, monkeypatch):
+    model = tmp_path / "cosmos3.safetensors"
+    vae = tmp_path / "wan2.2_vae.safetensors"
+    model.write_bytes(b"x")
+    vae.write_bytes(b"x")
+    monkeypatch.setenv(vr.MODEL_ENV, str(model))
+    monkeypatch.setenv(vr.VAE_ENV, str(vae))
+    return model, vae
+
+
+@pytest.mark.parametrize("count, expected", [(5, 5), (8, 5), (9, 9), (120, 117), (121, 121), (400, 121)])
+def test_snap_frame_count(count, expected):
+    assert vr.snap_frame_count(count) == expected
+
+
+def test_snap_frame_count_refuses_short_clip():
+    with pytest.raises(vr.RestyleError):
+        vr.snap_frame_count(4)
+
+
+def test_model_files_names_missing_env(monkeypatch):
+    monkeypatch.delenv(vr.MODEL_ENV, raising = False)
+    monkeypatch.delenv(vr.VAE_ENV, raising = False)
+    with pytest.raises(vr.RestyleError, match = vr.MODEL_ENV):
+        vr.model_files()
+
+
+def test_model_files_from_env(weights):
+    files = vr.model_files()
+    assert files.diffusion_model == str(weights[0])
+    assert files.vae == str(weights[1])
+
+
+def test_build_restyle_request_trims_to_4n_plus_1():
+    req = vr.build_restyle_request(prompt = "  red rally car  ", control_frames = ["f"] * 12, seed = 7)
+    assert req["video_frames"] == 9
+    assert len(req["control_frames"]) == 9
+    assert req["prompt"] == "red rally car"
+    assert (req["width"], req["height"], req["fps"], req["seed"]) == (832, 480, 30, 7)
+    assert req["output_format"] == "avi"
+    # The distilled sampler is fixed inside sd.cpp.
+    assert "sample_params" not in req
+
+
+def test_build_restyle_request_needs_prompt():
+    with pytest.raises(vr.RestyleError):
+        vr.build_restyle_request(prompt = " ", control_frames = ["f"] * 5, seed = 0)
+
+
+def test_parse_progress():
+    assert vr.parse_progress("[INFO ] cosmos3_transfer.cpp:354 - cosmos3: latent frame 3/31 in 512 ms") == (3, 31)
+    assert vr.parse_progress("cosmos3: control video encoded to 31x60x104 latents") is None
+
+
+def test_canny_flat_image_has_no_edges():
+    assert vr.canny_edges(np.full((40, 60, 3), 128, np.uint8)).max() == 0
+
+
+def test_canny_step_edge_is_one_thin_line():
+    img = np.zeros((40, 60, 3), np.uint8)
+    img[:, 30:] = 255
+    edges = vr.canny_edges(img)
+    cols = np.flatnonzero(edges.any(axis = 0))
+    assert edges.dtype == np.uint8 and set(np.unique(edges)) == {0, 255}
+    assert len(cols) == 1 and cols[0] in (29, 30)
+    assert edges[:, cols[0]].all()
+
+
+def test_canny_hysteresis_keeps_weak_only_when_connected():
+    # Left half: strong step joined to a weak step (kept). Right: an isolated weak step (dropped).
+    img = np.zeros((40, 80), np.uint8)
+    img[:, 20:] = 40  # |dx| + |dy| = 160 on the line: weak (100..200)
+    img[:20, 20:40] = 200  # strong part of the same line
+    img[:, 60:] = 80  # isolated weak step at x=60
+    edges = vr.canny_edges(np.repeat(img[..., None], 3, -1))
+    assert edges[30, 19:21].any()  # weak part, connected
+    assert not edges[:, 58:62].any()
+
+
+def test_fit_frame_covers_target():
+    out = vr.fit_frame(Image.new("RGB", (1920, 1080)))
+    assert out.size == (vr.WIDTH, vr.HEIGHT)
+    out = vr.fit_frame(Image.new("RGB", (300, 600)))
+    assert out.size == (vr.WIDTH, vr.HEIGHT)
+
+
+def _png(color):
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), color).save(buf, format = "PNG")
+    return buf.getvalue()
+
+
+def test_frames_from_images_sorted_and_filtered():
+    items = [("b/002.png", _png("blue")), ("b/notes.txt", b"hi"), ("b/001.png", _png("red"))]
+    frames = vr.frames_from_images(items)
+    assert [f.getpixel((0, 0)) for f in frames] == [(255, 0, 0), (0, 0, 255)]
+
+
+def _clip(fps, count):
+    import av
+
+    buf = io.BytesIO()
+    with av.open(buf, mode = "w", format = "mp4") as dst:
+        stream = dst.add_stream("libx264", rate = fps)
+        stream.width, stream.height, stream.pix_fmt = 64, 48, "yuv420p"
+        for i in range(count):
+            frame = np.full((48, 64, 3), (i * 10) % 256, np.uint8)
+            for packet in stream.encode(av.VideoFrame.from_ndarray(frame, format = "rgb24")):
+                dst.mux(packet)
+        for packet in stream.encode():
+            dst.mux(packet)
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("fps, count, expected", [(30, 20, 20), (60, 40, 20), (15, 10, 19)])
+def test_frames_from_video_resamples_to_30fps(fps, count, expected):
+    frames = vr.frames_from_video(_clip(fps, count))
+    assert abs(len(frames) - expected) <= 1
+
+
+def test_frames_from_video_caps_length():
+    assert len(vr.frames_from_video(_clip(30, 140))) == vr.MAX_FRAMES
+
+
+def test_frames_from_video_rejects_garbage():
+    with pytest.raises(vr.RestyleError):
+        vr.frames_from_video(b"not a video")
+
+
+class _FakeServer:
+    def __init__(self, avi, *, fail = None):
+        self.avi = avi
+        self.fail = fail
+        self.started = 0
+        self.payloads = []
+
+    def is_alive(self):
+        return True
+
+    def start(self, files):
+        self.started += 1
+
+    def stop(self):
+        pass
+
+    def vid_gen(self, payload, *, on_step = None, cancel_event = None):
+        self.payloads.append(payload)
+        if self.fail is not None:
+            raise self.fail
+        for t in range(1, 3):
+            on_step(f"cosmos3: latent frame {t}/2 in 500 ms")
+        on_step("cosmos3: 2 latent frames in 1.00s (500.0 ms per latent frame)")
+        return self.avi
+
+
+def _frames(n):
+    return [Image.new("RGB", (64, 48), (i * 20 % 256, 0, 0)) for i in range(n)]
+
+
+def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
+    server = _FakeServer(b"AVI")
+    runner = vr.RestyleRunner(server_factory = lambda _model: server)
+    monkeypatch.setattr(
+        "core.inference.video_minimax_h3.transcode_video_to_mp4", lambda path, fps: b"MP4:" + path.read_bytes()
+    )
+    saved = []
+    job = runner.start(prompt = "red car", frames = _frames(7), seed = 3)
+    assert runner.progress()["active"] and runner.progress()["total"] == 2
+    with pytest.raises(vr.RestyleBusy):
+        runner.start(prompt = "again", frames = _frames(5))
+    runner.run(job, save = lambda mp4, meta: saved.append((mp4, meta)) or {"id": "v1"})
+
+    state = runner.progress()
+    assert state["phase"] == "done" and not state["active"]
+    assert (state["step"], state["total"]) == (2, 2)
+    assert state["video"] == {"id": "v1"}
+    payload = server.payloads[0]
+    assert payload["video_frames"] == 5 and len(payload["control_frames"]) == 5
+    control = Image.open(io.BytesIO(base64.b64decode(payload["control_frames"][0])))
+    assert control.size == (vr.WIDTH, vr.HEIGHT) and control.mode == "RGB"
+    assert saved[0][0] == b"MP4:AVI" and saved[0][1]["model"] == vr.MODEL_ID
+    for kind in ("input", "output"):
+        assert runner.media_path(state["id"], kind) is not None
+    assert runner.media_path("other", "output") is None
+    # The resident server is reused for the next restyle.
+    runner.run(runner.start(prompt = "blue car", frames = _frames(5)))
+    assert server.started == 1
+
+
+def test_runner_reports_failure(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"", fail = RuntimeError("boom")))
+    runner.run(runner.start(prompt = "x", frames = _frames(5)))
+    state = runner.progress()
+    assert state["phase"] == "error" and "boom" in state["error"] and not state["active"]
+
+
+def test_runner_cancel_before_generate(weights):
+    server = _FakeServer(b"AVI")
+    runner = vr.RestyleRunner(server_factory = lambda _model: server)
+    job = runner.start(prompt = "x", frames = _frames(5))
+    assert runner.cancel()
+    runner.run(job)
+    assert runner.progress()["phase"] == "cancelled"
+    assert server.payloads == []
+
+
+def test_runner_start_needs_weights(monkeypatch):
+    monkeypatch.delenv(vr.MODEL_ENV, raising = False)
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b""))
+    with pytest.raises(vr.RestyleError):
+        runner.start(prompt = "x", frames = _frames(5))
+    assert not runner.progress()["active"]
+
+
+def test_route_rejects_mixed_upload(weights, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import video_restyle as route
+
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    client = TestClient(app)
+    files = [("video", ("a.mp4", b"x", "video/mp4")), ("frames", ("001.png", _png("red"), "image/png"))]
+    res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
+    assert res.status_code == 400
+    res = client.post("/api/inference/video/restyle", data = {"prompt": "x", "seed": "abc"}, files = files[1:])
+    assert res.status_code == 400
+    assert client.get("/api/inference/video/restyle/nope/output.mp4").status_code == 404

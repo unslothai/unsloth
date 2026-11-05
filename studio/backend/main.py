@@ -416,6 +416,7 @@ from routes.llama import router as llama_router
 from routes.engines import router as engines_router
 from routes.llama_compat import is_engine_probe_path, router as llama_compat_router
 from routes.whisper import router as whisper_router
+from routes.video_restyle import router as video_restyle_router
 from routes.npu import router as npu_router
 from routes.preview import router as preview_router
 from hub.routes import (
@@ -1977,6 +1978,7 @@ app.include_router(inference_studio_router, prefix = "/api/inference", tags = ["
 # Unsloth-only text-to-video endpoints; not exposed on the /v1 OpenAI-compat prefix.
 app.include_router(video_router, prefix = "/api/inference", tags = ["inference"])
 app.include_router(video_openai_router, prefix = "/api/inference", tags = ["inference"])
+app.include_router(video_restyle_router, prefix = "/api/inference", tags = ["inference"])
 app.include_router(video_openai_router, prefix = "/v1", tags = ["openai-compat"])
 
 app.include_router(inference_router, prefix = "/v1", tags = ["openai-compat"])

@@ -436,3 +436,55 @@ export async function fetchGalleryVideoExport(
   if (!res.ok) throw new Error(await readFastApiError(res));
   return res.blob();
 }
+
+export interface VideoRestyleProgress {
+  active: boolean;
+  id?: string;
+  // edges, loading, generate, decode, export, then done / error / cancelled.
+  phase: string | null;
+  // Latent frames done out of total; Cosmos3 makes one per 4 output frames.
+  step?: number;
+  total?: number;
+  num_frames?: number;
+  eta_seconds?: number | null;
+  error?: string | null;
+  video?: GalleryVideo | null;
+}
+
+/** One video file, or a folder of frames read in file-name order. */
+export async function startVideoRestyle(input: {
+  prompt: string;
+  seed?: number | null;
+  video?: File | null;
+  frames?: File[];
+}): Promise<VideoRestyleProgress> {
+  const form = new FormData();
+  form.append("prompt", input.prompt);
+  if (input.seed != null) form.append("seed", String(input.seed));
+  if (input.video) form.append("video", input.video);
+  for (const frame of input.frames ?? []) form.append("frames", frame, frame.name);
+  return parseJson(
+    await authFetch("/api/inference/video/restyle", { method: "POST", body: form }),
+  );
+}
+
+export async function fetchVideoRestyleProgress(): Promise<VideoRestyleProgress> {
+  return parseJson(await authFetch("/api/inference/video/restyle/progress"));
+}
+
+export async function cancelVideoRestyle(): Promise<{ cancelled: boolean }> {
+  return parseJson(
+    await authFetch("/api/inference/video/restyle/cancel", { method: "POST" }),
+  );
+}
+
+export async function fetchVideoRestyleClip(
+  id: string,
+  kind: "input" | "output",
+): Promise<Blob> {
+  const response = await authFetch(
+    `/api/inference/video/restyle/${encodeURIComponent(id)}/${kind}.mp4`,
+  );
+  if (!response.ok) throw new Error(await readFastApiError(response));
+  return response.blob();
+}
