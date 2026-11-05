@@ -666,3 +666,20 @@ def test_planning_honours_an_explicit_max_length_in_the_caller_generation_config
         )
         == 160
     )
+
+
+def test_cache_growth_cap_uses_the_planned_length():
+    # The planner budgets plan_len rows; start_generation's hint caps the cache growth, so both must get it.
+    import ast
+
+    path = Path(_SOURCE).with_name("llama.py")
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "unsloth_fast_generate")
+    args = {}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in ("start_generation", "short_call", "plan_call"):
+                args[node.func.attr] = node.args
+    assert args["start_generation"][0].id == "plan_len"
+    assert args["short_call"][1].id == "plan_len"
+    assert args["plan_call"][4].id == "plan_len"

@@ -2990,8 +2990,8 @@ def _generation_max_len(self, args, kwargs):
 
 
 def _generation_plan_len(self, args, kwargs):
-    """_generation_max_len, or for planning only, a max_length the caller's own GenerationConfig sets explicitly
-    (the call can grow to it; the model's default config is not a request)."""
+    """_generation_max_len, or a max_length the caller's own GenerationConfig sets explicitly (the call can grow
+    to it; the model's default config is not a request). Sizes both the plan and the cache growth cap."""
     max_len = _generation_max_len(self, args, kwargs)
     if max_len or kwargs.get("max_new_tokens", None) is not None:
         return max_len
@@ -3096,7 +3096,6 @@ def unsloth_fast_generate(self, *args, **kwargs):
         graphs = _decode_graphs.enabled()
         plan, token = "graph", None
         if graphs:
-            max_len = _generation_max_len(self, args, kwargs)
             plan_len = _generation_plan_len(self, args, kwargs)
             try:
                 ids = _generation_input_ids(args, kwargs)
@@ -3117,7 +3116,7 @@ def unsloth_fast_generate(self, *args, **kwargs):
             if plan == "eager":
                 graphs = False
             else:
-                _decode_graphs.start_generation(max_len)
+                _decode_graphs.start_generation(plan_len)
         redos = _decode_graphs.EAGER_REDOS
         # Mixed precision autocast.
         try:
