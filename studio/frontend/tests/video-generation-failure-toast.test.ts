@@ -12,25 +12,55 @@ const MISMATCH =
   "Video generation failed. RuntimeError: Input type (CPUBFloat16Type) and weight type " +
   "(CUDABFloat16Type) should be the same";
 
-test("the backend's failure reason is the toast text", async () => {
-  const { videoFailureToastText } = await import("../src/features/video/generation-failure.ts");
-  assert.equal(videoFailureToastText(MISMATCH), MISMATCH);
-  assert.equal(videoFailureToastText(null), "Video generation failed");
+test("the backend's failure reason becomes the toast description", async () => {
+  const { videoFailureToast } = await import("../src/features/video/generation-failure.ts");
+  assert.deepEqual(videoFailureToast(MISMATCH), {
+    title: "Video generation failed.",
+    errorType: "RuntimeError",
+    detail: "Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type) should be the same",
+  });
+  assert.deepEqual(videoFailureToast("Video generation failed. KeyError"), {
+    title: "Video generation failed.",
+    errorType: "KeyError",
+    detail: null,
+  });
+});
+
+test("fixed backend text and an empty error keep the logged-failure title", async () => {
+  const { videoFailureToast } = await import("../src/features/video/generation-failure.ts");
+  const oom =
+    "Video generation failed. The renderer stopped unexpectedly. See the server log in Settings > Logs for its output.";
+  assert.deepEqual(videoFailureToast(oom), {
+    title: "Video generation failed.",
+    errorType: null,
+    detail: "The renderer stopped unexpectedly. See the server log in Settings > Logs for its output.",
+  });
+  for (const empty of [null, undefined, "", "  "]) {
+    assert.deepEqual(videoFailureToast(empty), {
+      title: "Video generation failed.",
+      errorType: null,
+      detail: null,
+    });
+  }
 });
 
 test("a failure whose cause mentions cancelled still shows", async () => {
-  const { videoFailureToastText } = await import("../src/features/video/generation-failure.ts");
-  const reason = "Video generation failed. CancelledError: the offload stream was cancelled";
-  assert.equal(videoFailureToastText(reason), reason);
+  const { videoFailureToast } = await import("../src/features/video/generation-failure.ts");
+  const failure = videoFailureToast(
+    "Video generation failed. CancelledError: the offload stream was cancelled",
+  );
+  assert.equal(failure?.errorType, "CancelledError");
 });
 
 test("the user's own Cancel stays silent", async () => {
-  const { videoFailureToastText } = await import("../src/features/video/generation-failure.ts");
-  assert.equal(videoFailureToastText("Video generation was cancelled."), null);
+  const { videoFailureToast } = await import("../src/features/video/generation-failure.ts");
+  assert.equal(videoFailureToast("Video generation was cancelled."), null);
 });
 
-test("both failure paths on the Video page toast through it", () => {
+test("every failure toast on the Video page goes through one helper", () => {
   const page = readSrc("features/video/video-page.tsx");
-  assert.equal(page.match(/const msg = videoFailureToastText\([pg]\.error\);/g)?.length, 2);
+  assert.equal(page.match(/showVideoFailureToast\([pg]\.error\);/g)?.length, 2);
+  assert.match(page, /if \(!showVideoFailureToast\(refusal\) && refusal\) toast\.error\(refusal\);/);
+  assert.match(page, /action: generationFailureLogsAction\(title\)/);
   assert.doesNotMatch(page, /if \(!msg\.toLowerCase\(\)\.includes\("cancelled"\)\)/);
 });
