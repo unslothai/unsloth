@@ -309,7 +309,9 @@ class _HeadShard:
     # Plain attribute access only: torch.compile cannot trace object.__getattribute__ / object.__setattr__.
     def __init__(self, module, **overrides):
         self._unsloth_module = module
-        self.__dict__.update(overrides)
+        # One attribute at a time: torch < 2.13 cannot trace self.__dict__.update (graph break).
+        for name, value in overrides.items():
+            setattr(self, name, value)
 
     def __getattr__(self, name):
         # Only called for names the shard does not hold itself.

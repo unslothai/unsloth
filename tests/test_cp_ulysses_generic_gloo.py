@@ -298,7 +298,19 @@ def _fullgraph_packed_worker(rank, world, kind, implementation, out_dir):
 @pytest.mark.parametrize("kind, implementation", [("qwen3", "sdpa"), ("qwen3", "eager")])
 def test_compiled_packed_ulysses_has_no_graph_break(kind, implementation):
     _config(kind)
-    _spawn(_fullgraph_packed_worker, 2, kind, implementation, _OUT)
+    try:
+        _spawn(_fullgraph_packed_worker, 2, kind, implementation, _OUT)
+    except mp.ProcessRaisedException as error:
+        # torch 2.10's dynamo fails building a guard on transformers' sdpa path in the one-process
+        # reference itself (AttributeError on transformers.quantizers.auto), before any CP code runs.
+        text = str(error)
+        if (
+            tuple(int(x) for x in torch.__version__.split(".")[:2]) < (2, 13)
+            and "InternalTorchDynamoError" in text
+            and "transformers.quantizers.auto" in text
+        ):
+            pytest.skip(f"torch {torch.__version__} dynamo guard bug in the one-process reference")
+        raise
 
 
 def test_whole_sequence_mask_keeps_the_padding_tail_apart():
