@@ -285,8 +285,8 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
         frames = [frame.to_image().convert("RGB") for frame in list(picked)[:count]]
     if len(frames) < count:
         raise ValueError(
-            f"Continuing a clip keeps its {keep} {count} frames at {fps} fps, but this one has "
-            f"{len(frames)} ({decoded} decoded). Use a longer clip."
+            f"This clip has {len(frames)} frames at {fps} fps, and continuing it needs at least {count}. "
+            "Use a longer clip."
         )
     return frames
 

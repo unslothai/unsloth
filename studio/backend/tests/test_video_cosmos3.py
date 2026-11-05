@@ -1459,7 +1459,10 @@ def test_a_long_timestamp_gap_is_refused_even_when_the_rate_hides_it(monkeypatch
 
 
 def test_short_long_and_unreadable_clips_are_refused(monkeypatch):
-    with pytest.raises(ValueError, match = "has 4"):
+    with pytest.raises(
+        ValueError,
+        match = r"^This clip has 4 frames at 24 fps, and continuing it needs at least 5\. Use a longer clip\.$",
+    ):
         vc3.decode_continuation_clip(_clip(4), keep = "last", fps = 24, count = 5)
     monkeypatch.setattr(vc3, "CONTINUATION_MAX_SECONDS", 0.5)
     vc3.decode_continuation_clip(_clip(12), keep = "last", fps = 24, count = 5)

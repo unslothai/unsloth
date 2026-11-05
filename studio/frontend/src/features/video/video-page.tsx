@@ -1560,24 +1560,34 @@ function VideoGenerator({
     if (!canPickReferenceSize) setReferenceImageSize("match");
   }, [canPickReferenceSize]);
 
+  // A clip to continue sizes the canvas like a start frame (the two exclude each other).
+  const canvasClip = canvasKeyframe ? null : supportsContinuation ? (continuationClip?.dataUrl ?? null) : null;
+  const canvasSource = canvasKeyframe ?? canvasClip;
   useEffect(() => {
-    if (!canvasKeyframe) {
+    if (!canvasSource) {
       setKeyframeAspect(null);
       return;
     }
     let cancelled = false;
-    const img = new Image();
-    img.onload = () => {
-      if (!cancelled) setKeyframeAspect([img.naturalWidth, img.naturalHeight]);
+    const done = (size: [number, number] | null) => {
+      if (!cancelled) setKeyframeAspect(size && size[0] > 0 && size[1] > 0 ? size : null);
     };
-    img.onerror = () => {
-      if (!cancelled) setKeyframeAspect(null);
-    };
-    img.src = canvasKeyframe;
+    if (canvasKeyframe) {
+      const img = new Image();
+      img.onload = () => done([img.naturalWidth, img.naturalHeight]);
+      img.onerror = () => done(null);
+      img.src = canvasKeyframe;
+    } else {
+      const media = document.createElement("video");
+      media.preload = "metadata";
+      media.onloadedmetadata = () => done([media.videoWidth, media.videoHeight]);
+      media.onerror = () => done(null);
+      media.src = canvasSource;
+    }
     return () => {
       cancelled = true;
     };
-  }, [canvasKeyframe]);
+  }, [canvasSource, canvasKeyframe]);
 
   const matchedResolution = useMemo(
     () =>
@@ -1587,7 +1597,7 @@ function VideoGenerator({
     [keyframeAspect, status?.defaults],
   );
 
-  const sourceSized = matchSource && canvasKeyframe != null && matchedResolution != null;
+  const sourceSized = matchSource && canvasSource != null && matchedResolution != null;
   const shownSize = sourceSized ? matchedResolution : videoSize;
   const livePreviewBox = { maxWidth: shownSize[0], maxHeight: shownSize[1] };
 
@@ -1718,12 +1728,12 @@ function VideoGenerator({
   // Select "match source" only after the staged keyframe passes the aspect-ratio check.
   const hadKeyframeRef = useRef(false);
   useEffect(() => {
-    const has = canvasKeyframe != null;
+    const has = canvasSource != null;
     if (has === hadKeyframeRef.current) return;
     if (has && !matchedResolution) return;
     hadKeyframeRef.current = has;
     setMatchSource(has);
-  }, [canvasKeyframe, matchedResolution]);
+  }, [canvasSource, matchedResolution]);
 
   const loadedFamily = status?.loaded ? status.family : null;
   // A picked rate belongs to the family it was picked on.
@@ -4513,8 +4523,8 @@ function VideoGenerator({
                 <InfoHint>
                   Optional, and instead of a start frame. The new clip starts on 5 frames of this
                   one and generates what happens next; describe that in the prompt. Up to 15
-                  seconds. Its frames are matched to the frame rate and centre-cropped to the
-                  resolution below.
+                  seconds. Its frames are matched to the frame rate; Match source sizes the video to
+                  the clip's shape, and any other resolution centre-crops it.
                 </InfoHint>
               </span>
               <ReferenceMediaPicker
@@ -4588,7 +4598,7 @@ function VideoGenerator({
 
           <Field
             label="Aspect ratio"
-            hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height. With a keyframe staged, Match source keeps the picture's own shape."
+            hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height. With a keyframe or a clip to continue staged, Match source keeps its own shape."
           >
             <AspectRatioSelect
               value={sourceSized ? MATCH_SOURCE : aspect}
@@ -4596,7 +4606,7 @@ function VideoGenerator({
               portrait={sourceSized ? shownSize[1] > shownSize[0] : portrait}
               onFlip={flipDimensions}
               extraItems={
-                canvasKeyframe && matchedResolution ? (
+                canvasSource && matchedResolution ? (
                   <SelectItem value={MATCH_SOURCE}>Match source</SelectItem>
                 ) : null
               }

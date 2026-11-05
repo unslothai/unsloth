@@ -97,3 +97,14 @@ test("a start frame and a clip replace each other, and the user is told which on
   assert.match(page, /Removed the start frame: the clip to continue replaces it/);
   assert.match(page, /Removed the clip to continue: a start frame replaces it/);
 });
+
+test("a staged clip sizes the canvas through Match source, as a start frame does", () => {
+  assert.match(
+    page,
+    /const canvasClip = canvasKeyframe \? null : supportsContinuation \? \(continuationClip\?\.dataUrl \?\? null\) : null;/,
+  );
+  assert.match(page, /const canvasSource = canvasKeyframe \?\? canvasClip;/);
+  assert.match(page, /media\.onloadedmetadata = \(\) => done\(\[media\.videoWidth, media\.videoHeight\]\);/);
+  assert.match(page, /const sourceSized = matchSource && canvasSource != null && matchedResolution != null;/);
+  assert.match(page, /canvasSource && matchedResolution \? \(\s*<SelectItem value=\{MATCH_SOURCE\}>Match source<\/SelectItem>/);
+});
