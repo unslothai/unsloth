@@ -219,8 +219,6 @@ test("read aloud names the loaded speech model, so one beside the chat model ans
   assert.equal(posted[0].model, KOKORO);
 });
 
-// /v1/models rescans every downloaded model once its 30 s cache expires, which held each
-// read-aloud click for seconds on a large models folder (DC-061).
 test("read aloud lists only loaded models, never the full catalog", async () => {
   const { adapter, listed, posted } = load("", undefined, {
     data: [
