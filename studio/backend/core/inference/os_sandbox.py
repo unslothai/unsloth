@@ -750,8 +750,8 @@ def overlaps_studio_state(path: str, state = None) -> bool:
 
 
 def _holds_a_nested_credential(folder: str) -> bool:
-    """A tree too large to check counts as holding one. scandir, not walk: walk lists a whole
-    directory before the cap could stop it."""
+    """A tree too large to check, or a hard-linked file, counts as holding one. scandir, not walk:
+    walk lists a whole directory before the cap could stop it."""
     from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
     from .tool_path_approval import _references_sensitive_path
 
@@ -774,6 +774,10 @@ def _holds_a_nested_credential(folder: str) -> bool:
                 try:
                     if entry.is_dir(follow_symlinks = False):
                         pending.append(entry.path)
+                    # A second name can alias a credential anywhere on the volume, as in the workdir scan.
+                    # lstat, not entry.stat: DirEntry reports st_nlink 0 on Windows.
+                    elif entry.is_file(follow_symlinks = False) and os.lstat(entry.path).st_nlink > 1:
+                        return True
                 except OSError:
                     continue
     return False
