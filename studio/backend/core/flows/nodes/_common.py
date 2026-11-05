@@ -1031,8 +1031,8 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
 
 
 # The resident image build's own load settings: a reload that only changes its LoRAs rebuilds the same model
-# (its exact checkpoint file, supplied text-encoder / VAE files, precision, memory and speed settings), not the
-# repo's defaults.
+# (its exact checkpoint file, family, supplied text-encoder / VAE files, precision, memory, speed and cache
+# settings), not the repo's defaults.
 RESIDENT_BUILD_KEYS = (
     "display_repo_id",
     "model_kind",
@@ -1045,34 +1045,42 @@ RESIDENT_BUILD_KEYS = (
     "transformer_quant",
     "attention_backend",
     "transformer_cache",
+    "family_override",
 )
+# Reloaded as the precision that engaged, so an "auto" that engaged fp8 stays fp8.
+ENGAGED_BUILD_KEYS = ("transformer_quant", "text_encoder_quant")
 
 
 def resident_build_knobs(status: dict) -> dict:
     """The load settings of the image model ``status`` (``/images/status``) reports, as a load request takes
-    them: each engaged value the request accepts, so an "auto" precision that engaged fp8 reloads as fp8 and a
-    dense text encoder reloads "off" (unset, it would pick the family's automatic precision)."""
+    them: per setting, the first the request accepts of its engaged precision, its reported value and its explicit
+    ask. Unset, a setting falls back to the automatic policy: a dense text encoder would reload as int8, a cache
+    asked "off" as the family's auto cache, a family picked by hand as the one the file detects as."""
     from models.inference import DiffusionLoadRequest
 
     repo = str(status.get("repo_id") or "")
     resolved = status.get("resolved") if isinstance(status.get("resolved"), dict) else {}
     knobs: dict = {}
     for key in RESIDENT_BUILD_KEYS:
-        value = status.get(key)
-        if key in ("transformer_quant", "text_encoder_quant"):
-            engaged = resolved.get(key)
-            engaged = engaged.get("value") if isinstance(engaged, dict) else None
-            value = engaged or value
-        if value is None or value == "":
-            continue
-        if key == "base_repo" and (status.get("model_kind") == "pipeline" or value == repo):
-            # A pipeline is its own base: naming it again would only re-gate the same repo.
-            continue
-        try:
-            DiffusionLoadRequest(model_path = repo or "x", **{key: value})
-        except Exception:
-            continue
-        knobs[key] = value
+        record = resolved.get(key) if isinstance(resolved.get(key), dict) else {}
+        candidates = [
+            record.get("value") if key in ENGAGED_BUILD_KEYS else None,
+            # The family the load built (detected or picked): the same file can fit a sibling family.
+            status.get("family") if key == "family_override" else status.get(key),
+            record.get("requested"),
+        ]
+        for value in candidates:
+            if value is None or value == "":
+                continue
+            if key == "base_repo" and (status.get("model_kind") == "pipeline" or value == repo):
+                # A pipeline is its own base: naming it again would only re-gate the same repo.
+                break
+            try:
+                DiffusionLoadRequest(model_path = repo or "x", **{key: value})
+            except Exception:
+                continue
+            knobs[key] = value
+            break
     specs = status.get("component_specs") if isinstance(status.get("component_specs"), dict) else {}
     encoders = [str(v) for c, v in sorted(specs.items()) if c.startswith("text_encoder") and v]
     if encoders:

@@ -634,3 +634,25 @@ def test_a_bpw_resident_reloads_under_its_own_variant(monkeypatch, asked):
     (load,) = loads
     assert load["variant"] == "IQ4_XS-3.97bpw"
     assert load["knobs"]["gguf_filename"] == "flux2-IQ4_XS-3.97bpw.gguf"
+
+
+def test_a_reload_keeps_an_explicit_cache_off_and_the_built_family():
+    # Status reports an explicit cache "off" only in its resolved record, and a family picked by hand only as the
+    # family: unset, the reload would turn on the auto cache and re-detect a sibling family from the file.
+    status = {
+        "loaded": True,
+        "repo_id": "/models/diffusion_models/qwen-edit.safetensors",
+        "model_kind": "single_file",
+        "family": "qwen-image-edit",
+        "transformer_cache": None,
+        "resolved": {
+            "transformer_cache": {"requested": "off", "value": "off"},
+            "family_override": {"requested": "qwen-image-edit", "value": "qwen-image-edit"},
+        },
+    }
+    knobs = _common.resident_build_knobs(status)
+    assert knobs["transformer_cache"] == "off"
+    assert knobs["family_override"] == "qwen-image-edit"
+    # Auto asked: left to the policy again.
+    status["resolved"]["transformer_cache"] = {"requested": None, "value": "fbcache"}
+    assert "transformer_cache" not in _common.resident_build_knobs(status)
