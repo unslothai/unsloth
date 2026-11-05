@@ -41,7 +41,11 @@ _RTX = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060"}
 _VEGA = {"vendor": "amd", "index": 0, "name": None, "source": "sysfs-drm"}
 
 
-def _host(*devices, unanswered = (), unknown = False):
+def _host(
+    *devices,
+    unanswered = (),
+    unknown = False,
+):
     return {"unknown": unknown, "unanswered": list(unanswered), "devices": list(devices)}
 
 

@@ -963,7 +963,11 @@ def select_and_activate_engine(
                 logger.warning("sd-cli at %s is present but not runnable; not using it", binary)
                 unlaunchable_cli = binary
                 binary = None
-            if binary is None and server_binary is None and (unlaunchable_cli or unlaunchable_server):
+            if (
+                binary is None
+                and server_binary is None
+                and (unlaunchable_cli or unlaunchable_server)
+            ):
                 # One strike per bundle, only when neither executable runs.
                 note_unlaunchable_accelerator_build(
                     unlaunchable_cli or unlaunchable_server, card = selected_card

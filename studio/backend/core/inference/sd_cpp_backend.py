@@ -3761,7 +3761,9 @@ class SdCppDiffusionBackend:
                 klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
                 # A CPU torch running the Vulkan or CUDA build renders on a card torch never
                 # measured, so auto offloads.
-                unmeasured = torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
+                unmeasured = (
+                    torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
+                )
                 placed = klass if unmeasured else torch_device
                 # The fallback ladder can leave a CUDA / XPU torch running the CPU build. Not
                 # MPS: the macOS bundle is recorded as cpu and still renders on Metal.
