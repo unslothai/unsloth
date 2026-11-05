@@ -145,3 +145,16 @@ def test_sharegpt_from_value_rows_are_not_malformed():
     report = check_dataset(rows, tok, max_seq_length = 8)
     assert report["malformed"] == 0
     assert report["empty"] == 1
+
+
+def test_row_tools_are_rendered_into_length():
+    import json
+
+    template = "{% if tools %}{% for t in tools %}{{ t['name'] }} {% endfor %}{% endif %}" + TEMPLATE
+    row = _chat("hi", "hello")
+    plain = check_dataset([row], _tokenizer(template), max_seq_length = 8)["lengths"][0]
+    tools = [{"name": f"w{i}"} for i in range(10)]
+    as_list = check_dataset([{**row, "tools": tools}], _tokenizer(template), max_seq_length = 8)
+    as_str = check_dataset([{**row, "tools": json.dumps(tools)}], _tokenizer(template), max_seq_length = 8)
+    assert as_list["lengths"][0] == as_str["lengths"][0] == plain + 10
+    assert as_list["over_max_seq_length"] == 1

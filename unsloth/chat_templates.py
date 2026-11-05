@@ -33,6 +33,7 @@ try:
 except ImportError:
     LongTensor = FloatTensor = None
 logger = logging.get_logger(__name__)
+import json
 import os
 import shutil
 import re
@@ -111,8 +112,12 @@ def _render_dataset_row(row, tokenizer):
             value = [{"role": roles.get(m["from"], m["from"]), "content": m["value"]} for m in value]
     elif not all("role" in m and "content" in m for m in value):
         raise _MalformedRow(f"{column} is not a list of role/content messages")
+    tools = row.get("tools")
     try:
-        text = tokenizer.apply_chat_template(value, tokenize = False, add_generation_prompt = False)
+        tools = json.loads(tools) if isinstance(tools, str) else tools
+        text = tokenizer.apply_chat_template(
+            value, tools = tools or None, tokenize = False, add_generation_prompt = False
+        )
     except Exception as e:
         raise _MalformedRow(f"chat template failed: {e}") from e
     contents = (m["content"] if "content" in m else m["value"] for m in value)
