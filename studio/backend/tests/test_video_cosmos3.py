@@ -1438,7 +1438,9 @@ def test_nano_passes_the_kept_frames_to_the_pipeline(cosmos3_runtime, keep, size
     assert not {"video", "condition_video_keep"} & set(pipe.passed)
 
 
-@pytest.mark.parametrize("axis, canvas", [({"width": 832}, (832, 720)), ({"height": 480}, (1280, 480))])
+@pytest.mark.parametrize(
+    "axis, canvas", [({"width": 832}, (832, 720)), ({"height": 480}, (1280, 480))]
+)
 def test_one_supplied_axis_is_kept_rather_than_matched_to_the_clip(cosmos3_runtime, axis, canvas):
     backend, _status = _loaded(NANO)
     clip = _clip_url(12, size = (120, 208))
