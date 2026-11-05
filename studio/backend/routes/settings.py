@@ -4536,7 +4536,17 @@ def update_current_date_prompt(
 def get_trusted_tool_folders_setting(
     current_subject: str = Depends(get_current_subject),
 ) -> TrustedToolFoldersResponse:
-    return TrustedToolFoldersResponse(folders = get_trusted_tool_folders())
+    try:
+        folders = get_trusted_tool_folders()
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            "Could not read the trusted folders.",
+            event = "settings.trusted_tool_folders_read_failed",
+            log = logger,
+        ) from exc
+    return TrustedToolFoldersResponse(folders = folders)
 
 
 @_owner_settings_router.put("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)

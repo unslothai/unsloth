@@ -209,6 +209,16 @@ def test_only_the_owners_own_chats_get_the_folders(folder, account):
         gate._silent_roots_cache = None
 
 
+def test_runtime_reads_fail_closed(monkeypatch):
+    def broken(*_args, **_kwargs):
+        raise OSError("database is locked")
+
+    monkeypatch.setattr("storage.studio_db.get_app_setting", broken)
+    with pytest.raises(OSError):
+        trusted.get_trusted_tool_folders()
+    assert trusted.trusted_tool_folders_for_caller() == ()
+
+
 class TestSaving:
     @pytest.fixture(autouse = True)
     def store(self, monkeypatch):
@@ -321,6 +331,18 @@ class TestRoute:
             put = client.put("/trusted-tool-folders", json = {"folders": ["/opt/tools"]})
             assert put.status_code == 200, put.text
             assert client.get("/trusted-tool-folders").json() == {"folders": ["/opt/tools"]}
+
+    def test_an_unreadable_store_is_an_error_not_an_empty_list(self, build, monkeypatch):
+        import routes.settings as settings
+
+        make, _ = build
+
+        def broken():
+            raise OSError("database is locked")
+
+        monkeypatch.setattr(settings, "get_trusted_tool_folders", broken)
+        with make(OWNER) as client:
+            assert client.get("/trusted-tool-folders").status_code == 500
 
     def test_a_refused_folder_is_a_400_with_the_reason(self, build):
         make, state = build

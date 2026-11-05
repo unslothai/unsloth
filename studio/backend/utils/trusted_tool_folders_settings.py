@@ -12,20 +12,22 @@ TRUSTED_TOOL_FOLDERS_SETTING_KEY = "trusted_tool_folders"
 MAX_TRUSTED_TOOL_FOLDERS = 32
 
 
-def _stored() -> list[str]:
-    try:
-        from storage.studio_db import get_app_setting
-        from utils.account_context import OWNER, run_as
-        value = run_as(OWNER, get_app_setting, TRUSTED_TOOL_FOLDERS_SETTING_KEY, None)
-    except Exception:  # noqa: BLE001 - an unreadable store trusts nothing
-        return []
+def get_trusted_tool_folders() -> list[str]:
+    """Raises when the store cannot be read: the settings page must not mistake that for no folders."""
+    from storage.studio_db import get_app_setting
+    from utils.account_context import OWNER, run_as
+
+    value = run_as(OWNER, get_app_setting, TRUSTED_TOOL_FOLDERS_SETTING_KEY, None)
     if not isinstance(value, list):
         return []
     return [item for item in value if isinstance(item, str) and item]
 
 
-def get_trusted_tool_folders() -> list[str]:
-    return _stored()
+def _stored() -> list[str]:
+    try:
+        return get_trusted_tool_folders()
+    except Exception:  # noqa: BLE001 - an unreadable store trusts nothing
+        return []
 
 
 def trusted_tool_folders_for_caller() -> tuple[str, ...]:
