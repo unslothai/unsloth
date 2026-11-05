@@ -82,9 +82,8 @@ def test_settings_answer_searches_once_and_is_unchanged(searches, monkeypatch):
         app = SimpleNamespace(state = SimpleNamespace(server_port = 8888)),
         scope = {"server": ("127.0.0.1", 8888)},
     )
-    searched = settings._systemone_answer(request).model_dump_json()
-    per_lookup = len(searches.calls)
-    assert per_lookup > 1
-    searches.calls.clear()
-    assert settings._systemone_response(request).model_dump_json() == searched
+    answer = settings._systemone_response(request).model_dump_json()
     assert len(searches.calls) == 1
+    searches.calls.clear()
+    assert settings._systemone_answer(request).model_dump_json() == answer
+    assert len(searches.calls) > 1
