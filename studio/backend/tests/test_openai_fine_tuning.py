@@ -1318,6 +1318,60 @@ def test_a_job_that_waited_for_a_batch_keeps_its_place_once_it_starts(batch_queu
     assert sorted(seen) == sorted(j.id for j in jobs)
 
 
+def test_paging_stays_complete_when_a_loading_batch_gets_its_history_rows(batch_queue, monkeypatch):
+    client, _calls, live, gpu, backend = batch_queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+    starts = []
+
+    async def start_training_batch(requests, current_subject, via_api_key):
+        backend.current_job_id = f"job_20261021_10150{len(starts)}_batch"
+        run_ids = [f"{backend.current_job_id}_member{i}" for i in range(len(requests))]
+        starts.append(run_ids)
+        backend.running = list(run_ids)
+        live["status"] = _Status(backend.current_job_id, "loading_model")
+        return [
+            TrainingJobResponse(job_id = run_id, status = "queued", message = "queued")
+            for run_id in run_ids
+        ]
+
+    monkeypatch.setattr(training_routes, "start_training_batch", start_training_batch)
+
+    def history_rows(run_ids, started_at):
+        for run_id in run_ids:
+            studio_db.create_run(
+                id = run_id,
+                model_name = "unsloth/Qwen3-0.6B",
+                dataset_name = "chats.jsonl",
+                config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+                started_at = started_at,
+                total_steps = 4,
+            )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = []
+        for suffix in "abcd":
+            clock["t"] += 10
+            model = "unsloth/Qwen3-1.7B" if suffix in "bd" else "unsloth/Qwen3-0.6B"
+            jobs.append(
+                await client.fine_tuning.jobs.create(
+                    model = model, training_file = uploaded.id, suffix = suffix
+                )
+            )
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        history_rows(starts[0], "2026-11-04T00:00:00+00:00")
+        await openai_fine_tuning._drain_once()
+        first = await client.fine_tuning.jobs.list(limit = 2)
+        history_rows(starts[1], "2026-11-04T00:10:00+00:00")
+        rest = await client.fine_tuning.jobs.list(limit = 10, after = first.data[-1].id)
+        return jobs, [j.id for j in first.data] + [j.id for j in rest.data]
+
+    jobs, seen = _run(flow())
+    assert seen == [jobs[i].id for i in (3, 2, 1, 0)]
+
+
 @pytest.mark.parametrize(
     "model_kind",
     [

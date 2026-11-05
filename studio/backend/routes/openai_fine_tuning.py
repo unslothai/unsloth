@@ -17,7 +17,6 @@ from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1147,9 +1146,17 @@ def _ordered_jobs(
     # By creation time, queue entries first on ties: a started job keeps its place across pages.
     remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
     # A live run can acquire its history row between the status and history reads.
-    history = ((run, True) for run in _runs_by_creation() if run["id"] not in live)
-    for row, is_run in chain(((job, False) for job in live.values()), history):
-        created_at = _run_created(row) if is_run else row["created_at"]
+    history = (
+        (run, True, _run_created(run)) for run in _runs_by_creation() if run["id"] not in live
+    )
+    running = sorted(
+        ((job, False, job["created_at"] or 0) for job in live.values()),
+        key = lambda item: item[2],
+        reverse = True,
+    )
+    # Live jobs go by creation time too, so they keep their place once their history rows appear.
+    rows = heapq.merge(running, history, key = lambda item: (item[2], not item[1]), reverse = True)
+    for row, is_run, created_at in rows:
         while remaining and remaining[0]["created_at"] >= created_at:
             yield remaining.popleft(), False
         yield row, is_run
