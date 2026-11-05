@@ -18,7 +18,9 @@ ABORTED = "Page.goto: net::ERR_ABORTED at http://127.0.0.1:8000/login"
 
 
 def _driver():
-    spec = importlib.util.spec_from_file_location("playwright_multi_account_under_test", DRIVER_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "playwright_multi_account_under_test", DRIVER_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
