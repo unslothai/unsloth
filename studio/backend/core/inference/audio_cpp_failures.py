@@ -169,6 +169,15 @@ def _may_have_pre_ampere_nvidia_card() -> bool:
     return any(capability < (8, 0) for capability in capabilities.values())
 
 
+def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
+    """Whether the load check places an Auto load of ``audio_type`` on its estimate: native audio
+    on a GPU runtime. Dictation and loads that run on the CPU never compare it."""
+    from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
+    from core.inference.audio_device import audio_load_runs_on_cpu
+
+    return audio_type in AUDIO_CPP_AUDIO_TYPES and not audio_load_runs_on_cpu(audio_type, "auto")
+
+
 def estimate_resident_gb(size_bytes: int, family: Optional[str] = None) -> float:
     """Resident GPU memory for an audio.cpp package: weights plus graph and cache buffers.
     A measured family uses its own profile; a package past the sizes measured for it gets the

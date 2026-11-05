@@ -996,7 +996,7 @@ async def _audio_cpp_variants_answer(
 ) -> Optional[VariantsAnswer]:
     """group audio.cpp umbrella and package components; generic single-file repos return None."""
     from core.inference import audio_cpp_models
-    from core.inference.audio_cpp_failures import estimate_resident_gb
+    from core.inference.audio_cpp_failures import estimate_resident_gb, gpu_estimate_applies
 
     text = (repo_id or "").strip()
     umbrella = audio_cpp_models.is_umbrella_id(text)
@@ -1026,7 +1026,6 @@ async def _audio_cpp_variants_answer(
     if not umbrella and not model.is_package:
         return None
     from core.inference import audio_cpp_files
-    from core.inference.audio_device import audio_load_runs_on_cpu
 
     def _details():
         companions = [
@@ -1057,8 +1056,7 @@ async def _audio_cpp_variants_answer(
         for variant in model.variants:
             for path in {f.path for f in variant.files}:
                 counts[path] = counts.get(path, 0) + 1
-        # As the load check: an Auto load on a CPU-only runtime or override reads no GPU.
-        runtime_cpu = audio_load_runs_on_cpu(model.audio_type, "auto")
+        gpu_placed = gpu_estimate_applies(model.audio_type)
         rows = []
         for variant in model.variants:
             row_model = model.with_variant(variant)
@@ -1106,9 +1104,9 @@ async def _audio_cpp_variants_answer(
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
                     estimated_resident_gb = (
-                        None
-                        if runtime_cpu or row_model.cpu_only
-                        else estimate_resident_gb(variant.size_bytes, model.family)
+                        estimate_resident_gb(variant.size_bytes, model.family)
+                        if gpu_placed and not row_model.cpu_only
+                        else None
                     ),
                     download_remaining_bytes = remaining,
                     downloaded = downloaded,

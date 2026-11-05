@@ -128,12 +128,14 @@ def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
     assert on_loop == [False, False]
 
 
-def test_a_cpu_only_runtime_lists_no_gpu_estimate(client, monkeypatch):
+@pytest.mark.parametrize("task, cpu_runtime", [("tts", True), ("asr", False)])
+def test_a_load_the_check_never_sizes_lists_no_gpu_estimate(client, monkeypatch, task, cpu_runtime):
+    # A CPU-only runtime runs every Auto load on the CPU; dictation loads on its sidecar.
     from core.inference import audio_cpp_server
 
-    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
-    sized = dict(KOKORO, family = "kokoro_tts", size_bytes = 189_000_000, smallest_size_bytes = 9)
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+    sized = dict(KOKORO, task = task, family = "kokoro_tts", size_bytes = 189_000_000)
     catalog = AudioCatalogResponse(**{**CATALOG.model_dump(), "models": [sized]})
     _builder(monkeypatch, lambda: catalog)
     (row,) = client.get("/api/inference/audio/catalog").json()["models"]
-    assert row["estimated_resident_gb"] is None and row["smallest_estimated_resident_gb"] is None
+    assert row["estimated_resident_gb"] is None

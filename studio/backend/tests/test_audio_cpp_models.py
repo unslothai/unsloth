@@ -3270,3 +3270,15 @@ def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu
         "Q8_0": cpu_runtime,
         "TQ2_1": True,
     }
+
+
+def test_a_dictation_model_lists_no_gpu_estimate(hub, monkeypatch):
+    # Dictation loads on its sidecar, which never compares the estimate.
+    from core.inference import audio_cpp_server
+
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
+    _online(monkeypatch, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf")
+    row = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    rows = _rows(row)
+    assert acm.resolve(row, network = True).task == "asr"
+    assert rows and all(listed.estimated_resident_gb is None for listed in rows.values())
