@@ -103,15 +103,20 @@ def _render_dataset_row(row, tokenizer):
         if not isinstance(value, str):
             raise _MalformedRow("text is not a string")
         return value, value.strip() == "", True
-    if not isinstance(value, list) or not value or not all(
-        isinstance(m, dict) and "role" in m and "content" in m for m in value
-    ):
+    if not isinstance(value, list) or not value or not all(isinstance(m, dict) for m in value):
+        raise _MalformedRow(f"{column} is not a list of role/content messages")
+    if all("from" in m and "value" in m for m in value):
+        if "'role' not in messages[0]" not in (getattr(tokenizer, "chat_template", None) or ""):
+            roles = {"human": "user", "gpt": "assistant"}
+            value = [{"role": roles.get(m["from"], m["from"]), "content": m["value"]} for m in value]
+    elif not all("role" in m and "content" in m for m in value):
         raise _MalformedRow(f"{column} is not a list of role/content messages")
     try:
         text = tokenizer.apply_chat_template(value, tokenize = False, add_generation_prompt = False)
     except Exception as e:
         raise _MalformedRow(f"chat template failed: {e}") from e
-    empty = all(isinstance(m["content"], str) and m["content"].strip() == "" for m in value)
+    contents = (m["content"] if "content" in m else m["value"] for m in value)
+    empty = all(isinstance(c, str) and c.strip() == "" for c in contents)
     return text, empty, False
 
 

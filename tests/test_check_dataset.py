@@ -122,3 +122,26 @@ def test_get_chat_template_names_the_template(capsys):
     assert report["template"] == "chatml"
     assert report["response_marker_found"] == 3
     assert "Template: chatml | Response marker found in: 3 / 3" in capsys.readouterr().out
+
+
+def test_sharegpt_from_value_rows_are_not_malformed():
+    expected = check_dataset([_chat("hi", "hello")], _tokenizer(), max_seq_length = 8)["lengths"]
+    rows = [
+        {"conversations": [{"from": "human", "value": "hi"}, {"from": "gpt", "value": "hello"}]},
+        {"conversations": [{"from": "human", "value": "  "}, {"from": "gpt", "value": ""}]},
+    ]
+    report = check_dataset(rows, _tokenizer(), max_seq_length = 8)
+    assert report["malformed"] == 0
+    assert report["empty"] == 1
+    assert report["lengths"][:1] == expected
+
+    tok = get_chat_template(
+        _tokenizer(),
+        chat_template = "chatml",
+        mapping = {"role": "from", "content": "value", "user": "human", "assistant": "gpt"},
+        map_eos_token = False,
+        patch_saving = False,
+    )
+    report = check_dataset(rows, tok, max_seq_length = 8)
+    assert report["malformed"] == 0
+    assert report["empty"] == 1
