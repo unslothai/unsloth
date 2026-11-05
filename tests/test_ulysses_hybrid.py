@@ -335,11 +335,26 @@ def test_hybrid_gates():
         cp._check_stateful_mixers(model, "ulysses", 2)
 
 
-def test_eager_attention_is_refused():
+def test_flex_attention_is_refused():
+    # Eager is routed through the modeling module's eager_attention_forward now (test_cp_ulysses_generic_gloo.py).
     model = _model(KINDS[0])
     attn = model.model.layers[1].self_attn
     with pytest.raises(NotImplementedError, match = "attn_implementation"):
-        uh.install_hf_attention_wrapper(attn, "eager", cp.get_cp_manager)
+        uh.install_hf_attention_wrapper(attn, "flex_attention", cp.get_cp_manager)
+
+
+def test_bidirectional_attention_is_refused():
+    # The rebuilt mask is causal: a bidirectional layer (Gemma3 use_bidirectional_attention) would train causal.
+    model = _model(KINDS[0])
+    attn = model.model.layers[1].self_attn
+    attn.is_causal = False
+    with pytest.raises(NotImplementedError, match = "only supports causal attention"):
+        uh.install_hf_attention_wrapper(attn, "sdpa", cp.get_cp_manager)
+    assert not getattr(attn, "_unsloth_cp_ulysses_attention", False)
+    attn.is_causal = True
+    with pytest.raises(NotImplementedError, match = "only supports causal attention"):
+        uh._refuse_non_causal(attn, False)  # a per-call is_causal = False override
+    uh._refuse_non_causal(attn, None)
 
 
 def test_hybrid_packing_metadata_is_off_under_context_parallelism():

@@ -23,8 +23,8 @@ import { useRevealLabel } from "@/features/library";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { RefreshGlyph } from "@/lib/refresh-icon";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Delete02Icon,
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
@@ -278,7 +278,7 @@ export function ModelRowMenu({
                 }}
               >
                 <HugeiconsIcon
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   strokeWidth={1.75}
                   className="size-icon"
                 />

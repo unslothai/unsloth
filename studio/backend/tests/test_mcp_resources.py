@@ -228,9 +228,8 @@ def test_a_resource_only_server_without_a_tools_capability_is_discovered(monkeyp
 
     class _Client:
         def __init__(self, tools):
-            self.initialize_result = SimpleNamespace(
-                capabilities = SimpleNamespace(tools = tools, resources = {})
-            )
+            self.initialize_result = None
+            self.server_capabilities = SimpleNamespace(tools = tools, resources = {})
 
         async def __aenter__(self):
             return self

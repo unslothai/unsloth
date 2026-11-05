@@ -4,15 +4,17 @@
 import { Button } from "@/components/ui/button";
 import {
   getAppliedInterfaceZoom,
-  isImeComposing,
   subscribeAppliedInterfaceZoom,
-  useInterfaceScaleStore,
-} from "@/features/settings";
+} from "@/features/settings/lib/interface-scale-runtime";
+import { isImeComposing } from "@/features/settings/hooks/use-shortcut";
 import {
   formatBindingValueLabel,
   isMacPlatform,
 } from "@/features/settings/lib/keyboard-shortcuts";
-import { INTERFACE_SCALE_RANGE } from "@/features/settings/stores/interface-scale-store";
+import {
+  INTERFACE_SCALE_RANGE,
+  useInterfaceScaleStore,
+} from "@/features/settings/stores/interface-scale-store";
 import {
   shortcutOwningBinding,
   useKeyboardShortcutsStore,

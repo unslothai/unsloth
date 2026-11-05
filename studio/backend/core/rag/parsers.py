@@ -12,6 +12,7 @@ import os
 import re
 import secrets
 import struct
+import threading
 from dataclasses import dataclass
 from html.parser import HTMLParser
 
@@ -57,6 +58,7 @@ _HTML_PRE_TAGS = frozenset(("listing", "plaintext", "pre", "textarea", "xmp"))
 # atomic inline boxes separate neighbouring text without breaking the line
 _HTML_BOX_TAGS = frozenset(("button", "img", "input", "select"))
 _HTML_ROW_GROUPS = frozenset(("thead", "tbody", "tfoot"))
+_HTML_RAW_TEXT = frozenset("iframe noembed noframes textarea title xmp".split())
 _HTML_LIST_TAGS = frozenset(("dir", "menu", "ol", "ul"))
 _HTML_LIST_FORMATS = {
     "1": "decimal",
@@ -66,6 +68,52 @@ _HTML_LIST_FORMATS = {
     "I": "upperRoman",
 }
 _HTML_TABLE_DEPTH = 32
+_HTML_VOID_TAGS = frozenset(
+    "area base br col embed hr img input link meta param source track wbr".split()
+)
+# includes the SVG / MathML integration points, whose HTML children keep their own scope
+_HTML_P_SCOPE = frozenset(
+    "annotation-xml applet button caption desc foreignobject html marquee mi mn mo ms mtext"
+    " object select table td template th title".split()
+)
+_HTML_TABLE_SCOPE = frozenset(("table", "template"))
+_HTML_CELL_CLOSERS = frozenset(("td", "th", "tr")) | _HTML_ROW_GROUPS
+# optional end tags: open element -> (start tags that end it, ancestors that stop the search)
+_HTML_IMPLIED_END = {
+    "p": (
+        frozenset(
+            "address article aside blockquote center dd details dialog dir div dl dt fieldset"
+            " figcaption figure footer form h1 h2 h3 h4 h5 h6 header hgroup hr li listing main"
+            " menu nav ol p pre search section summary table ul".split()
+        ),
+        _HTML_P_SCOPE,
+    ),
+    "li": (frozenset(("li",)), _HTML_LIST_TAGS | _HTML_P_SCOPE),
+    "dt": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
+    "dd": (frozenset(("dt", "dd")), frozenset(("dl",)) | _HTML_P_SCOPE),
+    "tr": (frozenset(("tr",)) | _HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "td": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "th": (_HTML_CELL_CLOSERS, _HTML_TABLE_SCOPE),
+    "thead": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tbody": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "tfoot": (_HTML_ROW_GROUPS, _HTML_TABLE_SCOPE),
+    "caption": (
+        frozenset(("caption", "col", "colgroup", "td", "th", "tr")) | _HTML_ROW_GROUPS,
+        _HTML_TABLE_SCOPE,
+    ),
+    "option": (
+        frozenset(("option", "optgroup", "hr")),
+        frozenset(("select", "datalist", "template")),
+    ),
+}
+_HTML_IMPLIED_BY = {
+    tag: tuple(
+        (name, scope) for name, (closers, scope) in _HTML_IMPLIED_END.items() if tag in closers
+    )
+    for tag in frozenset().union(*(closers for closers, _ in _HTML_IMPLIED_END.values()))
+}
+# other optional-end elements have no tracked end, so a hidden one would swallow the rest
+_HTML_HIDDEN_IGNORED = frozenset("body colgroup head html optgroup rb rp rt rtc".split())
 
 
 class _HtmlPre(str):
@@ -98,12 +146,23 @@ def _html_span(attrs, name: str, limit: int) -> int:
     return limit if value == 0 and name == "rowspan" else min(max(value, 1), limit)
 
 
+def _html_hidden(tag: str, attrs) -> bool:
+    # any value but until-found (still searchable) hides the subtree; CSS is not evaluated
+    for name, value in attrs:
+        if name == "hidden":
+            return (value or "").lower() != "until-found" and tag not in _HTML_HIDDEN_IGNORED
+    return False
+
+
 class _Stripper(HTMLParser):
     """collect visible text, one line per block element."""
 
     def __init__(self, span_budget: int = 0) -> None:
         super().__init__()
         self._skip = 0
+        self._hidden_at: int | None = None
+        self._open_tags: list[str] = []
+        self._tag_positions: dict[str, list[int]] = {}
         self._pre = 0
         self._templates: list[bool] = []
         self._line: list[str] = []
@@ -229,7 +288,50 @@ class _Stripper(HTMLParser):
         if text.strip():
             self.out.append(_HtmlPre(text) if self._pre else text)
 
+    def _pop_tags(self, index: int) -> None:
+        while len(self._open_tags) > index:
+            self._tag_positions[self._open_tags.pop()].pop()
+        if self._hidden_at is not None and self._hidden_at >= index:
+            self._hidden_at = None
+
+    def _close_implied(self, tag: str, preserve_boundary: bool) -> None:
+        implied = _HTML_IMPLIED_BY.get(tag)
+        if not implied:
+            return
+        index = len(self._open_tags)
+        for name, barriers in implied:
+            positions = self._tag_positions.get(name)
+            if positions and positions[-1] < index:
+                barrier = max(
+                    (self._tag_positions[b][-1] for b in barriers if self._tag_positions.get(b)),
+                    default = -1,
+                )
+                if positions[-1] > barrier:
+                    index = positions[-1]
+        if index == len(self._open_tags):
+            return
+        if preserve_boundary and (self._hidden_at is None or index < self._hidden_at):
+            self.handle_endtag(self._open_tags[index])
+        else:
+            self._pop_tags(index)
+
     def handle_starttag(self, tag, attrs):
+        # markup inside raw text is literal text, even where older HTMLParsers parse it
+        hidden = _html_hidden(tag, attrs) and not any(
+            self._tag_positions.get(raw) for raw in _HTML_RAW_TEXT
+        )
+        self._close_implied(tag, self._hidden_at is not None or hidden)
+        if tag not in _HTML_VOID_TAGS:
+            index = len(self._open_tags)
+            self._tag_positions.setdefault(tag, []).append(index)
+            self._open_tags.append(tag)
+            if hidden and self._hidden_at is None:
+                self._hidden_at = index
+        if self._hidden_at is not None or hidden:
+            if tag in _HTML_RAW_TEXT:
+                # older HTMLParser versions parse these as markup, so hidden tags inside could end the scope
+                self.set_cdata_mode(tag)
+            return
         if tag == "template":
             # declarative shadow roots render; other templates are inert
             inert = (dict(attrs).get("shadowrootmode") or "").lower() not in ("open", "closed")
@@ -277,7 +379,24 @@ class _Stripper(HTMLParser):
             # absolute x/y coordinates start a separate SVG text label or line
             self._flush()
 
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag in _HTML_RAW_TEXT:
+            self.clear_cdata_mode()
+        # no synthesized </br> or </input> end for a hidden void element
+        if tag not in _HTML_VOID_TAGS or not _html_hidden(tag, attrs):
+            self.handle_endtag(tag)
+
     def handle_endtag(self, tag):
+        positions = self._tag_positions.get(tag)
+        if positions:
+            index = positions[-1]
+            muted = self._hidden_at is not None and index >= self._hidden_at
+            self._pop_tags(index)
+            if muted:
+                return
+        elif self._hidden_at is not None:
+            return
         if tag == "template":
             if self._templates and self._templates.pop() and self._skip:
                 self._skip -= 1
@@ -310,7 +429,7 @@ class _Stripper(HTMLParser):
             self._line.append(" ")
 
     def handle_data(self, data):
-        if not self._skip:
+        if not self._skip and self._hidden_at is None:
             if self._label and data.strip():
                 self._line.append(self._label)
                 self._label = None
@@ -396,6 +515,159 @@ def _image_covers_a_corner(doc, number: int) -> bool:
     return any(box.intersects(corner) for box in boxes for corner in corners)
 
 
+# PyMuPDF releases whose lines_strict table finder _no_lined_table_possible was checked against.
+_TABLE_GUARD_PYMUPDF = ("1.27.2.3", "1.28.2")
+_TABLE_SNAP = 3  # pymupdf.table.DEFAULT_SNAP_TOLERANCE
+_TABLE_GUARD_MAX_RECTS = 1000
+
+
+def _table_guard_enabled(pymupdf4llm) -> bool:
+    """Legacy pymupdf4llm on a checked PyMuPDF, no layout analyzer."""
+    try:
+        import inspect
+
+        import fitz
+
+        to_markdown = pymupdf4llm.to_markdown
+        params = inspect.signature(to_markdown).parameters
+        return (
+            to_markdown.__module__ == "pymupdf4llm.helpers.pymupdf_rag"
+            and params["table_strategy"].default == "lines_strict"
+            and "hdr_info" in params
+            and fitz.__version__ in _TABLE_GUARD_PYMUPDF
+            and getattr(fitz, "_get_layout", None) is None
+        )
+    except Exception:
+        return False
+
+
+def _graphics_bboxes(rects: list) -> list:
+    """make_edges' clean_graphics clusters (before its has-text check), copied verbatim."""
+    import fitz
+
+    snap_x = snap_y = _TABLE_SNAP
+
+    def are_neighbors(r1, r2):
+        if (
+            r2.x0 - snap_x <= r1.x0 <= r2.x1 + snap_x or r2.x0 - snap_x <= r1.x1 <= r2.x1 + snap_x
+        ) and (
+            r2.y0 - snap_y <= r1.y0 <= r2.y1 + snap_y or r2.y0 - snap_y <= r1.y1 <= r2.y1 + snap_y
+        ):
+            return True
+        if (
+            r1.x0 - snap_x <= r2.x0 <= r1.x1 + snap_x or r1.x0 - snap_x <= r2.x1 <= r1.x1 + snap_x
+        ) and (
+            r1.y0 - snap_y <= r2.y0 <= r1.y1 + snap_y or r1.y0 - snap_y <= r2.y1 <= r1.y1 + snap_y
+        ):
+            return True
+        return False
+
+    prects = sorted(set(fitz.Rect(r) for r in rects), key = lambda r: (r.y1, r.x0))
+    boxes = []
+    while prects:
+        prect0 = prects[0]
+        repeat = True
+        while repeat:
+            repeat = False
+            for i in range(len(prects) - 1, 0, -1):
+                if are_neighbors(prect0, prects[i]):
+                    prect0 |= prects[i].tl
+                    prect0 |= prects[i].br
+                    del prects[i]
+                    repeat = True
+        boxes.append(prect0)
+        del prects[0]
+    return boxes
+
+
+def _no_lined_table_possible(page) -> bool:
+    """True when find_tables(strategy="lines_strict") provably keeps no 2x2+ table: that needs
+    3+ vertical and 3+ horizontal base edges (length >= 1) from l/re/qu items of non-large-fill
+    paths plus cluster borders; this counts an upper bound of each."""
+    if page.rotation != 0:
+        return False
+    v = h = 0
+
+    def line(a, b):
+        nonlocal v, h
+        if abs(b[1] - a[1]) >= 1:
+            v += 1
+        if abs(b[0] - a[0]) >= 1:
+            h += 1
+
+    rects = []
+    for path in page.get_cdrawings():
+        x0, y0, x1, y1 = path["rect"]
+        if path["type"] == "f" and x1 - x0 > _TABLE_SNAP and y1 - y0 > _TABLE_SNAP:
+            continue
+        rects.append(path["rect"])
+        items = path["items"]
+        for item in items:
+            if item[0] == "l":
+                line(item[1], item[2])
+            elif item[0] == "re":
+                rx0, ry0, rx1, ry1 = item[1]
+                if abs(ry1 - ry0) >= 1:
+                    v += 2
+                if abs(rx1 - rx0) >= 1:
+                    h += 2
+            elif item[0] == "qu":
+                ul, ur, ll, lr = item[1]
+                for a, b in ((ul, ll), (ll, lr), (lr, ur), (ur, ul)):
+                    line(a, b)
+        if path.get("closePath", True) and items and items[0][0] == "l" and items[-1][0] == "l":
+            line(items[-1][2], items[0][1])
+        if v >= 3 and h >= 3:
+            return False
+    if len(rects) > _TABLE_GUARD_MAX_RECTS:
+        return False
+    for box in _graphics_bboxes(rects):
+        if box.y1 - box.y0 >= 1:
+            v += 2
+        if box.x1 - box.x0 >= 1:
+            h += 2
+    return v < 3 or h < 3
+
+
+def _skips_table_search(doc, number: int) -> bool:
+    try:
+        return _no_lined_table_possible(doc[number])
+    except Exception:  # noqa: BLE001 - an unreadable page keeps the full table search
+        return False
+
+
+def _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs) -> list | None:
+    """The plain path's to_markdown calls, each split into table-search and no-search pages
+    sharing one header table."""
+    # Bake as to_markdown would, so the guard sees the same page.
+    if doc.is_form_pdf or (doc.is_pdf and doc.has_annots()):
+        doc.bake()
+    by_page = {}
+    for group, detect in calls:
+        if not group:
+            continue
+        headers = pymupdf4llm.IdentifyHeaders(doc)
+        skip = {i for i in group if _skips_table_search(doc, i)}
+        for part_pages, extra in (
+            ([i for i in group if i not in skip], {}),
+            ([i for i in group if i in skip], {"table_strategy": None}),
+        ):
+            if not part_pages:
+                continue
+            part = pymupdf4llm.to_markdown(
+                doc,
+                pages = part_pages,
+                hdr_info = headers,
+                detect_bg_color = detect,
+                **extra,
+                **kwargs,
+            )
+            if not isinstance(part, list) or len(part) != len(part_pages):
+                return None
+            by_page.update(zip(part_pages, part))
+    return [by_page[i] for i in indices]
+
+
 def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
     """Per-page layout-aware Markdown (tables, headings, lists) via pymupdf4llm; index
     i maps to page i+1. Returns None when the lib is missing, extraction fails, or the
@@ -408,7 +680,17 @@ def _pdf_markdown(doc, pages: range | None = None) -> list[str] | None:
         kwargs = {"page_chunks": True, "show_progress": False, "ignore_images": True}
         indices = list(range(doc.page_count) if pages is None else pages)
         scans = {i for i in indices if _image_covers_a_corner(doc, i)}
-        if not scans:
+        if _table_guard_enabled(pymupdf4llm):
+            calls = [(indices, True)]
+            if scans:
+                calls = [
+                    ([i for i in indices if i not in scans], True),
+                    ([i for i in indices if i in scans], False),
+                ]
+            chunks = _pdf_markdown_skipping_tables(pymupdf4llm, doc, indices, calls, kwargs)
+            if chunks is None:
+                return None
+        elif not scans:
             if pages is not None:
                 kwargs["pages"] = indices
             chunks = pymupdf4llm.to_markdown(doc, **kwargs)
@@ -986,18 +1268,25 @@ def _docx_symbol(sym) -> str:
     return chr(code) if 0 <= code <= 0x10FFFF and chr(code).isprintable() else ""
 
 
+_docx_xpath = threading.local()
+
+
 def _docx_run_text(run) -> str:
-    if run.find(f"{_W}fldChar/{_W}ffData/{_W}checkBox") is None and run.find(_W + "sym") is None:
-        return run.text
+    # Per thread: run.xpath() recompiles per call; lxml locks an evaluator shared across threads.
+    parts = getattr(_docx_xpath, "run_parts", None)
+    if parts is None:
+        from lxml import etree
+        parts = _docx_xpath.run_parts = etree.XPath(
+            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym",
+            namespaces = {"w": _W[1:-1]},
+        )
     return "".join(
         _docx_checkbox(e)
         if e.tag == _W + "fldChar"
         else _docx_symbol(e)
         if e.tag == _W + "sym"
         else str(e)
-        for e in run.xpath(
-            "w:br | w:cr | w:noBreakHyphen | w:ptab | w:t | w:tab | w:fldChar | w:sym"
-        )
+        for e in parts(run)
     )
 
 
@@ -1065,17 +1354,26 @@ def _docx_number_lists(document) -> None:
     abstracts = {a.get(_W + "abstractNumId"): a for a in numbering.iterchildren(_W + "abstractNum")}
     nums = {n.get(_W + "numId"): n for n in numbering.iterchildren(_W + "num")}
 
+    style_nums = {}
+
     # numId and ilvl inherit through basedOn independently, like any other paragraph property.
     def style_num(
         style_id,
         name,
         depth = 0,
     ):
+        if depth == 0 and (style_id, name) in style_nums:
+            return style_nums[style_id, name]
         style = style_by_id.get(style_id)
         if style is None or depth > 20:
-            return None
-        value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
-        return style_num(val(style, "basedOn"), name, depth + 1) if value is None else value
+            value = None
+        else:
+            value = val(style.find(f"{_W}pPr/{_W}numPr"), name)
+            if value is None:
+                value = style_num(val(style, "basedOn"), name, depth + 1)
+        if depth == 0:
+            style_nums[style_id, name] = value
+        return value
 
     def linked(abstract_id, depth = 0):
         num_id = style_num(val(abstracts.get(abstract_id), "numStyleLink"), "numId")

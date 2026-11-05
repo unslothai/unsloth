@@ -5,7 +5,7 @@ import {
   CHAT_RAG_CAPTION_KEY,
   CHAT_RAG_OCR_KEY,
   useChatRuntimeStore,
-} from "@/features/chat";
+} from "@/features/chat/stores/chat-runtime-store";
 
 // authFetch sets no AbortSignal, so bound hydration and fall back to the local values.
 const HYDRATION_WAIT_MS = 8_000;

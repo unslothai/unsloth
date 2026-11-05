@@ -1056,7 +1056,7 @@ def test_the_model_list_marks_kept_models_loaded(backends, monkeypatch):
     _, extra = backends
     fake = FakeOrchestrator()
     fake.default_models = []
-    monkeypatch.setattr(models_routes, "get_inference_backend", lambda: fake)
+    monkeypatch.setattr(models_routes, "peek_inference_backend", lambda: fake)
     model_slots.slots.append(model_slots.ExtraSlot(FakeLlama(), FakeOrchestrator("org/C"), "owner"))
     app = FastAPI()
     app.include_router(models_routes.router, prefix = "/api/models")

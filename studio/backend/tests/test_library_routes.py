@@ -2497,6 +2497,110 @@ def test_explorer_gets_the_documented_select_command(tmp_path, monkeypatch):
     assert calls == [["explorer.exe", "/select,", windows_path]]
 
 
+class _Launcher:
+    def __init__(self, status):
+        self.status = status
+
+    def wait(self, timeout = None):
+        if self.status is None:
+            import subprocess
+            raise subprocess.TimeoutExpired("xdg-open", timeout)
+        return self.status
+
+
+def _linux_desktop(
+    monkeypatch,
+    tmp_path,
+    answers,
+    xdg_status = 0,
+):
+    """D-Bus clients exit with their code in *answers* (absent: not installed), xdg-open with *xdg_status* (None: still running)."""
+    import subprocess
+    from types import SimpleNamespace
+
+    import utils.paths.path_utils as path_utils
+
+    target = tmp_path / "it's, here" / "cat.png"
+    target.parent.mkdir(parents = True)
+    target.write_bytes(b"png")
+    commands = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        code = answers.get(command[0])
+        if code is None:
+            raise FileNotFoundError(2, "No such file or directory", command[0])
+        return SimpleNamespace(returncode = code)
+
+    def popen(command, **_kwargs):
+        commands.append(command)
+        return _Launcher(xdg_status)
+
+    monkeypatch.setattr(path_utils.sys, "platform", "linux")
+    monkeypatch.setattr(path_utils, "os", _os_named("posix"))
+    monkeypatch.setattr(path_utils, "_IS_WSL", False)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    return target, commands
+
+
+def test_linux_reveal_asks_the_file_manager_to_select_the_file(tmp_path, monkeypatch):
+    import utils.paths.path_utils as path_utils
+
+    target, commands = _linux_desktop(monkeypatch, tmp_path, {"gdbus": 0})
+    path_utils.reveal_in_file_manager(target)
+    [command] = commands
+    assert command[:2] == ["gdbus", "call"]
+    assert "org.freedesktop.FileManager1.ShowItems" in command
+    # The quote and comma in the folder name are percent-encoded, so the array literal holds.
+    assert f"['{target.as_uri()}']" in command
+    assert "'" not in target.as_uri() and "," not in target.as_uri()
+
+    commands.clear()
+    path_utils.reveal_in_file_manager(target.parent)
+    assert "org.freedesktop.FileManager1.ShowFolders" in commands[0]
+    assert f"['{target.parent.as_uri()}']" in commands[0]
+
+
+def test_linux_reveal_tries_dbus_send_then_xdg_open_on_the_folder(tmp_path, monkeypatch):
+    import utils.paths.path_utils as path_utils
+
+    target, commands = _linux_desktop(monkeypatch, tmp_path, {"dbus-send": 0})
+    path_utils.reveal_in_file_manager(target)
+    assert [command[0] for command in commands] == ["gdbus", "dbus-send"]
+    assert f"array:string:{target.as_uri()}" in commands[1]
+
+    target, commands = _linux_desktop(monkeypatch, tmp_path / "b", {"gdbus": 1, "dbus-send": 1})
+    path_utils.reveal_in_file_manager(target)
+    assert commands[-1] == ["xdg-open", str(target.parent)]
+
+
+def test_linux_reveal_reports_an_xdg_open_that_fails(tmp_path, monkeypatch):
+    """No FileManager1 and no handler for folders used to answer 200 with nothing on screen."""
+    import utils.paths.path_utils as path_utils
+
+    target, commands = _linux_desktop(monkeypatch, tmp_path, {}, xdg_status = 3)
+    with pytest.raises(RuntimeError, match = "status 3"):
+        path_utils.reveal_in_file_manager(target)
+
+    # Still running after the wait: a fallback that holds the window open, not a failure.
+    target, commands = _linux_desktop(monkeypatch, tmp_path / "b", {}, xdg_status = None)
+    path_utils.reveal_in_file_manager(target)
+    assert commands[-1] == ["xdg-open", str(target.parent)]
+
+
+def test_a_failed_linux_reveal_answers_with_an_error(client, monkeypatch, tmp_path):
+    import utils.paths.file_manager as file_manager
+    import utils.paths.path_utils as path_utils
+
+    [note] = _upload(client, ("plan.md", b"# plan", "text/markdown"))
+    monkeypatch.setattr(file_manager, "file_manager_kind", lambda: "files")
+    _linux_desktop(monkeypatch, tmp_path, {}, xdg_status = 4)
+    response = _post(client, "items/reveal", id = note)
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Failed to open file manager"
+
+
 @pytest.mark.parametrize(
     "path, root, inside",
     [

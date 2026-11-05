@@ -7,7 +7,7 @@ import {
   LR_DEFAULT_FULL,
   LR_DEFAULT_LORA,
 } from "@/config/training";
-import { getHfToken } from "@/features/hub";
+import { getHfToken } from "@/features/hub/stores/hf-token-store";
 import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { isAdapterMethod } from "@/types/training";

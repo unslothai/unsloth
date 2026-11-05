@@ -7,6 +7,7 @@ import {
   isDetectionDeferred,
   isProvisionalVerdict,
   resolveVerdict,
+  trainsOnCpu,
 } from "@/config/hardware-verdict";
 import { create } from "zustand";
 
@@ -43,6 +44,8 @@ interface PlatformState {
   // Developer mode's CPU video opt-in, from authed /api/health; keeps the Video row navigable
   // on a no-GPU host that opted in.
   videoCpuOptIn: boolean;
+  // authed /api/health cpu_training: training runs (or would, on "no_torch") on the CPU backend.
+  cpuTraining: boolean;
   // authenticated /api/health values for cloudflareUrl, serverUrl, and secure.
   cloudflareUrl: string | null;
   serverUrl: string | null;
@@ -50,9 +53,12 @@ interface PlatformState {
   lanUrls: string[];
   fetched: boolean;
   verdictStale: boolean;
-  // torch-warm kill switch defers detection to first use; the sidebar polls.
+  // Detection stays cold until a hardware-dependent page or operation requests it.
   detectionDeferred: boolean;
   isChatOnly: () => boolean;
+  // Train and /studio are off: chat-only, except a host that trains on the CPU backend.
+  isTrainUnavailable: () => boolean;
+  isCpuTrainingHost: () => boolean;
   // true until /api/health returns a verdict; guesses cannot gate features.
   capabilitiesUnknown: () => boolean;
 }
@@ -78,6 +84,7 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   chatOnlyDetail: null,
   chatOnlyHint: null,
   videoCpuOptIn: false,
+  cpuTraining: false,
   cloudflareUrl: null,
   serverUrl: null,
   secure: false,
@@ -86,10 +93,15 @@ export const usePlatformStore = create<PlatformState>()((_, get) => ({
   verdictStale: false,
   detectionDeferred: false,
   isChatOnly: () => get().chatOnly,
-  // deferred detection is settled because no verdict will arrive this session.
+  isTrainUnavailable: () => get().chatOnly && !get().isCpuTrainingHost(),
+  isCpuTrainingHost: () => {
+    const state = get();
+    return state.chatOnly && trainsOnCpu(state.chatOnlyReason, state.cpuTraining);
+  },
+  // Deferred is unknown, not an unsupported host; navigation can request detection.
   capabilitiesUnknown: () => {
     const state = get();
-    return (!state.fetched || state.verdictStale) && !state.detectionDeferred;
+    return !state.fetched || state.verdictStale || state.detectionDeferred;
   },
 }));
 
@@ -126,6 +138,27 @@ function localPlatformFallback(force?: boolean): DeviceType {
 
 // Bumped on a backend replacement so a read sent to the old backend is never joined.
 let backendGeneration = 0;
+// Once detection was requested or observed, an older idle reply cannot defer this backend again.
+let requestedHardwareGeneration: number | null = null;
+let systemVerdictRead: { generation: number; promise: Promise<DeviceType> } | null = null;
+
+/** Refresh the picker verdict; a cached caller may need to request detection again. */
+export function refreshDeviceTypeAfterSystemInfo(
+  { detectHardware = false }: { detectHardware?: boolean } = {},
+): void {
+  if (!usePlatformStore.getState().capabilitiesUnknown()) return;
+  if (systemVerdictRead?.generation === backendGeneration) return;
+  const entry = {
+    generation: backendGeneration,
+    promise: fetchDeviceType({ force: true, detectHardware }),
+  };
+  systemVerdictRead = entry;
+  const release = () => {
+    if (systemVerdictRead === entry) systemVerdictRead = null;
+  };
+  // System data remains usable while this independent health read finishes or fails.
+  void entry.promise.then(release, release);
+}
 
 // main.tsx and __root.tsx's beforeLoad both read at startup: an unforced call joins an unforced
 // read in flight for the same token, URL and backend generation. Forced refreshes never share.
@@ -147,13 +180,16 @@ function readAuthToken(): string | null {
 // `force` re-reads /api/health even if cached, to pick up a late-arriving tunnel URL.
 export async function fetchDeviceType(options?: {
   force?: boolean;
+  detectHardware?: boolean;
 }): Promise<DeviceType> {
   const { fetched } = usePlatformStore.getState();
-  if (fetched && !options?.force) return usePlatformStore.getState().deviceType;
+  if (fetched && !options?.force && !options?.detectHardware)
+    return usePlatformStore.getState().deviceType;
   // Desktop before server-port: port 0 never connects, so take the refused-fetch fallback.
   if (isTauri && getApiPort() === null) {
     return localPlatformFallback(options?.force);
   }
+  if (options?.detectHardware) return readHealth({ ...options, force: true });
   if (options?.force) return readHealth(options);
 
   let token: string | null;
@@ -188,9 +224,10 @@ export async function fetchDeviceType(options?: {
 }
 
 async function readHealth(
-  options: { force?: boolean } | undefined,
+  options: { force?: boolean; detectHardware?: boolean } | undefined,
   knownToken?: string | null,
 ): Promise<DeviceType> {
+  const generation = backendGeneration;
   try {
     const token = knownToken === undefined ? readAuthToken() : knownToken;
     // Re-read while the backend is still detecting: chat_only is its pre-detection default and
@@ -200,7 +237,12 @@ async function readHealth(
     const spendWait = Boolean(token) && !hardwareWaitSpent;
     const deadline = spendWait ? Date.now() + HARDWARE_DETECT_WAIT_MS : 0;
     let tokenRejected = false;
-    let res = await fetch(apiUrl("/api/health"), { headers });
+    let detectionDeferred = false;
+    // Only an authenticated, explicit page visit may request the cold hardware probe.
+    const healthUrl = apiUrl(
+      options?.detectHardware && token ? "/api/health?detect_hardware=true" : "/api/health",
+    );
+    let res = await fetch(healthUrl, { headers });
     while (res.ok && Date.now() < deadline) {
       const peek = (await res.clone().json()) as {
         hardware_detecting?: boolean;
@@ -208,25 +250,29 @@ async function readHealth(
         version?: string;
       };
       // Deferred is not "in progress": nothing will settle, so do not wait.
-      if (!isProvisionalVerdict(peek) || isDetectionDeferred(peek)) break;
+      detectionDeferred = isDetectionDeferred(peek);
+      if (!isProvisionalVerdict(peek) || detectionDeferred) break;
       // A rejected token gets the unauthed body: no `version`, so the wait could only time out.
       if (peek.version === undefined) {
         tokenRejected = true;
         break;
       }
       await new Promise((resolve) => setTimeout(resolve, HARDWARE_DETECT_POLL_MS));
-      res = await fetch(apiUrl("/api/health"), { headers });
+      res = await fetch(healthUrl, { headers });
     }
-    // Not spent on a rejected token, so a later sign-in in this page load still gets the wait.
-    if (spendWait && !tokenRejected) hardwareWaitSpent = true;
+    if (generation !== backendGeneration) return usePlatformStore.getState().deviceType;
+    // A rejected token or a deferred probe has not used the first real detection's wait.
+    if (spendWait && !tokenRejected && !detectionDeferred) hardwareWaitSpent = true;
     if (res.ok) {
       const data = (await res.json()) as {
         device_type?: string;
+        version?: string;
         apple_silicon?: boolean;
         file_manager?: FileManager;
         chat_only?: boolean;
         chat_only_reason?: string | null;
         video_cpu_opt_in?: boolean;
+        cpu_training?: boolean;
         hardware_detecting?: boolean;
         cloudflare_url?: string | null;
         server_url?: string | null;
@@ -237,6 +283,21 @@ async function readHealth(
         hub_proxy?: string | null;
         datasets_server_proxy?: string | null;
       };
+      if (generation !== backendGeneration) return usePlatformStore.getState().deviceType;
+      if (
+        data.version !== undefined &&
+        !isDetectionDeferred(data) &&
+        (options?.detectHardware || !isProvisionalVerdict(data))
+      ) {
+        requestedHardwareGeneration = generation;
+      }
+      if (
+        !options?.detectHardware &&
+        isDetectionDeferred(data) &&
+        requestedHardwareGeneration === backendGeneration
+      ) {
+        return usePlatformStore.getState().deviceType;
+      }
       // Before the authoritative-platform guard: hub_proxy is unauthed and idempotent, and a mirror
       // whose first authoritative reply already landed would otherwise never route Hub calls.
       const hubProxy = typeof data.hub_proxy === "string" ? data.hub_proxy : null;
@@ -269,7 +330,7 @@ async function readHealth(
           : keepPlatform
             ? previous.fileManager
             : undefined;
-      // Provisional keeps the stored verdict (resolveVerdict); deferred settles it without a replaced backend's reason.
+      // Provisional keeps the stored verdict; a replaced backend must not keep the old reason.
       const { chatOnly, chatOnlyReason, chatOnlyDetail, chatOnlyHint } = resolveVerdict(
         data,
         previous.verdictStale && isDetectionDeferred(data)
@@ -292,16 +353,20 @@ async function readHealth(
           data.video_cpu_opt_in === undefined
             ? previous.videoCpuOptIn
             : data.video_cpu_opt_in === true,
+        cpuTraining:
+          data.cpu_training === undefined ? previous.cpuTraining : data.cpu_training === true,
         cloudflareUrl: data.cloudflare_url ?? null,
         serverUrl: data.server_url ?? null,
         secure: data.secure ?? false,
-        fetched: data.device_type !== undefined || keepPlatform,
+        // A deferred reply names the platform but stays unfetched, so later reads can settle the verdict.
+        fetched: (data.device_type !== undefined && !isDetectionDeferred(data)) || keepPlatform,
         verdictStale: previous.verdictStale && isProvisionalVerdict(data) && !isDetectionDeferred(data),
         detectionDeferred: isDetectionDeferred(data),
       });
       return deviceType;
     }
   } catch {
+    if (generation !== backendGeneration) return usePlatformStore.getState().deviceType;
     return localPlatformFallback(options?.force);
   }
 

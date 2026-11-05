@@ -754,7 +754,7 @@ def test_session_time_ignores_long_idle_gaps(stats_db):
 
 
 def test_broken_metadata_does_not_break_aggregation(stats_db):
-    now = datetime.now()
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:
         conn.execute(
@@ -821,7 +821,7 @@ def test_training_totals(stats_db):
 
 def test_first_token_time_is_read_as_a_duration(stats_db):
     """firstTokenTime is a duration (Date.now() minus streamStartTime), not a timestamp to subtract."""
-    now = datetime.now()
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:
         _seed_thread(conn, "tft", "m", [(now, _metadata(10, 10))])
@@ -972,7 +972,7 @@ def test_forks_count_as_chats_before_their_first_new_turn(stats_db):
 
 def test_tokens_follow_the_model_that_answered(stats_db):
     """A routed provider records the real producer in responseDetails."""
-    now = datetime.now()
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     metadata = _metadata(100, 50)
     metadata["contextUsage"]["modelId"] = "openrouter/auto"
     metadata["responseDetails"] = {"responseModelId": "anthropic/claude-sonnet-4"}
@@ -1042,7 +1042,7 @@ def test_historical_daylight_saving_offsets_are_respected(stats_db):
 
 
 def test_unknown_timezone_falls_back_to_the_offset(stats_db):
-    now = datetime.now()
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:
         _seed_thread(conn, "tzbad", "m", [(now, _metadata(10, 10))])
@@ -1196,7 +1196,7 @@ def test_future_history_cannot_pad_the_longest_streak(stats_db):
 
 def test_comparison_panes_count_as_one_chat(stats_db):
     """Compare mode stores a thread per pane; the sidebar shows one chat."""
-    now = datetime.now()
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:
         for pane in ("left", "right"):
@@ -1256,8 +1256,10 @@ def test_deleting_a_continuation_restores_its_source(stats_db):
 
 
 def test_out_of_range_timestamps_do_not_break_the_panel(stats_db):
-    """created_at is client supplied and SQLite stores it unchecked."""
-    now = datetime.now()
+    """created_at is client supplied and SQLite stores it unchecked. Seeded at noon like the rest of the file:
+    seeded at the wall clock, a run in the last REPLY_DELAY before midnight put the reply on tomorrow, outside
+    the daily series."""
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:
         _seed_thread(conn, "sane", "m", [(now, _metadata(10, 10))])
@@ -1327,7 +1329,7 @@ def test_days_and_hours_use_the_callers_timezone(stats_db):
 
 
 def test_repeat_calls_are_served_from_cache_until_history_changes(stats_db):
-    now = datetime.now()
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     conn = studio_db.get_connection()
     try:
         _seed_thread(conn, "t5", "m", [(now, _metadata(10, 10))])
@@ -1696,7 +1698,7 @@ def test_nested_resume_keeps_cumulative_totals_after_middle_run_deletion(stats_d
 
 def test_inline_media_counts_as_attachments_without_double_counting(stats_db):
     """Compare messages keep uploads in content_json instead of attachments_json."""
-    now = datetime.now()
+    now = datetime.now().replace(hour = 12, minute = 0, second = 0, microsecond = 0)
     image = {"type": "image", "image": "data:image/png;base64,AAAA"}
     audio = {"type": "audio", "audio": "data:audio/wav;base64,BBBB"}
     conn = studio_db.get_connection()

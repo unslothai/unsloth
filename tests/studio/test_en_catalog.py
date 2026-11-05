@@ -155,7 +155,8 @@ def test_a_comment_is_not_read_as_a_key(sample):
 def test_the_shipped_catalog_resolves():
     assert en_string("composerSettings.showContext")
     assert en_string("settings.chat.showResponseModel")
-    assert en_string("shell.dialog.deleteChat.description").endswith('"{name}"?')
+    # The copy is free to change (#16390 reworded it); the chat name placeholder is the contract.
+    assert '"{name}"' in en_string("shell.dialog.deleteChat.description")
 
 
 def test_every_key_the_studio_tests_ask_for_exists():

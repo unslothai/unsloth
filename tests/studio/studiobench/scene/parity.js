@@ -20,6 +20,11 @@
     "data-tool-call-id", "data-checkpoint-id",
   ]);
 
+  // Any other data-*-id names an instance too: the turn navigator's data-turn-id (#16300) carries
+  // message ids and differed on every action of a null control. Presence is still compared.
+  const ID_ATTR_RE = /^data-[a-z0-9-]+-id$/;
+  const isVolatile = (name) => VOLATILE_ATTRS.has(name) || ID_ATTR_RE.test(name);
+
   const IGNORED_ATTRS = new Set(["data-react-checksum", "data-reactroot"]);
 
   // Dropped only from the visible-region digest; see parityVisible.capture().
@@ -132,7 +137,7 @@
       }
       names.sort();
       for (const name of names) {
-        if (VOLATILE_ATTRS.has(name)) {
+        if (isVolatile(name)) {
           parts.push(" " + name + "=*");
         } else {
           parts.push(" " + name + "=" + attrValue(el, name));

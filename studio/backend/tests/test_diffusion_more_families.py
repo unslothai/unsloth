@@ -769,7 +769,7 @@ def test_the_pinned_prebuilt_is_one_that_can_load_qwen_image_21():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    assert module.DEFAULT_TAG == "master-982-0518b34-ud331c66", (
+    assert module.DEFAULT_TAG == "master-982-0518b34-uaba3a1c", (
         "the pinned prebuilt must be one built from a tree carrying Qwen-Image-2.1, FLUX.3 and MOSS-Image; "
         f"{module.DEFAULT_TAG} is not"
     )

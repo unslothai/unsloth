@@ -145,3 +145,81 @@ def test_a_card_too_full_for_a_slice_takes_the_original_postprocess(monkeypatch)
     monkeypatch.setattr(torch, "aminmax", _oom)
     got = _run(vp, video, "np")
     assert isinstance(got, np.ndarray) and np.array_equal(got, expected)
+
+
+def _denormalize_spy(monkeypatch):
+    # Patched on VaeImageProcessor itself, so the processor still resolves to diffusers' own frame-wise method.
+    seen = []
+    original = VaeImageProcessor._denormalize_conditionally
+
+    def denormalize(
+        self,
+        images,
+        do_denormalize = None,
+    ):
+        seen.append(int(images.shape[0]))
+        return original(self, images, do_denormalize)
+
+    monkeypatch.setattr(VaeImageProcessor, "_denormalize_conditionally", denormalize)
+    return seen
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float16])
+@pytest.mark.parametrize("output_type", ["np", "pil"])
+def test_denormalize_runs_per_slice_not_on_the_whole_clip(dtype, output_type, monkeypatch):
+    import core.inference.video_frames as vf
+
+    vp = VideoProcessor(vae_scale_factor = 8, do_normalize = True)
+    # 9 frames in slices of 2: odd tail, two clips in the batch
+    video = torch.cat([_clip(dtype, normalized = True, frames = 9, seed = s) for s in (5, 6)])
+    expected = _encode_video_uint8(vp.postprocess_video(video, output_type = "np"))
+    monkeypatch.setattr(vf, "_SLICE_BYTES", 2 * 3 * 16 * 24 * 4)
+    seen = _denormalize_spy(monkeypatch)
+    got = _run(vp, video, output_type)
+    assert np.array_equal(got.numpy(), expected)
+    assert seen and max(seen) <= 2 and sum(seen) == 18
+
+
+def test_per_frame_do_denormalize_list_is_sliced_with_the_frames(monkeypatch):
+    import core.inference.video_frames as vf
+
+    vp = VideoProcessor(vae_scale_factor = 8, do_normalize = True)
+    video = _clip(torch.float32, normalized = True, frames = 7)
+    flags = [True, False, True, True, False, False, True]
+    video[0, :, [1, 4, 5]] = video[0, :, [1, 4, 5]].clamp(
+        0, 1
+    )  # undenormalized frames stay in range
+    expected = _encode_video_uint8(
+        vp.postprocess_video(video, output_type = "np", do_denormalize = flags)
+    )
+    monkeypatch.setattr(vf, "_SLICE_BYTES", 3 * 3 * 16 * 24 * 4)
+    seen = _denormalize_spy(monkeypatch)
+    with uint8_video_frames(types.SimpleNamespace(video_processor = vp)):
+        got = vp.postprocess_video(video, output_type = "np", do_denormalize = flags)
+    assert isinstance(got, torch.Tensor) and np.array_equal(got.numpy(), expected)
+    assert seen == [3, 3, 1]
+
+
+def test_a_processor_that_overrides_postprocess_keeps_the_whole_clip_call(monkeypatch):
+    calls = []
+
+    class Mixing(VideoProcessor):
+        def postprocess(
+            self,
+            image,
+            output_type = "pil",
+            **kwargs,
+        ):
+            calls.append(int(image.shape[0]))
+            return super().postprocess(image, output_type, **kwargs)
+
+    vp = Mixing(vae_scale_factor = 8, do_normalize = True)
+    video = _clip(torch.float32, normalized = True, frames = 5)
+    expected = _encode_video_uint8(VideoProcessor.postprocess_video(vp, video, output_type = "np"))
+    calls.clear()
+    import core.inference.video_frames as vf
+
+    monkeypatch.setattr(vf, "_SLICE_BYTES", 3 * 16 * 24 * 4)
+    got = _run(vp, video, "np")
+    assert np.array_equal(got.numpy(), expected)
+    assert calls == [5]

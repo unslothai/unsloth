@@ -9,6 +9,7 @@ import json
 import os
 import threading
 import uuid
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -268,6 +269,17 @@ def _hosted_component_table() -> dict[str, dict[str, set[tuple[str, str, str]]]]
 
     image_bases = {_normalise(b) for b in _with_mirrors(_curated_base_ids())}
     return {repo: files for repo, files in table.items() if repo not in image_bases}
+
+
+@lru_cache(maxsize = None)
+def hosted_supporting_names(repo_id: str) -> frozenset[str]:
+    """Lowercased names of the encoder and VAE files *repo_id* hosts, leaving out its denoisers."""
+    files = _hosted_component_table().get(_normalise(repo_id)) or {}
+    return frozenset(
+        name
+        for name, owners in files.items()
+        if not any(owner[2] == _HOSTED_DENOISER for owner in owners)
+    )
 
 
 def _hosted_names(table, repo_id: str) -> Optional[set[str]]:

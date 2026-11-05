@@ -10,11 +10,10 @@ import {
   Logout05Icon,
   Moon02Icon,
   PowerIcon,
-  Settings02Icon,
   UserCircleIcon,
   ApiIcon,
 } from "@hugeicons/core-free-icons";
-import { ChipIcon, MessageCircleIcon } from "@/lib/hugeicons-derived";
+import { ChipIcon, MessageCircleIcon, Settings01Icon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Reorder, useDragControls } from "motion/react";
 import { Switch } from "@/components/ui/switch";
@@ -114,7 +113,7 @@ export function SidebarMenuCustomizer() {
   const patch = useAppearanceCustomStore((s) => s.patch);
   return (
     <div className="flex flex-col rounded-lg border border-border/70 p-1">
-      <FixedRow icon={Settings02Icon} label={t("shell.navigation.settings")} />
+      <FixedRow icon={Settings01Icon} label={t("shell.navigation.settings")} />
       <Reorder.Group
         axis="y"
         values={sidebarMenu.map((item) => item.id)}

@@ -2,11 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  Delete02Icon,
   FlimSlateIcon,
   ImageIcon,
 } from "@hugeicons/core-free-icons";
-import { AiSpeechIcon } from "@/lib/hugeicons-derived";
+import { AiSpeechIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -560,7 +559,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
               className="text-destructive hover:bg-destructive/10 hover:text-destructive"
               onClick={() => setBulkIntent("delete")}
             >
-              <HugeiconsIcon icon={Delete02Icon} className="mr-1.5 size-4" />
+              <HugeiconsIcon icon={TrashIcon} className="mr-1.5 size-4" />
               {filters.query.trim()
                 ? t("settings.data.library.deleteResults")
                 : t("settings.data.deleteAllAction")}
@@ -614,7 +613,7 @@ export function ArchivedMediaView({ kind }: { kind: ArchivedMediaKind }) {
                       setConfirming({ rows: [row], action: "delete" })
                     }
                   >
-                    <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+                    <HugeiconsIcon icon={TrashIcon} className="size-4" />
                   </Button>
                   <Button
                     variant="ghost"

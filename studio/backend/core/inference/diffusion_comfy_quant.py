@@ -27,6 +27,8 @@ FP8_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP8_STORAGE"
 CONVERSION_RECORD_KEY = "unsloth_comfy_conversion"
 
 INT8_TENSORWISE = "int8_tensorwise"
+# Unpacked, a ConvRot W4A4 layer is an int8_tensorwise ConvRot layer (run with int8 activations, not int4).
+CONVROT_W4A4 = "convrot_w4a4"
 FP8_E4M3 = "float8_e4m3fn"
 FP8_FORMATS = {"float8_e4m3fn": "F8_E4M3", "float8_e5m2": "F8_E5M2"}
 
@@ -51,6 +53,8 @@ _CONSUMED = {
     MXFP8: (".weight_scale", ".input_scale"),
 }
 _LEGACY_RENAME = {".scale_weight": ".weight_scale", ".scale_input": ".input_scale"}
+# Container prefixes a declaration may omit while its weight carries one.
+_DECLARATION_PREFIXES = ("model.diffusion_model.", "diffusion_model.")
 
 # Row tag: key index * 2**24 + row, exact in float64 for any real checkpoint.
 _TAG = float(1 << 24)
@@ -67,6 +71,8 @@ class ComfyQuantLayer:
     format: str
     convrot: bool = False
     group: int = 0
+    # ``.weight`` holds packed int4 (K / 2 columns), unpacked on load.
+    packed_int4: bool = False
 
 
 @dataclass
@@ -107,6 +113,55 @@ def _read_json_tensor(path: str, entry: dict, base: int) -> Any:
     with open(path, "rb") as handle:
         handle.seek(base + int(start))
         return json.loads(handle.read(int(end) - int(start)).decode("utf-8"))
+
+
+def _w4a4_group(raw: Any) -> int:
+    params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
+    group = raw.get("convrot_groupsize", params.get("convrot_groupsize", 256))
+    return int(group) if isinstance(group, (int, float)) else 0
+
+
+def _w4a4_layer_problem(
+    name: str, raw: Any, weight: Optional[dict], header: dict, keys: set
+) -> Optional[str]:
+    params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
+    linear = raw.get("linear_dtype", params.get("linear_dtype", "int4"))
+    group = _w4a4_group(raw)
+    if linear not in ("int4", "int8"):
+        return f"{CONVROT_W4A4} with linear_dtype {linear!r}"
+    if weight is None:
+        return f"{CONVROT_W4A4} declared but there is no {name}.weight"
+    shape = weight.get("shape") or ()
+    if len(shape) != 2 or weight.get("dtype") != "I8":
+        return (
+            f"{CONVROT_W4A4} weight {weight.get('dtype')} {list(shape)} (expected packed 2-D int8)"
+        )
+    if not _is_power_of_four(group):
+        return f"ConvRot group {group!r} is not a power of 4"
+    if (2 * int(shape[1])) % group:
+        return f"in_features {2 * int(shape[1])} not divisible by ConvRot group {group}"
+    scale = header.get(name + ".weight_scale")
+    if scale is None or _numel(scale) != int(shape[0]):
+        return f"{CONVROT_W4A4} needs one weight_scale per row ({shape[0]})"
+    leftover = [s for s in _SCALE_SUFFIXES if name + s in keys and s != ".weight_scale"]
+    if leftover:
+        return f"{CONVROT_W4A4} layer carries {', '.join(leftover)}, which this format does not use"
+    return None
+
+
+def unpack_int4_rows(packed: Any) -> Any:
+    """Signed int4 codes, two per byte (low nibble first), as one int8 per code: ``(N, K / 2)`` -> ``(N, K)``."""
+    import torch
+
+    from .diffusion_single_file_converters import charge_host_ram
+
+    charge_host_ram(packed.numel() * 10)
+    x = packed.to(torch.int16)
+    lo = x & 0x0F
+    hi = (x >> 4) & 0x0F
+    lo = torch.where(lo >= 8, lo - 16, lo)
+    hi = torch.where(hi >= 8, hi - 16, hi)
+    return torch.stack((lo, hi), dim = -1).reshape(packed.shape[0], -1).to(torch.int8)
 
 
 def _layer_conf(raw: Any) -> tuple[Optional[str], bool, int]:
@@ -176,6 +231,11 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
             if key.endswith(".scale_weight"):
                 declared.setdefault(key[: -len(".scale_weight")], {"format": fmt})
 
+    for name in [n for n in declared if n + ".weight" not in keys]:
+        for prefix in _DECLARATION_PREFIXES:
+            if prefix + name + ".weight" in keys and prefix + name not in declared:
+                declared[prefix + name] = declared.pop(name)
+                break
     scaled = {
         key[: -len(suffix)] for key in keys for suffix in _SCALE_SUFFIXES if key.endswith(suffix)
     }
@@ -203,6 +263,15 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
         fmt, convrot, group = _layer_conf(raw)
         weight = header.get(name + ".weight")
         why = None
+        if fmt == CONVROT_W4A4:
+            why = _w4a4_layer_problem(name, raw, weight, header, keys)
+            if why:
+                scan.problems.append(f"{name}: {why}")
+            else:
+                scan.layers[name] = ComfyQuantLayer(
+                    name, INT8_TENSORWISE, True, _w4a4_group(raw), packed_int4 = True
+                )
+            continue
         if fmt is None:
             why = "no format"
         elif fmt not in _CONSUMED:
@@ -402,6 +471,8 @@ def comfy_resident_mib(
             )
         )
     packed = {name + ".weight" for name, layer in scan.layers.items() if layer.format == NVFP4}
+    # Packed int4 is half the int8 the loader unpacks it to, kept or dequantized.
+    packed_int4 = {name + ".weight" for name, layer in scan.layers.items() if layer.packed_int4}
     total = 0
     for key, entry in header.items():
         if keep_key is not None and not keep_key(key):
@@ -413,9 +484,12 @@ def comfy_resident_mib(
         dtype = str(entry.get("dtype", ""))
         stored = numel * _DTYPE_BYTES.get(dtype, 2)
         if key in kept:
-            total += (
-                stored if kept[key] else numel * _bytes(key, shape) * (2 if key in packed else 1)
-            )
+            if kept[key]:
+                total += stored * (2 if key in packed_int4 else 1)
+            else:
+                total += (
+                    numel * _bytes(key, shape) * (2 if key in packed or key in packed_int4 else 1)
+                )
         elif key.endswith(COMFY_QUANT_SUFFIX) or any(key.endswith(s) for s in _SCALE_SUFFIXES):
             total += stored
         elif dtype.startswith(("F", "BF")):
@@ -1240,7 +1314,7 @@ def load_comfy_quant_transformer(
 
     _widened = {
         layer.name + ".weight": (
-            (2 if layer.format == NVFP4 else 1)
+            (2 if layer.format == NVFP4 or layer.packed_int4 else 1)
             if not (backends.get(layer.format) or _stored(layer))
             or (layer.format in BLOCK_SIZES and key_map is not None)
             else 0
@@ -1282,6 +1356,8 @@ def load_comfy_quant_transformer(
     for layer in scan.layers.values():
         codes = state.pop(layer.name + ".weight")
         scale = state.pop(layer.name + ".weight_scale")
+        if layer.packed_int4:
+            codes = unpack_int4_rows(codes)
         # int8 / fp8 / mxfp8 activations are quantized per call; only nvfp4 uses its static input_scale.
         input_scale = state.pop(layer.name + ".input_scale", None)
         extra = None

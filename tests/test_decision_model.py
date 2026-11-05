@@ -251,6 +251,35 @@ def test_dataset_skips_bad_rows_and_names_the_most_common_reason(checkpoint):
     assert torch.allclose(batch["target"].sum(-1), torch.ones(3))
 
 
+@pytest.mark.parametrize("clef", [False, True])
+def test_rows_problem_needs_no_model_and_stops_at_the_first_usable_row(clef):
+    assert FastDecisionModel.rows_problem([], clef) == ""
+    no_gold = {**_row(0), "gold": {}}
+    no_questions = {"state": "only a state"}
+    assert FastDecisionModel.rows_problem([no_questions], clef) == (
+        "row 1 needs state, questions and gold"
+    )
+    assert FastDecisionModel.rows_problem([no_questions, no_questions], clef) == (
+        "row 1 needs state, questions and gold (and 1 more like it)"
+    )
+    assert FastDecisionModel.rows_problem([no_gold], clef).startswith('row 1: "')
+
+    def record(name, question):
+        seen.append(name)
+
+    seen = []
+    assert FastDecisionModel.rows_problem([no_gold, _row(1), no_questions], clef, record) is None
+    assert len(seen) == 1
+
+
+def test_rows_problem_applies_the_callers_validation():
+    def refuse(name, question):
+        raise ValueError("is over the limit")
+
+    problem = FastDecisionModel.rows_problem([_row(0)], False, refuse)
+    assert problem.endswith("is over the limit (and 2 more like it)")
+
+
 def test_holdout_takes_whole_rows_and_never_overshoots():
     items = [{"row": row} for row in range(50) for _ in range(3)]
     train, held = FastDecisionModel.split_holdout(items, 3407)
@@ -567,6 +596,29 @@ def test_compiled_layers_checkpoint_with_torch_and_get_unsloths_back(
         assert not compiled
         assert all(layer._compiled_call_impl is None for layer in layers)
         assert all(layer._gradient_checkpointing_func is offloaded for layer in layers)
+
+
+@pytest.mark.parametrize("instructions", [None, ""])
+def test_a_question_without_instructions_is_read_by_its_id(checkpoint, instructions):
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    state = "the server is down again"
+    blank = {"type": "noul", "instructions": instructions}
+    named = {name: {"type": "noul", "instructions": name} for name in ("outage", "billing")}
+
+    answers = FastDecisionModel.predict(model, tokenizer, state, dict.fromkeys(named, blank))
+    assert answers == FastDecisionModel.predict(model, tokenizer, state, named)
+
+    def tokens(questions):
+        gold = dict.fromkeys(questions, {"label": "true"})
+        row = {"state": state, "questions": questions, "gold": gold}
+        return [
+            item["input_ids"]
+            for item in FastDecisionModel.build_dataset([row], tokenizer, model)[0]
+        ]
+
+    assert tokens(dict.fromkeys(named, blank)) == tokens(named)
 
 
 def test_a_resized_laya_vocabulary_saves_and_reloads(checkpoint, tmp_path):
@@ -1428,6 +1480,11 @@ def test_a_failed_save_leaves_the_previous_clef_checkpoint_loadable(
     assert sorted(p.name for p in out.iterdir()) == before
     assert (out / "joint_head.safetensors").read_bytes() == head
     FastDecisionModel.from_pretrained(str(out), max_seq_length = 512)
+
+
+def test_structured_instructions_train_as_written():
+    question = {"type": "noul", "instructions": {"ask": "これは緊急ですか"}}
+    assert "これは緊急ですか" in _decision_common._internal(question)["ins"]
 
 
 def test_kl_regularization_needs_a_lora_clef(clef_checkpoint, tmp_path):

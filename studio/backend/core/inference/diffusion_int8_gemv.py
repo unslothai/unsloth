@@ -64,12 +64,12 @@ def _kernel() -> Any:
         stride_sn,
         stride_on,
         stride_ym,
-        HAS_BIAS: tl.constexpr,
-        HAS_OUT: tl.constexpr,
-        GROUPED: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_N: tl.constexpr,
-        BLOCK_K: tl.constexpr,
+        HAS_BIAS: tl.constexpr,  # bias present
+        HAS_OUT: tl.constexpr,  # bf16 outlier columns present
+        GROUPED: tl.constexpr,  # per-group weight scales
+        BLOCK_M: tl.constexpr,  # block size along M (rows)
+        BLOCK_N: tl.constexpr,  # block size along N (out features)
+        BLOCK_K: tl.constexpr,  # block size along K (in features)
     ):
         pid = tl.program_id(0)
         rn = pid * BLOCK_N + tl.arange(0, BLOCK_N)

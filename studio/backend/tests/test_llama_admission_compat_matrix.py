@@ -237,7 +237,12 @@ class TestOldCallers:
             inspect.signature(LlamaCppBackend.generate_chat_completion_with_tools).parameters
         )
         assert names.index("sandbox_level") == names.index("instruction_anchor_ids") + 1
-        assert names[-3:] == ["compact_context", "website_policy", "live_permissions"]
+        assert names[-4:] == [
+            "compact_context",
+            "website_policy",
+            "live_permissions",
+            "chat_template_kwargs",
+        ]
         assert names.index("promote_reasoning_only") == names.index("permission_mode") + 1
 
     def test_the_wait_timeout_has_a_sane_default(self):

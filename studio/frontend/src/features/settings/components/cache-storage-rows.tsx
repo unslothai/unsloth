@@ -17,7 +17,7 @@ import {
 } from "@/features/hub/stores/inventory-events";
 import { type TranslationKey, useT } from "@/i18n";
 import { toast } from "@/lib/toast";
-import { Delete02Icon } from "@hugeicons/core-free-icons";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -413,7 +413,7 @@ export function CacheStorageRows({ cache }: { cache: CacheStorage }) {
           }
           onClick={() => setTarget({ kind: "bulk" })}
         >
-          <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
+          <HugeiconsIcon icon={TrashIcon} className="size-3.5" />
           {t("settings.resources.storage.caches.clearAction")}
         </Button>
       </SettingsCardRow>

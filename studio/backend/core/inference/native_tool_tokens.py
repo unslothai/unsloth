@@ -276,6 +276,9 @@ class NativeToolTokenDecoder:
             self._tokenizer, token_ids, self._special_ids, self._tool_ids
         )
 
+    def incremental(self) -> "_IncrementalNativeDecode":
+        return _IncrementalNativeDecode(self)
+
     def suppresses(self, token_id) -> bool:
         token_id = int(token_id)
         return token_id in self._special_ids and token_id not in self._tool_ids
@@ -285,3 +288,29 @@ class NativeToolTokenDecoder:
 
     def __getattr__(self, name):
         return getattr(self._tokenizer, name)
+
+
+class _IncrementalNativeDecode:
+    """``NativeToolTokenDecoder.decode`` of the ids fed so far; suppressed ids are dropped as fed."""
+
+    def __init__(self, decoder: NativeToolTokenDecoder):
+        from core.inference.incremental_decode import IncrementalDecode
+
+        self._decoder = decoder
+        skip = not decoder._special_ids
+        self._text = IncrementalDecode(
+            decoder._tokenizer,
+            {"skip_special_tokens": skip, "spaces_between_special_tokens": False},
+            fallback = lambda ids: _decode_without_special_spacing(
+                decoder._tokenizer, ids, skip_special_tokens = skip
+            ),
+        )
+
+    @property
+    def text(self) -> str:
+        return self._text.text
+
+    def feed(self, token_id) -> str:
+        if self._decoder._special_ids and self._decoder.suppresses(token_id):
+            return self._text.text
+        return self._text.feed(int(token_id))

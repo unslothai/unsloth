@@ -183,6 +183,40 @@ def test_json_lines_in_a_json_manifest_are_rewritten(monkeypatch, tmp_path):
     ]
 
 
+@pytest.mark.parametrize("layout", ["object", "jsonl", "array"])
+@pytest.mark.parametrize("audio_value", ["a.wav", {"path": "a.wav", "bytes": None}])
+def test_single_record_manifest_rewrites_audio(monkeypatch, tmp_path, layout, audio_value):
+    row = {"audio": audio_value, "text": "hello", "speaker": "speaker-1"}
+    suffix = ".jsonl" if layout == "jsonl" else ".json"
+    key = "datasets/train" + suffix
+    payload = [row] if layout == "array" else row
+    _install(
+        monkeypatch,
+        [key, "datasets/a.wav"],
+        contents = {key: json.dumps(payload) + "\n"},
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    loaded = json.loads(Path(files[0]).read_text(encoding = "utf-8"))
+    result = loaded[0] if layout == "array" else loaded
+    local_audio = str(tmp_path / "a.wav")
+    expected_audio = (
+        {"path": local_audio, "bytes": None} if isinstance(audio_value, dict) else local_audio
+    )
+    assert result == {**row, "audio": expected_audio}
+    assert Path(local_audio).is_file()
+
+
+def test_json_manifest_non_record_layout_is_unchanged(tmp_path):
+    # A column-oriented object of indexed columns is not a row of audio paths.
+    payload = {"audio": {"0": "a.wav"}, "text": {"0": "hello"}}
+    path = tmp_path / "train.json"
+    path.write_text(json.dumps(payload), encoding = "utf-8")
+    s3_dataset._rewrite_json_manifest(
+        str(path), lambda value: "/local/a.wav" if value == "a.wav" else None
+    )
+    assert json.loads(path.read_text(encoding = "utf-8")) == payload
+
+
 def test_manifest_relative_references_resolve_against_the_manifest_dir(monkeypatch, tmp_path):
     _install(
         monkeypatch,
@@ -195,6 +229,67 @@ def test_manifest_relative_references_resolve_against_the_manifest_dir(monkeypat
     files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
     rows = _rows(files[0])
     assert rows[0]["audio"] == str(tmp_path / "train" / "clips" / "a.wav")
+
+
+@pytest.mark.parametrize("suffix", [".jsonl", ".json", ".csv"])
+@pytest.mark.parametrize(
+    "reference,root_audio,nested_audio,expected",
+    [
+        ("clips/a.wav", True, True, None),
+        ("./clips/a.wav", True, True, "train/clips/a.wav"),
+        ("s3://my-bucket/datasets/train/clips/a.wav", True, True, "train/clips/a.wav"),
+        ("s3://my-bucket/datasets/clips/a.wav", True, True, "clips/a.wav"),
+        ("clips/a.wav", False, True, "train/clips/a.wav"),
+        ("clips/a.wav", True, False, "clips/a.wav"),
+        ("missing.wav", True, True, "missing.wav"),
+    ],
+)
+def test_audio_reference_ambiguity(
+    monkeypatch, tmp_path, suffix, reference, root_audio, nested_audio, expected
+):
+    manifest_key = "datasets/train/rows" + suffix
+    row = {"audio": reference, "text": "transcript for selected clip"}
+    if suffix == ".csv":
+        content = f"audio,text\n{reference},{row['text']}\n"
+    else:
+        content = json.dumps([row] if suffix == ".json" else row) + "\n"
+    keys = [manifest_key]
+    if root_audio:
+        keys.append("datasets/clips/a.wav")
+    if nested_audio:
+        keys.append("datasets/train/clips/a.wav")
+    client = _install(monkeypatch, keys, contents = {manifest_key: content})
+
+    if expected is None:
+        with pytest.raises(ValueError, match = "Ambiguous audio reference") as error:
+            s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+        assert reference in str(error.value)
+        assert manifest_key in str(error.value)
+        assert "./" in str(error.value) and "s3://" in str(error.value)
+        assert (tmp_path / "train" / ("rows" + suffix)).read_text() == content
+        assert [key for _, key, _ in client.downloaded] == [manifest_key]
+        return
+
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    with open(files[0], encoding = "utf-8") as handle:
+        if suffix == ".csv":
+            result = next(csv.DictReader(handle))
+        else:
+            result = json.load(handle)
+            if suffix == ".json":
+                result = result[0]
+    expected_path = expected if expected == "missing.wav" else str(tmp_path / expected)
+    assert result == {"audio": expected_path, "text": row["text"]}
+
+
+def test_prefix_and_manifest_relative_candidates_can_be_the_same_file(monkeypatch, tmp_path):
+    _install(
+        monkeypatch,
+        ["datasets/metadata.jsonl", "datasets/clips/a.wav"],
+        contents = {"datasets/metadata.jsonl": '{"audio": "clips/a.wav", "text": "hi"}\n'},
+    )
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert _rows(files[0])[0]["audio"] == str(tmp_path / "clips/a.wav")
 
 
 def test_csv_audio_references_are_rewritten_to_local_paths(monkeypatch, tmp_path):

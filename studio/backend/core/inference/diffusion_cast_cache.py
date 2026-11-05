@@ -772,103 +772,12 @@ def save(
                 logger, "info", f"{cand.component}: not cached (rescaled in place for fp16 decode)"
             )
             return None
-        names = list(cand.names)
         reader = _Reader(module, check)
         why = _matches_source(cand, reader)
         if why is not None:
             _log(logger, "info", f"{cand.component}: not cached ({why})")
             return None
-        import torch
-
-        nbytes = 0
-        for _n, dtype, shape in names:
-            count = 1
-            for d in shape:
-                count *= int(d)
-            nbytes += count * torch.empty((), dtype = dtype).element_size()
-        budget = _cache.max_cache_bytes()
-        if budget is not None and nbytes > budget:
-            _log(logger, "info", f"{cand.component}: not cached (larger than the cache budget)")
-            return None
-        with _cache._writer_lock(root, cand.key) as locked:
-            if not locked:
-                return None
-            existing = _cache._entry(cand.key)
-            if existing is not None:
-                with _cache._lock:
-                    rejected = os.path.realpath(str(existing)) in _cache._REJECTED
-                if not rejected:
-                    return None
-                _cache._reclaim(root / cand.key)
-            root.mkdir(parents = True, exist_ok = True)
-            need = nbytes + max(_cache._DISK_MARGIN_BYTES, nbytes // 20)
-            free = shutil.disk_usage(str(root)).free
-            if free < need:
-                _cache.evict(root = root, extra_free_bytes = need - free, keep = cand.key, logger = logger)
-                free = shutil.disk_usage(str(root)).free
-            if free < need:
-                _log(
-                    logger,
-                    "info",
-                    f"{cand.component}: not cached (disk short: {free / 2**30:.1f} GiB free, "
-                    f"need {need / 2**30:.1f} GiB)",
-                )
-                return None
-            source_bytes = sum(os.path.getsize(os.path.realpath(s)) for s in cand.shards)
-            meta = {
-                "key": cand.key,
-                "component": cand.component,
-                "class": cand.class_name,
-                "dtype": cand.parts["dtype"],
-                "source_gib": round(source_bytes / 2**30, 2),
-                "torch_version": str(torch.__version__),
-            }
-            kdir = root / cand.key
-            kdir.mkdir(parents = True, exist_ok = True)
-            shutil.copyfile(cand.config_path, kdir / "config.json")
-            fd, tmp = tempfile.mkstemp(
-                dir = str(kdir), prefix = f".{_cache.FILE_NAME}.", suffix = _cache._TEMP_SUFFIX
-            )
-            os.close(fd)
-            hasher = hashlib.sha256()
-            try:
-                size = _write(
-                    tmp,
-                    cand,
-                    {CAST_META_KEY: json.dumps(meta, sort_keys = True)},
-                    hasher,
-                    reader,
-                )
-                os.replace(tmp, kdir / _cache.FILE_NAME)
-                tmp = None
-            finally:
-                if tmp is not None:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
-            sha = hasher.hexdigest()
-            _cache._record_verified(kdir, sha)
-            manifest = {
-                "key": cand.key,
-                "bytes": size,
-                "sha256": sha,
-                "created": time.time(),
-                "parts": cand.parts,
-            }
-            _cache._atomic_bytes(
-                kdir / _cache.MANIFEST_NAME,
-                json.dumps(manifest, indent = 1, default = str).encode("utf-8"),
-            )
-            _cache._touch(kdir)
-        _log(
-            logger,
-            "info",
-            f"{cand.component}: saved the {cand.parts['dtype']} cast ({cand.key}, {size / 2**30:.2f} GiB from "
-            f"{source_bytes / 2**30:.2f} GiB of source shards, in {time.perf_counter() - t0:.1f} s)",
-        )
-        _cache.evict(logger = logger, keep = cand.key)
-        return str(kdir / _cache.FILE_NAME)
+        return _persist(cand, reader, logger = logger, t0 = t0)
     except Exception as exc:  # noqa: BLE001 - a cache write never fails a load
         _log(
             logger,
@@ -876,6 +785,213 @@ def save(
             f"{cand.component}: save failed: {type(exc).__name__}: {str(exc)[:200]}",
         )
         return None
+
+
+def _persist(
+    cand: CastCandidate,
+    reader: Any,
+    *,
+    logger: Any = None,
+    t0: float = 0.0,
+) -> Optional[str]:
+    """Write ``cand.names`` through ``reader`` into the cast cache; returns the artifact path or None. Raises."""
+    import torch
+
+    root = _cache.cache_root()
+    names = list(cand.names)
+    nbytes = 0
+    for _n, dtype, shape in names:
+        count = 1
+        for d in shape:
+            count *= int(d)
+        nbytes += count * torch.empty((), dtype = dtype).element_size()
+    budget = _cache.max_cache_bytes()
+    if budget is not None and nbytes > budget:
+        _log(logger, "info", f"{cand.component}: not cached (larger than the cache budget)")
+        return None
+    with _cache._writer_lock(root, cand.key) as locked:
+        if not locked:
+            return None
+        existing = _cache._entry(cand.key)
+        if existing is not None:
+            with _cache._lock:
+                rejected = os.path.realpath(str(existing)) in _cache._REJECTED
+            if not rejected:
+                return None
+            _cache._reclaim(root / cand.key)
+        root.mkdir(parents = True, exist_ok = True)
+        need = nbytes + max(_cache._DISK_MARGIN_BYTES, nbytes // 20)
+        free = shutil.disk_usage(str(root)).free
+        if free < need:
+            _cache.evict(root = root, extra_free_bytes = need - free, keep = cand.key, logger = logger)
+            free = shutil.disk_usage(str(root)).free
+        if free < need:
+            _log(
+                logger,
+                "info",
+                f"{cand.component}: not cached (disk short: {free / 2**30:.1f} GiB free, "
+                f"need {need / 2**30:.1f} GiB)",
+            )
+            return None
+        source_bytes = sum(os.path.getsize(os.path.realpath(s)) for s in cand.shards)
+        meta = {
+            "key": cand.key,
+            "component": cand.component,
+            "class": cand.class_name,
+            "dtype": cand.parts["dtype"],
+            "source_gib": round(source_bytes / 2**30, 2),
+            "torch_version": str(torch.__version__),
+        }
+        kdir = root / cand.key
+        kdir.mkdir(parents = True, exist_ok = True)
+        shutil.copyfile(cand.config_path, kdir / "config.json")
+        fd, tmp = tempfile.mkstemp(
+            dir = str(kdir), prefix = f".{_cache.FILE_NAME}.", suffix = _cache._TEMP_SUFFIX
+        )
+        os.close(fd)
+        hasher = hashlib.sha256()
+        try:
+            size = _write(
+                tmp,
+                cand,
+                {CAST_META_KEY: json.dumps(meta, sort_keys = True)},
+                hasher,
+                reader,
+            )
+            os.replace(tmp, kdir / _cache.FILE_NAME)
+            tmp = None
+        finally:
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        sha = hasher.hexdigest()
+        _cache._record_verified(kdir, sha)
+        manifest = {
+            "key": cand.key,
+            "bytes": size,
+            "sha256": sha,
+            "created": time.time(),
+            "parts": cand.parts,
+        }
+        _cache._atomic_bytes(
+            kdir / _cache.MANIFEST_NAME,
+            json.dumps(manifest, indent = 1, default = str).encode("utf-8"),
+        )
+        _cache._touch(kdir)
+    _log(
+        logger,
+        "info",
+        f"{cand.component}: saved the {cand.parts['dtype']} cast ({cand.key}, {size / 2**30:.2f} GiB from "
+        f"{source_bytes / 2**30:.2f} GiB of source shards, in {time.perf_counter() - t0:.1f} s)",
+    )
+    _cache.evict(logger = logger, keep = cand.key)
+    return str(kdir / _cache.FILE_NAME)
+
+
+class _ShardReader:
+    """``tensor(name)`` straight from the source shards, cast to the cached dtype: one tensor in RAM at a time."""
+
+    def __init__(self, cand: CastCandidate, where: dict, check: Any) -> None:
+        self.cand = cand
+        self.where = where
+        self.check = check
+        self.dtypes = {n: d for n, d, _s in cand.names}
+        self._open: dict = {}
+
+    def tensor(self, name: str) -> Any:
+        from safetensors import safe_open
+
+        shard = self.where[name]
+        fh = self._open.get(shard)
+        if fh is None:
+            for old in self._open.values():
+                old.__exit__(None, None, None)
+            self._open = {shard: safe_open(shard, framework = "pt").__enter__()}
+            fh = self._open[shard]
+        return fh.get_tensor(name).to(self.dtypes[name])
+
+    def close(self) -> None:
+        for fh in self._open.values():
+            try:
+                fh.__exit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+        self._open = {}
+
+
+def _source_names(cand: CastCandidate) -> tuple[Optional[list], dict]:
+    """``([(name, dtype, shape)], {name: shard})`` a ``from_pretrained(torch_dtype = cand.dtype)`` load would hold, from
+    an empty-weights instance of the class (diffusers only) and the shard headers; (None, {}) when they disagree."""
+    import torch
+
+    if cand.library != "diffusers":
+        return None, {}
+    from accelerate import init_empty_weights
+
+    config = cand.cls.load_config(os.path.dirname(cand.config_path))
+    with init_empty_weights():
+        model = cand.cls.from_config(config)
+    keep = tuple(str(m) for m in (getattr(cand.cls, "_keep_in_fp32_modules", None) or ()))
+    tied = _tied_keys(model)
+    where: dict = {}
+    tags: dict = {}
+    for shard in cand.shards:
+        header = _shard_header(shard) or {}
+        for key, entry in header.items():
+            if key != "__metadata__" and isinstance(entry, dict):
+                where[key] = shard
+                tags[key] = entry
+    names = []
+    for name, tensor in model.state_dict(keep_vars = True).items():
+        if name in tied and name not in where:
+            continue
+        entry = tags.get(name)
+        if entry is None or [int(d) for d in entry.get("shape", ())] != [
+            int(d) for d in tensor.shape
+        ]:
+            return None, {}
+        dtype = tensor.dtype
+        if dtype.is_floating_point:
+            dtype = torch.float32 if any(k in name.split(".") for k in keep) else cand.dtype
+        names.append((name, dtype, tuple(int(d) for d in tensor.shape)))
+    return names, where
+
+
+def save_from_source(
+    cand: CastCandidate,
+    *,
+    logger: Any = None,
+    check: Optional[Any] = None,
+) -> Optional[str]:
+    """Write ``cand``'s cast straight from its source shards, one tensor in RAM at a time, for a component whose
+    dense load would not fit host RAM; the load then maps the cached file. Returns the path or None. Never raises."""
+    check = check or (lambda: None)
+    t0 = time.perf_counter()
+    reader = None
+    try:
+        names, where = _source_names(cand)
+        if not names:
+            _log(
+                logger,
+                "info",
+                f"{cand.component}: not cached from source (its tensors do not match the class)",
+            )
+            return None
+        cand.names = names
+        reader = _ShardReader(cand, where, check)
+        return _persist(cand, reader, logger = logger, t0 = t0)
+    except Exception as exc:  # noqa: BLE001 - the dense load still runs
+        _log(
+            logger,
+            "warning",
+            f"{cand.component}: source cast failed: {type(exc).__name__}: {str(exc)[:200]}",
+        )
+        return None
+    finally:
+        if reader is not None:
+            reader.close()
 
 
 class CastWrites:

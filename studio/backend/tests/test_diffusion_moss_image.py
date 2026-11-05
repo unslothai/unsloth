@@ -721,5 +721,6 @@ def test_loader_records_the_checkpoint_and_diffusion_passes_the_base_repo(moss):
     source = (_BACKEND / "core" / "inference" / "diffusion.py").read_text(encoding = "utf-8")
     calls = source.split("load_moss_image_pipeline(")[1:]
     calls = [c for c in calls if "dtype" in c.split(")")[0] or "dtype," in c[:200]]
-    assert len(calls) == 2
-    assert all("checkpoint = base," in c[:900] for c in calls)
+    # Full pipeline, single-file and pre-quantized assemblies.
+    assert len(calls) == 3
+    assert all("checkpoint = base," in c[:1600] for c in calls)

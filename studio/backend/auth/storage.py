@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""SQLite storage for auth data (user credentials + JWT secret)."""
-
 import contextlib
 from contextlib import contextmanager
 
@@ -777,6 +775,11 @@ def issue_account_setup_code(
             with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 if username is not None:
+                    owner = conn.execute(
+                        "SELECT must_change_password FROM auth_user WHERE role = 'owner'"
+                    ).fetchone()
+                    if owner is not None and owner["must_change_password"]:
+                        raise ValueError("Set the owner's password before adding an account.")
                     if _login_alias_taken(conn, username):
                         raise sqlite3.IntegrityError("Username is unavailable")
                     account_id = uuid.uuid4().hex
@@ -982,6 +985,40 @@ def set_account_model_allowlist(account_id: str, allowlist: Optional[list[str]])
                     "UPDATE auth_user SET model_allowlist = ? WHERE account_id = ?",
                     (None if allowlist is None else json.dumps(allowlist), account_id),
                 )
+                result = _public_account(_managed_account(conn, account_id))
+        finally:
+            conn.close()
+    return result
+
+
+def rename_account(account_id: str, username: str) -> dict:
+    """Data keys on account_id, so nothing moves; sessions are revoked, API keys follow the account."""
+    from auth.policy import account_mutation
+
+    username = validate_account_username(username)
+    with account_mutation():
+        conn = get_connection()
+        try:
+            with conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = _managed_account(conn, account_id)
+                old = row["username"]
+                if old != username:
+                    if _login_alias_taken(conn, username):
+                        raise sqlite3.IntegrityError("Username is unavailable")
+                    conn.execute(
+                        "UPDATE auth_user SET username = ?, account_jwt_secret = ? WHERE account_id = ?",
+                        (username, secrets.token_urlsafe(64), account_id),
+                    )
+                    conn.execute("DELETE FROM refresh_tokens WHERE username = ?", (old,))
+                    conn.execute(
+                        "UPDATE api_keys SET username = ? WHERE username = ? AND account_id = ?",
+                        (username, old, account_id),
+                    )
+                    conn.execute(
+                        "UPDATE account_api_keys SET username = ? WHERE account_id = ?",
+                        (username, account_id),
+                    )
                 result = _public_account(_managed_account(conn, account_id))
         finally:
             conn.close()
@@ -1783,6 +1820,13 @@ def create_api_key(
 
     conn = get_connection()
     try:
+        if account_id is not None:
+            # A long-lived caller (a research run) may hold a name from before a rename.
+            row = conn.execute(
+                "SELECT username FROM auth_user WHERE account_id = ?", (account_id,)
+            ).fetchone()
+            if row is not None:
+                username = row["username"]
         if expect_gen is not None:
             conn.execute("BEGIN IMMEDIATE")
             if _current_generation(conn, username) != expect_gen:

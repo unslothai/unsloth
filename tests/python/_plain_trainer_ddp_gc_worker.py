@@ -9,6 +9,14 @@ import runpy
 import tempfile
 
 
+def _report(queue, item):
+    """Deliver the result before teardown. put() hands it to a feeder thread that needs the GIL, and a
+    teardown blocking in C while holding it left both ranks' results unsent after they had trained."""
+    queue.put(item)
+    queue.close()
+    queue.join_thread()
+
+
 def run_rank(rank, port, cases, queue):
     os.environ.update(
         MASTER_ADDR = "127.0.0.1",
@@ -101,10 +109,10 @@ def run_rank(rank, port, cases, queue):
             if error is not None:
                 # A rank that raised leaves the group unusable for the next case.
                 break
-        queue.put((rank, out))
+        _report(queue, (rank, out))
     except BaseException:
         import traceback
-        queue.put((rank, {"error": traceback.format_exc()}))
+        _report(queue, (rank, {"error": traceback.format_exc()}))
         raise
     if not any(case.get("error") for case in out.values()):
         import torch.distributed as dist

@@ -199,9 +199,16 @@ def test_fused_maths_tracks_the_eager_kernels(rot, bias):
     assert ((got.float() - ref.float()).norm() / ref.float().norm()).item() < 2e-2
 
 
+def _require_the_compiled_linear():
+    # has_real_cuda() is also true on ROCm, and a host may lack the inductor runtime: production stays eager there.
+    if nq._fused_w8a8() is None:
+        pytest.skip(f"compiled linear off on this host: {nq.fused_w8a8_state()['failed']}")
+
+
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA torch._int_mm and inductor")
 @pytest.mark.parametrize("rot", [256, 0])
 def test_cuda_compiled_linear_is_bit_identical_to_eager(monkeypatch, rot):
+    _require_the_compiled_linear()
     torch.manual_seed(0)
     cls = nq.native_linear_class()
     layers = [
@@ -231,6 +238,7 @@ def test_cuda_compiled_linear_is_bit_identical_to_eager(monkeypatch, rot):
 @pytest.mark.skipif(not has_real_cuda(), reason = "needs CUDA torch._int_mm and inductor")
 @pytest.mark.parametrize("rot", [256, 0])
 def test_cuda_compiled_linear_peak_stays_at_or_below_eager(monkeypatch, rot):
+    _require_the_compiled_linear()
     # 8192 rows x 16384 outputs: eager takes four chunks, the old 4x budget one call (768 vs 576 MiB).
     torch.manual_seed(0)
     layer = nq.native_linear_class()(
@@ -257,6 +265,23 @@ def test_cuda_compiled_linear_peak_stays_at_or_below_eager(monkeypatch, rot):
     assert nq.fused_w8a8_state()["calls"] == calls + 2
     assert torch.equal(got, ref)
     assert fused_peak <= eager_peak, (fused_peak, eager_peak)
+
+
+@pytest.mark.parametrize(
+    "test",
+    [
+        test_cuda_compiled_linear_is_bit_identical_to_eager,
+        test_cuda_compiled_linear_peak_stays_at_or_below_eager,
+    ],
+)
+@pytest.mark.parametrize("off", ["ROCm", "no inductor runtime"])
+def test_cuda_engagement_tests_skip_where_production_stays_eager(monkeypatch, test, off):
+    import core.inference.diffusion_speed as sp
+
+    monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: off == "ROCm")
+    monkeypatch.setattr(torch.version, "hip", "6.4" if off == "ROCm" else None, raising = False)
+    with pytest.raises(pytest.skip.Exception, match = off):
+        test(monkeypatch, 256)
 
 
 def test_chunked_output_keeps_the_compiled_dtype(monkeypatch):
@@ -342,6 +367,9 @@ def test_factory_creates_every_state_key_before_the_first_trace(monkeypatch):
     # torch <= 2.6 dynamo guards on len(_FUSED_STATE): a key added after the first call recompiles.
     import core.inference.diffusion_speed as sp
 
+    import core.inference.rocm_bf16 as rb
+
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
+    monkeypatch.setattr(rb, "is_rocm_torch", lambda _torch: False)
     assert nq._fused_w8a8() is not None
     assert {"fn", "into", "row_major", "calls", "failed"} <= set(nq._FUSED_STATE)

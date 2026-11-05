@@ -151,7 +151,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         silu = _rbf16(gf * tl.sigmoid(gf))
         return (silu * v.to(tl.float32)).to(tl.bfloat16)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_i8(
         x_ptr,
         h_ptr,
@@ -159,16 +159,16 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         s_ptr,
         M,
         NG,
-        G: tl.constexpr,
-        BLOCK_M: tl.constexpr,
-        BLOCK_K: tl.constexpr,
-        ROWS: tl.constexpr,
-        ROWS_P2: tl.constexpr,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        DIV: tl.constexpr,
-        EPS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        G: tl.constexpr,  # rotation group width
+        BLOCK_M: tl.constexpr,  # group rows per program
+        BLOCK_K: tl.constexpr,  # K step inside a group
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        ROWS_P2: tl.constexpr,  # ROWS next pow2
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        DIV: tl.constexpr,  # amax divisor (127)
+        EPS: tl.constexpr,  # norm epsilon, per model
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         # one program = ROWS whole activation rows, so the per-row amax closes inside the tile
         pid = tl.program_id(0)
@@ -215,9 +215,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         live,
         h,
         h32,
-        TM: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
+        TM: tl.constexpr,  # 256-wide groups per tile
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
     ):
         # X[a, b] = x[16 a + b]; Y = X . H16 on tensor cores (H16 entries +-1/4: exact products), Z = H16 . Y in fp32.
         offs = tl.arange(0, 256)
@@ -241,9 +241,9 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         q_ptr,
         gidx,
         live,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         offs = tl.arange(0, 256)
         p = z * inv_t[:, None]
@@ -265,10 +265,10 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         NG,
         h,
         h32,
-        CG: tl.constexpr,
-        ROWS: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
     ):
         live = row < M
         gidx = tl.where(live, row * NG + c * CG + gl, 0)
@@ -289,20 +289,20 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         NG,
         h,
         h32,
-        CG: tl.constexpr,
-        ROWS: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         live = row < M
         gidx = tl.where(live, row * NG + c * CG + gl, 0)
         z = _h16_tile(x_ptr, v_ptr, gidx, live, h, h32, ROWS * CG, SWIGLU, TF32X3)
         _h16_quant_store(z, inv_t, q_ptr, gidx, live, QMIN, QMAX, FP32_SCALE)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["M"])
     def rotq_h16(
         x_ptr,
         v_ptr,
@@ -312,18 +312,18 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         s_ptr,
         M,
         NG,
-        NCH: tl.constexpr,
-        CG: tl.constexpr,
-        ROWS: tl.constexpr,
-        ONE_PASS: tl.constexpr,
-        UNROLL: tl.constexpr,
-        SWIGLU: tl.constexpr,
-        TF32X3: tl.constexpr,
-        QMIN: tl.constexpr,
-        QMAX: tl.constexpr,
-        DIV: tl.constexpr,
-        EPS: tl.constexpr,
-        FP32_SCALE: tl.constexpr,
+        NCH: tl.constexpr,  # chunks per row
+        CG: tl.constexpr,  # groups per chunk
+        ROWS: tl.constexpr,  # activation rows per program (from K)
+        ONE_PASS: tl.constexpr,  # whole row fits one chunk
+        UNROLL: tl.constexpr,  # unroll the chunk loop
+        SWIGLU: tl.constexpr,  # fuse swiglu before rotation
+        TF32X3: tl.constexpr,  # tf32x3 dot for fp32 accuracy
+        QMIN: tl.constexpr,  # int8 clamp min
+        QMAX: tl.constexpr,  # int8 clamp max
+        DIV: tl.constexpr,  # amax divisor (127)
+        EPS: tl.constexpr,  # norm epsilon, per model
+        FP32_SCALE: tl.constexpr,  # scale kept in fp32 (torchao >= 0.18)
     ):
         # ONE_PASS: rotate, amax, quantize from registers. Else an amax pass, then recompute + quant (row re-read from L2).
         TM: tl.constexpr = ROWS * CG

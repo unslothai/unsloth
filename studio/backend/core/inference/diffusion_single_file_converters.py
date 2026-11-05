@@ -119,6 +119,38 @@ def krea2_checkpoint_to_diffusers(checkpoint: Any = None, **kwargs: Any) -> dict
     return converted
 
 
+_MOSS_QKV_RE = re.compile(r"^(layers\.\d+\.proj\.)qkv\.(weight|bias)$")
+
+
+def moss_image_checkpoint_to_diffusers(checkpoint: Any = None, **kwargs: Any) -> dict:
+    """Reference-layout MOSS-Image -> the in-tree names: split the fused ``proj.qkv`` (equal q, k, v thirds), drop the
+    ``comfy_attention.config`` hint."""
+    converted: dict = {}
+    for raw_key, value in (checkpoint or {}).items():
+        key = _strip_prefix(raw_key)
+        if key.endswith(".comfy_attention.config"):
+            continue
+        match = _MOSS_QKV_RE.match(key)
+        if match is None:
+            converted[key] = value
+            continue
+        stem, kind = match.groups()
+        rows = int(value.shape[0])
+        if rows % 3:
+            raise ValueError(f"{raw_key}: {rows} rows do not split into q, k and v")
+        for part, piece in zip(("q", "k", "v"), _split_rows(raw_key, value, (rows // 3,) * 3)):
+            converted[f"{stem}{part}.{kind}"] = piece
+    config = kwargs.get("config") or {}
+    if "rope.bands" not in converted and config.get("dim") and config.get("num_heads"):
+        # Some converters drop the RoPE band buffer; it is a function of the config (_RoPE._default_bands).
+        import torch
+
+        bands = int(config["dim"]) // int(config["num_heads"]) // 8
+        exponent = torch.arange(bands, dtype = torch.float32) / bands
+        converted["rope.bands"] = 1 / (float(config.get("rope_base", 10000.0)) ** exponent)
+    return converted
+
+
 _HYIMG_TOP = {
     "img_in.proj": "x_embedder.proj",
     "time_in.in_layer": "time_guidance_embed.timestep_embedder.linear_1",
@@ -343,6 +375,7 @@ def _cat_rows(first: Any, second: Any) -> Any:
 
 CONVERTERS: dict = {
     "Krea2Transformer2DModel": krea2_checkpoint_to_diffusers,
+    "MOSSImageTransformer": moss_image_checkpoint_to_diffusers,
     "HunyuanImageTransformer2DModel": hunyuanimage_checkpoint_to_diffusers,
 }
 

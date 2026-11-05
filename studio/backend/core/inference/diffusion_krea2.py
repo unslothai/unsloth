@@ -147,6 +147,7 @@ def load_krea2_pipeline(
     text_encoder = None,
     local_files_only: bool = False,
     check_cancelled: Optional[Callable[[], None]] = None,
+    vae = None,
 ):
     """local_files_only raises rather than fetching a component after the resident pipeline was evicted."""
     check_cancelled = check_cancelled or (lambda: None)
@@ -192,15 +193,16 @@ def load_krea2_pipeline(
         cache_dir = cache_dir,
     )
     check_cancelled()
-    vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
-        repo_id,
-        subfolder = "vae",
-        torch_dtype = dtype,
-        token = token,
-        local_files_only = local_files_only,
-        cache_dir = cache_dir,
-    )
-    check_cancelled()
+    if vae is None:
+        vae = diffusers.AutoencoderKLQwenImage.from_pretrained(
+            repo_id,
+            subfolder = "vae",
+            torch_dtype = dtype,
+            token = token,
+            local_files_only = local_files_only,
+            cache_dir = cache_dir,
+        )
+        check_cancelled()
     if transformer is None and with_transformer:
         transformer = diffusers.Krea2Transformer2DModel.from_pretrained(
             repo_id,

@@ -109,7 +109,8 @@ function manualReleasePageUrl(
   return `${policy.releasePageBaseUrl}${policy.releaseTagPrefix}${normalized}`;
 }
 
-export function useTauriUpdate(isExternalServer = false) {
+export function useTauriUpdate(externalServerPort: number | null = null) {
+  const isExternalServer = externalServerPort !== null;
   const [status, setStatus] = useState<UpdateStatus>("idle");
   const statusRef = useRef<UpdateStatus>("idle");
   const [info, setInfo] = useState<UpdateInfo | null>(null);
@@ -598,6 +599,7 @@ export function useTauriUpdate(isExternalServer = false) {
     phase,
     lastFailure,
     isExternalServer,
+    externalServerPort,
     updatePolicyMode: updatePolicy.mode,
     manualReleaseUrl,
     releasePageUrl,

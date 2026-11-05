@@ -360,7 +360,8 @@ def test_resume_after_a_dropped_transfer_and_offline_rerun(tmp_path, hub_factory
     hub = hub_factory(fail_get = "model.safetensors")
     first = _run(hub, tmp_path)
     assert first.returncode != 0
-    assert (_repo_dir(tmp_path) / "refs" / "main").read_text(encoding = "utf-8") == _OLD
+    # An interrupted first download has no successful publication yet.
+    assert not (_repo_dir(tmp_path) / "refs" / "main").exists()
     hub.fail_get = None
     hub.move = True  # the branch moves before the resume's metadata read is answered
     second = _run(hub, tmp_path)
@@ -387,7 +388,7 @@ def test_network_drop_after_the_metadata_read_keeps_the_older_snapshot_loadable(
     repo = _repo_dir(tmp_path)
     assert (repo / "refs" / "main").read_text(encoding = "utf-8") == _OLD
     assert [p.name for p in (repo / "refs").iterdir()] == ["main"]
-    assert "retrying unpinned" in second.stderr
+    assert "retrying unpinned" not in second.stderr
     env = dict(os.environ, HF_HUB_CACHE = str(tmp_path / "hf" / "hub"), HF_HUB_OFFLINE = "1")
     loaded = subprocess.run(
         [
@@ -417,10 +418,10 @@ def test_no_pin_without_a_full_sha(monkeypatch, tmp_path):
     assert hf_download._pinned_revision("model", _REPO, "A" * 40) == {}
     assert not (tmp_path / "models--fake--repo").exists()
     assert hf_download._pinned_revision("model", _REPO, _OLD) == {"revision": _OLD}
-    assert (tmp_path / "models--fake--repo" / "refs" / "main").read_text(encoding = "utf-8") == _OLD
+    assert not (tmp_path / "models--fake--repo").exists()
 
 
-def test_pinned_call_rolls_the_ref_back_only_when_nothing_landed(monkeypatch, tmp_path):
+def test_failed_pinned_call_preserves_publication_even_when_files_landed(monkeypatch, tmp_path):
     from hub.workers import hf_download
     from huggingface_hub import constants
 
@@ -428,61 +429,56 @@ def test_pinned_call_rolls_the_ref_back_only_when_nothing_landed(monkeypatch, tm
     repo = tmp_path / "models--fake--repo"
     ref = repo / "refs" / "main"
     ref.parent.mkdir(parents = True)
+    ref.write_text(_OLD)
     calls = []
 
     def fake(behaviour):
         def snapshot_download(**kw):
             calls.append(kw.get("revision"))
-            if kw.get("revision") is None:
-                return "unpinned"
+            assert kw["revision"]  # No fallback may silently load an older snapshot.
+            target = repo / "snapshots" / kw["revision"]
             if behaviour == "land":
-                (repo / "snapshots" / _NEW).mkdir(parents = True, exist_ok = True)
-                (repo / "snapshots" / _NEW / "config.json").write_text("{}")
+                target.mkdir(parents = True, exist_ok = True)
+                (target / "config.json").write_text("{}")
             if behaviour == "peer_rollback":
                 ref.write_text(_OLD)
-                return "pinned"
+                target.mkdir(parents = True, exist_ok = True)
+                return str(target)
             if behaviour == "interrupt":
                 raise KeyboardInterrupt
             raise OSError("network down")
 
         return snapshot_download
 
-    # Nothing landed: the ref goes back and the unpinned call runs (main's offline fallback).
-    ref.write_text(_OLD)
-    assert hf_download._pinned_snapshot_download(fake("drop"), _NEW, repo_id = _REPO) == "unpinned"
-    assert calls == [_NEW, None] and ref.read_text() == _OLD
-    # A file landed: the ref stays on the new commit and the error stands, as an unpinned download leaves it.
-    calls.clear()
-    with pytest.raises(OSError):
-        hf_download._pinned_snapshot_download(fake("land"), _NEW, repo_id = _REPO)
-    assert calls == [_NEW] and ref.read_text() == _NEW
-    # A cancel before anything landed restores the ref and is not retried.
-    ref.write_text(_OLD)
+    # Neither a failed transfer with no bytes nor one with partial bytes may
+    # replace a successful publication. Both propagate the original failure.
+    for behaviour in ("drop", "land"):
+        calls.clear()
+        with pytest.raises(OSError, match = "network down"):
+            hf_download._pinned_snapshot_download(fake(behaviour), _NEW, repo_id = _REPO)
+        assert calls == [_NEW] and ref.read_text() == _OLD
     calls.clear()
     with pytest.raises(KeyboardInterrupt):
         hf_download._pinned_snapshot_download(fake("interrupt"), "c" * 40, repo_id = _REPO)
     assert calls == ["c" * 40] and ref.read_text() == _OLD
-    # A peer's rollback during a successful download is undone: the fetched commit is named.
-    assert (
-        hf_download._pinned_snapshot_download(fake("peer_rollback"), "d" * 40, repo_id = _REPO)
-        == "pinned"
-    )
-    assert ref.read_text() == "d" * 40
-    # Same when a peer had already published the commit before this download started.
-    assert (
-        hf_download._pinned_snapshot_download(fake("peer_rollback"), "d" * 40, repo_id = _REPO)
-        == "pinned"
-    )
-    assert ref.read_text() == "d" * 40
-    # No ref before and nothing landed: no ref after.
+    # A successful publication repairs the ref, including a repeated no-op SHA.
+    for _ in range(2):
+        result = hf_download._pinned_snapshot_download(
+            fake("peer_rollback"),
+            "d" * 40,
+            repo_id = _REPO,
+        )
+        assert Path(result).name == "d" * 40
+        assert ref.read_text() == "d" * 40
+    # No ref before and no successful download: no ref afterward.
     ref.unlink()
-    assert (
-        hf_download._pinned_snapshot_download(fake("drop"), "e" * 40, repo_id = _REPO) == "unpinned"
-    )
+    with pytest.raises(OSError):
+        hf_download._pinned_snapshot_download(fake("drop"), "e" * 40, repo_id = _REPO)
     assert not ref.exists()
-    # A failed ref write leaves no temp file under refs/ (every file there reads as a ref).
+    # A failed atomic replacement leaves no temporary branch names behind.
     monkeypatch.setattr(
         hf_download.os, "replace", lambda *a: (_ for _ in ()).throw(PermissionError("locked"))
     )
-    assert hf_download._pinned_revision("model", _REPO, "f" * 40) == {}
-    assert [p.name for p in ref.parent.iterdir()] == []
+    with pytest.raises(PermissionError):
+        hf_download._write_ref(ref, "f" * 40)
+    assert list(ref.parent.iterdir()) == []

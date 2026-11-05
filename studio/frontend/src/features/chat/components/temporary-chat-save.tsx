@@ -23,9 +23,8 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
+import { BookmarkIcon, TrashIcon } from "@/lib/hugeicons-derived";
 import {
-  Bookmark02Icon,
-  Delete02Icon,
   MoreHorizontalIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
@@ -205,7 +204,7 @@ export function SaveTemporaryChatMenu({
                 }}
               >
                 <HugeiconsIcon
-                  icon={Bookmark02Icon}
+                  icon={BookmarkIcon}
                   strokeWidth={1.75}
                   className="size-icon"
                 />
@@ -225,7 +224,7 @@ export function SaveTemporaryChatMenu({
             <DropdownMenuSeparator className="mx-3" />
             <DropdownMenuItem variant="destructive" onSelect={onDiscard}>
               <HugeiconsIcon
-                icon={Delete02Icon}
+                icon={TrashIcon}
                 strokeWidth={1.75}
                 className="size-icon"
               />
@@ -248,7 +247,7 @@ export function SaveTemporaryChatMenu({
           <DialogHeader className="gap-3">
             <DialogTitle className="flex items-center gap-2">
               <HugeiconsIcon
-                icon={Bookmark02Icon}
+                icon={BookmarkIcon}
                 strokeWidth={2}
                 className="text-foreground/80 size-4.5 shrink-0"
               />

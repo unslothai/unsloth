@@ -545,6 +545,8 @@ _STREAM_DTYPES = {
     "U8": "uint8",
     "BOOL": "bool",
 }
+# ``cast_floats``: floating dtypes a bf16 load casts per tensor exactly as diffusers' loader does.
+_CAST_DTYPES = {"F32": "float32", "F16": "float16", "F64": "float64"}
 
 
 def stream_build_enabled() -> bool:
@@ -552,9 +554,14 @@ def stream_build_enabled() -> bool:
     return value not in ("0", "off", "false", "no")
 
 
-def _dense_shards(source: Any, component: str, cache_dir: Optional[str]) -> Optional[list[str]]:
+def _dense_shards(
+    source: Any,
+    component: str,
+    cache_dir: Optional[str],
+    weights_name: str = "diffusion_pytorch_model",
+) -> Optional[list[str]]:
     """The shard files ``from_pretrained(source, subfolder = component)`` reads (index first, as diffusers), or None."""
-    stem = f"{component}/diffusion_pytorch_model"
+    stem = f"{component}/{weights_name}"
     index = _cache._local_file(str(source), f"{stem}.safetensors.index.json", cache_dir)
     if index is not None:
         with open(index, "r", encoding = "utf-8") as fh:
@@ -566,16 +573,37 @@ def _dense_shards(source: Any, component: str, cache_dir: Optional[str]) -> Opti
     return [str(single)] if single else None
 
 
-def _shard_entries(path: str) -> Optional[tuple[int, dict]]:
-    """(data start, ``{key: header entry}``) of a shard holding only dtypes in ``_STREAM_DTYPES``, else None."""
+def _shard_entries(path: str, dtypes: Optional[dict] = None) -> Optional[tuple[int, dict]]:
+    """(data start, ``{key: header entry}``) of a shard holding only dtypes in ``dtypes`` (default
+    ``_STREAM_DTYPES``), else None."""
+    dtypes = _STREAM_DTYPES if dtypes is None else dtypes
     raw = _cache.read_header_bytes(path)
     if raw is None:
         return None
     header = json.loads(raw[8:].decode("utf-8"))
     header.pop("__metadata__", None)
-    if any(entry.get("dtype") not in _STREAM_DTYPES for entry in header.values()):
+    if any(entry.get("dtype") not in dtypes for entry in header.values()):
         return None
     return len(raw), header
+
+
+def _stored_dtype(tag: str) -> Any:
+    import torch
+    return getattr(torch, _STREAM_DTYPES.get(tag) or _CAST_DTYPES[tag])
+
+
+def _loaded_dtype(key: str, tag: str, dtype: Any, keep_in_fp32: Any) -> Any:
+    """The dtype ``from_pretrained(torch_dtype = dtype)`` gives the stored ``key``: diffusers'
+    ``load_model_dict_into_meta`` rule (a floating param under a ``_keep_in_fp32_modules`` name goes fp32, any other
+    floating param goes ``dtype``; integers stay)."""
+    import torch
+
+    stored = _stored_dtype(tag)
+    if not stored.is_floating_point:
+        return stored
+    if keep_in_fp32 and any(m in key.split(".") for m in keep_in_fp32):
+        return torch.float32
+    return dtype
 
 
 def _map_tensor(fd: int, start: int, entry: dict) -> Any:
@@ -586,7 +614,7 @@ def _map_tensor(fd: int, start: int, entry: dict) -> Any:
     import torch
 
     begin, end = (int(v) for v in entry["data_offsets"])
-    dtype = getattr(torch, _STREAM_DTYPES[entry["dtype"]])
+    dtype = _stored_dtype(entry["dtype"])
     shape = [int(d) for d in entry["shape"]]
     count = 1
     for d in shape:
@@ -616,9 +644,15 @@ def build_from_shards(
     config_kwargs: Optional[dict] = None,
     logger: Any = None,
     cancel_check: Optional[Any] = None,
+    cast_floats: bool = False,
+    reraise_oom: bool = False,
 ) -> Any:
     """Build the native ``component`` per tensor, bit-identical to the in-place build, or None for the dense load
-    (also on cancel, which the caller re-checks). Never raises."""
+    (also on cancel, which the caller re-checks). Never raises, except an out-of-memory under ``reraise_oom``.
+
+    ``cast_floats``: fp32 / fp16 shards and ``_keep_in_fp32_modules`` classes are built too, each tensor cast as the
+    dense bf16 load casts it (one Linear's bf16 copy at a time). Inside ``quantise_host_linears_on(device)`` each
+    Linear is quantised on ``device`` and returned to the host, as the in-place build there does."""
     cancelled = [False]
 
     def _check() -> None:
@@ -634,7 +668,12 @@ def build_from_shards(
     try:
         import torch
 
-        from .diffusion_native_quant import NATIVE_INT8, native_linear_class
+        from .diffusion_native_quant import (
+            _HOST_QUANT_DEVICE,
+            NATIVE_INT8,
+            _HostLinearMover,
+            native_linear_class,
+        )
         from .diffusion_transformer_quant import exclude_tokens_for_scheme, make_filter_fn
 
         def skip(why: str) -> None:
@@ -644,7 +683,8 @@ def build_from_shards(
             return None
         if dtype is not torch.bfloat16:
             return skip(f"loads at {str(dtype).replace('torch.', '')}, not bfloat16")
-        if getattr(transformer_cls, "_keep_in_fp32_modules", None):
+        keep_in_fp32 = list(getattr(transformer_cls, "_keep_in_fp32_modules", None) or ())
+        if keep_in_fp32 and not cast_floats:
             return skip("the class keeps fp32 modules")
         scheme = spec["scheme"]
         cache_dir = (config_kwargs or {}).get("cache_dir")
@@ -653,11 +693,16 @@ def build_from_shards(
             return skip("dense shards not found locally")
         if _cache._hub_source_stale(shards, logger):
             return None
+        allowed = {**_STREAM_DTYPES, **_CAST_DTYPES} if cast_floats else _STREAM_DTYPES
         entries = []
         for shard in shards:
-            found = _shard_entries(shard)
+            found = _shard_entries(shard, allowed)
             if found is None:
-                return skip("a shard holds a dtype other than bf16")
+                return skip(
+                    "a shard holds a dtype other than bf16"
+                    if not cast_floats
+                    else "a shard holds a dtype the per-tensor cast does not cover"
+                )
             entries.append((shard, *found))
         stored = {key: entry for _shard, _start, header in entries for key, entry in header.items()}
         _check()
@@ -682,7 +727,9 @@ def build_from_shards(
                 mod.weight = torch.nn.Parameter(
                     torch.empty(
                         mod.weight.shape,
-                        dtype = getattr(torch, _STREAM_DTYPES[entry["dtype"]]),
+                        dtype = _loaded_dtype(f"{name}.weight", entry["dtype"], dtype, keep_in_fp32)
+                        if cast_floats
+                        else _stored_dtype(entry["dtype"]),
                         device = "meta",
                     ),
                     requires_grad = mod.weight.requires_grad,
@@ -696,6 +743,12 @@ def build_from_shards(
         act_int8 = scheme == NATIVE_INT8 and bool(spec["act_int8"])
         rot_group = int(spec["rot_group"]) if act_int8 else 0
         cls = native_linear_class()
+
+        def make(linear: Any) -> Any:
+            return cls(linear, scheme, act_int8 = act_int8, rot_group = rot_group)
+
+        mover_device = _HOST_QUANT_DEVICE.get()
+        mover = _HostLinearMover(mover_device) if mover_device is not None else None
         state: dict = {}
         built = 0
         for shard, start, header in entries:
@@ -706,6 +759,9 @@ def build_from_shards(
                 ):
                     _check()
                     tensor = _map_tensor(fd, start, entry)
+                    if cast_floats:
+                        # What load_model_dict_into_meta does: ``param.to(dtype)`` (a no-op at the stored dtype).
+                        tensor = tensor.to(_loaded_dtype(key, entry["dtype"], dtype, keep_in_fp32))
                     fqn, _, leaf = key.rpartition(".")
                     if leaf != "weight" or fqn not in quant:
                         state[key] = tensor
@@ -722,7 +778,7 @@ def build_from_shards(
                     )
                     stand_in.weight = torch.nn.Parameter(tensor, requires_grad = False)
                     del tensor
-                    layer = cls(stand_in, scheme, act_int8 = act_int8, rot_group = rot_group)
+                    layer = mover.build(stand_in, make) if mover is not None else make(stand_in)
                     del stand_in
                     setattr(parent, attr, layer)
                     state[f"{fqn}.weight_q"] = layer.weight_q
@@ -731,6 +787,8 @@ def build_from_shards(
             finally:
                 # The mappings outlive the descriptor; each closes with its tensor.
                 os.close(fd)
+        if mover is not None:
+            mover.close(logger)
         if built != len(quant):
             return skip(f"{len(quant) - built} quantizable weights missing from the shards")
         model.load_state_dict(state, strict = True, assign = True)
@@ -759,12 +817,27 @@ def build_from_shards(
     except Exception as exc:  # noqa: BLE001 - the caller loads the dense module whole instead
         if cancelled[0]:
             return None
+        if reraise_oom and _is_oom(exc):
+            raise
         _cache._log(
             logger,
             "warning",
             f"native {component}: per-tensor build failed: {type(exc).__name__}: {str(exc)[:200]}",
         )
         return None
+
+
+def _is_oom(exc: BaseException) -> bool:
+    if isinstance(exc, MemoryError):
+        return True
+    try:
+        import torch
+        oom = getattr(torch, "OutOfMemoryError", None)
+        if oom is not None and isinstance(exc, oom):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return "out of memory" in str(exc).lower()
 
 
 def build_spec(transformer: Any, family: Optional[str]) -> Optional[dict]:

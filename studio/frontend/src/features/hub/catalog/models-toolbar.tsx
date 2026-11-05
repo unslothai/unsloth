@@ -13,9 +13,9 @@ import {
 import type { HfSortKey } from "@/features/hub/hooks/use-hub-model-search";
 import { useHubSource } from "@/lib/hf-endpoint";
 import { cn } from "@/lib/utils";
+import { TrashIcon } from "@/lib/hugeicons-derived";
 import {
   Cancel01Icon,
-  Delete02Icon,
   Search01Icon,
   SlidersHorizontalIcon,
   SparklesIcon,
@@ -488,7 +488,7 @@ export const ModelsToolbar = memo(function ModelsToolbar({
                 )}
               >
                 <HugeiconsIcon
-                  icon={Delete02Icon}
+                  icon={TrashIcon}
                   strokeWidth={1.75}
                   className="size-[calc(18px*var(--ui-space-scale,1))]"
                 />

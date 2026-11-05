@@ -1163,8 +1163,11 @@ def family_buildable_here(
     *,
     model_kind: Optional[str],
     gguf_filename: Optional[str] = None,
+    provisional: bool = False,
 ) -> bool:
     """True when THIS host can actually build ``fam`` for a ``model_kind`` load, by either engine.
+
+    ``provisional`` (listing before detection) answers engine predictions True so detection never starts.
 
     The two engines need different things. diffusers instantiates ``fam.pipeline_class``, which the
     newer families ship only in a newer diffusers -- and packaging still allows an older one on
@@ -1182,26 +1185,30 @@ def family_buildable_here(
     ``predict_engine`` activates nothing and installs nothing."""
     if fam is None:
         return False
-    if native_gguf_only(fam, model_kind):
+
+    def predicts(engine_name: str, **kwargs) -> bool:
+        if provisional:
+            return True
         try:
-            return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
-        except Exception:  # noqa: BLE001 -- refused or unprobeable: not buildable here
+            return predict_engine(fam, model_kind = "gguf", **kwargs) == engine_name
+        except Exception:  # noqa: BLE001 -- refused or unprobeable: not buildable by that engine
             return False
+
+    if native_gguf_only(fam, model_kind):
+        return predicts(ENGINE_SD_CPP)
     if family_pipeline_available(fam):
         return True
-    if model_kind == "gguf" and gguf_filename and family_mlx_supported(fam):
-        try:
-            if predict_engine(fam, model_kind = "gguf", gguf_filename = gguf_filename) == ENGINE_MLX:
-                return True
-        except Exception:  # noqa: BLE001 -- a probe failure must not hide/refuse a usable model
-            pass
+    if (
+        model_kind == "gguf"
+        and gguf_filename
+        and family_mlx_supported(fam)
+        and predicts(ENGINE_MLX, gguf_filename = gguf_filename)
+    ):
+        return True
     # only a GGUF can go native, and only for a family with the single-file assets sd.cpp needs
     if model_kind != "gguf" or not family_sd_cpp_supported(fam):
         return False
-    try:
-        return predict_engine(fam, model_kind = "gguf") == ENGINE_SD_CPP
-    except Exception:  # noqa: BLE001 -- a probe failure must not hide/refuse a usable model
-        return False
+    return predicts(ENGINE_SD_CPP)
 
 
 @functools.cache

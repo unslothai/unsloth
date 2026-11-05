@@ -280,7 +280,7 @@ test("text and lines head away from whatever they are drawn on", () => {
       "a surface scope leaves body text on the other surface's target",
     );
   }
-  const media = ':is(:not([data-palette]), [data-palette="classic"], [data-palette="minimal"]) .diffusion-surface {';
+  const media = ':not([data-palette]) .diffusion-surface {';
   assert.ok(CSS.includes(`html:not(.dark)${media}\n\t\t--border-base: #e9e9e9;`));
   assert.ok(
     CSS.includes(

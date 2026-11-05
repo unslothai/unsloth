@@ -43,6 +43,10 @@ class GgufVariantDetail(BaseModel):
     )
     size_bytes: int = Field(0, description = "File size in bytes")
     download_size_bytes: int = Field(0, description = "Total bytes needed to download this variant")
+    estimated_resident_gb: Optional[float] = Field(
+        None,
+        description = "audio.cpp only: GiB of GPU memory the load check requires for this variant",
+    )
     lookup_table_bytes: int = Field(
         0,
         description = "Bytes of lazily read lookup tables (per-layer embeddings / Engram) "

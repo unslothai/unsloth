@@ -18,6 +18,7 @@ cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason = "CUDA only")
 MODELS = (
     "trl-internal-testing/tiny-LlamaForCausalLM-3.2",
     "trl-internal-testing/tiny-Qwen3ForCausalLM",
+    "trl-internal-testing/tiny-Qwen2ForCausalLM-2.5-Coder",
 )
 PROMPTS = [
     "Once upon a time there was",
@@ -138,6 +139,26 @@ def test_graph_decode_is_bitwise_eager(name, load_in_4bit, bsz, monkeypatch):
 
 
 @cuda
+@pytest.mark.parametrize("bsz", [1, 4])
+def test_qwen2_sliding_window_graph_decode_is_bitwise_eager(bsz, monkeypatch):
+    """Past the sliding window, replay attends over the same trailing window as eager."""
+    model, tok = _load(MODELS[2], False)
+    for module in model.modules():
+        config = getattr(module, "config", None)
+        if config is not None and hasattr(config, "sliding_window"):
+            config.sliding_window = 16
+    enc = tok(PROMPTS[:bsz], return_tensors = "pt", padding = True).to("cuda")
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    before = G.stats(_causal(model)).get("replays", 0)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    stats = G.stats(_causal(model))
+    assert stats["disabled"] is None, stats
+    assert stats["replays"] - before == 40 - 2
+    assert torch.equal(eager[0], graph[0])
+    assert torch.equal(eager[1], graph[1])
+
+
+@cuda
 def test_returned_cache_is_not_overwritten(monkeypatch):
     """A cache handed back by generate(return_dict_in_generate=True) keeps its values through a
     later generate(): the persistent buffers it views are released to the caller."""
@@ -203,6 +224,8 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
         pinned = G._state(_causal(model)).fingerprint
         monkeypatch.setattr(G, "_fingerprint", lambda *a: pinned)
     params = [p for n, p in model.named_parameters() if "lora_" in n and p.requires_grad]
+    # for_training() frees the graphs; keep them here, so the fingerprint alone must catch the edits.
+    monkeypatch.setattr(G, "release_for_training", lambda model: None)
     FastLanguageModel.for_training(model)
     opt = torch.optim.SGD(params, lr = 1.0)
     for p in params:
@@ -316,6 +339,58 @@ def test_release_drops_graphs_and_buffers(monkeypatch):
         _generate(model, tok, enc, False, monkeypatch)[1],
         _generate(model, tok, enc, True, monkeypatch)[1],
     )
+
+
+@cuda
+def test_ineligible_generation_frees_graphs_and_recovers(monkeypatch):
+    """Compare mode: a generation the graphs cannot serve (here a DoRA adapter, faked) frees the
+    captured steps, and the next eligible generation is graphed again instead of eager for good."""
+    model, tok = _load(MODELS[0], False, lora = True)
+    enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
+    causal = _causal(model)
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    # _plain returns no cache, so generate() keeps the captured steps (a returned one releases them).
+    monkeypatch.setattr(G, "ENABLED", True)
+    _plain(model, tok, enc)
+    assert G.stats(causal)["graphs"] >= 1
+    plain = kernel_utils._has_active_dora_adapter
+    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", lambda proj: True)
+    replays = G.stats(causal)["replays"]
+    _plain(model, tok, enc)
+    stats = G.stats(causal)
+    assert stats["graphs"] == 0 and stats["replays"] == replays, stats
+    assert stats["disabled"] is None, stats
+    monkeypatch.setattr(kernel_utils, "_has_active_dora_adapter", plain)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    assert G.stats(causal)["replays"] > replays
+    assert torch.equal(graph[1], eager[1])
+
+
+@cuda
+def test_failed_capture_joins_the_side_stream(monkeypatch):
+    """A capture that fails in its warmup still makes the caller's stream wait for the side stream
+    before the eager fallback runs."""
+    model, tok = _load(MODELS[0], False)
+    enc = tok(PROMPTS[:1], return_tensors = "pt").to("cuda")
+    joins = []
+    wait = torch.cuda.Stream.wait_stream
+
+    def spy(self, other):
+        joins.append((self, other))
+        return wait(self, other)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected warmup failure")
+
+    monkeypatch.setattr(torch.cuda.Stream, "wait_stream", spy)
+    monkeypatch.setattr(G, "_run_step", fail)
+    eager = _generate(model, tok, enc, False, monkeypatch)
+    graph = _generate(model, tok, enc, True, monkeypatch)
+    side = G._state(_causal(model)).stream
+    assert side is not None and any(
+        other is side and self is not side for self, other in joins
+    ), joins
+    assert torch.equal(eager[1], graph[1])
 
 
 @cuda

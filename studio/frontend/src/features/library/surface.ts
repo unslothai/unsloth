@@ -4,8 +4,9 @@
 export const RAISED_SURFACE =
   "bg-white shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none";
 
+// library-card: index.css glass hook.
 export const CARD_SHADOW =
-  "shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
+  "library-card shadow-[0_1px_2px_rgba(0,0,0,0.04),0_4px_16px_rgba(0,0,0,0.06)] dark:shadow-none";
 
 // A selected card dims as a whole, picture included: the ring alone vanished against white previews.
 export const SELECTED_TINT =

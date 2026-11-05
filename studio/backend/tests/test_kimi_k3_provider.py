@@ -57,23 +57,69 @@ def _stream(model, **kwargs):
     _drive(run())
 
 
+def _list_kimi_models(monkeypatch, ids):
+    from models.providers import ProviderModelsRequest
+    from routes import providers as providers_route
+
+    class _FakeClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def list_models(self):
+            return [{"id": model_id} for model_id in ids]
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(providers_route, "ExternalProviderClient", _FakeClient)
+    monkeypatch.setattr(
+        providers_route, "resolve_provider_api_key_or_400", lambda *a, **k: "sk-test"
+    )
+    payload = ProviderModelsRequest(provider_type = "kimi", base_url = "https://api.moonshot.ai/v1")
+    result = _drive(providers_route.list_provider_models(payload, "tester", False))
+    return [m.id for m in result]
+
+
+_MOONSHOT_LIVE_IDS = [
+    "kimi-k3",
+    "kimi-k2.7-code",
+    "kimi-k2.7-code-highspeed",
+    "kimi-k2.6",
+    "kimi-k3.1-pro",
+]
+
+
 def test_kimi_k3_reaches_the_picker():
     kimi = PROVIDER_REGISTRY["kimi"]
-    for model_id in ("kimi-k3", "kimi-k2.6", "kimi-k2.5"):
-        assert kimi["model_id_allowlist"].match(model_id), model_id
+    for model_id in ("kimi-k3", "kimi-k3.1-pro", "kimi-k2.6", "kimi-k2.5"):
         assert model_id in kimi["default_models"], model_id
-    for model_id in ("kimi-k3-preview", "kimi-k2-0905-preview", "moonshot-v1-8k"):
-        assert not kimi["model_id_allowlist"].match(model_id), model_id
+
+
+def test_every_current_kimi_model_reaches_the_picker(monkeypatch):
+    assert _list_kimi_models(monkeypatch, _MOONSHOT_LIVE_IDS) == _MOONSHOT_LIVE_IDS
+
+
+def test_kimi_previews_and_legacy_models_stay_out_of_the_picker(monkeypatch):
+    ids = [
+        "kimi-k3-preview",
+        "kimi-k2-0905-preview",
+        "kimi-k2-turbo-preview",
+        "kimi-k2-thinking",
+        "kimi-k2-thinking-turbo",
+        "moonshot-v1-8k",
+    ]
+    assert _list_kimi_models(monkeypatch, ids) == []
 
 
 @pytest.mark.parametrize(
     ("effort", "sent"),
     [("low", "low"), ("high", "high"), ("max", "max"), ("medium", "high"), ("xhigh", "max")],
 )
-def test_kimi_k3_sends_its_documented_controls(monkeypatch, effort, sent):
+@pytest.mark.parametrize("model", ["kimi-k3", "kimi-k3.1-pro"])
+def test_kimi_k3_sends_its_documented_controls(monkeypatch, model, effort, sent):
     bodies = _capture(monkeypatch, [_PLAIN])
     _stream(
-        "kimi-k3",
+        model,
         temperature = 0.7,
         top_p = 0.9,
         presence_penalty = 0.0,
@@ -161,7 +207,9 @@ def test_kimi_k3_history_keeps_prior_reasoning():
     assert all("reasoning_content" not in m for m in k26)
 
 
-@pytest.mark.parametrize(("model", "keeps"), [("kimi-k3", True), ("kimi-k2.6", False)])
+@pytest.mark.parametrize(
+    ("model", "keeps"), [("kimi-k3", True), ("kimi-k3.1-pro", True), ("kimi-k2.6", False)]
+)
 def test_studio_tool_loop_replays_kimi_k3_reasoning(model, keeps):
     from core.inference.external_tool_transport import OAICompatTransport
     client = ExternalProviderClient(

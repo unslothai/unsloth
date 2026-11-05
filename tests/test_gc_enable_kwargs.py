@@ -12,7 +12,7 @@ import transformers.modeling_utils as hf_modeling_utils
 from transformers import PreTrainedModel, Qwen3Config, Qwen3ForCausalLM
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UTILS = os.path.join(HERE, "unsloth", "models", "_utils.py")
+UTILS = os.path.join(HERE, "unsloth", "_gc_kwargs.py")
 VISION = os.path.join(HERE, "unsloth", "models", "vision.py")
 LOADER_UTILS = os.path.join(HERE, "unsloth", "models", "loader_utils.py")
 FUNCS = (

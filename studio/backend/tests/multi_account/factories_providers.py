@@ -11,6 +11,7 @@ MCP_SERVER_ID = "prov-mcp-server"
 PROMPT_ENTRY_ID = "prov-prompt-entry"
 PROMPT_LIST_ID = "prov-prompt-list"
 RETIRABLE_USERNAME = "prov-retirable"
+RENAMABLE_USERNAMES = ("prov-renamable", "prov-renamed")
 
 SENTINEL = "prov-sentinel café / 日本語"
 EDITED = "prov-edited"
@@ -224,6 +225,17 @@ def seed_account(account) -> dict[str, str]:
     return {"account_id": account.account_id}
 
 
+@seeder("prov-renamable-account")
+def seed_renamable_account(account) -> dict[str, str]:
+    from auth import storage
+
+    for row in storage.list_accounts():
+        if row["username"] in RENAMABLE_USERNAMES:
+            storage.delete_account(row["account_id"], lambda _context: None)
+    issued = storage.issue_account_setup_code(username = RENAMABLE_USERNAMES[0])
+    return {"account_id": issued["account"]["account_id"]}
+
+
 @seeder("prov-retirable-account")
 def seed_retirable_account(account) -> dict[str, str]:
     """A managed account of its own, whose deletion retires a private root the matrix's unchanged-workspace assertion would misread as erased."""
@@ -270,6 +282,10 @@ _PROVIDER_DELETE_OWNER_REASON = (
 _ACCOUNTS_DELETE_REASON = (
     "owner administration route behind require_owner, inverted like its siblings; the target is "
     "a disposable account because a real owner delete renames the target's whole private root"
+)
+_ACCOUNTS_RENAME_REASON = (
+    "owner administration route behind require_owner, inverted like its siblings; the target is "
+    "a disposable account because a rename signs the target out"
 )
 _ACCOUNTS_SELF_REASON = (
     "owner administration route behind require_owner, so the contract inverts: the owner "
@@ -365,6 +381,14 @@ FACTORIES = {
         wrong = (403,),
         self_expected = (400,),
         reason = _ACCOUNTS_SELF_REASON,
+    ),
+    "routes.accounts:PUT:/{account_id}/username": Factory(
+        "prov-renamable-account",
+        {"username": RENAMABLE_USERNAMES[1]},
+        owner = (200,),
+        right = (403,),
+        wrong = (403,),
+        reason = _ACCOUNTS_RENAME_REASON,
     ),
     "routes.accounts:PUT:/{account_id}/model-access": Factory(
         "prov-account",

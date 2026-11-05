@@ -83,9 +83,9 @@ def _kernels() -> Optional[dict]:
         stl,
         stk,
         sbk,
-        K_SHIFT: tl.constexpr,
-        K_SCALE: tl.constexpr,
-        BLOCK: tl.constexpr,
+        K_SHIFT: tl.constexpr,  # modulation index of shift
+        K_SCALE: tl.constexpr,  # modulation index of scale
+        BLOCK: tl.constexpr,  # block size along hidden
     ):
         # int64: l * 6 * D passes 2**31 on long clips; int32 wraps to an out-of-bounds temb read.
         row = tl.program_id(0).to(tl.int64)
@@ -110,7 +110,19 @@ def _kernels() -> Optional[dict]:
 
     @triton.jit
     def _gate_residual(
-        X, A, T, TBL, OUT, D, L, stb, stl, stk, sbk, K_GATE: tl.constexpr, BLOCK: tl.constexpr
+        X,
+        A,
+        T,
+        TBL,
+        OUT,
+        D,
+        L,
+        stb,
+        stl,
+        stk,
+        sbk,
+        K_GATE: tl.constexpr,
+        BLOCK: tl.constexpr,  # K_GATE modulation index of gate, BLOCK block size along hidden
     ):
         # out = fp16(x.float() + a.float() * (tbl[gate] + temb[gate]))
         row = tl.program_id(0).to(tl.int64)  # int64 temb offset, as in _modnorm
@@ -130,7 +142,9 @@ def _kernels() -> Optional[dict]:
         tl.store(OUT + row * D + col, y.to(OUT.dtype.element_ty), mask = mask)
 
     @triton.jit
-    def _affine_norm(X, MEAN, RSTD, W, BIAS, OUT, D, BLOCK: tl.constexpr):
+    def _affine_norm(
+        X, MEAN, RSTD, W, BIAS, OUT, D, BLOCK: tl.constexpr
+    ):  # block size along hidden
         # Matches PyTorch's gamma * (...) + beta, which nvcc contracts to one fma.
         row = tl.program_id(0)
         col = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
@@ -145,7 +159,16 @@ def _kernels() -> Optional[dict]:
 
     @triton.jit
     def _rope(
-        X, COS, SIN, OUT, L, scl, ssl, PAIRS: tl.constexpr, HALF: tl.constexpr, BLOCK: tl.constexpr
+        X,
+        COS,
+        SIN,
+        OUT,
+        L,
+        scl,
+        ssl,
+        PAIRS: tl.constexpr,
+        HALF: tl.constexpr,
+        BLOCK: tl.constexpr,  # PAIRS rotary pairs per row, HALF hd // 2, BLOCK block size along hidden
     ):
         # Each product a separately rounded fp32 multiply, then one fp16 rounding, matching stock.
         row = tl.program_id(0)

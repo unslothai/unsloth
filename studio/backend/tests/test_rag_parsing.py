@@ -1407,3 +1407,71 @@ def test_html_keeps_declarative_shadow_root_text(tmp_path):
 def test_html_template_blocks_do_not_split_visible_text(tmp_path):
     text = _parse_html(tmp_path, "<p>Hello <template><div>hidden</div></template>world</p>")
     assert text == "Hello world"
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("<p>Current</p><div hidden><p>Obsolete</p></div><p>After</p>", "Current\nAfter"),
+        ('<p>A<span hidden="">obsolete<b>nested</b></span>B</p>', "AB"),
+        ('<p>Current</p><div hidden="false">Obsolete</div>', "Current"),
+        ('<p>Current</p><div hidden=" until-found ">Obsolete</div>', "Current"),
+        ('<div hidden><span style="display:block">Obsolete</span></div><p>After</p>', "After"),
+        ('<p>Before<input hidden type="checkbox" checked>After</p>', "BeforeAfter"),
+        ('<p>Before<br hidden/><img hidden src="x">After</p>', "BeforeAfter"),
+        ("<p>Before<span hidden/>After</p>", "BeforeAfter"),
+    ],
+)
+def test_html_skips_native_hidden_subtrees(tmp_path, body, expected):
+    assert _parse_html(tmp_path, body) == expected
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    [
+        ("<p hidden>Obsolete<p>Current", "Current"),
+        ("<p>Before<div hidden>Obsolete</div>After", "Before\nAfter"),
+        ("<ul><li hidden>Obsolete<li>Current</ul>", "Current"),
+        ("<ul><li hidden>Obsolete<ul><li>Nested</li></ul></li><li>Current</li></ul>", "Current"),
+        ("<table><tr><td hidden>Obsolete<td>Current</tr></table>", "Current"),
+        ("<table><tr hidden><td>Obsolete<tr><td>Current</table>", "Current"),
+        (
+            "<table><tr><td>Before<span hidden>Obsolete</td><td>After</td></tr></table>",
+            "Before | After",
+        ),
+        ("<ol><li>Before<span hidden>Obsolete</li><li>After</li></ol>", "1. Before\n2. After"),
+        ("<table><caption><p hidden>Obsolete<tr><td>Current</table>", "Current"),
+        ("<p>A<textarea hidden><p>Obsolete</p></textarea>B</p>", "AB"),
+        ("<p>A<textarea hidden/>B</p>", "AB"),
+        (
+            "<p>A<span hidden><svg><foreignObject><div>Obsolete</div></foreignObject></svg></span>B</p>",
+            "AB",
+        ),
+    ],
+)
+def test_html_hidden_scope_releases_visible_siblings(tmp_path, body, expected):
+    assert _parse_html(tmp_path, body) == expected
+
+
+@pytest.mark.parametrize("value", ["until-found", "UNTIL-FOUND"])
+def test_html_hidden_until_found_remains_searchable(tmp_path, value):
+    text = _parse_html(tmp_path, f'<p>Before</p><div hidden="{value}">Findable</div><p>After</p>')
+    assert text == "Before\nFindable\nAfter"
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "<head hidden><title>Title</title><body>Current",
+        "<table><caption hidden>Caption<tr><td>Current</td></tr></table>",
+        "<select><optgroup hidden><option>Option<hr><option>Current</select>",
+        "<ruby><rt hidden>Ruby<rp>Current</ruby>",
+    ],
+)
+def test_html_hidden_without_tracked_end_keeps_following_text(tmp_path, body):
+    assert _parse_html(tmp_path, body).endswith("Current")
+
+
+def test_html_hidden_markup_inside_visible_raw_text_stays_text(tmp_path):
+    text = _parse_html(tmp_path, "<textarea><span hidden>Current</span></textarea><p>After</p>")
+    assert "Current" in text and text.endswith("After")

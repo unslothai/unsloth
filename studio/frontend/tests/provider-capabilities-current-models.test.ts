@@ -28,6 +28,15 @@ const {
   resolveExternalReasoningEffort,
 } = await import("../src/features/chat/provider-capabilities.ts");
 
+test("Gemini Lite image output stays within its published limit", () => {
+  assert.equal(getExternalMaxOutputTokens("gemini", "gemini-3.1-flash-lite-image"), 4096);
+});
+
+test("Gemini Nano Banana 2.1 supports Search grounding", () => {
+  assert.equal(providerSupportsBuiltinWebSearch("gemini", "gemini-nano-banana-2.1"), true);
+  assert.equal(providerSupportsBuiltinWebSearch("gemini", "gemini-2.5-flash-image"), false);
+});
+
 const {
   providerModelSupportsStudioTools,
   providerModelSupportsVision,
@@ -556,6 +565,11 @@ test("Kimi K3 always thinks at a low/high/max effort and leaves k2.x as they wer
     "max",
   );
   assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3"), true);
+
+  assert.deepEqual(getExternalReasoningCapabilities("kimi", "kimi-k3.1-pro"), k3);
+  assert.equal(getProviderCapabilities("kimi", undefined, "kimi-k3.1-pro")?.presencePenalty, false);
+  assert.equal(kimiSearchExcludesThinking("kimi", "kimi-k3.1-pro"), false);
+  assert.equal(providerModelReplaysReasoning("kimi", "kimi-k3.1-pro"), true);
 
   const k26 = getExternalReasoningCapabilities("kimi", "kimi-k2.6");
   assert.equal(k26.reasoningStyle, "enable_thinking");

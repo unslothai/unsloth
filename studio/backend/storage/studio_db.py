@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
-from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterable, Iterator, Mapping, NamedTuple, Optional
 
 
 from core import chat_originals
@@ -2219,11 +2219,19 @@ def _raise_if_chat_thread_deleted(conn: sqlite3.Connection, thread_id: str) -> N
         raise ChatThreadDeletedError(thread_id)
 
 
-def upsert_chat_thread(thread: dict) -> dict:
+def upsert_chat_thread(
+    thread: dict, *, external_import_session: Optional[tuple[str, str]] = None
+) -> dict:
     conn = get_connection(_CONTENDED_BUSY_TIMEOUT_SECONDS)
     try:
         conn.execute("BEGIN IMMEDIATE")
         _raise_if_chat_thread_deleted(conn, thread["id"])
+        if external_import_session is not None:
+            conn.execute(
+                "DELETE FROM external_import_sessions WHERE source = ? AND session_id = ? "
+                "AND NOT EXISTS (SELECT 1 FROM chat_threads WHERE id = ?)",
+                (*external_import_session, thread["id"]),
+            )
         conn.execute(
             """
             INSERT INTO chat_threads
@@ -3523,6 +3531,27 @@ def _raise_if_chat_message_thread_conflicts(
         )
 
 
+def _stored_chat_message_values(
+    conn: sqlite3.Connection, thread_id: str, message_ids: list
+) -> dict:
+    """Stored upsert columns of this thread's messages, keyed by id, in upsert parameter order."""
+    unique_ids = list(dict.fromkeys(message_ids))
+    stored: dict = {}
+    for start in range(0, len(unique_ids), _SQLITE_IN_CHUNK_SIZE):
+        chunk = unique_ids[start : start + _SQLITE_IN_CHUNK_SIZE]
+        placeholders = ",".join("?" for _ in chunk)
+        for row in conn.execute(
+            f"""
+            SELECT id, parent_id, role, content_json, attachments_json, metadata_json, created_at
+            FROM chat_messages
+            WHERE thread_id = ? AND id IN ({placeholders})
+            """,
+            (thread_id, *chunk),
+        ):
+            stored[row[0]] = tuple(row)[1:]
+    return stored
+
+
 def _bump_chat_thread_updated_at(
     conn: sqlite3.Connection, thread_id: str, message_created_at: int
 ) -> None:
@@ -4325,6 +4354,13 @@ def upsert_chat_message(
         conn.close()
 
 
+class ExternalImportMark(NamedTuple):
+    source: str
+    session_id: str
+    turns: int
+    revision: str = ""
+
+
 def sync_chat_messages(
     thread_id: str,
     messages: list[dict],
@@ -4332,6 +4368,7 @@ def sync_chat_messages(
     *,
     allow_research_update: bool = False,
     deleted_message_ids: Iterable[str] = (),
+    external_import_mark: Optional[ExternalImportMark] = None,
 ) -> list[dict]:
     conn = get_connection()
     try:
@@ -4415,6 +4452,25 @@ def sync_chat_messages(
             )
             for m in reconciled_messages
         ]
+        # The client resends the whole thread per run start/end: skip rows stored unchanged (O(thread) rewrite + media hashing).
+        current_rows = _stored_chat_message_values(
+            conn, thread_id, [m["id"] for m in reconciled_messages]
+        )
+        changed_rows = []
+        for m, content_json, attachments_json in serialized_messages:
+            values = (
+                m.get("parentId"),
+                m["role"],
+                content_json,
+                attachments_json,
+                json.dumps(m.get("metadata")) if m.get("metadata") is not None else None,
+                int(m["createdAt"]),
+            )
+            if current_rows.get(m["id"]) == values:
+                continue
+            # Later duplicates compare against what this batch wrote, as the upsert would.
+            current_rows[m["id"]] = values
+            changed_rows.append((m["id"], values))
         conn.executemany(
             """
             INSERT INTO chat_messages
@@ -4429,24 +4485,13 @@ def sync_chat_messages(
                 created_at = excluded.created_at
             WHERE excluded.thread_id = chat_messages.thread_id
             """,
-            [
-                (
-                    m["id"],
-                    thread_id,
-                    m.get("parentId"),
-                    m["role"],
-                    content_json,
-                    attachments_json,
-                    json.dumps(m.get("metadata")) if m.get("metadata") is not None else None,
-                    int(m["createdAt"]),
-                )
-                for m, content_json, attachments_json in serialized_messages
-            ],
+            [(message_id, thread_id, *values) for message_id, values in changed_rows],
         )
-        for m, content_json, attachments_json in serialized_messages:
+        # A clean inventory already matches every unchanged row.
+        for message_id, (_, _, content_json, attachments_json, _, _) in changed_rows:
             _replace_chat_attachment_inventory(
                 conn,
-                m["id"],
+                message_id,
                 attachments_json,
                 content_json,
             )
@@ -4481,6 +4526,8 @@ def sync_chat_messages(
                 max(int(m["createdAt"]) for m in reconciled_messages),
             )
         _mark_chat_attachment_inventory_clean(conn)
+        if external_import_mark is not None:
+            _record_external_import_mark(conn, external_import_mark)
         conn.commit()
         return list_chat_messages(thread_id)
     except (ChatMessageConflictError, ChatMessageProtectedError):
@@ -6043,6 +6090,21 @@ def get_external_import_mark(source: str, session_id: str) -> Optional[tuple[int
         conn.close()
 
 
+def _record_external_import_mark(conn: sqlite3.Connection, mark: ExternalImportMark) -> None:
+    conn.execute(
+        """
+        INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(source, session_id) DO UPDATE SET
+            turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
+                THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
+                ELSE excluded.turns_imported END,
+            revision = excluded.revision
+        """,
+        (mark.source, mark.session_id, int(mark.turns), mark.revision),
+    )
+
+
 def record_external_import_mark(
     source: str,
     session_id: str,
@@ -6051,18 +6113,7 @@ def record_external_import_mark(
 ) -> None:
     conn = get_connection()
     try:
-        conn.execute(
-            """
-            INSERT INTO external_import_sessions (source, session_id, turns_imported, revision)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(source, session_id) DO UPDATE SET
-                turns_imported = CASE WHEN excluded.revision = external_import_sessions.revision
-                    THEN MAX(excluded.turns_imported, external_import_sessions.turns_imported)
-                    ELSE excluded.turns_imported END,
-                revision = excluded.revision
-            """,
-            (source, session_id, int(turns), revision),
-        )
+        _record_external_import_mark(conn, ExternalImportMark(source, session_id, turns, revision))
         conn.commit()
     finally:
         conn.close()

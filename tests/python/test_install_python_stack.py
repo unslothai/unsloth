@@ -2939,11 +2939,13 @@ class TestDesktopBackendVersionConstraint:
         zoo = None,
         floors = None,
         full = False,
+        no_torch = False,
     ):
         with (
             mock.patch.dict(os.environ, env, clear = True),
             mock.patch.object(ips.sys, "prefix", str(tmp_path)),
             mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "NO_TORCH", no_torch),
             mock.patch.object(
                 ips,
                 "_uv_config_index_policy",

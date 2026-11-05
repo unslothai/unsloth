@@ -113,6 +113,39 @@ test("xlsx: sheet XML read as text", () => {
   );
 });
 
+test("xlsx: decodes escaped text in shared, inline and cached formula strings", () => {
+  for (const [encoded, expected] of [
+    ["First_x000D_\nSecond_x0009_End", "First\r\nSecond\tEnd"],
+    ["_xD83D__xDE00_", "\u{1f600}"],
+    ["_x005F_x000D_", "_x000D_"],
+    ["_x005F_x005F_x000D_", "_x005F_x000D_"],
+    ["&amp;_x0041_ _xZZZZ_", "&A _xZZZZ_"],
+    ["_X0041_ _X000D_ _x004a_", "_X0041_ _X000D_ J"],
+  ]) {
+    const [sheet] = readXlsx(workbook(
+      `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+        <c r="A1" t="s"><v>0</v></c>
+        <c r="B1" t="inlineStr"><is><t>${encoded}</t></is></c>
+        <c r="C1" t="str"><f>A1</f><v>${encoded}</v></c>
+      </row></sheetData></worksheet>`,
+      { "xl/sharedStrings.xml": strToU8(`<sst xmlns="${MAIN}"><si><t>${encoded}</t></si></sst>`) },
+    ));
+    assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), [expected, expected, expected], encoded);
+  }
+});
+
+test("xlsx: decodes rich text runs independently", () => {
+  const rich = "<r><t>_x00</t></r><r><t>0D_</t></r><r><t>_x000A_end</t></r>";
+  const [sheet] = readXlsx(workbook(
+    `<worksheet xmlns="${MAIN}"><sheetData><row r="1">
+      <c r="A1" t="s"><v>0</v></c>
+      <c r="B1" t="inlineStr"><is>${rich}</is></c>
+    </row></sheetData></worksheet>`,
+    { "xl/sharedStrings.xml": strToU8(`<sst xmlns="${MAIN}"><si>${rich}</si></sst>`) },
+  ));
+  assert.deepEqual(sheet?.rows[0]?.map((cell) => cell?.text), ["_x000D_\nend", "_x000D_\nend"]);
+});
+
 test("xlsx: lowercase cell references land in their columns", () => {
   const [sheet] = readXlsx(
     workbook(`<worksheet xmlns="${MAIN}"><sheetData><row r="1"><c r="a1"><v>1</v></c><c r="c1"><v>3</v></c></row></sheetData></worksheet>`),

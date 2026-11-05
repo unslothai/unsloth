@@ -210,3 +210,26 @@ test("GPU rendering is searchable on desktop only", () => {
   );
   assert.equal(desktop.appearance.length, browser.appearance.length + 1);
 });
+
+
+test("ML startup warmup is searchable in General for the owner on web and desktop", () => {
+  const entries = [
+    "settings.general.mlWarmup.sectionTitle",
+    "settings.general.mlWarmup.hardwareLabel",
+    "settings.general.mlWarmup.textLabel",
+    "settings.general.mlWarmup.datasetsLabel",
+    "settings.general.mlWarmup.mediaLabel",
+    "settings.general.mlWarmup.quantizationLabel",
+  ] as const;
+  for (const desktop of [false, true]) {
+    const index = createSettingsSearchIndex({
+      desktop,
+      closeToTray: false,
+      menuBarIcon: false,
+    });
+    for (const entry of entries) {
+      assert.ok(renderedSearchEntries(index, "general", "huggingface", true).includes(entry));
+      assert.ok(!renderedSearchEntries(index, "general", "huggingface", false).includes(entry));
+    }
+  }
+});
