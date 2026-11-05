@@ -1317,12 +1317,10 @@ def test_turns_evicted_while_the_embedder_fails_stay_searchable(conn, monkeypatc
         "SELECT sha256, archive_ordinal, embedding_model FROM documents WHERE scope = ?", (scope,)
     ).fetchall()
     assert {row["sha256"]: row["archive_ordinal"] for row in rows} == before
-    assert all(
-        row["embedding_model"] != conversation_archive.LEXICAL_ONLY_IDENTITY for row in rows
-    )
-    vectors = conn.execute(
-        "SELECT COUNT(*) FROM chunks_vec WHERE scope = ?", (scope,)
-    ).fetchone()[0]
+    assert all(row["embedding_model"] != conversation_archive.LEXICAL_ONLY_IDENTITY for row in rows)
+    vectors = conn.execute("SELECT COUNT(*) FROM chunks_vec WHERE scope = ?", (scope,)).fetchone()[
+        0
+    ]
     assert vectors > 0
     assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 0
 

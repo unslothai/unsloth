@@ -474,12 +474,7 @@ def add_chunks(
         )
 
 
-def add_lexical_chunks(
-    conn: sqlite3.Connection,
-    scope: str,
-    document_id: str,
-    chunks,
-) -> None:
+def add_lexical_chunks(conn: sqlite3.Connection, scope: str, document_id: str, chunks) -> None:
     """Index one document's chunks into chunks + FTS5 only, for text no embedder could encode.
 
     Dense search never sees these rows (they have no vec0 row), keyword search does. The caller

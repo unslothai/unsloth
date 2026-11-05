@@ -1103,10 +1103,7 @@ def _rough_token_count(text: str) -> int:
 
 @_writes
 def _archive_turns_lexically(
-    thread_id: str,
-    scope: str,
-    groups: list,
-    positions: Optional[list[list[str]]],
+    thread_id: str, scope: str, groups: list, positions: Optional[list[list[str]]]
 ) -> int:
     """Keyword-only copies of evicted turns that have no copy at all, for when the embedder fails.
     Returns how many were written."""
