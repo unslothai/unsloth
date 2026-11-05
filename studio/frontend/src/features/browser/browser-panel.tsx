@@ -79,7 +79,10 @@ import {
   InternetIcon,
   MinusSignIcon,
   MoreHorizontalIcon,
+  PictureInPictureOnIcon,
   PlusSignIcon,
+  SidebarLeftIcon,
+  SidebarRightIcon,
   SmartPhone01Icon,
   SourceCodeIcon,
   StarIcon,
@@ -129,6 +132,8 @@ import { useBookmarkFor } from "./bookmarks-store";
 import { browserTabType, fileBarKind, mediaKind } from "./file-kind";
 import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
+import { FLOATING_SCALE_VAR } from "./floating-events";
+import { nudgeFloating, startFloatingGesture } from "./floating-preview";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
 import {
   CertificateIcon,
@@ -610,12 +615,13 @@ function TabStrip({
   tabs,
   activeTabId,
   active,
-}: { tabs: BrowserTab[]; activeTabId: string | null; active: boolean }) {
+  floatable,
+}: { tabs: BrowserTab[]; activeTabId: string | null; active: boolean; floatable: boolean }) {
   const t = useT();
   const tabTitle = useTabTitle();
   const fullView = useBrowserStore((state) => state.fullView);
   const renamingTabId = useBrowserStore((state) => state.renamingTabId);
-  const { activateTab, closeTab, newTab, closePanel, setFullView } =
+  const { activateTab, closeTab, newTab, closePanel, setFullView, setFloating } =
     useBrowserStore.getState();
   const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
   useShortcut(
@@ -742,6 +748,17 @@ function TabStrip({
         className="size-8"
       />
       <span aria-hidden={true} className="mx-1 h-4 w-px shrink-0 bg-border" />
+      {floatable ? (
+        <IconButton
+          label={t("browser.floating.enter")}
+          icon={PictureInPictureOnIcon}
+          onClick={() => {
+            setFloating(true);
+            focusAfterLayout("[data-floating-handle]");
+          }}
+          className="size-8"
+        />
+      ) : null}
       <IconButton
         label={t(fullView ? "browser.fullView.exit" : "browser.fullView.enter")}
         shortcut={fullViewShortcut}
@@ -1431,23 +1448,108 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
+/** Keeps keyboard focus in the browser across a layout switch, which unmounts the button pressed.
+ *  Only for the keyboard: a mouse press leaves focus where it was, without a focus ring. */
+function focusAfterLayout(selector: string): void {
+  if (!document.activeElement?.matches(":focus-visible")) return;
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-slot="browser-panel"] ${selector}`)?.focus({ preventScroll: true }),
+    ),
+  );
+}
+
+const SHOWN_TAB = '[role="tab"][aria-selected="true"]';
+
+function canGoBackIn(tab: BrowserTab | undefined): boolean {
+  const native = nativePage(tab);
+  return Boolean(
+    tab && (tab.index > 0 || tab.pageHistory?.back || (native && (tab.nativeError || tab.nativeHistory?.back))),
+  );
+}
+
+function goBackIn(tab: BrowserTab | undefined): void {
+  if (!tab) return;
+  const native = nativePage(tab);
+  if (native && tab.nativeError && returnToNativePage(tab.id)) return;
+  if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
+  else if (!tab.pageHistory?.back || !sendFrameCommand(tab.id, { command: "go", delta: -1 })) {
+    useBrowserStore.getState().goBack(tab.id);
+  }
+}
+
+/** The floating preview's header: drag it to move the preview, double-click it to dock. */
+function FloatingBar({ tab, active }: { tab: BrowserTab | undefined; active: boolean }) {
+  const t = useT();
+  const tabTitle = useTabTitle();
+  const chatOnRight = useBrowserStore((state) => state.chatSide === "right");
+  const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
+  const { setFloating, setFullView, closePanel } = useBrowserStore.getState();
+  useShortcut(
+    "toggleBrowserFullView",
+    (event) => {
+      event.preventDefault();
+      setFullView(true);
+    },
+    { enabled: active },
+  );
+  const title = tab ? tabTitle(tab, currentEntry(tab)) : t("browser.title");
+  return (
+    <div
+      onPointerDown={(event) => startFloatingGesture(event, "move")}
+      onDoubleClick={(event) => {
+        if (!(event.target as Element).closest("button:not([data-floating-handle])")) setFloating(false);
+      }}
+      className="browser-chrome flex h-[calc(40px*var(--ui-space-scale,1))] shrink-0 cursor-grab touch-none select-none items-center gap-0.5 border-b border-border/70 px-1.5"
+    >
+      <IconButton label={t("browser.back")} disabled={!canGoBackIn(tab)} onClick={() => goBackIn(tab)} className="size-7">
+        <ArrowLeft strokeWidth={NAV_STROKE} className="size-4" />
+      </IconButton>
+      <button
+        type="button"
+        data-floating-handle=""
+        aria-label={t("browser.floating.handle")}
+        title={title}
+        onKeyDown={nudgeFloating}
+        className="flex h-7 min-w-0 flex-1 cursor-grab items-center gap-1.5 rounded-[8px] px-1 text-start text-ui-12 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {tab ? <TabIcon tab={tab} /> : null}
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+      </button>
+      <IconButton
+        label={t("browser.floating.dock")}
+        icon={chatOnRight ? SidebarLeftIcon : SidebarRightIcon}
+        onClick={() => {
+          setFloating(false);
+          focusAfterLayout(SHOWN_TAB);
+        }}
+        className="size-7"
+      />
+      <IconButton
+        label={t("browser.fullView.enter")}
+        shortcut={fullViewShortcut}
+        icon={EnterFullViewIcon}
+        onClick={() => {
+          setFullView(true);
+          focusAfterLayout(SHOWN_TAB);
+        }}
+        className="size-7"
+      />
+      <IconButton label={t("browser.floating.close")} icon={Cancel01Icon} onClick={closePanel} className="size-7" />
+    </div>
+  );
+}
+
 /** `visible`: the panel's chat is shown (BrowserPanel `active`). */
 function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   const t = useT();
-  const { goBack, goForward, reload } = useBrowserStore.getState();
+  const { goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
-  const canGoBack = Boolean(
-    tab && (tab.index > 0 || tab.pageHistory?.back || (native && (tab.nativeError || tab.nativeHistory?.back))),
-  );
+  const canGoBack = canGoBackIn(tab);
   const canGoForward = Boolean(
     tab && (tab.index < tab.history.length - 1 || tab.pageHistory?.forward || (native && tab.nativeHistory?.forward)),
   );
-  const back = () => {
-    if (!tab) return;
-    if (native && tab.nativeError && returnToNativePage(tab.id)) return;
-    if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
-    else if (!tab.pageHistory?.back || !sendFrameCommand(tab.id, { command: "go", delta: -1 })) goBack(tab.id);
-  };
+  const back = () => goBackIn(tab);
   const forward = () => {
     if (!tab) return;
     if (native && tab.nativeHistory?.forward) nativeAction(tab.id, "forward");
@@ -2253,6 +2355,17 @@ function DeviceBar() {
   );
 }
 
+// Floating, a framed page keeps its side-pane layout and is drawn scaled down (floating-preview.ts),
+// so shrinking the preview never reflows it and the agent works on the layout it already read.
+// A native page is zoomed to the same effect instead (native-view.ts).
+const FLOATING_PAGE_STYLE = {
+  width: `calc(100% / var(${FLOATING_SCALE_VAR}, 1))`,
+  height: `calc(100% / var(${FLOATING_SCALE_VAR}, 1))`,
+  margin: 0,
+  transform: `scale(var(${FLOATING_SCALE_VAR}, 1))`,
+  transformOrigin: "0 0",
+} as const;
+
 const MAX_MOUNTED_TABS = 4;
 // Hidden pages share the chat's thread; keep only one ordinary page and three drafts.
 const MAX_HIDDEN_WEB_PAGES = 1;
@@ -2303,8 +2416,13 @@ function retainedTabs(mounted: readonly string[], tabs: BrowserTab[], activeTabI
   return { live, pendingDrafts };
 }
 
-/** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
-export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
+/** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown.
+ *  `floating`: shown as the small preview over the chat, page only. `floatable`: beside a chat, so it can float. */
+export const BrowserPanel = memo(function BrowserPanel({
+  active = true,
+  floating = false,
+  floatable = false,
+}: { active?: boolean; floating?: boolean; floatable?: boolean }) {
   const t = useT();
   const tabs = useBrowserStore(useShallow(chatTabs));
   const activeTabId = useBrowserStore((state) => state.activeTabId);
@@ -2383,7 +2501,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         }
       }}
       className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
+        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted",
+        floating ? "rounded-[inherit]" : "pt-[var(--studio-content-top-inset,0px)]",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
           : "[--browser-surface:var(--card)]",
@@ -2408,12 +2527,18 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
+      {floating ? (
+        <FloatingBar tab={activeTab} active={active} />
+      ) : (
+        <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} floatable={floatable} />
+      )}
       {/* Not on the section: before Safari 18.5 container-type makes a stacking context, sinking the strip under the macOS drag strip. */}
       <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
+            // Kept mounted, so its shortcuts still reach the page.
+            floating && "!hidden",
             (!activeEntry || activeEntry.kind !== "file") && "browser-web-toolbar flex-wrap",
             floatingFileControls
               ? "browser-file-toolbar pointer-events-none absolute inset-x-0 top-0 z-20 py-2 *:pointer-events-auto"
@@ -2431,17 +2556,17 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
             <WebToolbar tab={activeTab} visible={active} />
           )}
         </div>
-        {floatingFileControls ? null : (
+        {floatingFileControls || floating ? null : (
           <BookmarksBar tab={activeTab} />
         )}
-        {deviceWidth ? <DeviceBar /> : null}
+        {deviceWidth && !floating ? <DeviceBar /> : null}
         <AgentBar activeTabId={activeTabId} />
         <div
           ref={setPageElement}
           data-browser-page=""
           className={cn(
             "relative min-h-0 flex-1 overflow-hidden",
-            floatingFileControls ? "browser-file-page" : "border-t border-border/70",
+            floatingFileControls ? "browser-file-page" : !floating && "border-t border-border/70",
             documentShown ? "bg-transparent" : "bg-background",
             deviceWidth && "bg-muted/60",
           )}
@@ -2462,7 +2587,11 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
                 "border-x border-border/70 bg-background shadow-sm",
             )}
             style={
-              deviceWidth ? { width: `min(100%, ${deviceWidth}px)` } : undefined
+              floating && !native
+                ? FLOATING_PAGE_STYLE
+                : deviceWidth
+                  ? { width: `min(100%, ${deviceWidth}px)` }
+                  : undefined
             }
           >
             {tabs.map((tab) =>

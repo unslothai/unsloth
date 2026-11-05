@@ -334,6 +334,8 @@ type BrowserState = {
   bookmarkSequence: number;
   device: DeviceMode;
   fullView: boolean;
+  /** The page floats over the chat as a small movable preview. A layout choice for every chat, kept across closes. */
+  floating: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
   requestEdits: RequestEdits | null;
@@ -406,6 +408,7 @@ type BrowserState = {
   setFullView: (fullView: boolean) => void;
   setChatDock: (dock: ChatDock) => void;
   splitWithChatOn: (side: ChatSide) => void;
+  setFloating: (floating: boolean) => void;
 };
 
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
@@ -592,6 +595,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     bookmarkSequence: 0,
     device: "off",
     fullView: false,
+    floating: false,
     chatDock: "composer",
     chatSide: "left",
     requestEdits: null,
@@ -859,9 +863,12 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, zoom: Math.min(5, Math.max(0.25, zoom)) })),
       })),
     setDevice: (device) => set({ device }),
-    setFullView: (fullView) => set({ fullView, chatDock: "composer" }),
+    setFullView: (fullView) => set(fullView ? { fullView, chatDock: "composer", floating: false } : { fullView, chatDock: "composer" }),
     setChatDock: (chatDock) => set({ chatDock }),
-    splitWithChatOn: (chatSide) => set({ fullView: false, chatSide }),
+    splitWithChatOn: (chatSide) => set({ fullView: false, floating: false, chatSide }),
+    // Marks are placed on the page as laid out beside the chat, which floating scales down.
+    setFloating: (floating) =>
+      set(floating ? { floating, fullView: false, chatDock: "composer", annotateTabId: null } : { floating }),
   };
 });
 

@@ -207,6 +207,7 @@ export const fr = {
     tabs: "Onglets du navigateur",
     newTab: "Nouvel onglet",
     newTabFullView: "Nouvel onglet en plein écran",
+    newTabFloating: "Nouvel onglet en aperçu flottant",
     closeTab: "Fermer l’onglet",
     close: "Fermer le navigateur",
     show: "Afficher le navigateur",
@@ -389,6 +390,12 @@ export const fr = {
       openChat: "Ouvrir en plein écran",
       moveLeft: "Déplacer vers le volet gauche",
       moveRight: "Déplacer vers le volet droit",
+    },
+    floating: {
+      enter: "Aperçu flottant",
+      dock: "Ancrer sur le côté",
+      close: "Fermer l'aperçu flottant",
+      handle: "Déplacer l'aperçu. Les flèches le déplacent ; Maj et les flèches le redimensionnent.",
     },
     annotate: {
       countOne: "1 annotation",

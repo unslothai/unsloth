@@ -215,6 +215,7 @@ export const id = {
     tabs: "Tab browser",
     newTab: "Tab baru",
     newTabFullView: "Tab baru dalam tampilan penuh",
+    newTabFloating: "Tab baru di pratinjau mengambang",
     closeTab: "Tutup tab",
     close: "Tutup browser",
     show: "Tampilkan browser",
@@ -433,6 +434,12 @@ export const id = {
       openChat: "Buka dalam tampilan penuh",
       moveLeft: "Pindahkan ke panel kiri",
       moveRight: "Pindahkan ke panel kanan",
+    },
+    floating: {
+      enter: "Pratinjau mengambang",
+      dock: "Sematkan ke samping",
+      close: "Tutup pratinjau mengambang",
+      handle: "Pindahkan pratinjau. Tombol panah memindahkannya; Shift dan tombol panah mengubah ukurannya.",
     },
     annotate: {
       countOne: "1 anotasi",

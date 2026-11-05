@@ -207,6 +207,7 @@ export const de = {
     tabs: "Browser-Tabs",
     newTab: "Neuer Tab",
     newTabFullView: "Neuer Tab in Vollansicht",
+    newTabFloating: "Neuer Tab in schwebender Vorschau",
     closeTab: "Tab schließen",
     close: "Browser schließen",
     show: "Browser anzeigen",
@@ -389,6 +390,12 @@ export const de = {
       openChat: "In Vollansicht öffnen",
       moveLeft: "In linken Bereich verschieben",
       moveRight: "In rechten Bereich verschieben",
+    },
+    floating: {
+      enter: "Schwebende Vorschau",
+      dock: "Seitlich andocken",
+      close: "Schwebende Vorschau schließen",
+      handle: "Vorschau verschieben. Pfeiltasten verschieben sie, Umschalt und Pfeiltasten ändern ihre Größe.",
     },
     annotate: {
       countOne: "1 Anmerkung",
