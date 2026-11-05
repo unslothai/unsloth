@@ -64,7 +64,10 @@ class Query:
     hybrid: bool = False  # linear attention / state space layers beside attention
     multimodal: bool = False
     windowed: bool = False  # sliding window, chunked attention or logit softcapping
-    mode: str = "lora"  # lora, qlora, full
+    direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
+    # tp_native's refusal at q.tp ranks; "" when it shards or the model is already split (_tp_blocker).
+    tp_blocker: str = ""
+    mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
     cp_backend: Optional[str] = None  # ulysses, ring (resolved)
     torch: tuple = (0, 0)
@@ -258,6 +261,22 @@ RULES = (
         "reads the local tensors would orthogonalize the shards",
         "torch.optim.Muon (it steps DTensor shards as whole matrices), adamw_torch / adamw_8bit, or DDP "
         "(dp without fsdp) for another Muon",
+    ),
+    Rule(
+        "tp x model",
+        "tensor parallel on attention / MLP blocks that own a parameter directly (gpt-oss attention sinks)",
+        lambda q: q.tp > 1 and q.direct_params,
+        "tensor parallel shards the projections inside a block; a parameter the block owns itself (not inside a "
+        "projection) has no sharding rule (models/tp_native.py refuses it)",
+        "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
+    ),
+    Rule(
+        "tp x model",
+        "tensor parallel on models tensor parallel has no sharding rule for (multi-head latent attention, a q / k "
+        "norm over all heads)",
+        lambda q: q.tp > 1 and bool(q.tp_blocker),
+        "models/tp_native.py refuses the model before any weight loads (its reason follows the layout below)",
+        "drop tp (DDP, or UNSLOTH_FSDP2=1, over the dp axis)",
     ),
     Rule(
         "pp / tp x vLLM",
@@ -657,7 +676,27 @@ CELLS = (
 
 # MoE rows: family x precision x router aux loss x parallel mode. Evidence where a CPU gloo run proves it; every
 # other row is refused (under cp / pp / tp) or reported unverified (dp alone), with what it waits for.
-MOE_FAMILIES = ("qwen3_moe", "qwen3_5_moe", "gpt_oss", "deepseek_v3", "kimi_linear")
+# Zoo MoE matrix families (structure checked on transformers 5.17); family drops "_text" (_model_traits).
+MOE_FAMILIES = (
+    "qwen3_moe",
+    "qwen3_5_moe",
+    "gpt_oss",
+    "deepseek_v3",
+    "kimi_linear",
+    "olmoe",
+    "mixtral",
+    "qwen2_moe",
+    "qwen3_next",
+    "qwen3_vl_moe",
+    "llama4",
+    "glm4_moe",
+    "ernie4_5_moe",
+    "nemotron_h",
+    "jamba",
+    "granitemoehybrid",
+    "gemma4",
+    "lfm2_moe",
+)
 _MOE_PRECISION = {
     "lora": {"mode": ("lora",), "expert_lora": (False,)},
     "lora+experts": {"mode": ("lora",), "expert_lora": (True,)},
@@ -730,8 +769,20 @@ _MOE_EVIDENCE = {
 }
 
 
+# Cells table only; a real model is read by structure (_direct_params, _tp_blocker).
+_DIRECT_PARAM_FAMILIES = ("gpt_oss",)
+_TP_BLOCKED_FAMILIES = {
+    "deepseek_v3": "multi-head latent attention (MLA, kv_lora_rank)",
+    "olmoe": "q_norm / k_norm normalize all heads' features, not one head",
+}
+
+
 def _moe_note(family, precision, aux, mode):
     if mode == "tp":
+        if family in _DIRECT_PARAM_FAMILIES:
+            return "refused by the tp x model rule (its attention owns the sinks parameter)"
+        if family in _TP_BLOCKED_FAMILIES:
+            return f"refused by the tp x model rule (models/tp_native.py: {_TP_BLOCKED_FAMILIES[family]})"
         return "tensor parallel MoE runs (models/tp_native.py, its own gloo tests); no registry parity row yet"
     if aux and mode == "cp":
         return "refused by the MoE x pp / cp rule (aux-loss injection first)"
@@ -883,6 +934,7 @@ def _describe(q: Query) -> str:
         + (" x ".join(parts) or "single rank")
         + f", trainer {q.trainer}"
         + (f", model {q.family}" if q.family else "")
+        + (f"; models/tp_native.py: {q.tp_blocker}" if q.tp > 1 and q.tp_blocker else "")
     )
 
 
@@ -935,6 +987,9 @@ def _model_traits(model):
         return "", False, False, False
     text = getattr(config, "text_config", None) or config
     family = str(getattr(text, "model_type", "") or getattr(config, "model_type", "") or "")
+    # A multimodal text config: qwen3_5_moe_text is the qwen3_5_moe family.
+    if family.endswith("_text"):
+        family = family[: -len("_text")]
     layer_types = list(getattr(text, "layer_types", None) or [])
     hybrid = any(
         t not in ("full_attention", "sliding_attention", "chunked_attention") for t in layer_types
@@ -951,9 +1006,87 @@ def _model_traits(model):
     return family, hybrid, multimodal, windowed
 
 
+def _direct_params(model) -> bool:
+    """An attention / MLP block owns a parameter itself (attention sinks), as tp_native.derive_tp_plan refuses.
+    MoE blocks are skipped as tp_native skips them (replicated). Meta-device safe."""
+    if not callable(getattr(model, "named_modules", None)):
+        return False
+    try:
+        from .models import tp_native
+        _, layers = tp_native._decoder_layers(model)
+    except Exception:
+        return False
+    for layer in layers:
+        for child_name, child in layer.named_children():
+            attention = child_name in tp_native._ATTN_NAMES
+            if not attention and child_name not in tp_native._MLP_NAMES:
+                continue
+            if not tp_native._has_params(child) or (
+                not attention and tp_native._is_moe_block(child)
+            ):
+                continue
+            if next(child.named_parameters(recurse = False), None) is not None:
+                return True
+    return False
+
+
+def _tp_blocker(model, tp) -> str:
+    """derive_tp_plan's ValueError for `model` at `tp` ranks, "" when it shards. Only for an unsplit model:
+    a sharded model's local shapes are not the model's. Meta-device safe."""
+    if not isinstance(tp, int) or tp <= 1 or not callable(getattr(model, "named_modules", None)):
+        return ""
+    try:
+        from .models import tp_native
+        if tp_native.is_tensor_parallel(model) or any(
+            type(p).__name__ == "DTensor" for p in model.parameters()
+        ):
+            return ""
+        tp_native._decoder_layers(model)  # not a decoder model: no answer
+    except Exception:
+        return ""
+    try:
+        tp_native.derive_tp_plan(model, tp)
+    except ValueError as e:
+        return str(e)
+    except Exception:
+        return ""
+    return ""
+
+
+def _low_precision(model) -> Optional[str]:
+    """Return "fp8" if fp8 LoRA is requested / attached or torchao Float8Linear layers exist, else None."""
+    stack, seen = [model], set()
+    while stack and len(seen) < 8:
+        m = stack.pop()
+        if m is None or id(m) in seen:
+            continue
+        seen.add(id(m))
+        # enable_fp8_lora leaves an empty bases tuple when it converted nothing: that run trains in 16 bit.
+        requested = isinstance(getattr(m, "_unsloth_fp8_lora_recipe", None), str) and (
+            getattr(m, "_unsloth_fp8_lora_bases", None) != ()
+        )
+        linears = getattr(m, "_unsloth_float8_linears", None)
+        if requested or (isinstance(linears, (list, tuple)) and len(linears) > 0):
+            return "fp8"
+        stack.extend(getattr(m, attr, None) for attr in ("base_model", "model"))
+    try:
+        for m in model.modules():
+            if "_unsloth_fp8_lora" in getattr(m, "__dict__", {}):
+                return "fp8"
+            cls = type(m)
+            if cls.__name__ == "Float8Linear" and cls.__module__.startswith("torchao."):
+                return "fp8"
+    except Exception:
+        pass
+    return None
+
+
 def _mode(model):
     if model is None or isinstance(model, str):
         return "lora"
+    low_precision = _low_precision(model)
+    if low_precision is not None:
+        return low_precision
     if getattr(model, "is_loaded_in_4bit", False) or getattr(
         getattr(model, "config", None), "quantization_config", None
     ):
@@ -1142,6 +1275,8 @@ def query_from(
         hybrid = hybrid,
         multimodal = multimodal,
         windowed = windowed,
+        direct_params = _direct_params(model),
+        tp_blocker = _tp_blocker(model, getattr(layout, "tp", 1)),
         mode = mode,
         packing = packing,
         cp_backend = backend,
