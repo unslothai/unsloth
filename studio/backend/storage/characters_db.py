@@ -385,15 +385,15 @@ def update_persona(persona_id: str, fields: dict) -> Optional[dict]:
             values[key] = fields[key]
     values["updated_at"] = now_ms()
     with _connect("BEGIN IMMEDIATE") as conn:
+        if conn.execute("SELECT 1 FROM personas WHERE id = ?", (persona_id,)).fetchone() is None:
+            return None
         if fields.get("isDefault"):
             conn.execute("UPDATE personas SET is_default = 0")
             values["is_default"] = 1
         assignments = ", ".join(f"{column} = ?" for column in values)
-        cursor = conn.execute(
+        conn.execute(
             f"UPDATE personas SET {assignments} WHERE id = ?", [*values.values(), persona_id]
         )
-        if cursor.rowcount == 0:
-            return None
     return get_persona(persona_id)
 
 
@@ -463,6 +463,7 @@ def create_character_chat(
     project_id: Optional[str] = None,
     settings: Optional[dict] = None,
     title: Optional[str] = None,
+    greetings: Optional[dict[str, list[str]]] = None,
 ) -> dict:
     """Makes the thread, its cast and scene, then the opening turn with every member's greetings.
 
@@ -520,8 +521,11 @@ def create_character_chat(
         )
         group = len(characters) > 1
         for index, character in enumerate(characters):
-            greetings = [character["firstMes"], *character["alternateGreetings"]]
-            greetings = [g for g in greetings if g and g.strip()]
+            source = [character["firstMes"], *character["alternateGreetings"]]
+            resolved = (greetings or {}).get(character["id"])
+            if resolved is None or len(resolved) != len(source):
+                resolved = [fill_names(g, character["name"], speaker_name) for g in source]
+            texts = [g for g in resolved if g and g.strip()]
             if group and index > 0:
                 # A hidden turn marker keeps each member's greeting answering a user turn.
                 marker_id = str(uuid.uuid4())
@@ -538,14 +542,14 @@ def create_character_chat(
                     }
                 )
                 parent_id = marker_id
-            if not greetings:
+            if not texts:
                 continue
             first_id = None
             # Alternates first: with no saved branch choice a chat opens on its newest row, which
             # should be the main greeting, here and on every other device.
-            order = [*range(1, len(greetings)), 0]
+            order = [*range(1, len(texts)), 0]
             for greeting_index in order:
-                greeting = greetings[greeting_index]
+                greeting = texts[greeting_index]
                 message_id = str(uuid.uuid4())
                 created += 1
                 upsert_chat_message(
@@ -554,9 +558,7 @@ def create_character_chat(
                         "threadId": thread_id,
                         "parentId": parent_id,
                         "role": "assistant",
-                        "content": _text_content(
-                            fill_names(greeting, character["name"], speaker_name)
-                        ),
+                        "content": _text_content(greeting),
                         "metadata": {
                             "roleplay": {
                                 "kind": "reply",

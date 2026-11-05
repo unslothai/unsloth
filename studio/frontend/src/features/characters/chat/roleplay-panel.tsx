@@ -66,8 +66,6 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
       toast.error(t("characters.panel.updateFailed"), { description: errorText(error) });
     }
   }
-  const castPayload = (members: { characterId: string; muted: boolean }[]) =>
-    members.map((m) => ({ characterId: m.characterId, muted: m.muted }));
   const members = [...scene.cast].sort((a, b) => a.position - b.position);
   // A group needs someone left to answer: with every member muted, a sent message has no speaker.
   const leavesNoSpeaker = (next: { muted: boolean }[]) => next.length > 1 && next.every((m) => m.muted);
@@ -82,8 +80,10 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
           {cast.map((character) => {
             const member = members.find((m) => m.characterId === character.id);
             const muted = Boolean(member?.muted);
-            const toggled = members.map((m) => (m.characterId === character.id ? { ...m, muted: !m.muted } : m));
-            const remaining = members.filter((m) => m.characterId !== character.id);
+            const toggle = (list: { characterId: string; muted: boolean }[]) =>
+              list.map((m) => (m.characterId === character.id ? { ...m, muted: !m.muted } : m));
+            const remove = (list: { characterId: string; muted: boolean }[]) =>
+              list.filter((m) => m.characterId !== character.id);
             return (
               <li key={character.id} className="group/member flex items-center gap-2.5 rounded-xl py-1 pl-1 pr-1 hover:bg-nav-surface-hover">
                 <Portrait
@@ -112,14 +112,14 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
                     <IconAction
                       label={muted ? t("characters.panel.unmute", { name: character.name }) : t("characters.panel.mute", { name: character.name })}
                       icon={muted ? VolumeMute01Icon : VolumeHighIcon}
-                      disabled={leavesNoSpeaker(toggled)}
-                      onClick={() => void patch({ cast: castPayload(toggled) })}
+                      disabled={leavesNoSpeaker(toggle(members))}
+                      onClick={() => void patch({ cast: toggle })}
                     />
                     <IconAction
                       label={t("characters.panel.remove", { name: character.name })}
                       icon={Cancel01Icon}
-                      disabled={leavesNoSpeaker(remaining)}
-                      onClick={() => void patch({ cast: castPayload(remaining) })}
+                      disabled={leavesNoSpeaker(remove(members))}
+                      onClick={() => void patch({ cast: remove })}
                     />
                   </>
                 ) : null}
@@ -227,7 +227,12 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
         onClose={() => setAdding(false)}
         onPick={(ids) => {
           setAdding(false);
-          void patch({ cast: [...castPayload(members), ...ids.map((characterId) => ({ characterId, muted: false }))] });
+          void patch({
+            cast: (current) => [
+              ...current,
+              ...ids.filter((id) => !current.some((m) => m.characterId === id)).map((characterId) => ({ characterId, muted: false })),
+            ],
+          });
         }}
       />
       <PromptInspectorDialog open={inspecting} threadId={threadId} onClose={() => setInspecting(false)} />

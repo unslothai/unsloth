@@ -36,12 +36,15 @@ interface CharactersState {
   patchScene: (
     threadId: string,
     patch: {
-      cast?: { characterId: string; muted?: boolean }[];
+      /** A function runs on the cast as the previous write left it, so queued cast edits do not undo each other. */
+      cast?: CastEdit[] | ((current: CastEdit[]) => CastEdit[]);
       personaId?: string | null;
       settings?: SceneSettings;
     },
   ) => Promise<ChatScene>;
 }
+
+type CastEdit = { characterId: string; muted: boolean };
 
 const inflightScenes = new Map<string, Promise<ChatScene | null>>();
 const sceneWrites = new Map<string, Promise<unknown>>();
@@ -157,10 +160,18 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     const write = previous
       .catch(() => undefined)
       .then(async () => {
-        const settings = patch.settings
-          ? { ...(get().scenes[threadId]?.settings ?? {}), ...patch.settings }
-          : undefined;
-        const scene = await updateChatScene(threadId, { ...patch, ...(settings ? { settings } : {}) });
+        const latest = get().scenes[threadId];
+        const settings = patch.settings ? { ...(latest?.settings ?? {}), ...patch.settings } : undefined;
+        const current = [...(latest?.cast ?? [])]
+          .sort((a, b) => a.position - b.position)
+          .map((m) => ({ characterId: m.characterId, muted: m.muted }));
+        const { cast: castEdit, ...rest } = patch;
+        const cast = typeof castEdit === "function" ? castEdit(current) : castEdit;
+        const scene = await updateChatScene(threadId, {
+          ...rest,
+          ...(cast ? { cast } : {}),
+          ...(settings ? { settings } : {}),
+        });
         get().setScene(scene);
         return scene;
       });

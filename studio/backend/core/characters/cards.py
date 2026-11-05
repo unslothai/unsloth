@@ -47,9 +47,14 @@ class CardError(ValueError):
     """The file is not a character card Studio can read."""
 
 
+def _finite(text: str) -> Optional[float]:
+    value = float(text)
+    return value if math.isfinite(value) else None
+
+
 def _json_loads(text: str):
-    # NaN and Infinity parse in Python but cannot be served back as JSON; read them as null.
-    return json.loads(text, parse_constant = lambda _constant: None)
+    # NaN, Infinity and overflowing numbers (1e309) parse in Python but cannot be served back as JSON; read them as null.
+    return json.loads(text, parse_constant = lambda _constant: None, parse_float = _finite)
 
 
 @dataclass

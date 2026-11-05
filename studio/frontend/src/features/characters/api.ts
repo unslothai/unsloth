@@ -203,6 +203,8 @@ export async function createCharacterChat(input: {
   userName?: string;
   projectId?: string | null;
   settings?: SceneSettings;
+  /** Per character, [firstMes, ...alternateGreetings] with macros resolved. */
+  greetings?: Record<string, string[]>;
 }): Promise<CreatedCharacterChat> {
   return json(
     await authFetch(`${CHARACTERS_API}/chats`, { method: "POST", ...body(input) }),

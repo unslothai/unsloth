@@ -134,6 +134,14 @@ class CharacterChatCreate(BaseModel):
     userName: str = Field(default = "", max_length = 200)
     projectId: Optional[str] = Field(default = None, max_length = 128)
     settings: Optional[SceneSettings] = None
+    # Per character, [firstMes, *alternateGreetings] with their macros resolved by the client, which
+    # knows the user's clock and locale; a list that no longer matches the card is ignored.
+    greetings: Optional[
+        dict[
+            Annotated[str, Field(max_length = 64)],
+            Annotated[list[LongText], Field(max_length = cards.MAX_GREETINGS + 1)],
+        ]
+    ] = Field(default = None, max_length = db.MAX_CAST)
 
 
 class SceneUpdate(BaseModel):
@@ -443,6 +451,7 @@ def create_character_chat(
             user_name = payload.userName,
             project_id = payload.projectId,
             settings = payload.settings.model_dump(exclude_none = True) if payload.settings else None,
+            greetings = payload.greetings,
         )
     except LookupError:
         raise HTTPException(status_code = 404, detail = _NOT_FOUND) from None

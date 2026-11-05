@@ -328,6 +328,9 @@ def test_personas_keep_exactly_one_default(client):
     assert personas[second["id"]]["isDefault"] and not personas[first["id"]]["isDefault"]
     assert client.delete(f"/api/characters/personas/{second['id']}").status_code == 204
     assert client.get("/api/characters/personas").json()["personas"][0]["isDefault"] is True
+    missing = client.patch(f"/api/characters/personas/{second['id']}", json = {"isDefault": True})
+    assert missing.status_code == 404
+    assert client.get("/api/characters/personas").json()["personas"][0]["isDefault"] is True
 
 
 def _messages(thread_id: str) -> list[dict]:
@@ -369,6 +372,28 @@ def test_a_one_on_one_chat_opens_with_its_greetings_as_siblings(client):
     chats = client.get(f"/api/characters/{character['id']}/chats").json()["chats"]
     assert [c["threadId"] for c in chats] == [thread_id]
     assert client.get(f"/api/characters/{character['id']}").json()["lastChatAt"] is not None
+
+
+def test_a_chat_stores_the_greetings_the_client_resolved(client):
+    character = client.post(
+        "/api/characters",
+        json = {
+            "name": "Bo",
+            "firstMes": "{{random::Hi::Yo}} {{user}}",
+            "alternateGreetings": ["{{// x}}"],
+        },
+    ).json()
+
+    def opening(greetings):
+        body = {"characterIds": [character["id"]], "userName": "Pat", "greetings": greetings}
+        created = client.post("/api/characters/chats", json = body)
+        assert created.status_code == 201, created.text
+        rows = _messages(created.json()["threadId"])
+        return sorted(m["content"][0]["text"] for m in rows if m["role"] == "assistant")
+
+    assert opening({character["id"]: ["Yo Pat", ""]}) == ["Yo Pat"]
+    # A list that no longer matches the card falls back to the names only.
+    assert opening({character["id"]: ["stale"]}) == ["{{// x}}", "{{random::Hi::Yo}} Pat"]
 
 
 def test_a_group_chat_chains_each_members_greeting_through_a_turn_marker(client):
@@ -524,12 +549,14 @@ def test_export_survives_a_damaged_portrait():
     assert cards.read_png_card(exported)[0]["data"]["name"] == "Cut"
 
 
-def test_a_nan_card_imports_and_the_library_still_lists(client):
+@pytest.mark.parametrize("value", [b"NaN", b"1e309", b"-1e400"])
+def test_a_non_finite_card_imports_and_the_library_still_lists(client, value):
     response = client.post(
         "/api/characters/import?filename=nan.json",
-        content = b'{"name": "Nan", "extensions": {"x": NaN}}',
+        content = b'{"name": "Nan", "extensions": {"x": ' + value + b', "y": 1.5}}',
     )
     assert response.status_code == 201
+    assert response.json()["character"]["extensions"] == {"x": None, "y": 1.5}
     assert client.get("/api/characters").status_code == 200
 
 

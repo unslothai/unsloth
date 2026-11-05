@@ -115,8 +115,17 @@ export async function prepareCharacterRun(args: {
   }
   if (!scene) return null;
   await ensureLoaded();
-  const { characters, personas } = useCharactersStore.getState();
-  const cast = castOf(scene, characters);
+  let cast = castOf(scene, useCharactersStore.getState().characters);
+  if (cast.length < scene.cast.length) {
+    // A member added on another device is not in this tab's library yet; a partial cast would drop them from the prompt.
+    const refreshed = await store.refresh().then(
+      () => true,
+      () => false,
+    );
+    cast = castOf(scene, useCharactersStore.getState().characters);
+    if (!refreshed && cast.length < scene.cast.length) throw new CharacterChatUnavailableError(null);
+  }
+  const { personas } = useCharactersStore.getState();
   if (cast.length === 0) {
     // Every character in the chat was deleted: it carries on as an ordinary chat.
     if (scene.cast.length === 0) return null;

@@ -210,6 +210,11 @@ export function CharacterEditorPage({ characterId }: { characterId: string | nul
       let saved = original
         ? await updateCharacter(original.id, { ...fields, clear })
         : await createCharacter(fields);
+      if (!original) {
+        // Kept before the portrait upload, so a retry after a failed upload updates this character.
+        setOriginal(saved);
+        useCharactersStore.getState().upsert(saved);
+      }
       if (picture instanceof File) saved = await uploadCharacterAvatar(saved.id, picture);
       else if (picture === "remove" && saved.hasAvatar) saved = await removeCharacterAvatar(saved.id);
       useCharactersStore.getState().upsert(saved);

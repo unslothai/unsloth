@@ -16,6 +16,7 @@ import {
   updateCharacter,
 } from "./api";
 import { resolvePersona } from "./chat-runtime";
+import { applyMacros } from "./prompt/macros";
 import { useCharactersStore } from "./store";
 import type { Character } from "./types";
 
@@ -33,17 +34,30 @@ export async function startCharacterChat(
   const store = useCharactersStore.getState();
   if (store.personasStatus !== "ready") await store.refreshPersonas().catch(() => undefined);
   const persona = resolvePersona(null, useCharactersStore.getState().personas);
+  // Resolved here, where the user's clock and locale are, and stored once so history never rerolls.
+  const { characters } = useCharactersStore.getState();
+  const cast = [...new Set(characterIds)].map((id) => characters[id]).filter((c): c is Character => Boolean(c));
+  const group = cast.map((c) => c.name);
+  const now = new Date();
+  const greetings = Object.fromEntries(
+    cast.map((c) => [
+      c.id,
+      [c.firstMes, ...c.alternateGreetings].map((text) =>
+        applyMacros(text, { char: c.name, user: persona.name || "User", group, now }),
+      ),
+    ]),
+  );
   const created = await createCharacterChat({
     characterIds,
     personaId: persona.id,
     userName: persona.name,
     projectId: options.projectId ?? null,
+    greetings,
   });
   writeBranchHead(created.threadId, created.headId);
-  const now = Date.now();
   for (const id of characterIds) {
     const character = useCharactersStore.getState().characters[id];
-    if (character) store.upsert({ ...character, lastChatAt: now, chatCount: character.chatCount + 1 });
+    if (character) store.upsert({ ...character, lastChatAt: now.getTime(), chatCount: character.chatCount + 1 });
   }
   store.setScene(created.scene);
   notifyChatHistoryUpdated();
