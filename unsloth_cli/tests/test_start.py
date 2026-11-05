@@ -5678,6 +5678,32 @@ def test_resolve_model_reload_option_keeps_the_running_quant(monkeypatch):
     ]
 
 
+@pytest.mark.parametrize("requested", ["mlx-community/Qwen3-4B", None])
+def test_resolve_model_reload_option_keeps_the_resident_mlx_folder(monkeypatch, requested):
+    repo = "mlx-community/Qwen3-4B"
+    models = [{"id": repo, "loaded": True}]
+    payloads = []
+
+    def load(base, key, model, load, payload):
+        payloads.append(payload)
+        return {"status": "loaded", "model": model}
+
+    status = {
+        "is_gguf": False,
+        "is_mlx": True,
+        "gguf_variant": "6-bit",
+        "active_model": repo,
+        "model_identifier": repo,
+    }
+    monkeypatch.setattr(start, "_loaded_models", lambda base, key: models)
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: status)
+    monkeypatch.setattr(start, "_load_model_with_progress", load)
+
+    start._resolve_model(BASE, "key", requested, start.LoadOptions(max_seq_length = 8192))
+
+    assert [p.get("gguf_variant") for p in payloads] == ["6-bit"]
+
+
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 

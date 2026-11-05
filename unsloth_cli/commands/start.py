@@ -2418,14 +2418,18 @@ def _resolve_model(
                     )
             else:
                 payload["gguf_variant"] = load.gguf_variant
-        elif attach_public_id is not None and status_snapshot.get("is_gguf"):
+        elif attach_public_id is not None and (
+            status_snapshot.get("is_gguf") or status_snapshot.get("is_mlx")
+        ):
             # Re-send the running quant: a repo id carries none, so from_identifier would auto-pick (GGUF_QUANT_PREFERENCE, UD-Q4_K_XL first) and changing only the context would evict a chosen Q8_0 to download a different quant. Skip a .gguf path, which loads as itself; the server gates on the same suffix.
             resident_variant = status_snapshot.get("gguf_variant")
             if resident_variant and not str(requested).lower().endswith(".gguf"):
                 payload["gguf_variant"] = resident_variant
         elif loaded_match is not None and not str(requested).lower().endswith(".gguf"):
             # Same for a named model already served, read from the slot serving it.
-            if status_snapshot.get("is_gguf") and status_snapshot.get("gguf_variant"):
+            if (status_snapshot.get("is_gguf") or status_snapshot.get("is_mlx")) and status_snapshot.get(
+                "gguf_variant"
+            ):
                 payload["gguf_variant"] = status_snapshot["gguf_variant"]
         if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
