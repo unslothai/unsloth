@@ -586,8 +586,12 @@ def _same_rows(
     """Every step of the composed run trains on exactly the rows one process trains on (data parallel replicas
     split them, cp / tp / pp peers share theirs), and no side read a row twice (no second epoch)."""
     for rank, res in enumerate([want, *results]):
-        assert "error" not in res, (what, "reference" if rank == 0 else f"rank {rank - 1}", res.get("error"),
-                                    res.get("trace"))
+        assert "error" not in res, (
+            what,
+            "reference" if rank == 0 else f"rank {rank - 1}",
+            res.get("error"),
+            res.get("trace"),
+        )
     expected = _rows_per_step(want)
     flat = [r for step in expected for r in step]
     assert len(flat) == len(set(flat)), (what, "one process read a row twice", want["rows_read"])
@@ -852,7 +856,9 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
 @pytest.mark.parametrize("zoo_compile", [False, True], ids = ["forward_install", "zoo_compiled"])
 @pytest.mark.parametrize("aux", [True, False], ids = ["aux_on", "aux_off"])
 @pytest.mark.parametrize("ga", [1, 2, 4])
-def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux, zoo_compile, tmp_path):
+def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
+    ga, aux, zoo_compile, tmp_path
+):
     """PP=2 Qwen3-MoE with GA 1/2/4 matches one process: the aux term is weighted per micro-batch token share
     (unsloth_ga_scale_aux_loss); adding it in full trained a ~ga x larger term."""
     kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
@@ -868,7 +874,12 @@ def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux, z
         }
     (ref,) = _spawn("train", 1, base, **kw)
     assert ref["output_router_logits"] is aux, ref
-    env = {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe", **base}
+    env = {
+        "UNSLOTH_PP_SIZE": "2",
+        "UNSLOTH_PP_MICROBATCHES": "1",
+        "UNSLOTH_PP_SCHEDULE": "gpipe",
+        **base,
+    }
     results = _spawn("train", 2, env, **kw)
     _skip_if_one_microbatch_refused(results)
     _same_rows(results, ref, what = (ga, aux))

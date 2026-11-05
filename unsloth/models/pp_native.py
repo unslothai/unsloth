@@ -665,7 +665,9 @@ def _forward_aux_scaler(owner):
     Read from the forward itself, not a version check, so the pipeline matches whatever forward is installed."""
     # The instance forward (a wrapper), else / then the class forward with every layer it wraps.
     scaler = _scaler_called_by(owner.__dict__.get("forward"))
-    return scaler if scaler is not None else _scaler_called_by(getattr(type(owner), "forward", None))
+    return (
+        scaler if scaler is not None else _scaler_called_by(getattr(type(owner), "forward", None))
+    )
 
 
 def _forward_aux_weighting(owner, term, kwargs, num_items_in_batch):
