@@ -8,6 +8,7 @@ import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.
 import {
   VIDEO_CATALOG,
   catalogToModelOptions,
+  curatedRowLabelFor,
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 
 // nvidia/Cosmos3-* cards name no pipeline task (library "cosmos") and tag diffusers.
@@ -42,4 +43,10 @@ test("the Video picker lists Cosmos3 Nano beside Edge, and the Nano row names th
   assert.ok(rows.some((row) => row.id === "nvidia/Cosmos3-Edge"));
   assert.equal(nano.name, "Cosmos3 Nano");
   assert.match(nano.description ?? "", /cosmos-guardrail/);
+});
+
+test("the Nano row carries a visible cosmos-guardrail chip; Edge carries none", () => {
+  // The picker draws these tags beside the name; the description is only searchable.
+  assert.deepEqual(curatedRowLabelFor("nvidia/Cosmos3-Nano", VIDEO_CATALOG)?.tags, ["needs cosmos-guardrail"]);
+  assert.deepEqual(curatedRowLabelFor("nvidia/Cosmos3-Edge", VIDEO_CATALOG)?.tags, []);
 });
