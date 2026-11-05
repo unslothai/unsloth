@@ -23,6 +23,8 @@ type Node =
   | { t: "repeat"; node: Node; min: number; max: number };
 
 const MAX_PROGRAM = 256;
+// Nodes visited while compiling: a repeat of something empty, (?:a{0}){100}, emits nothing yet still costs work.
+const MAX_COMPILE_STEPS = 4096;
 const MAX_REPEAT = 100;
 
 class Unsupported extends Error {}
@@ -163,7 +165,9 @@ function compile(root: Node): Inst[] {
     program.push(inst);
     return program.length - 1;
   };
+  let steps = 0;
   const walk = (node: Node): void => {
+    if (++steps > MAX_COMPILE_STEPS) throw new Unsupported();
     switch (node.t) {
       case "char":
         emit({ op: "char", test: node.test });

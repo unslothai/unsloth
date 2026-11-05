@@ -325,7 +325,7 @@ test("a long lorebook regex key is ignored rather than run", () => {
 
 test("lorebook regex keys run in linear time and match as JS regexes do", () => {
   const started = Date.now();
-  for (const key of ["/(a+)+$/", "/a+a+a+a+a+a+$/", "/(a|a)*(a?){20}b/"]) {
+  for (const key of ["/(a+)+$/", "/a+a+a+a+a+a+$/", "/(a|a)*(a?){20}b/", "/(?:(?:(?:(?:(?:a{0}){100}){100}){100}){100}){100}/"]) {
     const fired = activateLorebook(book([entry({ keys: [key], content: "never" })]), [`${"a".repeat(3000)}!`]);
     assert.equal(fired.fired.length, 0, key);
   }
