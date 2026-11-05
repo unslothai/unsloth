@@ -63,6 +63,8 @@ def _host(
     platform = "linux",
     physical = None,
     allowed = None,
+    hybrid = False,
+    windows = None,
 ):
     monkeypatch.delenv("UNSLOTH_CPU_THREADS", raising = False)
     monkeypatch.setattr(bk.sys, "platform", platform)
@@ -70,6 +72,9 @@ def _host(
     monkeypatch.setattr(bk, "_cgroup_cpu_limit", lambda: limit)
     monkeypatch.setattr(bk, "_linux_physical_cores", lambda *a, **k: physical)
     monkeypatch.setattr(bk, "_allowed_cpus", lambda: cpus if allowed is None else allowed)
+    monkeypatch.setattr(bk, "_linux_hybrid_cpu", lambda *a, **k: hybrid)
+    monkeypatch.setattr(bk, "_windows_cores", lambda: windows)
+    monkeypatch.delenv(bk.SD_CPP_CPU_SMT_ENV, raising = False)
 
 
 def test_without_a_quota_the_default_is_unchanged(monkeypatch):
@@ -337,14 +342,16 @@ def test_physical_cores_is_none_without_topology_or_affinity(monkeypatch, tmp_pa
     assert bk._linux_physical_cores(_sysfs(tmp_path / "y", _NO_SMT8)) is None
 
 
-def test_the_linux_default_is_the_physical_core_count(monkeypatch):
+def test_the_linux_default_counts_cores_then_smt_siblings(monkeypatch):
     # No SMT: every core, not half of them
     _host(monkeypatch, cpus = 8, physical = 8)
     assert bk._default_threads() == 8
-    # A 4-CPU cpuset (2 cores) on a 192-CPU host: 2, not 96
-    _host(monkeypatch, cpus = 192, physical = 2)
+    # A 4-CPU cpuset (2 cores x 2 SMT) on a 192-CPU host: its 4 CPUs, not 96
+    _host(monkeypatch, cpus = 192, allowed = 4, physical = 2)
+    assert bk._default_threads() == 4
+    _host(monkeypatch, cpus = 192, allowed = 2, physical = 2)
     assert bk._default_threads() == 2
-    # 2-way SMT with the whole machine: unchanged
+    # 2-way SMT with the whole machine: a many-core server keeps one thread per core
     _host(monkeypatch, cpus = 192, physical = 96)
     assert bk._default_threads() == 96
     # The quota still caps it, and an unreadable topology keeps half the CPUs
@@ -396,3 +403,131 @@ def test_the_real_host_topology_reads(monkeypatch):
     if count is None:
         pytest.skip("no sysfs topology here")
     assert 1 <= count <= len(bk.os.sched_getaffinity(0))
+
+
+def test_a_small_smt_host_runs_one_thread_per_logical_cpu(monkeypatch):
+    # 4 cores x 2 SMT (desktop / laptop / cloud VM): all 8 logical CPUs
+    _host(monkeypatch, cpus = 8, physical = 4)
+    assert bk._default_threads() == 8
+    _host(monkeypatch, cpus = 32, physical = 16)
+    assert bk._default_threads() == 32
+    _host(monkeypatch, cpus = 64, physical = 32)
+    assert bk._default_threads() == 32
+    # A cpuset holding 3 whole cores plus one lone sibling: the 7 CPUs it may use
+    _host(monkeypatch, cpus = 192, allowed = 7, physical = 4)
+    assert bk._default_threads() == 7
+    _host(monkeypatch, cpus = 8, physical = 4, limit = 6)
+    assert bk._default_threads() == 6
+
+
+def test_smt_threads_skip_hybrid_hosts_the_opt_out_and_h3_video(monkeypatch):
+    _host(monkeypatch, cpus = 20, physical = 14, hybrid = True)  # Intel 6P + 8E: one per core
+    assert bk._default_threads() == 14
+    _host(monkeypatch, cpus = 8, physical = 4)
+    monkeypatch.setenv(bk.SD_CPP_CPU_SMT_ENV, "0")
+    assert bk._default_threads() == 4
+    monkeypatch.delenv(bk.SD_CPP_CPU_SMT_ENV)
+    assert bk._default_threads(smt = False) == 4
+    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "3")
+    assert bk._default_threads() == 3
+
+
+def test_linux_hybrid_cpu_reads_the_cpu_atom_pmu(tmp_path):
+    assert bk._linux_hybrid_cpu(str(tmp_path)) is False
+    (tmp_path / "cpu_atom").mkdir()
+    (tmp_path / "cpu_atom" / "cpus").write_text("\n")
+    assert bk._linux_hybrid_cpu(str(tmp_path)) is False
+    (tmp_path / "cpu_atom" / "cpus").write_text("12-19\n")
+    assert bk._linux_hybrid_cpu(str(tmp_path)) is True
+
+
+def _win_record(
+    relationship,
+    efficiency = 0,
+    smt = True,
+):
+    import struct
+
+    # SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX: Relationship, Size, Flags, EfficiencyClass, ...
+    body = struct.pack("<BB20xH", 1 if smt else 0, efficiency, 1) + struct.pack("<QH6x", 0b11, 0)
+    return struct.pack("<II", relationship, 8 + len(body)) + body
+
+
+def test_parse_windows_cores_counts_cores_and_efficiency_classes():
+    cache = _win_record(2)  # RelationCache records are skipped
+    four = b"".join(_win_record(0) for _ in range(4)) + cache
+    assert bk._parse_windows_cores(four) == (4, False)
+    hybrid = b"".join(_win_record(0, 1) for _ in range(6)) + b"".join(
+        _win_record(0, 0, smt = False) for _ in range(8)
+    )
+    assert bk._parse_windows_cores(hybrid) == (14, True)
+    assert bk._parse_windows_cores(b"") is None
+    assert bk._parse_windows_cores(cache) is None
+    assert bk._parse_windows_cores(b"\0" * 16) is None  # a zero Size never loops
+
+
+def test_windows_runs_the_logical_cpus_on_a_small_non_hybrid_smt_host(monkeypatch):
+    _host(monkeypatch, cpus = 4, platform = "win32", windows = (2, False))
+    assert bk._default_threads() == 4
+    _host(monkeypatch, cpus = 16, platform = "win32", windows = (8, False))
+    assert bk._default_threads() == 16
+    # hybrid (P + E cores), no SMT, or many cores: one per core
+    _host(monkeypatch, cpus = 20, platform = "win32", windows = (14, True))
+    assert bk._default_threads() == 14
+    _host(monkeypatch, cpus = 8, platform = "win32", windows = (8, False))
+    assert bk._default_threads() == 8
+    _host(monkeypatch, cpus = 64, platform = "win32", windows = (32, False))
+    assert bk._default_threads() == 32
+    # unreadable topology: half the logical CPUs, as before
+    _host(monkeypatch, cpus = 16, platform = "win32", windows = None)
+    assert bk._default_threads() == 8
+    _host(monkeypatch, cpus = 4, platform = "win32", windows = (2, False))
+    monkeypatch.setenv(bk.SD_CPP_CPU_SMT_ENV, "off")
+    assert bk._default_threads() == 2
+    monkeypatch.delenv(bk.SD_CPP_CPU_SMT_ENV)
+    assert bk._default_threads(smt = False) == 2
+
+
+def test_windows_cores_is_none_off_windows(monkeypatch):
+    monkeypatch.setattr(bk.sys, "platform", "linux")
+    assert bk._windows_cores() is None
+
+
+def test_cpu_renders_size_torch_threads_like_sd_cpp(monkeypatch):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_device as dd
+
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.delenv(name, raising = False)
+    before = torch.get_num_threads()
+    calls = []
+    monkeypatch.setattr(torch, "set_num_threads", lambda n: calls.append(n))
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: before + 3)
+    assert dd.apply_cpu_render_threads("cuda:0") is None
+    assert dd.apply_cpu_render_threads("mps") is None
+    assert calls == []
+    assert dd.apply_cpu_render_threads("cpu") == before + 3
+    assert dd.apply_cpu_render_threads(torch.device("cpu")) == before + 3
+    assert calls == [before + 3, before + 3]
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: torch.get_num_threads())
+    assert dd.apply_cpu_render_threads("cpu") is None
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: 1 / 0)
+    assert dd.apply_cpu_render_threads("cpu") is None
+
+
+@pytest.mark.parametrize("name", ["OMP_NUM_THREADS", "MKL_NUM_THREADS"])
+def test_cpu_renders_keep_an_explicit_torch_thread_pool(monkeypatch, name):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_device as dd
+
+    for other in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.delenv(other, raising = False)
+    monkeypatch.setenv(name, "2")
+    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "8")
+    calls = []
+    monkeypatch.setattr(torch, "set_num_threads", lambda n: calls.append(n))
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: torch.get_num_threads() + 3)
+    assert dd.apply_cpu_render_threads("cpu") is None
+    assert calls == []
+    monkeypatch.setenv(name, " ")
+    assert dd.apply_cpu_render_threads("cpu") == torch.get_num_threads() + 3
