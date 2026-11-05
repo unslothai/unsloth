@@ -6999,6 +6999,59 @@ exit 0
         }
     }
 
+    # Deleting a committed rollback tree takes 30-40 s on Windows, so a separate process does it.
+    # The tree is first renamed to unsloth_studio.rollback.<stamp>.<that process's PID>: while
+    # it runs, Remove-StaleStudioVenvRollbacks in this or a later run leaves the tree alone; if it
+    # is stopped early, the next run's sweep removes what is left. Started through the shell
+    # (no inherited handles, so a caller reading this installer's output is not held open) and
+    # with no window. Returns $false, having changed nothing, whenever the caller should delete
+    # in the foreground instead.
+    function Start-StudioVenvRollbackBackgroundDelete {
+        param([Parameter(Mandatory = $true)][string]$Path)
+        if ($env:OS -ne 'Windows_NT') { return $false }
+        try {
+            $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+            if (-not $item.PSIsContainer) { return $false }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            $parent = [System.IO.Path]::GetDirectoryName($item.FullName)
+            if (-not $parent) { return $false }
+            $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+            if (-not (Test-Path -LiteralPath $shell -PathType Leaf)) { return $false }
+        } catch {
+            return $false
+        }
+        $stamp = Get-Date -Format "yyyyMMddHHmmss"
+        $parentLiteral = $parent.Replace("'", "''")
+        # Plain text, single quotes only: the whole command travels as one quoted argument.
+        $deleteCommand = @(
+            "`$ErrorActionPreference = 'SilentlyContinue'",
+            "`$p = Join-Path '$parentLiteral' ('unsloth_studio.rollback.$stamp.' + `$PID)",
+            "for (`$i = 0; (`$i -lt 600) -and -not (Test-Path -LiteralPath `$p); `$i++) { Start-Sleep -Milliseconds 100 }",
+            "if (Test-Path -LiteralPath `$p) { try { [System.IO.Directory]::Delete(`$p, `$true) } catch { } }",
+            "if (Test-Path -LiteralPath `$p) { Remove-Item -LiteralPath `$p -Recurse -Force }"
+        ) -join '; '
+        $deleter = $null
+        try {
+            $deleter = Start-Process -FilePath $shell `
+                -ArgumentList "-NoProfile -NonInteractive -Command `"$deleteCommand`"" `
+                -WindowStyle Hidden -PassThru -ErrorAction Stop
+        } catch {
+            return $false
+        }
+        if ($null -eq $deleter) { return $false }
+        $parked = Join-Path $parent "unsloth_studio.rollback.$stamp.$($deleter.Id)"
+        try {
+            if (Test-StudioPathPresent -Path $parked) { throw "$parked already exists" }
+            # A same-volume rename: atomic, never a copy.
+            [System.IO.Directory]::Move($item.FullName, $parked)
+        } catch {
+            try { Stop-Process -Id $deleter.Id -Force -ErrorAction SilentlyContinue } catch { }
+            return $false
+        }
+        try { $deleter.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::BelowNormal } catch { }
+        return $true
+    }
+
     function Merge-StudioVenvRollbackTree {
         # Moves every entry of $Source into $Destination without ever overwriting or
         # deleting what is already there. Returns $true only when $Source ends up
@@ -7137,6 +7190,8 @@ exit 0
                 return
             }
         }
+        # Restoration is disarmed above, so nothing reads $backup again: delete it off the critical path.
+        if (Start-StudioVenvRollbackBackgroundDelete -Path $backup) { return }
         Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
     }
 
