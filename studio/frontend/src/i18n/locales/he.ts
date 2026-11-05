@@ -806,6 +806,7 @@ export const he = {
     compactsAt: "דחיסה אוטומטית ב-{tokens} טוקנים",
     waitForResponse: "המתינו לסיום התשובה הנוכחית",
     noModel: "טענו מודל כדי להשתמש ב-/context",
+    emptyChat: "שלחו הודעה קודם כדי להשתמש ב-/context",
     noUsageYet: "שלחו קודם הודעה: מודלי API מדווחים על השימוש בטוקנים בכל תשובה.",
     usedOnly: "{used} טוקנים בשימוש",
     apiNoBreakdown: "מודלי API מדווחים רק על סך הכול, ולכן אין פירוט.",

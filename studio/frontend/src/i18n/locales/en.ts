@@ -772,6 +772,7 @@ export const en = {
     compactsAt: "Compacts automatically at {tokens} tokens",
     waitForResponse: "Wait for the current response to finish",
     noModel: "Load a model to use /context",
+    emptyChat: "Send a message first to use /context",
     noUsageYet: "Send a message first: API models report token usage with each reply.",
     usedOnly: "{used} tokens used",
     apiNoBreakdown: "API models report only a total, so there is no breakdown.",

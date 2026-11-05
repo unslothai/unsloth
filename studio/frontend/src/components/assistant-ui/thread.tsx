@@ -5533,6 +5533,11 @@ const Composer: FC<{
           toast.info(translate("context.noModel"));
           return;
         }
+        // An empty chat has no message to hang the report under, so it would float below the welcome.
+        if (aui.thread().getState().messages.length === 0) {
+          toast.info(translate("context.emptyChat"));
+          return;
+        }
         aui.composer().setText("");
         useContextReportStore
           .getState()

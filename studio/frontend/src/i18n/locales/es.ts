@@ -767,6 +767,7 @@ export const es = {
     compactsAt: "Se compacta automáticamente a los {tokens} tokens",
     waitForResponse: "Espera a que termine la respuesta actual",
     noModel: "Carga un modelo para usar /context",
+    emptyChat: "Envía primero un mensaje para usar /context",
     noUsageYet: "Envía primero un mensaje: los modelos de API informan el uso de tokens con cada respuesta.",
     usedOnly: "{used} tokens usados",
     apiNoBreakdown: "Los modelos de API solo informan un total, así que no hay desglose.",

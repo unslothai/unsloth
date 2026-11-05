@@ -57,7 +57,7 @@ const ContextCard: FC<{ onDismiss: () => void }> = ({ onDismiss }) => {
     <section
       ref={ref}
       aria-label={t("context.title")}
-      className="mx-auto mb-4 grid w-full max-w-(--thread-content-max-width) gap-3 text-sm"
+      className="mx-auto mb-4 grid w-full max-w-(--thread-content-max-width) gap-3 rounded-[16px] border border-border/70 bg-muted/20 px-4 py-3 text-sm"
     >
       {isExternalModelId(checkpoint) ? (
         <ApiTotal checkpoint={checkpoint} onDismiss={onDismiss} />

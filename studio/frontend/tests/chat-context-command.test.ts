@@ -333,3 +333,10 @@ test("usage is a whole percent of the window, capped at 100", () => {
   assert.equal(usagePercent(150_000, 200_000), 75);
   assert.equal(usagePercent(250_000, 200_000), 100);
 });
+
+test("an empty chat asks for a message instead of floating a report", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const branch = thread.slice(thread.indexOf("isContextCommand(composerText)"));
+  const gate = branch.indexOf('translate("context.emptyChat")');
+  assert.ok(gate > 0 && gate < branch.indexOf("showContext("));
+});

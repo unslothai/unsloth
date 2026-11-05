@@ -768,6 +768,7 @@ export const ja = {
     compactsAt: "{tokens} トークンで自動的に圧縮されます",
     waitForResponse: "現在の応答が終わるまでお待ちください",
     noModel: "/context を使うにはモデルを読み込んでください",
+    emptyChat: "/context を使うには、まずメッセージを送信してください",
     noUsageYet: "先にメッセージを送ってください。API モデルは応答ごとにトークン使用量を報告します。",
     usedOnly: "{used} トークン使用",
     apiNoBreakdown: "API モデルは合計のみを報告するため、内訳はありません。",

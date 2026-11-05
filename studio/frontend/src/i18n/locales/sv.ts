@@ -821,6 +821,7 @@ export const sv = {
     compactsAt: "Komprimeras automatiskt vid {tokens} token",
     waitForResponse: "Vänta tills det aktuella svaret är klart",
     noModel: "Läs in en modell för att använda /context",
+    emptyChat: "Skicka ett meddelande först för att använda /context",
     noUsageYet: "Skicka ett meddelande först: API-modeller rapporterar tokenanvändning med varje svar.",
     usedOnly: "{used} token används",
     apiNoBreakdown: "API-modeller rapporterar bara en summa, så det finns ingen uppdelning.",

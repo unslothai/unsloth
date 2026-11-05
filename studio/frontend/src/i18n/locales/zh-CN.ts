@@ -767,6 +767,7 @@ export const zhCN = {
     compactsAt: "达到 {tokens} 个 token 时自动压缩",
     waitForResponse: "请等待当前回复完成",
     noModel: "请加载模型以使用 /context",
+    emptyChat: "请先发送一条消息再使用 /context",
     noUsageYet: "请先发送一条消息：API 模型会在每次回复时报告 token 用量。",
     usedOnly: "已使用 {used} 个 token",
     apiNoBreakdown: "API 模型只报告总数，因此没有细分。",
