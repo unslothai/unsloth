@@ -2427,9 +2427,9 @@ def _resolve_model(
                 payload["gguf_variant"] = resident_variant
         elif loaded_match is not None and not str(requested).lower().endswith(".gguf"):
             # Same for a named model already served, read from the slot serving it.
-            if (status_snapshot.get("is_gguf") or status_snapshot.get("is_mlx")) and status_snapshot.get(
-                "gguf_variant"
-            ):
+            if (
+                status_snapshot.get("is_gguf") or status_snapshot.get("is_mlx")
+            ) and status_snapshot.get("gguf_variant"):
                 payload["gguf_variant"] = status_snapshot["gguf_variant"]
         if "max_seq_length" in overrides:
             payload["max_seq_length"] = load.max_seq_length
