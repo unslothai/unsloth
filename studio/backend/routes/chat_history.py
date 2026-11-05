@@ -1748,7 +1748,11 @@ def _search_view_string(text: str) -> str:
     return cut if _split_mcp_images(cut) == cut else text
 
 
-def _search_view_value(value: Any, depth: int = 0, tool_name: Any = None) -> Any:
+def _search_view_value(
+    value: Any,
+    depth: int = 0,
+    tool_name: Any = None,
+) -> Any:
     if isinstance(value, str):
         return _search_view_string(value)
     if value is None or depth > 4:
