@@ -443,6 +443,20 @@ def _mapped_cells(row: dict, columns: list[str], labels: Any, join: str) -> Any:
     return "\n".join(_extract_column_value(row.get(c), c, labels) for c in columns)
 
 
+def mapped_question(row: dict, spec: dict) -> Any:
+    """The question of a row whose checkpoint mapped several columns into it (``spec`` as the
+    Benchmark node reports it to a Loop): user turns, lines, or an Alpaca instruction and input."""
+    users = [c for c in spec.get("columns") or [] if isinstance(c, str)]
+    inputs = [c for c in spec.get("inputs") or [] if isinstance(c, str)]
+    labels, join = spec.get("labels"), spec.get("join")
+    if join != "alpaca":
+        return _mapped_cells(row, users, labels, "turns" if join == "turns" else "lines")
+    question = _mapped_cells(row, users, labels, "lines")
+    extra = _mapped_cells(row, inputs, labels, "lines").strip() if inputs else ""
+    # As Benchmark asks any Alpaca row: its instruction, then its input.
+    return f"{question}\n\n{extra}" if extra else question
+
+
 def _labelled(rows: list[dict], columns: tuple, ctx: NodeContext) -> list[dict]:
     """The rows with the label names training gave numeric labels (Fine-tune's label mapping)."""
     checkpoint = ctx.inputs.get("checkpoint")
@@ -481,7 +495,19 @@ async def _recipe_heldout(
     facts = checkpoint if isinstance(checkpoint, dict) else {}
     # The checkpoint's mapping names the question and answer columns, unless one is missing here.
     users = [c for c in facts.get("user_columns") or [] if isinstance(c, str)]
-    users = users if users and all(c in columns for c in users) else []
+    inputs = [c for c in facts.get("input_columns") or [] if isinstance(c, str)]
+    users = users if users and all(c in columns for c in [*users, *inputs]) else []
+    # Several columns make the question: the Loop rebuilds it from this to know a row by it.
+    mapped = (
+        {
+            "columns": users,
+            "join": facts.get("user_join") or "turns",
+            "inputs": inputs,
+            "labels": facts.get("label_mapping"),
+        }
+        if len(users) > 1 or (users and inputs)
+        else None
+    )
     answers = [c for c in facts.get("answer_columns") or [] if isinstance(c, str)]
     answers = answers if answers and all(c in columns for c in answers) else []
     asked = rows
@@ -489,12 +515,10 @@ async def _recipe_heldout(
         prompt_col = guess_column(
             columns if named_prompt else guessable, named_prompt, PROMPT_GUESSES
         )
-    elif len(users) == 1:
+    elif mapped is None:
         prompt_col = users[0]
     else:
-        join = "lines" if facts.get("user_join") == "lines" else "turns"
-        labels = facts.get("label_mapping")
-        asked = [{**r, MAPPED_PROMPT: _mapped_cells(r, users, labels, join)} for r in rows]
+        asked = [{**r, MAPPED_PROMPT: mapped_question(r, mapped)} for r in rows]
         prompt_col = MAPPED_PROMPT
     if not prompt_col and not named_prompt:
         # A whole-conversation SFT row (`messages`, `conversations`): its turns are the question
@@ -634,7 +658,9 @@ async def _recipe_heldout(
         "failures": failures,
         # The column asked, so a Loop reads failures and test questions as they were scored; an
         # Alpaca row's question is its instruction plus input, which the Loop rebuilds itself.
-        "prompt_column": "" if prompt_col in (ALPACA_PROMPT, MAPPED_PROMPT) else prompt_col,
+        "prompt_column": mapped
+        if prompt_col == MAPPED_PROMPT
+        else ("" if prompt_col == ALPACA_PROMPT else prompt_col),
     }
 
 

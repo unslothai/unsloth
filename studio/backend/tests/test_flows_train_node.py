@@ -1484,7 +1484,8 @@ def test_an_sft_input_role_is_recorded_as_the_system_column():
     # An Alpaca format makes it the Alpaca input instead, part of the question.
     assert training.mapping_facts(mapping, "alpaca") == {
         "system_column": "",
-        "user_join": "lines",
+        "user_join": "alpaca",
+        "input_columns": ["input"],
         **facts,
     }
     # RL objectives read only the literal role.

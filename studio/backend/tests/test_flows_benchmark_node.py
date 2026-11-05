@@ -1072,3 +1072,39 @@ def test_a_question_mapped_from_several_columns_is_asked_whole(monkeypatch):
         else:
             assert asked == user[0]["content"]
         assert spec["reference_column"] == "answer"
+
+
+def test_an_alpaca_mapping_asks_its_instruction_with_its_input(monkeypatch):
+    from core.flows.nodes.training import mapping_facts
+
+    mapping = {"instruction": "instruction", "input": "input", "output": "output"}
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [
+            {
+                "instruction": "Translate to French",
+                "input": "The weather is lovely today.",
+                "output": "Il fait beau aujourd'hui.",
+            }
+        ]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    ctx.inputs["checkpoint"] = {
+        "kind": "checkpoint",
+        "name": "run-1",
+        **mapping_facts(mapping, "alpaca"),
+    }
+    out = asyncio.run(benchmark.benchmark(ctx))
+    spec = sent[0]["recipe"]
+    assert spec["rows"][0][spec["prompt_column"]] == (
+        "Translate to French\n\nThe weather is lovely today."
+    )
+    assert spec["system_column"] is None
+    # The Loop is told how the question was built, to know a row by all of it.
+    assert out["failures"]["prompt_column"]["inputs"] == ["input"]

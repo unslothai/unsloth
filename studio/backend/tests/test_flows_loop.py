@@ -865,3 +865,53 @@ def test_a_failure_seeds_the_question_benchmark_asked_but_is_known_by_its_row():
     # A test row carries no scored question: both are known by the same column.
     test_row = {k: v for k, v in failure.items() if k not in ("model_output", "scored_prompt")}
     assert loop_rounds.questions([failure]) == loop_rounds.questions([test_row])
+
+
+def test_a_mapped_question_is_known_by_all_its_columns():
+    spec = {"columns": ["context", "question"], "join": "turns", "inputs": [], "labels": None}
+    rows = [
+        {"context": f"Ticket {i}: my card was charged twice", "question": "Which support queue?"}
+        for i in range(3)
+    ]
+    frozen = loop_rounds.questions(rows[:1], spec)
+    # Another ticket asking the same fixed question is not the frozen test row.
+    exclude = {"column": spec, "questions": frozen}
+    assert loop_rounds.without_questions(rows, exclude) == rows[1:]
+    # A later round's own rows, without those columns, are never taken for it.
+    fresh = [{"prompt": "x", "response": "y"}]
+    assert loop_rounds.without_questions(fresh, exclude) == fresh
+
+
+def test_a_scored_question_seeds_even_when_no_column_looks_like_one():
+    failure = {
+        "context": "Card charged twice",
+        "ticket": "Refund please",
+        "queue": "billing",
+        "model_output": "sales",
+        "scored_prompt": "user: Card charged twice\n\nuser: Refund please",
+        "scored_reference": "billing",
+    }
+    found = loop_rounds.failure_row(failure)
+    assert found["failed_prompt"] == failure["scored_prompt"]
+    assert found["failed_reference"] == "billing"
+
+
+@run_async
+async def test_the_loop_knows_test_rows_by_the_mapped_columns_benchmark_reports():
+    eng, _, _ = _engine()
+    real_bench, real_train = eng.handlers["test.bench"], eng.handlers["train.finetune"]
+    spec = {"columns": ["prompt"], "join": "lines", "inputs": [], "labels": None}
+    excluded = []
+
+    async def bench(ctx):
+        found = await real_bench(ctx)
+        return {**found, "failures": {"rows": found["failures"], "prompt_column": spec}}
+
+    async def train(ctx):
+        excluded.append(ctx.inputs.get(loop_rounds.EXCLUDE_INPUT))
+        return await real_train(ctx)
+
+    eng.handlers["test.bench"], eng.handlers["train.finetune"] = bench, train
+    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
+    assert rs.status == "completed", rs.error
+    assert excluded[1]["column"] == spec and excluded[1]["questions"]

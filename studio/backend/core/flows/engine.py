@@ -2385,7 +2385,7 @@ class FlowEngine:
 
         # The question column: the score step's setting, else the one its failures report it asked
         # (a column training read as the system message is not it).
-        asked_col = str(scorer_params.get("prompt_column") or "")
+        asked_col: Any = str(scorer_params.get("prompt_column") or "")
         try:
             for r in range(rounds):
                 if rs.cancelled:
@@ -2479,7 +2479,9 @@ class FlowEngine:
                 probe_out = await score(probe, Env(child), (*key, 0))
                 fed_back = probe_out.get(fail_port)
                 if not asked_col and isinstance(fed_back, dict):
-                    asked_col = str(fed_back.get("prompt_column") or "")
+                    reported = fed_back.get("prompt_column")
+                    # A dict: the several mapped columns Benchmark built each question from.
+                    asked_col = reported if isinstance(reported, dict) else str(reported or "")
                 test_layer = Env(child)
                 test_out = await score(test, test_layer, (*key, 1))
                 if after:

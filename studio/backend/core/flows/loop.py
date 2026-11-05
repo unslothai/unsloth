@@ -59,14 +59,18 @@ def _text(value: Any, answer: bool = False) -> str:
 
 def failure_row(
     failure: Any,
-    prompt_column: str = "",
+    prompt_column: Any = "",
     reference_column: str = "",
     as_scored: bool = True,
 ) -> Optional[dict]:
+    """``prompt_column`` names the question's column, or (a dict) the several mapped columns
+    Benchmark built it from."""
     if not isinstance(failure, dict):
         return None
+    mapped = prompt_column if isinstance(prompt_column, dict) else None
     # As Benchmark reads them: " ticket " names the ticket column.
-    prompt_column, reference_column = prompt_column.strip(), reference_column.strip()
+    prompt_column = "" if mapped else str(prompt_column or "").strip()
+    reference_column = reference_column.strip()
     lowered = {str(k).lower(): v for k, v in failure.items()}
     output = next((k for k in OUTPUT_KEYS if k in lowered), None)
     rest = [
@@ -82,14 +86,24 @@ def failure_row(
 
     prompt = pick(prompt_column, PROMPT_KEYS, None)
     reference = pick(reference_column, REFERENCE_KEYS, prompt)
-    question = _text(lowered.get(prompt)) if prompt else ""
-    extra = _text(lowered.get("input")) if prompt == "instruction" and not prompt_column else ""
-    if extra.strip():
-        # An Alpaca row was scored as instruction plus input; feed back the same question.
-        question = f"{question}\n\n{extra.strip()}"
-    if as_scored and isinstance(lowered.get("scored_prompt"), str) and question:
-        # Benchmark's own question when it gave one: several mapped columns joined.
-        question = lowered["scored_prompt"]
+    if mapped:
+        from core.benchmark.recipe_heldout import prompt_text
+        from core.flows.nodes.benchmark import mapped_question
+
+        columns = [*(mapped.get("columns") or []), *(mapped.get("inputs") or [])]
+        # A row without those columns (a later round's own rows) asks nothing through them.
+        present = any(failure.get(c) not in (None, "") for c in columns if isinstance(c, str))
+        question = prompt_text(mapped_question(failure, mapped)) if present else ""
+    else:
+        question = _text(lowered.get(prompt)) if prompt else ""
+        extra = _text(lowered.get("input")) if prompt == "instruction" and not prompt_column else ""
+        if extra.strip():
+            # An Alpaca row was scored as instruction plus input; feed back the same question.
+            question = f"{question}\n\n{extra.strip()}"
+    scored = lowered.get("scored_prompt")
+    if as_scored and isinstance(scored, str) and scored.strip():
+        # Benchmark's own question when it gave one, found in the row or not.
+        question = scored
     row = {
         "origin": "failure",
         "failed_prompt": question,
@@ -117,14 +131,14 @@ def _strings(value: Any) -> list[str]:
     return found
 
 
-def _asked(row: Any, prompt_column: str = "") -> str:
+def _asked(row: Any, prompt_column: Any = "") -> str:
     """The question a row asks (an Alpaca row's instruction plus input), as Benchmark asked it."""
     # Read from the row alone, as a test row (which carries no scored question) is read.
     found = failure_row(row, prompt_column, as_scored = False) if isinstance(row, dict) else None
     return found["failed_prompt"].strip() if found else ""
 
 
-def _identifying(row: Any, prompt_column: str = "") -> frozenset:
+def _identifying(row: Any, prompt_column: Any = "") -> frozenset:
     """The long strings that could name one test row: its question, never its answer or labels (a rare
     category would otherwise hide every failure sharing it). An Alpaca row's question is its
     instruction plus input, and its input on its own; the instruction alone is shared by its task."""
@@ -133,7 +147,12 @@ def _identifying(row: Any, prompt_column: str = "") -> frozenset:
         strings = {asked}
         lowered = {str(k).lower(): v for k, v in row.items()}
         extra = lowered.get("input")
-        if isinstance(extra, str) and extra.strip() and "input" != prompt_column.lower():
+        if (
+            isinstance(extra, str)
+            and extra.strip()
+            and isinstance(prompt_column, str)
+            and "input" != prompt_column.strip().lower()
+        ):
             strings.add(extra.strip())
     elif isinstance(row, dict):
         # No question column to go by: every value but the answer and the model's output.
@@ -148,7 +167,7 @@ def _identifying(row: Any, prompt_column: str = "") -> frozenset:
 EXCLUDE_INPUT = "_loop_test_questions"
 
 
-def questions(rows: list[dict], prompt_column: str = "") -> list[str]:
+def questions(rows: list[dict], prompt_column: Any = "") -> list[str]:
     """The questions rows ask, as Benchmark asks them (an Alpaca row's instruction plus input)."""
     return sorted({q for q in (_asked(row, prompt_column) for row in rows) if q})
 
@@ -159,14 +178,14 @@ def without_questions(rows: list[dict], exclude: Any) -> list[dict]:
     if not isinstance(exclude, dict):
         return list(rows)
     banned = {q for q in exclude.get("questions") or [] if isinstance(q, str)}
-    column = str(exclude.get("column") or "")
+    column = exclude.get("column") or ""
     return [r for r in rows if _asked(r, column) not in banned] if banned else list(rows)
 
 
 def drop_test_rows(
     failures: list[dict],
     test_rows: list[dict],
-    prompt_column: str = "",
+    prompt_column: Any = "",
 ) -> list[dict]:
     """Guard: a failure asking a question that identifies one test row never reaches the seed.
     A value many test rows share (a fixed Alpaca instruction) identifies none of them."""
@@ -216,7 +235,7 @@ def seed_rows(
     failures: list[dict],
     rows: int,
     failure_percent: int = FAILURE_PERCENT,
-    prompt_column: str = "",
+    prompt_column: Any = "",
     reference_column: str = "",
     per_failure: int = PER_FAILURE,
 ) -> list[dict]:
