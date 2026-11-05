@@ -1337,7 +1337,7 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
         refuse(T, eval_only, layout(), model, train_dataset = None)
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(T, args(8, eval_strategy = "steps", eval_bs = 4), layout(), model, train_dataset = None)
-    # Batches are no larger than the dataset (per dp rank); no len() or packing: only the step knows.
+    # Fewer rows than one batch per dp rank, no len() or packing: only the step knows the batch size.
     if not pp_env._gpipe_needs_stage_count():
         refuse(T, args(8), layout(), model, train_dataset = [0])
         refuse(
@@ -1351,8 +1351,18 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
             train_dataset = None,
             eval_dataset = {"a": [0]},
         )
-    with pytest.raises(NotImplementedError, match = "into 2 micro-batches"):
-        refuse(T, args(8), layout(), model, train_dataset = [0, 1])
+        refuse(
+            T, args(5), types.SimpleNamespace(**vars(layout()), dp = 2), model, train_dataset = rows[:8]
+        )
+    refuse(T, args(8), layout(), model, train_dataset = [0, 1])
+    with pytest.raises(NotImplementedError, match = "into 4 micro-batches"):
+        refuse(
+            T,
+            args(8),
+            types.SimpleNamespace(**vars(layout()), dp = 2),
+            model,
+            train_dataset = rows[:16],
+        )
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(
             T,

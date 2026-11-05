@@ -678,20 +678,20 @@ def _router_aux_coef_at_init(trainer_cls, args, model):
 
 
 def _largest_batch(dataset, batch_size, dp, packing):
-    """Rows in the largest batch one rank gets from `dataset`, or None when only the step can know: no dataset
-    (train() / evaluate() cannot run on it), no len(), or packing (TRL rebuilds the rows inside __init__)."""
+    """`batch_size` when every rank surely gets a full batch from `dataset`, else None (the step decides): no
+    dataset (train() / evaluate() cannot run on it), no len(), packing (TRL rebuilds the rows inside __init__),
+    or fewer rows than one batch per dp rank (the dataloader's sharding / padding sets the size then)."""
     batch_size = int(batch_size or 0)
     if dataset is None or batch_size < 1 or packing:
         return None
     if isinstance(dataset, dict):
         sizes = [_largest_batch(d, batch_size, dp, packing) for d in dataset.values()]
-        return None if not sizes or None in sizes else max(sizes)
+        return max((size for size in sizes if size), default = None)
     try:
         rows = len(dataset)
     except TypeError:
         return None
-    # A dataset smaller than the batch gives smaller batches; the sampler splits rows over the dp ranks.
-    return min(batch_size, -(-rows // max(int(dp or 1), 1)))
+    return batch_size if rows >= batch_size * max(int(dp or 1), 1) else None
 
 
 def _refuse_split_router_aux_at_init(
