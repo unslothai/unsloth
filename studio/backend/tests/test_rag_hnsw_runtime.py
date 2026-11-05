@@ -312,3 +312,10 @@ def test_a_corrupt_marker_still_imports(tripwire, tmp_path):
     (tmp_path / vec_ann.MARKER).write_text("{", encoding = "utf-8")
     vec_ann.usearch()
     assert tripwire.hit
+
+
+def test_the_installer_is_found_without_importing_the_studio_update_stack(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_HNSW_INSTALLER", raising = False)
+    monkeypatch.setitem(sys.modules, "utils.prebuilt.update_flow", None)
+    script = hnsw_runtime._installer()
+    assert script is not None and script.name == "install_hnsw_prebuilt.py" and script.is_file()

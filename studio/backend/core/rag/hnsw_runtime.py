@@ -10,6 +10,7 @@ import importlib
 import json
 import logging
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -74,10 +75,15 @@ def request(on_ready: Callable[[], None]) -> bool:
 
 
 def _installer():
-    from utils.prebuilt.update_flow import find_installer_script
-    return find_installer_script(
-        env_var = "UNSLOTH_HNSW_INSTALLER", script_name = "install_hnsw_prebuilt.py"
-    )
+    # Same search as utils.prebuilt.update_flow.find_installer_script, without its structlog import.
+    env = os.environ.get("UNSLOTH_HNSW_INSTALLER")
+    if env and os.path.isfile(env):
+        return Path(env)
+    for up in Path(__file__).resolve().parents:
+        for cand in (up / "install_hnsw_prebuilt.py", up / "studio" / "install_hnsw_prebuilt.py"):
+            if cand.is_file():
+                return cand
+    return None
 
 
 def _env() -> dict:
