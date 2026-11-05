@@ -6887,6 +6887,8 @@ class ExternalProviderClient:
                                 recorded_reasoning = _record_openai_reasoning_replay_item(event)
                                 if recorded_reasoning:
                                     last_openai_reasoning_replay_item = recorded_reasoning
+                                if not event_type.endswith(".delta"):
+                                    continue
                                 reasoning_delta = _extract_reasoning_text(event)
                                 if reasoning_delta:
                                     if not reasoning_open:
