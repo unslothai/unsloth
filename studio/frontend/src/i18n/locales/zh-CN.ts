@@ -785,6 +785,8 @@ export const zhCN = {
   picker: {
     unifiedTightFit: "勉强可用",
     unifiedTightFitHint: "在这台 Mac 上可能以更短的上下文加载，或运行更慢。",
+    residentToRun: "运行所需",
+    residentToRunHint: "加载检查要求的运行时 GPU 显存",
     onDevice: "本机",
     huggingFace: "Hugging Face",
     retry: "重试",

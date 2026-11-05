@@ -892,6 +892,9 @@ export const pl = {
     unifiedTightFit: "Ciasne dopasowanie",
     unifiedTightFitHint:
       "Może wczytać się z krótszym kontekstem lub działać wolniej na tym Macu.",
+    residentToRun: "do uruchomienia",
+    residentToRunHint:
+      "Pamięć GPU wymagana przez kontrolę ładowania podczas działania",
     onDevice: "Na urządzeniu",
     huggingFace: "Hugging Face",
     retry: "Ponów",

@@ -886,6 +886,8 @@ export const vi = {
     unifiedTightFit: "Sát giới hạn",
     unifiedTightFitHint:
       "Có thể được nạp với ngữ cảnh ngắn hơn hoặc chạy chậm hơn trên máy Mac này.",
+    residentToRun: "để chạy",
+    residentToRunHint: "Bộ nhớ GPU mà bước kiểm tra tải yêu cầu khi chạy",
     onDevice: "Trên thiết bị",
     huggingFace: "Hugging Face",
     retry: "Thử lại",

@@ -823,6 +823,8 @@ export const he = {
   picker: {
     unifiedTightFit: "התאמה צפופה",
     unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
+    residentToRun: "להרצה",
+    residentToRunHint: "זיכרון GPU שבדיקת הטעינה דורשת בזמן הריצה",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",

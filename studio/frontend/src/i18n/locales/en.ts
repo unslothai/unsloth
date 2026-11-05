@@ -791,6 +791,8 @@ export const en = {
   picker: {
     unifiedTightFit: "Tight fit",
     unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
+    residentToRun: "to run",
+    residentToRunHint: "GPU memory the load check needs while running",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",

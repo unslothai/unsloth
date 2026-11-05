@@ -891,6 +891,9 @@ export const uk = {
     unifiedTightFit: "Впритул",
     unifiedTightFitHint:
       "Може завантажитися з коротшим контекстом або працювати повільніше на цьому Mac.",
+    residentToRun: "для запуску",
+    residentToRunHint:
+      "Пам'ять GPU, яку перевірка завантаження вимагає під час роботи",
     onDevice: "На пристрої",
     huggingFace: "Hugging Face",
     retry: "Повторити",

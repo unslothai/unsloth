@@ -785,6 +785,8 @@ export const ko = {
   picker: {
     unifiedTightFit: "빠듯함",
     unifiedTightFitHint: "이 Mac에서는 더 짧은 컨텍스트로 로드되거나 느리게 실행될 수 있습니다.",
+    residentToRun: "실행에 필요",
+    residentToRunHint: "실행 중 로드 검사가 요구하는 GPU 메모리",
     onDevice: "기기",
     huggingFace: "Hugging Face",
     retry: "다시 시도",

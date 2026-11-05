@@ -786,6 +786,8 @@ export const hi = {
   picker: {
     unifiedTightFit: "तंग फ़िट",
     unifiedTightFitHint: "इस Mac पर छोटे कॉन्टेक्स्ट के साथ लोड हो सकता है या धीमा चल सकता है।",
+    residentToRun: "चलाने के लिए",
+    residentToRunHint: "चलते समय लोड जांच के लिए आवश्यक GPU मेमोरी",
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
     retry: "पुनः प्रयास करें",

@@ -891,6 +891,9 @@ export const es419 = {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint:
       "Puede cargarse con un contexto más corto o funcionar más lento en esta Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint:
+      "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",

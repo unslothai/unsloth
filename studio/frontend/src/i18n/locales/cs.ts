@@ -886,6 +886,8 @@ export const cs = {
     unifiedTightFit: "Těsně se vejde",
     unifiedTightFitHint:
       "Na tomto Macu se model může načíst s kratším kontextem nebo běžet pomaleji.",
+    residentToRun: "ke spuštění",
+    residentToRunHint: "Paměť GPU, kterou kontrola načtení vyžaduje za běhu",
     onDevice: "V zařízení",
     huggingFace: "Hugging Face",
     retry: "Zkusit znovu",

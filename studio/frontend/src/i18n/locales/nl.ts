@@ -895,6 +895,9 @@ export const nl = {
     unifiedTightFit: "Krap",
     unifiedTightFitHint:
       "Wordt op deze Mac mogelijk geladen met een kortere context of werkt langzamer.",
+    residentToRun: "om te draaien",
+    residentToRunHint:
+      "GPU-geheugen dat de laadcontrole tijdens het draaien vereist",
     onDevice: "Op apparaat",
     huggingFace: "Hugging Face",
     retry: "Opnieuw proberen",

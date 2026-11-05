@@ -786,6 +786,8 @@ export const ja = {
   picker: {
     unifiedTightFit: "ぎりぎり",
     unifiedTightFitHint: "この Mac では短いコンテキストで読み込まれるか、動作が遅くなる可能性があります。",
+    residentToRun: "実行に必要",
+    residentToRunHint: "実行中に読み込みチェックが必要とする GPU メモリ",
     onDevice: "デバイス上",
     huggingFace: "Hugging Face",
     retry: "再試行",

@@ -786,6 +786,8 @@ export const fr = {
   picker: {
     unifiedTightFit: "Juste",
     unifiedTightFitHint: "Peut se charger avec un contexte plus court ou être plus lent sur ce Mac.",
+    residentToRun: "pour l'exécution",
+    residentToRunHint: "Mémoire GPU que la vérification de chargement exige pendant l'exécution",
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
     retry: "Réessayer",

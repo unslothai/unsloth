@@ -839,6 +839,8 @@ export const sv = {
   picker: {
     unifiedTightFit: "Snäv passform",
     unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
+    residentToRun: "för att köra",
+    residentToRunHint: "GPU-minne som laddningskontrollen kräver under körning",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",

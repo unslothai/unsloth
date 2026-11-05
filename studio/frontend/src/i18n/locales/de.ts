@@ -786,6 +786,8 @@ export const de = {
   picker: {
     unifiedTightFit: "Knapp",
     unifiedTightFitHint: "Lädt auf diesem Mac eventuell nur mit kürzerem Kontext oder läuft langsamer.",
+    residentToRun: "zum Ausführen",
+    residentToRunHint: "GPU-Speicher, den die Ladeprüfung während der Ausführung verlangt",
     onDevice: "Auf dem Gerät",
     huggingFace: "Hugging Face",
     retry: "Erneut versuchen",

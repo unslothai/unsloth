@@ -785,6 +785,8 @@ export const ar = {
   picker: {
     unifiedTightFit: "ملاءمة محدودة",
     unifiedTightFitHint: "قد يُحمَّل بسياق أقصر أو يعمل بشكل أبطأ على جهاز Mac هذا.",
+    residentToRun: "للتشغيل",
+    residentToRunHint: "ذاكرة GPU التي يتطلبها فحص التحميل أثناء التشغيل",
     onDevice: "على الجهاز",
     huggingFace: "Hugging Face",
     retry: "إعادة المحاولة",

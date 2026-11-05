@@ -882,6 +882,8 @@ export const fa = {
     unifiedTightFit: "جای تنگ",
     unifiedTightFitHint:
       "ممکن است با زمینهٔ کوتاه‌تر بارگذاری شود یا روی این Mac کندتر اجرا شود.",
+    residentToRun: "برای اجرا",
+    residentToRunHint: "حافظه GPU که بررسی بارگذاری هنگام اجرا لازم دارد",
     onDevice: "روی دستگاه",
     huggingFace: "Hugging Face",
     retry: "تلاش دوباره",

@@ -786,6 +786,8 @@ export const ru = {
   picker: {
     unifiedTightFit: "Впритык",
     unifiedTightFitHint: "На этом Mac может загрузиться с более коротким контекстом или работать медленнее.",
+    residentToRun: "для запуска",
+    residentToRunHint: "Память GPU, которую проверка загрузки требует во время работы",
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
     retry: "Повторить",

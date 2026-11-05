@@ -884,6 +884,9 @@ export const id = {
     unifiedTightFit: "Pas-pasan",
     unifiedTightFitHint:
       "Mungkin dimuat dengan konteks lebih pendek atau berjalan lebih lambat di Mac ini.",
+    residentToRun: "untuk menjalankan",
+    residentToRunHint:
+      "Memori GPU yang dibutuhkan pemeriksaan pemuatan saat berjalan",
     onDevice: "Di Perangkat",
     huggingFace: "Hugging Face",
     retry: "Coba lagi",

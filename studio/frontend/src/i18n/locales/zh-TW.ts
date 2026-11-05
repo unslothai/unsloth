@@ -834,6 +834,8 @@ export const zhTW = {
     unifiedTightFit: "勉強可容納",
     unifiedTightFitHint:
       "在這台 Mac 上可能會以較短的上下文載入，或執行速度較慢。",
+    residentToRun: "執行所需",
+    residentToRunHint: "載入檢查要求的執行時 GPU 記憶體",
     onDevice: "裝置上",
     huggingFace: "Hugging Face",
     retry: "重試",

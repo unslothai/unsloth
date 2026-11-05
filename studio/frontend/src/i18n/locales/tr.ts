@@ -880,6 +880,9 @@ export const tr = {
     unifiedTightFit: "Sınırda",
     unifiedTightFitHint:
       "Bu Mac'te daha kısa bir bağlamla yüklenebilir veya daha yavaş çalışabilir.",
+    residentToRun: "çalıştırmak için",
+    residentToRunHint:
+      "Yükleme denetiminin çalışırken gerektirdiği GPU belleği",
     onDevice: "Cihazda",
     huggingFace: "Hugging Face",
     retry: "Yeniden dene",

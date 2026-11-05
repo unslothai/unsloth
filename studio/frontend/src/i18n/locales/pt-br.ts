@@ -786,6 +786,8 @@ export const ptBR = {
   picker: {
     unifiedTightFit: "Ajuste apertado",
     unifiedTightFitHint: "Pode carregar com um contexto menor ou rodar mais devagar neste Mac.",
+    residentToRun: "para rodar",
+    residentToRunHint: "Memória de GPU que a verificação de carregamento exige durante a execução",
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
     retry: "Tentar novamente",

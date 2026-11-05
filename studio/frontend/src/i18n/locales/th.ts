@@ -837,6 +837,8 @@ export const th = {
   picker: {
     unifiedTightFit: "พอดีแบบเฉียดฉิว",
     unifiedTightFitHint: "อาจโหลดด้วยบริบทที่สั้นลงหรือทำงานช้าลงบน Mac เครื่องนี้",
+    residentToRun: "สำหรับการรัน",
+    residentToRunHint: "หน่วยความจำ GPU ที่การตรวจสอบการโหลดต้องใช้ระหว่างทำงาน",
     onDevice: "ในอุปกรณ์",
     huggingFace: "Hugging Face",
     retry: "ลองอีกครั้ง",

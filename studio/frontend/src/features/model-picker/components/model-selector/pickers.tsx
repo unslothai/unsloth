@@ -995,6 +995,7 @@ function ResidentText({
   value: string;
   className?: string;
 }) {
+  const t = useT();
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild={true}>
@@ -1005,11 +1006,11 @@ function ResidentText({
           )}
         >
           <SizeText value={value} />
-          <span className="ml-1 font-sans">to run</span>
+          <span className="ml-1 font-sans">{t("picker.residentToRun")}</span>
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
-        GPU memory the load check needs while running
+        {t("picker.residentToRunHint")}
       </TooltipContent>
     </Tooltip>
   );
