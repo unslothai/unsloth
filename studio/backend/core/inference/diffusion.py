@@ -10608,6 +10608,8 @@ class DiffusionBackend:
                         backend = "image",
                         audit = load_audit,
                         logger = logger,
+                        explicit_off = speed_mode is not None
+                        and normalize_speed_mode(speed_mode) == SPEED_OFF,
                     )
                     if speed_deferred:
                         from .diffusion_qwenimage21_eager import install_for_pipe as q21_eager
