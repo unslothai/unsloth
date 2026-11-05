@@ -6736,6 +6736,11 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
   .novel-figure-speaking { animation: none; }
 }
 
+/* A character reply shows the response model in its name line instead of floating over it. */
+.roleplay-reply .aui-response-model-badge:not(.roleplay-model-badge) {
+  display: none;
+}
+
 /* The composer's bottom fade turns clear just where the speaker bar sits, so the bar brings its own
    backdrop: messages scrolled up behind it stay out of the chips' way. */
 .roleplay-speaker-bar::before {

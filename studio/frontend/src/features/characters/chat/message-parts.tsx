@@ -7,6 +7,7 @@ import { withTimeFormat } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { createContext, useContext, type ReactNode } from "react";
+import { MessageResponseModelBadge } from "@/components/assistant-ui/message-response-details-sheet";
 import { useMessagePartTextSafe } from "@/components/assistant-ui/stale-safe-scopes";
 import { Portrait } from "../components/portrait";
 import { RoleplayText } from "../components/roleplay-text";
@@ -123,6 +124,8 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
             {character ? speaker.name : `${speaker.name} · ${t("characters.chat.deleted")}`}
           </span>
           <MessageTime />
+          {/* With "Response model" on, the model shows after the time; the floating badge would sit on the name. */}
+          <MessageResponseModelBadge className="roleplay-model-badge min-w-0" />
         </div>
         {children}
       </div>
