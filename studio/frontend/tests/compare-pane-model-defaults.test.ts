@@ -33,6 +33,7 @@ const QWEN = "unsloth/Qwen3-0.6B-GGUF";
 const GEMMA = "unsloth/gemma-3-270m-it-GGUF";
 const QWEN35 = "unsloth/Qwen3.5-27B-GGUF";
 const CONTEXT = 32768;
+const REQUESTED_CONTEXT = 4096;
 const RECOMMENDED: Record<string, { temperature: number; top_p: number; top_k: number }> = {
   [QWEN]: { temperature: 0.6, top_p: 0.95, top_k: 20 },
   [GEMMA]: { temperature: 1, top_p: 0.95, top_k: 64 },
@@ -58,12 +59,12 @@ const commitPaneLoad = new Function(
   `let upgradeUnloadedActive; ${composer.slice(start, end)}`,
 );
 
-function response(model: string) {
+function response(model: string, gguf = true) {
   return {
     status: "loaded",
     model,
     supports_reasoning: model === QWEN35,
-    is_gguf: true,
+    is_gguf: gguf,
     context_length: CONTEXT,
     inference: RECOMMENDED[model],
   };
@@ -84,13 +85,13 @@ function pickerLoad(model: string): void {
   store.setCheckpoint(model, "Q4_K_M");
 }
 
-function compareLoad(model: string): void {
+function compareLoad(model: string, gguf = true): void {
   commitPaneLoad(
     useChatRuntimeStore,
-    response(model),
-    { id: model, ggufVariant: "Q4_K_M" },
-    true,
-    0,
+    response(model, gguf),
+    { id: model, ggufVariant: gguf ? "Q4_K_M" : null },
+    gguf,
+    gguf ? 0 : REQUESTED_CONTEXT,
     loadedContextFields,
     replayMaxTokensCap,
     mergeBackendRecommendedInference,
@@ -162,6 +163,20 @@ test("a compare pane model keeps its remembered sampling over the recommendation
   compareLoad(QWEN);
   assert.deepEqual(sampling(), { temperature: 0.6, topP: 0.95, topK: 20 });
   assert.equal(useChatRuntimeStore.getState().paramsByModel[GEMMA]?.temperature, 0.4);
+});
+
+test("a non-GGUF compare pane load takes its sampling and context without filing an entry", async () => {
+  pickerLoad(QWEN);
+  compareLoad(GEMMA, false);
+  assert.deepEqual(sampling(), { temperature: 1, topP: 0.95, topK: 64 });
+  assert.equal(useChatRuntimeStore.getState().params.maxSeqLength, REQUESTED_CONTEXT);
+  assert.equal(useChatRuntimeStore.getState().paramsByModel[GEMMA], undefined);
+
+  compareLoad(QWEN, false);
+  assert.deepEqual(sampling(), { temperature: 0.6, topP: 0.95, topK: 20 });
+  await settled();
+  assert.equal(stored()[GEMMA]?.temperature, 1);
+  assert.equal(stored()[GEMMA]?.topK, 64);
 });
 
 test("a compare pane Qwen model gets the sampling for the active thinking mode", () => {
