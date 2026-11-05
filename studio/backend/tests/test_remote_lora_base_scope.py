@@ -167,6 +167,7 @@ if worker == "inference":
     import core.inference.worker as w
 
     w._native_audio_security_targets_or_error = done
+    w.is_apple_silicon = lambda: False  # the MLX branch never activates transformers
     w.run_inference_process(cmd_queue = queue.Queue(), resp_queue = queue.Queue(), cancel_event = None, config = config)
 else:
     import core._torchao_stub as stub
@@ -188,12 +189,14 @@ def test_worker_load_reads_adapter_config_once(worker, tmp_path):
         k: v for k, v in os.environ.items() if k not in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
     }
     env["PYTHONPATH"] = str(backend)
-    subprocess.run(
+    proc = subprocess.run(
         [sys.executable, "-c", _WORKER_DRIVER, str(out), worker, "org/model"],
         cwd = tmp_path,
         env = env,
         timeout = 300,
         capture_output = True,
+        text = True,
     )
+    assert out.exists(), proc.stderr[-4000:]
     reads = json.loads(out.read_text())
     assert reads.count("adapter_config.json") == 1, reads
