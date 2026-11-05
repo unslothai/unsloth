@@ -17,7 +17,7 @@ import { type ChatCountTokensResponse, countChatInputTokens } from "./chat-api";
 export async function countContext(
   branch: readonly ThreadMessage[],
   threadId: string | undefined,
-  readBranch?: () => readonly ThreadMessage[],
+  readBranch: () => readonly ThreadMessage[],
 ): Promise<ChatCountTokensResponse | null> {
   const start = useChatRuntimeStore.getState();
   const checkpoint = start.params.checkpoint;
@@ -40,7 +40,7 @@ export async function countContext(
     now.contextUsage === start.contextUsage &&
     !Object.values(now.runningByThreadId).some(Boolean) &&
     // An edit or a rewind mid-count leaves every check above passing, but the count is stale.
-    (!readBranch || sameMessageIds(readBranch(), branch))
+    sameMessageIds(readBranch(), branch)
   ) {
     now.setContextUsage({
       promptTokens: counted.input_tokens,

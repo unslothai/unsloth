@@ -41902,19 +41902,7 @@ async def _mlx_count_chat_tokens(
     # A budget of zero never enters the loop, so the relay is what renders.
     _budget = getattr(payload, "max_tool_calls_per_message", None)
     _tools_to_use = None
-    if (
-        _takes_tools
-        and (_budget is None or _budget > 0)
-        and (
-            _tools_on
-            or _mcp_on
-            # GGUF parity: a checkpointed thread reopens the loop with search_conversation alone.
-            or (
-                getattr(payload, "tool_choice", None) != "none"
-                and await asyncio.to_thread(_checkpoint_recall_may_enable_tools, payload)
-            )
-        )
-    ):
+    if _takes_tools and (_tools_on or _mcp_on) and (_budget is None or _budget > 0):
         # Never MCP discovery on a count (spawns stdio servers): use the completion cache and decline if incomplete; mcp_allowed stays False
         _mcp_tools: list[dict] = []
         if _mcp_on:
@@ -41950,6 +41938,7 @@ async def _mlx_count_chat_tokens(
         if not _tools_to_use:
             _tools_to_use = None
 
+    _nudge = ""
     if (
         not _tools_to_use
         and _takes_tools
@@ -42102,7 +42091,13 @@ async def _mlx_count_chat_tokens(
     def _count(count_messages, tools) -> int:
         count, _counted = backend.count_chat_tokens(
             count_messages,
-            system_prompt or "",
+            # The breakdown's tool-free render; every other render keeps the nudge it was sent with.
+            (
+                _without_tool_nudge(system_prompt, _nudge)
+                if _tools_to_use and not tools
+                else system_prompt
+            )
+            or "",
             tools = tools,
             enable_thinking = payload.enable_thinking,
             reasoning_effort = payload.reasoning_effort,
@@ -42111,9 +42106,12 @@ async def _mlx_count_chat_tokens(
         return count
 
     try:
-        count, breakdown = await _count_with_breakdown(
-            _count, messages, _tools_to_use, payload.breakdown
-        )
+        if payload.breakdown:
+            count, breakdown = await asyncio.to_thread(
+                _count_breakdown, _count, messages, _tools_to_use
+            )
+        else:
+            count, breakdown = await asyncio.to_thread(_count, messages, _tools_to_use), None
     except Exception:
         raise HTTPException(
             status_code = 503,
@@ -42142,7 +42140,7 @@ async def _mlx_count_chat_tokens(
 
 
 def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
-    """The total, split into system prompt, tool schemas and messages (Studio's /context).
+    """The total, split into system, tools and messages (Studio's /context).
 
     Priced as cumulative renders so the parts sum to the total: everything first, then the
     leading system turns with and without the tools. The prefixes sit behind an empty user turn
@@ -42163,15 +42161,18 @@ def _count_breakdown(count, messages: list[dict], tools) -> tuple[int, dict]:
         "system": total - tool_tokens - message_tokens,
         "tools": tool_tokens,
         "messages": message_tokens,
-        "tool_names": [((t.get("function") or {}).get("name")) for t in tools or []],
+        "tool_names": [(t.get("function") or {}).get("name") for t in tools or []],
     }
 
 
-async def _count_with_breakdown(count, messages: list[dict], tools, breakdown: bool):
-    """``(total, parts)``; parts only when asked, since they cost two more renders."""
-    if not breakdown:
-        return await asyncio.to_thread(count, messages, tools), None
-    return await asyncio.to_thread(_count_breakdown, count, messages, tools)
+def _without_tool_nudge(text: str, nudge: str) -> str:
+    """``text`` without the tool nudge, so a breakdown counts the nudge under the tools that
+    added it. A no-op for an empty nudge."""
+    if not nudge:
+        return text
+    if "\n\n" + nudge in text:
+        return text.replace("\n\n" + nudge, "", 1)
+    return text.replace(nudge, "", 1)
 
 
 def _count_response(payload, total: int, model, parts: Optional[dict], context_length, prompt):
@@ -42199,7 +42200,7 @@ def _count_model_id(model_id, via_api_key):
     ]
 
 
-def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs):
+def _count_chat_context_tokens(backend, payload, messages, tools, template_kwargs, nudge):
     """``(total, parts, prompt)``; parts and the rendered prompt only for a breakdown."""
     from core.inference.llama_cpp import (
         _can_reset_epoch,
@@ -42209,7 +42210,11 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
         _sticky_compaction_details,
     )
 
-    def count_tokens(candidate, candidate_tools = tools, **extra):
+    def count_tokens(
+        candidate,
+        candidate_tools = tools,
+        **extra,
+    ):
         return backend.count_chat_tokens(
             candidate,
             None,
@@ -42268,15 +42273,31 @@ def _count_chat_context_tokens(backend, payload, messages, tools, template_kwarg
         return count_tokens(messages), None, None
     # Only the fitted prompt's first render is kept: the fitter's trial renders never reach here.
     rendered: dict = {}
-    total, parts = _count_breakdown(
-        lambda candidate, candidate_tools: count_tokens(
+
+    def without_nudge(candidate):
+        out = []
+        for message in candidate:
+            content = message.get("content")
+            if message.get("role") in ("system", "developer") and isinstance(content, str):
+                stripped = _without_tool_nudge(content, nudge)
+                if stripped != content:
+                    # A turn that held only the nudge is not there without tools.
+                    if not stripped:
+                        continue
+                    message = {**message, "content": stripped}
+            out.append(message)
+        return out
+
+    def priced(candidate, candidate_tools):
+        if not candidate_tools:
+            candidate = without_nudge(candidate)
+        return count_tokens(
             candidate,
             candidate_tools,
             on_prompt = lambda text: rendered.setdefault("prompt", text),
-        ),
-        messages,
-        tools,
-    )
+        )
+
+    total, parts = _count_breakdown(priced, messages, tools)
     return total, parts, rendered.get("prompt")
 
 
@@ -42421,6 +42442,7 @@ async def chat_count_tokens(
 
     # Only the passthrough sends the caller's own catalog; others render from the selection below.
     openai_tools = _passthrough_client_tools(payload) if _takes_passthrough else None
+    _count_nudge = ""
     # The CLI hard-override still applies: _effective_enable_tools resolves it into _tools_on.
     _client_disabled_tool_calls = getattr(payload, "tool_choice", None) == "none" and not (
         _explicit_studio_tool_loop_requested(payload) and llama_backend.supports_tools
@@ -42566,6 +42588,7 @@ async def chat_count_tokens(
             openai_messages,
             openai_tools,
             _template_kwargs,
+            _count_nudge,
         )
     except CountAborted:
         raise HTTPException(

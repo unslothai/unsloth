@@ -5279,7 +5279,8 @@ def _select_only(*names):
         pytest.param("error", None, id = "not_compacting"),
     ],
 )
-def test_chat_count_tokens_breakdown_splits_the_total(monkeypatch, overflow, budget):
+@pytest.mark.parametrize("system", ["be brief", None], ids = ["system_prompt", "no_system_prompt"])
+def test_chat_count_tokens_breakdown_splits_the_total(monkeypatch, overflow, budget, system):
     # /context: the parts are priced as cumulative renders, so they sum to the one total.
     _count_tokens_backend(monkeypatch, supports_tools = True)
     backend = inference_route.get_llama_cpp_backend()
@@ -5302,8 +5303,8 @@ def test_chat_count_tokens_breakdown_splits_the_total(monkeypatch, overflow, bud
     backend.count_chat_tokens = _count
     monkeypatch.setattr(inference_route, "_select_request_tools", _select_only("web_search"))
     payload = _count_request(
-        [
-            {"role": "system", "content": "be brief"},
+        ([{"role": "system", "content": system}] if system else [])
+        + [
             {"role": "user", "content": "one two three"},
             {"role": "assistant", "content": "four five"},
         ],
@@ -5314,16 +5315,19 @@ def test_chat_count_tokens_breakdown_splits_the_total(monkeypatch, overflow, bud
     )
     body = _counted_body(payload)
     parts = body["breakdown"]
-    assert parts["tools"] == 40
+    # The template's 3 and the system prompt; the tool nudge counts under tools, with the schema's 40.
+    assert parts["system"] == 3 + len((system or "").split())
+    assert parts["tools"] > 40
     assert parts["messages"] == 5
     assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
     assert parts["tool_names"] == ["web_search"]
     assert body["context_length"] == 8192
     assert body["compaction_budget"] == budget
     # Full prompt, then the system turns behind an empty user turn without and with the tools.
+    # With no system prompt set the nudge is the whole system turn, so without tools there is none.
     assert renders == [
         (["system", "user", "assistant"], True),
-        (["system", "user"], False),
+        (["system", "user"] if system else ["user"], False),
         (["system", "user"], True),
     ]
 
