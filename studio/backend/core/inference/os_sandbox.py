@@ -723,9 +723,36 @@ def trusted_tool_folder_roots() -> tuple[str, ...]:
     """Filtered as a model folder is, so the gate never silences a folder the jails would refuse to grant."""
     try:
         from utils.trusted_tool_folders_settings import trusted_tool_folders_for_caller
-        return _grantable_read_roots(trusted_tool_folders_for_caller())
+        return grantable_trusted_roots(trusted_tool_folders_for_caller())
     except Exception:  # noqa: BLE001 - never fail a launch over a stored setting
         return ()
+
+
+_TRUSTED_FOLDER_SCAN_LIMIT = 5000
+
+
+def grantable_trusted_roots(candidates) -> tuple[str, ...]:
+    """Granted whole, so any sandboxed call could read a credential anywhere inside, not only at the top."""
+    return tuple(
+        root for root in _grantable_read_roots(candidates) if not _holds_a_nested_credential(root)
+    )
+
+
+def _holds_a_nested_credential(folder: str) -> bool:
+    """A tree too large to check counts as holding one."""
+    from .tool_path_approval import _CREDENTIAL_BASENAMES as approval_names
+    from .tool_path_approval import _references_sensitive_path
+
+    names = {*_CREDENTIAL_BASENAMES, *approval_names}
+    seen = 0
+    for top, dirs, files in os.walk(folder):
+        for name in (*dirs, *files):
+            seen += 1
+            if seen > _TRUSTED_FOLDER_SCAN_LIMIT:
+                return True
+            if name in names or _references_sensitive_path(os.path.join(top, name)):
+                return True
+    return False
 
 
 def _grantable_read_roots(candidates) -> tuple[str, ...]:

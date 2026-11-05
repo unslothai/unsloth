@@ -80,6 +80,23 @@ def test_a_credential_inside_the_folder_still_asks(folder):
     assert _asks(folder / "sub" / ".git-credentials") is True
 
 
+@pytest.mark.parametrize("relative", ["sub/.git-credentials", "deep/er/token", ".ssh/config", "a/.env"])
+def test_a_folder_with_a_nested_credential_is_not_granted(folder, relative):
+    # The sandbox binds the folder whole, so a script there could read it without any prompt.
+    path = folder / relative
+    path.parent.mkdir(parents = True, exist_ok = True)
+    path.write_text("x")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+    assert _asks(folder / "run.sh") is True
+
+
+def test_a_folder_too_large_to_check_is_not_granted(folder, monkeypatch):
+    monkeypatch.setattr(os_sandbox, "_TRUSTED_FOLDER_SCAN_LIMIT", 3)
+    for index in range(4):
+        (folder / f"f{index}.txt").write_text("x")
+    assert os_sandbox.trusted_tool_folder_roots() == ()
+
+
 def test_a_folder_with_a_credential_at_its_top_is_not_trusted(folder):
     (folder / ".env").write_text("KEY=x")
     assert os_sandbox.trusted_tool_folder_roots() == ()
@@ -229,10 +246,10 @@ class TestSaving:
                 trusted.set_trusted_tool_folders([str(value)])
         assert store == {}
 
-    @pytest.mark.parametrize("name", [".env", "token", ".git-credentials"])
+    @pytest.mark.parametrize("name", [".env", "token", ".git-credentials", "sub/.ssh/id_rsa"])
     def test_refuses_a_folder_the_sandbox_would_not_grant(self, scratch, store, name):
         folder = scratch / "tools"
-        folder.mkdir()
+        (folder / name).parent.mkdir(parents = True)
         (folder / name).write_text("x")
         with pytest.raises(ValueError, match = "credential"):
             trusted.set_trusted_tool_folders([str(folder)])
