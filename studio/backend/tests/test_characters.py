@@ -644,12 +644,13 @@ def test_charx_icon_candidates_are_read_once_each(monkeypatch):
         archive.writestr("card.json", json.dumps({**V2, "data": {**V2["data"], "assets": refs}}))
         archive.writestr("assets/x.bin", b"\0" * 4096)
     reads = []
-    original = zipfile.ZipFile.read
-    monkeypatch.setattr(
-        zipfile.ZipFile,
-        "read",
-        lambda self, name, pwd = None: reads.append(name) or original(self, name, pwd),
-    )
+    original = zipfile.ZipFile.open
+
+    def counted(self, name, *args, **kwargs):
+        reads.append(getattr(name, "filename", name))
+        return original(self, name, *args, **kwargs)
+
+    monkeypatch.setattr(zipfile.ZipFile, "open", counted)
     cards.read_charx(buffer.getvalue())
     assert reads.count("assets/x.bin") == 1
 
@@ -743,3 +744,22 @@ def test_a_card_with_malformed_extensions_still_exports(client):
         assert (
             client.get(f"/api/characters/{imported['id']}/export?format={fmt}").status_code == 200
         )
+
+
+def test_a_charx_member_is_not_inflated_past_its_declared_size():
+    import tracemalloc
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("card.json", b'{"name": "x"}' + b" " * (16 * 1024 * 1024))
+    data = bytearray(buffer.getvalue())
+    # Declare 22 bytes in both headers, as a crafted archive would.
+    struct.pack_into("<I", data, data.find(b"PK\x03\x04") + 22, 22)
+    struct.pack_into("<I", data, data.find(b"PK\x01\x02") + 24, 22)
+    tracemalloc.start()
+    try:
+        with pytest.raises(cards.CardError):
+            cards.read_charx(bytes(data))
+        assert tracemalloc.get_traced_memory()[1] < 4 * 1024 * 1024
+    finally:
+        tracemalloc.stop()

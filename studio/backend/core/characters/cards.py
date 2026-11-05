@@ -288,6 +288,12 @@ def read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
         raise CardError("This CHARX archive could not be read.") from exc
 
 
+def _read_member(archive: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+    # Streamed to the declared size: ZipFile.read inflates the whole member before it checks that size.
+    with archive.open(info) as member:
+        return member.read(info.file_size)
+
+
 def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
     try:
         archive = zipfile.ZipFile(io.BytesIO(data))
@@ -300,7 +306,7 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
         if names["card.json"].file_size > MAX_CARD_BYTES:
             raise CardError("card.json is too large.")
         try:
-            card = _json_loads(archive.read("card.json").decode("utf-8"))
+            card = _json_loads(_read_member(archive, names["card.json"]).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CardError("card.json is not valid JSON.") from exc
         if not isinstance(card, dict):
@@ -325,7 +331,7 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
             info = names.get(candidate)
             if info is not None and 0 < info.file_size <= budget:
                 budget -= info.file_size
-                blob = archive.read(candidate)
+                blob = _read_member(archive, info)
                 if sniff_image_type(blob):
                     icon_bytes = blob
                     break
