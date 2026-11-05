@@ -143,7 +143,7 @@ def measure(browser, base: str, turns: int) -> dict:
     )
     page.wait_for_timeout(1500)
     page.mouse.move(720, 420)
-    m1 = metrics(cdp)
+    s0 = metrics(cdp)
     steps = 24
     for i in range(steps):
         page.mouse.wheel(0, -400 if i < steps // 2 else 400)
@@ -160,8 +160,8 @@ def measure(browser, base: str, turns: int) -> dict:
         "worst_has": max(worst, key = worst.get)[:200] if worst else "",
         "type_style_ms": 1000 * (m1["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / len(KEYS),
         "type_layout_ms": 1000 * (m1["LayoutDuration"] - m0["LayoutDuration"]) / len(KEYS),
-        "scroll_style_ms": 1000 * (m2["RecalcStyleDuration"] - m1["RecalcStyleDuration"]) / steps,
-        "scroll_layout_ms": 1000 * (m2["LayoutDuration"] - m1["LayoutDuration"]) / steps,
+        "scroll_style_ms": 1000 * (m2["RecalcStyleDuration"] - s0["RecalcStyleDuration"]) / steps,
+        "scroll_layout_ms": 1000 * (m2["LayoutDuration"] - s0["LayoutDuration"]) / steps,
     }
 
 
