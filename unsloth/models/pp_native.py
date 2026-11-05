@@ -635,30 +635,37 @@ def _moe_aux_plan(parts):
     return _MoEAux(inner, router_class, index, num_experts, routers)
 
 
+def _scaler_called_by(fn, depth = 1):
+    """`unsloth_ga_scale_aux_loss` if `fn` (or a function it wraps) calls it, else None. With depth, also a
+    module-level *forward it calls: Unsloth Zoo's compiled module has the class forward return
+    `<Class>_forward(self, ...)`, and that function holds the rewrite."""
+    seen = 0
+    while fn is not None and seen < 8:
+        seen += 1
+        fn = getattr(fn, "__func__", fn)
+        code = getattr(fn, "__code__", None)
+        names = getattr(code, "co_names", ())
+        scope = getattr(fn, "__globals__", None) or {}
+        if "unsloth_ga_scale_aux_loss" in names:
+            scaler = scope.get("unsloth_ga_scale_aux_loss")
+            if callable(scaler):
+                return scaler
+        elif depth > 0:
+            for name in names:
+                if name.endswith("_forward") and callable(scope.get(name)):
+                    scaler = _scaler_called_by(scope[name], depth - 1)
+                    if scaler is not None:
+                        return scaler
+        fn = getattr(fn, "__wrapped__", None)
+    return None
+
+
 def _forward_aux_scaler(owner):
     """The `unsloth_ga_scale_aux_loss` the running forward calls (Unsloth Zoo rewrite_aux_loss_ga), or None.
     Read from the forward itself, not a version check, so the pipeline matches whatever forward is installed."""
-    import inspect
-
-    forward = owner.__dict__.get("forward") or getattr(type(owner), "forward", None)
-    forward = getattr(forward, "__func__", forward)
-    seen = 0
-    while forward is not None and seen < 8:
-        seen += 1
-        code = getattr(forward, "__code__", None)
-        if code is not None and "unsloth_ga_scale_aux_loss" in code.co_names:
-            scaler = getattr(forward, "__globals__", {}).get("unsloth_ga_scale_aux_loss")
-            return scaler if callable(scaler) else None
-        forward = getattr(forward, "__wrapped__", None)
-    try:
-        forward = inspect.unwrap(getattr(type(owner), "forward", None))
-    except Exception:
-        return None
-    code = getattr(forward, "__code__", None)
-    if code is not None and "unsloth_ga_scale_aux_loss" in code.co_names:
-        scaler = getattr(forward, "__globals__", {}).get("unsloth_ga_scale_aux_loss")
-        return scaler if callable(scaler) else None
-    return None
+    # The instance forward (a wrapper), else / then the class forward with every layer it wraps.
+    scaler = _scaler_called_by(owner.__dict__.get("forward"))
+    return scaler if scaler is not None else _scaler_called_by(getattr(type(owner), "forward", None))
 
 
 def _forward_aux_weighting(owner, term, kwargs, num_items_in_batch):

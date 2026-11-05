@@ -181,6 +181,7 @@ def _case_train(
     mode = "lora",
     trl_aux = False,
     aux_coef = None,
+    zoo_compile = False,
     device = "cpu",
     bypass_pre = False,
     bypass_post = False,
@@ -270,6 +271,11 @@ def _case_train(
         )
         return get_peft_model(model, config)
 
+    if zoo_compile:
+        # FastModel's path: Unsloth Zoo's compiled module, whose CausalLM forward delegates to a module-level
+        # rewrite (the test's env: UNSLOTH_COMPILE_DISABLE keeps the rewritten forwards eager).
+        from unsloth_zoo.compiler import unsloth_compile_transformers
+        unsloth_compile_transformers(model_type = arch)
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
@@ -843,15 +849,26 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
         _close(res, ref, what = (env, rank))
 
 
+@pytest.mark.parametrize("zoo_compile", [False, True], ids = ["forward_install", "zoo_compiled"])
 @pytest.mark.parametrize("aux", [True, False], ids = ["aux_on", "aux_off"])
 @pytest.mark.parametrize("ga", [1, 2, 4])
-def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux):
+def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux, zoo_compile, tmp_path):
     """PP=2 Qwen3-MoE with GA 1/2/4 matches one process: the aux term is weighted per micro-batch token share
     (unsloth_ga_scale_aux_loss); adding it in full trained a ~ga x larger term."""
     kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
-    (ref,) = _spawn("train", 1, **kw)
+    # zoo_compiled: the CausalLM forward is the compiled module's, which returns its module-level
+    # Qwen3MoeForCausalLM_forward (the one calling the scaler); the import-time fused forward is off.
+    base = {}
+    if zoo_compile:
+        kw["zoo_compile"] = True
+        base = {
+            "UNSLOTH_FUSED_FORWARD": "0",
+            "UNSLOTH_COMPILE_DISABLE": "1",
+            "UNSLOTH_COMPILE_LOCATION": str(tmp_path / "unsloth_compiled_cache"),
+        }
+    (ref,) = _spawn("train", 1, base, **kw)
     assert ref["output_router_logits"] is aux, ref
-    env = {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"}
+    env = {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe", **base}
     results = _spawn("train", 2, env, **kw)
     _skip_if_one_microbatch_refused(results)
     _same_rows(results, ref, what = (ga, aux))
