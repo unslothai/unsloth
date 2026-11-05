@@ -173,8 +173,10 @@ export async function prepareCharacterRun(args: {
   const shape = <M extends { id: string }>(message: M): M => {
     if (!byId.has(message.id)) return message;
     const thread = message as unknown as ThreadMessage;
-    const name = replyNameOf(roleplayMetaOf(thread), cast, built.speaker.name);
-    return shapeReplayMessage(thread, byId.get(message.id)!, name, built.named) as unknown as M;
+    const meta = roleplayMetaOf(thread);
+    const name = replyNameOf(meta, cast, built.speaker.name);
+    const recorded = meta?.kind === "reply" ? meta.speakerName || name : name;
+    return shapeReplayMessage(thread, byId.get(message.id)!, name, built.named, recorded) as unknown as M;
   };
   return {
     system: built.system,

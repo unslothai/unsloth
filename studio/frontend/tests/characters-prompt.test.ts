@@ -428,6 +428,18 @@ test("a hidden turn with no reply after it is not sent", () => {
   assert.ok(built.texts[1].startsWith("Hello") && built.texts[1].includes("[Rain.]"));
 });
 
+test("a renamed character's old replies replay under the new name only", () => {
+  const built = buildCharacterPrompt({
+    cast: [character({ id: "rin", name: "Nova" }), character({ id: "bo", name: "Bo" })],
+    speakerId: "bo",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [{ role: "assistant", text: "Rin: Hello", meta: { kind: "reply", speakerId: "rin", speakerName: "Rin" } }],
+    now: NOW,
+  });
+  assert.equal(built.texts[0], "Nova: Hello");
+});
+
 test("lorebook keys split on commas, except inside a regex key", () => {
   assert.deepEqual(parseKeyList(" sword, /a{2,4}/i , /[,/]x/,blade ,, "), ["sword", "/a{2,4}/i", "/[,/]x/", "blade"]);
 });

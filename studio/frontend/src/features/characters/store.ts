@@ -179,6 +179,13 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
 }));
 
 if (typeof window !== "undefined") {
+  // Coming back to this tab picks up characters and personas edited in another one before the next send.
+  document.addEventListener("visibilitychange", () => {
+    const state = useCharactersStore.getState();
+    if (document.visibilityState !== "visible") return;
+    if (state.status === "ready") void state.refresh().catch(() => undefined);
+    if (state.personasStatus === "ready") void state.refreshPersonas().catch(() => undefined);
+  });
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     epoch += 1;
     refreshPromise = null;

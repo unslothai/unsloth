@@ -118,8 +118,9 @@ export function stripSpeakerPrefix(text: string, name: string): string {
 }
 
 /** A stored reply as history replays it: no leading "Name:", and in a group the speaker's name in front. */
-export function replayedReply(text: string, name: string, group: boolean): string {
-  const body = stripSpeakerPrefix(text, name).trim();
+export function replayedReply(text: string, name: string, group: boolean, recorded = name): string {
+  // The name the reply was written under goes too, or a renamed character replays as "Nova: Rin: Hello".
+  const body = stripSpeakerPrefix(stripSpeakerPrefix(text, recorded), name).trim();
   return group ? `${name}: ${body}` : body;
 }
 
@@ -143,12 +144,13 @@ export function shapeReplayMessage<M extends { role: string; content: unknown }>
   text: string,
   replyName: string,
   group: boolean,
+  recordedName = replyName,
 ): M {
   const parts = message.content as readonly ContentPart[];
   const firstText = parts.findIndex((part) => part.type === "text");
   if (message.role === "assistant" && parts.filter((part) => part.type === "text").length > 1) {
     const content = parts.map((part, index) =>
-      index === firstText ? { ...part, text: replayedReply(part.text ?? "", replyName, group) } : part,
+      index === firstText ? { ...part, text: replayedReply(part.text ?? "", replyName, group, recordedName) } : part,
     );
     return { ...message, content };
   }
@@ -270,7 +272,10 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     // A marker asks the named character to speak again without a new user message.
     if (meta?.kind === "turn") return [nudgeText(nameOf(meta.speakerId, speaker.name))];
     if (meta?.kind === "opening") return [entry.text.trim() || "[Start a new chat]"];
-    if (entry.role === "assistant") return [replayedReply(entry.text, replyNameOf(meta, cast, speaker.name), named)];
+    if (entry.role === "assistant") {
+      const name = replyNameOf(meta, cast, speaker.name);
+      return [replayedReply(entry.text, name, named, meta?.kind === "reply" ? meta.speakerName || name : name)];
+    }
     // Names only: a re-rolled {{random}} or a fresh {{time}} would rewrite old turns on every send.
     const text = applyNameMacros(entry.text, steadyChar, user).trim();
     const lines = [named ? `${user}: ${text}` : text];
