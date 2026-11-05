@@ -105,7 +105,6 @@ test("speaker planning is deterministic per message and follows each reply order
   assert.deepEqual(planReplies({ cast, order: "manual", userText: "hi", lastSpeakerId: "a", seed: "m1" }), ["b"]);
   const natural = planReplies({ cast, order: "natural", userText: "Ann, look", lastSpeakerId: null, seed: "m1" });
   assert.equal(natural[0], "a");
-  assert.ok(natural.includes("b"), "talkativeness 1 always joins");
   assert.ok(!natural.includes("c"), "muted members never reply");
   for (const seed of ["x", "y", "z"]) {
     assert.deepEqual(
@@ -331,5 +330,39 @@ test("a title is not a name: mentions and labels skip Captain, Professor and the
   assert.deepEqual(mentionedIds("The man in the captain's coat stared. Elara, where are we?", cast), ["elara"]);
   assert.deepEqual(mentionedIds("Rhys, and you, Elara?", cast), ["rhys", "elara"]);
   assert.deepEqual(mentionedIds("Ask Captain Rhys Calloway first.", cast), ["rhys"]);
+  // A title only one character holds calls them when used as a form of address, and so does a surname.
+  assert.deepEqual(mentionedIds("Captain, you've gone quiet.", cast), ["rhys"]);
+  assert.deepEqual(mentionedIds("What do you think, Calloway? And you, Voss?", cast), ["rhys", "elara"]);
+  assert.deepEqual(mentionedIds("I admire the captain's coat.", cast), []);
+  const two = [...cast, { id: "mara", name: "Captain Mara Okafor", talkativeness: 0.5, muted: false }];
+  assert.deepEqual(mentionedIds("Captain, a word?", two), [], "a shared title names nobody");
 });
 
+test("natural order: the named character answers, an open line gets one voice, rarely two", () => {
+  const cast = [
+    { id: "elara", name: "Elara Voss", talkativeness: 0.5, muted: false },
+    { id: "rin", name: "Rin Takeda", talkativeness: 0.6, muted: false },
+    { id: "rhys", name: "Captain Rhys Calloway", talkativeness: 0.45, muted: false },
+  ];
+  const seeds = Array.from({ length: 400 }, (_, i) => `msg-${i}`);
+  const named = seeds.map((seed) => planReplies({ cast, order: "natural", userText: "Elara, where are we?", lastSpeakerId: "rin", seed }));
+  assert.ok(named.every((plan) => plan[0] === "elara" && plan.length <= 2));
+  const namedExtra = named.filter((plan) => plan.length === 2).length / seeds.length;
+  assert.ok(namedExtra > 0.05 && namedExtra < 0.25, `a named answer is rarely joined (${namedExtra})`);
+
+  const open = seeds.map((seed) => planReplies({ cast, order: "natural", userText: "What now?", lastSpeakerId: "rin", seed }));
+  assert.ok(open.every((plan) => plan.length >= 1 && plan.length <= 2 && plan[0] !== "rin"));
+  const openExtra = open.filter((plan) => plan.length === 2).length / seeds.length;
+  assert.ok(openExtra > 0.18 && openExtra < 0.38, `an open line often gets a second voice (${openExtra})`);
+  const leads = new Set(open.map((plan) => plan[0]));
+  assert.deepEqual([...leads].sort(), ["elara", "rhys"], "anyone but the last speaker can lead");
+
+  // Several named characters all answer, in the order named.
+  assert.deepEqual(
+    planReplies({ cast, order: "natural", userText: "Rhys and Elara, help!", lastSpeakerId: null, seed: "s" }).slice(0, 2),
+    ["rhys", "elara"],
+  );
+  // Back to back only when allowed or named.
+  const self = planReplies({ cast: cast.slice(0, 2), order: "natural", userText: "", lastSpeakerId: "elara", seed: "q" });
+  assert.equal(self[0], "rin");
+});

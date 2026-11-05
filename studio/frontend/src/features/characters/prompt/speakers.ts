@@ -45,18 +45,31 @@ function escape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Members named in the text, in the order they are first named. Whole name or short name (3+ letters). */
+/** Members named in the text, in the order they are first named: full name, short name, surname, or a title only they hold. */
 export function mentionedIds(text: string, cast: SpeakerCandidate[]): string[] {
+  const words = (member: SpeakerCandidate) => member.name.trim().split(/\s+/).filter(Boolean);
+  const isTitle = (word: string) => TITLES.has(word.toLowerCase().replace(/\.$/, ""));
+  // A title calls its character only when one character has it ("Captain, you've gone quiet").
+  const titleCount = new Map<string, number>();
+  for (const member of cast) {
+    for (const word of words(member).filter(isTitle)) titleCount.set(word, (titleCount.get(word) ?? 0) + 1);
+  }
   const found: { id: string; at: number }[] = [];
   for (const member of cast) {
-    const names = [member.name.trim()];
-    const first = shortName(member.name);
-    if (first && first.length >= 3 && first !== names[0]) names.push(first);
+    const all = words(member);
+    const plain = all.filter((word) => !isTitle(word));
+    const loose = [member.name.trim(), shortName(member.name), plain.length > 1 ? plain[plain.length - 1] : ""]
+      .filter((name, i, list) => name && (i === 0 || name.length >= 3) && list.indexOf(name) === i);
     let at = -1;
-    for (const name of names) {
-      if (!name) continue;
-      const match = new RegExp(`(?<![\\p{L}\\p{N}_])${escape(name)}(?![\\p{L}\\p{N}_])`, "iu").exec(text);
-      if (match && (at === -1 || match.index < at)) at = match.index;
+    const see = (index: number) => {
+      if (index >= 0 && (at === -1 || index < at)) at = index;
+    };
+    for (const name of loose) {
+      see(new RegExp(`(?<![\\p{L}\\p{N}_])${escape(name)}(?![\\p{L}\\p{N}_])`, "iu").exec(text)?.index ?? -1);
+    }
+    for (const title of all.filter((word) => isTitle(word) && titleCount.get(word) === 1)) {
+      // Capitalized and not possessive: "Captain," calls him, "the captain's coat" does not.
+      see(new RegExp(`(?<![\\p{L}\\p{N}_])${escape(title)}(?![\\p{L}\\p{N}_'\u2019])`, "u").exec(text)?.index ?? -1);
     }
     if (at >= 0) found.push({ id: member.id, at });
   }
@@ -88,28 +101,28 @@ export function planReplies(input: {
     const last = active.findIndex((member) => member.id === input.lastSpeakerId);
     return [active[(last + 1) % active.length].id];
   }
+  // Natural order is a conversation, not a panel: whoever you name answers; otherwise one character
+  // speaks, picked by talkativeness. Now and then a second voice chimes in, never more.
+  const canFollow = (member: SpeakerCandidate) => input.allowSelfReplies || member.id !== input.lastSpeakerId;
+  const pickWeighted = (pool: SpeakerCandidate[]): SpeakerCandidate | null => {
+    if (pool.length === 0) return null;
+    const weights = pool.map((member) => Math.max(0.05, Math.min(1, member.talkativeness)));
+    let roll = random() * weights.reduce((sum, weight) => sum + weight, 0);
+    for (let i = 0; i < pool.length; i += 1) {
+      roll -= weights[i];
+      if (roll < 0) return pool[i];
+    }
+    return pool[pool.length - 1];
+  };
   const queue = [...mentioned];
-  const others = active.filter(
-    (member) =>
-      !queue.includes(member.id) &&
-      (input.allowSelfReplies || member.id !== input.lastSpeakerId || mentioned.length === 0),
-  );
-  // Shuffle so equal talkativeness does not always favor cast order.
-  for (let i = others.length - 1; i > 0; i -= 1) {
-    const j = Math.floor(random() * (i + 1));
-    [others[i], others[j]] = [others[j], others[i]];
-  }
-  for (const member of others) {
-    if (random() < Math.min(1, Math.max(0, member.talkativeness))) queue.push(member.id);
-  }
   if (queue.length === 0) {
-    const pool = active.filter((member) => member.id !== input.lastSpeakerId);
-    const from = pool.length ? pool : active;
-    queue.push(from[Math.floor(random() * from.length)].id);
+    const lead = pickWeighted(active.filter(canFollow)) ?? pickWeighted(active);
+    if (lead) queue.push(lead.id);
   }
-  // A reply right after itself only when allowed or explicitly named.
-  if (!input.allowSelfReplies && queue.length > 1 && queue[0] === input.lastSpeakerId && !mentioned.includes(queue[0])) {
-    queue.push(queue.shift()!);
-  }
+  // A named answer is rarely interrupted (a quarter of the usual chance); an open line invites more.
+  const joinChance = mentioned.length ? 0.25 : 0.5;
+  const rest = active.filter((member) => !queue.includes(member.id));
+  const extra = pickWeighted(rest);
+  if (extra && queue.length < 2 && random() < Math.min(1, extra.talkativeness) * joinChance) queue.push(extra.id);
   return queue;
 }

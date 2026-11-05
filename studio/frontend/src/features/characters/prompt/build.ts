@@ -61,11 +61,15 @@ export interface BuiltPrompt {
 
 export const SOLO_FRAME =
   "You are {{char}} in an ongoing roleplay with {{user}}. Write {{char}}'s next reply only. " +
-  "Stay in character, follow the scene, and leave {{user}}'s words, thoughts and actions to {{user}}.";
+  "Stay in character and keep the scene alive: react to what just happened, act, and bring in your own ideas, " +
+  "feelings and small surprises instead of only asking {{user}} questions. " +
+  "Leave {{user}}'s words, thoughts and actions to {{user}}.";
 
 export const GROUP_FRAME =
   "This is a group roleplay between {{user}} and {{group}}. Each turn you are told which character speaks; " +
-  "write only that character's next reply, in their own voice. Leave {{user}}'s words, thoughts and actions to {{user}}.";
+  "write only that character's next reply, in their own voice. Characters talk to each other as well as to {{user}}: " +
+  "react to what was just said, tease, disagree, make plans and move the scene forward, rather than only asking {{user}} questions. " +
+  "Leave {{user}}'s words, thoughts and actions to {{user}}.";
 
 /**
  * Messages that ask the model to write the user's own next line ("Write my reply"): the same
