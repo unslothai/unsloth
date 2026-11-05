@@ -272,8 +272,7 @@ def _case_train(
         return get_peft_model(model, config)
 
     if zoo_compile:
-        # FastModel's path: Unsloth Zoo's compiled module, whose CausalLM forward delegates to a module-level
-        # rewrite (the test's env: UNSLOTH_COMPILE_DISABLE keeps the rewritten forwards eager).
+        # FastModel's path: Zoo's compiled CausalLM forward delegates to a module-level rewrite.
         from unsloth_zoo.compiler import unsloth_compile_transformers
         unsloth_compile_transformers(model_type = arch)
     load = tp_env.tensor_parallel_env_load(load)
@@ -561,14 +560,12 @@ def _rows_per_step(res):
     ]
 
 
-# torch < 2.13 refuses fewer micro-batches than stages in every single-stage schedule, GPipe included
-# (torch/distributed/pipelining/schedules.py, PipelineScheduleSingle.__init__, line 579 on 2.10.0); 2.13 keeps the
-# check in Schedule1F1B only (line 1020). pp_schedules.py turns torch's ValueError into this refusal.
+# torch < 2.13 refuses fewer micro-batches than stages in every single-stage schedule (PipelineScheduleSingle);
+# 2.13 keeps the check in Schedule1F1B only.
 _ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 stages"
 
 
 def _skip_if_one_microbatch_refused(results):
-    """The pipeline refused one micro-batch over two stages on this torch (every rank): the cell cannot run here."""
     errors = [res.get("error") or "" for res in results]
     if errors and all(_ONE_MICROBATCH_REFUSED in e for e in errors):
         import torch as _torch
@@ -859,11 +856,8 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
 def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
     ga, aux, zoo_compile, tmp_path
 ):
-    """PP=2 Qwen3-MoE with GA 1/2/4 matches one process: the aux term is weighted per micro-batch token share
-    (unsloth_ga_scale_aux_loss); adding it in full trained a ~ga x larger term."""
+    """PP=2 Qwen3-MoE GA 1/2/4 matches one process: the aux term is token-share weighted (full = ~ga x larger)."""
     kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
-    # zoo_compiled: the CausalLM forward is the compiled module's, which returns its module-level
-    # Qwen3MoeForCausalLM_forward (the one calling the scaler); the import-time fused forward is off.
     base = {}
     if zoo_compile:
         kw["zoo_compile"] = True

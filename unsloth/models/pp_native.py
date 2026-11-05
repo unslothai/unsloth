@@ -636,9 +636,8 @@ def _moe_aux_plan(parts):
 
 
 def _scaler_called_by(fn, depth = 1):
-    """`unsloth_ga_scale_aux_loss` if `fn` (or a function it wraps) calls it, else None. With depth, also a
-    module-level *forward it calls: Unsloth Zoo's compiled module has the class forward return
-    `<Class>_forward(self, ...)`, and that function holds the rewrite."""
+    """`unsloth_ga_scale_aux_loss` if `fn`, a function it wraps, or (depth) a module-level *_forward it calls
+    (Unsloth Zoo's compiled `<Class>_forward`) calls it, else None."""
     seen = 0
     while fn is not None and seen < 8:
         seen += 1
@@ -661,9 +660,7 @@ def _scaler_called_by(fn, depth = 1):
 
 
 def _forward_aux_scaler(owner):
-    """The `unsloth_ga_scale_aux_loss` the running forward calls (Unsloth Zoo rewrite_aux_loss_ga), or None.
-    Read from the forward itself, not a version check, so the pipeline matches whatever forward is installed."""
-    # The instance forward (a wrapper), else / then the class forward with every layer it wraps.
+    """The scaler the installed forward calls, or None; read from the forward, not a version check."""
     scaler = _scaler_called_by(owner.__dict__.get("forward"))
     return (
         scaler if scaler is not None else _scaler_called_by(getattr(type(owner), "forward", None))
