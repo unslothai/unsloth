@@ -454,9 +454,18 @@ class Fast_RoPE_Embedding_QK(torch.autograd.Function):
     def backward(ctx, dQ, dK):
         rope_ptr = ctx.rope_indices
 
-        # Out of place: gradients can share storage with each other or another branch.
-        dQ_out = torch.empty(dQ.shape, dtype = dQ.dtype, device = dQ.device)
-        dK_out = torch.empty(dK.shape, dtype = dK.dtype, device = dK.device)
+        # Out of place: gradients can share storage with each other or another branch;
+        # keep BSHD-transposed layout so the caller's .transpose(1, 2).reshape(...) is a view.
+        dQ_out = (
+            _bshd_buffer(dQ)
+            if dQ.transpose(1, 2).is_contiguous()
+            else torch.empty(dQ.shape, dtype = dQ.dtype, device = dQ.device)
+        )
+        dK_out = (
+            _bshd_buffer(dK)
+            if dK.transpose(1, 2).is_contiguous()
+            else torch.empty(dK.shape, dtype = dK.dtype, device = dK.device)
+        )
 
         with torch_gpu_device(dQ.device):
             _rope_qk(
