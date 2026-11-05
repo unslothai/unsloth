@@ -407,6 +407,7 @@ def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
             f"'{NANO}'",
             "pip install cosmos-guardrail",
             _GUARDRAIL_REPO,
+            "hf auth login",
             "HF_TOKEN",
             f"{_OPT_OUT_ENV}=0",
         ):
@@ -805,6 +806,7 @@ def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_run
     for part in (
         f"'{NANO}'",
         f"https://huggingface.co/{_GUARDRAIL_REPO}",
+        "hf auth login",
         "HF_TOKEN",
         f"{_OPT_OUT_ENV}=0",
     ):

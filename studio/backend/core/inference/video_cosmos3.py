@@ -22,10 +22,12 @@ NONE_COMPONENTS = ("sound_tokenizer",)
 GUARDRAIL_PACKAGE = "cosmos_guardrail"
 # cosmos_guardrail downloads its weights from this gated repo when the pipeline is built.
 GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
+# That download sends only the ambient Hub login (HF_TOKEN or `hf auth login`), never the Unsloth settings token.
 _GUARDRAIL_ACCESS = (
     f"The guardrail downloads its weights from the gated Hugging Face repo {GUARDRAIL_REPO}: accept its licence at "
-    f"https://huggingface.co/{GUARDRAIL_REPO}, then add a Hugging Face token that has access in Unsloth settings (or "
-    f"set HF_TOKEN)."
+    f"https://huggingface.co/{GUARDRAIL_REPO}, then log in with `hf auth login` or set HF_TOKEN for that account "
+    f"where Unsloth Studio runs, and restart Unsloth Studio (a token saved only in Unsloth settings does not reach "
+    f"this download)."
 )
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
