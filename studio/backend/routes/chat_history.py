@@ -1739,13 +1739,25 @@ def _split_mcp_images(text: str) -> str:
     return text[:at] if valid else text
 
 
-def _search_view_string(text: str) -> str:
-    cut = _split_mcp_images(text)
-    at = cut.find(_IMAGES_MARKER)
+# JavaScript's \s, which differs from Python's (no \x1c-\x1f or \x85, adds \ufeff).
+_JS_SPACE = "\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+_DATA_URL = re.compile(f"data:[^;,{_JS_SPACE}]+;base64,[A-Za-z0-9+/=]+")
+
+
+def _searchable_string(text: str) -> str:
+    """searchableText on a string, short of stripBase64Runs: a Python scan for bare runs costs far more
+    than the prefixed data URL one, so those runs are left to the browser."""
+    text = _split_mcp_images(text)
+    at = text.find(_IMAGES_MARKER)
     if at != -1:
-        cut = cut[:at]
+        text = text[:at]
+    return _DATA_URL.sub(" ", text)
+
+
+def _search_view_string(text: str) -> str:
+    cut = _searchable_string(text)
     # Sent only when the browser would read it back unchanged, else the original.
-    return cut if _split_mcp_images(cut) == cut else text
+    return cut if _searchable_string(cut) == cut else text
 
 
 def _search_view_value(

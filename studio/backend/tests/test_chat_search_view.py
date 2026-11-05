@@ -232,6 +232,18 @@ def test_search_view_keeps_only_the_text_of_a_widget_result():
     assert plain["result"] == {"text": "shown", "ui": ui}
 
 
+def test_search_view_strips_data_urls_the_index_drops():
+    run = "QUJD" * 40
+    text = f"plot data:image/png;base64,{run}== saved {run}= ok"
+    # The bare run is the browser's to strip.
+    assert _tool_call(toolName = "python", result = {"stdout": text})["result"] == {
+        "stdout": f"plot   saved {run}= ok"
+    }
+    # JavaScript's \s has U+FEFF and not U+001C, so only the second ends the media type.
+    odd = f"data:a\x1cb;base64,QQ data:a\ufeffb;base64,QQ"
+    assert _tool_call(toolName = "python", result = odd)["result"] == "  data:a\ufeffb;base64,QQ"
+
+
 @pytest.mark.parametrize(
     "text",
     [
