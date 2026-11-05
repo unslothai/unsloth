@@ -601,6 +601,7 @@ export const ar = {
     compactsAt: "يُضغط تلقائيًا عند {tokens} رمز",
     waitForResponse: "انتظر حتى ينتهي الرد الحالي",
     noModel: "حمّل نموذجًا لاستخدام /context",
+    emptyChat: "أرسل رسالة أولاً لاستخدام /context",
     noUsageYet: "أرسل رسالة أولًا: تُبلغ نماذج API عن حجمها مع كل رد.",
     usedOnly: "{used} رمز مستخدم",
     apiNoBreakdown: "تُبلغ نماذج API عن الإجمالي فقط، لذا لا يوجد تفصيل.",

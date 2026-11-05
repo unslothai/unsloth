@@ -601,6 +601,7 @@ export const ptBR = {
     compactsAt: "Compacta automaticamente em {tokens} tokens",
     waitForResponse: "Aguarde a resposta atual terminar",
     noModel: "Carregue um modelo para usar /context",
+    emptyChat: "Envie uma mensagem primeiro para usar /context",
     noUsageYet: "Envie uma mensagem primeiro: modelos de API informam o tamanho a cada resposta.",
     usedOnly: "{used} tokens usados",
     apiNoBreakdown: "Modelos de API informam apenas um total, então não há detalhamento.",

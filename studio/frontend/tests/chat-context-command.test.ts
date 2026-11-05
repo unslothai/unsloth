@@ -268,6 +268,13 @@ test("an API report treats a text-length estimate as no usage yet", () => {
   assert.match(report, /stored\?\.estimated \? null : stored/);
 });
 
+test("an empty chat asks for a message instead of floating a report", () => {
+  const thread = readSrc("components/assistant-ui/thread.tsx");
+  const branch = thread.slice(thread.indexOf("isContextCommand(composerText)"));
+  const gate = branch.indexOf('translate("context.emptyChat")');
+  assert.ok(gate > 0 && gate < branch.indexOf("showContext("));
+});
+
 test("the count carries the completion's overflow policy", () => {
   // truncate_oldest puts search_conversation and the checkpoint nudge in a compacted prompt.
   const adapter = readSrc("features/chat/api/chat-adapter.ts");
