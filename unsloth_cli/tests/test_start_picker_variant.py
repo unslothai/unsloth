@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """A picked GGUF file must not silently override an explicit quantization choice."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -176,3 +177,66 @@ def test_cached_picker_preserves_path_qualified_selector(cached_gguf_pick):
     (build / "tiny-Q8_0.gguf").write_bytes(b"GGUF" + bytes(4092))
     [entry] = catalog.list_chat_models(gguf_variant = "other-build/tiny-Q8_0.gguf")
     assert entry.model == str(snapshot)
+
+
+@pytest.mark.parametrize("mode", ["idle-server", "auto-start"])
+def test_picked_repo_finds_requested_quant_in_remembered_cache(
+    tmp_path, monkeypatch, picker, fake_studio, mode
+):
+    ensure_studio_backend_path(seed_cache_env = False)
+    from huggingface_hub import scan_cache_dir
+    from hub.services.models import cache_inventory
+    from utils import hf_cache_settings
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path / "home"))
+    active, remembered = tmp_path / "active", tmp_path / "remembered"
+    monkeypatch.setattr(hf_cache_settings, "known_hf_hub_caches", lambda: [active, remembered])
+    paths = hf_cache_settings.get_hf_cache_paths()
+    monkeypatch.setattr(
+        hf_cache_settings, "get_hf_cache_paths", lambda: replace(paths, hub_cache = active)
+    )
+    for root, quant in [(active, "Q4_K_M"), (remembered, "Q8_0")]:
+        repo = root / "models--Org--Tiny-GGUF"
+        snapshot = repo / "snapshots" / ("a" * 40)
+        snapshot.mkdir(parents = True)
+        (repo / "refs").mkdir()
+        (repo / "refs" / "main").write_text(snapshot.name)
+        file = snapshot / f"tiny-{quant}.gguf"
+        file.write_bytes(b"GGUF" + bytes(4092))
+        if root == remembered:
+            expected = str(file)
+
+    scans = [scan_cache_dir(root) for root in (active, remembered)]
+    monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
+    [row], _ = catalog._cached_catalog_rows()
+    assert Path(row["cache_path"]).parent == active
+    assert row["load_id"] == row["repo_id"] == "Org/Tiny-GGUF"
+    pinned = Path(row["cache_path"]) / "snapshots" / ("a" * 40)
+    assert catalog._cached_variant_entry({**row, "load_id": str(pinned)}, "Q8_0") is None
+    monkeypatch.setattr(catalog, "list_chat_models", REAL_CATALOG)
+    for source in ("trained_entries", "exported_entries", "local_folder_entries"):
+        monkeypatch.setattr(catalog, source, lambda **kwargs: [])
+
+    load = start.LoadOptions(gguf_variant = "Q8_0")
+    attempts = []
+    if mode == "auto-start":
+        with pytest.raises(typer.Exit) as error:
+            _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
+        assert error.value.exit_code == 7
+        assert attempts == [(expected, load)]
+    else:
+        _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
+        assert _loads(fake_studio) == [{"model_path": expected, "gguf_variant": "Q8_0"}]
+
+    # A positive-sized file can still be shorter than its recorded download.
+    from hub.utils.download_manifest import ExpectedFile, write_manifest
+
+    assert write_manifest(
+        "model",
+        row["repo_id"],
+        "Q8_0",
+        [ExpectedFile(Path(expected).name, 8192)],
+        hub_cache = remembered,
+        commit_hash = pinned.name,
+    )
+    assert catalog._cached_variant_entry(row, "Q8_0") is None

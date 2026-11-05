@@ -5,6 +5,7 @@ import asyncio
 import os
 from dataclasses import dataclass
 from datetime import datetime
+from itertools import chain
 from pathlib import Path
 from typing import List, Optional
 
@@ -456,7 +457,12 @@ def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
     return newest_first(gguf_rows), newest_first(model_rows)
 
 
-def _directory_variant_target(directory: Path, variant: str) -> Optional[str]:
+def _directory_variant_target(
+    directory: Path,
+    variant: str,
+    *,
+    cached_repo: Optional[str] = None,
+) -> Optional[str]:
     """Resolve a complete local quant, keeping the directory for path-qualified selectors."""
     from hub.utils.gguf import gguf_variant_key
     from hub.utils.inventory_scan import complete_snapshot_variants
@@ -467,16 +473,37 @@ def _directory_variant_target(directory: Path, variant: str) -> Optional[str]:
     if target is None or not Path(target).is_relative_to(directory):
         return None
     relative = Path(target).relative_to(directory).as_posix()
-    if gguf_variant_key(relative) not in complete_snapshot_variants(str(directory)):
+    quant = gguf_variant_key(relative)
+    if quant not in complete_snapshot_variants(str(directory)):
         return None
+    if cached_repo:
+        from hub.utils.gguf_sources import cached_gguf_manifest_complete, cached_gguf_source_partial
+        if not cached_gguf_manifest_complete(
+            cached_repo, quant, directory
+        ) or cached_gguf_source_partial(cached_repo, quant, directory):
+            return None
     if _direct_gguf_for_variant(target, variant) is None:
         return str(directory)
     return target
 
 
 def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
-    for snapshot in _reachable_snapshots(Path(row["cache_path"]), row.get("load_id")):
-        target = _directory_variant_target(snapshot, variant)
+    from hub.utils.gguf_sources import gguf_cache_snapshots
+
+    repo_id = row["repo_id"]
+    load_id = row.get("load_id")
+    repo_dir = Path(row["cache_path"])
+    snapshots = _reachable_snapshots(repo_dir, load_id)
+    if load_id == repo_id:
+        # A merged repo-ID row can also load quants from the other cache copies.
+        other_copies = (
+            snapshot
+            for snapshot in gguf_cache_snapshots(repo_id)
+            if snapshot.parent.parent != repo_dir
+        )
+        snapshots = chain(snapshots, other_copies)
+    for snapshot in snapshots:
+        target = _directory_variant_target(snapshot, variant, cached_repo = repo_id)
         if target is not None:
             detail = variant if _is_gguf_file(target) else "gguf"
             return ModelEntry("Downloaded", row["repo_id"], detail, target)
