@@ -6274,7 +6274,9 @@ html[data-glass="macos"] .unsloth-composer-surface {
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
 }
+/* Dimmed, not blurred, everywhere but the New chat welcome view. */
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready],
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper {
   opacity: calc(.7 * (.4 + .6 * var(--wallpaper-conversation, 0)));
 }
@@ -6578,6 +6580,10 @@ html[data-glass][data-glass-menus] .browser-menu[data-slot] {
 html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   box-shadow: var(--glass-rim), var(--glass-lift) !important;
 }
+/* Outranks the flat dark .sidebar-menu rule so chat row menus keep the rim. */
+html[data-glass^="liquid"][data-glass-menus].dark .unsloth-plus-menu.sidebar-menu[data-slot] {
+  box-shadow: var(--glass-rim), var(--glass-lift) !important;
+}
 }
 html[data-glass^="liquid"][data-glass-menus]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
   --glass-hover: color-mix(in srgb, var(--foreground) 7%, transparent);
@@ -6772,10 +6778,6 @@ html[data-glass] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]
   display: none;
 }
 
-/* A user image blur (inline filter) wins. */
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]) > .chat-wallpaper .chat-wallpaper-artwork:not([style*="filter"]) {
-  filter: blur(1.5px);
-}
 /* A backdrop root hides the text beneath a frosted child, so such surfaces blur on a layer instead. */
 html[data-glass][data-glass-menus] :is([data-slot$="popover-content"], [data-slot$="menu-content"], [data-slot="dialog-content"]):has(.sticky, [data-glass-float]),
 html[data-glass][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"]:has(.sticky, [data-glass-float]) {

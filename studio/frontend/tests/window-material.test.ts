@@ -199,9 +199,15 @@ test("glass surfaces holding a frosted child move their own blur behind their co
 	assert.match(css, /:has\(\.sticky, \[data-glass-float\]\)::before \{\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 });
 
-test("glass frosts the wallpaper slightly unless the user set an image blur", () => {
+test("glass dims the wallpaper on other pages like an open chat, and blurs it nowhere", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /\.chat-wallpaper-artwork:not\(\[style\*="filter"\]\) \{\n  filter: blur\(1\.5px\);/);
+	assert.match(css, /html\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\] > \.chat-wallpaper\[data-ready\],[^{]*\{\n  opacity: calc\(\.7 \* /);
+	assert.doesNotMatch(css, /\.chat-wallpaper-artwork[^{]*\{\n  filter: blur\(/);
+});
+
+test("dark glass chat row menus keep the glass rim over the flat sidebar-menu shadow", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\^="liquid"\]\[data-glass-menus\]\.dark \.unsloth-plus-menu\.sidebar-menu\[data-slot\] \{\n  box-shadow: var\(--glass-rim\), var\(--glass-lift\) !important;/);
 });
 
 test("the browser menu takes the glass fill instead of its pinned dark surface", () => {
