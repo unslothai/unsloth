@@ -1200,6 +1200,7 @@ def load_override_modules(
     missing = [c for c in overrides.files if c not in overrides.modules]
     if not missing:
         return dict(overrides.modules)
+    from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
     from .diffusion_text_encoder_trim import family_trims_lm_head
 
     for component in missing:
@@ -1213,8 +1214,10 @@ def load_override_modules(
             cache_dir = cache_dir,
         )
         if component == COMPONENT_VAE:
+            # MOSS-Image decodes in fp32 (load_moss_image_pipeline casts it): a bf16 build first would round its weights.
+            vae_dtype = None if family == MOSS_IMAGE_FAMILY_NAME else dtype
             overrides.modules[component] = build_vae(
-                path, vae_cls = cls, config = config, dtype = dtype, logger = logger
+                path, vae_cls = cls, config = config, dtype = vae_dtype, logger = logger
             )
             continue
         trim = component == "text_encoder" and family_trims_lm_head(family)

@@ -328,6 +328,8 @@ class _AnimaPipelineMixin:
                 images.extend(out if isinstance(out, list) else [out])
         except _AnimaInterrupted:
             images = []
+        # The modular pipeline does not own the hooks enable_model_cpu_offload put on these components.
+        self.maybe_free_model_hooks()
         if not return_dict:
             return (images,)
         return AnimaPipelineOutput(images = images)

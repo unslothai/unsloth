@@ -260,6 +260,63 @@ def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monke
         assert buf.dtype == ref_buf.dtype and torch.equal(buf, ref_buf), name
 
 
+class _AnimaScheduler:
+    def step(
+        self,
+        noise_pred,
+        t,
+        latents,
+        return_dict = False,
+    ):
+        return (latents + 1,)
+
+
+class _AnimaModular:
+    def __init__(self):
+        self.scheduler = _AnimaScheduler()
+        self.transformer = None
+
+    def __call__(
+        self,
+        output = None,
+        **kwargs,
+    ):
+        latents = 0
+        for i in range(kwargs["num_inference_steps"]):
+            latents = self.scheduler.step(None, 1000 - i, latents)[0]
+        return [f"img:{kwargs['prompt']}"] * kwargs["num_images_per_prompt"]
+
+
+def test_every_anima_render_frees_the_offload_hooks():
+    # diffusers' contract for enable_model_cpu_offload: else the VAE stays on the GPU into the next image.
+    from core.inference.diffusion_anima import _AnimaPipelineMixin
+
+    class Face(_AnimaPipelineMixin):
+        def __init__(self):
+            self._interrupt = False
+            self.mp = _AnimaModular()
+            self.freed = 0
+
+        def modular_pipeline(self):
+            return self.mp
+
+        def _set_guidance(self, mp, guidance_scale):
+            pass
+
+        def maybe_free_model_hooks(self):
+            self.freed += 1
+
+    def interrupt(pipe, i, t, kwargs):
+        pipe._interrupt = True
+        return kwargs
+
+    face = Face()
+    assert face(prompt = "a", num_inference_steps = 2).images == ["img:a"]
+    assert face.freed == 1
+    assert face(prompt = "a", num_inference_steps = 3, callback_on_step_end = interrupt).images == []
+    assert face.freed == 2
+
+
 def test_every_anima_image_is_its_own_generation_chunk():
     # One modular call per image (as FLUX.3), so each image is its own chunk.
     from core.inference.diffusion import _generation_chunks
@@ -361,21 +418,45 @@ def test_family_entries():
     ) == (25, 7.0)
 
 
-def test_scheduler_overrides_switch_to_beta_sigmas():
+def test_a_local_anima_load_gets_the_anima_defaults():
+    from core.inference.diffusion import _generation_defaults_for
+    from core.inference.diffusion_families import detect_family
+
+    anima = detect_family("", override = "anima")
+    local = "/models/Anima-Base-v1.0-Diffusers"
+    expected = {"steps": 30, "guidance": 4.0}
+    # The defaults row is keyed by circlestone-labs/..., which a local folder never names.
+    assert _generation_defaults_for(local, None, local, family = anima) == expected
+    assert (
+        _generation_defaults_for("/models/comfy", "anima-v1.safetensors", local, family = anima)
+        == expected
+    )
+    sdxl = detect_family("", override = "sdxl")
+    assert _generation_defaults_for(
+        "/models/sdxl",
+        "animagineXL40_v4Opt.safetensors",
+        "stabilityai/stable-diffusion-xl-base-1.0",
+        family = sdxl,
+    ) == {"steps": 25, "guidance": 7.0}
+
+
+def test_the_comfy_schedule_switches_to_beta_sigmas_unless_opted_out(monkeypatch):
     pytest.importorskip("diffusers")
+    pytest.importorskip("scipy")  # diffusers' beta sigmas need it
     from diffusers import FlowMatchEulerDiscreteScheduler
 
-    from core.inference.diffusion_flow_shift import (
-        apply_comfy_flow_shift,
-        apply_scheduler_overrides,
-    )
+    from core.inference.diffusion_flow_shift import COMFY_SIGMAS_ENV, apply_comfy_schedule
 
-    pipe = type("P", (), {})()
-    pipe.scheduler = FlowMatchEulerDiscreteScheduler(shift = 3.0)
-    apply_comfy_flow_shift(pipe, 1.0)
-    assert apply_scheduler_overrides(pipe, (("use_beta_sigmas", True),))
-    assert pipe.scheduler.config.shift == 1.0
-    assert pipe.scheduler.config.use_beta_sigmas is True
+    def schedule():
+        pipe = type("P", (), {})()
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler(shift = 3.0)
+        changed = apply_comfy_schedule(pipe, 1.0, (("use_beta_sigmas", True),))
+        return changed, pipe.scheduler.config.shift, pipe.scheduler.config.use_beta_sigmas
+
+    assert schedule() == (True, 1.0, True)
+    # The opt-out keeps the shipped scheduler: neither the shift nor the beta spacing.
+    monkeypatch.setenv(COMFY_SIGMAS_ENV, "0")
+    assert schedule() == (False, 3.0, False)
 
 
 def test_krea2_pipeline_takes_a_supplied_vae():
@@ -409,6 +490,51 @@ def test_moss_pipeline_takes_a_supplied_vae():
     from core.inference.diffusion_moss_image import load_moss_image_pipeline
 
     assert "vae" in inspect.signature(load_moss_image_pipeline).parameters
+
+
+def test_a_supplied_moss_vae_keeps_its_fp32_weights(tmp_path):
+    pytest.importorskip("diffusers")
+    from diffusers import AutoencoderKLFlux2
+
+    from core.inference.diffusion_comfy_components import (
+        ComponentFileRef,
+        ComponentOverrides,
+        load_override_modules,
+    )
+
+    torch.manual_seed(0)
+    reference = AutoencoderKLFlux2(
+        block_out_channels = (32, 32),
+        down_block_types = ("DownEncoderBlock2D",) * 2,
+        up_block_types = ("UpDecoderBlock2D",) * 2,
+        layers_per_block = 1,
+        latent_channels = 4,
+        norm_num_groups = 8,
+    )
+    reference.save_config(tmp_path / "base" / "vae")
+    path = _save(tmp_path / "vae.safetensors", reference.state_dict())
+
+    def built(family):
+        overrides = ComponentOverrides(
+            files = {"vae": ComponentFileRef(spec = path, local_path = path)},
+            paths = {"vae": path},
+            classes = {"vae": "AutoencoderKLFlux2"},
+        )
+        modules = load_override_modules(
+            overrides,
+            base = str(tmp_path / "base"),
+            dtype = torch.bfloat16,
+            family = family,
+            local_files_only = True,
+        )
+        return modules["vae"].state_dict()
+
+    # MOSS-Image decodes in fp32, so its supplied VAE must not be rounded to the pipeline dtype on the way.
+    moss = built("moss-image")
+    for key, value in reference.state_dict().items():
+        assert moss[key].dtype == value.dtype and torch.equal(moss[key], value), key
+    other = built("krea-2")
+    assert other["decoder.conv_out.weight"].dtype == torch.bfloat16
 
 
 def test_anima_gguf_is_neither_offered_nor_loaded():
