@@ -421,3 +421,48 @@ def test_a_probe_failure_must_repeat_before_it_counts(monkeypatch):
     assert hp.probe("py") == (True, "")
     runs = iter([(False, "first"), (False, "second")])
     assert hp.probe("py") == (False, "first")
+
+
+def test_uv_is_found_in_studios_private_dir_without_path(tmp_path, monkeypatch):
+    for k in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME", "UV_INSTALL_DIR", "XDG_BIN_HOME"):
+        monkeypatch.delenv(k, raising = False)
+    monkeypatch.setattr(hp.shutil, "which", lambda name: None)
+    monkeypatch.setattr(hp.Path, "home", lambda: tmp_path / "nohome")
+    name = "uv.exe" if os.name == "nt" else "uv"
+    uv = tmp_path / "studio" / "uv" / name
+    uv.parent.mkdir(parents = True)
+    uv.write_text("#!/bin/sh\n", encoding = "utf-8")
+    uv.chmod(0o755)
+    assert hp._uv(str(tmp_path / "studio" / "unsloth_studio")) == str(uv)
+    cmds = hp._pip_cmd("py", "install", ["w.whl"], str(tmp_path / "studio" / "unsloth_studio"))
+    assert cmds[0][0] == str(uv)
+
+
+@pytest.mark.parametrize(
+    "env, disabled",
+    [
+        ({"RAG_VEC_ANN": "0"}, True),
+        ({"RAG_VEC_ANN": "false"}, False),
+        ({"RAG_VEC_ANN_AUTO_INSTALL": "off"}, True),
+        ({}, False),
+    ],
+)
+def test_opt_outs_read_like_the_backend(monkeypatch, env, disabled):
+    for k in ("RAG_VEC_ANN", "RAG_VEC_ANN_AUTO_INSTALL"):
+        monkeypatch.delenv(k, raising = False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    assert hp._disabled() is disabled
+
+
+def test_uv_no_index_counts_as_offline(monkeypatch):
+    for k in (
+        "HF_HUB_OFFLINE",
+        "TRANSFORMERS_OFFLINE",
+        "UNSLOTH_OFFLINE",
+        "UV_OFFLINE",
+        "PIP_NO_INDEX",
+    ):
+        monkeypatch.delenv(k, raising = False)
+    monkeypatch.setenv("UV_NO_INDEX", "1")
+    assert hp._offline()

@@ -135,7 +135,11 @@ def _env_flag(name: str, values: set[str]) -> bool:
 
 
 def _disabled() -> bool:
-    return _env_flag("RAG_VEC_ANN_AUTO_INSTALL", _FALSY) or _env_flag("RAG_VEC_ANN", _FALSY)
+    # RAG_VEC_ANN keeps vec_cache's own reading: only "0" turns the tier off.
+    return (
+        _env_flag("RAG_VEC_ANN_AUTO_INSTALL", _FALSY)
+        or os.environ.get("RAG_VEC_ANN", "").strip() == "0"
+    )
 
 
 def _offline() -> bool:
@@ -144,6 +148,7 @@ def _offline() -> bool:
         "TRANSFORMERS_OFFLINE",
         "UNSLOTH_OFFLINE",
         "UV_OFFLINE",
+        "UV_NO_INDEX",
         "PIP_NO_INDEX",
     )
     return any(_env_flag(k, _TRUTHY) for k in keys)
@@ -204,6 +209,8 @@ def interpreter_info(python: str, timeout: float = 60.0) -> dict:
         [python, "-I", "-c", _INFO_SCRIPT],
         capture_output = True,
         text = True,
+        encoding = "utf-8",
+        errors = "replace",
         timeout = timeout,
         env = _child_env(),
         **_hidden(),
@@ -329,26 +336,47 @@ def obtain(
     raise RuntimeError(f"{wheel['filename']}: " + "; ".join(errors or ["no source allowed"]))
 
 
-def _uv() -> str | None:
+def _uv(prefix: str | None = None) -> str | None:
+    # Studio venvs are made by uv without pip, and a Desktop launch can have a minimal PATH: also look
+    # in Studio's private uv dir (<studio home>/uv, the venv's parent by default) and the installers' dirs.
     name = "uv.exe" if os.name == "nt" else "uv"
     found = shutil.which("uv")
     if found:
         return found
-    for cand in (
-        Path(sys.prefix) / ("Scripts" if os.name == "nt" else "bin") / name,
-        Path.home() / ".local" / "bin" / name,
-        Path.home() / ".cargo" / "bin" / name,
-        Path("/opt/homebrew/bin/uv"),
-        Path("/usr/local/bin/uv"),
-    ):
-        if cand.is_file() and os.access(cand, os.X_OK):
-            return str(cand)
+    homes = [os.environ.get(k, "").strip() for k in ("UNSLOTH_STUDIO_HOME", "STUDIO_HOME")]
+    homes += [str(Path(p).parent) for p in (prefix, sys.prefix) if p]
+    cands = [Path(h) / "uv" / name for h in homes if h]
+    cands += [
+        Path(p) / ("Scripts" if os.name == "nt" else "bin") / name
+        for p in (prefix, sys.prefix)
+        if p
+    ]
+    cands += [
+        Path(d) / name
+        for d in (os.environ.get("UV_INSTALL_DIR"), os.environ.get("XDG_BIN_HOME"))
+        if d
+    ]
+    cands += [Path.home() / ".local" / "bin" / name, Path.home() / ".cargo" / "bin" / name]
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        cands.append(Path(os.environ["LOCALAPPDATA"]) / "Microsoft" / "WinGet" / "Links" / name)
+    cands += [Path("/opt/homebrew/bin/uv"), Path("/usr/local/bin/uv")]
+    for cand in cands:
+        try:
+            if cand.is_file() and (os.name == "nt" or os.access(cand, os.X_OK)):
+                return str(cand)
+        except OSError:
+            continue
     return None
 
 
-def _pip_cmd(python: str, verb: str, args: list[str]) -> list[list[str]]:
+def _pip_cmd(
+    python: str,
+    verb: str,
+    args: list[str],
+    prefix: str | None = None,
+) -> list[list[str]]:
     cmds = []
-    uv = _uv()
+    uv = _uv(prefix)
     if uv:
         extra = ["--no-deps", "--no-index", "--no-config"] if verb == "install" else ["--no-config"]
         cmds.append([uv, "pip", verb, "--python", python, *extra, *args])
@@ -376,7 +404,14 @@ def _run_first(cmds: list[list[str]], timeout: float) -> None:
     for cmd in cmds:
         try:
             proc = subprocess.run(
-                cmd, capture_output = True, text = True, timeout = timeout, env = _child_env(), **_hidden()
+                cmd,
+                capture_output = True,
+                text = True,
+                encoding = "utf-8",
+                errors = "replace",
+                timeout = timeout,
+                env = _child_env(),
+                **_hidden(),
             )
         except (OSError, subprocess.TimeoutExpired) as exc:
             errors.append(f"{os.path.basename(cmd[0])}: {type(exc).__name__}")
@@ -407,7 +442,7 @@ def _probe_once(python: str, extra_path: str, timeout: float, want: str) -> tupl
     try:
         proc = subprocess.run(
             [python, "-I", "-c", _PROBE_SCRIPT, want, extra_path],
-            capture_output = True, text = True, timeout = timeout, env = _child_env(), **_hidden(),
+            capture_output = True, text = True, encoding = "utf-8", errors = "replace", timeout = timeout, env = _child_env(), **_hidden(),
         )  # fmt: skip
     except subprocess.TimeoutExpired:
         return None, "probe timed out"
@@ -521,11 +556,11 @@ def ensure(
                 sources.add(source)
             source = "+".join(sorted(sources))
             remaining = max(30.0, deadline - time.monotonic())
-            _run_first(_pip_cmd(python, "install", files), remaining)
+            _run_first(_pip_cmd(python, "install", files, prefix), remaining)
             ok, reason = probe(python)
             if ok is False:
                 try:
-                    _run_first(_pip_cmd(python, "uninstall", [n for n, _ in PAIR]), 120.0)
+                    _run_first(_pip_cmd(python, "uninstall", [n for n, _ in PAIR], prefix), 120.0)
                 except Exception:  # noqa: BLE001 - the failed marker still keeps Studio off it
                     pass
             _write_marker(prefix, fp, ok, reason)
