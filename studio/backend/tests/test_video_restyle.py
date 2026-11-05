@@ -27,7 +27,9 @@ def weights(tmp_path, monkeypatch):
     return model, vae
 
 
-@pytest.mark.parametrize("count, expected", [(5, 5), (8, 5), (9, 9), (120, 117), (121, 121), (400, 121)])
+@pytest.mark.parametrize(
+    "count, expected", [(5, 5), (8, 5), (9, 9), (120, 117), (121, 121), (400, 121)]
+)
 def test_snap_frame_count(count, expected):
     assert vr.snap_frame_count(count) == expected
 
@@ -67,7 +69,9 @@ def test_build_restyle_request_needs_prompt():
 
 
 def test_parse_progress():
-    assert vr.parse_progress("[INFO ] cosmos3_transfer.cpp:354 - cosmos3: latent frame 3/31 in 512 ms") == (3, 31)
+    assert vr.parse_progress(
+        "[INFO ] cosmos3_transfer.cpp:354 - cosmos3: latent frame 3/31 in 512 ms"
+    ) == (3, 31)
     assert vr.parse_progress("cosmos3: control video encoded to 31x60x104 latents") is None
 
 
@@ -147,7 +151,12 @@ def test_frames_from_video_rejects_garbage():
 
 
 class _FakeServer:
-    def __init__(self, avi, *, fail = None):
+    def __init__(
+        self,
+        avi,
+        *,
+        fail = None,
+    ):
         self.avi = avi
         self.fail = fail
         self.started = 0
@@ -162,7 +171,13 @@ class _FakeServer:
     def stop(self):
         pass
 
-    def vid_gen(self, payload, *, on_step = None, cancel_event = None):
+    def vid_gen(
+        self,
+        payload,
+        *,
+        on_step = None,
+        cancel_event = None,
+    ):
         self.payloads.append(payload)
         if self.fail is not None:
             raise self.fail
@@ -180,7 +195,8 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
     server = _FakeServer(b"AVI")
     runner = vr.RestyleRunner(server_factory = lambda _model: server)
     monkeypatch.setattr(
-        "core.inference.video_minimax_h3.transcode_video_to_mp4", lambda path, fps: b"MP4:" + path.read_bytes()
+        "core.inference.video_minimax_h3.transcode_video_to_mp4",
+        lambda path, fps: b"MP4:" + path.read_bytes(),
     )
     saved = []
     job = runner.start(prompt = "red car", frames = _frames(7), seed = 3)
@@ -207,7 +223,9 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
 
 
 def test_runner_reports_failure(weights):
-    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"", fail = RuntimeError("boom")))
+    runner = vr.RestyleRunner(
+        server_factory = lambda _model: _FakeServer(b"", fail = RuntimeError("boom"))
+    )
     runner.run(runner.start(prompt = "x", frames = _frames(5)))
     state = runner.progress()
     assert state["phase"] == "error" and "boom" in state["error"] and not state["active"]
@@ -242,9 +260,14 @@ def test_route_rejects_mixed_upload(weights, monkeypatch):
     app.include_router(route.router, prefix = "/api/inference")
     app.dependency_overrides[get_current_subject] = lambda: "owner"
     client = TestClient(app)
-    files = [("video", ("a.mp4", b"x", "video/mp4")), ("frames", ("001.png", _png("red"), "image/png"))]
+    files = [
+        ("video", ("a.mp4", b"x", "video/mp4")),
+        ("frames", ("001.png", _png("red"), "image/png")),
+    ]
     res = client.post("/api/inference/video/restyle", data = {"prompt": "x"}, files = files)
     assert res.status_code == 400
-    res = client.post("/api/inference/video/restyle", data = {"prompt": "x", "seed": "abc"}, files = files[1:])
+    res = client.post(
+        "/api/inference/video/restyle", data = {"prompt": "x", "seed": "abc"}, files = files[1:]
+    )
     assert res.status_code == 400
     assert client.get("/api/inference/video/restyle/nope/output.mp4").status_code == 404

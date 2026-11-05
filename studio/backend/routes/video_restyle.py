@@ -23,7 +23,6 @@ router = APIRouter()
 
 def _save_to_gallery(mp4: bytes, meta: dict) -> Optional[dict]:
     from core.inference import video_gallery
-
     try:
         return video_gallery.save(mp4, meta)
     except Exception:  # noqa: BLE001 -- the clip is still served from the job dir
@@ -53,7 +52,9 @@ async def _read_upload(request: Request) -> tuple[dict[str, Any], list[tuple[str
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
     fields, files = await _read_upload(request)
     videos = [data for name, data in files if name.startswith("video:")]
-    frames_in = [(name.split(":", 1)[1], data) for name, data in files if name.startswith("frames:")]
+    frames_in = [
+        (name.split(":", 1)[1], data) for name, data in files if name.startswith("frames:")
+    ]
     seed: Optional[int] = None
     if fields.get("seed"):
         try:
@@ -102,7 +103,11 @@ async def unload_restyle(current_subject: str = Depends(get_current_subject)):
 
 
 @router.get("/video/restyle/{job_id}/{kind}.mp4")
-async def restyle_media(job_id: str, kind: str, current_subject: str = Depends(get_current_subject)):
+async def restyle_media(
+    job_id: str,
+    kind: str,
+    current_subject: str = Depends(get_current_subject),
+):
     path = video_restyle.runner.media_path(job_id, kind)
     if path is None:
         raise HTTPException(status_code = 404, detail = "Not found.")

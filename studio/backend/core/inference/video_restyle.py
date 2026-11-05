@@ -66,7 +66,11 @@ def model_files(env: Optional[dict[str, str]] = None) -> SdCppModelFiles:
     env = os.environ if env is None else env
     model = (env.get(MODEL_ENV) or "").strip()
     vae = (env.get(VAE_ENV) or "").strip()
-    missing = [name for name, path in ((MODEL_ENV, model), (VAE_ENV, vae)) if not path or not Path(path).is_file()]
+    missing = [
+        name
+        for name, path in ((MODEL_ENV, model), (VAE_ENV, vae))
+        if not path or not Path(path).is_file()
+    ]
     if missing:
         raise RestyleError(
             "Cosmos3 transfer weights not found. Set "
@@ -76,7 +80,11 @@ def model_files(env: Optional[dict[str, str]] = None) -> SdCppModelFiles:
     return SdCppModelFiles(diffusion_model = model, vae = vae)
 
 
-def fit_frame(image: Any, width: int = WIDTH, height: int = HEIGHT) -> Any:
+def fit_frame(
+    image: Any,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+) -> Any:
     """Scale to cover ``width`` x ``height`` and centre-crop, so the clip is never stretched."""
     from PIL import Image
 
@@ -91,7 +99,11 @@ def fit_frame(image: Any, width: int = WIDTH, height: int = HEIGHT) -> Any:
     return resized.crop((left, top, left + width, top + height))
 
 
-def frames_from_video(data: bytes, limit: int = MAX_FRAMES, fps: int = FPS) -> list[Any]:
+def frames_from_video(
+    data: bytes,
+    limit: int = MAX_FRAMES,
+    fps: int = FPS,
+) -> list[Any]:
     """Frames at ``fps`` by presentation time (held when the source is slower), up to ``limit``."""
     import av
 
@@ -141,7 +153,11 @@ def frames_from_images(items: list[tuple[str, bytes]], limit: int = MAX_FRAMES) 
     return out
 
 
-def canny_edges(rgb: Any, low: int = CANNY_LOW, high: int = CANNY_HIGH) -> Any:
+def canny_edges(
+    rgb: Any,
+    low: int = CANNY_LOW,
+    high: int = CANNY_HIGH,
+) -> Any:
     """``cv2.Canny(rgb, low, high)`` in numpy (3x3 Sobel, L1 magnitude, strongest channel), since
     OpenCV is not a Studio dependency. Returns a uint8 map of 0 / 255."""
     import numpy as np
@@ -261,7 +277,9 @@ def encode_mp4(frames: list[Any], fps: int = FPS) -> bytes:
         stream.height = frames[0].height
         stream.pix_fmt = "yuv420p"
         for frame in frames:
-            for packet in stream.encode(av.VideoFrame.from_ndarray(np.asarray(frame), format = "rgb24")):
+            for packet in stream.encode(
+                av.VideoFrame.from_ndarray(np.asarray(frame), format = "rgb24")
+            ):
                 dst.mux(packet)
         for packet in stream.encode():
             dst.mux(packet)
@@ -286,7 +304,13 @@ class RestyleRunner:
     def _update(self, **fields: Any) -> None:
         self._state = {**self._state, **fields}
 
-    def start(self, *, prompt: str, frames: list[Any], seed: Optional[int] = None) -> dict[str, Any]:
+    def start(
+        self,
+        *,
+        prompt: str,
+        frames: list[Any],
+        seed: Optional[int] = None,
+    ) -> dict[str, Any]:
         """Validate and claim the runner; the caller runs ``run`` on a worker thread."""
         if not (prompt or "").strip():
             raise RestyleError("A prompt is required.")
@@ -317,7 +341,9 @@ class RestyleRunner:
             "id": job_id,
             "prompt": prompt.strip(),
             "frames": [fit_frame(f) for f in frames[:count]],
-            "seed": int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
+            "seed": int(seed)
+            if seed is not None
+            else int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
             "files": files,
         }
 
@@ -361,7 +387,11 @@ class RestyleRunner:
         self._server, self._server_files = server, files
         return server
 
-    def run(self, job: dict[str, Any], save: Optional[Callable[[bytes, dict], Any]] = None) -> None:
+    def run(
+        self,
+        job: dict[str, Any],
+        save: Optional[Callable[[bytes, dict], Any]] = None,
+    ) -> None:
         """Worker body; every outcome lands in the progress state, nothing is raised."""
         from core.inference.sd_cpp_engine import SdCppCancelled
         from core.inference.video_minimax_h3 import transcode_video_to_mp4
@@ -374,7 +404,9 @@ class RestyleRunner:
             control = control_frames_b64(frames)
             if self._cancel.is_set():
                 raise SdCppCancelled("cancelled")
-            payload = build_restyle_request(prompt = job["prompt"], control_frames = control, seed = job["seed"])
+            payload = build_restyle_request(
+                prompt = job["prompt"], control_frames = control, seed = job["seed"]
+            )
             server = self._ensure_server(job["files"])
             self._update(phase = "generate")
             started = time.monotonic()
@@ -384,7 +416,9 @@ class RestyleRunner:
                 if hit is not None:
                     done, total = hit
                     elapsed = time.monotonic() - started
-                    self._update(step = done, total = total, eta_seconds = elapsed / done * (total - done))
+                    self._update(
+                        step = done, total = total, eta_seconds = elapsed / done * (total - done)
+                    )
                 elif _DECODE_RE.search(line):
                     self._update(phase = "decode", eta_seconds = None)
 
