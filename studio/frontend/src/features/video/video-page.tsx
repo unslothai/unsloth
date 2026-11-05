@@ -243,6 +243,7 @@ import { ReferenceImageEditor } from "@/components/image-crop-editor";
 import { type ReferenceMedia, ReferenceMediaPicker } from "./reference-picker";
 import {
   CONTINUATION_KEEP_OPTIONS,
+  continuationDurationWarning,
   continuationLengthError,
   continuationRequest,
   supportsVideoContinuation,
@@ -4186,7 +4187,10 @@ function VideoGenerator({
                       value={firstFrame}
                       onChange={(next) => {
                         setFirstFrame(next);
-                        if (next) setContinuationClip(null);
+                        if (next && continuationClip) {
+                          setContinuationClip(null);
+                          toast.info("Removed the clip to continue: a start frame replaces it");
+                        }
                       }}
                       label="Click or drop"
                       removeLabel="Remove start frame"
@@ -4200,7 +4204,10 @@ function VideoGenerator({
                       value={lastFrame}
                       onChange={(next) => {
                         setLastFrame(next);
-                        if (next) setContinuationClip(null);
+                        if (next && continuationClip) {
+                          setContinuationClip(null);
+                          toast.info("Removed the clip to continue: an end frame replaces it");
+                        }
                       }}
                       label="Click or drop"
                       removeLabel="Remove end frame"
@@ -4513,9 +4520,10 @@ function VideoGenerator({
                 label="Clip to continue"
                 onChange={(next) => {
                   setContinuationClip(next);
-                  if (next) {
+                  if (next && (firstFrame || lastFrame)) {
                     setFirstFrame(null);
                     setLastFrame(null);
+                    toast.info("Removed the start frame: the clip to continue replaces it");
                   }
                 }}
               />
@@ -4528,9 +4536,14 @@ function VideoGenerator({
                     src={continuationClip.dataUrl}
                     className="max-h-36 w-full rounded-lg bg-black object-contain"
                   />
+                  {continuationDurationWarning(continuationClip.durationSeconds) && (
+                    <p className="text-ui-11 leading-snug text-destructive">
+                      {continuationDurationWarning(continuationClip.durationSeconds)}
+                    </p>
+                  )}
                   <Field
                     label="Continue"
-                    hint="Last frames carries the clip on from where it ends. First frames keeps its opening and generates a different take of what follows."
+                    hint="From its last frames picks up where the clip ends. From its first frames keeps its opening 5 frames and generates a new version of what follows."
                   >
                     <Select
                       value={continuationKeep}

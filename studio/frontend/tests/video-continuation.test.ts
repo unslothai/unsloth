@@ -7,6 +7,8 @@ import test from "node:test";
 
 import {
   CONTINUATION_KEEP_OPTIONS,
+  CONTINUATION_MAX_SECONDS,
+  continuationDurationWarning,
   continuationLengthError,
   continuationRequest,
   supportsVideoContinuation,
@@ -64,7 +66,10 @@ test("the clip section renders only for a family that declares it, and a clip an
     page.indexOf('data-testid="video-keyframes"'),
     page.indexOf("{supportsReferences && ("),
   );
-  assert.equal(keyframes.match(/if \(next\) setContinuationClip\(null\);/g)?.length, 2);
+  assert.equal(
+    keyframes.match(/if \(next && continuationClip\) \{\s*setContinuationClip\(null\);/g)?.length,
+    2,
+  );
   assert.match(page, /if \(status\?\.loaded && !supportsContinuation\) setContinuationClip\(null\);/);
 });
 
@@ -74,4 +79,18 @@ test("the payload spreads the continuation fields and the gallery labels a conti
     /\.\.\.continuationRequest\(supportsContinuation, stagedClip\?\.dataUrl, continuationKeep\)/,
   );
   assert.match(page, /v2v: "Continued a clip"/);
+});
+
+test("a picked clip past the 15 s cap is flagged before Generate; unknown or shorter clips are not", () => {
+  assert.equal(CONTINUATION_MAX_SECONDS, 15);
+  assert.equal(continuationDurationWarning(undefined), null);
+  assert.equal(continuationDurationWarning(3.9), null);
+  assert.equal(continuationDurationWarning(15), null);
+  assert.match(continuationDurationWarning(32.04) ?? "", /32\.0 s.*up to 15 s/);
+  assert.match(page, /continuationDurationWarning\(continuationClip\.durationSeconds\)/);
+});
+
+test("a start frame and a clip replace each other, and the user is told which one went", () => {
+  assert.match(page, /Removed the start frame: the clip to continue replaces it/);
+  assert.match(page, /Removed the clip to continue: a start frame replaces it/);
 });
