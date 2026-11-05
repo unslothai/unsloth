@@ -170,7 +170,9 @@ def _character_from_row(row: sqlite3.Row, *, full: bool = True) -> dict:
         "avatarRev": row["avatar_rev"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
-        "lastChatAt": row["last_chat_at"],
+        "lastChatAt": (row["last_active"] or None)
+        if "last_active" in row.keys()
+        else row["last_chat_at"],
         "chatCount": row["chat_count"] if "chat_count" in row.keys() else 0,
     }
     if full:
@@ -180,14 +182,19 @@ def _character_from_row(row: sqlite3.Row, *, full: bool = True) -> dict:
 
 _CHAT_COUNT = (
     "(SELECT COUNT(*) FROM chat_cast c JOIN chat_threads t ON t.id = c.thread_id"
-    " WHERE c.character_id = characters.id AND t.archived = 0) AS chat_count"
+    " WHERE c.character_id = characters.id AND t.archived = 0) AS chat_count,"
+    # Recency follows the character's chats, so continuing an old chat moves it up.
+    " MAX(COALESCE(last_chat_at, 0), COALESCE((SELECT MAX(COALESCE(t.updated_at, t.created_at))"
+    " FROM chat_cast c JOIN chat_threads t ON t.id = c.thread_id"
+    " WHERE c.character_id = characters.id), 0)) AS last_active"
 )
 
 
 def list_characters() -> list[dict]:
     with _connect() as conn:
         rows = conn.execute(
-            f"SELECT *, {_CHAT_COUNT} FROM characters ORDER BY COALESCE(last_chat_at, updated_at) DESC, name"
+            f"SELECT *, {_CHAT_COUNT} FROM characters"
+            " ORDER BY COALESCE(NULLIF(last_active, 0), updated_at) DESC, name"
         ).fetchall()
     return [_character_from_row(row, full = False) for row in rows]
 
@@ -695,15 +702,6 @@ def update_chat_scene(
                     "UPDATE characters SET last_chat_at = ? WHERE id = ?", [(now, i) for i in added]
                 )
     return get_chat_scene(thread_id)
-
-
-def touch_characters_for_thread(thread_id: str) -> None:
-    with _connect("BEGIN IMMEDIATE") as conn:
-        conn.execute(
-            "UPDATE characters SET last_chat_at = ? WHERE id IN"
-            " (SELECT character_id FROM chat_cast WHERE thread_id = ?)",
-            (now_ms(), thread_id),
-        )
 
 
 def chat_index() -> dict[str, list[str]]:

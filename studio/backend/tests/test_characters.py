@@ -707,3 +707,19 @@ def test_cast_edits_apply_by_id_and_keep_a_group_speaker(client):
     assert client.put(url, json = {"mute": {c: True}}).status_code == 409
     assert client.get(url).json()["cast"][1]["muted"] is False
     assert client.put(url, json = {"remove": [c]}).status_code == 200
+
+
+def test_continuing_an_older_chat_moves_its_character_up(client):
+    old = client.post("/api/characters", json = {"name": "Old"}).json()
+    new = client.post("/api/characters", json = {"name": "New"}).json()
+    thread_id = client.post("/api/characters/chats", json = {"characterIds": [old["id"]]}).json()[
+        "threadId"
+    ]
+    client.post("/api/characters/chats", json = {"characterIds": [new["id"]]})
+    thread = studio_db.get_chat_thread(thread_id)
+    later = db.now_ms() + 60_000
+    studio_db.upsert_chat_thread({**thread, "id": thread_id, "updatedAt": later})
+    listed = client.get("/api/characters").json()["characters"]
+    names = [c["name"] for c in listed if c["name"] in ("Old", "New")]
+    assert names == ["Old", "New"]
+    assert next(c for c in listed if c["name"] == "Old")["lastChatAt"] == later
