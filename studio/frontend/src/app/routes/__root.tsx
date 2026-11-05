@@ -720,6 +720,7 @@ function RootLayout() {
           data-wallpaper-workspace=""
           data-windows-wallpaper-page={windowsWallpaperPage || undefined}
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
+          data-wallpaper-media={isImagesRoute || isVideoRoute || isAudioRoute || undefined}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />

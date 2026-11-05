@@ -19,6 +19,7 @@ import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } f
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
+import { FLOATING_ATTRIBUTE, FLOATING_MOVE_EVENT, FLOATING_SCALE_VAR, floatingNativeZoom } from "./floating-events";
 import { outsideThread } from "./outside-thread";
 import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -612,6 +613,7 @@ function markHole(): boolean {
   const layers = chain
     .filter((node) => node.hasAttribute?.("data-wallpaper-workspace") || node.hasAttribute?.("data-chat-content-root"))
     .flatMap((node) => [...(node.children ?? [])].filter((child): child is HTMLElement => child.classList.contains("chat-wallpaper")));
+  layers.push(...floatingUnderlay(chain));
   const signature = `${root.dataset.palette}|${theme}|${chain.map((node) => node.className).join("|")}|${layers.length}`;
   if (signature === holeSignature && [...holed, ...masked].every((node) => node.isConnected)) return false;
   unmarkHole();
@@ -630,6 +632,20 @@ function markHole(): boolean {
   // Mid theme switch everything can read transparent: retry next sync.
   if (holed.length === 0) holeSignature = "";
   return true;
+}
+
+/** The chat under a floating page is no ancestor of it, so its boxes are masked too. */
+function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
+  const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
+  if (floating < 0) return [];
+  const under: HTMLElement[] = [];
+  for (const node of chain.slice(floating)) {
+    if (node.hasAttribute("data-chat-content-root")) break;
+    for (const sibling of node.parentElement?.children ?? []) {
+      if (sibling !== node && sibling instanceof HTMLElement && !sibling.classList.contains("chat-wallpaper")) under.push(sibling);
+    }
+  }
+  return under;
 }
 
 function unmarkHole(): void {
@@ -713,6 +729,12 @@ function insetToasts(rect: DOMRect | null): void {
   else style.removeProperty(BROWSER_PAGE_INSET_VAR);
 }
 
+function floatingScale(tabId: string): number {
+  const surface = placeholder(tabId)?.closest?.<HTMLElement>(`[${FLOATING_ATTRIBUTE}]`);
+  const scale = Number.parseFloat(surface?.style?.getPropertyValue?.(FLOATING_SCALE_VAR) ?? "");
+  return scale > 0 && scale <= 1 ? scale : 1;
+}
+
 function desiredView(): Desired {
   const page = pageRect();
   if (layered) {
@@ -727,7 +749,7 @@ function desiredView(): Desired {
     tabId: tab.id,
     url: entry.url,
     entry: entryKey(entry),
-    zoom: tab.zoom,
+    zoom: floatingNativeZoom(tab.zoom, floatingScale(tab.id)),
     bounds: {
       x: Math.round(rect.left),
       y: Math.round(rect.top),
@@ -1123,6 +1145,8 @@ export function startNativeViews(): () => void {
   const sync = () => {
     frame = 0;
     if (layered === null) return;
+    // A page on top waits out a floating drag under its snapshot, not a capture per frame.
+    if (!layered && parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
     pruneViews(desired?.tabId ?? null);
@@ -1172,6 +1196,11 @@ export function startNativeViews(): () => void {
   document.addEventListener("pointerover", reachedPage, true);
   // A dragged or resized panel ends where the pointer lets go.
   document.addEventListener("pointerup", schedule, true);
+  // A layered page follows the floating window; one on top waits for the drop (see sync).
+  const floatingMoved = () => {
+    if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
+  };
+  window.addEventListener(FLOATING_MOVE_EVENT, floatingMoved);
   const interval = window.setInterval(schedule, RECHECK_MS);
   void askLayered().then(schedule);
   schedule();
@@ -1187,6 +1216,7 @@ export function startNativeViews(): () => void {
     for (const type of MOTION_EVENTS) document.removeEventListener(type, moved, true);
     document.removeEventListener("pointerover", reachedPage, true);
     document.removeEventListener("pointerup", schedule, true);
+    window.removeEventListener(FLOATING_MOVE_EVENT, floatingMoved);
     window.clearInterval(interval);
     panelUp = false;
     tooltipHold = 0;

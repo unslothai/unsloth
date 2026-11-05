@@ -2,8 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """Triton RoPE (auto on ROCm and NVIDIA CUDA Linux) and AdaLN kernels for FLUX; inference only,
-never while compiling; AdaLN off by default (not bit-identical); UNSLOTH_DIFFUSION_FUSED_ROPE,
-UNSLOTH_DIFFUSION_FUSED_ADALN"""
+never while compiling; AdaLN auto on NVIDIA CUDA Linux off the ``off`` speed tier (one rounding instead of three, not
+bit-identical); UNSLOTH_DIFFUSION_FUSED_ROPE, UNSLOTH_DIFFUSION_FUSED_ADALN"""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def _is_nvidia_linux() -> bool:
 
 # gfx1151 klein 1024^2: RoPE 8.76 -> 8.09 s pixel-identical; AdaLN adds no speed and moves pixels (LPIPS 0.004).
 _AUTO_ON = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
-_AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: False}
+_AUTO_ON_NVIDIA = {FUSED_ROPE_ENV: True, FUSED_ADALN_ENV: True}
 
 
 def _switch_on(env: str) -> bool:
@@ -511,8 +511,10 @@ def install_for_pipe(
     dtype: Any,
     device: Any = "cuda",
     logger: Any = None,
+    *,
+    adaln: bool = True,
 ) -> dict:
-    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock."""
+    """Install for a FLUX.1 / FLUX.2 denoiser, otherwise restore stock; ``adaln=False`` (speed off) keeps stock AdaLN."""
     transformer = getattr(pipe, "transformer", None)
     module_name = type(transformer).__module__ if transformer is not None else ""
     if module_name not in _MODULES:
@@ -520,7 +522,7 @@ def install_for_pipe(
         return {"rope": False, "adaln": 0}
     uninstall()
     rope = install_rope(module_name, dtype, device)
-    adaln = install_adaln(dtype, device)
+    adaln = install_adaln(dtype, device) if adaln else 0
     if logger is not None and (rope or adaln):
         try:
             logger.info(

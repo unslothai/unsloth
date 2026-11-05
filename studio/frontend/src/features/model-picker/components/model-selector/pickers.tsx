@@ -118,7 +118,9 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  classifyGgufFitWithLookupTables,
+  audioCppCardGb,
+  audioCppRowFit,
+  classifyVariantFitOnCard,
   ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
@@ -671,6 +673,9 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
  *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
 const UnifiedLoadBudget = createContext<number | null>(null);
 
+/** `audioCppCardGb` of the picker's load, which audio.cpp variants are judged on; 0 judges none. */
+const AudioCppCard = createContext(0);
+
 /** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
  *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
 function loadsOnAudioCpp(repoId: string): boolean {
@@ -680,16 +685,20 @@ function loadsOnAudioCpp(repoId: string): boolean {
 function PickerScopes({
   capabilityScope,
   unifiedLoadBudgetGb,
+  audioCppCardGb,
   children,
 }: {
   capabilityScope: readonly (keyof ModelCapabilities)[] | null;
   unifiedLoadBudgetGb: number | null;
+  audioCppCardGb: number;
   children: ReactNode;
 }) {
   return (
     <CapabilityScope.Provider value={capabilityScope}>
       <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
-        {children}
+        <AudioCppCard.Provider value={audioCppCardGb}>
+          {children}
+        </AudioCppCard.Provider>
       </UnifiedLoadBudget.Provider>
     </CapabilityScope.Provider>
   );
@@ -975,6 +984,42 @@ function VramBadge({
 }
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
+
+function residentGbLabel(gb: number): string {
+  return `${gb.toFixed(1)} GB`;
+}
+
+// Fixed widths ("99.9GB to run", "99.9GB") keep the estimate and fit mark aligned across rows.
+const RESIDENT_COLUMN = "mr-1.5 min-w-[13ch] text-right";
+const RESIDENT_SIZE_COLUMN = "min-w-[6ch] text-right";
+
+function ResidentText({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  const t = useT();
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          className={cn(
+            "shrink-0 whitespace-nowrap font-mono text-ui-10 text-muted-foreground tabular-nums",
+            className,
+          )}
+        >
+          <SizeText value={value} />
+          <span className="ml-1 font-sans">{t("picker.residentToRun")}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {t("picker.residentToRunHint")}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
@@ -1576,6 +1621,9 @@ function ModelRow({
               {text}
             </span>
           ))}
+          {parsed.resident ? (
+            <ResidentText value={parsed.resident} className="mr-1.5" />
+          ) : null}
           {/* GGUF repos hold several quants, so their size shows only once expanded. */}
           {alignMeta === "device" || showSize ? (
             <span
@@ -1972,6 +2020,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
   expander: DeviceRowExpanderProps;
 }) {
   const callbacks = useDeviceExpanderCallbacks(actions, optionKey);
+  const audioCardGb = useContext(AudioCppCard);
   const variant = sole.variant;
   const expectedBytes = ggufVariantExpectedBytes(variant);
   // Should never be partial, but if it is, state what is on disk rather than load a torn file.
@@ -2002,7 +2051,15 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
               c.cache_path,
               ggufQuantDetailLabel(variant.quant),
             )}
-            meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
+            meta={[
+              "GGUF",
+              formatBytes(variant.size_bytes),
+              variant.estimated_resident_gb && audioCardGb > 0
+                ? `${residentGbLabel(variant.estimated_resident_gb)} to run`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
             quantChip={ggufQuantChipLabel(variant.quant)}
             partial={isPartial}
             // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
@@ -2876,10 +2933,12 @@ function GgufVariantExpander({
   );
 
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
+  const audioCardGb = useContext(AudioCppCard);
+  const cardGb = anyBudgetGb ? audioCardGb : 0;
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
-      classifyGgufFitWithLookupTables(getGgufFit, variant),
-    [getGgufFit],
+      classifyVariantFitOnCard(getGgufFit, variant, cardGb),
+    [getGgufFit, cardGb],
   );
 
   const variantGroups = useMemo(
@@ -2900,12 +2959,12 @@ function GgufVariantExpander({
         continue;
       }
       const pick =
-        recommendedQuantForDevice(group.variants, getGgufFit, preferred) ??
+        recommendedQuantForDevice(group.variants, getGgufFit, preferred, cardGb) ??
         preferred;
       if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;
-  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
+  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit, cardGb]);
   // Keyed by presentation group while footprints bucket by dependency_key, so ask via the variant.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
@@ -3154,6 +3213,7 @@ function GgufVariantExpander({
           effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getVariantFit(v);
         const oom = fit === "oom";
+        const residentGb = audioCardGb > 0 ? v.estimated_resident_gb : null;
         const expectedBytes = ggufVariantExpectedBytes(v);
         const variantContext = ggufVariantContextLength(v, nativeContext);
         // This row's own dependency group, never the listing's.
@@ -3225,7 +3285,18 @@ function GgufVariantExpander({
                   diffusionLoad ? mediaGgufPickerStatus(fit) : fit
                 }
               />
-              <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
+              {residentGb ? (
+                <ResidentText
+                  value={residentGbLabel(residentGb)}
+                  className={RESIDENT_COLUMN}
+                />
+              ) : null}
+              <span
+                className={cn(
+                  "font-mono text-ui-10 text-muted-foreground tabular-nums",
+                  residentGb ? RESIDENT_SIZE_COLUMN : null,
+                )}
+              >
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />
                 ) : (
@@ -3754,6 +3825,7 @@ export function HubModelPicker({
   npu,
   rowFilter,
   moreModels,
+  cpuLoad = false,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -3794,11 +3866,17 @@ export function HubModelPicker({
   /** A second Recommended group under its own ListLabel; rows reuse the recommended renderer. */
   moreModels?: {
     label: string;
-    models: (ModelOption & { sizeBytes?: number | null })[];
+    models: (ModelOption & {
+      sizeBytes?: number | null;
+      estimatedResidentGb?: number | null;
+      smallestResidentGb?: number | null;
+    })[];
   };
+  cpuLoad?: boolean;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
+  const audioCardGb = audioCppCardGb(gpu, cpuLoad);
   // Threaded into every fit call, not only the quant rows.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   // FP8 / NVFP4 checkpoints every GPU here runs natively: chat lists them past the GGUF-only rule and
@@ -4701,6 +4779,7 @@ export function HubModelPicker({
         (catalogFit(r.id, pipelineBudget)?.fits ??
           hfModelFitsDevice(r, source, {
             budgetFraction,
+            audioCppCardGb: audioCardGb,
             // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
             // rule IS the budget those rows had before the classifiers were merged.
             mediaLoad: diffusionLoad,
@@ -4755,6 +4834,7 @@ export function HubModelPicker({
     isTaskRuntimeSupported,
     gpu,
     inferenceGpu,
+    audioCardGb,
     isChatSupported,
     task,
     catalog,
@@ -4792,6 +4872,8 @@ export function HubModelPicker({
         likes: 0,
         isGguf: model.isGguf ?? true,
         estimatedSizeBytes: model.sizeBytes ?? undefined,
+        estimatedResidentGb: model.estimatedResidentGb ?? undefined,
+        smallestResidentGb: model.smallestResidentGb ?? undefined,
       }))
       .filter(
         (row) =>
@@ -4799,6 +4881,7 @@ export function HubModelPicker({
           cachedIdFor(row.id) !== null ||
           hfModelFitsDevice(row, source, {
             budgetFraction,
+            audioCppCardGb: audioCardGb,
             mediaLoad: diffusionLoad,
             hostPooledMemory: gpu.loadDeviceSharesHostMemory,
             gpuCount: source.deviceCount,
@@ -4812,6 +4895,7 @@ export function HubModelPicker({
     fitOnDeviceOnly,
     cachedIdFor,
     inferenceGpu,
+    audioCardGb,
     gpu,
     task,
     budgetFraction,
@@ -4888,6 +4972,9 @@ export function HubModelPicker({
             ggufParams ? formatCompact(ggufParams) : null,
             "GGUF",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+            r.estimatedResidentGb && audioCardGb > 0
+              ? `${residentGbLabel(r.estimatedResidentGb)} to run`
+              : null,
           ]
             .filter(Boolean)
             .join(" · ")
@@ -4906,6 +4993,16 @@ export function HubModelPicker({
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
+        const resident = r.estimatedResidentGb;
+        const residentFit = audioCppRowFit(r, audioCardGb);
+        if (resident && residentFit) {
+          map.set(r.id, {
+            meta,
+            status: residentFit === "fits" ? null : "oom",
+            est: resident,
+          });
+          continue;
+        }
         map.set(r.id, {
           meta,
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
@@ -4954,6 +5051,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    audioCardGb,
     loadFreesResident,
   ]);
 
@@ -7686,6 +7784,7 @@ export function HubModelPicker({
   return (
     <PickerScopes
       capabilityScope={capabilityScope}
+      audioCppCardGb={audioCardGb}
       unifiedLoadBudgetGb={
         (loadFreesResident
           ? inferenceGpu.unifiedLoadCeilingGb

@@ -337,6 +337,7 @@ def _fake_complete_appdir(tmp_path: Path) -> Path:
         "libwebkit2gtkinjectedbundle.so",
     ):
         (runtime / name).touch()
+    (runtime / "libayatana-appindicator3.so.1").symlink_to("libappindicator3.so.1")
 
     gio_modules = runtime / "gio/modules"
     gio_modules.mkdir(parents = True)
@@ -441,6 +442,30 @@ def test_complete_appimage_verifier_requires_the_bundled_media_pipeline(tmp_path
     )
     assert result.returncode != 0
     assert "gst-plugin-scanner" in result.stderr
+
+
+def test_complete_appimage_verifier_keeps_the_tray_loader_off_the_host_ayatana(tmp_path):
+    # libappindicator-sys tries the Ayatana name first, so a bundle without it loads the host's.
+    unaliased = _fake_complete_appdir(tmp_path / "unaliased")
+    (unaliased / "usr/lib/libayatana-appindicator3.so.1").unlink()
+    result = _verify(unaliased)
+    assert result.returncode != 0
+    assert "libayatana-appindicator3.so.1" in result.stderr
+
+    dangling = _fake_complete_appdir(tmp_path / "dangling")
+    alias = dangling / "usr/lib/libayatana-appindicator3.so.1"
+    alias.unlink()
+    alias.symlink_to("missing.so.1")
+    result = _verify(dangling)
+    assert result.returncode != 0
+    assert "libayatana-appindicator3.so.1" in result.stderr
+
+    real = _fake_complete_appdir(tmp_path / "real")
+    alias = real / "usr/lib/libayatana-appindicator3.so.1"
+    alias.unlink()
+    alias.touch()
+    result = _verify(real)
+    assert result.returncode == 0, result.stderr
 
 
 def test_complete_appimage_verifier_rejects_global_library_path_and_missing_origin_runpath(
@@ -1292,6 +1317,43 @@ def test_finalizer_adds_an_identical_host_copy_and_stays_idempotent(tmp_path):
     result = subprocess.run([finalizer, appdir], check = False, capture_output = True, text = True)
     assert result.returncode != 0
     assert "usr/bin/lib" in result.stderr
+
+
+@pytest.mark.skipif(shutil.which("patchelf") is None, reason = "the finalizer needs patchelf")
+def test_finalizer_aliases_the_ayatana_name_to_the_bundled_tray_library(tmp_path):
+    finalizer = _finalizer_tools(tmp_path)
+
+    def appdir_with(name: str) -> Path:
+        appdir = tmp_path / name
+        binary = appdir / "usr/bin/unsloth-studio"
+        binary.parent.mkdir(parents = True)
+        _compile_fixture_elf(binary, origin_runpath = False)
+        (appdir / "usr/lib").mkdir()
+        return appdir
+
+    bundled = appdir_with("bundled")
+    (bundled / "usr/lib/libappindicator3.so.1").write_bytes(b"legacy appindicator")
+    alias = bundled / "usr/lib/libayatana-appindicator3.so.1"
+    # linuxdeploy runs the finalizer once from each of the gtk and gstreamer plugins.
+    for _ in range(2):
+        subprocess.run([finalizer, bundled], check = True, capture_output = True, text = True)
+        assert alias.is_symlink()
+        assert os.readlink(alias) == "libappindicator3.so.1"
+        assert alias.read_bytes() == b"legacy appindicator"
+    # Host mode's $ORIGIN/../lib reaches no bundled library, so it still loads the host's tray.
+    assert not (bundled / "usr/bin/lib").exists()
+
+    ayatana = appdir_with("ayatana")
+    (ayatana / "usr/lib/libappindicator3.so.1").write_bytes(b"legacy appindicator")
+    (ayatana / "usr/lib/libayatana-appindicator3.so.1").write_bytes(b"real ayatana")
+    subprocess.run([finalizer, ayatana], check = True, capture_output = True, text = True)
+    real = ayatana / "usr/lib/libayatana-appindicator3.so.1"
+    assert not real.is_symlink()
+    assert real.read_bytes() == b"real ayatana"
+
+    no_tray = appdir_with("no-tray")
+    subprocess.run([finalizer, no_tray], check = True, capture_output = True, text = True)
+    assert not os.path.lexists(no_tray / "usr/lib/libayatana-appindicator3.so.1")
 
 
 def test_apprun_never_probes_without_a_timeout(tmp_path):
