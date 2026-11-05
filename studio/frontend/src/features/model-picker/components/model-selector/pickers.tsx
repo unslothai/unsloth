@@ -174,6 +174,7 @@ import {
 import { audioPickSearch } from "../../../audio/route-search.ts";
 import { useChatPickerInventory } from "../../inventory/use-chat-picker-inventory";
 import { modelConfigTarget } from "../../model-config/model-config-handoff";
+import { useHasRememberedRunSettings } from "../../model-config/remembered-run-settings";
 import {
   type CommunityModelPolicy,
   allowedHiddenModelIdMatches,
@@ -299,6 +300,7 @@ import type {
   LoraModelOption,
   ModelDownloadFootprintResolver,
   ModelOption,
+  ModelPickTarget,
   ModelSelectorChangeMeta,
 } from "./types";
 import { type PinnedDropEdge, usePinnedRowDrag } from "./use-pinned-row-drag";
@@ -1753,6 +1755,31 @@ function useDeviceExpanderCallbacks(
     onNavigatePastStart,
     onNavigatePastEnd,
   };
+}
+
+/** A quant with no other menu still offers Reset once its settings are saved before download. */
+function SavedRunSettingsMenu({
+  ariaLabel,
+  runSettings,
+  reserveSlot,
+}: {
+  ariaLabel: string;
+  runSettings: ModelPickTarget | undefined;
+  reserveSlot: boolean;
+}) {
+  const saved = useHasRememberedRunSettings(runSettings ?? null);
+  if (saved) {
+    return (
+      <ModelRowMenu
+        ariaLabel={ariaLabel}
+        iconClassName="size-3"
+        runSettings={runSettings}
+      />
+    );
+  }
+  return reserveSlot ? (
+    <span className="size-5 shrink-0" aria-hidden={true} />
+  ) : null;
 }
 
 const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
@@ -3299,8 +3326,12 @@ function GgufVariantExpander({
                 savedFor={configTarget}
               />
             )}
-            {!variantHasMenu(v) && reserveMenuSlot && (
-              <span className="size-5 shrink-0" aria-hidden={true} />
+            {!variantHasMenu(v) && (
+              <SavedRunSettingsMenu
+                ariaLabel={`More options for ${repoId} ${v.quant}`}
+                runSettings={configTarget}
+                reserveSlot={reserveMenuSlot}
+              />
             )}
             {variantHasMenu(v) && (
               <ModelRowMenu

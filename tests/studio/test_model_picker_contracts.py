@@ -3935,3 +3935,15 @@ def test_every_run_settings_gear_marks_saved_settings():
     assert len(run_settings) >= 10, "the run-settings gears moved; update this guard"
     missing = [g.splitlines()[1].strip() for g in run_settings if "savedFor=" not in g]
     assert not missing, f"run-settings gears without savedFor: {missing}"
+
+
+def test_a_quant_saved_before_download_still_offers_reset():
+    # The gear saves settings on a quant that is not on disk yet; such a row has no other menu.
+    picker = _read("features/model-picker/components/model-selector/pickers.tsx")
+    gate = re.search(r"function SavedRunSettingsMenu\(.*?\n}\n", picker, re.S)
+    assert gate, "the saved-only Reset menu was renamed"
+    assert "useHasRememberedRunSettings(runSettings ?? null)" in gate.group(0)
+    assert re.search(
+        r"!variantHasMenu\(v\) && \(\s*<SavedRunSettingsMenu[^/]*runSettings=\{configTarget\}",
+        picker,
+    ), "a quant row without a menu lost its Reset"
