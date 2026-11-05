@@ -755,7 +755,6 @@ def _adapter_base_from_hf_cache(model_name: str) -> str | None:
     return None
 
 
-# Definitive adapter_config.json answers for one load, so the worker's own lookup and its activation share one GET.
 _remote_lora_base_answers: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
     "_remote_lora_base_answers", default = None
 )
