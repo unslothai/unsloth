@@ -82,8 +82,10 @@ def test_a_builder_failure_answers_503_without_its_text(client, monkeypatch):
 
 
 def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
+    from core.inference import audio_cpp_server
     from core.inference.audio_cpp_failures import estimate_resident_gb
 
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
     sized = dict(
         KOKORO, family = "kokoro_tts", size_bytes = 189_000_000, smallest_size_bytes = 90_000_000
     )
@@ -103,8 +105,10 @@ def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
 def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
     import asyncio
 
+    from core.inference import audio_cpp_server
     from utils.hardware import nvidia
 
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
     on_loop = []
 
     def capabilities():
@@ -122,3 +126,14 @@ def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
     _builder(monkeypatch, lambda: catalog)
     assert client.get("/api/inference/audio/catalog").status_code == 200
     assert on_loop == [False, False]
+
+
+def test_a_cpu_only_runtime_lists_no_gpu_estimate(client, monkeypatch):
+    from core.inference import audio_cpp_server
+
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: True)
+    sized = dict(KOKORO, family = "kokoro_tts", size_bytes = 189_000_000, smallest_size_bytes = 9)
+    catalog = AudioCatalogResponse(**{**CATALOG.model_dump(), "models": [sized]})
+    _builder(monkeypatch, lambda: catalog)
+    (row,) = client.get("/api/inference/audio/catalog").json()["models"]
+    assert row["estimated_resident_gb"] is None and row["smallest_estimated_resident_gb"] is None

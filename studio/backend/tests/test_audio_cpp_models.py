@@ -3242,8 +3242,10 @@ def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignor
 
 
 def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
+    from core.inference import audio_cpp_server
     from core.inference.audio_cpp_failures import estimate_resident_gb
 
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: False)
     names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-bf16.gguf"]
     _online(monkeypatch, *names, size = 189_000_000)
     rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
@@ -3253,3 +3255,18 @@ def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
         expected = estimate_resident_gb(variant.size_bytes, model.family)
         assert rows[variant.key].estimated_resident_gb == expected
         assert expected != estimate_resident_gb(variant.size_bytes)
+
+
+@pytest.mark.parametrize("cpu_runtime", [False, True])
+def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu_runtime):
+    # The load check skips VRAM for a CPU-only quant, and for every quant on a CPU-only runtime.
+    from core.inference import audio_cpp_server
+
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+    names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-tq2_1.gguf"]
+    _online(monkeypatch, *names, size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    assert {quant: row.estimated_resident_gb is None for quant, row in rows.items()} == {
+        "Q8_0": cpu_runtime,
+        "TQ2_1": True,
+    }

@@ -50243,7 +50243,12 @@ async def audio_catalog(current_subject: str = Depends(get_current_subject)):
         ) from None
 
     def _estimate_rows() -> None:
-        # Off the event loop: YuE2's estimate reads the cards through nvidia-smi.
+        from core.inference.audio_cpp_server import runtime_runs_on_cpu
+
+        # Off the event loop: YuE2's estimate reads the cards through nvidia-smi. None when Auto
+        # loads run on the CPU (a CPU-only runtime or override), where the load check reads no GPU.
+        if runtime_runs_on_cpu():
+            return
         for row in rows:
             for size_key, estimate_key in (
                 ("size_bytes", "estimated_resident_gb"),
