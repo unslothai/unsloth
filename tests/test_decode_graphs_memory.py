@@ -637,3 +637,32 @@ def test_an_oversized_kept_cache_is_credited_only_up_to_this_call_kv(G):
     G._free_bytes = lambda device: 0
     assert G.plan_call(model, _ids(4, 128), torch.float16, 512, 160) == ("eager", None)
     assert model.held() == 0 and G.emptied == 1 and G.EAGER_UNFIT == 1
+
+
+def _llama_helpers(*names):
+    import ast
+
+    path = Path(_SOURCE).with_name("llama.py")
+    tree = ast.parse(path.read_text(encoding = "utf-8"))
+    fns = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
+    namespace = {}
+    exec(compile(ast.Module(body = fns, type_ignores = []), str(path), "exec"), namespace)
+    return namespace
+
+
+def test_planning_honours_an_explicit_max_length_in_the_caller_generation_config():
+    transformers = pytest.importorskip("transformers")
+    ns = _llama_helpers("_generation_max_len", "_generation_plan_len")
+    model = types.SimpleNamespace(generation_config = transformers.GenerationConfig(max_length = 40960))
+    ids = torch.zeros((1, 128), dtype = torch.long)
+    config = transformers.GenerationConfig(max_length = 4096)
+    assert ns["_generation_max_len"](model, (ids,), {"generation_config": config}) == 0
+    assert ns["_generation_plan_len"](model, (ids,), {"generation_config": config}) == 4096
+    # The model's default config is not a request, and max_new_tokens still wins.
+    assert ns["_generation_plan_len"](model, (ids,), {}) == 0
+    assert (
+        ns["_generation_plan_len"](
+            model, (ids,), {"generation_config": config, "max_new_tokens": 32}
+        )
+        == 160
+    )

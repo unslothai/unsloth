@@ -2989,6 +2989,25 @@ def _generation_max_len(self, args, kwargs):
         return 0
 
 
+def _generation_plan_len(self, args, kwargs):
+    """_generation_max_len, or for planning only, a max_length the caller's own GenerationConfig sets explicitly
+    (the call can grow to it; the model's default config is not a request)."""
+    max_len = _generation_max_len(self, args, kwargs)
+    if max_len or kwargs.get("max_new_tokens", None) is not None:
+        return max_len
+    try:
+        config = kwargs.get("generation_config", None)
+        explicit = config.to_diff_dict() if config is not None else {}
+        if (
+            explicit.get("max_new_tokens", None) is None
+            and explicit.get("max_length", None) is not None
+        ):
+            return int(explicit["max_length"])
+    except Exception:
+        pass
+    return max_len
+
+
 def _generation_input_ids(args, kwargs):
     ids = kwargs.get("input_ids", kwargs.get("inputs", args[0] if args else None))
     return ids if ids is not None else kwargs.get("inputs_embeds", None)
@@ -3078,17 +3097,18 @@ def unsloth_fast_generate(self, *args, **kwargs):
         plan, token = "graph", None
         if graphs:
             max_len = _generation_max_len(self, args, kwargs)
+            plan_len = _generation_plan_len(self, args, kwargs)
             try:
                 ids = _generation_input_ids(args, kwargs)
                 bsz = _decode_graphs.decode_batch(
                     int(ids.shape[0]), kwargs, getattr(self, "generation_config", None)
                 )
-                short = _decode_graphs.short_call(self, max_len, int(ids.shape[1]), bsz)
+                short = _decode_graphs.short_call(self, plan_len, int(ids.shape[1]), bsz)
                 if short and _decode_graphs.HELD not in self.__dict__:
                     plan, token = "eager", None
                 else:
                     plan, token = _decode_graphs.plan_call(
-                        self, ids, dtype, KV_CACHE_INCREMENT, max_len, bsz = bsz, eager = short,
+                        self, ids, dtype, KV_CACHE_INCREMENT, plan_len, bsz = bsz, eager = short,
                     )  # fmt: skip
                     if short:
                         plan, token = "eager", None
