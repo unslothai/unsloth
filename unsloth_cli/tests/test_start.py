@@ -11339,7 +11339,19 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     ):
         _fake_variants(monkeypatch, answer)
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    # The real answer for a precision-folder repo: its folders, with only downloaded ones loadable.
+    mlx_answer = {
+        "variants": [{"quant": "6-bit", "filename": "6-bit/"}, {"quant": "8bit", "filename": "8bit/"}],
+        "loadable_variants": [],
+        "variant_format": "mlx",
+    }
+    _fake_variants(monkeypatch, mlx_answer)
+    start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", repo)
     assert "needs a GGUF model" not in capsys.readouterr().err
+    for wanted in ("Q8_0", "4bit"):
+        with pytest.raises(typer.Exit):
+            start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, wanted)
     monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
