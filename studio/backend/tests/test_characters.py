@@ -636,3 +636,20 @@ def test_imported_tags_fit_the_editor_and_charx_assets_do_not_leak_into_exports(
         {"type": "icon", "uri": "ccdefault:", "name": "main", "ext": "png"},
         assets[2],
     ]
+
+
+def test_charx_icon_candidates_are_read_once_each(monkeypatch):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        refs = [{"type": "icon", "uri": "embeded://assets/x.bin", "name": "main"}] * 128
+        archive.writestr("card.json", json.dumps({**V2, "data": {**V2["data"], "assets": refs}}))
+        archive.writestr("assets/x.bin", b"\0" * 4096)
+    reads = []
+    original = zipfile.ZipFile.read
+    monkeypatch.setattr(
+        zipfile.ZipFile,
+        "read",
+        lambda self, name, pwd = None: reads.append(name) or original(self, name, pwd),
+    )
+    cards.read_charx(buffer.getvalue())
+    assert reads.count("assets/x.bin") == 1

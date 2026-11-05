@@ -30678,13 +30678,25 @@ async def _cut_studio_reply_at_stops(chunks, stops: list[str]):
                     content = delta.get("content") if isinstance(delta, dict) else None
                     if isinstance(content, str):
                         out = stop.feed(content)
-                        if choice.get("finish_reason") and stop.hit is None:
+                        if (
+                            choice.get("finish_reason") or delta.get("tool_calls")
+                        ) and stop.hit is None:
                             out += stop.flush()
                         delta["content"] = out
+                    elif isinstance(delta, dict) and delta.get("tool_calls"):
+                        held = stop.flush()
+                        if held:
+                            delta["content"] = held
                     if stop.hit is not None:
                         choice["finish_reason"] = "stop"
                 if isinstance(chunk, dict):
                     line = "data: " + json.dumps(chunk)
+            elif data:
+                # A tool event marks a place in the text, so held-back text goes out before it.
+                held = stop.flush()
+                if held:
+                    chunk = {"choices": [{"index": 0, "delta": {"content": held}}]}
+                    yield "data: " + json.dumps(chunk) + "\n\n"
             yield line + "\n"
             if stop.hit is not None:
                 yield "\ndata: [DONE]\n\n"

@@ -308,9 +308,12 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
                     if uri.startswith(prefix):
                         candidates.append(uri[len(prefix) :])
         candidates.extend(sorted(n for n in names if n.startswith("assets/icon/")))
-        for candidate in candidates:
+        # Each member is read once, and all reads together stay within one card's size.
+        budget = MAX_CARD_BYTES
+        for candidate in dict.fromkeys(candidates):
             info = names.get(candidate)
-            if info is not None and 0 < info.file_size <= MAX_CARD_BYTES:
+            if info is not None and 0 < info.file_size <= budget:
+                budget -= info.file_size
                 blob = archive.read(candidate)
                 if sniff_image_type(blob):
                     icon_bytes = blob

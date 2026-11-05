@@ -85,3 +85,13 @@ def test_think_tags_split_across_chunks_still_bound_the_reasoning():
         _run([_event("Hi\nA"), _event("<think>x</think>"), _event("ok")], ["\nAnn:"])[0]
     )
     assert text == "Hi\nA<think>x</think>ok"
+
+
+def test_held_text_goes_out_before_a_tool_event():
+    tool_event = "data: " + json.dumps({"_toolEvent": {"type": "tool_start"}}) + "\n\n"
+    stream, _closed = _run(
+        [_event("Let me search for that."), tool_event, _event("Found."), "data: [DONE]\n\n"],
+        ["\nUser:"],
+    )
+    before, after = stream.split(tool_event)
+    assert _text(before)[0] == "Let me search for that." and _text(after)[0] == "Found."
