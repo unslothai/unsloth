@@ -279,10 +279,11 @@ function pickVariant(
   return null;
 }
 
-function activeGgufSelection(
+// GGUF or MLX: both serve every agent here; a transformers model is never adopted.
+function activeAgentModelSelection(
   status: InferenceStatusResponse | null,
 ): { model: string; variant: string | null; named: boolean } | null {
-  if (!status?.is_gguf) {
+  if (!(status?.is_gguf || status?.is_mlx)) {
     return null;
   }
   if (!status.model_identifier) {
@@ -838,7 +839,7 @@ export function AgentsTab() {
     });
   }, []);
 
-  // Follow the resident GGUF away too, or the command would switch the shared server back.
+  // Follow the resident model away too, or the command would switch the shared server back.
   // An explicit pick wins, except a native-grant label, which is not loadable.
   const dropActiveModel = useCallback(
     (attachOnly: string | null, wasActive: string | null) => {
@@ -861,7 +862,7 @@ export function AgentsTab() {
 
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
-      const active = activeGgufSelection(status);
+      const active = activeAgentModelSelection(status);
       activeModelRef.current = active
         ? { model: active.model, variant: active.variant }
         : null;
@@ -1042,7 +1043,7 @@ export function AgentsTab() {
     selectedModel,
   ]);
 
-  // No GGUF warning for `codex`/`claude`: the picker only offers GGUF models.
+  // No GGUF warning for `codex`/`claude`: the picker only offers GGUF models and a resident MLX one.
 
   return (
     <div className="settings-page">

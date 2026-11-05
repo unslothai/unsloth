@@ -122,7 +122,8 @@ export function buildAgentShellCommands(
   };
 }
 
-// Codex (/v1/responses) and Claude Code (/v1/messages) are llama-server only.
+// Codex (/v1/responses) and Claude Code (/v1/messages) run on llama-server or MLX, not transformers;
+// `isGguf` below means either.
 export const GGUF_ONLY_AGENTS: readonly string[] = ["codex", "claude"];
 
 export function agentRunsOnActiveModel(
@@ -183,9 +184,10 @@ export function resolveGgufCompatibility(
 export function statusGgufVerdict(
   resident: string | null | undefined,
   isGguf: boolean | null | undefined,
+  isMlx?: boolean | null,
 ): boolean | null {
-  if (resident == null) return null;
-  return isGguf ?? null;
+  if (resident == null || isGguf == null) return null;
+  return isGguf || isMlx === true;
 }
 
 export function sameBaseModelId(a: string, b: string): boolean {

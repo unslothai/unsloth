@@ -36,6 +36,8 @@ from typer.testing import CliRunner
 import unsloth_cli.commands.start as start
 
 BASE = "http://127.0.0.1:8888"
+# The autouse _gguf_only_host fixture replaces this on the module.
+_REAL_SERVER_LOADS_MLX = start._server_loads_mlx
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
 
@@ -4713,6 +4715,28 @@ def test_connect_gguf_only_agents_reject_non_gguf_model(fake_studio, monkeypatch
     assert result.exit_code == 0, result.output
 
 
+@pytest.mark.parametrize("subcommand", ["claude", "codex"])
+def test_connect_gguf_only_agents_run_on_an_mlx_model(fake_studio, monkeypatch, subcommand):
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.split("?")[0].endswith("/api/inference/status"):
+            return {"is_gguf": False, "is_mlx": True, "model_identifier": "unsloth/Qwen3-0.6B"}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(start.start_app, [subcommand, "--no-launch"])
+    assert result.exit_code == 0, result.output
+    assert "needs a GGUF model" not in result.output
+
+
 def test_connect_nonloopback_keyless_refuses_to_send_credential(fake_studio, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: "http://studio.evil.example:8888")
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
@@ -4982,6 +5006,13 @@ def test_connect_no_studio_errors(fake_studio, monkeypatch):
 def _studio_is_this_machine(monkeypatch):
     # The gate reads the local filesystem only for a confirmed identity; tunnel tests override this.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base, **_kw: True)
+
+
+@pytest.fixture(autouse = True)
+def _gguf_only_host(monkeypatch):
+    # The GGUF gate defers on an MLX host, and this suite also runs on Apple Silicon.
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: False)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
 
 
 @pytest.fixture(autouse = True)
@@ -11190,6 +11221,108 @@ def test_require_gguf_for_agent_reads_the_requested_models_slot(monkeypatch, cap
             start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "unsloth/Qwen3-0.6B"
         )
     assert "Claude Code needs a GGUF model" in capsys.readouterr().err
+
+
+def test_require_gguf_for_agent_accepts_an_mlx_model(monkeypatch, capsys):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: {
+            "is_gguf": False,
+            "is_mlx": True,
+            "active_model": "mlx-community/Qwen3-4B-4bit",
+        },
+    )
+    for agent in (start._CLAUDE_GGUF_AGENT, start._CODEX_GGUF_AGENT):
+        start._require_gguf_for_agent(agent, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("health", "loads_mlx"),
+    [
+        ({"device_type": "mac", "apple_silicon": True, "chat_only_reason": None}, True),
+        (
+            {"device_type": "mac", "apple_silicon": True, "chat_only_reason": "mlx_unavailable"},
+            False,
+        ),
+        ({"device_type": "mac", "apple_silicon": False}, False),
+        ({"device_type": "linux", "apple_silicon": False}, False),
+        # Hardware not yet detected: no platform fields at all.
+        ({"status": "healthy"}, False),
+        (OSError("down"), False),
+    ],
+)
+def test_server_loads_mlx_reads_the_servers_platform(monkeypatch, health, loads_mlx):
+    urls = _fake_variants(monkeypatch, health)
+    assert _REAL_SERVER_LOADS_MLX(BASE, "sk-test") is loads_mlx
+    assert urls == [f"{BASE}/api/health?detect_hardware=true"]
+
+
+def test_server_loads_mlx_waits_out_hardware_detection(monkeypatch):
+    # A fresh server answers within a short budget, before detection has filled in the platform.
+    answers = iter(
+        [
+            {"status": "healthy", "hardware_detecting": True},
+            {"status": "healthy", "hardware_detecting": True},
+            {"device_type": "mac", "apple_silicon": True, "chat_only_reason": None},
+        ]
+    )
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: next(answers))
+    monkeypatch.setattr(start.time, "sleep", lambda s: None)
+    assert _REAL_SERVER_LOADS_MLX(BASE, "sk-test") is True
+
+
+def test_attach_check_defers_a_non_gguf_repo_on_an_mlx_server(monkeypatch, capsys):
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
+    _fake_variants(monkeypatch, {"variants": [], "has_vision": False})
+    start._attach_gguf_check(
+        start._CODEX_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit"
+    )
+    _fake_variants(monkeypatch, {"variants": [], "loadable": False})
+    start._attach_gguf_check(
+        start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit"
+    )
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    # GGUF weights a variantless load cannot pick stay refused on an MLX server too.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
+            "loadable": False,
+            "loadable_variants": ["BF16"],
+        },
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "/models/Foo-GGUF")
+    # A requested quant asks for GGUF: an MLX load would drop it, so an empty listing still refuses.
+    _fake_variants(monkeypatch, {"variants": [], "loadable": None, "loadable_variants": None})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(
+            start._CODEX_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit", "Q8_0"
+        )
+    # A .gguf file the server calls unloadable (a drafter it alone can place) never loads as MLX.
+    monkeypatch.setattr(start, "_direct_gguf_companion_is_uncertain", lambda repo: True)
+    _fake_variants(monkeypatch, {"variants": [], "loadable": False})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(
+            start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "/models/MTP/model-Q8_0-MTP.gguf"
+        )
+
+
+def test_claude_preflight_accepts_non_gguf_repo_on_an_mlx_host(monkeypatch, capsys):
+    _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
+    start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    # A requested quant still needs GGUF weights, inline or by flag.
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit:Q8_0")
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(
+            start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit", gguf_variant = "Q8_0"
+        )
 
 
 def test_claude_preflight_rejects_non_gguf_repo(monkeypatch, capsys):

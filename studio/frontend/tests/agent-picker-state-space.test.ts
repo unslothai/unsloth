@@ -289,6 +289,16 @@ test("a server that names what it holds still decides", () => {
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", undefined), null);
 });
 
+test("an MLX model runs Claude Code and Codex like a GGUF", () => {
+  const mlx = statusGgufVerdict("mlx-community/Qwen3-4B-4bit", false, true);
+  assert.equal(mlx, true);
+  assert.equal(pickCompatibleAgent([], "claude", mlx as boolean, VISIBLE_AGENTS), null);
+  // A server predating is_mlx still refuses a transformers model.
+  assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false, undefined), false);
+  assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false, false), false);
+  assert.equal(statusGgufVerdict(null, false, true), null);
+});
+
 test("a verdict about one model never gates a different one", () => {
   // Status and catalog polls run on separate timers, so a swap can reach one first.
   assert.equal(

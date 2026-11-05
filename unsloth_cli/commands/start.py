@@ -2835,12 +2835,54 @@ def _fail_agent_needs_gguf(agent: _GgufAgent, model_id: str) -> NoReturn:
     _fail(message)
 
 
+# Mirrors the frontend's NO_MLX_REASONS: an Apple Silicon host that still cannot load MLX.
+_NO_MLX_REASONS = frozenset(
+    {"mlx_unavailable", "no_torch", "intel_mac", "rosetta", "detection_failed"}
+)
+
+
+def _this_host_loads_mlx() -> bool:
+    import platform
+    return sys.platform == "darwin" and platform.machine() == "arm64"
+
+
+def _server_loads_mlx(base: str, key: str) -> bool:
+    # A non-GGUF model on an MLX host loads as MLX, which serves both agents; anything unknown keeps the GGUF gate.
+    deadline = time.monotonic() + 30
+    while True:
+        try:
+            # Detection is deferred until asked for; each call waits only a short budget for it.
+            health = _http_json("GET", f"{base}/api/health?detect_hardware=true", key, timeout = 30)
+        except Exception:
+            return False
+        if not (isinstance(health, dict) and health.get("hardware_detecting")):
+            break
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(1)
+    return (
+        isinstance(health, dict)
+        and health.get("device_type") == "mac"
+        and health.get("apple_silicon") is True
+        and health.get("chat_only_reason") not in _NO_MLX_REASONS
+    )
+
+
+def _refuse_non_gguf(
+    agent: _GgufAgent, model_id: str, base: str, key: str, variant: Optional[str]
+) -> None:
+    # A requested quant or a .gguf file asks for GGUF, which an MLX load would silently drop.
+    if variant or model_id.lower().endswith(".gguf") or not _server_loads_mlx(base, key):
+        _fail_agent_needs_gguf(agent, model_id)
+
+
 def _preflight_agent_gguf(
     agent: _GgufAgent,
     model: Optional[str],
     *,
     serve: bool = True,
     launch: bool = True,
+    gguf_variant: Optional[str] = None,
 ) -> None:
     # Hub-listing preflight for the auto-start path only: with a server running, identifiers
     # resolve against its cwd/cache/token, so _attach_gguf_check asks the server instead.
@@ -2855,7 +2897,7 @@ def _preflight_agent_gguf(
         return
     if find_studio_server() is not None:
         return
-    repo, _ = _split_repo_variant(model)
+    repo, inline_variant = _split_repo_variant(model)
     # A bare foo.gguf naming no local file is a shorthand, canonicalized like any owner-less name.
     if "/" not in repo and (not _is_model_path(repo) or repo.lower().endswith(".gguf")):
         # The server canonicalizes owner-less shorthands to unsloth/<name>.
@@ -2868,7 +2910,9 @@ def _preflight_agent_gguf(
     if not _is_hub_model_id(repo):
         return
     files = _hub_gguf_files(repo)
-    if files is not None and not files:
+    # A requested quant asks for GGUF, which an MLX load would silently drop.
+    asks_gguf = bool(gguf_variant or inline_variant) or repo.lower().endswith(".gguf")
+    if files is not None and not files and (asks_gguf or not _this_host_loads_mlx()):
         _fail_agent_needs_gguf(agent, repo)
 
 
@@ -2989,7 +3033,10 @@ def _attach_gguf_check(
                 return
             if not variant and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    _fail_agent_needs_gguf(agent, candidate)
+                    # GGUF weights the load cannot pick stay refused; only a GGUF-less repo may load as MLX.
+                    if variants:
+                        _fail_agent_needs_gguf(agent, candidate)
+                    _refuse_non_gguf(agent, candidate, base, key, variant)
                 return
         if isinstance(variants, list) and variants:
             # llama.cpp kills the resident model before resolving the quant, so settle it here; local answers take exact labels only.
@@ -3048,7 +3095,8 @@ def _attach_gguf_check(
                         return
                 except OSError:
                     return
-            _fail_agent_needs_gguf(agent, candidate)
+            _refuse_non_gguf(agent, candidate, base, key, variant)
+            return
 
 
 def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: str) -> None:
@@ -3065,7 +3113,8 @@ def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: st
         return
     is_gguf = status.get("is_gguf")
     # InferenceStatusResponse declares is_gguf non-optional under a response_model, so a current server always sends it. Absent means "not that endpoint", never "non-GGUF".
-    if is_gguf is None or is_gguf:
+    # MLX serves /v1/messages and /v1/responses in process; only the transformers path is refused.
+    if is_gguf is None or is_gguf or status.get("is_mlx"):
         return
     # is_gguf carries a False default, so an idle server answers False while naming no model. The request that follows gets the server's own "No GGUF model loaded" anyway.
     if not (status.get("active_model") or status.get("model_identifier")):
@@ -7348,7 +7397,9 @@ def claude(
         else "curl -fsSL https://claude.ai/install.sh | bash"
     )
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
-    _preflight_agent_gguf(_CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch)
+    _preflight_agent_gguf(
+        _CLAUDE_GGUF_AGENT, model, serve = serve, launch = launch, gguf_variant = gguf_variant
+    )
     # Only a bare or resumed interactive launch is refused: its prompt is the stock one and the TUI would hide a warning. Other forwarded args (-p, --tools, a --no-launch recipe a driver extends) can shrink the prompt, so they only warn.
     # CLAUDE_CODE_SIMPLE is the env form of --bare: a minimal prompt that may fit, so it only warns too.
     simple = os.environ.get("CLAUDE_CODE_SIMPLE", "").strip().lower() not in (
@@ -7539,7 +7590,9 @@ def codex(
         )
     install_hint = _npm_install_hint("@openai/codex")
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
-    _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
+    _preflight_agent_gguf(
+        _CODEX_GGUF_AGENT, model, serve = serve, launch = launch, gguf_variant = gguf_variant
+    )
     _require_agent_for_launch("codex", install_hint, launch and not app)
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
