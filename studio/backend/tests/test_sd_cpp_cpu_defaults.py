@@ -497,6 +497,8 @@ def test_cpu_renders_size_torch_threads_like_sd_cpp(monkeypatch):
     torch = pytest.importorskip("torch")
     from core.inference import diffusion_device as dd
 
+    for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.delenv(name, raising = False)
     before = torch.get_num_threads()
     calls = []
     monkeypatch.setattr(torch, "set_num_threads", lambda n: calls.append(n))
@@ -511,3 +513,21 @@ def test_cpu_renders_size_torch_threads_like_sd_cpp(monkeypatch):
     assert dd.apply_cpu_render_threads("cpu") is None
     monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: 1 / 0)
     assert dd.apply_cpu_render_threads("cpu") is None
+
+
+@pytest.mark.parametrize("name", ["OMP_NUM_THREADS", "MKL_NUM_THREADS"])
+def test_cpu_renders_keep_an_explicit_torch_thread_pool(monkeypatch, name):
+    torch = pytest.importorskip("torch")
+    from core.inference import diffusion_device as dd
+
+    for other in ("OMP_NUM_THREADS", "MKL_NUM_THREADS"):
+        monkeypatch.delenv(other, raising = False)
+    monkeypatch.setenv(name, "2")
+    monkeypatch.setenv("UNSLOTH_CPU_THREADS", "8")
+    calls = []
+    monkeypatch.setattr(torch, "set_num_threads", lambda n: calls.append(n))
+    monkeypatch.setattr(bk, "_default_threads", lambda *a, **k: torch.get_num_threads() + 3)
+    assert dd.apply_cpu_render_threads("cpu") is None
+    assert calls == []
+    monkeypatch.setenv(name, " ")
+    assert dd.apply_cpu_render_threads("cpu") == torch.get_num_threads() + 3
