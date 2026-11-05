@@ -253,6 +253,13 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
+import {
+  isLoadingPick,
+  loadComparePaneModel,
+  registerComparePaneRunPreparer,
+} from "./compare-run-ownership";
+import { checkpointMatchesPick } from "./lib/resident-model-match";
+import { compareModelDisplayName } from "./lib/external-model-label";
 import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
 import { RootSandboxSetupDialog } from "./sandbox-setup-dialog";
 import {
@@ -1146,6 +1153,8 @@ const CompareContent = memo(function CompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  loadPaneModel,
+  cancelPaneModelLoad,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -1157,6 +1166,8 @@ const CompareContent = memo(function CompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  loadPaneModel: (selection: SelectedModelInput) => Promise<void>;
+  cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const { state: compareRead, retry: retryCompareRead } =
     useCompareVariant(pairId);
@@ -1184,6 +1195,8 @@ const CompareContent = memo(function CompareContent({
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
       onExitCompare={onExitCompare}
+      loadPaneModel={loadPaneModel}
+      cancelPaneModelLoad={cancelPaneModelLoad}
     />
   );
 });
@@ -1550,6 +1563,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  loadPaneModel,
+  cancelPaneModelLoad,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -1561,6 +1576,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  loadPaneModel: (selection: SelectedModelInput) => Promise<void>;
+  cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -1591,6 +1608,50 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
+
+  useEffect(
+    () =>
+      registerComparePaneRunPreparer(pairId, async (pane, signal) => {
+        const sel = pane === "model1" ? model1 : model2;
+        if (!sel.id) return;
+        const store = () => useChatRuntimeStore.getState();
+        // A shared Send has already loaded this pane's model, so it is active here.
+        await loadComparePaneModel(
+          {
+            name: compareModelDisplayName(sel.id),
+            isActive: () =>
+              checkpointMatchesPick(
+                store().params.checkpoint,
+                store().activeGgufVariant,
+                sel,
+              ),
+            isLoading: () => isLoadingPick(store().loadingModelPick, sel),
+            cancelLoad: () => void cancelPaneModelLoad(),
+            load: () =>
+              loadPaneModel({
+                id: sel.id,
+                isLora: sel.isLora,
+                ggufVariant: sel.ggufVariant,
+                ...(sel.ggufVariant || sel.id.toLowerCase().endsWith(".gguf")
+                  ? { isGguf: true }
+                  : {}),
+                isDiffusion: sel.isDiffusion,
+                config:
+                  sel.config ??
+                  resolveResidentInitialConfig(sel.id, sel.ggufVariant ?? null)
+                    .config,
+                keepSpeculative: true,
+                throwOnError: true,
+                previousConfig: currentRuntimePerModelConfig({
+                  includeMaxSeqLength: true,
+                }),
+              }),
+          },
+          signal,
+        );
+      }),
+    [pairId, model1, model2, loadPaneModel, cancelPaneModelLoad],
+  );
 
   const handleModelsChange = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -4932,6 +4993,8 @@ export function ChatPage({
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
             onExitCompare={exitCompare}
+            loadPaneModel={selectModel}
+            cancelPaneModelLoad={cancelLoading}
           />
         ) : null}
 

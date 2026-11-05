@@ -524,6 +524,28 @@ def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     return None, None
 
 
+def smi_util_pct(ordinal: int) -> Optional[float]:
+    """nvidia-smi utilization.gpu (percent) of torch ordinal ``ordinal``, without a CUDA context; None wherever
+    :func:`smi_free_total_mib` would not trust the rows. Never raises."""
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM or hw._cuda_instance_ids_active() or not hw._cuda_order_matches_smi():
+            return None
+        visible = hw.get_parent_visible_gpu_ids()
+        if not 0 <= int(ordinal) < len(visible):
+            return None
+        index = visible[int(ordinal)]
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        for device in (result or {}).get("devices", []):
+            if device.get("index") == index:
+                util = device.get("gpu_utilization_pct")
+                return None if util is None else float(util)
+    except Exception:  # noqa: BLE001 -- unknown utilisation: the memory test alone decides
+        pass
+    return None
+
+
 def auto_cuda_ranking_possible_cached() -> Optional[bool]:
     """``auto_cuda_ranking_possible`` when it can be answered from state already in memory, else None.
 
