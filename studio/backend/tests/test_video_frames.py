@@ -152,7 +152,11 @@ def _denormalize_spy(monkeypatch):
     seen = []
     original = VaeImageProcessor._denormalize_conditionally
 
-    def denormalize(self, images, do_denormalize = None):
+    def denormalize(
+        self,
+        images,
+        do_denormalize = None,
+    ):
         seen.append(int(images.shape[0]))
         return original(self, images, do_denormalize)
 
@@ -182,7 +186,9 @@ def test_per_frame_do_denormalize_list_is_sliced_with_the_frames(monkeypatch):
     vp = VideoProcessor(vae_scale_factor = 8, do_normalize = True)
     video = _clip(torch.float32, normalized = True, frames = 7)
     flags = [True, False, True, True, False, False, True]
-    video[0, :, [1, 4, 5]] = video[0, :, [1, 4, 5]].clamp(0, 1)  # undenormalized frames stay in range
+    video[0, :, [1, 4, 5]] = video[0, :, [1, 4, 5]].clamp(
+        0, 1
+    )  # undenormalized frames stay in range
     expected = _encode_video_uint8(
         vp.postprocess_video(video, output_type = "np", do_denormalize = flags)
     )
@@ -198,7 +204,12 @@ def test_a_processor_that_overrides_postprocess_keeps_the_whole_clip_call(monkey
     calls = []
 
     class Mixing(VideoProcessor):
-        def postprocess(self, image, output_type = "pil", **kwargs):
+        def postprocess(
+            self,
+            image,
+            output_type = "pil",
+            **kwargs,
+        ):
             calls.append(int(image.shape[0]))
             return super().postprocess(image, output_type, **kwargs)
 

@@ -193,7 +193,9 @@ def _frame_wise_prepare(proc: Any, postprocess: Any, frames: Any, kwargs: dict) 
         return None
     own = vars(proc) if hasattr(proc, "__dict__") else {}
     for name in _FRAME_WISE_METHODS:
-        if name in own or getattr(type(proc), name, None) is not getattr(VaeImageProcessor, name, None):
+        if name in own or getattr(type(proc), name, None) is not getattr(
+            VaeImageProcessor, name, None
+        ):
             return None
     if set(kwargs) - {"do_denormalize"}:
         return None
