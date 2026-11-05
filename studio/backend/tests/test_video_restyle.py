@@ -403,3 +403,16 @@ def test_unload_if_idle_refuses_while_a_restyle_holds_the_runner(weights):
     runner._update(active = False)
     assert runner.unload_if_idle()
     assert stopped == [True] and runner._server is None
+
+
+def test_progress_waits_for_start_to_swap_owner_and_state(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    out = []
+    runner._lock.acquire()
+    reader = threading.Thread(target = lambda: out.append(runner.progress("bob")))
+    reader.start()
+    reader.join(0.2)
+    assert reader.is_alive() and out == []
+    runner._lock.release()
+    reader.join(5)
+    assert out == [{"active": False, "phase": None}]

@@ -310,9 +310,12 @@ class RestyleRunner:
 
     def progress(self, owner: Optional[str] = None) -> dict[str, Any]:
         """Another account sees only whether the runner is busy, never the prompt's outputs."""
-        if owner is not None and not self.owned_by(owner):
-            return {"active": bool(self._state.get("active")), "phase": None}
-        return dict(self._state)
+        # Under the lock ``start`` swaps owner and state in, so a new owner never sees the old job.
+        with self._lock:
+            state = self._state
+            if owner is not None and not self.owned_by(owner):
+                return {"active": bool(state.get("active")), "phase": None}
+            return dict(state)
 
     def _update(self, **fields: Any) -> None:
         self._state = {**self._state, **fields}
