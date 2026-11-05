@@ -546,7 +546,6 @@ def test_anima_gguf_is_neither_offered_nor_loaded():
 
 
 def test_an_anima_single_file_takes_only_configs_for_what_it_carries(tmp_path):
-    # The file holds the DiT and the text conditioner, so the base needs neither one's weights.
     from core.inference.diffusion import DiffusionBackend, _single_file_components
     from core.inference.diffusion_anima import ANIMA_COMPONENT_FOLDERS
     from core.inference.diffusion_families import detect_family
