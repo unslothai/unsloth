@@ -1178,3 +1178,76 @@ def test_a_template_mapping_s_one_answer_column_is_read_as_training_reads_it(mon
     # The exact training answer passes.
     result = run_benchmark({**spec, "with_baseline": False}, chat = lambda target, messages: "Paris")
     assert result["candidate"]["passed"] == 1
+
+
+@pytest.mark.parametrize("seed", ["output", "prompt"])
+def test_a_conversation_dataset_is_scored_on_its_conversation_whatever_seed_columns_it_keeps(
+    monkeypatch, seed
+):
+    from core.benchmark.recipe_heldout import run_benchmark
+    from core.flows.nodes.training import auto_conversation
+
+    row = {
+        "messages": [
+            {"role": "user", "content": "Capital of France?"},
+            {"role": "assistant", "content": "Paris"},
+        ],
+        seed: "Seed text the recipe kept",
+    }
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(row)]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    # Fine-tune's automatic formatting read the messages column.
+    conversation = auto_conversation(row)
+    assert conversation == "messages"
+    ctx.inputs["checkpoint"] = {
+        "kind": "checkpoint",
+        "name": "run-1",
+        "conversation_column": conversation,
+    }
+    asyncio.run(benchmark.benchmark(ctx))
+    spec = sent[0]["recipe"]
+    assert spec["prompt_column"] == "messages" and spec["reference_column"] is None
+    result = run_benchmark({**spec, "with_baseline": False}, chat = lambda target, messages: "Paris")
+    assert result["candidate"]["passed"] == 1
+
+
+def test_several_answer_message_columns_are_read_as_training_reads_them(monkeypatch):
+    from datasets import Dataset
+
+    from core.benchmark.recipe_heldout import run_benchmark
+    from core.flows.nodes.training import mapping_facts
+    from utils.datasets.dataset_utils import _apply_user_mapping
+
+    mapping = {"question": "user", "first": "assistant", "second": "assistant"}
+    row = {
+        "question": "Name the capital and country.",
+        "first": [{"role": "assistant", "content": "Paris"}],
+        "second": [{"role": "assistant", "content": "France"}],
+    }
+    trained = _apply_user_mapping(Dataset.from_list([row]), mapping)[0]["conversations"]
+    answer = "\n".join(t["content"] for t in trained if t["role"] == "assistant")
+
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(row)]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    ctx = _Ctx(_routes(sent))
+    ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", **mapping_facts(mapping)}
+    asyncio.run(benchmark.benchmark(ctx))
+    spec = sent[0]["recipe"]
+    result = run_benchmark({**spec, "with_baseline": False}, chat = lambda target, messages: answer)
+    assert result["candidate"]["passed"] == 1

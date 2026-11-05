@@ -432,14 +432,21 @@ def _system_column(ctx: NodeContext, columns: list[str]) -> Optional[str]:
     return next((c for c in columns if c.strip().lower() in SYSTEM_GUESSES), None)
 
 
-def _mapped_cells(row: dict, columns: list[str], labels: Any, join: str) -> Any:
-    """Several mapped columns as training joined them: one user message per column, or their
-    lines in one message (template mapping, Alpaca format) with label names for numeric labels."""
+def _mapped_cells(
+    row: dict,
+    columns: list[str],
+    labels: Any,
+    join: str,
+    role: str = "user",
+) -> Any:
+    """Several mapped columns as training joined them: one message per column (a message list's
+    own turns), or their lines in one message (template mapping, Alpaca format) with label names
+    for numeric labels."""
     from utils.datasets.cells import cell_turns
     from utils.datasets.dataset_utils import _extract_column_value
 
     if join == "turns":
-        return [turn for c in columns for turn in cell_turns(row.get(c), "user")]
+        return [turn for c in columns for turn in cell_turns(row.get(c), role)]
     labels = labels if isinstance(labels, dict) else {}
     return "\n".join(_extract_column_value(row.get(c), c, labels) for c in columns)
 
@@ -534,7 +541,15 @@ async def _recipe_heldout(
     answers = [c for c in facts.get("answer_columns") or [] if isinstance(c, str)]
     answers = answers if answers and all(c in columns for c in answers) else []
     asked = rows
-    if named_prompt or not users:
+    conversation = facts.get("conversation_column")
+    # The whole-conversation column training read: its turns are the question and its closing
+    # answer the reference, whatever seed columns the rows also keep.
+    conversation = (
+        conversation if isinstance(conversation, str) and conversation in columns else None
+    )
+    if not named_prompt and not users and conversation:
+        prompt_col = conversation
+    elif named_prompt or not users:
         prompt_col = guess_column(
             columns if named_prompt else guessable, named_prompt, PROMPT_GUESSES
         )
@@ -561,11 +576,18 @@ async def _recipe_heldout(
         prompt_col = ALPACA_PROMPT
         columns = [c for c in columns if c != "input"]
     named_reference = str(ctx.params.get("reference_column") or "").strip()
-    if not named_reference and len(answers) == 1 and not converted:
+    if not named_reference and conversation and prompt_col == conversation:
+        reference_col = None
+    elif not named_reference and len(answers) == 1 and not converted:
         reference_col = answers[0]
     elif not named_reference and answers:
         labels = facts.get("label_mapping")
-        asked = [{**r, MAPPED_REFERENCE: _mapped_cells(r, answers, labels, "lines")} for r in asked]
+        # As training read them: a plain role mapping's assistant turns, else their lines.
+        join = "lines" if converted else "turns"
+        asked = [
+            {**r, MAPPED_REFERENCE: _mapped_cells(r, answers, labels, join, "assistant")}
+            for r in asked
+        ]
         reference_col = MAPPED_REFERENCE
     else:
         reference_col = guess_column(

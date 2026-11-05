@@ -312,8 +312,10 @@ async def finetune(ctx: NodeContext) -> dict:
     system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
+    conversation = None
     if automatic:
         mapping = await asyncio.to_thread(auto_mapping, row)
+        conversation = await asyncio.to_thread(auto_conversation, row)
     alpaca_input = False
     if objective != "sft" and isinstance(row, dict):
         from core.training.rl import _IGNORE_ROLE, resolve_role_columns
@@ -336,6 +338,9 @@ async def finetune(ctx: NodeContext) -> dict:
         except (KeyError, ValueError):
             pass
     facts = mapping_facts(mapping, config.get("format_type"), objective)
+    if conversation:
+        # The column of whole conversations training read, whatever other columns the rows keep.
+        facts["conversation_column"] = conversation
     if alpaca_input:
         facts.update(user_join = "alpaca", input_columns = ["input"])
     checkpoint.update(facts)
@@ -449,6 +454,22 @@ def drafter_request(params: dict) -> dict:
         "learning_rate": float(lr) if lr not in (None, "") and float(lr) > 0 else None,
         "draft_steps": int(params.get("drafter_draft_steps") or 3),
     }
+
+
+def auto_conversation(row: Any) -> Optional[str]:
+    """The column of whole conversations (``messages``, ``conversations``) automatic formatting
+    reads, or None."""
+    if not isinstance(row, dict) or not row:
+        return None
+    try:
+        from datasets import Dataset
+
+        from utils.datasets.format_detection import detect_dataset_format
+        found = detect_dataset_format(Dataset.from_list([row]))
+    except Exception:
+        return None
+    column = found.get("chat_column")
+    return column if found.get("format") in ("sharegpt", "chatml") and column in row else None
 
 
 def auto_mapping(row: Any) -> dict:
