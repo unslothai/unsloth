@@ -345,7 +345,6 @@ def test_a_model_with_nvfp4_layers_defaults_to_auto(monkeypatch, env, spec, step
 
 
 def test_the_default_leaves_models_without_nvfp4_layers_unarmed(monkeypatch):
-    """Only a model that owns FlashInfer NVFP4 layers gets auto: every other graph key and log stays as it was."""
     torch = pytest.importorskip("torch")
     import torch.nn as nn
 

@@ -244,7 +244,7 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
-    # Unset = auto for NVFP4 models; "off" (not a bare "0", which protects step 0) disables it.
+    # A bare "0" protects step 0, it is not off.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "protect:auto",
 }
 _OFF_WORDS = ("0", "off", "false", "no", "none")

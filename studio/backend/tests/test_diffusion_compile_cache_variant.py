@@ -228,7 +228,6 @@ def test_protect_steps_auto_is_its_default_and_off_or_step_0_key_apart(monkeypat
     k_off = _key(m)
     assert k_off != k0
     assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "off"}
-    # A bare 0 protects step 0: it must not share the off (or the auto) bundle.
     monkeypatch.setenv("UNSLOTH_NVFP4_PROTECT_STEPS", "0")
     assert _key(m) not in (k0, k_off)
     assert cc.graph_switches() == {"UNSLOTH_NVFP4_PROTECT_STEPS": "0"}
