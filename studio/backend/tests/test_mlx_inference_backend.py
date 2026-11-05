@@ -11158,7 +11158,6 @@ def test_mlx_passes_an_explicit_budget_through_both_paths(monkeypatch):
 
 @pytest.mark.parametrize("limit", [None, 16])
 def test_mlx_refuses_a_prompt_that_fills_the_served_window(monkeypatch, limit):
-    # A rotating cache would otherwise drop the prompt's start during prefill.
     from core.inference.context_refusal import ContextBudgetExceeded
 
     fits = _BUDGET_PROMPT_N + 1
