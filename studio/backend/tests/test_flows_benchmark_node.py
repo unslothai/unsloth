@@ -1309,3 +1309,39 @@ def test_a_grpo_prefill_stays_in_the_prompt(monkeypatch):
     passed, asked = _scored(monkeypatch, row, {"rl_objective": "grpo", "rl_mapping": None}, "8")
     assert passed == 1
     assert [t["content"] for t in asked] == ["Complete this sequence.", "2, 4, 6,"]
+
+
+def test_benchmark_tells_the_loop_how_it_built_each_question(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", False
+
+    rows = {}
+
+    async def read_rows(ctx, dataset, limit):
+        return [dict(rows["row"])]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+
+    def reported(row, checkpoint):
+        rows["row"] = row
+        ctx = _Ctx(_routes([]))
+        ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", **checkpoint}
+        return asyncio.run(benchmark.benchmark(ctx))["failures"]["prompt_column"]
+
+    rl = {"rl_objective": "dpo", "rl_mapping": {"ticket": "prompt"}}
+    assert reported({"ticket": "Refund", "chosen": "billing", "rejected": "sales"}, rl) == {
+        "kind": "rl",
+        "objective": "dpo",
+        "mapping": {"ticket": "prompt"},
+    }
+    prefill = [
+        {"role": "user", "content": "Complete this sequence."},
+        {"role": "assistant", "content": "2, 4, 6,"},
+    ]
+    assert reported({"prompt": prefill, "answer": "8"}, {}) == {
+        "kind": "column",
+        "column": "prompt",
+        "whole": False,
+    }
+    assert reported({"prompt": "Capital?", "answer": "Paris"}, {}) == "prompt"

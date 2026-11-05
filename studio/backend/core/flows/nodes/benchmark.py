@@ -465,24 +465,42 @@ def system_message(row: dict, columns: Any) -> str:
     return "\n\n".join(t for t in (cell_text(row.get(c)).strip() for c in names) if t)
 
 
+class _Rows:
+    """Rows as format_rl_dataset reads a dataset: its columns, and a map over every row (each with
+    every column, None where it has none, as a datasets table reads it)."""
+
+    def __init__(self, rows: list[dict]):
+        self.column_names = sorted({k for r in rows for k in r})
+        self.rows = [{c: r.get(c) for c in self.column_names} for r in rows]
+
+    def map(self, convert, **_kwargs) -> list[dict]:
+        return [convert(dict(r)) for r in self.rows]
+
+
+def rl_format(rows: list[dict], objective: Any, mapping: Any) -> Optional[list[dict]]:
+    """``rows`` through training's own GRPO, DPO or ORPO formatter, or None (not RL, or rows it
+    refuses)."""
+    if objective not in ("grpo", "dpo", "orpo") or not rows:
+        return None
+    from core.training.rl import format_rl_dataset
+
+    try:
+        formatted, _roles = format_rl_dataset(
+            _Rows(rows), objective, mapping if isinstance(mapping, dict) else None
+        )
+    except Exception:
+        return None
+    return list(formatted)
+
+
 def _rl_rows(rows: list[dict], facts: dict) -> Optional[list[dict]]:
     """Held-out rows of a GRPO, DPO or ORPO checkpoint shaped by training's own formatter: the
     prompt it trained on (an implicit prompt, an assistant prefill, the row's system message) and
     the answer, the preferred reply's closing turn. None when the checkpoint is not RL or the rows
     do not format."""
     objective = facts.get("rl_objective")
-    if objective not in ("grpo", "dpo", "orpo") or not rows:
-        return None
-    from datasets import Dataset
-
-    from core.training.rl import format_rl_dataset
-
-    mapping = facts.get("rl_mapping")
-    try:
-        formatted, _roles = format_rl_dataset(
-            Dataset.from_list(rows), objective, mapping if isinstance(mapping, dict) else None
-        )
-    except Exception:
+    formatted = rl_format(rows, objective, facts.get("rl_mapping"))
+    if formatted is None:
         return None
     shaped = []
     for row, out in zip(rows, formatted):
@@ -493,6 +511,33 @@ def _rl_rows(rows: list[dict], facts: dict) -> Optional[list[dict]]:
             found[MAPPED_REFERENCE] = "" if out["answer"] is None else str(out["answer"])
         shaped.append(found)
     return shaped
+
+
+def _asked_spec(
+    prompt_col: str,
+    reference_col: Optional[str],
+    rl: Optional[list],
+    mapped: Optional[dict],
+    facts: dict,
+    asked: list[dict],
+) -> Any:
+    """How a Loop rebuilds each row's question as Benchmark asked it: through training's RL
+    formatter, from several mapped columns, as one column (a conversation whole, or a prompt with
+    its assistant prefill when a reference column holds the answer), or "" for the Loop's own
+    Alpaca reading."""
+    if prompt_col == MAPPED_PROMPT and rl is not None:
+        return {
+            "kind": "rl",
+            "objective": facts.get("rl_objective"),
+            "mapping": facts.get("rl_mapping"),
+        }
+    if prompt_col == MAPPED_PROMPT:
+        return mapped
+    if prompt_col == ALPACA_PROMPT:
+        return ""
+    if reference_col and any(cell_messages(r.get(prompt_col)) for r in asked[:1]):
+        return {"kind": "column", "column": prompt_col, "whole": False}
+    return prompt_col
 
 
 def mapped_question(row: dict, spec: dict) -> Any:
@@ -749,9 +794,7 @@ async def _recipe_heldout(
         "failures": failures,
         # The column asked, so a Loop reads failures and test questions as they were scored; an
         # Alpaca row's question is its instruction plus input, which the Loop rebuilds itself.
-        "prompt_column": mapped
-        if prompt_col == MAPPED_PROMPT
-        else ("" if prompt_col == ALPACA_PROMPT else prompt_col),
+        "prompt_column": _asked_spec(prompt_col, reference_col, rl, mapped, facts, asked),
         # Rows sharing a question can ask different tasks through their own system message.
         "system_column": systems if system_col == MAPPED_SYSTEM else (system_col or ""),
     }

@@ -44,7 +44,11 @@ def split_holdout(rows: list[dict], probe_percent: int, seed: int) -> tuple[list
     return [rows[i] for i in probe], [rows[i] for i in test]
 
 
-def _text(value: Any, answer: bool = False) -> str:
+def _text(
+    value: Any,
+    answer: bool = False,
+    whole: bool = True,
+) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
@@ -53,8 +57,12 @@ def _text(value: Any, answer: bool = False) -> str:
 
     if cell_messages(value) is not None:
         # A chat transcript (OpenAI or ShareGPT turns), read as Benchmark asked and scored it.
-        return reference_text(value) if answer else prompt_text(value)
+        return reference_text(value) if answer else prompt_text(value, whole)
     return json.dumps(value, ensure_ascii = False)
+
+
+# What Benchmark adds to a failed row: never part of the row's own question.
+_SCORED = ("reason", "origin", "scored_reference", "scored_prompt")
 
 
 def failure_row(
@@ -68,6 +76,11 @@ def failure_row(
     if not isinstance(failure, dict):
         return None
     mapped = prompt_column if isinstance(prompt_column, dict) else None
+    whole = True
+    if mapped and mapped.get("kind") == "column":
+        # One column, its assistant prefill kept when a reference column held the answer.
+        prompt_column, whole = mapped.get("column"), bool(mapped.get("whole", True))
+        mapped = None
     # As Benchmark reads them: " ticket " names the ticket column.
     prompt_column = "" if mapped else str(prompt_column or "").strip()
     reference_column = reference_column.strip()
@@ -86,7 +99,15 @@ def failure_row(
 
     prompt = pick(prompt_column, PROMPT_KEYS, None)
     reference = pick(reference_column, REFERENCE_KEYS, prompt)
-    if mapped:
+    if mapped and mapped.get("kind") == "rl":
+        from core.benchmark.recipe_heldout import prompt_text
+        from core.flows.nodes.benchmark import rl_format
+
+        # The prompt training's RL formatter gives the row, as Benchmark asked it.
+        own = {k: v for k, v in failure.items() if str(k).lower() not in (*OUTPUT_KEYS, *_SCORED)}
+        formatted = rl_format([own], mapped.get("objective"), mapped.get("mapping"))
+        question = prompt_text(formatted[0]["prompt"], False) if formatted else ""
+    elif mapped:
         from core.benchmark.recipe_heldout import prompt_text
         from core.flows.nodes.benchmark import mapped_question
 
@@ -95,7 +116,7 @@ def failure_row(
         present = any(failure.get(c) not in (None, "") for c in columns if isinstance(c, str))
         question = prompt_text(mapped_question(failure, mapped)) if present else ""
     else:
-        question = _text(lowered.get(prompt)) if prompt else ""
+        question = _text(lowered.get(prompt), whole = whole) if prompt else ""
         extra = _text(lowered.get("input")) if prompt == "instruction" and not prompt_column else ""
         if extra.strip():
             # An Alpaca row was scored as instruction plus input; feed back the same question.
