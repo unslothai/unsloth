@@ -20,6 +20,7 @@ __all__ = [
     "standardize_data_formats",
     "apply_chat_template",
     "train_on_responses_only",
+    "check_dataset",
 
     "test_construct_chat_template",
 ]
@@ -83,6 +84,96 @@ else:
         )
         trainer = arguments.pop("trainer", None)
         return _zoo_train_on_responses_only(trainer, **arguments)
+
+_DATASET_CHECK_COLUMNS = ("messages", "conversations", "text")
+
+
+class _MalformedRow(Exception):
+    pass
+
+
+def _render_dataset_row(row, tokenizer):
+    if not isinstance(row, dict):
+        raise _MalformedRow("row is not a dict")
+    column = next((c for c in _DATASET_CHECK_COLUMNS if c in row), None)
+    if column is None:
+        raise _MalformedRow("no messages, conversations or text column")
+    value = row[column]
+    if column == "text":
+        if not isinstance(value, str):
+            raise _MalformedRow("text is not a string")
+        return value, value.strip() == "", True
+    if not isinstance(value, list) or not value or not all(
+        isinstance(m, dict) and "role" in m and "content" in m for m in value
+    ):
+        raise _MalformedRow(f"{column} is not a list of role/content messages")
+    try:
+        text = tokenizer.apply_chat_template(value, tokenize = False, add_generation_prompt = False)
+    except Exception as e:
+        raise _MalformedRow(f"chat template failed: {e}") from e
+    empty = all(isinstance(m["content"], str) and m["content"].strip() == "" for m in value)
+    return text, empty, False
+
+
+def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
+    if response_part is None:
+        response_part = getattr(tokenizer, "_unsloth_output_part", None)
+    if response_part is None and getattr(tokenizer, "chat_template", None) is not None:
+        try:
+            from unsloth_zoo.dataset_utils import get_chat_template_parts
+            response_part = get_chat_template_parts(tokenizer)[1]
+        except Exception:
+            pass
+
+    rows = malformed = empty = found = 0
+    problems, lengths = [], []
+    for i, row in enumerate(dataset):
+        rows += 1
+        try:
+            text, is_empty, add_special_tokens = _render_dataset_row(row, tokenizer)
+        except _MalformedRow as e:
+            malformed += 1
+            if len(problems) < 5:
+                problems.append(f"  row {i}: {e}")
+            continue
+        if is_empty:
+            empty += 1
+        if response_part is not None and response_part in text:
+            found += 1
+        lengths.append(len(tokenizer(text, add_special_tokens = add_special_tokens).input_ids))
+
+    over = sum(length > max_seq_length for length in lengths)
+    template = getattr(tokenizer, "_unsloth_chat_template_name", None)
+    if template is None:
+        if getattr(tokenizer, "chat_template", None) is None:
+            template = "none"
+        else:
+            template = f"{getattr(tokenizer, 'name_or_path', 'tokenizer')} (tokenizer's own)"
+    marker = f"{found:,} / {rows:,}" if response_part is not None else "none detected"
+
+    print("Unsloth: Dataset check")
+    print(f"Rows: {rows:,}  |  Malformed: {malformed:,}  |  Empty: {empty:,}")
+    for problem in problems:
+        print(problem)
+    if lengths:
+        s = sorted(lengths)
+        print(
+            f"Token lengths: min {s[0]:,} | median {s[len(s) // 2]:,} | "
+            f"p95 {s[int(0.95 * (len(s) - 1))]:,} | max {s[-1]:,}"
+        )
+    print(f"Over max_seq_length ({max_seq_length:,}): {over:,} ({100 * over / max(rows, 1):.1f}%)")
+    print(f"Template: {template} | Response marker found in: {marker}")
+    return {
+        "rows": rows,
+        "malformed": malformed,
+        "empty": empty,
+        "lengths": lengths,
+        "max_seq_length": max_seq_length,
+        "over_max_seq_length": over,
+        "template": template,
+        "response_part": response_part,
+        "response_marker_found": found,
+    }
 
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
@@ -2513,6 +2604,7 @@ def get_chat_template(
 
     same_padding_token = False
     type_chat_template = None
+    template_name = None
 
     if type(chat_template) in (list, tuple,):
         # For changing system message later Since it's not supported yet, we will raise an error first!
@@ -2525,6 +2617,7 @@ def get_chat_template(
     elif type(chat_template) is str:
         # For changing system message later
         type_chat_template = chat_template.lower()
+        template_name = chat_template
 
         chat_template, stop_word, yes_map_eos_token, ollama_modelfile = CHAT_TEMPLATES[chat_template]
 
@@ -2742,6 +2835,7 @@ def get_chat_template(
 
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
+    tokenizer._unsloth_chat_template_name = template_name
 
     # Re-wrap so the trainer gets the same TokenizerWrapper type back.
     if _mlx_tokenizer_wrapper is not None:
