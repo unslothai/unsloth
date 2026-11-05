@@ -78,7 +78,7 @@ test("a replaced backend's verdict is unmeasured until the new one answers", asy
 });
 
 test("a replaced backend under deferred detection does not inherit the old reason", async () => {
-  // UNSLOTH_STUDIO_DISABLE_TORCH_WARM=1: a deferred reply counts as settled.
+  // A deferred backend has not measured hardware and cannot inherit the predecessor's verdict.
   reply = CHAT_ONLY;
   await fetchDeviceType({ force: true });
   assert.equal(usePlatformStore.getState().chatOnlyReason, "no_torch");
@@ -86,7 +86,7 @@ test("a replaced backend under deferred detection does not inherit the old reaso
   reply = { ...DETECTING, hardware_detection_deferred: true };
   await fetchDeviceType({ force: true });
   const s = usePlatformStore.getState();
-  assert.equal(s.capabilitiesUnknown(), false);
+  assert.equal(s.capabilitiesUnknown(), true);
   assert.equal(s.isChatOnly(), true);
   assert.equal(s.chatOnlyReason, null);
   assert.equal(s.deviceType, "windows");
@@ -114,6 +114,6 @@ test("only a backend that already answered marks the verdict stale", async () =>
   );
   assert.match(
     src,
-    /if \(verdictStaleRef\.current\) \{\s*verdictStaleRef\.current = false;\s*forgetMeasuredVerdict\(\);\s*\}\s*void fetchDeviceType\(\{ force: true \}\)/,
+    /if \(verdictStaleRef\.current\) \{\s*verdictStaleRef\.current = false;\s*forgetMeasuredVerdict\(\);\s*\}\s*void fetchDeviceType\(\{\s*force: true,/,
   );
 });

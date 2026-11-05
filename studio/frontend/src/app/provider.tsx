@@ -23,6 +23,7 @@ import {
   forgetMeasuredVerdict,
   usePlatformStore,
 } from "@/config/env";
+import { routeNeedsHardware } from "@/config/hardware-verdict";
 import { getTauriAuthFailure, tauriAutoAuth } from "@/features/auth";
 import { resyncInferenceStatusAfterServerModelChange } from "@/features/chat/hooks/use-chat-model-runtime";
 import { DeepLinkHandler } from "@/features/deep-links";
@@ -504,17 +505,17 @@ function getTauriWindowMode(
 }
 
 function TauriUpdateLayer({
-  isExternalServer,
+  externalServerPort,
   children,
   appContent,
   onUpdateScreenChange,
 }: {
-  isExternalServer: boolean;
+  externalServerPort: number | null;
   children?: ReactNode;
   appContent: ReactNode;
   onUpdateScreenChange: (shown: boolean) => void;
 }) {
-  const update = useTauriUpdate(isExternalServer);
+  const update = useTauriUpdate(externalServerPort);
   const isUpdating =
     update.status === "updating-backend" ||
     update.status === "downloading" ||
@@ -570,7 +571,7 @@ function TauriUpdateLayer({
         info={update.info}
         dismissed={update.dismissed}
         lastFailure={update.lastFailure}
-        isExternalServer={isExternalServer}
+        externalServerPort={externalServerPort}
         updatePolicyMode={update.updatePolicyMode}
         manualReleaseUrl={update.manualReleaseUrl}
         releasePageUrl={update.releasePageUrl}
@@ -700,6 +701,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     error,
     installDiskFull,
     isExternalServer,
+    externalServerPort,
     currentStepIndex,
     progressDetail,
     startupMessage,
@@ -889,6 +891,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   // Set once a backend that already answered goes away: the next one measures its hardware again.
   const servedRef = useRef(false);
   const verdictStaleRef = useRef(false);
+  // Read at reconnect time only: a navigation must not trigger another health read.
+  const pathnameRef = useRef(pathname);
+  pathnameRef.current = pathname;
   useEffect(() => {
     if (status === "running") servedRef.current = true;
     else if (servedRef.current) verdictStaleRef.current = true;
@@ -900,7 +905,11 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       verdictStaleRef.current = false;
       forgetMeasuredVerdict();
     }
-    void fetchDeviceType({ force: true }).catch(() => undefined);
+    void fetchDeviceType({
+      force: true,
+      // The open page's beforeLoad will not rerun, so it asks for detection here.
+      detectHardware: routeNeedsHardware(pathnameRef.current),
+    }).catch(() => undefined);
   }, [status, desktopAuthReady]);
 
   useEffect(() => {
@@ -977,7 +986,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         >
           <AppReadinessBoundary onReady={setAppShellReady} revealed={showApp}>
             <TauriUpdateLayer
-              isExternalServer={isExternalServer}
+              externalServerPort={externalServerPort}
               onUpdateScreenChange={setUpdateScreenShown}
               appContent={
                 <>

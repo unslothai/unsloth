@@ -884,15 +884,19 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
         if not isinstance(message, dict):
             continue
         role = message.get("role") or message.get("from")
-        content = message.get("content") if "content" in message else message.get("value")
+        content = message.get("content")
+        if content is None:
+            content = message.get("value")
         normalized = _normalize_role_alias(role)
-        messages.append(
+        new_message = {key: value for key, value in message.items() if key not in ("from", "value")}
+        new_message.update(
             {
                 # Unknown alias shown as written; blank falls back to "user", as before.
                 "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
-                "content": "" if content is None else content,
+                "content": "" if content is None and not message.get("tool_calls") else content,
             }
         )
+        messages.append(new_message)
     return {chat_column: messages}
 
 

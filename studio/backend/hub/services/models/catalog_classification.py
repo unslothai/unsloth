@@ -98,16 +98,25 @@ def _gguf_architecture(path: str) -> Optional[str]:
     return read_gguf_architecture(path)
 
 
+def _family_buildable_for_listing(family, *, model_kind: str) -> bool:
+    from core.inference.diffusion_engine_router import family_buildable_here
+    from utils.hardware import hardware as hw
+
+    # Listing must not run hardware detection; the load re-checks buildability.
+    if not hw.DETECTION_COMPLETE.is_set():
+        return family is not None
+    return family_buildable_here(family, model_kind = model_kind)
+
+
 def _gguf_family_buildable(name_hints: tuple[Optional[str], ...]) -> bool:
     try:
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick
         for hint in name_hints:
             if not hint:
                 continue
             family = detect_family_for_pick(hint)
             if family is not None:
-                return family_buildable_here(family, model_kind = "gguf")
+                return _family_buildable_for_listing(family, model_kind = "gguf")
     except Exception:
         return True
     return True
@@ -265,10 +274,11 @@ def _whole_pipeline_gguf_task(path: str | Path) -> Optional[str]:
         family = whole_pipeline_gguf_family(str(path))
         if family is None:
             return None
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family
 
-        buildable = family_buildable_here(detect_family("", override = family), model_kind = "gguf")
+        buildable = _family_buildable_for_listing(
+            detect_family("", override = family), model_kind = "gguf"
+        )
     except Exception:
         return None
     return "text-to-image" if buildable else _UNSUPPORTED_DIFFUSION_TASK
@@ -322,15 +332,13 @@ def _arch_to_task(arch: Optional[str], name_hints: tuple[Optional[str], ...] = (
             return _VIDEO_GEN_TASK
         return _UNSUPPORTED_DIFFUSION_TASK
     if normalized in _AMBIGUOUS_DIFFUSION_GGUF_ARCHS:
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import detect_family_for_pick, family_gguf_loadable
-
         for hint in name_hints:
             if not hint:
                 continue
             family = detect_family_for_pick(hint)
             if family is not None:
-                loadable = family_gguf_loadable(family) and family_buildable_here(
+                loadable = family_gguf_loadable(family) and _family_buildable_for_listing(
                     family, model_kind = "gguf"
                 )
                 return "text-to-image" if loadable else _UNSUPPORTED_DIFFUSION_TASK
@@ -582,7 +590,6 @@ def _local_model_task(model) -> Optional[str]:
     except Exception:
         pass
     try:
-        from core.inference.diffusion_engine_router import family_buildable_here
         from core.inference.diffusion_families import (
             detect_family,
             detect_family_by_pipeline_index,
@@ -599,7 +606,7 @@ def _local_model_task(model) -> Optional[str]:
             if family is not None:
                 return (
                     "text-to-image"
-                    if family_buildable_here(family, model_kind = "pipeline")
+                    if _family_buildable_for_listing(family, model_kind = "pipeline")
                     else None
                 )
         return None

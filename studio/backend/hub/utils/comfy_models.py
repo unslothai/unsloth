@@ -17,11 +17,11 @@ from utils.paths.path_utils import is_appledouble_metadata
 DIT_FOLDERS = ("diffusion_models", "unet", "checkpoints")
 TEXT_ENCODER_FOLDERS = ("text_encoders", "clip")
 VAE_FOLDERS = ("vae",)
-_ROLE_FOLDERS = DIT_FOLDERS + TEXT_ENCODER_FOLDERS + VAE_FOLDERS
+LORA_FOLDERS = ("loras",)
+_ROLE_FOLDERS = DIT_FOLDERS + TEXT_ENCODER_FOLDERS + VAE_FOLDERS + LORA_FOLDERS
 _COMFY_ONLY_FOLDERS = frozenset(
     {
         *_ROLE_FOLDERS,
-        "loras",
         "clip_vision",
         "controlnet",
         "upscale_models",
@@ -44,6 +44,7 @@ class ComfyLayout:
     dit_dirs: tuple[Path, ...] = ()
     text_encoder_dirs: tuple[Path, ...] = ()
     vae_dirs: tuple[Path, ...] = ()
+    lora_dirs: tuple[Path, ...] = ()
 
 
 def _is_dir(path: Path) -> bool:
@@ -166,8 +167,9 @@ def comfy_layout(folder: Path) -> Optional[ComfyLayout]:
         dit_dirs = _role(DIT_FOLDERS),
         text_encoder_dirs = _role(TEXT_ENCODER_FOLDERS),
         vae_dirs = _role(VAE_FOLDERS),
+        lora_dirs = _role(LORA_FOLDERS),
     )
-    if not (layout.dit_dirs or layout.text_encoder_dirs or layout.vae_dirs):
+    if not (layout.dit_dirs or layout.text_encoder_dirs or layout.vae_dirs or layout.lora_dirs):
         return None
     return layout
 
@@ -209,6 +211,13 @@ def comfy_dit_scan_roots(folder: Path) -> tuple[Path, ...]:
         roots.append(root)
         roots.extend(_plain_subdirs(root))
     return tuple(roots)
+
+
+def comfy_lora_scan_roots(folder: Path) -> tuple[Path, ...]:
+    layout = comfy_layout(folder)
+    if layout is None:
+        return ()
+    return tuple(p for root in layout.lora_dirs for p in (root, *_plain_subdirs(root)))
 
 
 # models/<dit folder>/ plus the scanner's subfolder depth, then the ComfyUI root above models/.

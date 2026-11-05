@@ -361,6 +361,7 @@ OWNER_PATHS = [
         "/llama-cpp-path": ("GET", "PUT"),
         "/upload-limit": ("PUT",),
         "/tool-result-limit": ("PUT",),
+        "/ml-warmup": ("PUT",),
         "/helper-precache": ("PUT",),
         "/developer-mode": ("PUT",),
         "/download-transport": ("PUT",),
@@ -803,3 +804,74 @@ def test_chat_memory_is_per_account(client):
     assert bob["text"] == "" and bob["enabled"] is True
     alice = client.get("/settings/chat-memory").json()
     assert alice["text"] == "Alice uses uv.\n" and alice["enabled"] is False
+
+
+def test_ml_warmup_is_saved_for_owner_and_shared_with_managed_accounts(client, monkeypatch):
+    from utils.ml_warmup_settings import ML_WARMUP_FEATURES_SETTING_KEY
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", raising = False)
+    assert client.get("/settings/ml-warmup").json() == {
+        "features": [],
+        "effective_features": [],
+        "disabled_by_env": False,
+    }
+    response = client.put(
+        "/settings/ml-warmup",
+        headers = {"x-test-account": OWNER.username},
+        json = {"features": ["text"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "features": ["text"],
+        "effective_features": ["hardware", "text"],
+        "disabled_by_env": False,
+    }
+    assert run_as(OWNER, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY) == ["text"]
+    assert run_as(ALICE, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY, None) is None
+    assert client.get("/settings/ml-warmup").json()["features"] == ["text"]
+
+    monkeypatch.setenv("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", "1")
+    assert client.get("/settings/ml-warmup").json() == {
+        "features": ["text"],
+        "effective_features": ["hardware", "text"],
+        "disabled_by_env": True,
+    }
+
+
+@pytest.mark.parametrize("invalid", ["text", True, 1, None, ["unknown"], ["text", 1]])
+def test_ml_warmup_api_requires_a_list_of_supported_features(client, invalid):
+    response = client.put(
+        "/settings/ml-warmup",
+        headers = {"x-test-account": OWNER.username},
+        json = {"features": invalid},
+    )
+    assert response.status_code == 422, response.text
+
+
+@pytest.mark.parametrize("mask", range(32))
+def test_every_ml_warmup_selection_round_trips_without_persisting_dependencies(
+    client, monkeypatch, mask
+):
+    from utils.ml_warmup_settings import ML_WARMUP_FEATURES_SETTING_KEY
+
+    monkeypatch.delenv("UNSLOTH_STUDIO_DISABLE_TORCH_WARM", raising = False)
+    names = ("hardware", "text", "datasets", "media", "quantization")
+    selected = [feature for bit, feature in enumerate(names) if mask & (1 << bit)]
+    effective = set(selected)
+    if effective & {"text", "media", "quantization"}:
+        effective.add("hardware")
+    expected = {
+        "features": selected,
+        "effective_features": [name for name in names if name in effective],
+        "disabled_by_env": False,
+    }
+    response = client.put(
+        "/settings/ml-warmup",
+        headers = {"x-test-account": OWNER.username},
+        json = {"features": list(reversed(selected)) + selected},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == expected
+    assert client.get("/settings/ml-warmup").json() == expected
+    assert run_as(OWNER, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY) == selected
+    assert run_as(ALICE, studio_db.get_app_setting, ML_WARMUP_FEATURES_SETTING_KEY, None) is None

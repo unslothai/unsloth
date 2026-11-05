@@ -693,13 +693,8 @@ def test_training_after_generate_is_bitwise_unchanged(pending_graph):
 def _with_blocks(path, name):
     tree = ast.parse(path.read_text(encoding = "utf-8"))
     fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == name)
-    calls = [
-        n
-        for n in ast.walk(fn)
-        if isinstance(n, ast.Call)
-        and isinstance(n.func, ast.Attribute)
-        and n.func.attr == "_old_generate"
-    ]
+    # Called directly or handed to a wrapper (generate_with_fallback(self, self._old_generate, ...)).
+    calls = [n for n in ast.walk(fn) if isinstance(n, ast.Attribute) and n.attr == "_old_generate"]
     withs = [n for n in ast.walk(fn) if isinstance(n, ast.With)]
     return calls, withs
 
@@ -723,3 +718,6 @@ def test_every_generate_path_is_wrapped(path, name):
         assert items.index("_lora_fold_generate(self, args, kwargs)") > items.index(
             "_get_inference_mode_context_manager(self)"
         )
+        # After the per-call eager plan, so the graphs-on threshold follows what this call decodes with.
+        eager = [i for i, item in enumerate(items) if "eager_scope()" in item]
+        assert all(items.index("_lora_fold_generate(self, args, kwargs)") > i for i in eager), items
