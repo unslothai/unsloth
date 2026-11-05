@@ -478,7 +478,6 @@ def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
     (folder.parent / "model.safetensors").write_bytes(b"x")
     picked = ri._local_mlx_model_dir(SimpleNamespace(**vars(config), gguf_variant = "6-bit"))
     assert picked == str(folder)
-    # The estimate reads the picked folder's config (Raon-1 Mini), not the root's.
     assert mlx_memory._snapshot_config(picked)["model_type"] == "raon1_mini"
 
 

@@ -6013,7 +6013,7 @@ class MLXInferenceBackend:
         model_name = config.identifier if hasattr(config, "identifier") else str(config)
         is_vision = getattr(config, "is_vision", False)
         is_lora = getattr(config, "is_lora", False)
-        # Route by the config the loader reads: a precision folder's, else the base model's or the repo's.
+        # Route by the config the loader reads.
         route_config = getattr(config, "config_dir", None) or (
             getattr(config, "base_model", None) if is_lora else model_name
         )
@@ -6187,7 +6187,7 @@ class MLXInferenceBackend:
                 FastMLXModel.from_pretrained, load_source, load_kwargs, offload
             )
         except Exception as exc:
-            # Only mlx-vlm ships a vlm_only_text model, so no mlx-lm route is left to fall back to.
+            # A vlm_only_text model has no mlx-lm route to fall back to.
             if is_vision or vlm_only_text or not use_vlm or is_metal_queue_dead(exc):
                 raise
             logger.warning(
