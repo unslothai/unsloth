@@ -9,7 +9,6 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { npuRuntimeLabel } from "./api";
 import type { NpuCatalog } from "./use-npu-catalog";
 
-/** The installed FastFlowLM and Lemonade versions, once the NPU runtime is set up. */
 export function NpuRuntimeVersions({
   catalog,
   className,

@@ -155,8 +155,6 @@ def _lemonade_only(*tags: str):
 
 
 def _glibc_by_version(floors: dict[str, tuple[int, int]]):
-    """A hasher whose Linux tarballs need the glibc given per release version."""
-
     def hasher(url: str) -> tuple:
         name = url.rsplit("/", 1)[1]
         glibc = next((g for v, g in floors.items() if f"-{v}-ubuntu" in name), None)

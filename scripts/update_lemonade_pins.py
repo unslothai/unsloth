@@ -64,7 +64,6 @@ def _request(url: str) -> urllib.request.Request:
 
 
 def fetch_stable_releases(repo: str) -> list[dict]:
-    """Recent releases that are neither drafts nor prereleases."""
     with urllib.request.urlopen(
         _request(f"{_API}/repos/{repo}/releases?per_page=30"), timeout = _TIMEOUT_S
     ) as r:
