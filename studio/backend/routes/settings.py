@@ -4890,7 +4890,7 @@ class PersonalizationCustomization(BaseModel):
     contrast: int = Field(50, ge = 0, le = 100)
     composerOutline: Optional[int] = Field(None, ge = 0, le = 100)
     pointerCursors: bool = False
-    reduceMotion: Literal["system", "on", "off"] = "system"
+    reduceMotion: Literal["system", "on", "off"] = "off"
     fontSmoothing: bool = True
     codeLineNumbers: bool = False
     codeWordWrap: bool = False
