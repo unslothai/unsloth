@@ -336,7 +336,7 @@ def test_streamed_reload_of_the_resident_model_keeps_its_gguf_variant(monkeypatc
     monkeypatch.setattr(_common, "_BAKED_LORAS", {})
     status = {"loaded": True, "repo_id": repo, "gguf_variant": "Q4_K_M"}
     assert asyncio.run(_common._reload_with_loras(_ImageCtx(status), None, []))
-    assert loads == [(repo, "Q4_K_M", None)]
+    assert loads == [(repo, "Q4_K_M", {})]
 
 
 class _BakedPipe:
@@ -452,7 +452,9 @@ _CHANGES = {
 def test_streamed_bake_change_reloads_once_with_the_new_set(monkeypatch, change):
     first, second = _CHANGES[change]
     nodes = _run_baked_nodes(monkeypatch, [first, second], "group")
-    assert nodes[1] == [{"loras": second} if second else {}], nodes
+    # The resident int8 build again, with the new set (none: a plain reload).
+    build = {"transformer_quant": "int8"}
+    assert nodes[1] == [{**build, "loras": second} if second else build], nodes
 
 
 @pytest.mark.parametrize("change", sorted(_CHANGES))
@@ -464,7 +466,7 @@ def test_model_placement_bake_change_adjusts_in_place(monkeypatch, change):
 
 def test_streamed_bake_subset_reloads_with_the_subset(monkeypatch):
     nodes = _run_baked_nodes(monkeypatch, [BOTH, [{"id": FOX, "weight": 1.0}]], "group")
-    assert nodes[1] == [{"loras": [{"id": FOX, "weight": 1.0}]}], nodes
+    assert nodes[1] == [{"transformer_quant": "int8", "loras": [{"id": FOX, "weight": 1.0}]}], nodes
 
 
 @pytest.mark.parametrize("placement", ["group", "model"])
@@ -495,3 +497,67 @@ def test_streamed_lora_refusal_is_tagged_through_the_flows_caller():
     with pytest.raises(flow_caller.RouteError) as raised:
         flow_caller.parse_body(response)
     assert raised.value.refusal == _common.STREAMED_LORA_REFUSAL
+
+
+@pytest.mark.parametrize("named", [None, {"repo": "someone/flux2-finetune-GGUF"}])
+def test_a_streamed_reload_rebuilds_the_resident_build(monkeypatch, named):
+    # The node names the resident repo without its quant, or names nothing: either way the reload is the
+    # resident build (its exact file, precision, memory and speed settings), not the repo's defaults.
+    repo = "someone/flux2-finetune-GGUF"
+    loads = []
+
+    async def fake_load_media(caller, ctx, **kwargs):
+        loads.append(kwargs)
+
+    monkeypatch.setattr(loading, "load_media", fake_load_media)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_BAKED_LORAS", {})
+    status = {
+        "loaded": True,
+        "repo_id": repo,
+        "gguf_variant": "Q8_0",
+        "model_kind": "gguf",
+        "gguf_filename": "flux2-finetune-Q8_0.gguf",
+        "base_repo": "black-forest-labs/FLUX.2-klein-4B",
+        "transformer_quant": "auto",
+        "resolved": {"transformer_quant": {"value": "fp8"}},
+        "text_encoder_quant": "int8",
+        "memory_mode": "low_vram",
+        "speed_mode": "max",
+        "cpu_offload": False,
+    }
+    assert asyncio.run(_common._reload_with_loras(_ImageCtx(status), named, []))
+    (load,) = loads
+    assert load["model"] == repo and load["variant"] == "Q8_0"
+    assert load["knobs"] == {
+        "model_kind": "gguf",
+        "gguf_filename": "flux2-finetune-Q8_0.gguf",
+        "base_repo": "black-forest-labs/FLUX.2-klein-4B",
+        "cpu_offload": False,
+        "memory_mode": "low_vram",
+        "speed_mode": "max",
+        "text_encoder_quant": "int8",
+        "transformer_quant": "fp8",
+    }
+
+
+def test_a_single_file_resident_reloads_as_that_file():
+    status = {
+        "loaded": True,
+        "repo_id": "someone/flux-single",
+        "model_kind": "single_file",
+        "gguf_filename": "flux-single.safetensors",
+        "base_repo": "black-forest-labs/FLUX.1-dev",
+        "memory_mode": "not-a-mode",
+    }
+    knobs = _common.resident_build_knobs(status)
+    assert knobs["model_kind"] == "single_file"
+    assert knobs["gguf_filename"] == "flux-single.safetensors"
+    assert knobs["base_repo"] == "black-forest-labs/FLUX.1-dev"
+    # A value no load request takes is left out, not sent to fail validation.
+    assert "memory_mode" not in knobs
+    # A pipeline is its own base.
+    assert "base_repo" not in _common.resident_build_knobs(
+        {"repo_id": "org/pipe", "model_kind": "pipeline", "base_repo": "org/pipe"}
+    )

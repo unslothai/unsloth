@@ -1030,6 +1030,49 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
     _own_media_reload("image", repo, variant)
 
 
+# The resident image build's own load settings: a reload that only changes its LoRAs rebuilds the same model
+# (its exact checkpoint file, precision, memory and speed settings), not the repo's defaults.
+RESIDENT_BUILD_KEYS = (
+    "display_repo_id",
+    "model_kind",
+    "gguf_filename",
+    "base_repo",
+    "cpu_offload",
+    "memory_mode",
+    "speed_mode",
+    "text_encoder_quant",
+    "transformer_quant",
+    "attention_backend",
+    "transformer_cache",
+)
+
+
+def resident_build_knobs(status: dict) -> dict:
+    """The load settings of the image model ``status`` (``/images/status``) reports, as a load request takes
+    them: each engaged value the request accepts, so an "auto" precision that engaged fp8 reloads as fp8."""
+    from models.inference import DiffusionLoadRequest
+
+    repo = str(status.get("repo_id") or "")
+    knobs: dict = {}
+    for key in RESIDENT_BUILD_KEYS:
+        value = status.get(key)
+        if key == "transformer_quant":
+            resolved = (status.get("resolved") or {}).get("transformer_quant")
+            engaged = resolved.get("value") if isinstance(resolved, dict) else None
+            value = engaged or value
+        if value is None or value == "":
+            continue
+        if key == "base_repo" and (status.get("model_kind") == "pipeline" or value == repo):
+            # A pipeline is its own base: naming it again would only re-gate the same repo.
+            continue
+        try:
+            DiffusionLoadRequest(model_path = repo or "x", **{key: value})
+        except Exception:
+            continue
+        knobs[key] = value
+    return knobs
+
+
 # slot -> (repo, adapter ids, diffusion load count) Flows baked into a quantized build.
 _BAKED_LORAS: dict[str, tuple[str, frozenset, int]] = {}
 QUANT_BUILDS = ("int8", "fp8", "nvfp4", "mxfp8")
@@ -1065,15 +1108,20 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
     ctx.log(
         f"Reloading {repo} with its LoRAs baked in: a quantized ({engaged}) build takes them at load time"
     )
+    # The resident build again (its checkpoint file, precision, memory and speed settings), with the LoRAs.
     await loading.load_media(
         _caller(ctx),
         None,
         kind = "image",
-        model = repo,
-        variant = model.get("variant") if isinstance(model, dict) else None,
+        model = str(status.get("repo_id") or repo),
+        variant = status.get("gguf_variant")
+        or (model.get("variant") if isinstance(model, dict) else None),
         hf_token = None,
         deadline = time.monotonic() + LOAD_DEADLINE_S,
-        knobs = {"loras": sorted(loras, key = lambda item: item["id"])},
+        knobs = {
+            **resident_build_knobs(status),
+            "loras": sorted(loras, key = lambda item: item["id"]),
+        },
     )
     note_loaded(ctx, "image", str(repo))
     _own_media_reload("image", str(repo), model.get("variant") if isinstance(model, dict) else None)
@@ -1091,19 +1139,17 @@ async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[li
 
     _BAKED_LORAS.pop("image", None)
     _LOADED_VARIANT.pop("image", None)
-    repo = model.get("repo") if isinstance(model, dict) else None
-    variant = model.get("variant") if isinstance(model, dict) else None
-    if not repo:
-        try:
-            status = await ctx.call("GET", IMAGE_STATUS)
-        except FlowNodeError:
-            return False
-        status = status if isinstance(status, dict) else {}
-        repo = status.get("repo_id")
-        # Keep the resident GGUF quant: an unset variant resolves to the repo default and can switch files.
-        variant = status.get("gguf_variant") or None
-    if not repo:
+    try:
+        status = await ctx.call("GET", IMAGE_STATUS)
+    except FlowNodeError:
         return False
+    status = status if isinstance(status, dict) else {}
+    resident = status.get("repo_id")
+    if not status.get("loaded") or not resident:
+        return False
+    # Named as this node names it, so the next node's residency check still matches.
+    repo = (model.get("repo") if isinstance(model, dict) else None) or resident
+    variant = status.get("gguf_variant") or None
     wanted = frozenset(item["id"] for item in loras or [] if item.get("weight", 1.0) > 0)
     ctx.log(
         f"Reloading {repo} with its new LoRA weights baked in: this load streams the transformer, so its "
@@ -1111,15 +1157,18 @@ async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[li
         if wanted
         else f"Reloading {repo} without LoRAs: this load streams the transformer, so its baked weights are fixed"
     )
+    knobs = resident_build_knobs(status)
+    if wanted:
+        knobs["loras"] = sorted(loras, key = lambda item: item["id"])
     await loading.load_media(
         _caller(ctx),
         None,
         kind = "image",
-        model = str(repo),
+        model = str(resident),
         variant = variant,
         hf_token = None,
         deadline = time.monotonic() + LOAD_DEADLINE_S,
-        knobs = {"loras": sorted(loras, key = lambda item: item["id"])} if wanted else None,
+        knobs = knobs,
     )
     note_loaded(ctx, "image", str(repo))
     count = gpu_arbiter.load_count(gpu_arbiter.DIFFUSION)
