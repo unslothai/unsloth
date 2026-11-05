@@ -11719,6 +11719,21 @@ class VideoBackend:
             speed_optims = speed_optims + tuple(f"h3_vae_{name}" for name in vae_levers)
         except Exception as exc:  # noqa: BLE001 -- optimisation only, never fail a load
             logger.warning("video.h3_vae_fast failed, keeping the stock VAE: %s", exc)
+        # Opt-in Sol-H3-VAE (UNSLOTH_H3_SOL_VAE=1): the video stream's _decode only, the stock levers above stay as
+        # its fallback; the audio VAE is untouched.
+        try:
+            from .video_minimax_h3_sol_vae import h3_sol_vae_requested, install_h3_sol_vae
+            if h3_sol_vae_requested() and install_h3_sol_vae(
+                getattr(pipe, "vae", None),
+                device = device,
+                dtype = dtype,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                logger = logger,
+            ):
+                speed_optims = speed_optims + ("h3_sol_vae",)
+        except Exception as exc:  # noqa: BLE001 -- optional decoder, never fail a load
+            logger.warning("video.h3_sol_vae: not engaged, keeping the stock decoder: %s", exc)
         # the H3 VAE speedups rewrap vae.decode: the OOM retry's scope (when installed) goes back on top
         try:
             from .diffusion_vae_oom import ensure_outermost
