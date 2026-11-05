@@ -1090,6 +1090,7 @@ def load_moss_image_pipeline(
     check_cancelled: Optional[Callable[[], None]] = None,
     vae_dtype: Any = None,
     checkpoint: Optional[str] = None,
+    vae: Any = None,
 ) -> MOSSImagePipeline:
     """A ready ``MOSSImagePipeline`` for ``repo_id`` (a repo id or a local diffusers folder), on CPU.
 
@@ -1125,9 +1126,12 @@ def load_moss_image_pipeline(
         )
         check_cancelled()
     transformer.eval()
-    vae = diffusers.AutoencoderKLFlux2.from_pretrained(
-        repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common
-    )
+    if vae is None:
+        vae = diffusers.AutoencoderKLFlux2.from_pretrained(
+            repo_id, subfolder = "vae", torch_dtype = vae_dtype or torch.float32, **common
+        )
+    else:
+        vae = vae.to(vae_dtype or torch.float32)
     check_cancelled()
     scheduler = MOSSImageScheduler.from_pretrained(repo_id, subfolder = "scheduler", **common)
     logger.info("diffusion.moss_image: assembled pipeline from %s per component", repo_id)

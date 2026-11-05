@@ -162,6 +162,12 @@ from .diffusion_hidream import (
 )
 from .diffusion_krea2 import KREA2_FAMILY_NAME, load_krea2_pipeline
 from .diffusion_families import MOSS_IMAGE_FAMILY_NAME
+from .diffusion_anima import (
+    ANIMA_COMPONENT_FOLDERS,
+    ANIMA_COMPONENTS,
+    ANIMA_FAMILY_NAME,
+    is_anima_family,
+)
 from .diffusion_flux3 import (
     FLUX3_COMPONENTS,
     FLUX3_COMPONENT_FOLDERS,
@@ -400,7 +406,7 @@ from .diffusion_fp16_variant import (
 )
 from .diffusion_flow_shift import (
     SAMPLE_SIGMAS_KEY,
-    apply_comfy_flow_shift,
+    apply_comfy_schedule,
     requested_flow_shift,
     scheduler_with_flow_shift,
     shift_control,
@@ -1485,18 +1491,61 @@ def _generation_chunks(
     *,
     layer_count: Any = None,
 ) -> list:
-    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 runs one image per
-    modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
+    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 and Anima run one image
+    per modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
     the text-encoder release that comes with entering denoise (one chunk of several images would release it once,
     and the next image's encode would bring it back for the rest of the chunk)."""
-    if layer_count or is_flux3_family(family):
+    if layer_count or is_flux3_family(family) or is_anima_family(family):
         return [[job] for job in jobs]
     return chunk_jobs(jobs, batch_size)
 
 
+def _component_index(
+    fam: Any,
+    base: str,
+    *,
+    base_local_dir: Optional[str],
+    hf_token: Optional[str],
+    local_files_only: bool,
+) -> dict:
+    """The base's model_index.json components, or Anima's fixed classes (its modular base ships none)."""
+    if is_anima_family(fam):
+        return {name: [lib, cls] for name, (_folder, lib, cls) in ANIMA_COMPONENT_FOLDERS.items()}
+    from .diffusion_comfy_components import read_model_index
+
+    return read_model_index(
+        base,
+        base_local_dir = base_local_dir,
+        hf_token = hf_token,
+        local_files_only = local_files_only,
+        cache_dir = hub_cache_dir(),
+    )
+
+
+def _fixed_component_folders(fam: Any) -> Optional[dict]:
+    if is_flux3_family(fam):
+        return FLUX3_COMPONENT_FOLDERS
+    if is_anima_family(fam):
+        return ANIMA_COMPONENT_FOLDERS
+    return None
+
+
+def _modular_companions(fam: Any) -> Optional[tuple[str, ...]]:
+    if is_flux3_family(fam):
+        return FLUX3_COMPONENTS
+    if is_anima_family(fam):
+        return ANIMA_COMPONENTS
+    return None
+
+
+def _single_file_components(fam: Any, kind: Optional[str]) -> tuple[str, ...]:
+    """Base components besides the denoiser whose weights a single file carries (Anima's text conditioner)."""
+    return ("text_conditioner",) if kind in ("single_file", "gguf") and is_anima_family(fam) else ()
+
+
 def _base_manifest_name(fam: Any) -> str:
     """The pipeline index a base repo carries: FLUX.3 ships only ``modular_model_index.json``."""
-    return FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
+    return FLUX3_INDEX if is_flux3_family(fam) or is_anima_family(fam) else "model_index.json"
 
 
 def _cached_mirror_manifest(base: str, manifest: str) -> tuple[str, ...]:
@@ -1906,6 +1955,16 @@ def _model_index_sample_sigmas(base: str, base_local_dir: Optional[str]) -> Any:
     return index.get(SAMPLE_SIGMAS_KEY) if isinstance(index, dict) else None
 
 
+def _family_default_ids(fam: Any) -> tuple:
+    """Ids ahead of the file / repo names in the defaults lookup: FLUX.3's file names cannot tell its variants apart,
+    and a bare "anima" matches Animagine XL files while a local folder never names Anima's base repo."""
+    if is_flux3_family(fam):
+        return (fam.name,)
+    if is_anima_family(fam):
+        return (fam.base_repo,)
+    return ()
+
+
 def _generation_defaults_for(
     repo_id: Optional[str],
     gguf_filename: Optional[str],
@@ -1916,17 +1975,12 @@ def _generation_defaults_for(
     """The (steps, guidance) the OpenAI route renders this load with, header variant before base (FLUX.1's base is
     schnell), so the Images form can match it."""
     try:
-        # FLUX.3 first: the variant check has matched the checkpoint to the family, while the names cannot tell the
-        # variants apart (BFL's ComfyUI base files are flux3_image_klein_*.safetensors, no "base", and a base file can
-        # sit on the distilled repo's companions).
-        identifiers = (
+        identifiers = _family_default_ids(family) + (
             gguf_filename,
             content_variant_hint(repo_id, gguf_filename),
             repo_id,
             base_repo,
         )
-        if is_flux3_family(family):
-            identifiers = (family.name,) + identifiers
         steps, guidance = generation_params_with_grid(grid, *identifiers)
     except Exception:  # noqa: BLE001 - status must not fail on a recipe lookup
         return None
@@ -4050,6 +4104,7 @@ def _image_cast_candidates(
         if is_flux3_family(fam) or getattr(fam, "name", None) in (
             MOSS_IMAGE_FAMILY_NAME,
             KREA2_FAMILY_NAME,
+            ANIMA_FAMILY_NAME,
             IDEOGRAM4_FAMILY_NAME,
         ):
             return []
@@ -4949,12 +5004,7 @@ class DiffusionBackend:
         """Header-only, so a bad pick is a 400 before eviction. Single-file / GGUF denoisers only."""
         from .diffusion_comfy_components import validate_component_specs
 
-        if (
-            kind not in ("gguf", "single_file")
-            or fam.single_file_is_pipeline
-            or fam.pipeline_only
-            or getattr(fam, "native_transformer_files_only", False)
-        ):
+        if kind not in ("gguf", "single_file") or fam.single_file_is_pipeline or fam.pipeline_only:
             raise ValueError(
                 "text_encoder_file / vae_file load beside a single-file or GGUF transformer; a full pipeline "
                 "(or a whole-pipeline single file) already carries its own text encoders and VAE."
@@ -4966,15 +5016,6 @@ class DiffusionBackend:
             raise ValueError(
                 f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
                 "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
-            )
-        if fam.name == MOSS_IMAGE_FAMILY_NAME and (vae_file or text_encoder_files):
-            raise ValueError(
-                f"separate text encoder / VAE files are not supported for '{fam.name}' yet; omit "
-                "text_encoder_files and vae_file (the base repo's encoder and VAE are used)."
-            )
-        if vae_file and fam.name == KREA2_FAMILY_NAME:
-            raise ValueError(
-                f"a separate VAE file is not supported for '{fam.name}' yet; omit vae_file."
             )
         validate_component_specs(
             list(text_encoder_files or ()),
@@ -5000,14 +5041,14 @@ class DiffusionBackend:
     ) -> Any:
         if not text_encoder_files and not vae_file:
             return None
-        from .diffusion_comfy_components import plan_component_overrides, read_model_index
+        from .diffusion_comfy_components import plan_component_overrides
 
-        index = read_model_index(
+        index = _component_index(
+            fam,
             prefer_ungated_mirror(base, hf_token),
             base_local_dir = base_local_dir or (base if _is_local_path(base) else None),
             hf_token = hf_token,
             local_files_only = local_files_only,
-            cache_dir = hub_cache_dir(),
         )
 
         def _resolve_hub(ref: Any) -> str:
@@ -5091,19 +5132,15 @@ class DiffusionBackend:
                     ]
             if not candidates:
                 return []
-            from .diffusion_comfy_components import (
-                pick_comfy_text_encoders,
-                read_model_index,
-                verify_override_fit,
-            )
+            from .diffusion_comfy_components import pick_comfy_text_encoders, verify_override_fit
 
             mirror = prefer_ungated_mirror(base, hf_token)
-            index = read_model_index(
+            index = _component_index(
+                fam,
                 mirror,
                 base_local_dir = base if _is_local_path(base) else None,
                 hf_token = hf_token,
                 local_files_only = local_files_only,
-                cache_dir = hub_cache_dir(),
             )
             planned_quant, auto = resolve_te_quant_request(
                 text_encoder_quant, getattr(fam, "te_quant_auto", None)
@@ -5211,7 +5248,10 @@ class DiffusionBackend:
 
         # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check.
         if getattr(fam, "native_transformer_files_only", False) and (
-            kind == "single_file"
+            (
+                kind == "single_file"
+                and not str(gguf_filename or "").lower().endswith(".safetensors")
+            )
             or (
                 kind == "gguf"
                 and not family_buildable_here(fam, model_kind = kind, gguf_filename = gguf_filename)
@@ -5236,6 +5276,10 @@ class DiffusionBackend:
                 f"also carries the text encoders and VAE under the checkpoint's own tensor names (a current "
                 f"stable-diffusion.cpp convert of the checkpoint, on disk). Load the .safetensors checkpoint, or "
                 f"such a GGUF, instead."
+            )
+        if kind == "gguf" and not fam.gguf_loadable:
+            raise ValueError(
+                f"'{fam.name}' GGUF files are not supported yet; load its .safetensors single file instead."
             )
         # A multi-denoiser family (Ideogram 4) has no transformer-only path; reject before eviction
         if kind in ("gguf", "single_file") and fam.pipeline_only:
@@ -5262,16 +5306,18 @@ class DiffusionBackend:
         # A local base_repo loads as a full pipeline; reject a non-pipeline one before eviction
         whole_file = kind in ("single_file", "gguf") and fam.single_file_is_pipeline
         excluded = (
-            (fam.denoiser_attr,) if kind in ("gguf", "single_file") and not whole_file else ()
+            (fam.denoiser_attr,) + _single_file_components(fam, kind)
+            if kind in ("gguf", "single_file") and not whole_file
+            else ()
         )
         _assert_local_base_is_pipeline(
             base_repo,
             # FLUX.3 companions come from a Modular Diffusers base, and its loader reads only modular_model_index.json.
-            modular_only = is_flux3_family(fam),
+            modular_only = is_flux3_family(fam) or is_anima_family(fam),
             excluded_components = excluded,
             config_only_model_components = whole_file,
             # The FLUX.3 assembler reads each component from its own folder here, never from a spec's source repo.
-            fixed_component_folders = FLUX3_COMPONENT_FOLDERS if is_flux3_family(fam) else None,
+            fixed_component_folders = _fixed_component_folders(fam),
         )
         local_root = Path(repo_id).expanduser()
         # Path-shaped: "."/".." prefix, a backslash (never in "org/name"), or an absolute path.
@@ -5304,13 +5350,11 @@ class DiffusionBackend:
                 )
             if local_root.exists():
                 # FLUX.3 is a Modular Diffusers layout: its manifest is modular_model_index.json.
-                index_name = FLUX3_INDEX if is_flux3_family(fam) else "model_index.json"
+                index_name = _base_manifest_name(fam)
                 if not local_pipeline_components_are_complete(
                     local_root,
                     index_name,
-                    fixed_component_folders = (
-                        FLUX3_COMPONENT_FOLDERS if is_flux3_family(fam) else None
-                    ),
+                    fixed_component_folders = _fixed_component_folders(fam),
                 ):
                     raise FileNotFoundError(
                         f"Local pipeline directory has no complete valid {index_name}: {repo_id}"
@@ -5699,7 +5743,7 @@ class DiffusionBackend:
                 kind = kind,
                 pipeline_components = _explicit_pipeline_components(fam),
                 single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
-                companion_components = FLUX3_COMPONENTS if is_flux3_family(fam) else None,
+                companion_components = _modular_companions(fam),
                 base_manifest = _base_manifest_name(fam),
                 include_transformer = (
                     (
@@ -5713,7 +5757,10 @@ class DiffusionBackend:
                     if kind == "gguf"
                     else False
                 ),
-                skip_te_components = tuple(te_prequant_files) + replaced + tuple(vae_hosted_files),
+                skip_te_components = tuple(te_prequant_files)
+                + replaced
+                + tuple(vae_hosted_files)
+                + _single_file_components(fam, kind),
                 skip_transformer_weights = skip_transformer_weights,
                 skipped_files_out = skipped_transformer_files,
                 local_files_only = local_files_only,
@@ -7067,7 +7114,7 @@ class DiffusionBackend:
             kind = kind,
             pipeline_components = _explicit_pipeline_components(fam),
             single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
-            companion_components = FLUX3_COMPONENTS if is_flux3_family(fam) else None,
+            companion_components = _modular_companions(fam),
             base_manifest = _base_manifest_name(fam),
             # The RESOLVED base, as the load passes it: a variant base picks its own pre-quant repo. Deferred exactly
             # as _run_load defers it. Called eagerly this runs before the base listing exists, so the cache gate sees
@@ -7096,7 +7143,10 @@ class DiffusionBackend:
             resident_file_sizes_out = resident_file_sizes,
             revisions_out = revisions,
             fetch_repos_out = fetch_repos,
-            skip_te_components = tuple(te_files) + replaced + tuple(vae_hosted_files),
+            skip_te_components = tuple(te_files)
+            + replaced
+            + tuple(vae_hosted_files)
+            + _single_file_components(fam, kind),
             skip_transformer_weights = skip_transformer_weights,
             failures_out = plan_failures,
             fp16_twins = kind == "pipeline"
@@ -9293,7 +9343,12 @@ class DiffusionBackend:
                                     pipeline_seed_scheme is not None
                                     or _pipeline_prequant_skipped
                                     or is_flux3_family(fam)
-                                    or fam.name in (MOSS_IMAGE_FAMILY_NAME, KREA2_FAMILY_NAME)
+                                    or fam.name
+                                    in (
+                                        MOSS_IMAGE_FAMILY_NAME,
+                                        KREA2_FAMILY_NAME,
+                                        ANIMA_FAMILY_NAME,
+                                    )
                                 )
                                 _fp16_variant = (
                                     local_fp16_variant(
@@ -9548,6 +9603,23 @@ class DiffusionBackend:
                                         )
                                     finally:
                                         self._stop_load_prefetch()
+                                elif is_anima_family(fam):
+                                    from .diffusion_anima import load_anima_pipeline
+                                    try:
+                                        pipe = load_anima_pipeline(
+                                            _base_local_dir or fetch_base,
+                                            dtype,
+                                            hf_token = hf_token,
+                                            check_cancelled = lambda: self._raise_if_load_cancelled(
+                                                _load_token
+                                            ),
+                                            local_files_only = local_files_only,
+                                            cache_dir = hub_cache_dir(),
+                                            text_encoder = pipe_kwargs.get("text_encoder"),
+                                            transformer = pipe_kwargs.get("transformer"),
+                                        )
+                                    finally:
+                                        self._stop_load_prefetch()
                                 elif fam.name == MOSS_IMAGE_FAMILY_NAME:
                                     from .diffusion_moss_image import load_moss_image_pipeline
                                     try:
@@ -9561,6 +9633,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
+                                            vae = pipe_kwargs.get("vae"),
                                             checkpoint = base,
                                         )
                                     finally:
@@ -9579,6 +9652,7 @@ class DiffusionBackend:
                                             local_files_only = local_files_only,
                                             text_encoder = pipe_kwargs.get("text_encoder"),
                                             transformer = pipe_kwargs.get("transformer"),
+                                            vae = pipe_kwargs.get("vae"),
                                         )
                                     finally:
                                         self._stop_load_prefetch()
@@ -9773,7 +9847,18 @@ class DiffusionBackend:
                                 # sd.cpp GGUFs prefix tensors with model.diffusion_model.; the converters reject it.
                                 _install_gguf_prefix_strip(transformer_cls, logger)
                                 _install_gguf_dim_restore(logger)
-                            if comfy_scan is not None:
+                            anima_conditioner = None
+                            if is_anima_family(fam):
+                                from .diffusion_anima import load_anima_single_file
+                                transformer, anima_conditioner = load_anima_single_file(
+                                    single_file_path,
+                                    _base_local_dir or fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    local_files_only = sf_kwargs["local_files_only"],
+                                    cache_dir = hub_cache_dir(),
+                                )
+                            elif comfy_scan is not None:
                                 # int8 / fp8 codes go to Studio's runtime unchanged where it runs; the rest dequantize.
                                 _comfy_offload = self._comfy_offload_for(plan, single_file_path)
                                 transformer = load_comfy_quant_transformer(
@@ -9869,7 +9954,70 @@ class DiffusionBackend:
                                     ).get("text_encoder"),
                                     family_name = fam.name,
                                 )
+                            elif fam.name == MOSS_IMAGE_FAMILY_NAME:
+                                from .diffusion_moss_image import load_moss_image_pipeline
+                                moss_components = te_prequant_pipe_kwargs(
+                                    fam,
+                                    fetch_base,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                    local_files_only = local_files_only,
+                                    dense_source = _base_local_dir
+                                    or (fetch_base if local_files_only else None),
+                                    config_source = _base_local_dir,
+                                )
+                                pipe = load_moss_image_pipeline(
+                                    _base_local_dir or fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                    transformer = transformer,
+                                    local_files_only = local_files_only,
+                                    text_encoder = moss_components.get("text_encoder"),
+                                    vae = moss_components.get("vae"),
+                                    checkpoint = base,
+                                )
+                            elif is_anima_family(fam):
+                                from .diffusion_anima import load_anima_pipeline
+                                anima_supplied = supplied_component_pipe_kwargs(
+                                    fetch_base,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    local_files_only = local_files_only,
+                                    family = fam.name,
+                                    logger = logger,
+                                )
+                                pipe = load_anima_pipeline(
+                                    _base_local_dir or fetch_base,
+                                    dtype,
+                                    hf_token = hf_token,
+                                    check_cancelled = lambda: self._raise_if_load_cancelled(
+                                        _load_token
+                                    ),
+                                    transformer = transformer,
+                                    text_conditioner = anima_conditioner,
+                                    text_encoder = anima_supplied.get("text_encoder"),
+                                    vae = anima_supplied.get("vae"),
+                                    local_files_only = local_files_only,
+                                    cache_dir = hub_cache_dir(),
+                                )
                             elif fam.name == KREA2_FAMILY_NAME:
+                                krea_components = te_prequant_pipe_kwargs(
+                                    fam,
+                                    fetch_base,
+                                    te_quant_mode = text_encoder_quant,
+                                    target = target,
+                                    dtype = dtype,
+                                    hf_token = hf_token,
+                                    logger = logger,
+                                    local_files_only = local_files_only,
+                                    dense_source = fetch_base if local_files_only else None,
+                                )
                                 pipe = load_krea2_pipeline(
                                     fetch_base,
                                     dtype,
@@ -9880,17 +10028,8 @@ class DiffusionBackend:
                                     transformer = transformer,
                                     # Same as full-pipeline: single file supplies only the denoiser; other GB parts must not be fetched.
                                     local_files_only = local_files_only,
-                                    text_encoder = te_prequant_pipe_kwargs(
-                                        fam,
-                                        fetch_base,
-                                        te_quant_mode = text_encoder_quant,
-                                        target = target,
-                                        dtype = dtype,
-                                        hf_token = hf_token,
-                                        logger = logger,
-                                        local_files_only = local_files_only,
-                                        dense_source = fetch_base if local_files_only else None,
-                                    ).get("text_encoder"),
+                                    text_encoder = krea_components.get("text_encoder"),
+                                    vae = krea_components.get("vae"),
                                 )
                             else:
                                 pipe_kwargs = {
@@ -10339,8 +10478,7 @@ class DiffusionBackend:
                     static_plan: Optional[dict] = None
                     if cache_auto:
                         default_steps, _ = default_generation_params(
-                            # FLUX.3's family names its variant; its file names may not (see _generation_defaults_for).
-                            *((fam.name,) if is_flux3_family(fam) else ()),
+                            *_family_default_ids(fam),
                             gguf_filename,
                             content_variant_hint(repo_id, gguf_filename),
                             repo_id,
@@ -10555,7 +10693,7 @@ class DiffusionBackend:
                     raw_grid = _model_index_sample_sigmas(fetch_base, _base_local_dir)
                     if install_sample_sigmas(pipe, raw_grid, logger) is None:
                         # Before from_pipe copies the scheduler.
-                        apply_comfy_flow_shift(
+                        apply_comfy_schedule(
                             pipe,
                             comfy_flow_shift_for(
                                 fam,
@@ -10565,6 +10703,7 @@ class DiffusionBackend:
                                 display_repo_id,
                                 base,
                             ),
+                            getattr(fam, "scheduler_overrides", ()),
                             logger,
                         )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
@@ -10750,7 +10889,7 @@ class DiffusionBackend:
                         )
                         try:
                             plan_steps, _ = default_generation_params(
-                                *((fam.name,) if is_flux3_family(fam) else ()),
+                                *_family_default_ids(fam),
                                 gguf_filename,
                                 content_variant_hint(repo_id, gguf_filename),
                                 repo_id,
@@ -11863,6 +12002,21 @@ class DiffusionBackend:
             check_cancelled()
             pipe.to(device)
             return pipe
+        if is_anima_family(fam):
+            from .diffusion_anima import load_anima_pipeline
+
+            pipe = load_anima_pipeline(
+                base_local_dir or base,
+                dtype,
+                hf_token = hf_token,
+                transformer = transformer,
+                check_cancelled = check_cancelled,
+                local_files_only = local_files_only,
+                cache_dir = hub_cache_dir(),
+            )
+            check_cancelled()
+            pipe.to(device)
+            return pipe
         if getattr(fam, "name", None) == MOSS_IMAGE_FAMILY_NAME:
             from .diffusion_moss_image import load_moss_image_pipeline
 
@@ -11890,6 +12044,14 @@ class DiffusionBackend:
                 check_cancelled = check_cancelled,
                 local_files_only = local_files_only,
                 checkpoint = base,
+                vae = supplied_component_pipe_kwargs(
+                    base,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    family = fam.name,
+                    logger = logger,
+                ).get("vae"),
             )
             check_cancelled()
             pipe.to(device)
@@ -11920,6 +12082,14 @@ class DiffusionBackend:
                 check_cancelled = check_cancelled,
                 # ``base_local_dir`` is None if nothing was staged, leaving a repo id; pipe_kwargs guards it too.
                 local_files_only = local_files_only,
+                vae = supplied_component_pipe_kwargs(
+                    base,
+                    dtype = dtype,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    family = fam.name,
+                    logger = logger,
+                ).get("vae"),
             )
             check_cancelled()
             pipe.to(device)
@@ -15896,6 +16066,8 @@ def _explicit_pipeline_components(fam: Any) -> Optional[tuple[str, ...]]:
     name = getattr(fam, "name", None)
     if is_flux3_family(fam):
         return FLUX3_COMPONENTS
+    if is_anima_family(fam):
+        return ANIMA_COMPONENTS
     if name in (KREA2_FAMILY_NAME, MOSS_IMAGE_FAMILY_NAME):
         return ("scheduler", "text_encoder", "tokenizer", "transformer", "vae")
     if name == IDEOGRAM4_FAMILY_NAME:

@@ -215,6 +215,7 @@ export const pl = {
     tabs: "Karty przeglądarki",
     newTab: "Nowa karta",
     newTabFullView: "Nowa karta w pełnym widoku",
+    newTabFloating: "Nowa karta w pływającym oknie",
     closeTab: "Zamknij kartę",
     close: "Zamknij przeglądarkę",
     show: "Pokaż przeglądarkę",
@@ -434,6 +435,12 @@ export const pl = {
       openChat: "Otwórz w pełnym widoku",
       moveLeft: "Przenieś do lewego panelu",
       moveRight: "Przenieś do prawego panelu",
+    },
+    floating: {
+      enter: "Pływające okno",
+      dock: "Przypnij z boku",
+      close: "Zamknij pływające okno",
+      handle: "Przesuń okno. Strzałki je przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
     },
     annotate: {
       countOne: "1 adnotacja",
@@ -892,6 +899,9 @@ export const pl = {
     unifiedTightFit: "Ciasne dopasowanie",
     unifiedTightFitHint:
       "Może wczytać się z krótszym kontekstem lub działać wolniej na tym Macu.",
+    residentToRun: "do uruchomienia",
+    residentToRunHint:
+      "Pamięć GPU wymagana przez kontrolę ładowania podczas działania",
     onDevice: "Na urządzeniu",
     huggingFace: "Hugging Face",
     retry: "Ponów",
@@ -1214,6 +1224,9 @@ export const pl = {
         "Jeden model w wierszu, np. unsloth/Qwen3-4B-GGUF, lub unsloth/* dla całej organizacji. Pozostaw puste, aby zezwolić na każdy model.",
       modelAccessSave: "Zapisz",
       modelAccessLimited: "Ograniczony dostęp do modeli",
+      rename: "Zmień nazwę",
+      renameTitle: "Zmień nazwę {username}",
+      renameDescription: "Wybierz nazwę, której to konto używa do logowania. Czaty, pliki i klucze API pozostają na koncie. Użytkownik zostanie wylogowany i zaloguje się ponownie nową nazwą oraz obecnym hasłem.",
       empty: "Nie ma jeszcze innych kont",
       setupCode: "Kod konfiguracji",
       setupFor: "Kod konfiguracji dla: {username}",

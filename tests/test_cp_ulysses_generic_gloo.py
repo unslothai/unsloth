@@ -257,6 +257,77 @@ def test_generic_ulysses_matches_one_process(kind, implementation, packed):
     _spawn(_parity_worker, 2, kind, implementation, packed, _OUT)
 
 
+def _fullgraph_packed_worker(rank, world, kind, implementation, out_dir):
+    """fullgraph-compiled layers: a packed row with a padding tail traces with no graph break and matches one process."""
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _model(kind, implementation)
+    for layer in model.model.layers:
+        layer.compile(backend = "eager", fullgraph = True)
+    ids, labels = _batch(True)
+    ids, labels = ids[:, :15], labels[:, :15]  # 15 tokens: one padding token to the cp multiple
+    lengths = [6, 7, 2]
+    count = _reference(model, ids, labels, lengths)
+    reference = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+    model.zero_grad(set_to_none = True)
+    manager = _manager(world, rank)
+    manager.attach_attention_hooks(model)
+    inputs = {
+        "input_ids": ids.clone(),
+        "labels": labels.clone(),
+        "packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32),
+    }
+    with manager.apply(inputs):
+        out = model(
+            input_ids = inputs["input_ids"],
+            position_ids = inputs["position_ids"],
+            packed_seq_lengths = inputs["packed_seq_lengths"],
+            use_cache = False,
+        )
+        _loss(out.logits, inputs["shift_labels"], count).backward()
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        grad = torch.zeros_like(param) if param.grad is None else param.grad.clone()
+        dist.all_reduce(grad)
+        want = reference.get(name, torch.zeros_like(param))
+        torch.testing.assert_close(grad, want, rtol = 1e-4, atol = 1e-6, msg = name)
+
+
+# Qwen3's decoder layer traces whole in one process (Gemma3's does not: its own forward breaks the graph).
+@pytest.mark.parametrize("kind, implementation", [("qwen3", "sdpa"), ("qwen3", "eager")])
+def test_compiled_packed_ulysses_has_no_graph_break(kind, implementation):
+    _config(kind)
+    try:
+        _spawn(_fullgraph_packed_worker, 2, kind, implementation, _OUT)
+    except mp.ProcessRaisedException as error:
+        # torch 2.10's dynamo fails building a guard on transformers' sdpa path in the one-process
+        # reference itself (AttributeError on transformers.quantizers.auto), before any CP code runs.
+        text = str(error)
+        if (
+            tuple(int(x) for x in torch.__version__.split(".")[:2]) < (2, 13)
+            and "InternalTorchDynamoError" in text
+            and "transformers.quantizers.auto" in text
+        ):
+            pytest.skip(f"torch {torch.__version__} dynamo guard bug in the one-process reference")
+        raise
+
+
+def test_whole_sequence_mask_keeps_the_padding_tail_apart():
+    # Token 16 (padding past cu_seqlens[-1]) is its own segment.
+    mask = uh._whole_sequence_mask(
+        16,
+        torch.device("cpu"),
+        torch.float32,
+        None,
+        torch.tensor([0, 6, 13, 15], dtype = torch.int32),
+    )[0, 0]
+    allowed = mask == 0
+    assert allowed[15].nonzero().flatten().tolist() == [15]
+    assert not allowed[13:15, 15].any() and allowed[14, 13]
+    assert allowed[12].nonzero().flatten().tolist() == list(range(6, 13))
+
+
 def _compiled_rows_worker(rank, world, kind, implementation, out_dir):
     """Per-layer compiled model, two same-shape packed rows with different documents: each must match one process."""
     ad.HAS_FLASH_ATTENTION = False
