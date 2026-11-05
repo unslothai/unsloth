@@ -7887,18 +7887,13 @@ def _load_probe_memo_scope():
         ) = prev
 
 
-def _companion_repo_files(hf_repo: str, hf_token) -> list[str]:
-    """The repo listing for a companion pick. Inside one load the mmproj, MTP, DSpark and
-    DFlash lookups ask back to back for the same listing, so a successful one is reused until
-    a companion download starts; failures are never kept, so each lookup still retries."""
+def _companion_repo_files(hf_repo: str, hf_token: Optional[str]) -> list[str]:
+    """Listing shared by one load's back-to-back companion lookups until a companion download
+    starts; failures are never kept, so each lookup still retries."""
     from huggingface_hub import list_repo_files
 
     store = getattr(_LOAD_PROBE_STATE, "companion_listings", None)
-    try:
-        key = (hf_repo, hf_token)
-        hash(key)
-    except TypeError:
-        store, key = None, None
+    key = (hf_repo, hf_token)
     if store is not None and key in store:
         return list(store[key])
     files = list(call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo))
@@ -7908,7 +7903,7 @@ def _companion_repo_files(hf_repo: str, hf_token) -> list[str]:
 
 
 def _forget_companion_listings() -> None:
-    """A download can take minutes: later lookups list again, as they did before the reuse."""
+    """A download can take minutes, so later lookups list again."""
     store = getattr(_LOAD_PROBE_STATE, "companion_listings", None)
     if store:
         store.clear()
