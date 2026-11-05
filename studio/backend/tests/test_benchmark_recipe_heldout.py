@@ -592,3 +592,20 @@ def test_a_set_system_prompt_replaces_a_conversation_s_own():
     # Training's own prompt (not an override) leaves the row's system turn in place.
     run_benchmark({**spec, "system_prompt": "Answer in English."}, chat = chat)
     assert asked[1] == prompt and "Answer in French." in judged[1]
+
+
+def test_a_set_system_prompt_replaces_a_system_column_too():
+    def chat(target, messages):
+        return messages[0]["content"].rsplit(" ", 1)[-1] if messages[0]["role"] == "system" else ""
+
+    spec = {
+        "rows": [{"system": "Reply with RED", "q": "Which colour?", "a": "GREEN"}],
+        "prompt_column": "q",
+        "reference_column": "a",
+        "system_column": "system",
+        "system_prompt": "Reply with GREEN",
+        "scorer": "reference",
+    }
+    assert run_benchmark({**spec, "system_override": True}, chat = chat)["candidate"]["passed"] == 1
+    # Not an override: the row's own system message wins, as training sent it.
+    assert run_benchmark(spec, chat = chat)["candidate"]["passed"] == 0

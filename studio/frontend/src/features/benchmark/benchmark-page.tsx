@@ -30,6 +30,7 @@ import { useDebouncedValue } from "@/hooks";
 import type { BenchmarkTaskConfig, BenchmarkTaskInfo } from "./api/benchmark-api";
 import { fetchBenchmarkTaskConfig, fetchBenchmarkTasks } from "./api/benchmark-api";
 import type { EvalsModel } from "./use-evals-model";
+import { fewshotParam } from "./lib/fewshot";
 import { BenchmarkRunPanel } from "./components/benchmark-run-panel";
 import { BenchmarkHistoryPanel } from "./components/benchmark-history-panel";
 import { EvalScoreboard } from "./components/eval-scoreboard";
@@ -48,6 +49,8 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
 
   const [batchSize, setBatchSize] = useState(0); // 0 = auto
   const [numFewshot, setNumFewshot] = useState(0);
+  // The user set the few-shot count for this task, so the task's default does not replace it.
+  const fewshotPickedRef = useRef(false);
   const [maxTokens, setMaxTokens] = useState(32768);
 
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
@@ -72,13 +75,13 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
   useEffect(() => {
     let cancelled = false;
     setTaskConfig(null);
+    fewshotPickedRef.current = false;
     fetchBenchmarkTaskConfig(selectedTask)
       .then((cfg) => {
         if (!cancelled) {
           setTaskConfig(cfg);
-          if (cfg.num_fewshot != null && cfg.num_fewshot > 0) {
-            setNumFewshot(cfg.num_fewshot);
-          }
+          // The task's own default, 0 included: a count kept from the last task would be sent as a pick.
+          if (!fewshotPickedRef.current) setNumFewshot(cfg.num_fewshot ?? 0);
         }
       })
       .catch(() => {
@@ -186,7 +189,12 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
 
     const extraParams = {
       batch_size: batchSize > 0 ? String(batchSize) : "auto",
-      num_fewshot: numFewshot > 0 ? numFewshot : null,
+      num_fewshot: fewshotParam(
+        fewshotSupported,
+        taskConfig !== null,
+        fewshotPickedRef.current,
+        numFewshot,
+      ),
       max_tokens: maxTokens,
     };
 
@@ -239,7 +247,7 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
         setPanelOpen(false);
       }
     });
-  }, [evals, selectedTask, hfToken, runBenchmark, isRunning, resetBenchmarkRun, batchSize, numFewshot, maxTokens]);
+  }, [evals, selectedTask, hfToken, runBenchmark, isRunning, resetBenchmarkRun, batchSize, numFewshot, maxTokens, fewshotSupported, taskConfig]);
 
   const handleClosePanel = useCallback(() => {
     resetBenchmarkRun();
@@ -361,7 +369,10 @@ export function BenchmarkPage({ evals }: { evals: EvalsModel }) {
                       min={0}
                       max={20}
                       step={1}
-                      onCommit={setNumFewshot}
+                      onCommit={(value) => {
+                        fewshotPickedRef.current = true;
+                        setNumFewshot(value);
+                      }}
                     />
                   ) : (
                     <span className="flex h-9 items-center text-ui-11 text-muted-foreground/60">

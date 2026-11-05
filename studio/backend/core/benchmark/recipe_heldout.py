@@ -225,7 +225,11 @@ def run_benchmark(
         prompt = prompt_text(row.get(prompt_column))
         reference = reference_text(row.get(reference_column)) if reference_column else ""
         # A row's own system message (training sent it) unless the run sets one for every row.
-        system = (_cell(row, system_column).strip() and _cell(row, system_column)) or system_prompt
+        system = (
+            system_prompt
+            if override
+            else (_cell(row, system_column).strip() and _cell(row, system_column)) or system_prompt
+        )
         # A conversational prompt is asked as the turns training saw, its own system message kept
         # unless the run overrides it.
         turns = cell_messages(row.get(prompt_column)) or [{"role": "user", "content": prompt}]
