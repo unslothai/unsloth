@@ -1642,6 +1642,9 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
                     .config,
                 keepSpeculative: true,
                 throwOnError: true,
+                previousConfig: currentRuntimePerModelConfig({
+                  includeMaxSeqLength: true,
+                }),
               }),
           },
           signal,

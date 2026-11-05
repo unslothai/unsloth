@@ -256,6 +256,11 @@ test("Refresh or Edit in a compare pane loads that pane's own model", () => {
     /\.\.\.\(sel\.ggufVariant \|\| sel\.id\.toLowerCase\(\)\.endsWith\("\.gguf"\)\s*\? \{ isGguf: true \}/,
     "a standalone GGUF pane reloads with GGUF load fields, as shared Send does",
   );
+  assert.match(
+    generalCompareSource,
+    /throwOnError: true,\s*previousConfig: currentRuntimePerModelConfig\(\{\s*includeMaxSeqLength: true,/,
+    "a failed pane load restores the resident model's settings, as a regular pick does",
+  );
   assert.match(chatPageSource, /loadPaneModel=\{selectModel\}/);
   assert.match(chatPageSource, /cancelPaneModelLoad=\{cancelLoading\}/);
 });
