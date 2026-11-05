@@ -19034,11 +19034,12 @@ async def _load_model_impl(
                 _same_loaded_identifier(backend.active_model_name, model_identifier)
                 and (backend.models.get(backend.active_model_name) or {}).get("engine", "auto")
                 == request.engine
-                and (request.gguf_variant or "").strip().lower()
+                # Folder names are case-sensitive, so 6-BIT is not the resident 6-bit/.
+                and (request.gguf_variant or "").strip()
                 == str(
                     (backend.models.get(backend.active_model_name) or {}).get("precision_folder")
                     or ""
-                ).lower()
+                )
                 and _mlx_runtime_settings_match(backend, request)
                 and _non_gguf_runtime_settings_match(backend, request)
                 and _resident_context_satisfies(

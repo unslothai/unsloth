@@ -482,6 +482,7 @@ def test_memory_estimate_prices_the_picked_folder(monkeypatch, tmp_path):
         ("6-bit", None, "reload"),
         ("6-bit", "6-bit", "reuse"),
         ("6-bit", "8bit", "reload"),
+        ("6-bit", "6-BIT", "reload"),
         (None, "6-bit", "reload"),
     ],
 )
@@ -574,3 +575,13 @@ def test_offline_lists_a_cached_precision_folder(monkeypatch, tmp_path):
     with pytest.raises(HTTPException) as missing:
         asyncio.run(gguf_variants.get_gguf_variants_answer("org/absent", offline = True))
     assert missing.value.status_code == 404
+
+
+def test_the_resident_folder_survives_the_worker_hop():
+    from core.inference.orchestrator import _mirrored_model_entry
+
+    # The load route's same-folder reuse reads precision_folder off the parent's mirror.
+    assert _mirrored_model_entry({"precision_folder": "6-bit"}, _REPO)["precision_folder"] == "6-bit"
+    worker = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text(encoding = "utf-8")
+    projection = worker[worker.index('"gguf_variant",\n') :][:200]
+    assert '"precision_folder",' in projection

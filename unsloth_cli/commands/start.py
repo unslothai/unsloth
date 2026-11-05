@@ -952,8 +952,7 @@ def _subagent_model_id(
                 "may pick a different cached quant. Pass :variant to pin it.",
                 err = True,
             )
-        if status.get("is_gguf"):
-            variant = status.get("gguf_variant")
+        variant = _resident_variant(status)
     if variant and _is_hub_model_id(model_id):
         return _display_model_spec(model_id, str(variant))
     if variant:
@@ -2167,6 +2166,16 @@ def _resident_variant(status: dict) -> Optional[str]:
     return status.get("gguf_variant") if status.get("is_gguf") or status.get("is_mlx") else None
 
 
+def _resident_serves_variant(status: dict, wanted: Optional[str]) -> bool:
+    resident = _resident_variant(status)
+    if not resident:
+        return False
+    # Hub folder names are case-sensitive; llama.cpp quant labels are not.
+    if status.get("is_mlx"):
+        return str(resident).strip() == str(wanted).strip()
+    return str(resident).strip().lower() == str(wanted).strip().lower()
+
+
 def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset) -> bool:
     """Whether applying these settings can restart the resident. Unproven equality counts as a difference: a silent restart is worse than a spurious warning."""
     if not status:
@@ -2183,12 +2192,8 @@ def _load_settings_differ(status: dict, load: LoadOptions, overrides: frozenset)
         return True
     for name in overrides:
         if name == "gguf_variant":
-            resident = _resident_variant(status)
             # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM would read as equal here yet still really reload on the server. The preload gate below already compares this way, and the two have to agree.
-            if (
-                not resident
-                or str(resident).strip().lower() != str(load.gguf_variant).strip().lower()
-            ):
+            if not _resident_serves_variant(status, load.gguf_variant):
                 return True
         elif name == "max_seq_length":
             # Requested, not resolved: llama.cpp clamps n_ctx at fit time.
@@ -2335,13 +2340,8 @@ def _resolve_model(
                     status = _model_status(base, key, requested)
                 except Exception:
                     status = {}
-                resident_variant = _resident_variant(status)
                 # Casefold, not _normalized_variant, which strips separators: a mistyped Q4KM would skip the gate here yet still really reload on the server.
-                resident_serves_request = (
-                    bool(resident_variant)
-                    and str(resident_variant).strip().lower()
-                    == str(load.gguf_variant).strip().lower()
-                )
+                resident_serves_request = _resident_serves_variant(status, load.gguf_variant)
             if not resident_serves_request:
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
@@ -2375,7 +2375,12 @@ def _resolve_model(
             except Exception:
                 status = {}
             resident = _resident_variant(status)
-            if resident and _normalized_variant(resident) != _normalized_variant(load.gguf_variant):
+            switching = (
+                not _resident_serves_variant(status, load.gguf_variant)
+                if status.get("is_mlx")
+                else _normalized_variant(resident) != _normalized_variant(load.gguf_variant)
+            )
+            if resident and switching:
                 typer.echo(
                     f"Switching the Unsloth server from {active_id}:{resident} "
                     f"to {requested}:{load.gguf_variant}."

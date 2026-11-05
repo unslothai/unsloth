@@ -1321,6 +1321,16 @@ def test_subagent_model_id_uses_loaded_variant(monkeypatch):
     assert start._subagent_model_id(BASE, "key", MODEL, None, None) == MODEL["id"] + ":Q5_K_M"
 
 
+def test_subagent_model_id_pins_the_resident_mlx_folder(monkeypatch):
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *args, **kwargs: {"is_gguf": False, "is_mlx": True, "gguf_variant": "6-bit"},
+    )
+    entry = {"id": "mlx-community/Qwen3-4B"}
+    assert start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B:6-bit"
+
+
 def _kept_model_status(url):
     # Primary Qwen3-4B at Q4_K_M, Qwen3-1.7B kept alongside at Q8_0.
     if "model=unsloth%2FQwen3-1.7B-GGUF" in url:
@@ -5712,6 +5722,14 @@ def test_an_unchanged_mlx_folder_is_not_a_settings_change():
     assert start._load_settings_differ(
         status, start.LoadOptions(gguf_variant = "8bit"), frozenset({"gguf_variant"})
     )
+    # Folder names are case-sensitive: 6-BIT would load the root, so it is a change.
+    assert start._load_settings_differ(
+        status, start.LoadOptions(gguf_variant = "6-BIT"), frozenset({"gguf_variant"})
+    )
+    assert start._resident_serves_variant(status, "6-bit")
+    assert not start._resident_serves_variant(status, "6-BIT")
+    # GGUF quant labels stay case-insensitive, as llama.cpp resolves them.
+    assert start._resident_serves_variant({"is_gguf": True, "gguf_variant": "Q8_0"}, "q8_0")
 
 
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
@@ -11415,7 +11433,7 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
 def test_mlx_precision_folder_pattern_matches_the_backend():
     source = (
         Path(start.__file__).resolve().parents[2] / "studio/backend/hub/utils/snapshot_filters.py"
-    ).read_text()
+    ).read_text(encoding = "utf-8")
     namespace = {}
     exec(source[source.index("PRECISION_FOLDER_SOURCE =") :].split("\n)\n")[0] + "\n)", namespace)
     assert start._MLX_PRECISION_FOLDER_RE.pattern == namespace["PRECISION_FOLDER_SOURCE"]
