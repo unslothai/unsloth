@@ -13601,7 +13601,8 @@ class DiffusionBackend:
                     cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
                 # Same adapters, new scales: the replica takes PEFT's scales. The mirror skips LoKR buffers, so a pipe
                 # holding LoKR adapters rebuilds the replica, as does one whose layers do not line up.
-                if lora_files.kron_names(pipe) or not mirror_cfg_replica_adapter_scales(pipe, logger):
+                kron = lora_files.kron_names(pipe)
+                if kron or not mirror_cfg_replica_adapter_scales(pipe, logger):
                     invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
                 return
         # PEFT targets to_q / to_k / to_v: a fused U-Net that dropped them gets them back first (bit-exact).

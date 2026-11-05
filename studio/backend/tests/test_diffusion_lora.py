@@ -1091,6 +1091,10 @@ def test_a_lokr_only_weight_change_keeps_the_cuda_graphs(monkeypatch, tmp_path, 
     monkeypatch.setattr(
         diffusion_mod, "invalidate_cfg_replica", lambda pipe, why, log = None: invalidated.append(why)
     )
+    # The scale mirror copies PEFT scales only, so even a mirror that lines up must not keep the replica.
+    monkeypatch.setattr(
+        diffusion_mod, "mirror_cfg_replica_adapter_scales", lambda pipe, log = None: True
+    )
     torch = pytest.importorskip("torch")
     block = torch.nn.ModuleDict({"q": torch.nn.Linear(24, 36, bias = False)})
     adapter = lf.KronAdapter(block, block["q"], torch.randn(4, 3), torch.randn(9, 8), 1.0)
