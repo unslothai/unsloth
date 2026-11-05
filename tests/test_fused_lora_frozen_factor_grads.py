@@ -21,13 +21,23 @@ class _CountGemms(TorchDispatchMode):
         super().__init__()
         self.count = 0
 
-    def __torch_dispatch__(self, func, types, args = (), kwargs = None):
+    def __torch_dispatch__(
+        self,
+        func,
+        types,
+        args = (),
+        kwargs = None,
+    ):
         if func.overloadpacket.__name__ in _GEMMS:
             self.count += 1
         return func(*args, **(kwargs or {}))
 
 
-def _tensors(n_proj, dtype, seed = 0):
+def _tensors(
+    n_proj,
+    dtype,
+    seed = 0,
+):
     g = torch.Generator().manual_seed(seed)
     X = torch.randn(2, 5, 48, generator = g).to(dtype)
     weights, factors = [], []
@@ -39,7 +49,15 @@ def _tensors(n_proj, dtype, seed = 0):
     return X, weights, factors, grads
 
 
-def _run(cls, X, weights, factors, grads, trainable, dropout_p = None):
+def _run(
+    cls,
+    X,
+    weights,
+    factors,
+    grads,
+    trainable,
+    dropout_p = None,
+):
     X = X.clone().requires_grad_(True)
     factors = [f.clone().requires_grad_(t) for f, t in zip(factors, trainable)]
     scales = [0.5, 0.25, 0.75]
@@ -66,7 +84,9 @@ def _run(cls, X, weights, factors, grads, trainable, dropout_p = None):
 @pytest.mark.parametrize("dropout_p", [None, 0.25])
 def test_lora_w_frozen_factor_skips_its_gemm_and_keeps_the_rest(dtype, dropout_p):
     X, weights, factors, grads = _tensors(1, dtype)
-    dX_ref, (dA_ref, dB_ref), n_ref = _run(LoRA_W, X, weights, factors, grads, (True, True), dropout_p)
+    dX_ref, (dA_ref, dB_ref), n_ref = _run(
+        LoRA_W, X, weights, factors, grads, (True, True), dropout_p
+    )
     for trainable in [(False, True), (True, False), (False, False)]:
         dX, (dA, dB), n = _run(LoRA_W, X, weights, factors, grads, trainable, dropout_p)
         assert torch.equal(dX, dX_ref)
@@ -76,14 +96,23 @@ def test_lora_w_frozen_factor_skips_its_gemm_and_keeps_the_rest(dtype, dropout_p
         if trainable[1]:
             assert torch.equal(dB, dB_ref)
         # d_A is one GEMM; d_B two (A @ X.t(), then @ dY).
-        assert n == n_ref - (0 if trainable[0] else 1) - (0 if trainable[1] else 2), (trainable, n, n_ref)
+        assert n == n_ref - (0 if trainable[0] else 1) - (0 if trainable[1] else 2), (
+            trainable,
+            n,
+            n_ref,
+        )
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
 def test_lora_qkv_frozen_factors_keep_the_rest_bit_for_bit(dtype):
     X, weights, factors, grads = _tensors(3, dtype)
     dX_ref, f_ref, n_ref = _run(LoRA_QKV, X, weights, factors, grads, (True,) * 6)
-    for trainable in [(False, True) * 3, (True, False) * 3, (False, True, True, True, True, False), (False,) * 6]:
+    for trainable in [
+        (False, True) * 3,
+        (True, False) * 3,
+        (False, True, True, True, True, False),
+        (False,) * 6,
+    ]:
         dX, f, n = _run(LoRA_QKV, X, weights, factors, grads, trainable)
         assert torch.equal(dX, dX_ref)
         for got, ref, t in zip(f, f_ref, trainable):
@@ -93,10 +122,15 @@ def test_lora_qkv_frozen_factors_keep_the_rest_bit_for_bit(dtype):
         assert n < n_ref, (trainable, n, n_ref)
 
 
-@pytest.mark.parametrize("need_A, need_B", list(itertools.product(
-    [(True, True, True), (False, False, False), (True, False, True)],
-    [(True, True, True), (False, False, False), (False, True, False)],
-)))
+@pytest.mark.parametrize(
+    "need_A, need_B",
+    list(
+        itertools.product(
+            [(True, True, True), (False, False, False), (True, False, True)],
+            [(True, True, True), (False, False, False), (False, True, False)],
+        )
+    ),
+)
 def test_shared_backward_skips_frozen_factor_gemms(need_A, need_B):
     # The fused path shared by gate / up and Q / K / V (CUDA only through the Functions; called directly here).
     g = torch.Generator().manual_seed(3)
@@ -106,7 +140,9 @@ def test_shared_backward_skips_frozen_factor_gemms(need_A, need_B):
     dYs = [torch.randn(10, 40, generator = g) for _ in range(3)]
     ref_As, ref_Bs, ref_dX = _shared_lora_backward(X, dYs, As, Bs, 0.5, None)
     with _CountGemms() as counter:
-        d_As, d_Bs, dX = _shared_lora_backward(X, dYs, As, Bs, 0.5, None, need_A = need_A, need_B = need_B)
+        d_As, d_Bs, dX = _shared_lora_backward(
+            X, dYs, As, Bs, 0.5, None, need_A = need_A, need_B = need_B
+        )
     assert torch.equal(dX, ref_dX)
     for got, ref, need in zip(d_As + d_Bs, ref_As + ref_Bs, need_A + need_B):
         assert (got is None) != need

@@ -373,7 +373,16 @@ def _shared_XA(X, As, dtype):
     return XA.split_with_sizes([A.shape[0] for A in As], 1)
 
 
-def _shared_lora_backward(X, dYs, As, Bs, S, dX_out, need_A = None, need_B = None):
+def _shared_lora_backward(
+    X,
+    dYs,
+    As,
+    Bs,
+    S,
+    dX_out,
+    need_A = None,
+    need_B = None,
+):
     # LoRA grads of projections sharing X and S: X is read once for all d_A and A @ X.t(), and dX starts
     # as S * dB @ A.t() for the base GEMMs to accumulate onto. Each d_A.t() is a row block of one buffer.
     # need_A / need_B (per projection, default all): a frozen factor's gradient is None; with every A frozen
@@ -763,7 +772,9 @@ class LoRA_MLP(torch.autograd.Function):
             gate_mask = gate_mask.view(-1, hd)
 
         # d_upA = X.t() @ (df @ upB.t()), d_upB = (upA.t() @ X.t()) @ df, both scaled by upS.
-        d_upA, d_upB = _lora_AB_grads(X, up_mask, up_p, up_dB, upA, upB, df, upS, need_upA, need_upB)
+        d_upA, d_upB = _lora_AB_grads(
+            X, up_mask, up_p, up_dB, upA, upB, df, upS, need_upA, need_upB
+        )
         # d_gateA = X.t() @ (de @ gateB.t()), d_gateB = (gateA.t() @ X.t()) @ de, both scaled by gateS.
         d_gateA, d_gateB = _lora_AB_grads(
             X, gate_mask, gate_p, gate_dB, gateA, gateB, de, gateS, need_gateA, need_gateB
