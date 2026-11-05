@@ -96,6 +96,27 @@ def test_route_rejects_a_negative_limit(client):
     assert client.put("/download-speed-limit", json = {"mbps": -1}).status_code == 422
 
 
+def test_a_managed_account_downloads_under_the_owners_limit(monkeypatch):
+    from utils.account_context import AccountContext, current_account_id, run_as
+
+    dbs: dict = {}
+
+    def _db() -> dict:
+        return dbs.setdefault(current_account_id(), {})
+
+    monkeypatch.setattr(
+        studio_db, "get_app_setting", lambda key, fallback = None: _db().get(key, fallback)
+    )
+    monkeypatch.setattr(
+        studio_db, "upsert_app_settings", lambda updates: _db().update(updates) or _db()
+    )
+    speed_limit.set_download_speed_limit_mbps(8)
+
+    user = AccountContext("alice", "alice")
+    assert run_as(user, speed_limit.get_download_speed_limit_mbps) == 8.0
+    assert run_as(user, download_lifecycle.resolve_requested_use_xet, "xet", True)[0] is False
+
+
 def _spawn_env(monkeypatch) -> dict:
     captured = {}
 

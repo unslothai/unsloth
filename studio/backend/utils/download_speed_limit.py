@@ -28,7 +28,10 @@ def normalize_speed_limit_mbps(value: Any) -> Optional[float]:
 def get_download_speed_limit_mbps() -> Optional[float]:
     try:
         from storage.studio_db import get_app_setting
-        return normalize_speed_limit_mbps(get_app_setting(DOWNLOAD_SPEED_LIMIT_SETTING_KEY, None))
+        from utils.account_context import OWNER, run_as
+
+        stored = run_as(OWNER, get_app_setting, DOWNLOAD_SPEED_LIMIT_SETTING_KEY, None)
+        return normalize_speed_limit_mbps(stored)
     except Exception as exc:  # noqa: BLE001 - an unreadable db reports no limit, not a 500
         logger.debug("download speed limit read failed (%s)", exc)
         return None
@@ -45,8 +48,9 @@ def set_download_speed_limit_mbps(value: Any) -> Optional[float]:
             )
 
     from storage.studio_db import upsert_app_settings
+    from utils.account_context import OWNER, run_as
 
-    upsert_app_settings({DOWNLOAD_SPEED_LIMIT_SETTING_KEY: mbps})
+    run_as(OWNER, upsert_app_settings, {DOWNLOAD_SPEED_LIMIT_SETTING_KEY: mbps})
     return mbps
 
 
