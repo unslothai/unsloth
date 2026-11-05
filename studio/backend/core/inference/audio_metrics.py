@@ -248,7 +248,7 @@ def _oversampler(factor: int = 4, taps_per_phase: int = 12) -> np.ndarray:
     return taps.reshape(taps_per_phase, factor).T
 
 
-# A float32 matrix product screens each chunk for the outputs that can hold its peak; only those
+# A float32 screen (12 multiply-adds per output) checks each chunk for the outputs that can hold its peak; only those
 # are then computed by np.convolve. Past this many separate spans per phase the whole chunk is
 # convolved instead.
 _PEAK_SPANS_MAX = 128
@@ -309,8 +309,12 @@ def true_peak(data: np.ndarray) -> float:
                 err = reach * scale * 2.0**-19
                 samples = window.astype(np.float32)
                 cols = len(window) - length + 1
-                stacked = np.stack([samples[k : k + cols] for k in range(length)])
-                screens = np.abs(flipped @ stacked)
+                # Plain float32 ufuncs, not a BLAS product: no BLAS thread pool to wake, and no
+                # dependence on how many threads the caller lets BLAS use.
+                screens = flipped[:, :1] * samples[:cols]
+                for k in range(1, length):
+                    screens += flipped[:, k : k + 1] * samples[k : k + cols]
+                screens = np.abs(screens)
             for taps, screen in zip(phases, screens):
                 peak = _phase_peak(window, taps, peak, screen, err)
     return peak
