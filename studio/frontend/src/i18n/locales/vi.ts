@@ -215,6 +215,7 @@ export const vi = {
     tabs: "Thẻ trình duyệt",
     newTab: "Thẻ mới",
     newTabFullView: "Thẻ mới ở chế độ toàn màn hình",
+    newTabFloating: "Tab mới trong cửa sổ nổi",
     closeTab: "Đóng thẻ",
     close: "Đóng trình duyệt",
     show: "Hiển thị trình duyệt",
@@ -433,6 +434,12 @@ export const vi = {
       openChat: "Mở ở chế độ toàn màn hình",
       moveLeft: "Chuyển sang ngăn trái",
       moveRight: "Chuyển sang ngăn phải",
+    },
+    floating: {
+      enter: "Cửa sổ nổi",
+      dock: "Ghim sang bên",
+      close: "Đóng cửa sổ nổi",
+      handle: "Di chuyển cửa sổ. Phím mũi tên di chuyển; Shift và phím mũi tên đổi kích thước.",
     },
     annotate: {
       countOne: "1 chú thích",

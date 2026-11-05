@@ -215,6 +215,7 @@ export const cs = {
     tabs: "Karty prohlížeče",
     newTab: "Nová karta",
     newTabFullView: "Nová karta v plném zobrazení",
+    newTabFloating: "Nová karta v plovoucím okně",
     closeTab: "Zavřít kartu",
     close: "Zavřít prohlížeč",
     show: "Zobrazit prohlížeč",
@@ -433,6 +434,12 @@ export const cs = {
       openChat: "Otevřít v plném zobrazení",
       moveLeft: "Přesunout do levého podokna",
       moveRight: "Přesunout do pravého podokna",
+    },
+    floating: {
+      enter: "Plovoucí okno",
+      dock: "Připnout ke straně",
+      close: "Zavřít plovoucí okno",
+      handle: "Přesunout okno. Šipky jej posouvají, Shift se šipkami mění jeho velikost.",
     },
     annotate: {
       countOne: "1 anotace",

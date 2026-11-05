@@ -208,6 +208,7 @@ export const ja = {
     tabs: "ブラウザのタブ",
     newTab: "新しいタブ",
     newTabFullView: "全画面表示で新しいタブ",
+    newTabFloating: "フローティングウィンドウで新しいタブ",
     closeTab: "タブを閉じる",
     close: "ブラウザを閉じる",
     show: "ブラウザを表示",
@@ -390,6 +391,12 @@ export const ja = {
       openChat: "全画面で開く",
       moveLeft: "左ペインに移動",
       moveRight: "右ペインに移動",
+    },
+    floating: {
+      enter: "フローティングウィンドウ",
+      dock: "横にドッキング",
+      close: "フローティングウィンドウを閉じる",
+      handle: "ウィンドウを移動。矢印キーで移動、Shift と矢印キーでサイズを変更します。",
     },
     annotate: {
       countOne: "注釈 1 件",

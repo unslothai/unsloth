@@ -104,7 +104,10 @@ import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
   BrowserToggleButton,
+  FloatingResizeHandles,
   chatKeyOfThread,
+  closeOrFloatBrowser,
+  floatSurface,
   openUrlInBrowser,
   pinBrowserPage,
   setBrowserPanelAvailable,
@@ -660,11 +663,11 @@ const SingleContent = memo(function SingleContent({
     if (size == null) return;
     // Dragged shut means closed.
     if (size <= 5) {
-      closeBrowser();
+      closeOrFloatBrowser();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [closeBrowser]);
+  }, []);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -688,10 +691,14 @@ const SingleContent = memo(function SingleContent({
   }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
+  // Floating stays mounted here, so switching layouts never reloads the page.
+  const browserFloating =
+    useBrowserStore((state) => state.floating) && showBrowserPanel && !browserFullView;
+  const browserDocked = showBrowserPanel && !browserFloating;
   const chatDock = useBrowserStore((state) => state.chatDock);
   const chatOnRight =
     useBrowserStore((state) => state.chatSide === "right") &&
-    showBrowserPanel &&
+    browserDocked &&
     !browserFullView;
   const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
   useEffect(() => {
@@ -699,7 +706,7 @@ const SingleContent = memo(function SingleContent({
       ? BROWSER_PANEL_DEFAULT_SIZE
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
-  const showContextPanel = showResearchPanel || showBrowserPanel;
+  const showContextPanel = showResearchPanel || browserDocked;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
@@ -793,7 +800,7 @@ const SingleContent = memo(function SingleContent({
   useEffect(() => {
     const surface = contextSurfaceRef.current;
     const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
-    if (!surface || !root || !showBrowserPanel) return;
+    if (!surface || !root || !browserDocked) return;
     let width = "";
     const insets = () =>
       root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
@@ -826,7 +833,13 @@ const SingleContent = memo(function SingleContent({
         element.style.removeProperty("--studio-side-panel-left");
       }
     };
-  }, [showBrowserPanel, chatOnRight]);
+  }, [browserDocked, chatOnRight]);
+
+  useLayoutEffect(() => {
+    const surface = contextSurfaceRef.current;
+    if (!surface || !browserFloating) return;
+    return floatSurface(surface);
+  }, [browserFloating]);
 
   // Moving the chat re-sorts panels to default sizes; restore the browser's width (full view fills).
   const browserLayout = `${browserFullView}:${chatOnRight}`;
@@ -835,14 +848,14 @@ const SingleContent = memo(function SingleContent({
     if (seenBrowserLayoutRef.current === browserLayout) return;
     seenBrowserLayoutRef.current = browserLayout;
     const panel = artifactPanelRef.current;
-    if (!panel || !showBrowserPanel) return;
+    if (!panel || !browserDocked) return;
     const frameId = window.requestAnimationFrame(() => {
       panel.resize(
         artifactPanelWidthRef.current ?? defaultPanelSizeRef.current,
       );
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [browserLayout, showBrowserPanel]);
+  }, [browserLayout, browserDocked]);
 
   // With no chat beside it, the chat header would sit over the browser's tabs.
   useEffect(() => {
@@ -998,11 +1011,13 @@ const SingleContent = memo(function SingleContent({
             data-artifact-surface-visible={
               isArtifactSurfaceVisible ? "true" : "false"
             }
+            {...{ "data-browser-floating": browserFloating ? "" : undefined }}
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              (showResearchPanel || showBrowserPanel) &&
+              (showResearchPanel || browserDocked) &&
                 (chatOnRight ? "border-r" : "border-l"),
-              (showResearchPanel || showBrowserPanel) && "border-border/70",
+              (showResearchPanel || browserDocked) && "border-border/70",
+              browserFloating && "chat-browser-floating",
             )}
             style={showBrowserPanel ? { transform: "none" } : undefined}
           >
@@ -1014,7 +1029,8 @@ const SingleContent = memo(function SingleContent({
                />
              ) : showBrowserPanel ? (
               <Suspense fallback={null}>
-                <BrowserPanel active={chatActive} />
+                <BrowserPanel active={chatActive} floating={browserFloating} floatable={true} />
+                {browserFloating ? <FloatingResizeHandles /> : null}
               </Suspense>
             ) : null}
           </div>
@@ -4848,6 +4864,7 @@ export function ChatPage({
               <BrowserToggleButton
                 active={active}
                 hideWhenOpen={view.mode === "single" || showBrowserOverlay}
+                floatable={view.mode === "single"}
               />
             ) : null}
             {view.mode === "single" &&

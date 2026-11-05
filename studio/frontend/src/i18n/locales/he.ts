@@ -208,6 +208,7 @@ export const he = {
     tabs: "כרטיסיות דפדפן",
     newTab: "כרטיסייה חדשה",
     newTabFullView: "כרטיסייה חדשה בתצוגה מלאה",
+    newTabFloating: "כרטיסייה חדשה בחלון צף",
     closeTab: "סגור כרטיסייה",
     close: "סגור דפדפן",
     show: "הצג דפדפן",
@@ -399,6 +400,12 @@ export const he = {
       openChat: "פתח בתצוגה מלאה",
       moveLeft: "העבר לחלונית השמאלית",
       moveRight: "העבר לחלונית הימנית",
+    },
+    floating: {
+      enter: "חלון צף",
+      dock: "עגינה לצד",
+      close: "סגירת החלון הצף",
+      handle: "הזזת החלון. מקשי החצים מזיזים אותו, ו־Shift עם החצים משנה את גודלו.",
     },
     annotate: {
       countOne: "הערה אחת",

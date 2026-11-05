@@ -5682,6 +5682,42 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	}
 }
 
+/* Placed by floating-preview.ts. No transition: a drag's transform must drop without easing back. */
+.chat-artifact-pop-surface.chat-browser-floating {
+	z-index: 35;
+	opacity: 1;
+	pointer-events: auto;
+	will-change: auto;
+	transition: none;
+	border: 1px solid var(--border);
+	border-radius: calc(16px * var(--ui-space-scale, 1));
+	background: var(--card);
+	box-shadow:
+		0 18px 44px -14px rgb(0 0 0 / 0.3),
+		0 4px 12px -4px rgb(0 0 0 / 0.12);
+	/* No chat header above it. */
+	--studio-content-top-inset: 0px;
+	animation: browser-floating-in 140ms var(--ease-out-cubic);
+}
+
+.chat-browser-floating[data-floating-gesture] {
+	box-shadow:
+		0 26px 60px -16px rgb(0 0 0 / 0.38),
+		0 6px 16px -6px rgb(0 0 0 / 0.16);
+}
+
+@keyframes browser-floating-in {
+	from {
+		opacity: 0;
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	html:not(.force-motion) .chat-browser-floating {
+		animation: none;
+	}
+}
+
 /* Unlayered, so it beats the panel's utilities. */
 .chat-artifact-split[data-browser-full-view] > #chat-thread {
 	position: absolute;

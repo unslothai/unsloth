@@ -204,6 +204,7 @@ export const it = {
     tabs: "Schede del browser",
     newTab: "Nuova scheda",
     newTabFullView: "Nuova scheda a schermo intero",
+    newTabFloating: "Nuova scheda in finestra mobile",
     closeTab: "Chiudi scheda",
     close: "Chiudi browser",
     show: "Mostra browser",
@@ -386,6 +387,12 @@ export const it = {
       openChat: "Apri in vista completa",
       moveLeft: "Sposta nel riquadro sinistro",
       moveRight: "Sposta nel riquadro destro",
+    },
+    floating: {
+      enter: "Finestra mobile",
+      dock: "Aggancia di lato",
+      close: "Chiudi finestra mobile",
+      handle: "Sposta la finestra. Le frecce la spostano; Maiusc e le frecce la ridimensionano.",
     },
     annotate: {
       countOne: "1 annotazione",

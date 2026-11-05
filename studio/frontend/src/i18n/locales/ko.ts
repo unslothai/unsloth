@@ -207,6 +207,7 @@ export const ko = {
     tabs: "브라우저 탭",
     newTab: "새 탭",
     newTabFullView: "전체 보기로 새 탭",
+    newTabFloating: "플로팅 창에서 새 탭",
     closeTab: "탭 닫기",
     close: "브라우저 닫기",
     show: "브라우저 표시",
@@ -389,6 +390,12 @@ export const ko = {
       openChat: "전체 보기로 열기",
       moveLeft: "왼쪽 창으로 이동",
       moveRight: "오른쪽 창으로 이동",
+    },
+    floating: {
+      enter: "플로팅 창",
+      dock: "옆에 고정",
+      close: "플로팅 창 닫기",
+      handle: "창 이동. 화살표 키로 이동하고 Shift와 화살표 키로 크기를 바꿉니다.",
     },
     annotate: {
       countOne: "주석 1개",
