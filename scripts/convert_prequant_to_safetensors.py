@@ -279,7 +279,12 @@ def convert(
     facts: list = []
     restore = _record_v1_facts(facts)
     try:
-        ckpt = dp._load_prequant_checkpoint(src, map_location = "cpu", mmap = True)
+        if str(src).lower().endswith(".safetensors"):
+            ckpt = dp._load_prequant_checkpoint(src, map_location = "cpu", mmap = True)
+        else:
+            # The allowlisted read without Studio's load guard: Studio refuses an nvfp4 pickle, so this
+            # offline conversion is the one way a local nvfp4 .pt becomes the .safetensors Studio loads.
+            ckpt = dp._torch_load_prequant(src, map_location = "cpu", mmap = True)
     finally:
         restore()
     fmt = ckpt.get("format")
