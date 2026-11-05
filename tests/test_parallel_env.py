@@ -1256,6 +1256,78 @@ def test_pp_env_refuses_router_aux_loss_split_over_micro_batches():
     pp_env._refuse_split_router_aux(stage, 2)
 
 
+def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
+    # Failing before: only the per-step check existed, so the refusal came after Trainer.__init__ split the model.
+    import types
+
+    import transformers
+    from transformers import Qwen3MoeConfig, Qwen3MoeForCausalLM
+
+    from unsloth.models import pp_env
+
+    config = Qwen3MoeConfig(
+        vocab_size = 32,
+        hidden_size = 8,
+        intermediate_size = 8,
+        moe_intermediate_size = 8,
+        num_hidden_layers = 2,
+        num_attention_heads = 2,
+        num_key_value_heads = 1,
+        head_dim = 4,
+        num_experts = 4,
+        num_experts_per_tok = 2,
+        router_aux_loss_coef = 0.5,
+        output_router_logits = True,
+    )
+    model = Qwen3MoeForCausalLM(config)
+
+    def layout(mb = None, schedule = "gpipe"):
+        return types.SimpleNamespace(
+            pp = 2, microbatches = mb, schedule = schedule, env_vars = "UNSLOTH_PP_SIZE=2"
+        )
+
+    def args(
+        bs,
+        coef = "absent",
+        eval_strategy = "no",
+        eval_bs = 1,
+    ):
+        a = types.SimpleNamespace(
+            per_device_train_batch_size = bs,
+            eval_strategy = eval_strategy,
+            per_device_eval_batch_size = eval_bs,
+        )
+        if coef != "absent":
+            a.router_aux_loss_coef = coef
+        return a
+
+    refuse = pp_env._refuse_split_router_aux_at_init
+    T, SFT = transformers.Trainer, type("SFTTrainer", (transformers.Trainer,), {})
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, args(2), layout(), model)  # default 2 x pp micro-batches, lowered to 2
+    with pytest.raises(NotImplementedError, match = "into 2 micro-batches"):
+        refuse(T, args(1), layout(schedule = "1f1b"), model)  # 1F1B pads up to pp micro-batches
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(
+            T, args(1, eval_strategy = "steps", eval_bs = 4), layout(), model
+        )  # the eval batch splits
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(SFT, args(2, coef = None), layout(), model)  # TRL takes the architecture's coefficient
+    refuse(T, args(4), layout(mb = 1), model)  # one micro-batch: allowed
+    if not pp_env._gpipe_needs_stage_count():
+        refuse(T, args(1), layout(), model)  # a batch of one row: one micro-batch
+    refuse(SFT, args(4, coef = 0.0), layout(), model)  # TRL turns the aux loss off
+    refuse(T, args(4), layout(mb = 3), model)  # 3 does not divide 4: the step raises its own error
+    model.router_aux_loss_coef = 0.0
+    refuse(T, args(4), layout(), model)  # plain Trainer: the CausalLM's coefficient is 0
+    model.router_aux_loss_coef = 0.5
+    config.output_router_logits = False
+    refuse(T, args(4), layout(), model)  # plain Trainer, output_router_logits off
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(SFT, args(4, coef = 0.1), layout(), model)  # TRL turns it on inside its __init__
+    refuse(T, args(4), layout(), model.model)  # no CausalLM of a carried family: the split decides
+
+
 def test_pending_expert_lora_counts_in_the_capability_query():
     # Failing before: SFTTrainer(peft_config = LoraConfig(target_modules = expert projections)) was queried as
     # attention-only LoRA (expert_lora read only the attached adapters) and hit an unverified cell.
