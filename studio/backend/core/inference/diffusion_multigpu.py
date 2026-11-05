@@ -3537,8 +3537,7 @@ class UnetCfgParallelRouter(CfgParallelRouter):
 
 # DiT classes whose batch may be cut along dim 0 (every per-sample input is a dim-0 tensor; ids, when unbatched, keep
 # a leading size that is the token count, never the batch). Z-Image passes per-sample lists and has its own split.
-# Lumina 2 pads each sample's caption to the batch's longest caption under its own mask, so a half pads to its own
-# longest: the extra positions are masked out of every attention (same image, fp order only).
+# Lumina 2: a half pads captions to its own longest, and the padding is masked out (fp order only).
 _DIT_BATCH_SPLIT_KWARGS = {
     "FluxTransformer2DModel": frozenset(
         {
