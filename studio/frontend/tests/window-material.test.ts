@@ -246,9 +246,9 @@ test("menus, popovers and dialogs point every hover token at the glass hover", (
 	}
 });
 
-test("glass sheen runs at 75% except on the composer", () => {
+test("glass sheen runs at 90% except on the composer", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.05\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.059\)/);
 	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
 	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
 });
