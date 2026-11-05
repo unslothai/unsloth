@@ -389,6 +389,19 @@ class _AnimaPipelineMixin:
         return _hooks()
 
 
+def _load_tokenizer(auto_tokenizer: Any, repo_id: str, subfolder: str, common: dict) -> Any:
+    from .diffusion_offline_source import offline_snapshot_source
+
+    # Offline by repo id, transformers 5.x fails on cached tokenizers (see diffusion_offline_source).
+    source = offline_snapshot_source(
+        repo_id,
+        subfolder,
+        local_files_only = common.get("local_files_only", False),
+        cache_dir = common.get("cache_dir"),
+    )
+    return auto_tokenizer.from_pretrained(source, subfolder = subfolder, **common)
+
+
 def load_anima_pipeline(
     repo_id: str,
     dtype,
@@ -417,8 +430,10 @@ def load_anima_pipeline(
         common["cache_dir"] = cache_dir
     if hf_token:
         common["token"] = hf_token
-    tokenizer = AutoTokenizer.from_pretrained(repo_id, subfolder = "tokenizer", **common)
-    t5_tokenizer = AutoTokenizer.from_pretrained(repo_id, subfolder = "t5_tokenizer", **common)
+    tokenizer, t5_tokenizer = (
+        _load_tokenizer(AutoTokenizer, repo_id, subfolder, common)
+        for subfolder in ("tokenizer", "t5_tokenizer")
+    )
     check_cancelled()
     if text_encoder is None:
         text_encoder = Qwen3Model.from_pretrained(
