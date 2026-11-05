@@ -2775,8 +2775,8 @@ class InferenceBackend:
                 ),
             )
         with self._generation_lock:
-            if _adapter_state is not None:
-                self._apply_adapter_state(_adapter_state)
+            # None too: it turns the LoRA back on after an adapter-off request.
+            self._apply_adapter_state(_adapter_state)
             try:
                 text = generate_text(
                     model_info["model"],
@@ -2923,8 +2923,8 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
-                        if _adapter_state is not None:
-                            self._apply_adapter_state(_adapter_state)
+                        # None too: it turns the LoRA back on after an adapter-off request.
+                        self._apply_adapter_state(_adapter_state)
                         # Started after the adapter swap so only model.generate() is timed.
                         timer.start()
                         # Only the returned sequences carry an exact token count;
@@ -3073,8 +3073,8 @@ class InferenceBackend:
         with self._generation_lock:
             if cancel_event is not None and cancel_event.is_set():
                 raise RuntimeError("Audio generation cancelled")
-            if use_adapter is not None:
-                self._apply_adapter_state(use_adapter)
+            # None too: it turns the LoRA back on after an adapter-off request.
+            self._apply_adapter_state(use_adapter)
             stopping_criteria = self._cancel_stopping_criteria(cancel_event)
             self.last_generation_stats = None
 
