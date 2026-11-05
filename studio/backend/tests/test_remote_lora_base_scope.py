@@ -169,7 +169,6 @@ if worker == "inference":
     import core.inference.worker as w
 
     w._native_audio_security_targets_or_error = done
-    w.is_apple_silicon = lambda: False  # the MLX branch never activates transformers
     w.run_inference_process(cmd_queue = queue.Queue(), resp_queue = queue.Queue(), cancel_event = None, config = config)
 else:
     import core._torchao_stub as stub
@@ -185,6 +184,8 @@ else:
 
 @pytest.mark.parametrize("worker", ["inference", "export"])
 def test_worker_load_reads_adapter_config_once(worker, tmp_path):
+    if worker == "inference" and sys.platform == "darwin":
+        pytest.skip("macOS inference takes the MLX command loop, not this activation path")
     backend = Path(__file__).resolve().parents[1]
     out = tmp_path / "reads.json"
     env = {
