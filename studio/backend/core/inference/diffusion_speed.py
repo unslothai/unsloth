@@ -1993,7 +1993,6 @@ TF32_ENV = "UNSLOTH_DIFFUSION_TF32"
 
 def tf32_enabled() -> bool:
     import os
-
     return (os.environ.get(TF32_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
