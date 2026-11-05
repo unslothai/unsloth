@@ -257,6 +257,15 @@ def test_health_is_not_ready_until_hardware_detection_settles():
     training run or an export in that window."""
     assert not studio_client.health_is_ready({"status": "healthy", "hardware_detecting": True})
     assert studio_client.health_is_ready({"status": "healthy"})
+    # no startup hardware warmup: detection waits for the authenticated request, so the server is up
+    deferred = {
+        "status": "healthy",
+        "hardware_detecting": True,
+        "hardware_detection_deferred": True,
+    }
+    assert studio_client.health_is_ready(deferred)
+    assert not studio_client.hardware_detected(deferred)
+    assert studio_client.hardware_detected({"status": "healthy"})
     assert not studio_client.health_is_ready({"status": "starting"})
     assert not studio_client.health_is_ready("connection refused")
 

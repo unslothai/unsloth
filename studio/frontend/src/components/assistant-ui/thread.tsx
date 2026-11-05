@@ -196,6 +196,7 @@ import {
   type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
+import { insertSavedPrompt } from "@/features/chat/prompt-storage/insert-prompt";
 import {
   COMPOSER_POSITION_BOTTOM,
   COMPOSER_POSITION_MIDDLE,
@@ -5762,6 +5763,7 @@ const Composer: FC<{
           data-pill-compact={pillCompact}
         >
           <ComposerToolsMenu
+            inputRef={inputRef}
             side={effectiveMenuSide}
             researchAvailable={!researchUsed}
             audioUploadBusy={audioUpload.busy}
@@ -6817,10 +6819,11 @@ const LazyLibraryAttachmentPicker = lazy(() =>
 );
 
 const ComposerToolsMenu: FC<{
+  inputRef: RefObject<HTMLTextAreaElement | null>;
   side?: "top" | "bottom";
   researchAvailable: boolean;
   audioUploadBusy: boolean;
-}> = ({ side = "bottom", researchAvailable, audioUploadBusy }) => {
+}> = ({ inputRef, side = "bottom", researchAvailable, audioUploadBusy }) => {
   const t = useT();
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
@@ -7111,7 +7114,7 @@ const ComposerToolsMenu: FC<{
           {recentPrompts.map((p) => (
             <DropdownMenuItem
               key={`prompt:${p.id}`}
-              onSelect={() => aui.composer().setText(p.text)}
+              onSelect={() => insertSavedPrompt(inputRef.current, p.text, (next) => aui.composer().setText(next))}
             >
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
@@ -7245,9 +7248,7 @@ const ComposerToolsMenu: FC<{
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
-      onUse={(text) => {
-        aui.composer().setText(text);
-      }}
+      onUse={(text) => insertSavedPrompt(inputRef.current, text, (next) => aui.composer().setText(next))}
       onRunList={(items) => runPromptList(items, true)}
     />
     <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>

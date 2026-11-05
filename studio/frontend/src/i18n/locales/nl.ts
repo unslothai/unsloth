@@ -206,6 +206,9 @@ export const nl = {
         history: "Je browsegeschiedenis lezen",
         move: "Muis verplaatsen",
         drag: "Slepen",
+        tabs: "Tabbladen bekijken",
+        readFile: "Bestand lezen",
+        editFile: "Bestand bewerken",
       },
     },
     title: "Browser",
@@ -362,6 +365,8 @@ export const nl = {
     askBeforeDownloadingSetting: "Vragen voor het downloaden",
     askBeforeDownloadingSettingDescription:
       "Bevestig bestanden van websites voordat ze worden opgeslagen.",
+    askBeforeProgramDownloadsSetting: "Vragen voor het downloaden van programma's",
+    askBeforeProgramDownloadsSettingDescription: "Bevestig bestanden die programma's kunnen uitvoeren, zoals .exe of .dmg, ook als andere downloads niets vragen.",
     downloadSitesSetting: "Downloadtoestemmingen per site",
     downloadSitesSettingDescription:
       "Sites waarvan je downloads altijd wilt toestaan of blokkeren.",
@@ -370,6 +375,7 @@ export const nl = {
     downloadSitesFor: "Downloads van {host}",
     downloadSitesRemove: "{host} vergeten",
     downloadSiteAllow: "Altijd toestaan",
+    downloadSiteAllowAll: "Ook programma's toestaan",
     downloadSiteBlock: "Altijd blokkeren",
     downloadPrompt: {
       title: "Dit bestand downloaden?",
@@ -377,6 +383,9 @@ export const nl = {
       dangerous:
         "Bestanden zoals dit kunnen programma's op je computer uitvoeren. Download het alleen als je {host} vertrouwt.",
       remember: "Onthouden voor de volgende keer",
+      once: "Volgende keer vragen",
+      site: "Altijd voor {host}",
+      all: "Altijd downloaden, van elke site",
       cancel: "Annuleren",
       download: "Downloaden",
       blocked: "Een download van {host} is geblokkeerd.",
@@ -1210,6 +1219,9 @@ export const nl = {
         "Eén model per regel, bijvoorbeeld unsloth/Qwen3-4B-GGUF, of unsloth/* voor een hele organisatie. Laat leeg om elk model toe te staan.",
       modelAccessSave: "Opslaan",
       modelAccessLimited: "Beperkte toegang tot modellen",
+      rename: "Naam wijzigen",
+      renameTitle: "Naam van {username} wijzigen",
+      renameDescription: "Kies de naam waarmee dit account zich aanmeldt. Chats, bestanden en API-sleutels blijven bij het account. De gebruiker wordt afgemeld en meldt zich opnieuw aan met de nieuwe naam en het huidige wachtwoord.",
       empty: "Nog geen andere accounts",
       setupCode: "Installatiecode",
       setupFor: "Installatiecode voor {username}",
@@ -4282,8 +4294,6 @@ export const nl = {
             "Deze dataset lijkt uit afbeeldingen te bestaan, die niet kunnen worden gestreamd.",
           audioDataset:
             "Deze dataset lijkt uit audio te bestaan, die niet kan worden gestreamd.",
-          appleSilicon:
-            "Streamen wordt nog niet ondersteund op Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "alleen assistentaanvullingen",

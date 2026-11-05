@@ -125,6 +125,7 @@ from .diffusion_multigpu import (
     is_split as multigpu_is_split,
     placement_status as multigpu_placement_status,
     refine_plan_for_multigpu,
+    set_cfg_parallel_fallback,
     uninstall_cfg_parallel,
     with_load_selection,
 )
@@ -372,6 +373,23 @@ def resolve_video_model_kind(gguf_filename: Optional[str], model_kind: Optional[
     if not gguf_filename:
         return "pipeline"
     return "gguf" if gguf_filename.strip().lower().endswith(".gguf") else "single_file"
+
+
+def auto_te_fetch_failure(
+    fam: Any, scheme: Optional[str], failures: Optional[dict]
+) -> Optional[str]:
+    """Why an automatic text-encoder ``scheme`` cannot engage: its family's hosted pre-cast encoder for that scheme
+    could not be fetched (``failures`` from ``_fetch_te_prequant``). None when it was fetched or never asked for."""
+    if not scheme or not failures:
+        return None
+    for entry in getattr(fam, "te_prequant_repos", None) or ():
+        try:
+            entry_scheme, component = entry[0], entry[1]
+        except Exception:  # noqa: BLE001
+            continue
+        if str(entry_scheme).lower() == str(scheme).lower() and component in failures:
+            return str(failures[component])
+    return None
 
 
 def video_te_quant_request(
@@ -2302,6 +2320,45 @@ def _video_index_repo(base: str, *, local_files_only: bool = False) -> str:
     return mirror
 
 
+def _video_offline_pinned_snapshot(
+    base: Optional[str], fetch_repo: Optional[str] = None
+) -> Optional[tuple[str, str]]:
+    """``(repo, commit)`` of the one cached pipeline snapshot of ``base``'s mirror pair (``fetch_repo`` first) when
+    that repo has no ``refs/main``: a fetch pinned to a commit writes only ``snapshots/<commit>``, which an unpinned
+    offline lookup cannot resolve. None when a repo has ``refs/main`` (it resolves as is), when no or several
+    snapshots hold a pipeline index (ambiguous), or for a local path."""
+    from .diffusion_families import _is_local_path, mirror_repo
+
+    repos: list[str] = []
+    for repo in (fetch_repo, base, mirror_repo(base)):
+        if repo and not _is_local_path(repo) and repo.lower() not in [r.lower() for r in repos]:
+            repos.append(repo)
+    root = Path(hub_cache_dir())
+    found: list[tuple[str, str]] = []
+    for repo in repos:
+        folder = root / ("models--" + repo.replace("/", "--"))
+        if not folder.is_dir():
+            continue
+        if (folder / "refs" / "main").is_file():
+            return None
+        snaps = folder / "snapshots"
+        if not snaps.is_dir():
+            continue
+        holding = [
+            d.name
+            for d in snaps.iterdir()
+            if d.is_dir()
+            and any(
+                (d / name).is_file() for name in ("model_index.json", "modular_model_index.json")
+            )
+        ]
+        if len(holding) > 1:
+            return None
+        if holding:
+            found.append((repo, holding[0]))
+    return found[0] if len(found) == 1 else None
+
+
 def _video_offline_cache_miss(exc: BaseException) -> bool:
     return isinstance(exc, OSError) or bool(getattr(exc, "cache_miss", False))
 
@@ -3413,8 +3470,18 @@ def _read_cast_cache(
         if not cands:
             return []
         if device is not None:
-            from .video_small_host import stage_misses
-            stage_misses(cands, device, logger = logger, cancel_check = cancel_check)
+            from .video_small_host import converted_others_mib, stage_misses
+            others = converted_others_mib(
+                source,
+                cands,
+                torch_dtype = pipe_kwargs.get("torch_dtype"),
+                cache_dir = None
+                if source and os.path.isdir(str(source))
+                else pipe_kwargs.get("cache_dir"),
+                revision = revision,
+                skip = tuple(pipe_kwargs),
+            )
+            stage_misses(cands, device, logger = logger, cancel_check = cancel_check, others_mib = others)
         hits = read_all(cands, logger = logger, cancel_check = cancel_check)
         pipe_kwargs.update(hits)
         if hits:
@@ -5717,13 +5784,16 @@ class VideoBackend:
                             if hasattr(self._loading, "fetch_plan"):
                                 self._loading.fetch_plan = planned_files
             # Only a pre-cast checkpoint actually on disk earns the dense skip below.
+            te_failed: dict = {}
             te_skipped = self._fetch_te_prequant(
                 te_sources,
                 kwargs.get("hf_token"),
                 cancel_event = cancel_event,
                 local_files_only = local_files_only,
+                failures = te_failed,
             )
             kwargs["_te_prequant_skipped"] = te_skipped
+            kwargs["_te_prequant_failed"] = te_failed
             # H3 conditioner: its artifact must be on disk before the base pull may skip the dense encoder.
             h3_te_skipped = self._fetch_h3_te_quant(
                 h3_te_scheme,
@@ -5860,6 +5930,26 @@ class VideoBackend:
                 if base_fetch_choice
                 else (base_plan.revision if base_plan is not None else None)
             )
+            if (
+                kwargs["_base_fetch_revision"] is None
+                and base_local is None
+                and not local_files_only
+                and kind == "pipeline"
+                and hub_reachability.hub_unreachable()
+            ):
+                # A plan-pinned fetch writes snapshots/<commit> and no refs/main, so with no plan (the Hub is down)
+                # neither the cached check nor from_pretrained could find the snapshot by "main". Pin the one cached
+                # snapshot instead; the checks below still refuse it when it is incomplete.
+                pinned_snapshot = _video_offline_pinned_snapshot(
+                    base, kwargs.get("_base_fetch_repo")
+                )
+                if pinned_snapshot is not None:
+                    kwargs["_base_fetch_repo"], kwargs["_base_fetch_revision"] = pinned_snapshot
+                    logger.info(
+                        "video.hub_unreachable: %s has one cached snapshot (%s) and no refs/main; pinning it",
+                        pinned_snapshot[0],
+                        pinned_snapshot[1][:12],
+                    )
             from .safetensors_pread import pread_safetensors
 
             from .diffusion_families import pinned_repo_revision
@@ -8070,13 +8160,16 @@ class VideoBackend:
         *,
         cancel_event: Optional[threading.Event] = None,
         local_files_only: bool = False,
+        failures: Optional[dict] = None,
     ) -> tuple[str, ...]:
-        """Fetch pre-cast encoders first, so the base pull can skip only dense weights that are on disk."""
+        """Fetch pre-cast encoders first, so the base pull can skip only dense weights that are on disk. ``failures``
+        collects ``{component: reason}`` for an encoder none of whose files could be fetched."""
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         fetched: list[str] = []
         for component, source in sources.items():
+            last_error: Optional[BaseException] = None
             # Local path overrides are validated at injection; they never justify skipping the dense download.
             if getattr(source, "kind", None) != "repo" or not getattr(source, "filename", None):
                 continue
@@ -8110,6 +8203,7 @@ class VideoBackend:
                 except Exception as exc:  # noqa: BLE001 -- no pre-cast file means the dense encoder
                     if cancel.is_set():
                         raise
+                    last_error = exc
                     logger.warning(
                         "video.te_prequant_fetch_failed: %s/%s: %s",
                         source.location,
@@ -8123,6 +8217,11 @@ class VideoBackend:
                 got = True
                 break
             if not got:
+                if failures is not None and last_error is not None:
+                    failures[component] = (
+                        f"{source.location}: {type(last_error).__name__}: "
+                        f"{str(last_error).splitlines()[0][:120] if str(last_error) else ''}"
+                    )
                 continue
             fetched.append(component)
         return tuple(fetched)
@@ -8503,6 +8602,7 @@ class VideoBackend:
         _base_fetch_revision: Optional[str] = None,
         _checkpoint_fetch: Optional[tuple[str, Optional[str]]] = None,
         _te_prequant_skipped: tuple[str, ...] = (),
+        _te_prequant_failed: Optional[dict] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
         _video_auto_denoiser_planned: Optional[str] = None,
         _denoiser_prequant_skipped: tuple[str, ...] = (),
@@ -8595,16 +8695,28 @@ class VideoBackend:
             base = repo_id if kind == "pipeline" else base,
             speed_mode = speed_mode,
         )
+        # An automatic pick whose hosted pre-cast encoder could not be fetched loads the dense encoder: say so.
+        te_auto_unavailable = auto_te_fetch_failure(
+            fam, text_encoder_quant if text_encoder_quant_auto else None, _te_prequant_failed
+        )
         if text_encoder_quant_auto:
             from . import diffusion_precision as _precision
-            if _precision.te_quant_supported(target, text_encoder_quant):
+            if not _precision.te_quant_supported(target, text_encoder_quant):
+                text_encoder_quant = None
+            elif te_auto_unavailable:
+                logger.info(
+                    "video.text_encoder_quant: the automatic '%s' for %s is not available (hosted pre-cast encoder "
+                    "unreachable: %s); the dense bf16 text encoder loads",
+                    text_encoder_quant,
+                    fam.name,
+                    te_auto_unavailable,
+                )
+            else:
                 logger.info(
                     "video.text_encoder_quant: '%s' selected automatically for %s (unset request)",
                     text_encoder_quant,
                     fam.name,
                 )
-            else:
-                text_encoder_quant = None
         # FlashInfer only serves hosted pre-quantised denoisers. Modular H3 installs below; a conventional load installs
         # after its live-memory plan keeps the seed (a capacity-settled seed can still be dropped).
         _nvfp4_install_wanted = (
@@ -10476,6 +10588,11 @@ class VideoBackend:
                         (
                             f"{text_encoder_outcome.reason or 'engaged'} (selected automatically: the family default)"
                             if text_encoder_quant_auto and text_encoder_quant_engaged is not None
+                            else (
+                                "not engaged: the automatic hosted pre-cast encoder is unreachable "
+                                f"({te_auto_unavailable}); dense bf16 text encoder loaded"
+                            )
+                            if text_encoder_quant_auto and te_auto_unavailable
                             else text_encoder_outcome.reason
                         )
                         or (
@@ -10525,6 +10642,18 @@ class VideoBackend:
                 speed_mode = speed_mode,
                 transformer_quant = transformer_quant_engaged,
                 logger = logger,
+            )
+            # a render-time replica failure hands the denoiser to CFG batching from the next render
+            set_cfg_parallel_fallback(
+                pipe,
+                # called with the pipeline: capturing it here would keep a rolled-back load alive
+                functools.partial(
+                    install_cfg_batch,
+                    offload_policy = offload_policy,
+                    speed_mode = speed_mode,
+                    transformer_quant = transformer_quant_engaged,
+                    logger = logger,
+                ),
             )
             # Opt-in (UNSLOTH_DIFFUSION_BG_COMPILE=1): off by default so the same seed twice repeats.
             from . import diffusion_bg_compile as bg_compile
@@ -11329,6 +11458,21 @@ class VideoBackend:
                             try:
                                 residency = H3Residency(denoiser, device, logger = logger)
                                 if residency.usable:
+                                    from .video_minimax_h3_te import yield_h3_te_resident
+
+                                    _te_for_yield = getattr(pipe, "text_encoder", None)
+                                    residency.host_yield = (
+                                        lambda nbytes, _te = _te_for_yield: yield_h3_te_resident(
+                                            _te, nbytes, logger = logger
+                                        )
+                                    )
+                                    from .video_minimax_h3_te import top_up_h3_te_resident
+
+                                    residency.host_top_up = (
+                                        lambda _te = _te_for_yield: top_up_h3_te_resident(
+                                            _te, logger = logger
+                                        )
+                                    )
                                     big_w, big_h = max(
                                         fam.resolution_presets, key = lambda wh: wh[0] * wh[1]
                                     )

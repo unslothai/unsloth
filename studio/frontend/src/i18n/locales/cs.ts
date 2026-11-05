@@ -206,6 +206,9 @@ export const cs = {
         history: "Čtení vaší historie prohlížení",
         move: "Pohyb myši",
         drag: "Přetahování",
+        tabs: "Prohlížení karet",
+        readFile: "Čtení souboru",
+        editFile: "Úprava souboru",
       },
     },
     title: "Prohlížeč",
@@ -361,6 +364,8 @@ export const cs = {
     askBeforeDownloadingSetting: "Ptát se před stažením",
     askBeforeDownloadingSettingDescription:
       "Potvrzovat soubory z webů před jejich uložením.",
+    askBeforeProgramDownloadsSetting: "Ptát se před stažením programů",
+    askBeforeProgramDownloadsSettingDescription: "Potvrzovat soubory, které mohou spouštět programy, například .exe nebo .dmg, i když se ostatní stahování neptají.",
     downloadSitesSetting: "Oprávnění webů ke stahování",
     downloadSitesSettingDescription:
       "Weby, ze kterých jste zvolili vždy povolit nebo blokovat stahování.",
@@ -369,6 +374,7 @@ export const cs = {
     downloadSitesFor: "Stahování z webu {host}",
     downloadSitesRemove: "Zapomenout {host}",
     downloadSiteAllow: "Vždy povolit",
+    downloadSiteAllowAll: "Povolit i programy",
     downloadSiteBlock: "Vždy blokovat",
     downloadPrompt: {
       title: "Stáhnout tento soubor?",
@@ -376,6 +382,9 @@ export const cs = {
       dangerous:
         "Soubory tohoto typu mohou ve vašem počítači spouštět programy. Stáhněte ho, jen pokud webu {host} důvěřujete.",
       remember: "Zapamatovat si příště",
+      once: "Zeptat se příště",
+      site: "Vždy pro {host}",
+      all: "Vždy stahovat ze všech webů",
       cancel: "Zrušit",
       download: "Stáhnout",
       blocked: "Stahování z webu {host} bylo zablokováno.",
@@ -1199,6 +1208,9 @@ export const cs = {
         "Jeden model na řádek, například unsloth/Qwen3-4B-GGUF, nebo unsloth/* pro celou organizaci. Pokud chcete povolit všechny modely, ponechte pole prázdné.",
       modelAccessSave: "Uložit",
       modelAccessLimited: "Omezený přístup k modelům",
+      rename: "Přejmenovat",
+      renameTitle: "Přejmenovat {username}",
+      renameDescription: "Zvolte jméno, kterým se tento účet přihlašuje. Chaty, soubory a klíče API zůstanou u účtu. Uživatel bude odhlášen a znovu se přihlásí novým jménem a stávajícím heslem.",
       empty: "Zatím žádné další účty",
       setupCode: "Kód nastavení",
       setupFor: "Kód nastavení pro účet {username}",
@@ -4252,8 +4264,6 @@ export const cs = {
             "Tato datová sada vypadá jako obrázky, které nelze streamovat.",
           audioDataset:
             "Tato datová sada vypadá jako zvuk, který nelze streamovat.",
-          appleSilicon:
-            "Streamování zatím není na Apple Silicon (MLX) podporováno.",
         },
         options: {
           trainOnCompletions: "pouze odpovědi asistenta",

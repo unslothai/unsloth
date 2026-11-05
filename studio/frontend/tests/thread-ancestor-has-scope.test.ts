@@ -105,6 +105,8 @@ test("index.css has no descendant-argument :has() on the panels that hold the th
 const THREAD_ANCESTORS = [
   ["attribute", "data-wallpaper-workspace"],
   ["attribute", "data-chat-content-root"],
+  // Same element as the workspace on Windows non-chat pages, where the chat stays mounted.
+  ["attribute", "data-windows-wallpaper-page"],
   ["class", "aui-thread-viewport"],
 ] as const;
 
@@ -176,6 +178,8 @@ test("the thread-ancestor :has() guard catches the shapes that regressed typing"
     `${workspace}:has(> .chat-wallpaper[data-ready]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper {}`,
     `${workspace}:has([data-tour="chat-compare-view"]) > .chat-wallpaper {}`,
     `${workspace} .aui-thread-viewport:has(.aui-thread-welcome-center) {}`,
+    `html:not(.dark)[data-glass] ${workspace}:has(.aui-thread-welcome-center) .chat-wallpaper-frame {}`,
+    "[data-windows-wallpaper-page]:has([data-windows-glass-frame]) > [data-slot=\"page-wallpaper-blur\"] {}",
   ];
   for (const css of bad) assert.equal(descendantHasOnThreadAncestors(css).length, 1, css);
   const good = [

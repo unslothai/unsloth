@@ -119,6 +119,9 @@ function oaiContentToParts(raw: unknown): unknown[] {
     if (part.type === "text" && typeof part.text === "string") {
       return [{ type: "text", text: part.text }];
     }
+    if (part.type === "refusal" && typeof part.refusal === "string") {
+      return [{ type: "text", text: part.refusal }];
+    }
     if (part.type === "image_url") {
       const imageUrl =
         typeof part.image_url === "object" && part.image_url !== null
@@ -169,6 +172,7 @@ function oaiMessagesToRecords(
 
     if (role === "assistant") {
       const parts = oaiContentToParts(msg.content);
+      if (parts.length === 0) parts.push(...oaiContentToParts(msg.refusal));
       if (Array.isArray(msg.tool_calls)) {
         for (const tc of msg.tool_calls) {
           const tcObj = tc as Record<string, unknown>;

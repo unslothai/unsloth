@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2023-present Daniel Han-Chen & the Unsloth team. All rights reserved.
 
-"""CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, only RL-trainer
-generate and Studio's chat worker on NVIDIA CUDA; graphs dropped when params, LoRA, quant or RoPE
-change.
+"""CUDA-graph decode; UNSLOTH_DECODE_CUDA_GRAPHS=1 forces, =0 disables; unset, on for every
+Unsloth generate() on NVIDIA CUDA outside native Windows for the model types below.
 
 UNSLOTH_DECODE_CUDA_GRAPHS_FULL=1 also captures the attention cores: each step is then ONE graph that
 attends over a fixed span of cache rows (the next power of two >= the KV length, at least BUCKET, at
@@ -29,6 +28,8 @@ FULL = os.environ.get("UNSLOTH_DECODE_CUDA_GRAPHS_FULL", "0") == "1"
 FULL_MAX_BSZ = int(os.environ.get("UNSLOTH_DECODE_FULL_GRAPH_MAX_BSZ", "1"))
 # KV-cache rows are allocated in multiples of this with graphs on.
 BUCKET = 256
+# T4 Qwen3-0.6B: 3-6 new tokens ran 5-58% slower graphed, 8 tokens 1.25x faster.
+CAPTURE_MIN_STEPS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_CAPTURE_MIN_STEPS", "6"))
 # Captured steps (one per batch size / autocast state) kept per model.
 MAX_GRAPHS = int(os.environ.get("UNSLOTH_DECODE_GRAPH_MAX", "8"))
 # Whole-step graphs keep one graph per span too (log2(cache / BUCKET) + 1 per batch size).
@@ -39,6 +40,21 @@ __all__ = [
     "enabled",
     "rl_generation",
     "studio_generation",
+    "generate_scope",
+    "eager_scope",
+    "graphable",
+    "can_replay",
+    "short_call",
+    "kept_graph",
+    "plan_call",
+    "record_need",
+    "decode_batch",
+    "decode_batch_used",
+    "EAGER_UNFIT",
+    "generate_with_fallback",
+    "keep_only",
+    "release_if_training",
+    "EAGER_REDOS",
     "static",
     "alloc_decode_buffers",
     "decode_step",
@@ -69,6 +85,8 @@ _PROJ_NAMES = ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "
 
 def enabled():
     """Whether a decode step / prefill on this thread runs (and sizes its buffers) for graph replay."""
+    if getattr(_TLS, "eager", 0):
+        return False
     if ENABLED is not None:
         return bool(ENABLED)
     if torch.compiler.is_compiling():
@@ -123,6 +141,308 @@ class studio_generation(rl_generation):
 
     def __exit__(self, *exc):
         return super().__exit__(*exc) if self._entered else False
+
+
+class generate_scope(studio_generation):
+    """Per-thread scope of plain model.generate(): graphs default on, as in Studio."""
+
+    __slots__ = ()
+
+
+class eager_scope:
+    """Per-thread: force eager decode (the OOM redo in generate())."""
+
+    __slots__ = ()
+
+    def __enter__(self):
+        _TLS.eager = getattr(_TLS, "eager", 0) + 1
+        return self
+
+    def __exit__(self, *exc):
+        _TLS.eager -= 1
+        return False
+
+
+# Need = CALIB_WORK x (KV + prefill work) + CALIB_GRAPH_KV x KV. Calibrated on Qwen3-4B QLoRA bs16 x 2048,
+# T4: eager peaked 1.14x the estimate; graph capture OOMed at ~12 GiB free (~0.26 x KV extra).
+CALIB_WORK = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_WORK", "1.15"))
+CALIB_GRAPH_KV = float(os.environ.get("UNSLOTH_DECODE_GRAPH_CALIB_KV", "0.30"))
+# A shape's largest measured footprint x this raises (never lowers) the estimate.
+MEASURED_MARGIN = 1.05
+EAGER_UNFIT = 0
+NEEDS = "_unsloth_decode_needs"
+
+
+def _call_bytes(
+    config,
+    bsz,
+    prompt,
+    dtype,
+    increment,
+    max_len = 0,
+):
+    """(cache rows, KV bytes, prefill work bytes), sized like alloc_decode_buffers."""
+    try:
+        layers = int(config.num_hidden_layers)
+        hidden = int(config.hidden_size)
+        heads = int(config.num_attention_heads)
+        kv_heads = int(getattr(config, "num_key_value_heads", None) or heads)
+        head_dim = int(getattr(config, "head_dim", None) or hidden // heads)
+        inter = int(getattr(config, "intermediate_size", None) or 4 * hidden)
+        vocab = int(getattr(config, "vocab_size", 0) or 0)
+    except (AttributeError, TypeError, ValueError):
+        return None, None, None
+    size = torch.empty((), dtype = dtype).element_size()
+    rows = _round_up(max(prompt + increment + 1, max_len + 1), BUCKET)
+    kv = layers * rows * 2 * bsz * kv_heads * head_dim * size
+    tokens = bsz * prompt
+    work = tokens * (4 * hidden + 3 * inter + 2 * heads * head_dim) * size + bsz * vocab * 4
+    return rows, kv, work
+
+
+def _allocator(device):
+    """(allocated, reserved, peak allocated) from one stats read."""
+    try:
+        stats = torch.cuda.memory_stats_as_nested_dict(device)
+        return (
+            stats["allocated_bytes"]["all"]["current"],
+            stats["reserved_bytes"]["all"]["current"],
+            stats["allocated_bytes"]["all"]["peak"],
+        )
+    except (KeyError, TypeError):
+        return (
+            torch.cuda.memory_allocated(device),
+            torch.cuda.memory_reserved(device),
+            torch.cuda.max_memory_allocated(device),
+        )
+
+
+def _free_bytes(device):
+    free, _ = torch.cuda.mem_get_info(device)
+    allocated, reserved, _ = _allocator(device)
+    return free + reserved - allocated
+
+
+def _empty_cache():
+    torch.cuda.empty_cache()
+
+
+def _alloc_stats(device):
+    # Peak is never reset: other code may rely on max_memory_allocated.
+    allocated, _, peak = _allocator(device)
+    return allocated, peak
+
+
+def _shape_key(bsz, prompt, max_len):
+    # Includes the prompt bucket: a longer prompt has a larger prefill.
+    return (bsz, _round_up(prompt + 1, BUCKET), _round_up(max(prompt, max_len) + 1, BUCKET))
+
+
+def _kept_buffers(model, key, rows):
+    """(any buffers kept, bytes of a kept cache for `key` with >= rows); no buffer reference outlives release()."""
+    kept, reused = False, 0
+    for m in model.modules():
+        store = m.__dict__.get("_unsloth_graph_buffers")
+        if not store:
+            continue
+        kept = True
+        bufs = store.get(key)
+        if bufs is not None and bufs[0].shape[0] >= rows:
+            reused += bufs[0].numel() * bufs[0].element_size()
+    return kept, reused
+
+
+def can_replay(max_len, prompt):
+    """The first decode step is always eager, so <= 2 new tokens never replay; 0 (unknown) may."""
+    return not max_len or max_len - prompt > 2
+
+
+def kept_graph(model, bsz):
+    return any(key[0] == bsz for state in _states(model) for key in state.graphs)
+
+
+def short_call(model, max_len, prompt, bsz):
+    """Too short to win back a capture unless a graph of its batch is kept: decode eagerly."""
+    if not max_len:
+        return False
+    left = max_len - prompt - 1
+    return left < 2 or (left < CAPTURE_MIN_STEPS and not kept_graph(model, bsz))
+
+
+def graphable(model):
+    """Other model types always decode eagerly, so planning them only costs."""
+    return getattr(getattr(model, "config", None), "model_type", None) in _SUPPORTED_MODEL_TYPES
+
+
+def plan_call(
+    model,
+    input_ids,
+    dtype,
+    increment,
+    max_len = 0,
+    bsz = None,
+    eager = False,
+):
+    """("graph", token) or ("eager", None). Releases kept graphs / buffers first if the call would not
+    fit beside them; still too big runs eagerly up front rather than relying on the OOM redo. `bsz` is
+    the expanded decode batch (decode_batch()). eager: only makes room, uncounted."""
+    global EAGER_UNFIT
+    device = getattr(input_ids, "device", None)
+    if (
+        not graphable(model)
+        or not hasattr(input_ids, "shape")
+        or len(input_ids.shape) < 2
+        or getattr(device, "type", None) != "cuda"
+    ):
+        return "graph", None
+    bsz, prompt = int(bsz or input_ids.shape[0]), int(input_ids.shape[1])
+    rows, kv, work = _call_bytes(model.config, bsz, prompt, dtype, increment, max_len)
+    if rows is None:
+        return "graph", None
+    key = _shape_key(bsz, prompt, max_len)
+    measured = model.__dict__.get(NEEDS, {}).get(key)
+    # A measurement can only raise the estimate; it includes a reused cache, so reuse is subtracted once.
+    estimate = CALIB_WORK * (kv + work) + CALIB_GRAPH_KV * kv
+    full = estimate if measured is None else max(estimate, MEASURED_MARGIN * measured)
+    kept, reused = _kept_buffers(model, (bsz, dtype, device), rows)
+    if eager:
+        # Eager decode uses fresh buffers: no graph extra, no kept-cache credit.
+        full, reused = CALIB_WORK * (kv + work), 0
+    # Cap credit at this call's KV: a larger kept cache cannot also cover prefill.
+    reused = min(reused, kv)
+    need = full - reused
+    free = _free_bytes(device)
+    if free < need and (kept or any(state.graphs for state in _states(model))):
+        release(model)
+        _empty_cache()
+        free = _free_bytes(device)
+        reused = 0
+        need = full
+    if eager:
+        return "eager", None
+    if free < need:
+        EAGER_UNFIT += 1
+        return "eager", None
+    return "graph", (key, device, *_alloc_stats(device), reused)
+
+
+def record_need(model, token):
+    """Store the largest graphed footprint per shape (peak delta + reused kept cache). The peak is never
+    reset, so a call that did not raise it is skipped."""
+    if token is None:
+        return
+    key, device, start, peak_before, reused = token
+    peak = _alloc_stats(device)[1]
+    if peak > peak_before:
+        needs = model.__dict__.setdefault(NEEDS, {})
+        needs[key] = max(needs.get(key, 0), peak - start + reused)
+
+
+def decode_batch(
+    bsz,
+    kwargs,
+    generation_config = None,
+):
+    """Batch size generate() decodes at: prompts x num_beams, else x num_return_sequences; kwargs win."""
+    config = kwargs.get("generation_config", None) or generation_config
+
+    def get(name):
+        value = kwargs.get(name, None)
+        if value is None:
+            value = getattr(config, name, None)
+        try:
+            return max(1, int(value or 1))
+        except (TypeError, ValueError):
+            return 1
+
+    beams = get("num_beams")
+    return bsz * (beams if beams > 1 else get("num_return_sequences"))
+
+
+def decode_batch_used(model):
+    """Batch size of the cache the last graph-mode decode ran on, or None."""
+    for module in model.modules():
+        d = module.__dict__
+        store = d.get("_unsloth_graph_buffers")
+        paged = d.get("paged_attention")
+        if store and paged is not None:
+            for key, bufs in store.items():
+                if bufs[0] is paged:
+                    return key[0]
+    return None
+
+
+_OOM_WARNED = False
+EAGER_REDOS = 0
+HELD = "_unsloth_decode_held"
+
+
+def generate_with_fallback(model, generate, graphs, args, kwargs):
+    """On a graph-mode OOM, free graphs and redo once eagerly; caller streamer / past_key_values /
+    stopping_criteria / logits_processor may hold failed-attempt state, so those re-raise."""
+    global _OOM_WARNED, EAGER_REDOS
+    try:
+        return generate(*args, **kwargs)
+    except torch.cuda.OutOfMemoryError:
+        if (
+            not graphs
+            or not graphable(model)
+            or kwargs.get("streamer", None) is not None
+            or kwargs.get("past_key_values", None) is not None
+            or kwargs.get("stopping_criteria", None)
+            or kwargs.get("logits_processor", None)
+        ):
+            raise
+    if not _OOM_WARNED:
+        _OOM_WARNED = True
+        import warnings
+        warnings.warn(
+            "Unsloth: generate() ran out of GPU memory with CUDA-graph decode; freed the decode graphs "
+            "and buffers and decoded this call eagerly (UNSLOTH_DECODE_CUDA_GRAPHS=0 always decodes eagerly).",
+            stacklevel = 3,
+        )
+    release_for_training(model)
+    _empty_cache()
+    EAGER_REDOS += 1
+    with eager_scope():
+        return generate(*args, **kwargs)
+
+
+def keep_only(model, bsz = None):
+    """Drop decode buffers and graphs of every other batch size; this one's graphs stay valid. The batch
+    size decode actually ran at wins over `bsz`."""
+    used = decode_batch_used(model)
+    if used is not None:
+        bsz = used
+    if bsz is None:
+        return False
+    dropped = False
+    for module in model.modules():
+        store = module.__dict__.get("_unsloth_graph_buffers")
+        if store:
+            for key in [k for k in store if k[0] != bsz]:
+                bufs = store.pop(key)
+                dropped = True
+                if module.__dict__.get("paged_attention") is bufs[0]:
+                    for name in _BUFFER_NAMES:
+                        module.__dict__.pop(name, None)
+        state = module.__dict__.get("_unsloth_decode_graphs")
+        if state is not None:
+            for key in [k for k in state.graphs if k[0] != bsz]:
+                del state.graphs[key]
+                dropped = True
+            if not state.graphs:
+                state.pool = None
+    return dropped
+
+
+def release_if_training(model):
+    """Run from the training forward: training can resume without for_training() (e.g. sampling in a
+    trainer callback), so this is the only place guaranteed to free kept graphs."""
+    if model.__dict__.pop(HELD, False):
+        release_for_training(model)
+        return True
+    return False
 
 
 def static():
@@ -230,6 +550,13 @@ def alloc_decode_buffers(
         key = (bsz, dtype, device)
         bufs = store.get(key)
         if bufs is None or bufs[0].shape[0] < rows:
+            # Evict before allocating so old and new caches are never both held (peak memory).
+            if bufs is not None or len(store) >= 2:
+                store.clear()
+                for name in _BUFFER_NAMES:
+                    attn.__dict__.pop(name, None)
+                bufs = None
+                BUFFER_EPOCH += 1
             with _no_inference_tensors():
                 # Zeroed: a captured step reads every row of its bucket, and a masked row still
                 # multiplies its V by 0, which is NaN for uninitialised NaN / inf bit patterns.
@@ -246,11 +573,6 @@ def alloc_decode_buffers(
                 else:
                     temp_O = temp_QA[1][:, :, :hidden_size]
                 scores = torch.empty((bsz, n_heads, 1, rows), dtype = dtype, device = device)
-            # Graphs reading a replaced / evicted buffer are dropped (BUFFER_EPOCH); a new batch size
-            # beside the ones kept leaves their graphs valid.
-            if bufs is not None or len(store) >= 2:
-                store.clear()
-                BUFFER_EPOCH += 1
             bufs = store[key] = (paged, temp_QA, temp_KV, RH_Q, temp_O, scores)
         elif FULL:
             # A reused buffer still holds the last generation's rows: a whole-step graph reads them
@@ -303,6 +625,13 @@ def start_generation(max_len):
     MAX_LEN_HINT = max(0, int(max_len or 0))
 
 
+def worth_capturing(kv_len):
+    """CAPTURE_MIN_STEPS steps left at kv_len; unknown length (0): yes."""
+    if MAX_LEN_HINT <= 0:
+        return True
+    return MAX_LEN_HINT - kv_len + 1 >= CAPTURE_MIN_STEPS
+
+
 def end_generation():
     global MAX_LEN_HINT
     MAX_LEN_HINT = 0
@@ -324,6 +653,7 @@ class _ModelGraphs:
         self.captures = 0
         self.replays = 0
         self.eager_steps = 0
+        self.short_skips = 0
 
     def clear(self):
         self.graphs.clear()
@@ -373,6 +703,7 @@ def release(model):
     found = False
     for module in model.modules():
         d = module.__dict__
+        d.pop(HELD, None)
         state = d.get("_unsloth_decode_graphs")
         if state is not None:
             found = True
@@ -702,6 +1033,10 @@ def decode_step(
     autocast = _autocast_state()
     key = (bsz, device, autocast, torch.is_inference_mode_enabled(), span)
     step = state.graphs.get(key)
+    if step is None and not worth_capturing(kv_len):
+        state.eager_steps += 1
+        state.short_skips += 1
+        return None
     if step is None:
         if len(state.graphs) >= (MAX_GRAPHS if span is None else MAX_FULL_GRAPHS):
             state.graphs.clear()
@@ -844,5 +1179,6 @@ def stats(model):
         "replays": state.replays,
         "graphs": len(state.graphs),
         "eager_steps": state.eager_steps,
+        "short_skips": state.short_skips,
         "disabled": state.disabled,
     }

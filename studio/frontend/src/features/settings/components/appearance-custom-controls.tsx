@@ -27,6 +27,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { useChatPreferencesStore } from "@/features/chat";
 import { Switch } from "@/components/ui/switch";
+import { useSliderDraft } from "@/hooks/use-slider-draft";
 import { NumericValueInput } from "@/features/model-picker/components/numeric-value-input";
 import { type TranslationKey, useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
@@ -960,19 +961,19 @@ export function ContrastSliderRow() {
   const t = useT();
   const contrast = useAppearanceCustomStore((s) => s.customization.contrast);
   const patch = useAppearanceCustomStore((s) => s.patch);
+  const { draft, sliderProps } = useSliderDraft(contrast, (value) => patch({ contrast: value }));
   return (
     <div className="flex w-64 items-center gap-3">
       <Slider
         className="contrast-slider"
-        value={[contrast]}
+        {...sliderProps}
         min={0}
         max={100}
         step={1}
-        onValueChange={(values: number[]) => patch({ contrast: values[0] })}
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
       <NumericValueInput
-        value={contrast}
+        value={draft ?? contrast}
         min={0}
         max={100}
         step={1}

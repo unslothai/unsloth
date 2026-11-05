@@ -1104,6 +1104,9 @@ export const en = {
       modelAccessHint: "One model per line, for example unsloth/Qwen3-4B-GGUF, or unsloth/* for a whole organization. Leave empty to allow every model.",
       modelAccessSave: "Save",
       modelAccessLimited: "Limited model access",
+      rename: "Rename",
+      renameTitle: "Rename {username}",
+      renameDescription: "Choose the name this account signs in with. Their chats, files and API keys stay with the account. They are signed out and sign in again with the new name and their current password.",
       empty: "No other accounts yet",
       setupCode: "Setup code",
       setupFor: "Setup code for {username}",
@@ -3947,7 +3950,6 @@ export const en = {
             "Embedding models don't support streaming (training needs the full dataset).",
           imageDataset: "This dataset looks like images, which can't stream.",
           audioDataset: "This dataset looks like audio, which can't stream.",
-          appleSilicon: "Streaming isn't supported on Apple Silicon (MLX) yet.",
         },
         options: {
           trainOnCompletions: "assistant completions only",
