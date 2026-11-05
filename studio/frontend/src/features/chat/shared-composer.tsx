@@ -53,6 +53,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { NonModalDropdownMenu } from "@/components/ui/non-modal-dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { resolveQwenThinkingParams } from "./utils/qwen-sampling-table";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import {
   DRAFT_N_MAX_SPEC_TYPES,
@@ -195,6 +196,7 @@ import {
 } from "./compare-run-ownership";
 import {
   loadedContextForParams,
+  mergeBackendRecommendedInference,
   resolveExplicitCtxPin,
   resolveFitMaxSeqLength,
   retainedContextPin,
@@ -1964,17 +1966,48 @@ export function SharedComposer({
         }
         upgradeUnloadedActive = false;
         const store = useChatRuntimeStore.getState();
+        const paneMaxTokensCap = replayMaxTokensCap(
+          loadedContextFields(resp).loadedContextLength ??
+            (!resp.is_gguf && effectiveMaxSeqLength > 0
+              ? effectiveMaxSeqLength
+              : null),
+        );
         store.setCheckpoint(
           resp.model,
           resp.is_gguf ? (sel.ggufVariant ?? undefined) : null,
+          { maxTokensCap: paneMaxTokensCap },
+        );
+        const paneState = useChatRuntimeStore.getState();
+        const paneParams = paneState.params;
+        const paneQwenParams =
+          resp.supports_reasoning &&
+          paneState.activePresetSource === "builtin-default"
+            ? resolveQwenThinkingParams(
+                resp.model,
+                (resp.reasoning_always_on ?? false) || paneState.reasoningEnabled,
+              )
+            : null;
+        store.setParams(
           {
-            maxTokensCap: replayMaxTokensCap(
-              loadedContextFields(resp).loadedContextLength ??
-                (!resp.is_gguf && effectiveMaxSeqLength > 0
-                  ? effectiveMaxSeqLength
-                  : null),
-            ),
+            ...mergeBackendRecommendedInference({
+              current: paneParams,
+              response: resp,
+              modelId: resp.model,
+              presetSource: paneState.activePresetSource,
+              loadedContextLength: loadedContextFields(resp).loadedContextLength,
+            }),
+            ...paneQwenParams,
+            ...(targetIsGguf
+              ? {}
+              : {
+                  maxSeqLength: loadedContextForParams(
+                    loadedContextFields(resp).loadedContextLength,
+                    effectiveMaxSeqLength,
+                    paneParams.maxSeqLength,
+                  ),
+                }),
           },
+          { fromModelDefaults: true, maxTokensCap: paneMaxTokensCap },
         );
         store.setModelRequiresTrustRemoteCode(
           resp.requires_trust_remote_code ?? false,
@@ -2079,17 +2112,6 @@ export function SharedComposer({
           activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(resp),
         });
-        if (!targetIsGguf) {
-          const paneParams = useChatRuntimeStore.getState().params;
-          store.setParams({
-            ...paneParams,
-            maxSeqLength: loadedContextForParams(
-              loadedContextFields(resp).loadedContextLength,
-              effectiveMaxSeqLength,
-              paneParams.maxSeqLength,
-            ),
-          });
-        }
         loadedFromConfig = config != null;
         // /api/models/list can lag the model's actual state.
         const currentModels = useChatRuntimeStore.getState().models;
