@@ -1986,8 +1986,6 @@ def _enable_miopen_immediate(logger: Any) -> bool:
         return False
 
 
-# TF32 matmuls on the compiled tiers (cuDNN TF32 is already torch's default). A100 fp32 SDXL VAE decode: 223.8 -> 222.6 ms
-# (A/A 0.04%), LPIPS 5e-7, max 1/255 pixel; bf16 / fp16 compute is untouched. =0 keeps strict fp32 matmuls.
 TF32_ENV = "UNSLOTH_DIFFUSION_TF32"
 
 

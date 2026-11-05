@@ -451,7 +451,6 @@ def test_speed_default_dense_falls_back_to_regional_compile(monkeypatch):
     # dynamic=True, no autotune: fast cold start, resolution-robust, avoids the CUDA-graph crash
     assert pipe.compile_kwargs == {"fullgraph": True, "dynamic": True}
     assert applied["cudnn_benchmark"] is True and torch.backends.cudnn.benchmark is True
-    # TF32 matmuls ride the compiled tiers; the QKV fuse stays max-only.
     assert applied["tf32"] is True and torch.backends.cuda.matmul.allow_tf32 is True
     assert applied["fused_qkv"] is False
     assert applied["compiled_dequant"] is False
