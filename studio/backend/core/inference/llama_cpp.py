@@ -7783,8 +7783,8 @@ _PAGEABLE_OVERRIDE_NOTE = (
 # The same override where nobody chose the mode: llama.cpp's auto is none on an iGPU.
 _PAGEABLE_AUTO_OVERRIDE_NOTE = (
     " On this integrated GPU llama.cpp loads without memory mapping by default, which reads "
-    "every byte into memory up front and cannot complete at this size, so Unsloth loaded it "
-    "with memory mapping instead."
+    "every byte into memory up front and can run out of memory at this size, so Unsloth "
+    "loaded it with memory mapping instead."
 )
 # Appended when the override also reads the lookup tables lazily.
 _PAGEABLE_LAZY_TABLE_NOTE = " Its lookup tables are read from disk as needed."
@@ -7797,7 +7797,7 @@ _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "mapping it started with; load the model again to run it as you asked."
 )
 _PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE = (
-    "With its vision projector in system RAM this model was too large to load without "
+    "With its vision projector in system RAM this model could run out of memory without "
     "memory mapping, llama.cpp's default on this integrated GPU, so Unsloth loaded it with "
     "memory mapping instead. The projector then failed to start and this session is "
     "text-only, which the weights alone would have fit. The running server keeps the "

@@ -2719,6 +2719,29 @@ def _igpu_backend(
     return backend, gguf
 
 
+from core.inference.llama_server_args import resolve_effective_load_state  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "extra_args, env",
+    [(["--no-mmap"], {}), ([], {"LLAMA_ARG_NO_MMAP": "1"}), (["--load-mode=none"], {})],
+    ids = ["no-mmap", "env-no-mmap", "load-mode-none-equals"],
+)
+def test_every_unmapped_selector_on_an_igpu_ends_up_mapped(tmp_path, monkeypatch, extra_args, env):
+    """Removing the selector is not enough there: the mode the child resolves must be pageable."""
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    launched = _launch(backend, gguf, extra_args = extra_args)
+
+    assert (
+        resolve_effective_load_state(launched["cmd"], launched["env"], auto_unmapped = True)[1]
+        is False
+    )
+    assert "was set to load without memory mapping" in (backend.last_load_warning or "")
+
+
 def _modes(cmd, flag):
     return [cmd[i + 1] for i, tok in enumerate(cmd) if tok == flag and i + 1 < len(cmd)]
 
@@ -2732,6 +2755,7 @@ def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(tmp
 
     assert _modes(cmd, "--load-mode") == ["mmap"], cmd
     assert _modes(cmd, "--lazy-mode") == ["on"], cmd
+    assert resolve_effective_load_state(cmd, {}, auto_unmapped = True)[1] is False
     warning = backend.last_load_warning or ""
     assert "On this integrated GPU llama.cpp loads without memory mapping by default" in warning
     assert "lookup tables are read from disk as needed" in warning
@@ -2792,9 +2816,13 @@ def test_an_explicit_none_on_an_igpu_also_streams_the_table(tmp_path, monkeypatc
     or mmap prefetch would still read the whole table."""
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
 
-    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none"])["cmd"]
+    launched = _launch(backend, gguf, extra_args = ["--load-mode", "none"])
+    cmd = launched["cmd"]
 
     assert not _unmapped_tokens(cmd), cmd
+    # Dropping none alone hands the mode back to auto, which is none again on this device.
+    assert _modes(cmd, "--load-mode")[-1:] == ["mmap"], cmd
+    assert resolve_effective_load_state(cmd, launched["env"], auto_unmapped = True)[1] is False
     assert _modes(cmd, "--lazy-mode") == ["on"], cmd
     assert "was set to load without memory mapping" in (backend.last_load_warning or "")
 

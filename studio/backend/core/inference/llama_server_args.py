@@ -1780,6 +1780,9 @@ def force_pageable_load(
             else:
                 env[name] = new_value
             overridden.append(name)
+    # Dropping none/--no-mmap hands the mode back to auto, which is none again on these devices.
+    if overridden and auto_unmapped and load_mode_left_auto(out, env):
+        out.extend(["--load-mode", "mmap"])
     return out, overridden
 
 
