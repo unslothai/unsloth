@@ -155,8 +155,7 @@ def _decoder_itemsize(vae: Any) -> int:
 
 
 def _free_bytes(device: Any) -> Optional[int]:
-    """Device free memory plus torch's reusable cache (not CUDA graph pools), less the user's VRAM Budget reserve (raw at the default).
-    A CPU decode reads usable host RAM (MemAvailable capped by an enforcing cgroup)."""
+    """Free device memory + torch's reusable cache (not graph pools) minus the VRAM Budget reserve; CPU: cgroup-capped MemAvailable."""
     if getattr(device, "type", device) == "cpu":
         try:
             from .diffusion_memory import _available_system_memory_mib
@@ -177,8 +176,7 @@ def _free_bytes(device: Any) -> Optional[int]:
 
 
 def _is_oom(exc: BaseException) -> bool:
-    """A CUDA / backend OOM, or torch's CPU allocator refusing (``DefaultCPUAllocator: not enough memory``, raised where
-    the OS fails the allocation instead of killing the process, e.g. Windows commit limits)."""
+    """A device OOM, or the CPU allocator's ``not enough memory`` (raised e.g. on Windows commit limits)."""
     from .diffusion_batched import is_oom_error
     return is_oom_error(exc) or "not enough memory" in str(exc).lower()
 

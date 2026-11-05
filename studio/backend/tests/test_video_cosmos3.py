@@ -1080,7 +1080,6 @@ def test_cosmos3_decodes_untiled_when_it_fits_even_at_speed_off(policy, speed):
     placed = policy != "sequential"
     for family in ("cosmos3-edge", "cosmos3-nano"):
         assert gate(family, policy, "cuda", speed) is placed
-        # a CPU host gates on usable RAM the same way
         assert gate(family, policy, "cpu", speed) is placed
         assert gate(family, policy, "mps", speed) is False
     for device in ("cuda", "cpu"):
