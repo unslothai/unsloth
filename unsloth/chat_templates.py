@@ -2459,6 +2459,19 @@ def _change_system_message(template: str, type_chat_template: str, system_messag
     return new_template, message_to_use
 
 
+_OLLAMA_SYSTEM_RE = re.compile(r'^SYSTEM """.*?"""[ \t]*\n?', flags = re.DOTALL | re.MULTILINE)
+
+
+def _set_ollama_system_message(modelfile: str, system_message: str):
+    # Ollama falls back to the Modelfile's SYSTEM line when a request has no system turn, the way the
+    # Jinja template falls back to {system_message}, so both must carry the same text.
+    system_line = f'SYSTEM """{system_message}"""\n' if system_message != "" else ""
+    modelfile, n_found = _OLLAMA_SYSTEM_RE.subn(lambda _: system_line, modelfile, count = 1)
+    if n_found == 0 and system_line:
+        modelfile = modelfile.rstrip("\n") + "\n" + system_line
+    return modelfile
+
+
 def get_chat_template(
     tokenizer,
     chat_template = "chatml",
@@ -2704,7 +2717,12 @@ def get_chat_template(
             "{%- endif %}" + \
             chat_template
 
+    requested_system_message = system_message
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
+    # Only templates with a default put the caller's message into the Jinja template.
+    if ollama_modelfile and requested_system_message is not None and \
+        DEFAULT_SYSTEM_MESSAGE.get(type_chat_template) is not None:
+        ollama_modelfile = _set_ollama_system_message(ollama_modelfile, system_message)
 
     tokenizer.chat_template = chat_template
 

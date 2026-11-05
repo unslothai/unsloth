@@ -6,6 +6,7 @@ from tokenizers import Tokenizer, models
 from transformers import CLIPImageProcessor, LlavaProcessor, PreTrainedTokenizerFast
 
 from unsloth.chat_templates import apply_chat_template, get_chat_template
+from unsloth.ollama_template_mappers import OLLAMA_TEMPLATES
 from unsloth.save import create_ollama_modelfile
 
 ALPACA = """Below are some instructions that describe some tasks. Write responses that appropriately complete each request.
@@ -90,3 +91,65 @@ def test_processor_template_survives_the_gguf_unwrap():
 
     assert modelfile is not None
     assert "### Instruction:" in modelfile
+
+
+def test_system_message_passed_to_get_chat_template_reaches_the_modelfile():
+    tokenizer = get_chat_template(
+        _tokenizer("some/model"), chat_template = "alpaca", system_message = "You are a pirate."
+    )
+
+    modelfile = create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
+
+    assert modelfile.endswith('SYSTEM """You are a pirate."""')
+    assert modelfile.count("SYSTEM ") == 1
+    assert "Below are some instructions" not in modelfile
+
+
+def test_system_message_replaces_the_default_of_a_mapped_model():
+    name = "unsloth/Qwen2.5-0.5B-Instruct"
+    tokenizer = get_chat_template(
+        _tokenizer(name), chat_template = "qwen-2.5", system_message = "Be brief."
+    )
+
+    modelfile = create_ollama_modelfile(tokenizer, name, "x.gguf")
+
+    assert modelfile.endswith('SYSTEM """Be brief."""')
+    assert "You are Qwen" not in modelfile
+    assert "<|im_start|>system" in modelfile
+
+
+def test_system_message_is_added_when_the_modelfile_has_none():
+    tokenizer = get_chat_template(
+        _tokenizer("some/model"), chat_template = "llama-3.1", system_message = "Be brief."
+    )
+
+    modelfile = create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
+
+    assert modelfile.endswith('PARAMETER min_p 0.1\nSYSTEM """Be brief."""')
+    assert modelfile.count("SYSTEM ") == 1
+
+
+def test_empty_system_message_drops_the_default_from_the_modelfile():
+    tokenizer = get_chat_template(
+        _tokenizer("some/model"), chat_template = "unsloth", system_message = ""
+    )
+
+    modelfile = create_ollama_modelfile(tokenizer, "some/model", "x.gguf")
+
+    assert "SYSTEM " not in modelfile
+    assert ">>> Assistant: {{ .Response }}" in modelfile
+
+
+def test_default_system_message_leaves_the_stock_modelfile():
+    tokenizer = get_chat_template(_tokenizer("some/model"), chat_template = "alpaca")
+
+    assert tokenizer._ollama_modelfile == OLLAMA_TEMPLATES["alpaca"]
+
+
+def test_system_message_without_a_template_default_leaves_the_modelfile():
+    # chatml has no default, so get_chat_template only warns and the Jinja template ignores it.
+    tokenizer = get_chat_template(
+        _tokenizer("some/model"), chat_template = "chatml", system_message = "Be brief."
+    )
+
+    assert tokenizer._ollama_modelfile == OLLAMA_TEMPLATES["chatml"]
