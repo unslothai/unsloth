@@ -803,6 +803,74 @@ def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
         return None
 
 
+# A per-module streamed Gemma 4 encode needs at most about this much free (two of its largest module plus a margin).
+LEND_STREAM_FLOOR_MIB = 6144
+
+
+def _encode_room_mib(client: Any) -> Optional[int]:
+    """The room the worker's ``_encode_device`` would see now (free card memory minus the user reserve, capped by the
+    load budget minus what this process holds); None when unreadable."""
+    device = str(client.config.get("device") or "")
+    if not device.startswith("cuda"):
+        return None
+    try:
+        import torch
+
+        from .video_ltx25_te_worker import WORKER_CONTEXT_MIB
+
+        dev = torch.device(device)
+        free, total = torch.cuda.mem_get_info(dev)
+        share = float(client.config.get("vram_reserve_share") or 0.0)
+        room = (int(free) - int(int(total) * share)) >> 20
+        budget = client.config.get("budget_mib")
+        if budget is not None:
+            reserved = int(torch.cuda.memory_reserved(dev)) >> 20
+            room = min(room, int(budget) - reserved - WORKER_CONTEXT_MIB)
+        return room
+    except Exception:  # noqa: BLE001 -- unreadable: lend nothing
+        return None
+
+
+def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..., None]]:
+    """Stream enough resident denoiser blocks again (``video_stream_residency``) for a non-resident encoder to encode on
+    the card: the whole encoder when lending makes it fit, else the streamed-encode floor. Returns the restore that
+    pins them back after the encode, or None when nothing was lent. Placement only: the same weights run either way."""
+    config = getattr(client, "config", None) or {}
+    if not config or config.get("resident"):
+        return None
+    try:
+        import torch
+
+        from .diffusion_memory import release_resident_groups
+        from .video_ltx25_te_worker import ENCODE_MARGIN_MIB
+        from .video_stream_residency import resident_mib
+
+        held = resident_mib(getattr(pipe, "transformer", None))
+        if held <= 0:
+            return None
+        torch.cuda.empty_cache()
+        room = _encode_room_mib(client)
+        if room is None:
+            return None
+        weights = int((getattr(client, "info", None) or {}).get("weights_mib") or 0)
+        whole = weights + ENCODE_MARGIN_MIB if weights > 0 else None
+        if whole is not None and room < whole <= room + held:
+            target = whole
+        elif room < LEND_STREAM_FLOOR_MIB:
+            target = LEND_STREAM_FLOOR_MIB
+        else:
+            return None
+        restore = release_resident_groups(
+            pipe, target - room, logger, denoisers_only = True, reason = "the prompt encode"
+        )
+        if restore is not None:
+            torch.cuda.empty_cache()
+        return restore
+    except Exception as exc:  # noqa: BLE001 -- the encode still runs, maybe on the CPU
+        logger.warning("video.ltx25_te: lending resident blocks skipped (%s)", exc)
+        return None
+
+
 class TextEncoderWorkerError(RuntimeError):
     def __init__(
         self,
@@ -1011,6 +1079,11 @@ class Ltx25TextEncoderClient:
         logger.info("video.ltx25_te: encoder worker stopped")
 
     # encoding
+    def cached(self, prompts: list[str], max_sequence_length: int) -> bool:
+        key = (tuple(prompts), int(max_sequence_length))
+        with self._lock:
+            return any(cached_key == key for cached_key, _ in self._cache)
+
     def encode(
         self,
         prompts: list[str],
@@ -1082,8 +1155,19 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
         def _one(texts: list[str]) -> tuple[Any, Any]:
-            # The client's own cached tensors (read only): every op below returns a new tensor.
-            cached, mask = client.encode(texts, max_sequence_length, copy = False)
+            # A cache miss runs the worker: resident DiT blocks step aside for it and are pinned back after the encode.
+            is_cached = getattr(client, "cached", None)
+            restore = (
+                lend_resident_dit_for_encode(pipe, client)
+                if callable(is_cached) and not is_cached(texts, max_sequence_length)
+                else None
+            )
+            try:
+                # The client's own cached tensors (read only): every op below returns a new tensor.
+                cached, mask = client.encode(texts, max_sequence_length, copy = False)
+            finally:
+                if restore is not None:
+                    restore()
             batch = cached.shape[0]
             embeds = cached.to(device = device, dtype = dtype)
             mask = mask.to(device = device)

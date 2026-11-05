@@ -2660,3 +2660,149 @@ def test_one_video_per_prompt_skips_the_repeat_copy_unless_it_would_alias_the_ca
     repeats.clear()
     pe = encode(_CachedClient(torch.float32), 2)
     assert pe.shape == (2, 4, 6) and [r for r in repeats if len(r) == 3] == [(1, 4, 6)]
+
+
+class _LendClient(_FakeClient):
+    def __init__(
+        self,
+        *,
+        resident = False,
+        weights_mib = 22811,
+        budget_mib = None,
+        hit = False,
+    ):
+        super().__init__()
+        self.config = {"device": "cuda:0", "resident": resident, "budget_mib": budget_mib}
+        self.info = {"weights_mib": weights_mib}
+        self.hit = hit
+        self.events = []
+
+    def cached(self, texts, max_len):
+        return self.hit
+
+    def encode(
+        self,
+        texts,
+        max_len,
+        cancel = None,
+        copy = True,
+    ):
+        self.events.append("encode")
+        return super().encode(texts, max_len, cancel = cancel, copy = copy)
+
+
+def _lend_env(
+    monkeypatch,
+    *,
+    free_mib,
+    held_mib,
+    reserved_mib = 0,
+    total_mib = 23034,
+):
+    import torch
+
+    from core.inference import diffusion_memory as dm
+    from core.inference import video_stream_residency as vr
+
+    released = []
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda dev: (free_mib << 20, total_mib << 20))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda dev: reserved_mib << 20)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(vr, "resident_mib", lambda module: held_mib)
+
+    def release(
+        pipe,
+        need_mib,
+        logger = None,
+        denoisers_only = False,
+        reason = "",
+        device = None,
+    ):
+        assert denoisers_only and reason == "the prompt encode"
+        released.append(need_mib)
+
+        def restore(strict = False):
+            released.append("restored")
+
+        return restore
+
+    monkeypatch.setattr(dm, "release_resident_groups", release)
+    return released
+
+
+def test_lend_streams_resident_blocks_only_when_the_encoder_then_fits_or_room_is_below_the_floor(
+    monkeypatch,
+):
+    from core.inference.video_ltx25_te_worker import ENCODE_MARGIN_MIB
+
+    pipe = SimpleNamespace(transformer = object())
+    whole = 22811 + ENCODE_MARGIN_MIB
+    # lending 6 GiB of the 20 GiB resident makes the whole encoder fit: stream exactly the shortfall
+    released = _lend_env(monkeypatch, free_mib = whole - 6000, held_mib = 20000)
+    restore = v25.lend_resident_dit_for_encode(pipe, _LendClient())
+    assert released == [6000] and callable(restore)
+    restore()
+    assert released == [6000, "restored"]
+    # the whole encoder fits already: nothing lent
+    released = _lend_env(monkeypatch, free_mib = whole + 1, held_mib = 20000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
+    # cannot fit whole even with every resident block, but room clears the streamed-encode floor: nothing lent
+    released = _lend_env(monkeypatch, free_mib = 9000, held_mib = 4000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
+    # below the streamed-encode floor: lend up to the floor
+    released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is not None
+    assert released == [v25.LEND_STREAM_FLOOR_MIB - 5000]
+    # the load budget minus what this process reserves caps the room, as in the worker
+    released = _lend_env(monkeypatch, free_mib = whole + 5000, held_mib = 20000, reserved_mib = 10000)
+    client = _LendClient(budget_mib = whole + 10000)
+    from core.inference.video_ltx25_te_worker import WORKER_CONTEXT_MIB
+
+    assert v25.lend_resident_dit_for_encode(pipe, client) is not None
+    assert released == [WORKER_CONTEXT_MIB]
+    # nothing resident, a resident encoder, or a non-CUDA device: nothing lent
+    released = _lend_env(monkeypatch, free_mib = 100, held_mib = 0)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None
+    released = _lend_env(monkeypatch, free_mib = 100, held_mib = 20000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient(resident = True)) is None
+    cpu = _LendClient()
+    cpu.config["device"] = "cpu"
+    assert v25.lend_resident_dit_for_encode(pipe, cpu) is None and released == []
+
+
+def test_remote_encode_prompt_pins_lent_blocks_back_after_the_encode_and_skips_cache_hits(
+    monkeypatch,
+):
+    import torch
+
+    events = []
+
+    def lend(pipe, client):
+        events.append("lend")
+        return lambda strict = False: events.append("restore")
+
+    monkeypatch.setattr(v25, "lend_resident_dit_for_encode", lend)
+    pipe = SimpleNamespace(
+        _execution_device = torch.device("cpu"), transformer = SimpleNamespace(dtype = torch.bfloat16)
+    )
+    client = _LendClient()
+    client.events = events
+    v25.install_remote_encode_prompt(pipe, client)
+    pipe.encode_prompt(prompt = "a fox", do_classifier_free_guidance = False, max_sequence_length = 4)
+    assert events == ["lend", "encode", "restore"]
+    events.clear()
+    client.hit = True
+    pipe.encode_prompt(prompt = "a fox", do_classifier_free_guidance = False, max_sequence_length = 4)
+    assert events == ["encode"]
+
+    # a failed encode still pins the lent blocks back
+    def boom(*a, **k):
+        events.append("encode")
+        raise RuntimeError("worker died")
+
+    events.clear()
+    client.hit = False
+    client.encode = boom
+    with pytest.raises(RuntimeError):
+        pipe.encode_prompt(prompt = "a fox", do_classifier_free_guidance = False, max_sequence_length = 4)
+    assert events == ["lend", "encode", "restore"]
