@@ -383,7 +383,6 @@ def _shared_lora_backward(
 ):
     # LoRA grads of projections sharing X and S: X is read once for all d_A and A @ X.t(), and dX starts
     # as S * dB @ A.t() for the base GEMMs to accumulate onto. Each d_A.t() is a row block of one buffer.
-    # need_A / need_B: per projection (default all); a frozen factor's gradient is None.
     need_A = (True,) * len(As) if need_A is None else need_A
     need_B = (True,) * len(Bs) if need_B is None else need_B
     A_rows = torch.cat([A.t() for A in As], 0)
