@@ -271,7 +271,7 @@ import {
   prefersReducedMotion,
 } from "@/features/settings/stores/appearance-custom-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
-import { useVoiceSettingsStore } from "@/features/settings";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   isSurfaceBackgrounded,
   useShortcutLabel,
