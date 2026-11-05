@@ -3076,7 +3076,7 @@ export const vi = {
       configurationDocs: "tài liệu",
       configurationFlagsSuffix: "để biết các cờ.",
       modelNote:
-        "Codex yêu cầu mô hình GGUF do llama-server phục vụ. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
+        "Claude Code và Codex yêu cầu mô hình GGUF do llama-server phục vụ, hoặc mô hình MLX. Các tác tử khác cũng có thể dùng mô hình chạy bằng transformers; bỏ --model để dùng mô hình đã nạp sẵn trong Unsloth.",
       subagent: {
         title: "Dùng mô hình cục bộ làm tác tử phụ",
         description:

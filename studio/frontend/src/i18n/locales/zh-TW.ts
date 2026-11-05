@@ -2932,7 +2932,7 @@ export const zhTW = {
       configurationDocs: "說明文件",
       configurationFlagsSuffix: "以了解可用旗標。",
       modelNote:
-        "Codex 需要由 llama-server 提供的 GGUF 模型。其他代理程式也可以使用以 Transformers 為後端的模型；移除 --model 即可使用 Unsloth 中已載入的模型。",
+        "Claude Code 和 Codex 需要由 llama-server 提供的 GGUF 模型，或 MLX 模型。其他代理程式也可以使用以 Transformers 為後端的模型；移除 --model 即可使用 Unsloth 中已載入的模型。",
       subagent: {
         title: "將本機模型用作子代理程式",
         description:

@@ -3062,7 +3062,7 @@ export const fa = {
       configurationDocs: "مستندات",
       configurationFlagsSuffix: "مراجعه کنید.",
       modelNote:
-        "Codex به یک مدل GGUF نیاز دارد که با llama-server ارائه شود. عامل‌های دیگر می‌توانند از مدل‌های مبتنی بر transformers نیز استفاده کنند؛ برای استفاده از مدلی که از قبل در Unsloth بارگذاری شده است، --model را حذف کنید.",
+        "Claude Code و Codex به یک مدل GGUF که با llama-server ارائه شود یا یک مدل MLX نیاز دارند. عامل‌های دیگر می‌توانند از مدل‌های مبتنی بر transformers نیز استفاده کنند؛ برای استفاده از مدلی که از قبل در Unsloth بارگذاری شده است، --model را حذف کنید.",
       subagent: {
         title: "استفاده از مدل محلی به‌عنوان زیرعامل",
         description:

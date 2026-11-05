@@ -3078,7 +3078,7 @@ export const id = {
       configurationDocs: "dokumentasi",
       configurationFlagsSuffix: "untuk flag.",
       modelNote:
-        "Codex memerlukan model GGUF yang dilayani oleh llama-server. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
+        "Claude Code dan Codex memerlukan model GGUF yang dilayani oleh llama-server, atau model MLX. Agen lain juga dapat menggunakan model berbasis transformer; hapus --model untuk menggunakan model yang sudah dimuat di Unsloth.",
       subagent: {
         title: "Gunakan model lokal sebagai subagen",
         description:

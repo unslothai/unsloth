@@ -2850,7 +2850,7 @@ export const hi = {
       configurationDocs: "दस्तावेज़",
       configurationFlagsSuffix: "देखें।",
       modelNote:
-        "Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
+        "Claude Code और Codex को llama-server द्वारा सर्व किया गया GGUF मॉडल या MLX मॉडल चाहिए। दूसरे एजेंट Transformers-आधारित मॉडल भी उपयोग कर सकते हैं; Unsloth में पहले से लोड किए गए मॉडल का उपयोग करने के लिए --model हटा दें।",
       subagent: {
         title: "लोकल मॉडल को सबएजेंट के रूप में उपयोग करें",
         description:

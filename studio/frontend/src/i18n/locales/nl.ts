@@ -3116,7 +3116,7 @@ export const nl = {
       configurationDocs: "documentatie",
       configurationFlagsSuffix: "voor flags.",
       modelNote:
-        "Codex vereist een GGUF-model dat door llama-server wordt aangeboden. Andere agents kunnen ook modellen op basis van Transformers gebruiken; verwijder --model om het model te gebruiken dat al in Unsloth is geladen.",
+        "Claude Code en Codex vereisen een GGUF-model dat door llama-server wordt aangeboden, of een MLX-model. Andere agents kunnen ook modellen op basis van Transformers gebruiken; verwijder --model om het model te gebruiken dat al in Unsloth is geladen.",
       subagent: {
         title: "Een lokaal model als subagent gebruiken",
         description:

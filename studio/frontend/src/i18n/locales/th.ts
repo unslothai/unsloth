@@ -2952,7 +2952,7 @@ export const th = {
       configurationDocs: "เอกสาร",
       configurationFlagsSuffix: "สำหรับแฟล็ก",
       modelNote:
-        "Codex ต้องใช้โมเดล GGUF ที่ให้บริการโดย llama-server เอเจนต์อื่นใช้โมเดลที่ทำงานด้วย transformers ได้ด้วย นำ --model ออกเพื่อใช้โมเดลที่โหลดอยู่ใน Unsloth แล้ว",
+        "Claude Code และ Codex ต้องใช้โมเดล GGUF ที่ให้บริการโดย llama-server หรือโมเดล MLX เอเจนต์อื่นใช้โมเดลที่ทำงานด้วย transformers ได้ด้วย นำ --model ออกเพื่อใช้โมเดลที่โหลดอยู่ใน Unsloth แล้ว",
       subagent: {
         title: "ใช้โมเดลภายในเครื่องเป็นเอเจนต์ย่อย",
         description:

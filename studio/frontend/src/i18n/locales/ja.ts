@@ -2826,7 +2826,7 @@ export const ja = {
       configurationDocs: "ドキュメント",
       configurationFlagsSuffix: "を参照してください。",
       modelNote:
-        "Codex には llama-server が提供する GGUF モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
+        "Claude Code と Codex には、llama-server が提供する GGUF モデルか MLX モデルが必要です。他のエージェントは transformers ベースのモデルも利用できます。Unsloth に読み込み済みのモデルを使うには --model を外してください。",
       subagent: {
         title: "ローカルモデルをサブエージェントとして使う",
         description:

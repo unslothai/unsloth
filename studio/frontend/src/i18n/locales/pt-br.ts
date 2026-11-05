@@ -2857,7 +2857,7 @@ export const ptBR = {
       configurationDocs: "documentação",
       configurationFlagsSuffix: "para ver as flags.",
       modelNote:
-        "O Codex exige um modelo GGUF servido pelo llama-server. Outros agentes também podem usar modelos baseados em transformers; remova --model para usar o modelo já carregado no Unsloth.",
+        "O Claude Code e o Codex exigem um modelo GGUF servido pelo llama-server ou um modelo MLX. Outros agentes também podem usar modelos baseados em transformers; remova --model para usar o modelo já carregado no Unsloth.",
       subagent: {
         title: "Usar um modelo local como subagente",
         description:

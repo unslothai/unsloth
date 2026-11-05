@@ -3119,7 +3119,7 @@ export const es419 = {
       configurationDocs: "documentación",
       configurationFlagsSuffix: "para ver las opciones.",
       modelNote:
-        "Codex requiere un modelo GGUF servido por llama-server. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo que ya está cargado en Unsloth.",
+        "Claude Code y Codex requieren un modelo GGUF servido por llama-server o un modelo MLX. Otros agentes también pueden usar modelos basados en transformers; quita --model para usar el modelo que ya está cargado en Unsloth.",
       subagent: {
         title: "Usar un modelo local como subagente",
         description:

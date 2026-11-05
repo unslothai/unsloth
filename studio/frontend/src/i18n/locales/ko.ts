@@ -2838,7 +2838,7 @@ export const ko = {
       configurationDocs: "문서를",
       configurationFlagsSuffix: "참고하세요.",
       modelNote:
-        "Codex에는 llama-server가 제공하는 GGUF 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
+        "Claude Code와 Codex에는 llama-server가 제공하는 GGUF 모델 또는 MLX 모델이 필요합니다. 다른 에이전트는 transformers 기반 모델도 사용할 수 있습니다. Unsloth에 이미 로드된 모델을 사용하려면 --model을 제거하세요.",
       subagent: {
         title: "로컬 모델을 서브에이전트로 사용",
         description:

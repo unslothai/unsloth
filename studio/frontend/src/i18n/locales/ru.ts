@@ -2854,7 +2854,7 @@ export const ru = {
       configurationDocs: "документации",
       configurationFlagsSuffix: "о флагах.",
       modelNote:
-        "Codex требует модель GGUF, обслуживаемую llama-server. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
+        "Claude Code и Codex требуют модель GGUF, обслуживаемую llama-server, или модель MLX. Другие агенты могут работать и с моделями на основе transformers; уберите --model, чтобы использовать модель, уже загруженную в Unsloth.",
       subagent: {
         title: "Использовать локальную модель в качестве субагента",
         description:
