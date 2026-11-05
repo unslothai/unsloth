@@ -25,13 +25,10 @@ FUNCS = (
 
 ASSIGNS = ("_OFFLOADING_CHECKPOINT_SHIMS", "_GC_KWARGS_WARNED")
 
-_ACTIVATION_CHECKPOINTING_METHOD = getattr(
-    PreTrainedModel, "activation_checkpointing_enable", None
-)
+_ACTIVATION_CHECKPOINTING_METHOD = getattr(PreTrainedModel, "activation_checkpointing_enable", None)
 
 _CHECKPOINTING_METHOD = (
-    _ACTIVATION_CHECKPOINTING_METHOD
-    or PreTrainedModel.gradient_checkpointing_enable
+    _ACTIVATION_CHECKPOINTING_METHOD or PreTrainedModel.gradient_checkpointing_enable
 )
 
 NATIVE = "offload" in inspect.signature(_CHECKPOINTING_METHOD).parameters
@@ -53,9 +50,7 @@ def _load():
 @pytest.fixture
 def patched():
     original_gradient = PreTrainedModel.__dict__["gradient_checkpointing_enable"]
-    original_activation = getattr(
-        PreTrainedModel, "activation_checkpointing_enable", None
-    )
+    original_activation = getattr(PreTrainedModel, "activation_checkpointing_enable", None)
     previous_checkpoint = hf_modeling_utils.checkpoint
 
     patch = _load().get("patch_gradient_checkpointing_enable_kwargs")
@@ -234,6 +229,7 @@ def test_plain_enable_unchanged(patched):
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": False})
     assert _flags(model) == [True, True, True, True]
 
+
 @pytest.mark.skipif(
     getattr(PreTrainedModel, "activation_checkpointing_enable", None) is None,
     reason = "requires activation_checkpointing_enable API",
@@ -247,6 +243,7 @@ def test_activation_checkpointing_enable_direct_api(patched):
     )
 
     assert _flags(model) == [True, False, True, False]
+
 
 @pytest.mark.parametrize("via_dict", [False, True])
 def test_every_n_layers_zero_is_rejected(patched, via_dict):

@@ -767,18 +767,15 @@ def test_trainer_leaves_the_callers_arguments_alone(checkpoint, tmp_path, monkey
     batch = next(iter(trainer.get_train_dataloader()))
     assert {"marker_pos", "marker_mask", "target"} <= set(batch)
 
-def test_trainer_handles_activation_checkpointing_without_mutating_caller(
-    checkpoint, tmp_path
-):
+
+def test_trainer_handles_activation_checkpointing_without_mutating_caller(checkpoint, tmp_path):
     if "activation_checkpointing" not in TrainingArguments.__dataclass_fields__:
         pytest.skip("requires activation_checkpointing TrainingArguments API")
 
     model, tokenizer = FastDecisionModel.from_pretrained(
         str(checkpoint), use_gradient_checkpointing = False
     )
-    items, _ = FastDecisionModel.build_dataset(
-        [_row(i) for i in range(4)], tokenizer, model
-    )
+    items, _ = FastDecisionModel.build_dataset([_row(i) for i in range(4)], tokenizer, model)
 
     args = _args(
         tmp_path,
