@@ -121,3 +121,21 @@ test("stop-and-send submits an attached clip with no new text", () => {
     false,
   );
 });
+
+// The gate keys on hasAudioInput alone, so every way a model reaches the store must carry it:
+// the models list row (GGUF, safetensors, MLX alike), the load response, and the status adoption.
+test("the gate is family-agnostic: no model names in the routing", () => {
+  const gate = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
+  const routing = gate.slice(gate.indexOf("export function micRecordsForModel"));
+  assert.doesNotMatch(routing.slice(0, routing.indexOf("\n}\n")), /lfm|gemma|qwen|omni|audio_type/i);
+});
+
+test("every route into the chat store carries has_audio_input", () => {
+  const runtime = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
+  const row = runtime.slice(runtime.indexOf("function toChatModelRow"));
+  assert.match(row.slice(0, 900), /hasAudioInput: Boolean\(model\.has_audio_input\)/);
+  const sync = runtime.slice(runtime.indexOf("export function syncModelCapabilities"));
+  assert.match(sync.slice(0, 2000), /hasAudioInput: Boolean\(resp\.has_audio_input\)/);
+  const status = readSrc("features/chat/lib/apply-inference-status-to-store.ts");
+  assert.match(status, /hasAudioInput: status\.has_audio_input \?\? false/);
+});
