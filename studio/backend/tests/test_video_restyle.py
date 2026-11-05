@@ -338,7 +338,8 @@ def test_body_middleware_streams_the_restyle_upload():
 
     path = "/api/inference/video/restyle"
     assert path in main._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
-    for p in (path, path + "/"):
+    assert path + "/preview" in main._BODY_UPLOAD_PASSTHROUGH_EXACT_PATHS
+    for p in (path, path + "/", path + "/preview"):
         assert main._get_upload_passthrough_request_max_bytes(p) == upload_request_limit_bytes(
             VIDEO_RESTYLE_UPLOAD_MAX_BYTES
         )
