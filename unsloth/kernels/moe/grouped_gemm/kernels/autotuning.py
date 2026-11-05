@@ -46,16 +46,6 @@ def convert_args_to_list(args):
     return [val_to_list(arg) for arg in args]
 
 
-def _triton_supports_tma():
-    """Check if current Triton version supports TMA API."""
-    import triton.language as tl
-
-    # Both the old experimental and the new stable API names.
-    return hasattr(tl, "make_tensor_descriptor") or hasattr(
-        tl, "_experimental_make_tensor_descriptor"
-    )
-
-
 # TMA disabled for now: incompatible with permute_x/permute_y in the MoE grouped GEMM passes.
 _TRITON_HAS_TMA = False
 

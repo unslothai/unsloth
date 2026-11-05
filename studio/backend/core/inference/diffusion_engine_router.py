@@ -395,10 +395,6 @@ def mlx_mode() -> str:
     return MLX_OFF
 
 
-def _mlx_requested() -> bool:
-    return mlx_mode() != MLX_OFF
-
-
 def _mlx_host_refusal() -> Optional[str]:
     if sys.platform != "darwin":
         return "the MLX engine runs on macOS only"

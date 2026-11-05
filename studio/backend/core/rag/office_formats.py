@@ -406,10 +406,6 @@ def _apply_section(value: float, plan) -> str | None:
     return prefix + text + percent + suffix
 
 
-def _format_section(value: float, tokens: list[tuple[str, str]]) -> str | None:
-    return _apply_section(value, _section_plan(tokens))
-
-
 def _number_plan(code: str):
     """Each section of a numeric format read once (with whether it has tokens), or None if unsupported."""
     tokens = _format_tokens(code) if code else None
@@ -433,11 +429,6 @@ def _apply_number(value: float, plan) -> str | None:
         return _apply_section(0.0, plan[2][1])
     text = _apply_section(abs(value), plan[0][1])
     return None if text is None else ("-" + text if value < 0 else text)
-
-
-def _format_number(value: float, code: str) -> str | None:
-    """``value`` as a numeric format displays it, or None for formats left as stored."""
-    return _apply_number(value, _number_plan(code))
 
 
 _NUMBER_ERRORS = (ArithmeticError, ValueError, decimal.InvalidOperation)
