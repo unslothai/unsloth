@@ -81,7 +81,14 @@ def _record_stages(monkeypatch):
     return stages
 
 
-def _start(scope, tmp_path, name, text, slots = None, model_name = None):
+def _start(
+    scope,
+    tmp_path,
+    name,
+    text,
+    slots = None,
+    model_name = None,
+):
     return ingestion.start_ingestion(
         scope,
         "K1",
@@ -192,7 +199,12 @@ def test_documents_under_different_models_are_not_batched_together(
     models = []
     real_encode = embeddings.encode
 
-    def note_model(texts, *, model_name = None, normalize = True):
+    def note_model(
+        texts,
+        *,
+        model_name = None,
+        normalize = True,
+    ):
         models.append(model_name)
         return real_encode(texts, model_name = model_name, normalize = normalize)
 
@@ -262,9 +274,7 @@ def test_a_waiting_document_reports_its_embedding_progress(
     for _, job_id in jobs:
         written = [(stage, progress) for job, stage, progress in stages if job == job_id]
         assert "embedding" in [stage for stage, _ in written]
-        assert [progress for _, progress in written] == sorted(
-            progress for _, progress in written
-        )
+        assert [progress for _, progress in written] == sorted(progress for _, progress in written)
 
 
 def test_a_backend_swap_inside_a_shared_batch_re_embeds_that_document(
