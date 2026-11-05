@@ -47,8 +47,7 @@ FLUX3_COMPONENT_FOLDERS = {
 FLUX3_PROMPT_UPSAMPLER_STEP = "prompt_upsampler"
 
 
-# The text step of both block graphs and its per-prompt helper (diffusers ``Flux3TextEncoderStep``), with the arguments
-# the facade's ``encode_prompt`` passes through. A build whose helper takes other arguments keeps its own text step.
+# diffusers ``Flux3TextEncoderStep`` helper args; a build whose helper takes others keeps its own text step.
 FLUX3_TEXT_STEP = "text_encoder"
 _TEXT_HELPER = "_get_qwen3_vl_prompt_embeds"
 _TEXT_HELPER_ARGS = frozenset(
@@ -83,9 +82,8 @@ def _text_step(mp: Any) -> tuple[Any, Any]:
 
 
 def _bridge_text_step(pipe: Any, mp: Any) -> bool:
-    """Route the text step's per-prompt encode through ``pipe.encode_prompt``, so whatever Studio wraps around it (the
-    cross-render prompt cache, the dead-tail probe) applies to FLUX.3 as to a classic pipeline. Only for this pipe's own
-    encoder and tokenizer; anything else runs the step's helper unchanged."""
+    """Route the text step's per-prompt encode through ``pipe.encode_prompt`` (prompt cache, dead-tail probe).
+    Only for this pipe's own encoder and tokenizer; a foreign encoder runs the step's helper unchanged."""
     import inspect
     import weakref
 
@@ -377,9 +375,7 @@ class _Flux3KleinPipelineMixin:
         pad_multiple: Optional[int] = None,
         hidden_states_layers: Any = None,
     ):
-        """One prompt's FLUX.3 text embeddings, from diffusers' own text step helper (chat template, window rounded up
-        to the pad multiple, the selected hidden states stacked). The blocks' text step calls this per prompt (see
-        ``_bridge_text_step``); ``None`` takes the step's own pad multiple and layer selection."""
+        """One prompt's FLUX.3 text embeddings via diffusers' text step helper; ``None`` takes the step's defaults."""
         import torch
 
         step, helper = _text_step(self.modular_pipeline())

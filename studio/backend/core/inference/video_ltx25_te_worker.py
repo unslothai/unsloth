@@ -575,11 +575,7 @@ def _tensor_tables(module: Any) -> tuple:
 
 def _stream_parts(model: Any) -> Optional[tuple[list, list, list]]:
     """``(resident, containers, layers)`` for a layer-streamed encode, or None when the encoder cannot stream.
-
-    ``layers``: the decoder layers with weights, onloaded one at a time. ``resident``: every other module the text
-    forward runs (embeddings, final norm, rotary tables, the head stub), onloaded for the whole encode.
-    ``containers``: the modules on the path to the layer stack, whose own tensors (not their children's) are onloaded
-    too. A module that overrides ``_apply`` may keep tensors outside its tables, so it declines streaming."""
+    A module overriding ``_apply`` may keep tensors outside its tables, so it declines streaming."""
     import torch
 
     from core.inference.diffusion_te_truncate import is_passthrough
@@ -628,8 +624,7 @@ def _tensors_mib(modules: list, recurse: bool = True) -> int:
 
 
 def _stream_need_mib(parts: tuple[list, list, list]) -> int:
-    """Card room a layer-streamed encode needs: the resident modules, two layers (the running one and the next one's
-    upload, as the allocator may still hold the last), and the same encode margin as a whole onload."""
+    """Resident modules + two layers (allocator may still hold the last) + the encode margin."""
     resident, containers, layers = parts
     biggest = max(_tensors_mib([layer]) for layer in layers)
     return (
@@ -645,9 +640,7 @@ def _encode_plan(
     model: Any,
     server_reserved_mib: Optional[int] = None,
 ) -> tuple[str, Optional[tuple[list, list, list]]]:
-    """``(device, parts)``: ``_encode_device``'s choice, except that an encoder too big to onload whole streams its
-    decoder layers through the card (``parts`` set) when the resident modules and two layers fit, instead of running
-    the whole encode on the CPU."""
+    """``(device, parts)``: an encoder too big to onload whole streams its layers (``parts`` set) instead of CPU."""
     device = _encode_device(config, model, server_reserved_mib)
     configured = str(config["device"])
     if device != "cpu" or configured.split(":", 1)[0] not in ("cuda", "xpu"):

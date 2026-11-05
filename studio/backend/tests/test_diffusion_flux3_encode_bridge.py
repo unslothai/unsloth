@@ -116,7 +116,6 @@ def test_the_text_step_encodes_through_encode_prompt(face, monkeypatch):
             "hidden_states_layers": LAYERS,
         }
     ]
-    # Same helper, same arguments, same tensor as the step running on its own.
     assert _TextStep.calls == [(face.text_encoder, "a fox", 512, 80, LAYERS)]
     assert torch.equal(
         out.images[0],

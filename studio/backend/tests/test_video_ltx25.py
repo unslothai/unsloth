@@ -2449,8 +2449,6 @@ def test_an_ltx25_image_render_counts_as_image_to_video_for_the_background_compi
 
 
 def test_the_hidden_state_encode_builds_no_kv_cache():
-    """The encoder config sets use_cache, which would build (and hold through the stacking) a DynamicCache the single
-    hidden-state forward never reads."""
     import torch
 
     from core.inference import video_ltx25_te_worker as worker
@@ -2461,8 +2459,7 @@ def test_the_hidden_state_encode_builds_no_kv_cache():
 
 
 def _stack_model(width = 8, layers = 4):
-    """Gemma 4's layout in miniature: model.language_model.{embed_tokens, layers, norm} plus a buffer on the language
-    model, a vision tower the text encode never runs, and an lm_head tied to the embeddings."""
+    """Miniature Gemma 4 layout with a buffer, a vision tower and a tied lm_head."""
     import torch
 
     class StackModel(torch.nn.Module):
@@ -2506,8 +2503,7 @@ def _stack_model(width = 8, layers = 4):
 
 
 def test_a_streamed_encode_runs_each_layer_onloaded_alone_and_matches(monkeypatch):
-    """Streaming onloads the embeddings, norm and buffers for the encode and one decoder layer at a time, never the
-    vision tower, and puts every host tensor back; on the CPU (copies forced) the packed states are bit-identical."""
+    """One layer onloaded at a time, never the vision tower, host tensors restored, output bit-identical."""
     import torch
 
     from core.inference import video_ltx25_te_worker as worker
