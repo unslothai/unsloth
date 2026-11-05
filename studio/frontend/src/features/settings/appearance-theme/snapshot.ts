@@ -51,23 +51,24 @@ export function readAppearanceSnapshot(): AppearanceSnapshot {
 
 /**
  * Writes palette, customization and glass in one pass; the background is separate. Theme mode and
- * interface scale are never touched. Off macOS the native-only material becomes Liquid 3D, since the
- * glass switch would read it as on while it renders solid.
+ * interface scale are never touched.
  */
 export function applyAppearanceSnapshot(next: AppearanceTarget): void {
   useAppearanceCustomStore.getState().replaceAll(next.customization);
   setPalette(next.palette);
-  const { strength, lens, menus } = next.glass;
-  const portable = (m: typeof next.glass.material) =>
-    m === "macos" && !nativeMaterialAvailable() ? "liquid-3d" : m;
-  useMaterialStore.setState({
-    material: portable(next.glass.material),
-    style: portable(next.glass.style) as typeof next.glass.style,
-    strength,
-    lens,
-    menus,
-    nativeFailed: false,
-  });
+  const { material, style, strength, lens, menus } = next.glass;
+  useMaterialStore.setState({ material, style, strength, lens, menus, nativeFailed: false });
+}
+
+/**
+ * Off macOS a theme's native-only glass becomes Liquid 3D: it would render solid while the glass
+ * switch reads it as on. Applied to the plan, so Undo compares against what was really written.
+ */
+export function portableGlass<T extends AppearanceTarget>(target: T): T {
+  if (nativeMaterialAvailable()) return target;
+  const portable = <M,>(m: M) => (m === "macos" ? "liquid-3d" : m) as M;
+  const { material, style } = target.glass;
+  return { ...target, glass: { ...target.glass, material: portable(material), style: portable(style) } };
 }
 
 /** Puts back a background read by readAppearanceSnapshot; null means none. Resolves false if it could not be stored. */

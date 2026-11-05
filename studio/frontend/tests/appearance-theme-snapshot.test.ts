@@ -160,15 +160,21 @@ test("restoreBackground resolves with whether the background could be stored", a
   assert.equal(await snapshot.restoreBackground(null), false);
 });
 
-test("off macOS a native-only material becomes Liquid 3D, so the glass switch matches what renders", () => {
+test("off macOS a theme's native-only glass becomes Liquid 3D, and Undo then restores the old glass", async () => {
+  const { planUndo } = await import("../src/features/settings/appearance-theme/application/plan-apply.ts");
   const macos = { ...NEXT, glass: { ...GLASS, material: "macos", style: "macos" } } as SnapshotModule.AppearanceTarget;
   const host = createHost();
-  load(host).applyAppearanceSnapshot(macos);
-  assert.equal(host.state.material.material, "liquid-3d");
-  assert.equal(host.state.material.style, "liquid-3d");
+  const snapshot = load(host);
+  const before = snapshot.readAppearanceSnapshot();
+  const plan = snapshot.portableGlass(macos);
+  assert.equal(plan.glass.material, "liquid-3d");
+  assert.equal(plan.glass.style, "liquid-3d");
+  snapshot.applyAppearanceSnapshot(plan);
+  // Undo with nothing touched since: the live glass matches the plan, so the old glass comes back.
+  snapshot.applyAppearanceSnapshot(planUndo(before, plan, snapshot.readAppearanceSnapshot()));
+  assert.equal(host.state.material.material, "solid");
+  assert.equal(host.state.material.style, "frosted");
   const mac = createHost();
   mac.native.available = true;
-  load(mac).applyAppearanceSnapshot(macos);
-  assert.equal(mac.state.material.material, "macos");
-  assert.equal(mac.state.material.style, "macos");
+  assert.equal(load(mac).portableGlass(macos), macos);
 });

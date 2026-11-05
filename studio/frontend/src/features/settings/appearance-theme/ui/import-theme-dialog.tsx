@@ -23,6 +23,7 @@ import type { AppearanceTheme, ThemeParseResult, ThemeWarning } from "../domain/
 import {
   applyAppearanceSnapshot,
   applyThemeBackground,
+  portableGlass,
   readAppearanceSnapshot,
   readLoadedAppearanceSnapshot,
   restoreBackground,
@@ -133,7 +134,7 @@ function ImportThemeForm({
     try {
       // Wait for the stored background, or Undo would think there was none and delete it.
       const prev = await readLoadedAppearanceSnapshot();
-      const next = planThemeApply(prev, theme, { applyLayout, applyAssets });
+      const next = portableGlass(planThemeApply(prev, theme, { applyLayout, applyAssets }));
       applyAppearanceSnapshot(next);
       // Undo restores the background only while it is still the one the theme set.
       let appliedBackground: ReturnType<typeof readAppearanceSnapshot>["background"] = null;
