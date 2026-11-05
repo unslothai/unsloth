@@ -4535,6 +4535,8 @@ def update_current_date_prompt(
 @_owner_settings_router.get("/trusted-tool-folders", response_model = TrustedToolFoldersResponse)
 def get_trusted_tool_folders_setting(
     current_subject: str = Depends(get_current_subject),
+    # Host paths: the settings page reads them, an API-key integration has no need to.
+    _ui_session: None = Depends(_require_ui_session),
 ) -> TrustedToolFoldersResponse:
     try:
         folders = get_trusted_tool_folders()

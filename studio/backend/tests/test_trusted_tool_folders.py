@@ -357,9 +357,12 @@ class TestRoute:
         [(AccountContext("a" * 32, "alice"), False), (OWNER, True)],
         ids = ["managed-account", "owner-api-key"],
     )
-    def test_only_the_owners_ui_session_may_write(self, build, account, via_api_key):
+    def test_only_the_owners_ui_session_may_read_or_write(self, build, account, via_api_key):
         make, state = build
+        state["folders"] = ["/opt/saved"]
         with make(account, via_api_key) as client:
             put = client.put("/trusted-tool-folders", json = {"folders": ["/opt/tools"]})
+            get = client.get("/trusted-tool-folders")
         assert put.status_code == 403, put.text
-        assert state["folders"] == []
+        assert get.status_code == 403, get.text
+        assert state["folders"] == ["/opt/saved"]
