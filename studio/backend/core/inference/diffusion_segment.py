@@ -127,8 +127,7 @@ ENV_KEEP_ALIVE = "UNSLOTH_SAM3_KEEP_ALIVE"
 # Seconds a host-RAM parked model is kept; 0 never parks.
 ENV_PARK_SECONDS = "UNSLOTH_SAM3_PARK_SECONDS"
 PARK_SECONDS = 600.0
-# Unset pins the parked copy with registered (cudaHostRegister) memory where supported: torch's pinned allocator took
-# minutes for 1.7 GB on a loaded host. "1" forces torch's allocator, "0" keeps the copy pageable.
+# Unset: registered host memory (torch's pinned allocator took minutes for 1.7 GB on a loaded host); "1" torch's, "0" pageable.
 ENV_PARK_PIN = "UNSLOTH_SAM3_PARK_PIN"
 
 # ── ComfyUI SAM3_Detect defaults ────────────────────────────────────────────────────────────────────────────────────
