@@ -543,3 +543,40 @@ def test_anima_gguf_is_neither_offered_nor_loaded():
             "someone/Anima-Base-GGUF", gguf_filename = "anima-base-v1.0-Q8_0.gguf", model_kind = "gguf"
         )
     assert family_gguf_loadable(detect_family("", override = "chroma"))
+
+
+def test_an_anima_single_file_takes_only_configs_for_what_it_carries(tmp_path):
+    # The file holds the DiT and the text conditioner, so the base needs neither one's weights.
+    from core.inference.diffusion import DiffusionBackend, _single_file_components
+    from core.inference.diffusion_anima import ANIMA_COMPONENT_FOLDERS
+    from core.inference.diffusion_families import detect_family
+
+    anima = detect_family("", override = "anima")
+    assert _single_file_components(anima, "single_file") == ("text_conditioner",)
+    assert _single_file_components(anima, "pipeline") == ()
+    assert _single_file_components(detect_family("", override = "krea-2"), "single_file") == ()
+    base = tmp_path / "base"
+    index = {"_class_name": "AnimaModularPipeline", "_blocks_class_name": "AnimaAutoBlocks"}
+    for name, (folder, lib, cls) in ANIMA_COMPONENT_FOLDERS.items():
+        (base / folder).mkdir(parents = True)
+        index[name] = [lib, cls, {"subfolder": folder, "type_hint": [lib, cls]}]
+        if "tokenizer" in name:
+            (base / folder / "tokenizer.json").write_text("{}")
+            (base / folder / "tokenizer_config.json").write_text("{}")
+        elif name == "scheduler":
+            (base / folder / "scheduler_config.json").write_text("{}")
+        else:
+            (base / folder / "config.json").write_text("{}")
+    for folder in ("text_encoder", "vae"):
+        (base / folder / "model.safetensors").write_bytes(b"\0" * 16)
+    (base / "modular_model_index.json").write_text(json.dumps(index))
+    files = tmp_path / "files"
+    files.mkdir()
+    (files / "anima.safetensors").write_bytes(b"\0" * 16)
+    DiffusionBackend().validate_load_request(
+        str(files),
+        gguf_filename = "anima.safetensors",
+        family_override = "anima",
+        model_kind = "single_file",
+        base_repo = str(base),
+    )
