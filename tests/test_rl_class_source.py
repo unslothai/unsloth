@@ -249,6 +249,18 @@ TABLE = dict(
 class AfterCall:
     def method(self):
         return 4
+
+
+STUB_ONLY = False
+if STUB_ONLY:
+    class Stubbed:
+        def method(self):
+            return 0
+
+
+class Stubbed:
+    def method(self):
+        return 5
 '''
 
 
@@ -278,6 +290,7 @@ def synthetic(tmp_path_factory):
         "InString",
         "NoMethods",
         "AfterCall",
+        "Stubbed",
     ],
 )
 def test_synthetic_matches_getsource(synthetic, name):
@@ -309,6 +322,7 @@ def test_ambiguous_cases_fall_back(synthetic, monkeypatch):
         synthetic.CommentAfterDecorator,  # decorator separated by a comment
         synthetic.InString,  # unique column-0 hit is inside a string, methods disagree
         synthetic.NoMethods,  # no method to confirm the match
+        synthetic.Stubbed,  # an indented stub earlier in the file is what inspect returns
     ):
         calls.clear()
         _class_source(cls)

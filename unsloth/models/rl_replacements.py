@@ -73,9 +73,10 @@ def _class_source(cls):
             return inspect.getsource(cls)
         # Same linecache read inspect.findsource(cls) does; a module needs no parse.
         lines, _ = inspect.findsource(module)
-        pattern = re.compile(r"class\s+" + re.escape(name) + r"\b")
+        # Count indented definitions too (a TYPE_CHECKING stub would be what inspect returns).
+        pattern = re.compile(r"[ \t]*class\s+" + re.escape(name) + r"\b")
         hits = [i for i, line in enumerate(lines) if pattern.match(line)]
-        if len(hits) != 1:
+        if len(hits) != 1 or lines[hits[0]][:1] in (" ", "\t"):
             return inspect.getsource(cls)
         start = hits[0]
         # Single-line column-0 decorators directly above the class line.
