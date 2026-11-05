@@ -93,6 +93,17 @@ def test_honour_rules(capsys):
     assert foreign.gradient_checkpointing is True
 
 
+def test_off_reaches_activation_checkpointing():
+    module = _load_module()
+    Config = _config_class()
+    module.track_explicit_gradient_checkpointing(Config)
+    args = Config()
+    args.activation_checkpointing = True
+    assert module.honour_gradient_checkpointing_off(args, _Model(False))
+    assert args.gradient_checkpointing is False
+    assert args.activation_checkpointing is False
+
+
 def test_assignment_after_construction_is_explicit():
     import dataclasses
 

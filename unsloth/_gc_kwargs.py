@@ -90,14 +90,19 @@ def patch_gradient_checkpointing_enable_kwargs():
         import transformers.modeling_utils as hf_modeling_utils
     except Exception:
         return
-    original = PreTrainedModel.gradient_checkpointing_enable
+    # transformers >= 5.23: gradient_checkpointing_enable is an alias that calls this one.
+    name = "activation_checkpointing_enable"
+    if not hasattr(PreTrainedModel, name):
+        name = "gradient_checkpointing_enable"
+    original = getattr(PreTrainedModel, name)
     if getattr(original, "_unsloth_gc_kwargs", False):
         return
     try:
         params = list(inspect.signature(original).parameters)
     except Exception:
         return
-    positional = [p for p in params if p not in ("self", "gradient_checkpointing_kwargs")]
+    kwargs_name = name.replace("_enable", "_kwargs")
+    positional = [p for p in params if p not in ("self", kwargs_name)]
     native_every = "every_n_layers" in params
     native_offload = "offload" in params
 
@@ -108,6 +113,7 @@ def patch_gradient_checkpointing_enable_kwargs():
         *args,
         **kwargs,
     ):
+        gradient_checkpointing_kwargs = kwargs.pop(kwargs_name, gradient_checkpointing_kwargs)
         kwargs.update(zip(positional, args))
         every = kwargs.pop("every_n_layers", None)
         offload = kwargs.pop("offload", None)
@@ -154,4 +160,4 @@ def patch_gradient_checkpointing_enable_kwargs():
         return out
 
     gradient_checkpointing_enable._unsloth_gc_kwargs = True
-    PreTrainedModel.gradient_checkpointing_enable = gradient_checkpointing_enable
+    setattr(PreTrainedModel, name, gradient_checkpointing_enable)

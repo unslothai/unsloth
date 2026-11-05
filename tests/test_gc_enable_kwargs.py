@@ -24,6 +24,7 @@ FUNCS = (
 )
 ASSIGNS = ("_OFFLOADING_CHECKPOINT_SHIMS", "_GC_KWARGS_WARNED")
 NATIVE = "offload" in inspect.signature(PreTrainedModel.gradient_checkpointing_enable).parameters
+RENAMED = hasattr(PreTrainedModel, "activation_checkpointing_enable")
 
 
 def _load():
@@ -41,13 +42,18 @@ def _load():
 
 @pytest.fixture
 def patched():
-    original = PreTrainedModel.__dict__["gradient_checkpointing_enable"]
+    original = {
+        name: PreTrainedModel.__dict__[name]
+        for name in ("gradient_checkpointing_enable", "activation_checkpointing_enable")
+        if name in PreTrainedModel.__dict__
+    }
     previous_checkpoint = hf_modeling_utils.checkpoint
     patch = _load().get("patch_gradient_checkpointing_enable_kwargs")
     if patch is not None:
         patch()
     yield
-    PreTrainedModel.gradient_checkpointing_enable = original
+    for name, function in original.items():
+        setattr(PreTrainedModel, name, function)
     hf_modeling_utils.checkpoint = previous_checkpoint
 
 
@@ -147,6 +153,50 @@ def test_every_n_layers_survives_for_training_flag_rewrite(patched):
     assert _flags(model) == [True, False, True, False]
     model.gradient_checkpointing_enable()
     assert _flags(model) == [True, True, True, True]
+
+
+@pytest.mark.skipif(
+    not RENAMED, reason = "the Trainer calls activation_checkpointing_enable from transformers 5.23"
+)
+def test_every_n_layers_survives_flag_rewrite_through_activation_checkpointing_enable(patched):
+    model = _model()
+    model.activation_checkpointing_enable(activation_checkpointing_kwargs = None, every_n_layers = 2)
+    assert _flags(model) == [True, False, True, False]
+    for module in model.modules():
+        if hasattr(module, "gradient_checkpointing"):
+            module.gradient_checkpointing = True
+    assert _flags(model) == [True, False, True, False]
+
+
+@pytest.mark.skipif(
+    not RENAMED, reason = "the Trainer calls activation_checkpointing_enable from transformers 5.23"
+)
+def test_offload_dropped_under_offloading_shim_through_activation_checkpointing_enable(
+    patched, smart_gc, monkeypatch
+):
+    entered = []
+    real = hf_modeling_utils.save_on_cpu
+
+    class Counting(real):
+        def __init__(
+            self,
+            pin_memory = False,
+            device_type = "cuda",
+        ):
+            pin_memory = pin_memory and torch.accelerator.is_available()
+            super().__init__(pin_memory = pin_memory, device_type = device_type)
+
+        def __enter__(self):
+            entered.append(1)
+            return super().__enter__()
+
+    monkeypatch.setattr(hf_modeling_utils, "save_on_cpu", Counting)
+    model = _model()
+    model.activation_checkpointing_enable(
+        activation_checkpointing_kwargs = {"use_reentrant": True}, offload = True
+    )
+    _grads(model)
+    assert entered == []
 
 
 @pytest.mark.skipif(

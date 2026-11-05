@@ -98,6 +98,8 @@ def honour_gradient_checkpointing_off(args, model):
         )
         return False
     args.gradient_checkpointing = False
+    if hasattr(args, "activation_checkpointing"):
+        args.activation_checkpointing = False
     _note(
         "off",
         "Unsloth: the model was set up with use_gradient_checkpointing = False, so gradient checkpointing stays "
