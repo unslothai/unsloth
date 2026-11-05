@@ -11,25 +11,8 @@ import {
   type ContextUsageBarInput,
   deriveContextUsageBar,
   formatTokenCountFull,
+  getSeverityColor,
 } from "../lib/context-usage-bar-state";
-
-function getSeverityColor(percent: number): {
-  bar: string;
-  stroke: string;
-  text: string;
-} {
-  if (percent > 85) {
-    return { bar: "bg-red-500", stroke: "stroke-red-500", text: "text-red-500" };
-  }
-  if (percent > 65) {
-    return { bar: "bg-amber-500", stroke: "stroke-amber-500", text: "text-amber-500" };
-  }
-  return {
-    bar: "bg-control-accent",
-    stroke: "stroke-control-accent",
-    text: "text-control-accent",
-  };
-}
 
 const RING_RADIUS = 6.25;
 const RING_LENGTH = 2 * Math.PI * RING_RADIUS;

@@ -8072,29 +8072,12 @@ def test_an_mlx_count_prices_the_archive_tool_and_its_compaction_nudge(monkeypat
     ), "the count omitted the compaction nudge the completion appends"
 
 
-def test_an_mlx_count_reopens_search_conversation_with_tools_off(monkeypatch):
-    """A checkpointed thread reopens the completion's loop with search_conversation alone."""
-    from routes import inference as route
-    from state import tool_policy
-
-    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
-    monkeypatch.setattr(route, "_thread_has_conversation_archive", lambda tid: bool(tid))
-    monkeypatch.setattr(route, "_checkpoint_recall_may_enable_tools", lambda payload: True)
-    backend = _RenderRecordingBackend()
-    _count_hi(
-        monkeypatch,
-        backend,
-        template = _TOOL_TEMPLATE,
-        enable_tools = False,
-        context_overflow = "truncate_oldest",
-        thread_id = "thread-with-an-archive",
-    )
-    assert [t["function"]["name"] for t in backend.tools or []] == ["search_conversation"]
-    assert route._apply_compaction_nudge("", backend.tools) in backend.system
-
-
 class _LengthCountingBackend(_RenderRecordingBackend):
-    """Counts content characters plus five per tool, so each breakdown part is predictable."""
+    """Counts system and content characters plus five per tool, so each part is predictable."""
+
+    def __init__(self):
+        super().__init__()
+        self.systems = []
 
     def count_chat_tokens(
         self,
@@ -8103,7 +8086,8 @@ class _LengthCountingBackend(_RenderRecordingBackend):
         **kwargs,
     ):
         super().count_chat_tokens(messages, system_prompt, **kwargs)
-        tokens = sum(len(str(m.get("content") or "")) for m in messages)
+        self.systems.append(system_prompt)
+        tokens = sum(len(str(m.get("content") or "")) for m in messages) + len(system_prompt)
         return tokens + 5 * len(kwargs.get("tools") or []), "mlx/model"
 
 
@@ -8111,20 +8095,53 @@ def test_an_mlx_breakdown_sums_to_the_total_and_has_no_prompt(monkeypatch):
     from state import tool_policy
 
     monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    backend = _LengthCountingBackend()
     served = _count_hi(
         monkeypatch,
-        _LengthCountingBackend(),
+        backend,
         template = _TOOL_TEMPLATE,
         enabled_tools = ["web_search"],
         breakdown = True,
     )
     body = json.loads(served.body)
     parts = body["breakdown"]
-    assert (parts["tools"], parts["messages"]) == (5, 2)
+    # Renders: the full prompt, then the system prompt without and with the tools.
+    full, bare, with_tools = backend.systems
+    assert full == with_tools and with_tools.startswith(bare) and len(with_tools) > len(bare)
+    # The tool nudge is in the prompt only for the tools, so it counts under them.
+    assert parts["system"] == len(bare)
+    assert parts["tools"] == 5 + len(with_tools) - len(bare)
+    assert parts["messages"] == 2
     assert parts["system"] + parts["tools"] + parts["messages"] == body["input_tokens"]
     assert parts["tool_names"] == ["web_search"]
     # The MLX count tokenizes in the worker and returns no rendered text.
     assert body["prompt"] is None
+
+
+def test_an_mlx_count_keeps_the_nudge_when_a_forced_tool_narrows_to_none(monkeypatch):
+    """Only /context's tool-free render drops the nudge: the completion still sends it here."""
+    from core.inference import chat_template_helpers
+    from routes import inference as route
+    from state import tool_policy
+
+    monkeypatch.setattr(tool_policy, "_tool_policy_default", True)
+    monkeypatch.setattr(chat_template_helpers, "renderable_tool_catalog", lambda *a, **k: [])
+    backend = _RenderRecordingBackend()
+    _count_hi(
+        monkeypatch,
+        backend,
+        template = _TOOL_TEMPLATE,
+        enabled_tools = ["web_search"],
+        tool_choice = {"type": "function", "function": {"name": "web_search"}},
+    )
+    assert not backend.tools
+    nudge = route._build_tool_action_nudge(
+        tools = [{"type": "function", "function": {"name": "web_search"}}],
+        model_name = "mlx/model",
+        full_access = False,
+        user_folder = None,
+    )
+    assert backend.system == nudge
 
 
 def test_an_mlx_count_prices_the_date_an_api_key_tool_loop_still_gets(monkeypatch):

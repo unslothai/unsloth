@@ -137,7 +137,7 @@ type CountModule = {
   countContext: (
     branch: readonly unknown[],
     threadId: string | undefined,
-    readBranch?: () => readonly unknown[],
+    readBranch: () => readonly unknown[],
   ) => Promise<{ input_tokens: number } | null>;
 };
 
@@ -194,7 +194,7 @@ test("the count is the recount's payload plus /context's own fields", async () =
     input_tokens: 348,
     model: "org/A-GGUF",
   });
-  await module.countContext([], "t1");
+  await module.countContext([], "t1", () => []);
   assert.deepEqual(sent, [
     {
       model: "org/A-GGUF",
@@ -212,7 +212,7 @@ test("the ring takes /context's count, so the two never disagree", async () => {
     input_tokens: 348,
     model: "org/A-GGUF",
   });
-  await module.countContext([], "t1");
+  await module.countContext([], "t1", () => []);
   assert.deepEqual(published, [
     {
       promptTokens: 348,
@@ -240,7 +240,7 @@ for (const [name, overrides, counted] of [
   test(`the ring keeps its number when ${name}`, async () => {
     const { state, published } = runtimeState(overrides);
     const { module } = loadCount(state, counted);
-    const result = await module.countContext([], "t1");
+    const result = await module.countContext([], "t1", () => []);
     assert.deepEqual(published, []);
     if (name === "another model answered") assert.equal(result, null);
   });

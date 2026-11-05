@@ -3668,8 +3668,8 @@ class ChatCountTokensRequest(ReasoningControlsRequest):
     )
     breakdown: bool = Field(
         False,
-        description = "[x-unsloth] Also split the total into system prompt, tool schemas and "
-        "messages, and return the rendered prompt (GGUF only; null elsewhere). Studio's "
+        description = "[x-unsloth] Also split the total into system, tools (schemas and the tool "
+        "nudge) and messages, and return the rendered prompt (GGUF only; null elsewhere). Studio's "
         "/context. Costs two more renders.",
     )
 

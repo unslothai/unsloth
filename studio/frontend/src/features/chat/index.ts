@@ -190,7 +190,10 @@ export {
   isContextCommand,
   usagePercent,
 } from "./utils/context-command";
-export { formatTokenCountFull } from "./lib/context-usage-bar-state";
+export {
+  formatTokenCountFull,
+  getSeverityColor,
+} from "./lib/context-usage-bar-state";
 export {
   folderRingKey,
   planKey,
