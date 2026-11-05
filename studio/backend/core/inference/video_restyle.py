@@ -251,7 +251,6 @@ def _png_b64(array: Any) -> str:
 def control_frames(frames: list[Any]) -> list[Any]:
     """Each fitted RGB frame's Canny map as a 3-channel uint8 array."""
     import numpy as np
-
     return [np.repeat(canny_edges(np.asarray(f))[..., None], 3, axis = -1) for f in frames]
 
 
@@ -544,9 +543,7 @@ class RestyleRunner:
             assert workdir is not None
             (workdir / "input.mp4").write_bytes(encode_mp4(frames))
             edges = control_frames(frames)
-            (workdir / "control.mp4").write_bytes(
-                encode_mp4([Image.fromarray(e) for e in edges])
-            )
+            (workdir / "control.mp4").write_bytes(encode_mp4([Image.fromarray(e) for e in edges]))
             control = [_png_b64(e) for e in edges]
             if self._cancel.is_set():
                 raise SdCppCancelled("cancelled")

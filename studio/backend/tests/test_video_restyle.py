@@ -497,7 +497,9 @@ def test_availability_names_what_is_missing(weights, monkeypatch, tmp_path):
     monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: None)
     out = vr.availability()
     assert not out["available"] and "stable-diffusion.cpp" in out["reason"]
-    monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: "/bin/sd-server")
+    monkeypatch.setattr(
+        "core.inference.sd_cpp_engine.find_sd_server_binary", lambda: "/bin/sd-server"
+    )
     assert vr.availability() == {"available": True, "reason": None}
     assert not vr.availability({})["available"]
 
