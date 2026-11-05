@@ -488,20 +488,23 @@ def _directory_variant_target(
 
 
 def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
-    from hub.utils.gguf_sources import gguf_cache_snapshots
+    from hub.services.models.catalog_classification import _gguf_path_task
+    from hub.utils.gguf_sources import CHAT_GGUF_TASKS, gguf_cache_snapshots
 
     repo_id = row["repo_id"]
     load_id = row.get("load_id")
     repo_dir = Path(row["cache_path"])
-    snapshots = _reachable_snapshots(repo_dir, load_id)
+    preferred = _reachable_snapshots(repo_dir, load_id)
+    snapshots = preferred
     if load_id == repo_id:
-        # A merged repo-ID row can also load quants from the other cache copies.
-        other_copies = (
+        # A repo ID can resolve in any chat snapshot. Try the inventory's chosen revision first.
+        other_snapshots = (
             snapshot
             for snapshot in gguf_cache_snapshots(repo_id)
-            if snapshot.parent.parent != repo_dir
+            if snapshot not in preferred
+            and _gguf_path_task(snapshot, (repo_id,)) in CHAT_GGUF_TASKS
         )
-        snapshots = chain(snapshots, other_copies)
+        snapshots = chain(preferred, other_snapshots)
     for snapshot in snapshots:
         target = _directory_variant_target(snapshot, variant, cached_repo = repo_id)
         if target is not None:

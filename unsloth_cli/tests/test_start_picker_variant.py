@@ -180,8 +180,9 @@ def test_cached_picker_preserves_path_qualified_selector(cached_gguf_pick):
 
 
 @pytest.mark.parametrize("mode", ["idle-server", "auto-start"])
-def test_picked_repo_finds_requested_quant_in_remembered_cache(
-    tmp_path, monkeypatch, picker, fake_studio, mode
+@pytest.mark.parametrize("location", ["remembered-cache", "sibling-snapshot"])
+def test_picked_repo_finds_requested_quant_outside_main(
+    tmp_path, monkeypatch, picker, fake_studio, mode, location
 ):
     ensure_studio_backend_path(seed_cache_env = False)
     from huggingface_hub import scan_cache_dir
@@ -195,18 +196,19 @@ def test_picked_repo_finds_requested_quant_in_remembered_cache(
     monkeypatch.setattr(
         hf_cache_settings, "get_hf_cache_paths", lambda: replace(paths, hub_cache = active)
     )
-    for root, quant in [(active, "Q4_K_M"), (remembered, "Q8_0")]:
+    q8_root = remembered if location == "remembered-cache" else active
+    for root, revision, quant in [(q8_root, "b", "Q8_0"), (active, "a", "Q4_K_M")]:
         repo = root / "models--Org--Tiny-GGUF"
-        snapshot = repo / "snapshots" / ("a" * 40)
+        snapshot = repo / "snapshots" / (revision * 40)
         snapshot.mkdir(parents = True)
-        (repo / "refs").mkdir()
+        (repo / "refs").mkdir(exist_ok = True)
         (repo / "refs" / "main").write_text(snapshot.name)
         file = snapshot / f"tiny-{quant}.gguf"
         file.write_bytes(b"GGUF" + bytes(4092))
-        if root == remembered:
+        if quant == "Q8_0":
             expected = str(file)
 
-    scans = [scan_cache_dir(root) for root in (active, remembered)]
+    scans = [scan_cache_dir(root) for root in (active, remembered) if root.is_dir()]
     monkeypatch.setattr(cache_inventory, "all_hf_cache_scans", lambda: scans)
     [row], _ = catalog._cached_catalog_rows()
     assert Path(row["cache_path"]).parent == active
@@ -236,7 +238,7 @@ def test_picked_repo_finds_requested_quant_in_remembered_cache(
         row["repo_id"],
         "Q8_0",
         [ExpectedFile(Path(expected).name, 8192)],
-        hub_cache = remembered,
-        commit_hash = pinned.name,
+        hub_cache = q8_root,
+        commit_hash = Path(expected).parent.name,
     )
     assert catalog._cached_variant_entry(row, "Q8_0") is None
