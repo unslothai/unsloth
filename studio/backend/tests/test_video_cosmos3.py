@@ -1235,7 +1235,9 @@ def test_fps_is_validated_against_the_family(name, fps, ok):
         vf.validate_video_request_shape(fam, fps = fps)
         return
     expected = "12 to 30" if name == "cosmos3-edge" else "10, 16, 24, 30"
-    with pytest.raises(vf.VideoShapeError, match = f"{fps} fps is not a supported frame rate.*{expected}"):
+    with pytest.raises(
+        vf.VideoShapeError, match = f"{fps} fps is not a supported frame rate.*{expected}"
+    ):
         vf.validate_video_request_shape(fam, fps = fps)
 
 
