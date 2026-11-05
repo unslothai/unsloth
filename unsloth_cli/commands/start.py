@@ -7547,7 +7547,7 @@ def codex(
         _fail(
             f"Codex {'.'.join(map(str, _CODEX_PROFILE_FILE_MIN_VERSION))} or newer is needed, "
             f"but `codex` here is {'.'.join(map(str, version))}. Update it with "
-            "`npm install -g @openai/codex@latest`."
+            f"`{_npm_install_hint('@openai/codex@latest')}`."
         )
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):

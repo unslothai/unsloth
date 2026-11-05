@@ -4301,7 +4301,9 @@ def test_codex_too_old_for_profile_files_stops_before_launch(
     else:
         assert result.exit_code == 1
         assert "Codex 0.134.0 or newer is needed, but `codex` here is 0.133.0" in result.output
-        assert "npm install -g @openai/codex@latest" in result.output
+        assert f"`{start._npm_install_hint('@openai/codex@latest')}`" in result.output
+        if os.name != "nt":
+            assert "--prefix" in result.output
         assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
 
 
