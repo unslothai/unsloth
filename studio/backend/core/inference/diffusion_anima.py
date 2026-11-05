@@ -36,7 +36,7 @@ ANIMA_COMPONENT_FOLDERS = {
     "scheduler": ("scheduler", "diffusers", "FlowMatchEulerDiscreteScheduler"),
 }
 
-_CONTAINER_PREFIXES = ("model.diffusion_model.", "net.")
+_CONTAINER_PREFIXES = ("model.diffusion_model.", "diffusion_model.", "net.")
 _ADAPTER_PREFIX = "llm_adapter."
 # Bookkeeping tensors diffusers' Cosmos converter drops too.
 _DROPPED = ("pos_embedder.", "accum_", "_extra_state")
