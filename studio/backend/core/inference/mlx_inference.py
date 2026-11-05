@@ -2288,7 +2288,6 @@ def _eager_spm_detokenizer_class():
             if pending and not self._unflushed:
                 self.trim_space = False
 
-        # mlx-vlm's stream loop passes skip_special_token_ids; mlx-lm's add_token takes none.
         def add_token(
             self,
             token,
