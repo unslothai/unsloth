@@ -3115,3 +3115,30 @@ def test_both_offload_tiers_fall_back_to_the_no_copy_back_top_group():
         assert (
             "not _pin_top_level_group(module, logger, pinned_mib, device=onload)" in src
         ), fn.__name__
+
+
+def test_refine_headroom_applies_to_the_denoiser_not_a_larger_text_encoder(monkeypatch):
+    """The denoise headroom prices only denoisers: a text encoder larger than the DiT runs in its own phase, so a
+    whole-module plan where each fits its phase stays whole-module."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(16384),
+        estimates = {"safe_device_budget_mib": 14000},
+    )
+    transformer = Module(6000)
+    pipe = types.SimpleNamespace(
+        transformer = transformer,
+        components = {"transformer": transformer, "text_encoder": Module(10000), "vae": Module(1000)},
+    )
+    assert refine_memory_plan_for_components(pipe, plan, headroom_mib = 6144) is plan
+    big = Module(9000)
+    tight = types.SimpleNamespace(
+        transformer = big, components = {"transformer": big, "text_encoder": Module(10000)}
+    )
+    refined = refine_memory_plan_for_components(tight, plan, headroom_mib = 6144)
+    assert refined.offload_policy == OFFLOAD_STREAMING
+    assert "loaded transformer is 9000 MiB (+6144 MiB runtime headroom)" in refined.reasons[-1]

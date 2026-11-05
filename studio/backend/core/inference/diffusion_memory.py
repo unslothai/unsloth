@@ -3321,10 +3321,18 @@ def refine_memory_plan_for_components(
     streamed_sizes = {n: m for n, m in sizes.items() if n in streamable}
     if not streamed_sizes:
         return plan
-    largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
     beside = max(0, int(headroom_mib or 0))
-    if largest_mib + beside <= int(budget):
+
+    def need(name: str) -> int:
+        # the headroom is the denoise phase's: a text encoder runs in its own phase and keeps the bare check
+        return streamed_sizes[name] + (beside if streamable[name][1] == "block_level" else 0)
+
+    largest_name = max(streamed_sizes, key = need)
+    largest_mib = streamed_sizes[largest_name]
+    if need(largest_name) <= int(budget):
         return plan
+    if streamable[largest_name][1] != "block_level":
+        beside = 0
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too
     resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
     if resident_mib > int(budget):
