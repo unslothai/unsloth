@@ -100,6 +100,20 @@ def apply_scheduler_overrides(
     return True
 
 
+def apply_comfy_schedule(
+    pipe: Any,
+    shift: Optional[float],
+    overrides: Any = (),
+    logger: Any = None,
+) -> bool:
+    """An image family's ComfyUI static schedule: its ``shift``, then its template's scheduler ``overrides`` (Chroma's
+    beta spacing). The opt-out keeps the shipped scheduler for both. True when it changed."""
+    if not comfy_sigmas_enabled():
+        return False
+    shifted = apply_comfy_flow_shift(pipe, shift, logger)
+    return apply_scheduler_overrides(pipe, overrides, logger) or shifted
+
+
 # A pipeline config's fixed sampling grid, terminal sigma excluded (QwenImage21Pipeline, huggingface/diffusers#14950).
 SAMPLE_SIGMAS_KEY = "sample_sigmas"
 

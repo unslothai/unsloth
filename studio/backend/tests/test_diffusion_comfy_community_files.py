@@ -440,22 +440,23 @@ def test_a_local_anima_load_gets_the_anima_defaults():
     ) == {"steps": 25, "guidance": 7.0}
 
 
-def test_scheduler_overrides_switch_to_beta_sigmas():
+def test_the_comfy_schedule_switches_to_beta_sigmas_unless_opted_out(monkeypatch):
     pytest.importorskip("diffusers")
     pytest.importorskip("scipy")  # diffusers' beta sigmas need it
     from diffusers import FlowMatchEulerDiscreteScheduler
 
-    from core.inference.diffusion_flow_shift import (
-        apply_comfy_flow_shift,
-        apply_scheduler_overrides,
-    )
+    from core.inference.diffusion_flow_shift import COMFY_SIGMAS_ENV, apply_comfy_schedule
 
-    pipe = type("P", (), {})()
-    pipe.scheduler = FlowMatchEulerDiscreteScheduler(shift = 3.0)
-    apply_comfy_flow_shift(pipe, 1.0)
-    assert apply_scheduler_overrides(pipe, (("use_beta_sigmas", True),))
-    assert pipe.scheduler.config.shift == 1.0
-    assert pipe.scheduler.config.use_beta_sigmas is True
+    def schedule():
+        pipe = type("P", (), {})()
+        pipe.scheduler = FlowMatchEulerDiscreteScheduler(shift = 3.0)
+        changed = apply_comfy_schedule(pipe, 1.0, (("use_beta_sigmas", True),))
+        return changed, pipe.scheduler.config.shift, pipe.scheduler.config.use_beta_sigmas
+
+    assert schedule() == (True, 1.0, True)
+    # The opt-out keeps the shipped scheduler: neither the shift nor the beta spacing.
+    monkeypatch.setenv(COMFY_SIGMAS_ENV, "0")
+    assert schedule() == (False, 3.0, False)
 
 
 def test_krea2_pipeline_takes_a_supplied_vae():

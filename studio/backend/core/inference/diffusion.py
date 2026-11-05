@@ -399,8 +399,7 @@ from .diffusion_fp16_variant import (
 )
 from .diffusion_flow_shift import (
     SAMPLE_SIGMAS_KEY,
-    apply_comfy_flow_shift,
-    apply_scheduler_overrides,
+    apply_comfy_schedule,
     requested_flow_shift,
     scheduler_with_flow_shift,
     shift_control,
@@ -10513,7 +10512,7 @@ class DiffusionBackend:
                     raw_grid = _model_index_sample_sigmas(fetch_base, _base_local_dir)
                     if install_sample_sigmas(pipe, raw_grid, logger) is None:
                         # Before from_pipe copies the scheduler.
-                        apply_comfy_flow_shift(
+                        apply_comfy_schedule(
                             pipe,
                             comfy_flow_shift_for(
                                 fam,
@@ -10523,10 +10522,8 @@ class DiffusionBackend:
                                 display_repo_id,
                                 base,
                             ),
+                            getattr(fam, "scheduler_overrides", ()),
                             logger,
-                        )
-                        apply_scheduler_overrides(
-                            pipe, getattr(fam, "scheduler_overrides", ()), logger
                         )
                     # Before the speed optims, so the fused batched tile decode does not replace it.
                     try:
