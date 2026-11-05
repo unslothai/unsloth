@@ -284,7 +284,12 @@ def test_streamed_encode_matches_cpu_and_restores_weights():
     from core.inference import video_ltx25_te_worker as W
 
     torch.manual_seed(0)
-    model = torch.nn.Sequential(torch.nn.Embedding(50, 16), torch.nn.Linear(16, 32), torch.nn.GELU(), torch.nn.Linear(32, 16))
+    model = torch.nn.Sequential(
+        torch.nn.Embedding(50, 16),
+        torch.nn.Linear(16, 32),
+        torch.nn.GELU(),
+        torch.nn.Linear(32, 16),
+    )
     ids = torch.randint(0, 50, (2, 7))
     with torch.inference_mode():
         ref = model(ids)
