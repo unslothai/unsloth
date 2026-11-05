@@ -177,7 +177,7 @@ def _publish(
     if entry.nbytes > _budget():
         # A scope that outgrew the exact cache through appends moves to HNSW now, not at its next write.
         # _build fetches the pair on demand when it is missing.
-        if entry.n >= _ann_min_rows() and ann_wanted():
+        if entry.n >= _ann_min_rows() and ann_wanted() and key not in _building:
             _schedule(key)
         else:
             _too_big[key] = entry.epoch
@@ -471,6 +471,9 @@ def _build(key: tuple) -> None:
         conn.close()
         if fetch_pair:
             hnsw_runtime.request(_on_ann_available)
+            # The fetch may have landed while this build ran (its callback found nothing to clear yet).
+            if vec_ann.usearch() is not None:
+                _on_ann_available()
     entry = _Entry(epoch, n, store, store.nbytes(_avg_id(store, n)))
     with _lock:
         _too_big.pop(key, None)

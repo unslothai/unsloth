@@ -319,3 +319,55 @@ def test_the_installer_is_found_without_importing_the_studio_update_stack(monkey
     monkeypatch.setitem(sys.modules, "utils.prebuilt.update_flow", None)
     script = hnsw_runtime._installer()
     assert script is not None and script.name == "install_hnsw_prebuilt.py" and script.is_file()
+
+
+def test_a_pair_that_lands_during_the_scopes_own_build_still_switches_it(rag_conn, monkeypatch):
+    pytest.importorskip("usearch")
+    monkeypatch.setenv("RAG_VEC_CACHE_MB", "0.001")
+    rows = _vectors(300)
+    _add(rag_conn, "d", rows)
+    real = vec_ann.usearch
+    state = {"avail": False, "cb": []}
+    monkeypatch.setattr(vec_ann, "usearch", lambda: real() if state["avail"] else None)
+
+    # Already settled ready: request() starts nothing and calls nothing back.
+    def request(cb):
+        if state["avail"]:
+            return False
+        state["cb"].append(cb)
+        return True
+
+    monkeypatch.setattr(hnsw_runtime, "request", request)
+    orig_enabled = vec_cache.ann_enabled
+
+    def enabled():
+        r = orig_enabled()
+        if not r and not state["avail"]:
+            # The install lands on the runtime thread mid-build.
+            state["avail"] = True
+            vec_cache._on_ann_available()
+        return r
+
+    monkeypatch.setattr(vec_cache, "ann_enabled", enabled)
+    _dense(rag_conn, rows[1])
+    assert vec_cache.drain(60)
+    for _ in range(3):
+        _, scanned = _dense(rag_conn, rows[1])
+        assert vec_cache.drain(60)
+    assert vec_cache._ann, "scope stuck on vec0 after the pair became importable"
+
+
+def test_a_scope_just_over_budget_is_not_rebuilt_on_every_query(rag_conn, monkeypatch):
+    rows = _vectors(300)
+    _add(rag_conn, "d", rows)
+    monkeypatch.setattr(vec_ann, "usearch", lambda: None)
+    monkeypatch.setattr(hnsw_runtime, "request", lambda cb: False)
+    est = 300 * (16 * 4 + 8 + vec_cache._ID_OVERHEAD)
+    monkeypatch.setenv("RAG_VEC_CACHE_MB", str((est + 600) / 2**20))
+    builds = []
+    orig = vec_cache._build
+    monkeypatch.setattr(vec_cache, "_build", lambda key: (builds.append(key), orig(key))[1])
+    for _ in range(5):
+        _dense(rag_conn, rows[1])
+        assert vec_cache.drain(60)
+    assert len(builds) <= 1, f"{len(builds)} full rebuilds for 5 queries"
