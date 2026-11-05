@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Anima: a Cosmos-Predict2 DiT plus an LLM adapter (``AnimaTextConditioner``) over a Qwen3-0.6B encoder. diffusers
-ships it as modular blocks only, which ``AnimaPipeline`` wraps as ``diffusion_flux3`` wraps FLUX.3."""
+"""Anima (Cosmos-Predict2 DiT + ``AnimaTextConditioner`` over Qwen3-0.6B): diffusers ships modular blocks only."""
 
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ ANIMA_FAMILY_NAME = "anima"
 ANIMA_PIPELINE_CLASS = "AnimaPipeline"
 ANIMA_BLOCKS = "AnimaAutoBlocks"
 ANIMA_INDEX = "modular_model_index.json"
-# Every folder load_anima_pipeline opens in the diffusers base; staging and the locality checks read this.
 ANIMA_COMPONENTS = (
     "scheduler",
     "t5_tokenizer",
@@ -40,7 +38,7 @@ ANIMA_COMPONENT_FOLDERS = {
 
 _CONTAINER_PREFIXES = ("model.diffusion_model.", "net.")
 _ADAPTER_PREFIX = "llm_adapter."
-# Bookkeeping tensors the reference checkpoints carry; diffusers' Cosmos converter drops the same names.
+# Bookkeeping tensors diffusers' Cosmos converter drops too.
 _DROPPED = ("pos_embedder.", "accum_", "_extra_state")
 
 
@@ -60,8 +58,7 @@ def is_anima_family(fam: Any) -> bool:
 
 
 def split_anima_checkpoint(checkpoint: dict) -> tuple[dict, dict]:
-    """``(transformer, text_conditioner)`` diffusers state dicts; a ComfyUI-quantised file raises (its codes would
-    load as plain weights)."""
+    """``(transformer, text_conditioner)`` state dicts; a quantized file raises (codes would load as weights)."""
     from diffusers.loaders.single_file_utils import (
         convert_cosmos_transformer_checkpoint_to_diffusers,
     )
@@ -101,8 +98,7 @@ def _block_count(state: dict) -> int:
 
 
 def _assign_on_meta(cls: Any, config: dict, state: dict, dtype) -> Any:
-    """``cls`` on meta, given ``state``'s tensors cast as ``from_pretrained`` casts them: init-time buffers (the
-    rotary ``inv_freq``) stay fp32, so no ``.to(dtype)``."""
+    """``cls`` on meta, ``state`` cast as ``from_pretrained`` casts: init buffers (rotary ``inv_freq``) stay fp32."""
     import torch
     from accelerate import init_empty_weights
 
@@ -129,8 +125,7 @@ def load_anima_single_file(
     local_files_only: bool = False,
     cache_dir: Optional[str] = None,
 ) -> tuple[Any, Any]:
-    """``(CosmosTransformer3DModel, AnimaTextConditioner)`` from one ComfyUI-layout file, on CPU. ``num_layers``
-    follows the file, so the 40-block 2.9B expansion loads with the 28-block base config."""
+    """``(transformer, text_conditioner)`` on CPU; ``num_layers`` follows the file (40-block 2.9B, 28-block base)."""
     from diffusers import AnimaTextConditioner, CosmosTransformer3DModel
     from safetensors.torch import load_file
 
@@ -231,7 +226,6 @@ class _AnimaPipelineMixin:
         return self._interrupt
 
     def modular_pipeline(self):
-        """The modular pipeline over THIS pipeline's current component objects."""
         import diffusers
 
         if self._modular is None:
@@ -337,8 +331,7 @@ class _AnimaPipelineMixin:
     def _step_hooks(
         self, mp, callback: Optional[Callable], num_inference_steps: int, first_call: bool
     ):
-        """``callback_on_step_end`` per scheduler step; ``progress_bar`` opened at the first denoiser forward, where
-        ``denoise_phase`` hooks (as diffusion_flux3)."""
+        """``callback_on_step_end`` per scheduler step; ``progress_bar`` opened at the first denoiser forward."""
         pipe = self
 
         @contextlib.contextmanager
