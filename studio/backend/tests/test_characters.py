@@ -763,3 +763,9 @@ def test_a_charx_member_is_not_inflated_past_its_declared_size():
         assert tracemalloc.get_traced_memory()[1] < 4 * 1024 * 1024
     finally:
         tracemalloc.stop()
+
+
+def test_a_chat_with_a_missing_member_is_refused(client):
+    ann = client.post("/api/characters", json = {"name": "Ann"}).json()
+    created = client.post("/api/characters/chats", json = {"characterIds": [ann["id"], "missing"]})
+    assert created.status_code == 404

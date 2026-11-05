@@ -494,8 +494,10 @@ def create_character_chat(
     Greetings hang under a hidden opening user turn so alternate greetings are ordinary sibling
     replies (and the history starts with a user turn, which strict chat templates require).
     """
-    characters = get_characters(list(dict.fromkeys(character_ids)))
-    if not characters:
+    requested = list(dict.fromkeys(character_ids))
+    characters = get_characters(requested)
+    # Every requested member must exist: a group must not quietly become a smaller chat.
+    if not characters or len(characters) != len(requested):
         raise LookupError("character")
     if len(characters) > MAX_CAST:
         raise LimitReached(f"A chat can have up to {MAX_CAST} characters.")
