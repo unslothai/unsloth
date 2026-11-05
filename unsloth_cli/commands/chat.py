@@ -141,8 +141,8 @@ def _drain_available_stdin() -> None:
 
 def _pick_model(console) -> str:
     ensure_studio_backend_path()
-    from unsloth_cli._model_picker import pick_local_model
-    return pick_local_model(console)
+    from unsloth_cli._model_picker import pick_model_entry
+    return pick_model_entry(console).model
 
 
 def chat(

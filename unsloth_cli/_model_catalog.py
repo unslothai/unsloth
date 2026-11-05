@@ -27,6 +27,7 @@ class ModelEntry:
     name: str
     detail: str
     model: str
+    file_variant: Optional[str] = None
 
 
 def _run_title(run: dict) -> str:
@@ -141,15 +142,15 @@ def exported_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]:
             if gguf_variant:
                 # The export scanner represents the whole export by its first GGUF file.
                 folder = Path(path)
-                load_id = _directory_variant_target(
-                    folder.parent if folder.is_file() else folder, gguf_variant
+                entry = _directory_variant_entry(
+                    folder.parent if folder.is_file() else folder, gguf_variant, "Fine-tunes", name
                 )
-                if load_id is None:
-                    continue
-            else:
-                load_id = _preferred_complete_gguf(path)
-                if not load_id and not _local_dir_holds_a_payload(Path(path)):
-                    continue
+                if entry is not None:
+                    entries.append(entry)
+                continue
+            load_id = _preferred_complete_gguf(path)
+            if not load_id and not _local_dir_holds_a_payload(Path(path)):
+                continue
         else:
             load_id = None
             # scan_exported_models calls a dir "lora" on adapter_config.json alone; require weights.
@@ -457,13 +458,15 @@ def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
     return newest_first(gguf_rows), newest_first(model_rows)
 
 
-def _directory_variant_target(
+def _directory_variant_entry(
     directory: Path,
     variant: str,
+    group: str,
+    name: str,
     *,
     cached_repo: Optional[str] = None,
-) -> Optional[str]:
-    """Resolve a complete local quant, keeping the directory for path-qualified selectors."""
+) -> Optional[ModelEntry]:
+    """Keep the concrete file selected in the directory, with a selector its loader accepts."""
     from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
 
     directory = directory.absolute()
@@ -482,9 +485,8 @@ def _directory_variant_target(
             cached_repo, quant, directory
         ) or cached_gguf_source_partial(cached_repo, quant, directory):
             return None
-    if _direct_gguf_for_variant(target, variant) is None:
-        return str(directory)
-    return target
+    file_variant = variant if _direct_gguf_for_variant(target, variant) is not None else file.name
+    return ModelEntry(group, name, variant, target, file_variant)
 
 
 def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
@@ -506,10 +508,11 @@ def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
         )
         snapshots = chain(preferred, other_snapshots)
     for snapshot in snapshots:
-        target = _directory_variant_target(snapshot, variant, cached_repo = repo_id)
-        if target is not None:
-            detail = variant if _is_gguf_file(target) else "gguf"
-            return ModelEntry("Downloaded", row["repo_id"], detail, target)
+        entry = _directory_variant_entry(
+            snapshot, variant, "Downloaded", repo_id, cached_repo = repo_id
+        )
+        if entry is not None:
+            return entry
     return None
 
 
@@ -700,11 +703,13 @@ def local_folder_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]
         target = model.load_id or model.id
         if is_gguf:
             if gguf_variant and Path(target).is_dir():
-                target = _directory_variant_target(Path(target), gguf_variant)
-                if target is None:
-                    continue
-            else:
-                target = _gguf_load_target(target)
+                entry = _directory_variant_entry(
+                    Path(target), gguf_variant, "Downloaded", model.display_name
+                )
+                if entry is not None:
+                    entries.append(entry)
+                continue
+            target = _gguf_load_target(target)
         entries.append(
             ModelEntry(
                 "Downloaded",

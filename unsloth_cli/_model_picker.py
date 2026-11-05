@@ -8,6 +8,8 @@ from typing import Callable, List, Optional
 
 import typer
 
+from unsloth_cli._model_catalog import ModelEntry
+
 
 def _is_gguf_entry(entry) -> bool:
     if entry.detail.lower() == "gguf":
@@ -49,15 +51,15 @@ def quiet_inventory_logs() -> None:
     structlog.configure(wrapper_class = structlog.make_filtering_bound_logger(level))
 
 
-def pick_local_model(
+def pick_model_entry(
     console,
     *,
     prompt: str = "Chat with",
     empty_hint: str = "No local models found. Pass a model id or path: `unsloth chat <model>`.",
     keep: Optional[Callable[[object], bool]] = None,
     entries: Optional[List] = None,
-) -> str:
-    """Print the device's chat models with numbers and return the chosen one's load target.
+) -> ModelEntry:
+    """Print the device's chat models with numbers and return the chosen entry.
 
     Callers put the Studio backend on sys.path first (ensure_studio_backend_path): the catalog
     reads the Studio inventory layer, imported here so `unsloth --help` never pays for it.
@@ -89,7 +91,7 @@ def pick_local_model(
         except (EOFError, KeyboardInterrupt):
             raise typer.Exit(code = 1)
         if not raw:
-            return entries[0].model
+            return entries[0]
         if raw.isdecimal():
             try:
                 index = int(raw)
@@ -97,17 +99,5 @@ def pick_local_model(
                 pass  # Python limits the length of integer strings.
             else:
                 if 1 <= index <= len(entries):
-                    return entries[index - 1].model
+                    return entries[index - 1]
         console.print(f"Pick a number between 1 and {len(entries)}.", style = "yellow")
-
-
-def pick_gguf_model(
-    console,
-    *,
-    prompt: str,
-    empty_hint: str,
-    entries: Optional[List] = None,
-) -> str:
-    return pick_local_model(
-        console, prompt = prompt, empty_hint = empty_hint, keep = _is_gguf_entry, entries = entries
-    )

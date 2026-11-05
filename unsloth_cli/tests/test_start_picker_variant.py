@@ -176,7 +176,23 @@ def test_cached_picker_preserves_path_qualified_selector(cached_gguf_pick):
     build.mkdir()
     (build / "tiny-Q8_0.gguf").write_bytes(b"GGUF" + bytes(4092))
     [entry] = catalog.list_chat_models(gguf_variant = "other-build/tiny-Q8_0.gguf")
-    assert entry.model == str(snapshot)
+    assert entry.model == str(build / "tiny-Q8_0.gguf")
+    assert entry.file_variant == "tiny-Q8_0.gguf"
+
+
+def test_auto_start_keeps_the_resolved_duplicate_family(
+    cached_gguf_pick, picker, fake_studio, monkeypatch
+):
+    directory = Path(cached_gguf_pick).parent / "Q8_0"
+    directory.mkdir()
+    for name in ("a-Q8_0.gguf", "b-Q8_0.gguf"):
+        (directory / name).write_bytes(b"GGUF" + bytes(4092))
+    load = start.LoadOptions(gguf_variant = "Q8_0/b-Q8_0.gguf")
+    attempts = []
+    with pytest.raises(typer.Exit) as error:
+        _connect_picked("auto-start", load, picker, fake_studio, monkeypatch, attempts)
+    assert error.value.exit_code == 7
+    assert attempts == [(str(directory / "b-Q8_0.gguf"), load._replace(gguf_variant = "b-Q8_0.gguf"))]
 
 
 @pytest.mark.parametrize("mode", ["idle-server", "auto-start"])
@@ -252,6 +268,7 @@ def test_picked_repo_finds_requested_quant_outside_main(
         ("tiny-NVFP4-4.25bpw.gguf", "NVFP4-4.25bpw"),
         ("NVFP4/model.gguf", "NVFP4"),
         ("Q6_K/build/model.gguf", "Q6_K"),
+        ("Q8_0/b-Q8_0.gguf", "Q8_0/b-Q8_0.gguf"),
         ("other-build/tiny-Q8_0.gguf", "other-build/tiny-Q8_0.gguf"),
     ],
 )
@@ -268,6 +285,8 @@ def test_agent_picker_preload_agrees_with_local_loader(
     expected = snapshot / filename
     expected.parent.mkdir(parents = True, exist_ok = True)
     expected.write_bytes(b"GGUF" + bytes(4092))
+    if filename == "Q8_0/b-Q8_0.gguf":
+        (expected.parent / "a-Q8_0.gguf").write_bytes(b"GGUF" + bytes(4092))
     assert _find_local_gguf_by_variant(str(snapshot), selector) == str(expected)
     _empty_server(fake_studio, monkeypatch)
     previous = start._http_json
@@ -283,6 +302,7 @@ def test_agent_picker_preload_agrees_with_local_loader(
     result = CliRunner().invoke(start.start_app, [agent, "--gguf-variant", selector, "--no-launch"])
     assert result.exit_code == 0, result.output
     [payload] = _loads(fake_studio)
+    assert payload["model_path"] == str(expected)
     assert _find_local_gguf_by_variant(payload["model_path"], payload["gguf_variant"]) == str(
         expected
     )

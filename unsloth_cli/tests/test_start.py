@@ -11690,7 +11690,9 @@ def test_openclaw_memory_search_clears_a_stale_external_fallback(
 
 
 def test_picked_gguf_accepts_packed_and_grouped_quants(tmp_path):
+    from unsloth_cli._model_catalog import ModelEntry
     from unsloth_cli._inference import ensure_studio_backend_path
+
     ensure_studio_backend_path(seed_cache_env = False)
     for name, label in (
         ("Ternary-Bonsai-8B-PQ2_0.gguf", "PQ2_0"),
@@ -11702,7 +11704,10 @@ def test_picked_gguf_accepts_packed_and_grouped_quants(tmp_path):
         file = tmp_path / name
         file.write_bytes(b"GGUF" + bytes(4092))
         load = start.LoadOptions(gguf_variant = label)
-        assert start._picked_load_options(str(file), load) == load
+        assert (
+            start._picked_load_options(ModelEntry("Downloaded", name, "gguf", str(file)), load)
+            == load
+        )
 
 
 GiB = 1024**3

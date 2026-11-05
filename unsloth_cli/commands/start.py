@@ -25,7 +25,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Literal, NamedTuple, NoReturn, Optional
+from typing import TYPE_CHECKING, Literal, NamedTuple, NoReturn, Optional
 from urllib.parse import quote, urlencode, urlparse
 
 import click
@@ -48,6 +48,9 @@ from unsloth_cli._inference import (
     urlopen_no_redirect,
     verify_studio_identity,
 )
+
+if TYPE_CHECKING:
+    from unsloth_cli._model_catalog import ModelEntry
 
 start_app = typer.Typer(
     help = "Start a coding agent against a running Unsloth server.",
@@ -4980,31 +4983,20 @@ def _can_ask_for_model() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _picked_load_options(model: Optional[str], load: LoadOptions) -> LoadOptions:
-    variant = load.gguf_variant
-    if not model or not variant:
+def _picked_load_options(entry: "ModelEntry", load: LoadOptions) -> LoadOptions:
+    variant = entry.file_variant or load.gguf_variant
+    if not variant:
         return load
     from unsloth_cli._model_catalog import _is_gguf_file
-    from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
+    from utils.models.model_config import _direct_gguf_for_variant
 
-    if _is_gguf_file(model):
-        if _direct_gguf_for_variant(model, variant) is None:
-            _fail(
-                f"Selected GGUF file {model} cannot use --gguf-variant {variant}. "
-                "Choose the matching file, or pass --model naming the repository or directory "
-                "to select a different quant."
-            )
-    elif Path(model).is_dir():
-        from hub.utils.gguf import gguf_variant_family
-
-        # Directory preflight advertises shard-stripped stems. Preserve the exact file selected.
-        selected = _find_local_gguf_by_variant(model, variant)
-        if selected and Path(selected).is_relative_to(Path(model).absolute()):
-            relative = Path(selected).relative_to(Path(model).absolute()).as_posix()
-            stem = gguf_variant_family(relative)
-            if _find_local_gguf_by_variant(model, stem) == selected:
-                return load._replace(gguf_variant = stem)
-    return load
+    if _is_gguf_file(entry.model) and _direct_gguf_for_variant(entry.model, variant) is None:
+        _fail(
+            f"Selected GGUF file {entry.model} cannot use --gguf-variant {variant}. "
+            "Choose the matching file, or pass --model naming the repository or directory "
+            "to select a different quant."
+        )
+    return load._replace(gguf_variant = variant)
 
 
 def _allowed_picker_models(base: str, key: str, models: list[str]) -> set:
@@ -5026,13 +5018,13 @@ def _ask_for_local_model(
     account: Optional[dict] = None,
     base: Optional[str] = None,
     key: Optional[str] = None,
-) -> str:
+) -> "ModelEntry":
     """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
     from rich.console import Console
 
     # No cache seeding: its pins would reach the agent and an auto-started server as if user-set, and the catalog resolves the cache without them.
     ensure_studio_backend_path(seed_cache_env = False)
-    from unsloth_cli._model_picker import pick_gguf_model, pick_local_model, quiet_inventory_logs
+    from unsloth_cli._model_picker import _is_gguf_entry, pick_model_entry, quiet_inventory_logs
 
     quiet_inventory_logs()
 
@@ -5044,7 +5036,7 @@ def _ask_for_local_model(
     if gguf_variant:
         hint = f"No {kind} found for --gguf-variant {gguf_variant}. Pass --model explicitly to select one."
     typer.echo(reason)
-    picker = pick_gguf_model if gguf_only else pick_local_model
+    picker = functools.partial(pick_model_entry, keep = _is_gguf_entry if gguf_only else None)
 
     def choose(check_access: bool):
         from unsloth_cli._model_catalog import list_chat_models
@@ -5080,7 +5072,7 @@ def _pick_model_to_auto_start(
     launch: bool,
     gguf_only: bool,
     gguf_variant: Optional[str] = None,
-) -> Optional[str]:
+) -> Optional["ModelEntry"]:
     """With no server running, the pick replaces --model so the auto-start path serves it."""
     if not (serve and launch and _can_ask_for_model()):
         return None
@@ -5115,7 +5107,7 @@ def _pick_model_for_idle_server(
     key: str,
     gguf_only: bool,
     gguf_variant: Optional[str] = None,
-) -> Optional[str]:
+) -> Optional["ModelEntry"]:
     """With a local server serving no chat model, the pick replaces --model and is loaded into it."""
     if not _can_ask_for_model():
         return None
@@ -5164,9 +5156,11 @@ def _connect(
     _refuse_npu_model(model)
     local_model_picked = False
     if model is None:
-        model = _pick_model_to_auto_start(serve, launch, gguf_only, load.gguf_variant)
-        load = _picked_load_options(model, load)
-        local_model_picked = model is not None
+        picked = _pick_model_to_auto_start(serve, launch, gguf_only, load.gguf_variant)
+        if picked is not None:
+            model = picked.model
+            load = _picked_load_options(picked, load)
+            local_model_picked = True
     requested = model
     explicit_connection = bool(model) and model.startswith(_CONNECTION_MODEL_PREFIX)
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`. Split it before we match or serve so the attach path resolves against the already-loaded `org/name` (listed without the suffix) instead of reloading a `:`-suffixed repo id, which Unsloth rejects and which would evict a model another session is using.
@@ -5206,7 +5200,7 @@ def _connect(
             picked = _pick_model_for_idle_server(base, key, gguf_only, load.gguf_variant)
             if picked is not None:
                 load = _picked_load_options(picked, load)
-                model = requested = picked
+                model = requested = picked.model
                 local_model_picked = True
         connection = (
             None
