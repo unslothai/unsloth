@@ -326,5 +326,12 @@ test("light glass draws no grey outlines outside the composer", () => {
 
 test("light glass pages drop outlines from boxed panels but keep checkboxes", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\):not\(\[data-slot="checkbox"\], \[role="checkbox"\], \[role="radio"\], \[role="switch"\]\) \{\n  border-color: transparent;/);
+	assert.match(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\):not\(\[data-slot="checkbox"\], \[role="checkbox"\], \[role="radio"\], \[role="switch"\], :focus-visible, \[aria-invalid="true"\]\) \{\n  border-color: transparent;/);
+});
+
+test("light glass border clearing leaves focused and invalid fields their ring border", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const cleared = [...css.matchAll(/([^{}]*)\{\n  border-color: transparent;\n\}/g)].map(([, sel]) => sel).filter((sel) => sel.includes('[data-wallpaper-route="page"]') && sel.includes(":not(.dark)"));
+	assert.ok(cleared.length >= 2);
+	for (const sel of cleared) assert.match(sel, /:focus-visible, \[aria-invalid="true"\]\)/, sel);
 });

@@ -6622,14 +6622,15 @@ html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where(.elevated-card, [class~="bg-card"], [class*="dark:bg-card"], [data-slot="input"], .panel-field, .field-soft, [data-slot="button"], .glass-inset, .library-card) {
+/* Focused and invalid fields keep their ring border (focus-visible:border-ring, aria-invalid). */
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where(.elevated-card, [class~="bg-card"], [class*="dark:bg-card"], [data-slot="input"], .panel-field, .field-soft, [data-slot="button"], .glass-inset, .library-card):not(:focus-visible, [aria-invalid="true"]) {
   border-color: transparent;
 }
 html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .glass-divider {
   border-color: var(--page-glass-divider);
 }
 /* Boxed panels (the API code sample and the like) lose their outline too; straight dividers and checkable controls keep theirs. */
-html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where([class~="border"][class*="rounded"]):not([data-slot="checkbox"], [role="checkbox"], [role="radio"], [role="switch"]) {
+html[data-glass]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] :where([class~="border"][class*="rounded"]):not([data-slot="checkbox"], [role="checkbox"], [role="radio"], [role="switch"], :focus-visible, [aria-invalid="true"]) {
   border-color: transparent;
 }
 /* API cards on light glass: no outline, a thinner white fill so the frost shows, and the Liquid 3D inner light (top highlight, top and bottom glow) as the glass edge. */
