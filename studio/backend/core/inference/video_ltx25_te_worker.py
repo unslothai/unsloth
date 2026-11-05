@@ -641,7 +641,9 @@ def _stream_need_mib(parts: tuple[list, list, list]) -> int:
 
 
 def _encode_plan(
-    config: dict, model: Any, server_reserved_mib: Optional[int] = None
+    config: dict,
+    model: Any,
+    server_reserved_mib: Optional[int] = None,
 ) -> tuple[str, Optional[tuple[list, list, list]]]:
     """``(device, parts)``: ``_encode_device``'s choice, except that an encoder too big to onload whole streams its
     decoder layers through the card (``parts`` set) when the resident modules and two layers fit, instead of running
@@ -677,9 +679,12 @@ class _Onload:
         self.saved: list = []
         self.moved: dict = {}
 
-    def add(self, modules: list, recurse: bool = True) -> None:
+    def add(
+        self,
+        modules: list,
+        recurse: bool = True,
+    ) -> None:
         import torch
-
         for module in modules:
             for sub in module.modules() if recurse else (module,):
                 for table in _tensor_tables(sub):
@@ -776,9 +781,7 @@ def _pack_hidden_states(model: Any, ids: Any, mask: Any) -> Any:
     the encoder config sets ``use_cache``, which would build and hold a DynamicCache this single forward never reads."""
     import torch
 
-    out = model(
-        input_ids = ids, attention_mask = mask, output_hidden_states = True, use_cache = False
-    )
+    out = model(input_ids = ids, attention_mask = mask, output_hidden_states = True, use_cache = False)
     return torch.stack(out.hidden_states, dim = -1).flatten(2, 3).to(dtype = model.dtype)
 
 
@@ -844,7 +847,10 @@ def _encode_on(
     if onloaded:
         model.to(device)
     try:
-        with _streamed(stream, device) if stream is not None else _no_context(), torch.inference_mode():
+        with (
+            _streamed(stream, device) if stream is not None else _no_context(),
+            torch.inference_mode(),
+        ):
             ids = inputs.input_ids.to(device)
             mask = inputs.attention_mask.to(device)
             embeds = _pack_hidden_states(model, ids, mask)
@@ -865,7 +871,6 @@ def _encode_on(
 
 def _no_context() -> Any:
     import contextlib
-
     return contextlib.nullcontext()
 
 

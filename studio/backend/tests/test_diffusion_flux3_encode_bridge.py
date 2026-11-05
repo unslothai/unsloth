@@ -36,7 +36,9 @@ class _TextStep:
         pad_multiple = 80,
         hidden_states_layers = (4, 8, 12),
     ):
-        _TextStep.calls.append((text_encoder, prompt, max_sequence_length, pad_multiple, tuple(hidden_states_layers)))
+        _TextStep.calls.append(
+            (text_encoder, prompt, max_sequence_length, pad_multiple, tuple(hidden_states_layers))
+        )
         seed = sum(map(ord, prompt)) + len(hidden_states_layers)
         return torch.full((1, pad_multiple, 3), float(seed))
 
@@ -53,7 +55,11 @@ class _Modular:
         for name, value in updates.items():
             setattr(self, name, value)
 
-    def __call__(self, output = None, **kwargs):
+    def __call__(
+        self,
+        output = None,
+        **kwargs,
+    ):
         step = self._blocks.sub_blocks["text_encoder"]
         embeds = step._get_qwen3_vl_prompt_embeds(
             text_encoder = self.text_encoder,
@@ -86,9 +92,7 @@ class _Face(f3._Flux3KleinPipelineMixin):
 @pytest.fixture
 def face(monkeypatch):
     _TextStep.calls = []
-    monkeypatch.setattr(
-        f3, "flux3_blocks", lambda name: SimpleNamespace(init_pipeline = _Modular)
-    )
+    monkeypatch.setattr(f3, "flux3_blocks", lambda name: SimpleNamespace(init_pipeline = _Modular))
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PROMPT_CACHE", raising = False)
     return _Face()
 
@@ -114,7 +118,12 @@ def test_the_text_step_encodes_through_encode_prompt(face, monkeypatch):
     ]
     # Same helper, same arguments, same tensor as the step running on its own.
     assert _TextStep.calls == [(face.text_encoder, "a fox", 512, 80, LAYERS)]
-    assert torch.equal(out.images[0], _TextStep._get_qwen3_vl_prompt_embeds(None, None, "a fox", hidden_states_layers = LAYERS, pad_multiple = 80))
+    assert torch.equal(
+        out.images[0],
+        _TextStep._get_qwen3_vl_prompt_embeds(
+            None, None, "a fox", hidden_states_layers = LAYERS, pad_multiple = 80
+        ),
+    )
 
 
 def test_a_returning_prompt_skips_the_encoder_once_the_prompt_cache_is_on(face):
@@ -146,7 +155,12 @@ def test_encode_prompt_defaults_come_from_the_step_and_the_probe_can_call_it(fac
 
 
 def test_an_unknown_helper_keeps_the_step_unbridged(face, monkeypatch):
-    def other_helper(text_encoder, tokenizer, prompt, device = None):
+    def other_helper(
+        text_encoder,
+        tokenizer,
+        prompt,
+        device = None,
+    ):
         return torch.zeros(1)
 
     monkeypatch.setattr(_TextStep, "_get_qwen3_vl_prompt_embeds", staticmethod(other_helper))

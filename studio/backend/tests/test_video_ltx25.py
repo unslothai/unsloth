@@ -2024,8 +2024,15 @@ class _FakeEncoderModel:
         self.moves.append(str(device))
         return self
 
-    def __call__(self, input_ids, attention_mask, output_hidden_states, use_cache = None):
+    def __call__(
+        self,
+        input_ids,
+        attention_mask,
+        output_hidden_states,
+        use_cache = None,
+    ):
         import torch
+
         self.use_cache = use_cache
         b, n = input_ids.shape
         return SimpleNamespace(
@@ -2464,7 +2471,9 @@ def _stack_model(width = 8, layers = 4):
             torch.manual_seed(0)
             language = torch.nn.Module()
             language.embed_tokens = torch.nn.Embedding(32, width)
-            language.layers = torch.nn.ModuleList(torch.nn.Linear(width, width) for _ in range(layers))
+            language.layers = torch.nn.ModuleList(
+                torch.nn.Linear(width, width) for _ in range(layers)
+            )
             language.norm = torch.nn.LayerNorm(width)
             language.register_buffer("scale", torch.tensor(0.5))
             inner = torch.nn.Module()
@@ -2476,7 +2485,13 @@ def _stack_model(width = 8, layers = 4):
             self.dtype = torch.float32
             self.layer_devices = []
 
-        def forward(self, input_ids, attention_mask, output_hidden_states, use_cache = None):
+        def forward(
+            self,
+            input_ids,
+            attention_mask,
+            output_hidden_states,
+            use_cache = None,
+        ):
             language = self.model.language_model
             h = language.embed_tokens(input_ids) * language.scale
             states = [h]
@@ -2584,7 +2599,9 @@ def test_a_streamed_encode_never_moves_the_whole_encoder(monkeypatch):
     embeds, mask, device = worker._encode_on(_FakeTokenizer(), model, config, ["a fox"], 6)
     assert moves == [] and config["_streamed"] is True
     with torch.inference_mode():
-        plain = worker._pack_hidden_states(model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long))
+        plain = worker._pack_hidden_states(
+            model, torch.ones(1, 6, dtype = torch.long), torch.ones(1, 6, dtype = torch.long)
+        )
     assert torch.equal(embeds, plain)
 
 
@@ -2593,11 +2610,16 @@ class _CachedClient:
 
     def __init__(self, dtype):
         import torch
-
         self.embeds = torch.arange(24, dtype = dtype).view(1, 4, 6)
         self.mask = torch.ones(1, 4, dtype = torch.long)
 
-    def encode(self, texts, max_len, cancel = None, copy = True):
+    def encode(
+        self,
+        texts,
+        max_len,
+        cancel = None,
+        copy = True,
+    ):
         return self.embeds, self.mask
 
 
@@ -2619,7 +2641,10 @@ def test_one_video_per_prompt_skips_the_repeat_copy_unless_it_would_alias_the_ca
         )
         v25.install_remote_encode_prompt(pipe, client)
         return pipe.encode_prompt(
-            prompt = "a fox", do_classifier_free_guidance = False, num_videos_per_prompt = count, max_sequence_length = 4
+            prompt = "a fox",
+            do_classifier_free_guidance = False,
+            num_videos_per_prompt = count,
+            max_sequence_length = 4,
         )[0]
 
     # A casting .to already made a private copy: no second (embedding-sized) copy.

@@ -393,7 +393,9 @@ class _Flux3KleinPipelineMixin:
                 None,
             )
             if hidden_states_layers is None:
-                raise RuntimeError("this diffusers build's FLUX.3 text step names no default layers")
+                raise RuntimeError(
+                    "this diffusers build's FLUX.3 text step names no default layers"
+                )
         with torch.no_grad():
             return helper(
                 text_encoder = self.text_encoder,
