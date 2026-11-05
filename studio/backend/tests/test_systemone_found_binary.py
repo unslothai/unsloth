@@ -34,7 +34,6 @@ def test_a_found_binary_is_searched_for_once_per_answer(searches):
             "/opt/llama.cpp/llama-server"
         ] * 5
     assert len(searches.calls) == 1
-    # The next answer searches again, so an install or removal in between is seen.
     searches.answer["binary"] = "/new/llama-server"
     with native_worker.reuse_found_binary():
         assert native_worker.resolve_binary() == "/new/llama-server"
@@ -42,7 +41,6 @@ def test_a_found_binary_is_searched_for_once_per_answer(searches):
 
 
 def test_a_miss_searches_every_time(searches):
-    # A miss can log why (a pinned folder without the binary), once per lookup as before.
     searches.answer["binary"] = None
     with native_worker.reuse_found_binary():
         assert [native_worker.resolve_binary() for _ in range(3)] == [None] * 3
@@ -68,7 +66,6 @@ def test_nested_scopes_and_threads_search_on_their_own(searches):
             native_worker.resolve_binary()
             native_worker.resolve_binary()
         native_worker.resolve_binary()
-        # A background thread (the llama.cpp GPU re-probe) does not see this answer's scope.
         thread = threading.Thread(target = native_worker.resolve_binary)
         thread.start()
         thread.join()
