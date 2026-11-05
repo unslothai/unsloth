@@ -661,6 +661,8 @@ async def _recipe_heldout(
         "prompt_column": mapped
         if prompt_col == MAPPED_PROMPT
         else ("" if prompt_col == ALPACA_PROMPT else prompt_col),
+        # Rows sharing a question can ask different tasks through their own system message.
+        "system_column": system_col or "",
     }
 
 
@@ -823,4 +825,6 @@ async def benchmark(ctx: NodeContext) -> dict:
     ]
     if "prompt_column" in found:
         failures["prompt_column"] = found["prompt_column"]
+    if found.get("system_column"):
+        failures["system_column"] = found["system_column"]
     return {"score": _percent(found["score"]), "results": results, "failures": failures}

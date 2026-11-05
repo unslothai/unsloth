@@ -299,19 +299,35 @@ async def finetune(ctx: NodeContext) -> dict:
         metrics["holdout_rows"] = holdout["rows"]
     checkpoint = {"kind": "checkpoint", "name": run, "base_model": base_model}
     row = None
-    if objective == "grpo":
+    mapping = config.get("custom_format_mapping")
+    automatic = objective == "sft" and not mapping and config.get("format_type") in (None, "auto")
+    if objective == "grpo" or automatic:
         from core.training.account_jobs import account_hf_token
 
-        # Whether a prompt carried its own system message is in the rows: read the first, as the
-        # formatter saw it (an Arrow column holds one type, so one row tells text from conversation).
+        # Whether a prompt carried its own system message, and which roles automatic formatting
+        # gave the columns, is in the rows: read the first, as the formatter saw it (an Arrow
+        # column holds one type, so one row tells text from conversation).
         token = account_hf_token(getattr(ctx.caller, "hf_token", None))
         row = await asyncio.to_thread(_first_row, dataset, token)
     system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
-    checkpoint.update(
-        mapping_facts(config.get("custom_format_mapping"), config.get("format_type"), objective)
-    )
+    if automatic:
+        mapping = await asyncio.to_thread(auto_mapping, row)
+    elif objective == "grpo" and isinstance(row, dict):
+        from core.training.rl import resolve_role_columns
+        try:
+            # The columns GRPO read, mapped or found by name.
+            found = resolve_role_columns(
+                list(row), "grpo", mapping if isinstance(mapping, dict) else None
+            )
+            mapping = {
+                **{c: r for r, c in found.items()},
+                **{k: v for k, v in (mapping or {}).items() if str(k).startswith("__")},
+            }
+        except ValueError:
+            pass
+    checkpoint.update(mapping_facts(mapping, config.get("format_type"), objective))
     return {
         "checkpoint": checkpoint,
         "metrics": metrics,
@@ -424,6 +440,31 @@ def drafter_request(params: dict) -> dict:
     }
 
 
+def auto_mapping(row: Any) -> dict:
+    """The roles automatic formatting gives the columns of rows in no known format (``context`` as
+    the system message, say), read off the first row as the formatter reads it; {} otherwise."""
+    if not isinstance(row, dict) or not row:
+        return {}
+    try:
+        from datasets import Dataset
+
+        from utils.datasets.format_detection import (
+            detect_custom_format_heuristic,
+            detect_dataset_format,
+        )
+
+        rows = Dataset.from_list([row])
+        if detect_dataset_format(rows)["format"] != "unknown":
+            return {}
+        return detect_custom_format_heuristic(rows) or {}
+    except Exception:
+        return {}
+
+
+# RL roles as the chat roles Benchmark asks with: the preferred answer is the reference.
+_RL_AS_CHAT = {"prompt": "user", "answer": "assistant", "chosen": "assistant", "system": "system"}
+
+
 def mapping_facts(
     mapping: Any,
     format_type: Any = "auto",
@@ -436,6 +477,9 @@ def mapping_facts(
         return {}
     from utils.datasets.dataset_utils import _TO_CHATML
 
+    if (objective or "sft") != "sft":
+        # RL formats its rows itself: a dataset format setting does not apply.
+        format_type = "auto"
     # Any `__` metadata selects the template mapping, which drops system columns: its one system
     # prompt is `__system_prompt`, the checkpoint's system_prompt. An Alpaca format makes a system
     # column the Alpaca input, part of the question.
@@ -444,25 +488,24 @@ def mapping_facts(
         # SFT's formatter reads role aliases: an `input` column is the system message.
         roles = {c: _TO_CHATML.get(role) for c, role in mapping.items() if isinstance(role, str)}
     else:
-        roles = dict(mapping)
+        roles = {c: _RL_AS_CHAT.get(role) for c, role in mapping.items() if isinstance(role, str)}
     per_row = [] if templated else [c for c, role in roles.items() if role == "system"]
     facts = {"system_column": per_row[0] if per_row else ""}
-    if (objective or "sft") == "sft":
-        # The columns that made each row's question and answer: several user columns are one
-        # message per column, or one message of their lines under the template mapping. The
-        # Alpaca format joins them as its instruction, and its system columns as its input.
-        users = [c for c, role in roles.items() if role == "user"]
-        answers = [c for c, role in roles.items() if role == "assistant"]
-        if format_type == "alpaca":
-            inputs = [c for c, role in roles.items() if role == "system"]
-            if users:
-                facts.update(user_columns = users, user_join = "alpaca")
-            if inputs:
-                facts["input_columns"] = inputs
-        elif users:
-            facts.update(user_columns = users, user_join = "lines" if templated else "turns")
-        if answers:
-            facts["answer_columns"] = answers
+    # The columns that made each row's question and answer: several user columns are one
+    # message per column, or one message of their lines under the template mapping. The
+    # Alpaca format joins them as its instruction, and its system columns as its input.
+    users = [c for c, role in roles.items() if role == "user"]
+    answers = [c for c, role in roles.items() if role == "assistant"]
+    if format_type == "alpaca":
+        inputs = [c for c, role in roles.items() if role == "system"]
+        if users:
+            facts.update(user_columns = users, user_join = "alpaca")
+        if inputs:
+            facts["input_columns"] = inputs
+    elif users:
+        facts.update(user_columns = users, user_join = "lines" if templated else "turns")
+    if answers:
+        facts["answer_columns"] = answers
     labels = mapping.get("__label_mapping")
     if isinstance(labels, dict) and labels:
         facts["label_mapping"] = labels

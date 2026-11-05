@@ -789,7 +789,9 @@ async def test_later_rounds_train_without_the_frozen_test_questions():
     test = sorted({p for split, rows in scored if split == "test" for p in rows})
     # Round 1 makes the split; every later round is told its test questions.
     assert excluded[0] is None
-    assert excluded[1:] and all(e == {"column": "", "questions": test} for e in excluded[1:])
+    assert excluded[1:] and all(
+        e == {"column": "", "system": "", "questions": test} for e in excluded[1:]
+    )
 
 
 def test_a_column_name_with_spaces_reads_the_same_column_benchmark_scored():
@@ -915,3 +917,51 @@ async def test_the_loop_knows_test_rows_by_the_mapped_columns_benchmark_reports(
     rs = await _run(eng, loop_doc(rounds = 2, target = 100))
     assert rs.status == "completed", rs.error
     assert excluded[1]["column"] == spec and excluded[1]["questions"]
+
+
+def test_rows_sharing_a_question_are_told_apart_by_their_system_message():
+    rows = [
+        {"system": f"Reply with {c}", "prompt": "What label?"} for c in ("RED", "BLUE", "GREEN")
+    ]
+    frozen = loop_rounds.questions(rows[:1], "", "system")
+    exclude = {"column": "", "system": "system", "questions": frozen}
+    assert loop_rounds.without_questions(rows, exclude) == rows[1:]
+    # The same row as a probe failure is still the test row, and is dropped.
+    failure = {**rows[0], "model_output": "BLUE"}
+    assert loop_rounds.drop_test_rows([failure], rows[:1], "", "system") == []
+    # A conversation prompt's own system turn tells rows apart too.
+    chats = [
+        {
+            "prompt": [
+                {"role": "system", "content": f"Reply with {c}"},
+                {"role": "user", "content": "What label?"},
+            ]
+        }
+        for c in ("RED", "BLUE")
+    ]
+    assert (
+        loop_rounds.without_questions(
+            chats, {"column": "prompt", "questions": loop_rounds.questions(chats[:1], "prompt")}
+        )
+        == chats[1:]
+    )
+
+
+@run_async
+async def test_the_loop_knows_test_rows_by_the_system_column_benchmark_reports():
+    eng, _, _ = _engine()
+    real_bench, real_train = eng.handlers["test.bench"], eng.handlers["train.finetune"]
+    excluded = []
+
+    async def bench(ctx):
+        found = await real_bench(ctx)
+        return {**found, "failures": {"rows": found["failures"], "system_column": "sys"}}
+
+    async def train(ctx):
+        excluded.append(ctx.inputs.get(loop_rounds.EXCLUDE_INPUT))
+        return await real_train(ctx)
+
+    eng.handlers["test.bench"], eng.handlers["train.finetune"] = bench, train
+    rs = await _run(eng, loop_doc(rounds = 2, target = 100))
+    assert rs.status == "completed", rs.error
+    assert excluded[1]["system"] == "sys"

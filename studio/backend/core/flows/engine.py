@@ -2386,6 +2386,8 @@ class FlowEngine:
         # The question column: the score step's setting, else the one its failures report it asked
         # (a column training read as the system message is not it).
         asked_col: Any = str(scorer_params.get("prompt_column") or "")
+        # The column each row's own system message came from, as the score step reports it.
+        asked_system = ""
         try:
             for r in range(rounds):
                 if rs.cancelled:
@@ -2422,7 +2424,11 @@ class FlowEngine:
                     override(
                         held_src[0],
                         loop_rounds.EXCLUDE_INPUT,
-                        {"column": column, "questions": loop_rounds.questions(test_rows, column)},
+                        {
+                            "column": column,
+                            "system": asked_system,
+                            "questions": loop_rounds.questions(test_rows, column, asked_system),
+                        },
                     )
                 # The scored Fine-tune's start, not whichever trainer comes first.
                 continued = (
@@ -2482,6 +2488,8 @@ class FlowEngine:
                     reported = fed_back.get("prompt_column")
                     # A dict: the several mapped columns Benchmark built each question from.
                     asked_col = reported if isinstance(reported, dict) else str(reported or "")
+                if not asked_system and isinstance(fed_back, dict):
+                    asked_system = str(fed_back.get("system_column") or "")
                 test_layer = Env(child)
                 test_out = await score(test, test_layer, (*key, 1))
                 if after:
@@ -2493,6 +2501,7 @@ class FlowEngine:
                     await self._dataset_rows(ctx, found),
                     test_rows,
                     asked_col,
+                    asked_system,
                 )
                 entry = {
                     "round": r + 1,

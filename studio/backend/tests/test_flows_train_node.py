@@ -1491,7 +1491,9 @@ def test_an_sft_input_role_is_recorded_as_the_system_column():
     # RL objectives read only the literal role.
     assert training.mapping_facts(mapping, "auto", "grpo") == {"system_column": ""}
     assert training.mapping_facts({"q": "prompt", "rule": "system"}, "auto", "grpo") == {
-        "system_column": "rule"
+        "system_column": "rule",
+        "user_columns": ["q"],
+        "user_join": "turns",
     }
 
 
@@ -1505,3 +1507,33 @@ def test_the_input_role_is_trained_and_benchmarked_as_the_system_message():
     trained = _apply_user_mapping(Dataset.from_list([row]), mapping)[0]["conversations"]
     column = training.mapping_facts(mapping)["system_column"]
     assert trained[0] == {"role": "system", "content": row[column]}
+
+
+def test_automatic_formatting_s_roles_reach_the_checkpoint():
+    from datasets import Dataset
+
+    from utils.datasets.dataset_utils import format_dataset
+
+    row = {
+        "context": "The parcel is being held in customs at the border.",
+        "question": "Where is the parcel?",
+        "answer": "customs",
+    }
+    mapping = training.auto_mapping(row)
+    trained = format_dataset(Dataset.from_list([row]))["dataset"][0]["conversations"]
+    facts = training.mapping_facts(mapping)
+    # The column training sent as the system message is the one Benchmark asks with.
+    system = [t for t in trained if t["role"] == "system"]
+    assert system and row[facts["system_column"]] == system[0]["content"]
+    assert facts["user_columns"] == ["question"] and facts["answer_columns"] == ["answer"]
+    # A row in a known format names no roles of its own.
+    assert training.auto_mapping({"instruction": "a", "output": "b"}) == {}
+
+
+def test_grpo_prompt_and_answer_roles_reach_the_checkpoint():
+    assert training.mapping_facts({"ticket": "prompt", "queue": "answer"}, "auto", "grpo") == {
+        "system_column": "",
+        "user_columns": ["ticket"],
+        "user_join": "turns",
+        "answer_columns": ["queue"],
+    }

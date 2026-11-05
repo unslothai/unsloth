@@ -131,18 +131,44 @@ def _strings(value: Any) -> list[str]:
     return found
 
 
-def _asked(row: Any, prompt_column: Any = "") -> str:
-    """The question a row asks (an Alpaca row's instruction plus input), as Benchmark asked it."""
+def _system_of(row: dict, prompt_column: Any, system_column: str) -> str:
+    """The row's own system message as Benchmark sent it: its system column, else the system turns
+    of a conversation prompt."""
+    from core.benchmark.recipe_heldout import cell_messages
+    from utils.datasets.cells import cell_text
+
+    if system_column and cell_text(row.get(system_column)).strip():
+        return cell_text(row.get(system_column)).strip()
+    if isinstance(prompt_column, str) and prompt_column.strip():
+        turns = cell_messages(row.get(prompt_column.strip())) or []
+        return "\n\n".join(cell_text(t["content"]) for t in turns if t["role"] == "system").strip()
+    return ""
+
+
+def _asked(
+    row: Any,
+    prompt_column: Any = "",
+    system_column: str = "",
+) -> str:
+    """The input a row asks (an Alpaca row's instruction plus input), as Benchmark asked it: its
+    question, after its own system message when it has one (rows sharing a question can ask
+    different tasks through it)."""
     # Read from the row alone, as a test row (which carries no scored question) is read.
     found = failure_row(row, prompt_column, as_scored = False) if isinstance(row, dict) else None
-    return found["failed_prompt"].strip() if found else ""
+    question = found["failed_prompt"].strip() if found else ""
+    system = _system_of(row, prompt_column, system_column) if question else ""
+    return f"{system}\n\n{question}" if system else question
 
 
-def _identifying(row: Any, prompt_column: Any = "") -> frozenset:
+def _identifying(
+    row: Any,
+    prompt_column: Any = "",
+    system_column: str = "",
+) -> frozenset:
     """The long strings that could name one test row: its question, never its answer or labels (a rare
     category would otherwise hide every failure sharing it). An Alpaca row's question is its
     instruction plus input, and its input on its own; the instruction alone is shared by its task."""
-    asked = _asked(row, prompt_column)
+    asked = _asked(row, prompt_column, system_column)
     if asked:
         strings = {asked}
         lowered = {str(k).lower(): v for k, v in row.items()}
@@ -167,33 +193,38 @@ def _identifying(row: Any, prompt_column: Any = "") -> frozenset:
 EXCLUDE_INPUT = "_loop_test_questions"
 
 
-def questions(rows: list[dict], prompt_column: Any = "") -> list[str]:
+def questions(
+    rows: list[dict],
+    prompt_column: Any = "",
+    system_column: str = "",
+) -> list[str]:
     """The questions rows ask, as Benchmark asks them (an Alpaca row's instruction plus input)."""
-    return sorted({q for q in (_asked(row, prompt_column) for row in rows) if q})
+    return sorted({q for q in (_asked(row, prompt_column, system_column) for row in rows) if q})
 
 
 def without_questions(rows: list[dict], exclude: Any) -> list[dict]:
     """``rows`` less those asking one of ``exclude``'s questions, read through its column as the score
-    step reads them (``{"column": ..., "questions": [...]}``)."""
+    step reads them (``{"column": ..., "system": ..., "questions": [...]}``)."""
     if not isinstance(exclude, dict):
         return list(rows)
     banned = {q for q in exclude.get("questions") or [] if isinstance(q, str)}
-    column = exclude.get("column") or ""
-    return [r for r in rows if _asked(r, column) not in banned] if banned else list(rows)
+    column, system = exclude.get("column") or "", str(exclude.get("system") or "")
+    return [r for r in rows if _asked(r, column, system) not in banned] if banned else list(rows)
 
 
 def drop_test_rows(
     failures: list[dict],
     test_rows: list[dict],
     prompt_column: Any = "",
+    system_column: str = "",
 ) -> list[dict]:
     """Guard: a failure asking a question that identifies one test row never reaches the seed.
     A value many test rows share (a fixed Alpaca instruction) identifies none of them."""
     # A test question asked again is a leak at any length and however many test rows ask it.
-    questions = {q for q in (_asked(row, prompt_column) for row in test_rows) if q}
+    questions = {q for q in (_asked(row, prompt_column, system_column) for row in test_rows) if q}
     seen: dict[str, int] = {}
     # A row repeated in the test split is still one row: its question stays banned.
-    distinct = {_identifying(row, prompt_column) for row in test_rows}
+    distinct = {_identifying(row, prompt_column, system_column) for row in test_rows}
     for strings in distinct:
         for s in strings:
             seen[s] = seen.get(s, 0) + 1
@@ -202,7 +233,7 @@ def drop_test_rows(
         return list(failures)
 
     def leaks(failure: dict) -> bool:
-        asked = _asked(failure, prompt_column)
+        asked = _asked(failure, prompt_column, system_column)
         return asked in questions or asked in banned or any(s in banned for s in _strings(failure))
 
     return [f for f in failures if not leaks(f)]
