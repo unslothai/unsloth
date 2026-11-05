@@ -41524,8 +41524,7 @@ class LlamaCppBackend:
             )
             if system_text:
                 template_messages = [{"role": "system", "content": system_text}] + template_messages
-            # A tool round recounts the prompt it just fitted; the loaded server renders it the same.
-            # Admission (prefer_native) counts once per request and keeps its own failover path.
+            # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
             memo_key = (
                 None
                 if prefer_native
