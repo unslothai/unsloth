@@ -246,7 +246,6 @@ def test_read_resource_is_contained_utf8_and_paginated(isolated_skills):
 
 @pytest.mark.parametrize("resource", ["data.jsonl", ".unsloth_attachments/85563b7dcbb0/data.jsonl"])
 def test_missing_resource_says_attachments_are_not_skill_resources(isolated_skills, resource):
-    # A small model retries with an attachment's name or sandbox path after the @mention load.
     home, _ = isolated_skills
     _write_skill(home, "agents", "reader")
 
