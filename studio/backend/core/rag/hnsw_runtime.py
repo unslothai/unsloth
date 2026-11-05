@@ -50,6 +50,11 @@ def _auto_install_off() -> bool:
     return os.environ.get("RAG_VEC_ANN_AUTO_INSTALL", "1").strip().lower() in _OFF
 
 
+def ready() -> bool:
+    """An attempt in this process installed or found the pair."""
+    return _final in _READY
+
+
 def request(on_ready: Callable[[], None]) -> bool:
     """Start one background attempt unless one is running, backing off or settled. True if this call started it."""
     global _inflight, _final

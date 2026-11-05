@@ -125,6 +125,8 @@ _too_big: dict[tuple, int] = {}
 # A failed HNSW build is never retried at the same epoch (it takes minutes).
 _ann_failed: dict[tuple, tuple] = {}
 _awaiting_ann: set[tuple] = set()
+# Pair landed mid-build: _schedule drops a key that is building, so the worker reschedules it after.
+_promote_after_build: set[tuple] = set()
 _bytes = 0
 _lock = threading.Lock()
 _pending: set[tuple] = set()
@@ -204,6 +206,7 @@ def search(conn, db_file: str, scope: str, vector, fetch: int):
             ann = _ann.get(key)
             if entry is not None and entry.epoch == epoch:
                 _entries.move_to_end(key)
+                retry_fetch = key in _awaiting_ann
             else:
                 entry = None
                 # ANN answers only at the reader's exact epoch: rows added elsewhere are not in its delta yet.
@@ -212,12 +215,12 @@ def search(conn, db_file: str, scope: str, vector, fetch: int):
                     if _too_big.get(key) != epoch and _ann_failed.get(key) != epoch:
                         _schedule(key)
                     elif key in _awaiting_ann:
-                        # _too_big stops rebuilds, not the fetch: request() backs off on its own.
                         retry_fetch = True
                 else:
                     _ann.move_to_end(key)
-        if retry_fetch:
-            hnsw_runtime.request(_on_ann_available)
+        # A failed fetch is retried by searches (request() backs off); one that already landed promotes.
+        if retry_fetch and not hnsw_runtime.request(_on_ann_available) and hnsw_runtime.ready():
+            _on_ann_available()
         if entry is not None:
             return _search_entry(np, entry, vector, fetch)
         if ann is not None:
@@ -407,6 +410,9 @@ def _run() -> None:
         finally:
             with _lock:
                 _building.discard(key)
+                if key in _promote_after_build:
+                    _promote_after_build.discard(key)
+                    _schedule(key)
                 _busy -= 1
                 _cond.notify_all()
 
@@ -488,7 +494,10 @@ def _on_ann_available() -> None:
         for key in waiting:
             _too_big.pop(key, None)
             # An exact entry keeps answering until the HNSW build publishes and replaces it.
-            _schedule(key)
+            if key in _building:
+                _promote_after_build.add(key)
+            else:
+                _schedule(key)
 
 
 def _ann_dir(db_file: str) -> str:
@@ -660,6 +669,7 @@ def clear() -> None:
         _too_big.clear()
         _ann_failed.clear()
         _awaiting_ann.clear()
+        _promote_after_build.clear()
         _pending.clear()
         _stale_files.clear()
         _bytes = 0

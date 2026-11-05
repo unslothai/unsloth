@@ -87,14 +87,15 @@ def no_pair(monkeypatch):
     return calls
 
 
-def test_a_missing_pair_keeps_exact_answers_and_asks_for_one_fetch(rag_conn, no_pair):
+def test_a_missing_pair_keeps_exact_answers_and_asks_for_the_fetch(rag_conn, no_pair):
     rows = _vectors(300)
     _add(rag_conn, "d", rows)
     _dense(rag_conn, rows[3])
-    assert vec_cache.drain(60)
+    assert vec_cache.drain(60) and len(no_pair) == 1
     hits, scanned = _dense(rag_conn, rows[3])
     assert not scanned and hits[0][0] == "d:3" and vec_cache._entries
-    assert len(no_pair) == 1 and not vec_cache._ann
+    # Searches of a waiting scope ask again; hnsw_runtime dedupes and backs off, nothing is rebuilt.
+    assert len(no_pair) == 2 and not vec_cache._ann and vec_cache.drain(60)
 
 
 def test_the_fetch_landing_moves_a_waiting_scope_to_hnsw_without_a_write(
@@ -168,6 +169,60 @@ def test_a_waiting_scope_retries_a_transient_fetch_failure_without_rebuilding(
     _, scanned = _dense(rag_conn, rows[2])
     _settle()
     assert scanned and runs == [1, 1] and len(builds) == 1
+
+
+def test_an_exact_cached_scope_retries_a_failed_fetch_then_moves_to_hnsw(rag_conn, monkeypatch):
+    pytest.importorskip("usearch")
+    real = vec_ann.usearch
+    state = {"avail": False}
+    monkeypatch.setattr(vec_ann, "usearch", lambda: real() if state["avail"] else None)
+    runs = []
+
+    def installer():
+        runs.append(1)
+        if len(runs) == 1:
+            return {"status": "failed"}
+        state["avail"] = True
+        return {"status": "ready"}
+
+    monkeypatch.setattr(hnsw_runtime, "_run_installer", installer)
+    rows = _vectors(300)
+    _add(rag_conn, "d", rows)
+    _dense(rag_conn, rows[6])
+    assert vec_cache.drain(60)
+    _settle()
+    _, scanned = _dense(rag_conn, rows[6])
+    _settle()
+    assert not scanned and vec_cache._entries and runs == [1]
+    monkeypatch.setattr(hnsw_runtime, "_retry_after", 0.0)
+    _dense(rag_conn, rows[6])
+    _settle()
+    assert runs == [1, 1] and vec_cache.drain(60)
+    assert vec_cache._ann and not vec_cache._entries
+    hits, scanned = _dense(rag_conn, rows[6])
+    assert not scanned and hits[0][0] == "d:6"
+
+
+def test_a_pair_landing_mid_build_still_promotes_the_scope_after(rag_conn, monkeypatch):
+    pytest.importorskip("usearch")
+    real = vec_ann.usearch
+    state = {"avail": False}
+    monkeypatch.setattr(vec_ann, "usearch", lambda: real() if state["avail"] else None)
+
+    def lands_now(cb):
+        # The install finishes while this scope's build is still running.
+        state["avail"] = True
+        cb()
+        return True
+
+    monkeypatch.setattr(hnsw_runtime, "request", lands_now)
+    rows = _vectors(300)
+    _add(rag_conn, "d", rows)
+    _dense(rag_conn, rows[8])
+    assert vec_cache.drain(60)
+    assert vec_cache._ann and not vec_cache._entries
+    hits, scanned = _dense(rag_conn, rows[8])
+    assert not scanned and hits[0][0] == "d:8"
 
 
 def _run(monkeypatch, result):
