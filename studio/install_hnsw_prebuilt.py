@@ -229,7 +229,7 @@ def read_marker(prefix: str) -> dict | None:
 def _write_marker(
     prefix: str,
     fp: str,
-    ok: bool,
+    ok: bool | None,
     reason: str = "",
 ) -> None:
     path = _marker_path(prefix)
@@ -237,7 +237,8 @@ def _write_marker(
     data = {
         "pair": PAIR_STR,
         "fingerprint": fp,
-        "result": "ok" if ok else "failed",
+        # "unverified": the probe hung or could not run; the backend will not import until one passes.
+        "result": "unverified" if ok is None else ("ok" if ok else "failed"),
         "reason": reason[:500],
         "time": time.time(),
     }
@@ -479,11 +480,14 @@ def ensure(
     if said == "failed" and (check_only or (_failure_is_fresh(marker) and not force)):
         return _result("failed", (marker or {}).get("reason", ""), info)
     if _pair_installed(info):
-        if said == "ok" or check_only:
-            return _result("already", "" if said == "ok" else "not probed", info)
+        if said == "ok":
+            return _result("already", "", info)
+        if check_only:
+            if said == "unverified":
+                return _result("missing", "probe inconclusive", info)
+            return _result("already", "not probed", info)
         ok, reason = probe(python, want = _want(info))
-        if ok is not None:
-            _write_marker(prefix, fp, ok, reason)
+        _write_marker(prefix, fp, ok, reason)
         return _result("already" if ok else "failed", reason, info)
     if _disabled():
         return _result("disabled", "RAG_VEC_ANN_AUTO_INSTALL=0 or RAG_VEC_ANN=0", info)
@@ -524,8 +528,7 @@ def ensure(
                     _run_first(_pip_cmd(python, "uninstall", [n for n, _ in PAIR]), 120.0)
                 except Exception:  # noqa: BLE001 - the failed marker still keeps Studio off it
                     pass
-            if ok is not None:
-                _write_marker(prefix, fp, ok, reason)
+            _write_marker(prefix, fp, ok, reason)
             info = interpreter_info(python)
             return _result("ready" if ok else "failed", reason, info, source)
     except TimeoutError as exc:

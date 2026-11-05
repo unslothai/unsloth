@@ -39,12 +39,12 @@ def hnsw_fingerprint() -> str:
 
 
 def _probe_failed() -> bool:
-    """The installer's subprocess probe saw this pair crash here: never import it in-process."""
+    """The installer's subprocess probe failed or hung here: never import this pair in-process."""
     try:
         with open(os.path.join(sys.prefix, MARKER), encoding = "utf-8") as fh:
             marker = json.load(fh)
         return (
-            marker.get("result") == "failed"
+            marker.get("result") in ("failed", "unverified")
             and marker.get("pair") == PAIR
             and marker.get("fingerprint") == hnsw_fingerprint()
         )

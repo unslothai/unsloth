@@ -376,8 +376,9 @@ def _marker(tmp_path, **over):
     (tmp_path / vec_ann.MARKER).write_text(json.dumps(marker), encoding = "utf-8")
 
 
-def test_a_failed_probe_marker_skips_the_import(tripwire, tmp_path):
-    _marker(tmp_path)
+@pytest.mark.parametrize("result", ["failed", "unverified"])
+def test_a_failed_or_unverified_probe_marker_skips_the_import(tripwire, tmp_path, result):
+    _marker(tmp_path, result = result)
     assert vec_ann.usearch() is None and not tripwire.hit
 
 

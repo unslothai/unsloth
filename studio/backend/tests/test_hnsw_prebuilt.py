@@ -229,11 +229,16 @@ def test_a_failed_probe_uninstalls_and_marks_failed(flow, tmp_path):
     assert hp.ensure("py", check_only = True)["status"] == "failed"
 
 
-def test_an_inconclusive_probe_leaves_no_marker_and_keeps_the_install(flow, tmp_path):
+def test_an_inconclusive_probe_keeps_the_install_but_marks_it_unverified(flow, tmp_path):
     flow["probe"] = (None, "probe timed out")
     r = hp.ensure("py")
     assert r["status"] == "failed" and r["detail"] == "probe timed out"
-    assert flow["ran"] == ["install"] and hp.read_marker(str(tmp_path)) is None
+    assert flow["ran"] == ["install"] and hp.read_marker(str(tmp_path))["result"] == "unverified"
+    # No week-long backoff: setup sees it as owed, and the next run probes again.
+    assert hp.ensure("py", check_only = True)["status"] == "missing"
+    flow["probe"] = (True, "")
+    assert hp.ensure("py")["status"] == "already" and flow["ran"] == ["install"]
+    assert hp.read_marker(str(tmp_path))["result"] == "ok"
 
 
 @pytest.mark.parametrize("numkong", ["7.8.7", "8.0.0"])
