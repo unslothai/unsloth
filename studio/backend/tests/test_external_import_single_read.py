@@ -1,8 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A re-import reads each existing thread's rows once and still lands late tool results and new turns."""
-
 import json
 import sys
 from pathlib import Path
