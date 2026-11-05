@@ -53,7 +53,9 @@ def _folder(rag_home, names):
 
 def _folder_row(folder_id: str) -> dict:
     with closing(rag_db.get_connection()) as conn:
-        return dict(conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone())
+        return dict(
+            conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
+        )
 
 
 def _mapped(folder_id: str) -> set[str]:
@@ -245,7 +247,8 @@ def test_failures_saved_before_the_fix_for_a_pending_download_retry(rag_home, st
     }
     with closing(rag_db.get_connection()) as conn:
         conn.execute(
-            "UPDATE linked_folders SET failed_files=? WHERE id=?", (json.dumps(stored), folder["id"])
+            "UPDATE linked_folders SET failed_files=? WHERE id=?",
+            (json.dumps(stored), folder["id"]),
         )
         conn.commit()
 
