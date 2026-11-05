@@ -19,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
@@ -53,6 +54,10 @@ _GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11
 
 # Matches llama.cpp's -ub default; a longer embedding prompt is refused with a 500.
 _UBATCH_SIZE = 512
+_TOKEN_COUNT_CACHE_SIZE = 4096
+# Texts and characters per batched /tokenize POST.
+_TOKENIZE_BATCH = 256
+_TOKENIZE_BATCH_CHARS = 262144
 
 
 def _skip_gguf_value(f, vtype: int) -> None:
@@ -1249,10 +1254,28 @@ class LlamaServerBackend:
 
     def token_counter(self, *, model_name = None):
         """Count tokens via the GGUF's /tokenize so chunk sizing matches the
-        embedder. Cached per text."""
+        embedder. Cached per text. ``many`` counts a list in a few POSTs: /tokenize
+        tokenizes each string of a content array on its own, exactly as a lone string,
+        so a -1 marker between them splits the reply into per-text counts."""
+        memo: OrderedDict[str, int] = OrderedDict()
+        memo_lock = threading.Lock()
+        batching = [True]
 
-        @lru_cache(maxsize = 4096)
-        def _count(text: str) -> int:
+        def _remember(text: str, n: int) -> None:
+            with memo_lock:
+                memo[text] = n
+                memo.move_to_end(text)
+                if len(memo) > _TOKEN_COUNT_CACHE_SIZE:
+                    memo.popitem(last = False)
+
+        def _lookup(text: str) -> int | None:
+            with memo_lock:
+                n = memo.get(text)
+                if n is not None:
+                    memo.move_to_end(text)
+                return n
+
+        def _count_one(text: str) -> int:
             with self._operation():
                 data = self._post(
                     "/tokenize",
@@ -1261,4 +1284,79 @@ class LlamaServerBackend:
                 )
                 return len(data.get("tokens", []))
 
+        def _count(text: str) -> int:
+            n = _lookup(text)
+            if n is None:
+                n = _count_one(text)
+                _remember(text, n)
+            return n
+
+        def _count_batch(keys: list[str]) -> list[int]:
+            content: list = []
+            for key in keys:
+                if content:
+                    content.append(-1)
+                content.append(key)
+            try:
+                with self._operation():
+                    data = self._post(
+                        "/tokenize",
+                        {"content": content, "add_special": False},
+                        model_name = model_name,
+                    )
+            except RuntimeError as e:
+                # A build that refuses the array answers with a status; anything else still raises.
+                if not isinstance(e.__cause__, httpx.HTTPStatusError):
+                    raise
+                batching[0] = False
+                return [_count_one(key) for key in keys]
+            counts, run = [], 0
+            for token in data.get("tokens", []):
+                if token == -1:
+                    counts.append(run)
+                    run = 0
+                else:
+                    run += 1
+            counts.append(run)
+            if len(counts) != len(keys):
+                batching[0] = False
+                return [_count_one(key) for key in keys]
+            return counts
+
+        def _count_many(texts) -> list[int]:
+            texts = list(texts)
+            out = [0] * len(texts)
+            misses: dict[str, list[int]] = {}
+            for i, text in enumerate(texts):
+                n = _lookup(text)
+                if n is None:
+                    misses.setdefault(text, []).append(i)
+                else:
+                    out[i] = n
+            keys = list(misses)
+            start = 0
+            while start < len(keys):
+                # Bounded batches, so a query encode waiting on _serve_lock never waits out a whole document.
+                end, chars = start, 0
+                while (
+                    end < len(keys)
+                    and end - start < _TOKENIZE_BATCH
+                    and (end == start or chars + len(keys[end]) <= _TOKENIZE_BATCH_CHARS)
+                ):
+                    chars += len(keys[end])
+                    end += 1
+                batch = keys[start:end]
+                counts = (
+                    _count_batch(batch)
+                    if batching[0] and len(batch) > 1
+                    else [_count_one(key) for key in batch]
+                )
+                for key, n in zip(batch, counts):
+                    _remember(key, n)
+                    for i in misses[key]:
+                        out[i] = n
+                start = end
+            return out
+
+        _count.many = _count_many
         return _count
