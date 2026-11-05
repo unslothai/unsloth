@@ -9,6 +9,7 @@ import {
   UNIVERSAL_AGENT,
   agentRunsOnActiveModel,
   fallbackAgent,
+  pickAgentVariant,
   pickCompatibleAgent,
   resolveGgufCompatibility,
   statusGgufVerdict,
@@ -401,5 +402,42 @@ test("an answer about the model on screen still decides, and the server wins", (
       "unsloth/X-GGUF",
     ),
     true,
+  );
+});
+
+test("a root-loaded MLX resident keeps its root checkpoint instead of a folder", () => {
+  const folders = new Set(["2-bit", "4bit"]);
+  const choice = {
+    remembered: null,
+    preferred: "2-bit",
+    defaultVariant: "4bit",
+    first: "2-bit",
+    keepRoot: true,
+  };
+  // A stale automatic folder or the listing's default would reload the shared model.
+  assert.equal(pickAgentVariant(folders, choice), null);
+  // An explicit pick still wins.
+  assert.equal(
+    pickAgentVariant(folders, { ...choice, remembered: "4bit" }),
+    "4bit",
+  );
+  // Anything else picks as before: preferred, then default, then the first offered.
+  assert.equal(
+    pickAgentVariant(folders, { ...choice, keepRoot: false }),
+    "2-bit",
+  );
+  assert.equal(
+    pickAgentVariant(folders, { ...choice, keepRoot: false, preferred: null }),
+    "4bit",
+  );
+  assert.equal(
+    pickAgentVariant(new Set(["Q8_0"]), {
+      ...choice,
+      keepRoot: false,
+      preferred: null,
+      defaultVariant: null,
+      first: "Q8_0",
+    }),
+    "Q8_0",
   );
 });

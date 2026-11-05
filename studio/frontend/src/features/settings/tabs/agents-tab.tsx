@@ -65,6 +65,7 @@ import {
   buildAgentShellCommands,
   isLoopbackHost,
   normalizeHost,
+  pickAgentVariant,
   quoteShellArg,
 } from "../components/agent-command";
 import {
@@ -265,18 +266,6 @@ function localGgufEntries(
     });
   }
   return entries;
-}
-
-function pickVariant(
-  available: Set<string>,
-  candidates: (string | null | undefined)[],
-): string | null {
-  for (const candidate of candidates) {
-    if (candidate && available.has(candidate)) {
-      return candidate;
-    }
-  }
-  return null;
 }
 
 // GGUF or MLX: both serve every agent here; a transformers model is never adopted.
@@ -543,6 +532,7 @@ export function AgentsTab() {
   const activeModelRef = useRef<{
     model: string;
     variant: string | null;
+    mlx: boolean;
   } | null>(null);
   // Only the newest status request may apply.
   const statusSeq = useRef(0);
@@ -864,7 +854,11 @@ export function AgentsTab() {
     (status: InferenceStatusResponse) => {
       const active = activeAgentModelSelection(status);
       activeModelRef.current = active
-        ? { model: active.model, variant: active.variant }
+        ? {
+            model: active.model,
+            variant: active.variant,
+            mlx: Boolean(status.is_mlx),
+          }
         : null;
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
@@ -943,6 +937,14 @@ export function AgentsTab() {
 
   useEffect(() => {
     let cancelled = false;
+    const residentIsRootMlx = () => {
+      const resident = activeModelRef.current;
+      return (
+        resident?.mlx === true &&
+        resident.variant === null &&
+        modelKey(resident.model) === modelKey(selectedModel)
+      );
+    };
 
     // After discovery a scanned directory's path is its identity; only a loose .gguf is variantless.
     const localDir =
@@ -998,22 +1000,13 @@ export function AgentsTab() {
         if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
         }
-        const resident = activeModelRef.current;
-        // A root-loaded MLX resident has no folder: picking one would reload it at another precision.
-        const keepRoot =
-          info.variant_format === "mlx" &&
-          resident?.variant === null &&
-          modelKey(resident.model) === modelKey(selectedModel);
-        const nextVariant =
-          pickVariant(available, [
-            rememberedVariant(selectedModel),
-            preferredVariant,
-          ]) ??
-          (keepRoot
-            ? null
-            : (pickVariant(available, [info.default_variant]) ??
-              uniqueVariants[0]?.quant ??
-              null));
+        const nextVariant = pickAgentVariant(available, {
+          remembered: rememberedVariant(selectedModel),
+          preferred: preferredVariant,
+          defaultVariant: info.default_variant,
+          first: uniqueVariants[0]?.quant ?? null,
+          keepRoot: residentIsRootMlx(),
+        });
         setSelectedVariant(nextVariant);
       })
       .catch(() => {
@@ -1022,12 +1015,13 @@ export function AgentsTab() {
         }
         setVariantsFailed(true);
         setVariants([]);
-        setSelectedVariant(preferredVariant);
-        if (preferredVariant) {
+        const fallback = residentIsRootMlx() ? null : preferredVariant;
+        setSelectedVariant(fallback);
+        if (fallback) {
           setVariants([
             {
               filename: "",
-              quant: preferredVariant,
+              quant: fallback,
               // biome-ignore lint/style/useNamingConvention: API response field
               size_bytes: 0,
             },

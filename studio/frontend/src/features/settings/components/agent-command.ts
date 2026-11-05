@@ -225,3 +225,25 @@ export function compatibilityFromSources(
   }
   return resolveGgufCompatibility(fromStore, status.isGguf);
 }
+
+// An explicit pick wins; a root-loaded MLX resident keeps its root, since any folder reloads it at another precision.
+export function pickAgentVariant(
+  available: ReadonlySet<string>,
+  choice: {
+    remembered: string | null;
+    preferred: string | null;
+    defaultVariant: string | null | undefined;
+    first: string | null;
+    keepRoot: boolean;
+  },
+): string | null {
+  const offered = (variant: string | null | undefined) =>
+    variant && available.has(variant) ? variant : null;
+  const remembered = offered(choice.remembered);
+  if (remembered || choice.keepRoot) {
+    return remembered;
+  }
+  return (
+    offered(choice.preferred) ?? offered(choice.defaultVariant) ?? choice.first
+  );
+}
