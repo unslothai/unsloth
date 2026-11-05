@@ -53,14 +53,17 @@ def test_kill_switch_disables_the_compiled_linear(monkeypatch, value):
 
 def test_no_inductor_runtime_or_rocm_keeps_eager(monkeypatch):
     import core.inference.diffusion_speed as sp
+    import core.inference.rocm_bf16 as rb
 
+    # An unreadable gfx arch, whatever card this host has (a real RDNA3 / RDNA4 host would compile).
+    monkeypatch.setattr(rb, "_device_gfx_arch", lambda _torch, _ordinal: "")
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: False)
     assert nq._fused_w8a8() is None
     assert nq.fused_w8a8_state()["failed"] == "no inductor runtime"
     monkeypatch.setattr(nq, "_FUSED_STATE", {"fn": None, "failed": None})
     monkeypatch.setattr(sp, "torch_compile_runtime_available", lambda: True)
     monkeypatch.setattr(torch.version, "hip", "6.4", raising = False)
-    # No readable gfx arch (this host has no ROCm device): unmeasured, so eager.
+    # No readable gfx arch: unmeasured, so eager.
     assert nq._fused_w8a8() is None
     assert nq.fused_w8a8_state()["failed"] == "ROCm unknown arch"
     # AMD SDK / Radeon wheels leave torch.version.hip unset and tag __version__ instead.
