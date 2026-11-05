@@ -23,12 +23,13 @@ const MAX_LITERAL_KEY = 500;
 // Scan only the tail of recent messages: keys are matched on every send and token count.
 const MAX_SCAN_CHARS = 16_000;
 
-function keyMatcher(key: string, caseSensitive: boolean): ((text: string) => boolean) | null {
+function keyMatcher(key: string, caseSensitive: boolean, useRegex = false): ((text: string) => boolean) | null {
   const trimmed = key.trim();
   if (!trimmed) return null;
-  const regex = REGEX_KEY.exec(trimmed);
+  const slashed = REGEX_KEY.exec(trimmed);
+  const regex = slashed ? [slashed[1], slashed[2]] : useRegex ? [trimmed, caseSensitive ? "" : "i"] : null;
   // Card keys run on every send on the UI thread, so they never reach the backtracking RegExp engine.
-  if (regex) return trimmed.length > MAX_REGEX_KEY ? null : linearRegex(regex[1], regex[2].replace("g", ""));
+  if (regex) return trimmed.length > MAX_REGEX_KEY ? null : linearRegex(regex[0], regex[1].replace("g", ""));
   // A keyword is a word or phrase; a card's oversized one is skipped rather than abort the prompt.
   if (trimmed.length > MAX_LITERAL_KEY) return null;
   const escaped = trimmed.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -44,13 +45,13 @@ function keyMatcher(key: string, caseSensitive: boolean): ((text: string) => boo
   return (text) => pattern.test(text);
 }
 
-function anyKey(keys: string[], text: string, caseSensitive: boolean): boolean {
-  return keys.some((key) => keyMatcher(key, caseSensitive)?.(text) ?? false);
+function anyKey(keys: string[], text: string, caseSensitive: boolean, useRegex = false): boolean {
+  return keys.some((key) => keyMatcher(key, caseSensitive, useRegex)?.(text) ?? false);
 }
 
 function secondaryPasses(entry: LorebookEntry, text: string): boolean {
   if (!entry.selective || entry.secondary_keys.length === 0) return true;
-  const hits = entry.secondary_keys.map((key) => keyMatcher(key, entry.case_sensitive)?.(text) ?? false);
+  const hits = entry.secondary_keys.map((key) => keyMatcher(key, entry.case_sensitive, entry.use_regex)?.(text) ?? false);
   switch (entry.selective_logic) {
     case "and_all":
       return hits.every(Boolean);
@@ -107,7 +108,7 @@ export function activateLorebook(
       candidates.push({ entry, reason: "constant" });
       continue;
     }
-    if (anyKey(entry.keys ?? [], scanText, entry.case_sensitive) && secondaryPasses(entry, scanText)) {
+    if (anyKey(entry.keys ?? [], scanText, entry.case_sensitive, entry.use_regex) && secondaryPasses(entry, scanText)) {
       candidates.push({ entry, reason: "keyword" });
     }
   }

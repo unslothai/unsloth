@@ -14,6 +14,8 @@ export interface LorebookEntry {
   constant: boolean;
   selective: boolean;
   case_sensitive: boolean;
+  /** V3: every key is a regex even without /slashes/. */
+  use_regex?: boolean;
   insertion_order: number;
   position: LorebookPosition;
   depth: number;

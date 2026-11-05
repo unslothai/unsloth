@@ -42,6 +42,7 @@ const sceneWrites = new Map<string, Promise<unknown>>();
 // Bumped by every saved scene write, so a read that started before one never replaces its result.
 const sceneWriteGen = new Map<string, number>();
 let refreshPromise: Promise<void> | null = null;
+let personasPromise: Promise<void> | null = null;
 // Bumped on sign-out: an answer to a request made before it belongs to the previous account.
 let epoch = 0;
 
@@ -82,16 +83,23 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
       });
     return refreshPromise;
   },
-  refreshPersonas: async () => {
+  refreshPersonas: () => {
+    // Shared while in flight, as refresh() does, so every component opening at once makes one request.
+    if (personasPromise) return personasPromise;
     if (get().personasStatus === "idle") set({ personasStatus: "loading" });
     const started = epoch;
-    try {
-      const personas = await listPersonas();
-      if (started === epoch) set({ personas, personasStatus: "ready" });
-    } catch (error) {
-      set({ personasStatus: get().personasStatus === "ready" ? "ready" : "error" });
-      throw error;
-    }
+    personasPromise = listPersonas()
+      .then((personas) => {
+        if (started === epoch) set({ personas, personasStatus: "ready" });
+      })
+      .catch((error) => {
+        set({ personasStatus: get().personasStatus === "ready" ? "ready" : "error" });
+        throw error;
+      })
+      .finally(() => {
+        personasPromise = null;
+      });
+    return personasPromise;
   },
   refreshIndex: async () => {
     const started = epoch;
@@ -188,6 +196,7 @@ if (typeof window !== "undefined") {
   window.addEventListener(AUTH_SESSION_CLEARED_EVENT, () => {
     epoch += 1;
     refreshPromise = null;
+    personasPromise = null;
     inflightScenes.clear();
     sceneWrites.clear();
     sceneWriteGen.clear();
