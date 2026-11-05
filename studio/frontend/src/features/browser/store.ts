@@ -336,6 +336,9 @@ type BrowserState = {
   fullView: boolean;
   /** The page floats over the chat as a small movable preview. A layout choice for every chat, kept across closes. */
   floating: boolean;
+  /** Floating only because it was closed while the model still used it (close-browser.ts): its
+   *  own close puts the layout back to what the reader had chosen. */
+  floatedForAgent: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
   requestEdits: RequestEdits | null;
@@ -409,6 +412,7 @@ type BrowserState = {
   setChatDock: (dock: ChatDock) => void;
   splitWithChatOn: (side: ChatSide) => void;
   setFloating: (floating: boolean) => void;
+  floatForAgent: () => void;
 };
 
 const patchTab = (tabs: BrowserTab[], tabId: string, update: (tab: BrowserTab) => BrowserTab) =>
@@ -596,6 +600,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
     device: "off",
     fullView: false,
     floating: false,
+    floatedForAgent: false,
     chatDock: "composer",
     chatSide: "left",
     requestEdits: null,
@@ -618,7 +623,13 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       }
       set((state) => ({ open: true, openSequence: state.openSequence + 1 }));
     },
-    closePanel: () => set({ open: false, fullView: false, annotateTabId: null }),
+    closePanel: () =>
+      set((state) => ({
+        open: false,
+        fullView: false,
+        annotateTabId: null,
+        ...(state.floatedForAgent ? { floating: false, floatedForAgent: false } : {}),
+      })),
     togglePanel: () => (get().open ? get().closePanel() : get().openPanel()),
     newTab: () => {
       openTab(createTab({ kind: "newtab" }));
@@ -863,12 +874,26 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
         tabs: patchTab(state.tabs, tabId, (tab) => ({ ...tab, zoom: Math.min(5, Math.max(0.25, zoom)) })),
       })),
     setDevice: (device) => set({ device }),
-    setFullView: (fullView) => set(fullView ? { fullView, chatDock: "composer", floating: false } : { fullView, chatDock: "composer" }),
+    setFullView: (fullView) =>
+      set(
+        fullView
+          ? { fullView, chatDock: "composer", floating: false, floatedForAgent: false }
+          : { fullView, chatDock: "composer" },
+      ),
     setChatDock: (chatDock) => set({ chatDock }),
-    splitWithChatOn: (chatSide) => set({ fullView: false, floating: false, chatSide }),
+    splitWithChatOn: (chatSide) => set({ fullView: false, floating: false, floatedForAgent: false, chatSide }),
     // Marks are placed on the page as laid out beside the chat, which floating scales down.
     setFloating: (floating) =>
-      set(floating ? { floating, fullView: false, chatDock: "composer", annotateTabId: null } : { floating }),
+      set(
+        floating
+          ? { floating, floatedForAgent: false, fullView: false, chatDock: "composer", annotateTabId: null }
+          : { floating, floatedForAgent: false },
+      ),
+    floatForAgent: () => {
+      if (get().floating) return;
+      get().setFloating(true);
+      set({ floatedForAgent: true });
+    },
   };
 });
 

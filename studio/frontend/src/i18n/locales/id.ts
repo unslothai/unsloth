@@ -215,7 +215,7 @@ export const id = {
     tabs: "Tab browser",
     newTab: "Tab baru",
     newTabFullView: "Tab baru dalam tampilan penuh",
-    newTabFloating: "Tab baru di pratinjau mengambang",
+    newTabFloating: "Tab baru di jendela mengambang",
     closeTab: "Tutup tab",
     close: "Tutup browser",
     show: "Tampilkan browser",
@@ -436,10 +436,10 @@ export const id = {
       moveRight: "Pindahkan ke panel kanan",
     },
     floating: {
-      enter: "Pratinjau mengambang",
+      enter: "Jendela mengambang",
       dock: "Sematkan ke samping",
-      close: "Tutup pratinjau mengambang",
-      handle: "Pindahkan pratinjau. Tombol panah memindahkannya; Shift dan tombol panah mengubah ukurannya.",
+      close: "Tutup jendela mengambang",
+      handle: "Pindahkan jendela. Tombol panah memindahkannya; Shift dan tombol panah mengubah ukurannya.",
     },
     annotate: {
       countOne: "1 anotasi",

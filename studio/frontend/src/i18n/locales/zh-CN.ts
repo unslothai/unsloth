@@ -207,7 +207,7 @@ export const zhCN = {
     tabs: "浏览器标签页",
     newTab: "新标签页",
     newTabFullView: "在全屏视图中新建标签页",
-    newTabFloating: "在浮动预览中新建标签页",
+    newTabFloating: "在浮动窗口中新建标签页",
     closeTab: "关闭标签页",
     close: "关闭浏览器",
     show: "显示浏览器",
@@ -392,10 +392,10 @@ export const zhCN = {
       moveRight: "移到右侧窗格",
     },
     floating: {
-      enter: "浮动预览",
+      enter: "浮动窗口",
       dock: "停靠到侧边",
-      close: "关闭浮动预览",
-      handle: "移动预览。方向键移动，Shift 加方向键调整大小。",
+      close: "关闭浮动窗口",
+      handle: "移动窗口。方向键移动，Shift 加方向键调整大小。",
     },
     annotate: {
       countOne: "1 条批注",

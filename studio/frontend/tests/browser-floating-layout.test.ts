@@ -24,3 +24,23 @@ test("floating, full view and the split are one layout at a time, and floating o
   store().openPanel();
   assert.deepEqual([store().open, store().floating], [true, true]);
 });
+
+test("closed while the model still works in it, the browser floats on the model's tab; closing the preview closes it", async () => {
+  const { patchAgentChat } = await import("../src/features/browser/agent/agent-store.ts");
+  const { closeOrFloatBrowser } = await import("../src/features/browser/close-browser.ts");
+  const store = () => useBrowserStore.getState();
+  store().setFloating(false);
+  store().openUrl("https://example.com/agent", { newTab: true });
+  const agentTab = store().activeTabId;
+  store().openUrl("https://example.com/mine", { newTab: true });
+  patchAgentChat(store().chat, { tabId: agentTab, runKey: "run-1", stoppedRun: null });
+  closeOrFloatBrowser();
+  assert.deepEqual([store().open, store().floating, store().activeTabId], [true, true, agentTab]);
+  closeOrFloatBrowser();
+  // The float was the run's, not a layout the reader chose: the next open is beside the chat again.
+  assert.deepEqual([store().open, store().floating], [false, false]);
+  store().openPanel();
+  patchAgentChat(store().chat, { stoppedRun: "run-1" });
+  closeOrFloatBrowser();
+  assert.equal(store().open, false);
+});

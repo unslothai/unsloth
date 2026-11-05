@@ -204,7 +204,7 @@ export const en = {
     tabs: "Browser tabs",
     newTab: "New tab",
     newTabFullView: "New tab in full view",
-    newTabFloating: "New tab in floating preview",
+    newTabFloating: "New tab in floating window",
     closeTab: "Close tab",
     close: "Close browser",
     show: "Show browser",
@@ -389,10 +389,10 @@ export const en = {
       moveRight: "Move to right pane",
     },
     floating: {
-      enter: "Floating preview",
+      enter: "Floating window",
       dock: "Dock to side",
-      close: "Close floating preview",
-      handle: "Move preview. Arrow keys move it; Shift and arrow keys resize it.",
+      close: "Close floating window",
+      handle: "Move window. Arrow keys move it; Shift and arrow keys resize it.",
     },
     annotate: {
       countOne: "1 annotation",

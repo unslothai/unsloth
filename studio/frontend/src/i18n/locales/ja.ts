@@ -208,7 +208,7 @@ export const ja = {
     tabs: "ブラウザのタブ",
     newTab: "新しいタブ",
     newTabFullView: "全画面表示で新しいタブ",
-    newTabFloating: "フローティングプレビューで新しいタブ",
+    newTabFloating: "フローティングウィンドウで新しいタブ",
     closeTab: "タブを閉じる",
     close: "ブラウザを閉じる",
     show: "ブラウザを表示",
@@ -393,10 +393,10 @@ export const ja = {
       moveRight: "右ペインに移動",
     },
     floating: {
-      enter: "フローティングプレビュー",
+      enter: "フローティングウィンドウ",
       dock: "横にドッキング",
-      close: "フローティングプレビューを閉じる",
-      handle: "プレビューを移動。矢印キーで移動、Shift と矢印キーでサイズを変更します。",
+      close: "フローティングウィンドウを閉じる",
+      handle: "ウィンドウを移動。矢印キーで移動、Shift と矢印キーでサイズを変更します。",
     },
     annotate: {
       countOne: "注釈 1 件",

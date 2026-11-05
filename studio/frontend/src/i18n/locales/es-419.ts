@@ -216,7 +216,7 @@ export const es419 = {
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
-    newTabFloating: "Nueva pestaña en vista previa flotante",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -438,10 +438,10 @@ export const es419 = {
       moveRight: "Mover al panel derecho",
     },
     floating: {
-      enter: "Vista previa flotante",
+      enter: "Ventana flotante",
       dock: "Acoplar al costado",
-      close: "Cerrar vista previa flotante",
-      handle: "Mover la vista previa. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",

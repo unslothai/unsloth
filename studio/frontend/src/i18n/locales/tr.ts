@@ -215,7 +215,7 @@ export const tr = {
     tabs: "Tarayıcı sekmeleri",
     newTab: "Yeni sekme",
     newTabFullView: "Tam görünümde yeni sekme",
-    newTabFloating: "Kayan önizlemede yeni sekme",
+    newTabFloating: "Kayan pencerede yeni sekme",
     closeTab: "Sekmeyi kapat",
     close: "Tarayıcıyı kapat",
     show: "Tarayıcıyı göster",
@@ -436,10 +436,10 @@ export const tr = {
       moveRight: "Sağ bölmeye taşı",
     },
     floating: {
-      enter: "Kayan önizleme",
+      enter: "Kayan pencere",
       dock: "Yana sabitle",
-      close: "Kayan önizlemeyi kapat",
-      handle: "Önizlemeyi taşı. Ok tuşları taşır; Shift ve ok tuşları boyutunu değiştirir.",
+      close: "Kayan pencereyi kapat",
+      handle: "Pencereyi taşı. Ok tuşları taşır; Shift ve ok tuşları boyutunu değiştirir.",
     },
     annotate: {
       countOne: "1 ek açıklama",

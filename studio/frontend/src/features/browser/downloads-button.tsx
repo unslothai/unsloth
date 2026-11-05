@@ -385,7 +385,7 @@ export function DownloadsButton({
                 {active ? (
                   <DownloadingIcon />
                 ) : (
-                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
+                  <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4" />
                 )}
               </button>
             </TooltipTrigger>

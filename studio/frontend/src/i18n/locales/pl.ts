@@ -215,7 +215,7 @@ export const pl = {
     tabs: "Karty przeglądarki",
     newTab: "Nowa karta",
     newTabFullView: "Nowa karta w pełnym widoku",
-    newTabFloating: "Nowa karta w pływającym podglądzie",
+    newTabFloating: "Nowa karta w pływającym oknie",
     closeTab: "Zamknij kartę",
     close: "Zamknij przeglądarkę",
     show: "Pokaż przeglądarkę",
@@ -437,10 +437,10 @@ export const pl = {
       moveRight: "Przenieś do prawego panelu",
     },
     floating: {
-      enter: "Pływający podgląd",
+      enter: "Pływające okno",
       dock: "Przypnij z boku",
-      close: "Zamknij pływający podgląd",
-      handle: "Przesuń podgląd. Strzałki go przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
+      close: "Zamknij pływające okno",
+      handle: "Przesuń okno. Strzałki je przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
     },
     annotate: {
       countOne: "1 adnotacja",

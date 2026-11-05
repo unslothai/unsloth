@@ -106,6 +106,7 @@ import {
   BrowserToggleButton,
   FloatingResizeHandles,
   chatKeyOfThread,
+  closeOrFloatBrowser,
   floatSurface,
   openUrlInBrowser,
   pinBrowserPage,
@@ -653,13 +654,13 @@ const SingleContent = memo(function SingleContent({
   const rememberArtifactPanelWidth = useCallback(() => {
     const size = artifactPanelRef.current?.getSize().asPercentage;
     if (size == null) return;
-    // Dragged shut means closed.
+    // Dragged shut means closed, or floating while the model still works in it.
     if (size <= 5) {
-      closeBrowser();
+      closeOrFloatBrowser();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [closeBrowser]);
+  }, []);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);

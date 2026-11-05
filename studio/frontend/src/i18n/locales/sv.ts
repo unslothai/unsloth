@@ -205,7 +205,7 @@ export const sv = {
     tabs: "Webbläsarflikar",
     newTab: "Ny flik",
     newTabFullView: "Ny flik i helvy",
-    newTabFloating: "Ny flik i flytande förhandsvisning",
+    newTabFloating: "Ny flik i flytande fönster",
     closeTab: "Stäng flik",
     close: "Stäng webbläsaren",
     show: "Visa webbläsaren",
@@ -404,10 +404,10 @@ export const sv = {
       moveRight: "Flytta till högra panelen",
     },
     floating: {
-      enter: "Flytande förhandsvisning",
+      enter: "Flytande fönster",
       dock: "Docka vid sidan",
-      close: "Stäng flytande förhandsvisning",
-      handle: "Flytta förhandsvisningen. Piltangenterna flyttar den; Skift och piltangenterna ändrar storleken.",
+      close: "Stäng flytande fönster",
+      handle: "Flytta fönstret. Piltangenterna flyttar det; Skift och piltangenterna ändrar storleken.",
     },
     annotate: {
       countOne: "1 anteckning",

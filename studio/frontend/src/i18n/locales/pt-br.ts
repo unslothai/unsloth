@@ -207,7 +207,7 @@ export const ptBR = {
     tabs: "Abas do navegador",
     newTab: "Nova aba",
     newTabFullView: "Nova aba em tela cheia",
-    newTabFloating: "Nova guia em prévia flutuante",
+    newTabFloating: "Nova guia em janela flutuante",
     closeTab: "Fechar aba",
     close: "Fechar navegador",
     show: "Mostrar navegador",
@@ -392,10 +392,10 @@ export const ptBR = {
       moveRight: "Mover para o painel direito",
     },
     floating: {
-      enter: "Prévia flutuante",
+      enter: "Janela flutuante",
       dock: "Encaixar na lateral",
-      close: "Fechar prévia flutuante",
-      handle: "Mover a prévia. As setas a movem; Shift e as setas a redimensionam.",
+      close: "Fechar janela flutuante",
+      handle: "Mover a janela. As setas a movem; Shift e as setas a redimensionam.",
     },
     annotate: {
       countOne: "1 anotação",

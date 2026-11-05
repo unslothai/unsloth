@@ -215,7 +215,7 @@ export const nl = {
     tabs: "Browsertabbladen",
     newTab: "Nieuw tabblad",
     newTabFullView: "Nieuw tabblad in volledige weergave",
-    newTabFloating: "Nieuw tabblad in zwevend voorbeeld",
+    newTabFloating: "Nieuw tabblad in zwevend venster",
     closeTab: "Tabblad sluiten",
     close: "Browser sluiten",
     show: "Browser weergeven",
@@ -437,10 +437,10 @@ export const nl = {
       moveRight: "Naar rechterpaneel verplaatsen",
     },
     floating: {
-      enter: "Zwevend voorbeeld",
+      enter: "Zwevend venster",
       dock: "Aan de zijkant vastzetten",
-      close: "Zwevend voorbeeld sluiten",
-      handle: "Voorbeeld verplaatsen. Pijltoetsen verplaatsen het; Shift en pijltoetsen wijzigen de grootte.",
+      close: "Zwevend venster sluiten",
+      handle: "Venster verplaatsen. Pijltoetsen verplaatsen het; Shift en pijltoetsen wijzigen de grootte.",
     },
     annotate: {
       countOne: "1 annotatie",

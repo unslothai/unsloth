@@ -211,7 +211,7 @@ export const zhTW = {
     tabs: "瀏覽器分頁",
     newTab: "新分頁",
     newTabFullView: "以完整檢視開啟新分頁",
-    newTabFloating: "在浮動預覽中開新分頁",
+    newTabFloating: "在浮動視窗中開新分頁",
     closeTab: "關閉分頁",
     close: "關閉瀏覽器",
     show: "顯示瀏覽器",
@@ -416,10 +416,10 @@ export const zhTW = {
       moveRight: "移到右側窗格",
     },
     floating: {
-      enter: "浮動預覽",
+      enter: "浮動視窗",
       dock: "停駐到側邊",
-      close: "關閉浮動預覽",
-      handle: "移動預覽。方向鍵移動，Shift 加方向鍵調整大小。",
+      close: "關閉浮動視窗",
+      handle: "移動視窗。方向鍵移動，Shift 加方向鍵調整大小。",
     },
     annotate: {
       countOne: "1 則註解",

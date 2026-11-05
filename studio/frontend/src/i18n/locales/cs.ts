@@ -215,7 +215,7 @@ export const cs = {
     tabs: "Karty prohlížeče",
     newTab: "Nová karta",
     newTabFullView: "Nová karta v plném zobrazení",
-    newTabFloating: "Nová karta v plovoucím náhledu",
+    newTabFloating: "Nová karta v plovoucím okně",
     closeTab: "Zavřít kartu",
     close: "Zavřít prohlížeč",
     show: "Zobrazit prohlížeč",
@@ -436,10 +436,10 @@ export const cs = {
       moveRight: "Přesunout do pravého podokna",
     },
     floating: {
-      enter: "Plovoucí náhled",
+      enter: "Plovoucí okno",
       dock: "Připnout ke straně",
-      close: "Zavřít plovoucí náhled",
-      handle: "Přesunout náhled. Šipky jej posouvají, Shift se šipkami mění jeho velikost.",
+      close: "Zavřít plovoucí okno",
+      handle: "Přesunout okno. Šipky jej posouvají, Shift se šipkami mění jeho velikost.",
     },
     annotate: {
       countOne: "1 anotace",
