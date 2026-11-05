@@ -265,6 +265,14 @@ def _closed_signal_span(buffer: str) -> Optional[tuple[int, int]]:
     return min(spans, key = lambda span: span[0]) if spans else None
 
 
+def _inside_open_wrapper(buffer: str, start: int) -> bool:
+    for open_tag, close_tag in (("<tool_call>", "</tool_call>"), ("<|tool_call>", "<tool_call|>")):
+        opened = buffer.rfind(open_tag, 0, start)
+        if opened >= 0 and buffer.find(close_tag, opened) < 0:
+            return True
+    return False
+
+
 # A strict parse needs a JSON/Gemma close tag or </function>; else only a balanced Mistral/rehearsal bracket call parses.
 _STRICT_CLOSE_TOKENS = ("</tool_call>", "<|end_message|>", "<tool_call|>", "</function>")
 _CALLS_TAG = "[TOOL_CALLS]"
@@ -520,6 +528,10 @@ class StreamToolCallHealer:
                 and _closed_signal_span(self._buffer) is None
             ):
                 parsed, spans = [], []
+            # A call closed inside a wrapper still open (Qwen3.5's <function=...> in <tool_call>):
+            # promoting it now would relay the wrapper's tags as text, so wait for the close.
+            if parsed and _inside_open_wrapper(self._buffer, spans[0][0]):
+                return events
             if not parsed:
                 # Its close tags are gate tokens, so a closed gate means no closed span.
                 closed_span = _closed_signal_span(self._buffer) if may_parse else None

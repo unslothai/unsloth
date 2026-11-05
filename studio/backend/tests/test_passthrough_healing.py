@@ -351,6 +351,30 @@ def test_stream_keeps_a_bracket_call_inside_an_open_block_in_its_arguments():
     assert "run " in json.loads(call["function"]["arguments"])["command"]
 
 
+@pytest.mark.parametrize("step", [1, 5])
+def test_stream_drops_the_tool_call_wrapper_around_a_function_call(step):
+    # Qwen3.5 wraps <function=...> in <tool_call>; the inner call closes before the wrapper does.
+    def call(command):
+        return (
+            "<tool_call>\n<function=Bash>\n<parameter=command>\n"
+            f"{command}\n</parameter>\n</function>\n</tool_call>"
+        )
+
+    text = f"Listing.\n\n{call('ls')}\n{call('pwd')}\nDone."
+    healer = StreamToolCallHealer({"Bash"})
+    events = []
+    for start in range(0, len(text), step):
+        events += healer.feed(text[start : start + step])
+    events += healer.finalize()
+    calls = _events_calls(events)
+    assert [json.loads(c["function"]["arguments"]) for c in calls] == [
+        {"command": "ls"},
+        {"command": "pwd"},
+    ]
+    assert len({c["id"] for c in calls}) == 2
+    assert _events_text(events) == "Listing.\n\n\n\nDone."
+
+
 def test_stream_delivers_a_bracket_call_wrapped_in_a_closed_block():
     healer = StreamToolCallHealer({"Bash"})
     events = healer.feed('<tool_call>[TOOL_CALLS]Bash[ARGS]{"command": "ls"}</tool_call>')
