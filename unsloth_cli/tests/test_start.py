@@ -11325,6 +11325,36 @@ def test_claude_preflight_accepts_non_gguf_repo_on_an_mlx_host(monkeypatch, caps
         )
 
 
+def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
+    repo = "mlx-community/Qwen3-4B"
+    _fake_hub_listing(monkeypatch, {repo: []})
+    monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
+    start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:6-bit")
+    start._preflight_agent_gguf(start._CODEX_GGUF_AGENT, repo, gguf_variant = "8bit")
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
+    for answer in (
+        {"variants": [], "loadable": False},
+        {"variants": [], "loadable": None, "loadable_variants": None},
+    ):
+        _fake_variants(monkeypatch, answer)
+        start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+
+
+def test_mlx_precision_folder_pattern_matches_the_backend():
+    source = (
+        Path(start.__file__).resolve().parents[2]
+        / "studio/backend/hub/utils/snapshot_filters.py"
+    ).read_text()
+    namespace = {}
+    exec(source[source.index("PRECISION_FOLDER_SOURCE =") :].split("\n)\n")[0] + "\n)", namespace)
+    assert start._MLX_PRECISION_FOLDER_RE.pattern == namespace["PRECISION_FOLDER_SOURCE"]
+
+
 def test_claude_preflight_rejects_non_gguf_repo(monkeypatch, capsys):
     _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     with pytest.raises(typer.Exit):

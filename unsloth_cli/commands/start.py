@@ -2840,6 +2840,17 @@ _NO_MLX_REASONS = frozenset(
     {"mlx_unavailable", "no_torch", "intel_mac", "rosetta", "detection_failed"}
 )
 
+# Mirrors the backend's PRECISION_FOLDER_SOURCE: an MLX precision subfolder (6-bit/), not a GGUF quant.
+_MLX_PRECISION_FOLDER_RE = re.compile(
+    "(?:mlx[-_]?)?(?:[0-9]{1,2}[-_]?bits?(?:[-_][a-z0-9]+)*"
+    "|bf16|fp16|f16|fp32|f32|fp8|mxfp4|nvfp4)",
+    re.IGNORECASE,
+)
+
+
+def _asks_gguf_quant(variant: Optional[str]) -> bool:
+    return bool(variant) and not _MLX_PRECISION_FOLDER_RE.fullmatch(str(variant).strip())
+
 
 def _this_host_loads_mlx() -> bool:
     import platform
@@ -2872,7 +2883,11 @@ def _refuse_non_gguf(
     agent: _GgufAgent, model_id: str, base: str, key: str, variant: Optional[str]
 ) -> None:
     # A requested quant or a .gguf file asks for GGUF, which an MLX load would silently drop.
-    if variant or model_id.lower().endswith(".gguf") or not _server_loads_mlx(base, key):
+    if (
+        _asks_gguf_quant(variant)
+        or model_id.lower().endswith(".gguf")
+        or not _server_loads_mlx(base, key)
+    ):
         _fail_agent_needs_gguf(agent, model_id)
 
 
@@ -2911,7 +2926,7 @@ def _preflight_agent_gguf(
         return
     files = _hub_gguf_files(repo)
     # A requested quant asks for GGUF, which an MLX load would silently drop.
-    asks_gguf = bool(gguf_variant or inline_variant) or repo.lower().endswith(".gguf")
+    asks_gguf = _asks_gguf_quant(gguf_variant or inline_variant) or repo.lower().endswith(".gguf")
     if files is not None and not files and (asks_gguf or not _this_host_loads_mlx()):
         _fail_agent_needs_gguf(agent, repo)
 
@@ -3022,7 +3037,9 @@ def _attach_gguf_check(
             # No allow-list means a direct file, which loads as itself whatever the quant, so the variantless verdict decides.
             if variant and offered is None and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    _fail_agent_needs_gguf(agent, candidate)
+                    if variants:
+                        _fail_agent_needs_gguf(agent, candidate)
+                    _refuse_non_gguf(agent, candidate, base, key, variant)
                 return
             if variant and isinstance(offered, list):
                 wanted_variant = str(variant).strip().lower()
