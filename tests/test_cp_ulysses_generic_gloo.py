@@ -257,6 +257,56 @@ def test_generic_ulysses_matches_one_process(kind, implementation, packed):
     _spawn(_parity_worker, 2, kind, implementation, packed, _OUT)
 
 
+def _compiled_rows_worker(rank, world, kind, implementation, out_dir):
+    """Decoder layers compiled once (torch.compile per layer, as the CPU route's UNSLOTH_CPU_COMPILE=1 and block
+    compile do), then two packed rows with the same shapes but different document lengths: each row's gradients
+    must match one process on that row's documents, so a graph traced on the first row cannot keep its
+    boundaries for the second."""
+    ad.HAS_FLASH_ATTENTION = False
+    ad.HAS_XFORMERS = False
+    model = _model(kind, implementation)
+    layers = model.model.layers
+    for layer in layers:
+        layer.compile(backend = "eager")  # dynamo alone: what is traced, not Inductor's numerics
+    manager = _manager(world, rank)
+    manager.attach_attention_hooks(model)
+    ids, labels = _batch(True)
+    # Same row length and document count: the graph traced on the first row is reused for the second.
+    for lengths in ([6, 7, 3], [3, 9, 4]):
+        model.zero_grad(set_to_none = True)
+        count = _reference(model, ids, labels, lengths)
+        reference = {n: p.grad.clone() for n, p in model.named_parameters() if p.grad is not None}
+        model.zero_grad(set_to_none = True)
+        inputs = {
+            "input_ids": ids.clone(),
+            "labels": labels.clone(),
+            "packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32),
+        }
+        with manager.apply(inputs):
+            out = model(
+                input_ids = inputs["input_ids"],
+                position_ids = inputs["position_ids"],
+                packed_seq_lengths = inputs["packed_seq_lengths"],
+                use_cache = False,
+            )
+            _loss(out.logits, inputs["shift_labels"], count).backward()
+        for name, param in model.named_parameters():
+            if not param.requires_grad:
+                continue
+            grad = torch.zeros_like(param) if param.grad is None else param.grad.clone()
+            dist.all_reduce(grad)
+            want = reference.get(name, torch.zeros_like(param))
+            torch.testing.assert_close(
+                grad, want, rtol = 1e-4, atol = 1e-6, msg = f"{name} on documents {lengths}"
+            )
+
+
+@pytest.mark.parametrize("kind, implementation", [("qwen3", "sdpa"), ("gemma3", "eager")])
+def test_compiled_layers_follow_each_packed_row(kind, implementation):
+    _config(kind)
+    _spawn(_compiled_rows_worker, 2, kind, implementation, _OUT)
+
+
 @pytest.mark.parametrize(
     "kind, control",
     [("gemma3", "window_dropped"), ("gemma2", "softcap_dropped"), ("gpt_oss", "sinks_unsliced")],

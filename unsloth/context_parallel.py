@@ -518,6 +518,14 @@ class ContextParallelManager:
         previous, _ACTIVE_MANAGER = _ACTIVE_MANAGER, self
         # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
         self.packed_seq_lengths = inputs.get("packed_seq_lengths")
+        if isinstance(self.packed_seq_lengths, torch.Tensor):
+            # Compiled decoder layers take a cached packed-metadata entry when it holds this very tensor, a
+            # check torch.compile does not guard: a layer traced on an earlier row would keep that row's
+            # documents. Build this row's entry here, outside any compiled region, as the fast forwards do.
+            from .utils.packing import get_packed_info_from_kwargs
+            get_packed_info_from_kwargs(
+                {"packed_seq_lengths": self.packed_seq_lengths}, inputs["input_ids"].device
+            )
         try:
             yield
         finally:
