@@ -397,6 +397,16 @@ class RestyleRunner:
         if server is not None:
             server.stop()
 
+    def unload_if_idle(self) -> bool:
+        """Detach the server under the same lock ``start`` claims, so a restyle can't begin in between."""
+        with self._lock:
+            if self._state.get("active"):
+                return False
+            server, self._server, self._server_files = self._server, None, None
+        if server is not None:
+            server.stop()
+        return True
+
     def _ensure_server(self, files: SdCppModelFiles) -> Any:
         if self._server is not None and self._server_files == files and self._server.is_alive():
             return self._server

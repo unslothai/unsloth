@@ -103,9 +103,8 @@ async def cancel_restyle(current_subject: str = Depends(get_current_subject)):
 
 @router.post("/video/restyle/unload")
 async def unload_restyle(current_subject: str = Depends(get_current_subject)):
-    if video_restyle.runner.progress().get("active"):
+    if not await asyncio.to_thread(video_restyle.runner.unload_if_idle):
         raise HTTPException(status_code = 409, detail = "A restyle is running.")
-    await asyncio.to_thread(video_restyle.runner.unload)
     return {"unloaded": True}
 
 

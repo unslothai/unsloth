@@ -386,3 +386,20 @@ def test_frames_are_fitted_as_they_are_read():
     (frame,) = vr.frames_from_images([("001.png", big.getvalue())])
     assert frame.size == (vr.WIDTH, vr.HEIGHT)
     assert {f.size for f in vr.frames_from_video(_clip(30, 6))} == {(vr.WIDTH, vr.HEIGHT)}
+
+
+def test_unload_if_idle_refuses_while_a_restyle_holds_the_runner(weights):
+    stopped = []
+
+    class _Server(_FakeServer):
+        def stop(self):
+            stopped.append(True)
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _Server(b"AVI"))
+    runner._ensure_server(vr.model_files())
+    runner.start(prompt = "x", frames = _frames(5))
+    assert not runner.unload_if_idle()
+    assert stopped == [] and runner._server is not None
+    runner._update(active = False)
+    assert runner.unload_if_idle()
+    assert stopped == [True] and runner._server is None
