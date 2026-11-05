@@ -282,7 +282,7 @@ def _case_train(
     if router_aux:
         model.config.output_router_logits = True
     if aux_coef is not None:
-        # TRL < 1.6 has no SFTConfig.router_aux_loss_coef: the model's own coefficient (config and the CausalLM)
+        # TRL < 1.6 has no SFTConfig.router_aux_loss_coef: set the model's own
         for m in [model, *model.modules()]:
             config = getattr(m, "config", None)
             if config is not None and hasattr(config, "router_aux_loss_coef"):
@@ -825,11 +825,8 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
 @pytest.mark.parametrize("aux", [True, False], ids = ["aux_on", "aux_off"])
 @pytest.mark.parametrize("ga", [1, 2, 4])
 def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux):
-    """UNSLOTH_PP_SIZE=2 over Qwen3-MoE, router load-balancing loss on (SFTConfig coefficient 0.5, so the term
-    shows in every gradient) or off, one pipeline micro-batch per Trainer step, gradient accumulation 1 / 2 / 4:
-    the same SFTTrainer in one process over the same rows gives the same step losses, gradients and adapters.
-    One process weights each accumulation step's aux term by that step's token share of the window (the forward
-    Unsloth Zoo rewrites); a pipeline adding it in full trained a ~ga x larger term (GA 2: loss 9.12 vs 8.05)."""
+    """PP=2 Qwen3-MoE with GA 1/2/4 matches one process: the aux term is weighted per micro-batch token share
+    (unsloth_ga_scale_aux_loss); adding it in full trained a ~ga x larger term."""
     kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
     (ref,) = _spawn("train", 1, **kw)
     assert ref["output_router_logits"] is aux, ref
@@ -838,8 +835,7 @@ def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux):
     _same_rows(results, ref, what = (ga, aux))
     assert sorted(res.get("stage") for res in results) == [0, 1], results
     for rank, res in enumerate(results):
-        # rel 5e-4 / 1e-5: transformers 4.x drifts ~1.4e-4 (grad norm) / ~5e-6 (adapters) at GA 4, aux off too; the aux
-        # weighting error this guards against is 13% (GA 2) to 42% (GA 4) of the loss
+        # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
         _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
 
 

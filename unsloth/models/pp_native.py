@@ -636,13 +636,8 @@ def _moe_aux_plan(parts):
 
 
 def _forward_aux_scaler(owner):
-    """The function the model's own forward wraps its router aux term in, or None.
-
-    Unsloth Zoo rewrites a CausalLM forward (fused_losses/aux_loss.py rewrite_aux_loss_ga) so the term it adds to
-    `loss` becomes `unsloth_ga_scale_aux_loss(term, labels, attention_mask, kwargs, num_items_in_batch, model)`:
-    the micro-batch's aux mean times its token share of the accumulation window. One process trains that; a
-    forward without the rewrite adds the term in full. Read from the forward that runs (the instance's, else the
-    class's), so the pipeline adds what that forward would, whatever version installed it."""
+    """The `unsloth_ga_scale_aux_loss` the running forward calls (Unsloth Zoo rewrite_aux_loss_ga), or None.
+    Read from the forward itself, not a version check, so the pipeline matches whatever forward is installed."""
     import inspect
 
     forward = owner.__dict__.get("forward") or getattr(type(owner), "forward", None)
@@ -667,8 +662,7 @@ def _forward_aux_scaler(owner):
 
 
 def _forward_aux_weighting(owner, term, kwargs, num_items_in_batch):
-    """`term` (coef x this micro-batch's aux loss) weighted as the model's forward weights it on one GPU: through
-    the same scaler with this micro-batch's labels / mask and the window's token count, else unchanged."""
+    """Weight `term` by this micro-batch's token share of the window, as the rewritten forward does on one GPU."""
     scaler = _forward_aux_scaler(owner)
     labels = kwargs.get("labels")
     if scaler is None or labels is None:
