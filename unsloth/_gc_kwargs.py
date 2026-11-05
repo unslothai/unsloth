@@ -90,6 +90,7 @@ def patch_gradient_checkpointing_enable_kwargs():
         import transformers.modeling_utils as hf_modeling_utils
     except Exception:
         return
+
     def _patch_method(method_name, kwargs_name):
         original = getattr(PreTrainedModel, method_name, None)
         if original is None or getattr(original, "_unsloth_gc_kwargs", False):
@@ -130,9 +131,7 @@ def patch_gradient_checkpointing_enable_kwargs():
             every = 1 if every is None else int(every)
 
             if every < 1:
-                raise ValueError(
-                    f"Unsloth: every_n_layers must be >= 1, got {every}."
-                )
+                raise ValueError(f"Unsloth: every_n_layers must be >= 1, got {every}.")
 
             if offload:
                 shim = getattr(hf_modeling_utils, "checkpoint", None)
@@ -161,10 +160,7 @@ def patch_gradient_checkpointing_enable_kwargs():
 
             out = original(self, checkpointing_kwargs, **kwargs)
 
-            if every > 1 or any(
-                "_unsloth_every_n_skip" in m.__dict__
-                for m in self.modules()
-            ):
+            if every > 1 or any("_unsloth_every_n_skip" in m.__dict__ for m in self.modules()):
                 skipped = _apply_every_n_layers(self, every)
 
                 if every > 1 and not skipped:

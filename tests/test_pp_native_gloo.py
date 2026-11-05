@@ -771,6 +771,7 @@ def test_layer_call_format_reads_tuple_loops():
 
     assert ppn._layer_call_format(Decoder(), "layers") == "tuple"
 
+
 def test_layer_call_format_recognizes_activation_checkpointing_layer():
     class ActivationCheckpointingLayer(torch.nn.Module):
         def forward(self, hidden_states):
