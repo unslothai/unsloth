@@ -349,3 +349,22 @@ def test_unsloth_fast_forwards_are_not_generic():
     assert not uh.is_hf_registry_attention(root.self_attn)
     assert not cp._generic_hf_attention(root)
     assert cp._supports_context_parallel(root, "ulysses")  # the fast Llama path, as before
+
+
+def test_ulysses_scope_restores_the_manager_when_packed_metadata_raises():
+    # Malformed lengths (empty here) raise while the packed metadata is built: the manager must not stay active.
+    from unsloth.utils.packing import get_packed_info_from_kwargs
+
+    manager = _manager(1, 0)
+    previous = cp._ACTIVE_MANAGER
+    inputs = {
+        "input_ids": torch.zeros(1, SEQ, dtype = torch.long),
+        "packed_seq_lengths": torch.tensor([], dtype = torch.int32),
+    }
+    with pytest.raises(ValueError):
+        with manager.apply(inputs):
+            get_packed_info_from_kwargs(
+                {"packed_seq_lengths": inputs["packed_seq_lengths"]}, torch.device("cpu")
+            )
+    assert cp._ACTIVE_MANAGER is previous
+    assert manager.packed_seq_lengths is None
