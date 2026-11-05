@@ -5,6 +5,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { classifyUnslothSupport } from "../src/features/hub/lib/unsloth-support.ts";
+import {
+  VIDEO_CATALOG,
+  catalogToModelOptions,
+} from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 
 // nvidia/Cosmos3-* cards name no pipeline task (library "cosmos") and tag diffusers.
 const HUB_CARD = {
@@ -14,11 +18,13 @@ const HUB_CARD = {
 };
 const UNSUPPORTED = { status: "unsupported", reason: "Library: diffusers." };
 
-test("only nvidia's Cosmos3 Edge is routed to the Video page; Nano, siblings and copies stay unsupported", () => {
+test("nvidia's Cosmos3 Nano and Edge are routed to the Video page; siblings and copies stay unsupported", () => {
   const cases: Array<[string, object]> = [
     ["nvidia/Cosmos3-Edge", { ...UNSUPPORTED, supportedIn: "video" }],
     ["NVIDIA/cosmos3-edge", { ...UNSUPPORTED, supportedIn: "video" }],
-    ["nvidia/Cosmos3-Nano", UNSUPPORTED],
+    ["nvidia/Cosmos3-Nano", { ...UNSUPPORTED, supportedIn: "video" }],
+    ["NVIDIA/cosmos3-nano", { ...UNSUPPORTED, supportedIn: "video" }],
+    ["someone/Cosmos3-Nano", UNSUPPORTED],
     ["nvidia/Cosmos3-Nano-FP8", UNSUPPORTED],
     ["nvidia/Cosmos3-Edge-Policy-DROID", UNSUPPORTED],
     ["nvidia/Cosmos3-Nano-Reasoner", UNSUPPORTED],
@@ -27,4 +33,13 @@ test("only nvidia's Cosmos3 Edge is routed to the Video page; Nano, siblings and
   for (const [modelId, expected] of cases) {
     assert.deepEqual(classifyUnslothSupport({ modelId, ...HUB_CARD }), expected, modelId);
   }
+});
+
+test("the Video picker lists Cosmos3 Nano beside Edge, and the Nano row names the guardrail it needs", () => {
+  const rows = catalogToModelOptions(VIDEO_CATALOG);
+  const nano = rows.find((row) => row.id === "nvidia/Cosmos3-Nano");
+  assert.ok(nano, "nvidia/Cosmos3-Nano missing from the Video picker");
+  assert.ok(rows.some((row) => row.id === "nvidia/Cosmos3-Edge"));
+  assert.equal(nano.name, "Cosmos3 Nano");
+  assert.match(nano.description ?? "", /cosmos-guardrail/);
 });

@@ -704,7 +704,14 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  // Not Cosmos3 Nano: its checkpoint enables the guardrail, whose package Studio does not install.
+  // Nano's checkpoint enables the Cosmos guardrail, which Studio does not install: the load refuses with the fix.
+  {
+    canonicalId: "nvidia/Cosmos3-Nano",
+    displayName: "Cosmos3 Nano",
+    description: "Text and image to video 720p · needs cosmos-guardrail",
+    scope: "video",
+    artifacts: [bf16Pipeline("nvidia/Cosmos3-Nano", 32, { totalParams: 15750057456 })],
+  },
   {
     canonicalId: "nvidia/Cosmos3-Edge",
     displayName: "Cosmos3 Edge",
