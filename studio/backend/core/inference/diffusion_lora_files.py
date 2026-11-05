@@ -407,16 +407,18 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
     if family not in NORMALIZED_FAMILIES:
         pipe.load_lora_weights(path, adapter_name = name)
         return
-    state = _dotted_kohya_keys(pipe, read_lora_file(path), family)
-    lokr, rest = split_lokr(state)
+    raw = read_lora_file(path)
+    lokr, rest = split_lokr(_dotted_kohya_keys(pipe, raw, family))
     plain = normalize_lora(rest, family)
     if not any(".lora_" in k for k in plain):
         plain = {}
     if plain:
+        # A file needing no rewrite loads by path: diffusers reads lora_alpha / rank from its metadata, not a dict.
+        unchanged = not lokr and plain.keys() == raw.keys() and all(plain[k] is raw[k] for k in raw)
         # PEFT injects only into bare Linears: unwrap LoKR while it runs, then rewrap whatever sits there now.
         wrappers = _unwrap_kron(pipe)
         try:
-            pipe.load_lora_weights(plain, adapter_name = name)
+            pipe.load_lora_weights(path if unchanged else plain, adapter_name = name)
         finally:
             _rewrap_kron(wrappers)
             if wrappers:

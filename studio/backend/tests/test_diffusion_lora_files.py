@@ -255,6 +255,39 @@ def test_kohya_keys_resolve_to_the_layer_they_name(tmp_path):
     assert isinstance(pipe.transformer.blocks[0].proj["q"], lf.kron_linear_class())
 
 
+def test_a_file_needing_no_rewrite_loads_by_path(tmp_path):
+    # diffusers reads lora_alpha / rank from the file's metadata only when it opens the file itself.
+    from safetensors.torch import save_file
+
+    diffusers_format = tmp_path / "diffusers.safetensors"
+    save_file(
+        {
+            "transformer.blocks.1.proj.q.lora_A.weight": torch.randn(2, 24),
+            "transformer.blocks.1.proj.q.lora_B.weight": torch.randn(24, 2),
+        },
+        diffusers_format,
+        metadata = {"lora_adapter_metadata": '{"r": 2, "lora_alpha": 8}'},
+    )
+    pipe = _RecordingPipe()
+    received = []
+    pipe.load_lora_weights = lambda source, adapter_name = None: (
+        received.append(source),
+        pipe.loaded.setdefault(adapter_name, {}),
+    )
+    lf.load_adapter(pipe, str(diffusers_format), "d", "krea-2")
+    assert received == [str(diffusers_format)]
+    reference_format = tmp_path / "reference.safetensors"
+    save_file(
+        {
+            "diffusion_model.blocks.1.proj.q.lora_down.weight": torch.randn(2, 24),
+            "diffusion_model.blocks.1.proj.q.lora_up.weight": torch.randn(24, 2),
+        },
+        reference_format,
+    )
+    lf.load_adapter(pipe, str(reference_format), "r", "krea-2")
+    assert isinstance(received[-1], dict)
+
+
 def test_a_lora_that_loads_into_no_layer_is_refused(tmp_path):
     from safetensors.torch import save_file
 
