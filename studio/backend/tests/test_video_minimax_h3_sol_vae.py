@@ -362,15 +362,23 @@ def test_an_oom_falls_back_for_that_decode_only(weights, caplog, monkeypatch):
     assert vae.stock_calls == 1 and vae.__dict__["_unsloth_h3_sol_vae_stats"]["calls"] == 1
 
 
-@pytest.mark.parametrize("error", ["kernel exploded", "CUDA out of memory. Tried to allocate 2.00 GiB"])
-def test_a_resident_decoder_leaves_the_card_before_the_stock_fallback(weights, caplog, monkeypatch, error):
+@pytest.mark.parametrize(
+    "error", ["kernel exploded", "CUDA out of memory. Tried to allocate 2.00 GiB"]
+)
+def test_a_resident_decoder_leaves_the_card_before_the_stock_fallback(
+    weights, caplog, monkeypatch, error
+):
     monkeypatch.setenv(S.SOL_VAE_ENV, "1")
     real_load = S.load_sol_decoder
     monkeypatch.setattr(S, "_free_device_gb", lambda device: None)
-    monkeypatch.setattr(S, "load_sol_decoder", lambda path, **k: real_load(path, **{**k, "device": "cpu"}))
+    monkeypatch.setattr(
+        S, "load_sol_decoder", lambda path, **k: real_load(path, **{**k, "device": "cpu"})
+    )
     vae = AutoencoderKLMiniMaxH3()
     log = logging.getLogger("sol_test")
-    assert S.install_h3_sol_vae(vae, device = "cuda:0", dtype = torch.float32, logger = log, weights_path = weights)
+    assert S.install_h3_sol_vae(
+        vae, device = "cuda:0", dtype = torch.float32, logger = log, weights_path = weights
+    )
     model = vae.__dict__["_unsloth_h3_sol_vae"]
     where = {"on_host": False}
     moves = []
