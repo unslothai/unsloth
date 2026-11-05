@@ -35,6 +35,7 @@ const IMAGE = new RegExp(`!\\[${LABEL}\\]${DESTINATION}`, "g");
 const LINK = new RegExp(`\\[${LABEL}\\]${DESTINATION}`, "g");
 const IMAGE_REFERENCE = new RegExp(`!\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
 const LINK_REFERENCE = new RegExp(`\\[${LABEL}\\](?:\\[([^\\]]*)\\])?`, "g");
+const WEB_DESTINATION = /^\((https?:\/\/[^\s()<>]+)\)$/i;
 const DEFINITION = /^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:/;
 const ESCAPE = /\\([!-/:-@[-`{-~])/g;
 // Private-use sentinels park code spans, so document text cannot contain them.
@@ -128,9 +129,15 @@ function stripHtmlTags(text: string): string {
   return out;
 }
 
+export interface ReleaseNotesLink {
+  text: string;
+  href: string;
+}
+
 export interface ReleaseNotesPreviewItem {
   lead: string;
   rest: string;
+  links: ReleaseNotesLink[];
 }
 
 export interface ReleaseNotesPreview {
@@ -141,6 +148,7 @@ export interface ReleaseNotesPreview {
 interface Bullet {
   text: string;
   indent: number;
+  links: ReleaseNotesLink[];
 }
 
 function definedLabel(
@@ -203,6 +211,22 @@ function toPlainText(markdown: string, labels?: Set<string>): string {
     .replace(PARKED, (_match, index: string) => codes[Number(index)] ?? "")
     .replace(WHITESPACE, " ")
     .trim();
+}
+
+function webLinks(markdown: string): ReleaseNotesLink[] {
+  const links: ReleaseNotesLink[] = [];
+  const unescaped = parkCodeSpans(markdown, () => " ")
+    .replace(ESCAPE, " ")
+    .replace(IMAGE, "");
+  for (const match of unescaped.matchAll(LINK)) {
+    const label = match[1] ?? "";
+    const href = WEB_DESTINATION.exec(match[0].slice(label.length + 2))?.[1];
+    const text = toPlainText(label);
+    if (href && text) {
+      links.push({ text, href });
+    }
+  }
+  return links;
 }
 
 function truncate(text: string): string {
@@ -652,7 +676,9 @@ function contentLines(markdown: string): ContentLine[] {
 }
 
 /** Conservative: the next sentence must start like one, so "unsloth.ai in the docs" is not split. */
-function splitLeadSentence(text: string): ReleaseNotesPreviewItem {
+function splitLeadSentence(
+  text: string,
+): Omit<ReleaseNotesPreviewItem, "links"> {
   SENTENCE_BREAK.lastIndex = 0;
   let match = SENTENCE_BREAK.exec(text);
   while (match) {
@@ -682,6 +708,7 @@ function flush(collector: Collector): void {
     collector.bullets.push({
       text: truncate(collector.current.text),
       indent: collector.current.indent,
+      links: collector.current.links,
     });
   }
   collector.current = null;
@@ -702,7 +729,11 @@ function takeBullet(
   const item = toPlainText(text, labels);
   // A quoted list is example output, never a headline bullet.
   if (!line.quoted) {
-    collector.current = { text: item, indent: line.indent };
+    collector.current = {
+      text: item,
+      indent: line.indent,
+      links: webLinks(text),
+    };
   } else if (item) {
     collector.prose.push(truncate(item));
   }
@@ -728,6 +759,7 @@ function takeText(
   collector.current = {
     text: `${collector.current.text} ${plain}`,
     indent: collector.current.indent,
+    links: [...collector.current.links, ...webLinks(text)],
   };
 }
 
@@ -849,13 +881,18 @@ export function releaseNotesPreview(
     (min, bullet) => Math.min(min, bullet.indent),
     Number.POSITIVE_INFINITY,
   );
-  const topLevel = bullets
-    .filter((bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE)
-    .map((bullet) => bullet.text);
+  const topLevel = bullets.filter(
+    (bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE,
+  );
 
-  const source = topLevel.length > 0 ? topLevel : prose;
+  const source: Bullet[] =
+    topLevel.length > 0
+      ? topLevel
+      : prose.map((text) => ({ text, indent: 0, links: [] }));
   return {
-    items: source.slice(0, limit).map(splitLeadSentence),
+    items: source
+      .slice(0, limit)
+      .map(({ text, links }) => ({ ...splitLeadSentence(text), links })),
     remaining: Math.max(source.length - limit, 0),
   };
 }

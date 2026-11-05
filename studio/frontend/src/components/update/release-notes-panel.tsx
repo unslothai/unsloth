@@ -14,7 +14,10 @@ import {
 import { useReleaseNotes } from "@/hooks/use-release-notes";
 import { useT } from "@/i18n";
 import { resolveReleaseBodyLinks } from "@/lib/release-body-links";
-import { releaseNotesPreview } from "@/lib/release-notes-preview";
+import {
+  type ReleaseNotesLink,
+  releaseNotesPreview,
+} from "@/lib/release-notes-preview";
 import {
   type ReactElement,
   type ReactNode,
@@ -234,6 +237,33 @@ export function ReleaseNotesPanel({
   );
 }
 
+function linked(text: string, links: ReleaseNotesLink[]): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  let from = 0;
+  for (const link of [...links]) {
+    const at = text.indexOf(link.text, from);
+    if (at === -1) {
+      break;
+    }
+    links.shift();
+    nodes.push(
+      text.slice(from, at),
+      <a
+        key={at}
+        href={link.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="underline decoration-foreground/40 underline-offset-2 transition-colors hover:decoration-foreground"
+      >
+        {link.text}
+      </a>,
+    );
+    from = at + link.text.length;
+  }
+  nodes.push(text.slice(from));
+  return nodes;
+}
+
 function ReleaseNotesSummary({
   preview,
 }: {
@@ -255,21 +285,26 @@ function ReleaseNotesSummary({
       className="hover-scrollbar min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain py-2 pr-1"
       data-testid="update-release-notes-summary"
     >
-      {items.map((item, index) => (
-        <li
-          // Two releases can carry the same bullet text, so index is the key.
-          key={`${index}-${item.lead}`}
-          className={UPDATE_NOTES_ITEM_CLASS}
-        >
-          <span aria-hidden="true" className={UPDATE_NOTES_BULLET_CLASS}>
-            &bull;
-          </span>
-          <span className="line-clamp-2 min-w-0">
-            <span className={UPDATE_NOTES_LEAD_CLASS}>{item.lead}</span>
-            {item.rest ? <span> {item.rest}</span> : null}
-          </span>
-        </li>
-      ))}
+      {items.map((item, index) => {
+        const links = [...item.links];
+        return (
+          <li
+            // Two releases can carry the same bullet text, so index is the key.
+            key={`${index}-${item.lead}`}
+            className={UPDATE_NOTES_ITEM_CLASS}
+          >
+            <span aria-hidden="true" className={UPDATE_NOTES_BULLET_CLASS}>
+              &bull;
+            </span>
+            <span className="line-clamp-2 min-w-0">
+              <span className={UPDATE_NOTES_LEAD_CLASS}>
+                {linked(item.lead, links)}
+              </span>
+              {item.rest ? <span> {linked(item.rest, links)}</span> : null}
+            </span>
+          </li>
+        );
+      })}
       {remaining > 0 ? (
         <li className="pl-3 text-ui-10 text-muted-foreground/70">
           {t("updateNotes.moreCount", { count: remaining })}
