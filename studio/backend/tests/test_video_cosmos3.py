@@ -1292,7 +1292,11 @@ def test_generate_renders_and_exports_at_the_chosen_fps(cosmos3_runtime, repo, f
 # Video continuation (Cosmos3-Nano only): keep frames from one end of a clip, generate what follows.
 
 
-def _clip(count, fps = 24, size = (208, 120)):
+def _clip(
+    count,
+    fps = 24,
+    size = (208, 120),
+):
     """An mp4 whose frame i is solid gray 20*i, so a decoded frame names its source index."""
     av = pytest.importorskip("av")
     import io
@@ -1322,20 +1326,16 @@ def _clip(count, fps = 24, size = (208, 120)):
 
 def _clip_url(*args, **kwargs):
     import base64
-
     return "data:video/mp4;base64," + base64.b64encode(_clip(*args, **kwargs)).decode()
 
 
 def _indexes(frames):
     import numpy as np
-
     return [int(round(float(np.asarray(f).mean()) / 20)) for f in frames]
 
 
 def test_only_nano_continues_a_clip():
-    assert {f.name for f in vf._FAMILIES if f.supports_video_continuation} == {
-        "cosmos3-nano"
-    }
+    assert {f.name for f in vf._FAMILIES if f.supports_video_continuation} == {"cosmos3-nano"}
 
 
 @pytest.mark.parametrize(
@@ -1374,9 +1374,7 @@ def test_continuation_rules(name, kwargs, error, fragment):
     ],
 )
 def test_the_clip_keeps_five_frames_from_the_chosen_end(count, source_fps, fps, keep, expected):
-    frames = vc3.decode_continuation_clip(
-        _clip(count, fps = source_fps), keep = keep, fps = fps, count = 5
-    )
+    frames = vc3.decode_continuation_clip(_clip(count, fps = source_fps), keep = keep, fps = fps, count = 5)
     assert _indexes(frames) == expected
     assert all(f.mode == "RGB" and f.size == (208, 120) for f in frames)
 
