@@ -68,7 +68,7 @@ function newCompareThread(paneId: string) {
 }
 
 test("the first message of a new compare chat starts pane 1 on the user message", async () => {
-  const handlesRef = { current: {} as Record<string, any> };
+  const handlesRef = { current: {} as Record<string, unknown> };
   const pane1 = newCompareThread("pane1");
   const pane2 = newCompareThread("pane2");
   registerHandle(handlesRef, "model1", pane1.aui);
