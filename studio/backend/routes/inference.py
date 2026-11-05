@@ -15768,7 +15768,6 @@ def _native_audio_post_handoff_free_gb(
         live.clear()
         live.update(_visible_gpu_memory_gb())
         return bool(live)
-        return bool(live)
 
     def _merge_report(reported) -> bool:
         if not isinstance(reported, dict):
@@ -50242,13 +50241,18 @@ async def audio_catalog(current_subject: str = Depends(get_current_subject)):
             status_code = 503,
             detail = "Unsloth Studio could not list audio models right now.",
         ) from None
-    for row in rows:
-        for size_key, estimate_key in (
-            ("size_bytes", "estimated_resident_gb"),
-            ("smallest_size_bytes", "smallest_estimated_resident_gb"),
-        ):
-            if row.get(size_key):
-                row[estimate_key] = audio_cpp_resident_gb(row[size_key], row.get("family"))
+
+    def _estimate_rows() -> None:
+        # Off the event loop: YuE2's estimate reads the cards through nvidia-smi.
+        for row in rows:
+            for size_key, estimate_key in (
+                ("size_bytes", "estimated_resident_gb"),
+                ("smallest_size_bytes", "smallest_estimated_resident_gb"),
+            ):
+                if row.get(size_key):
+                    row[estimate_key] = audio_cpp_resident_gb(row[size_key], row.get("family"))
+
+    await asyncio.to_thread(_estimate_rows)
     return payload.model_copy(update = {"models": [AudioCatalogModel(**r) for r in rows]})
 
 

@@ -99,3 +99,28 @@ def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
     )
     assert rows[DRAMA["id"]]["estimated_resident_gb"] is None
     assert rows[DRAMA["id"]]["smallest_estimated_resident_gb"] is None
+
+
+def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
+    # YuE2's estimate asks nvidia-smi for compute capabilities, which can take seconds.
+    import asyncio
+
+    from utils.hardware import nvidia
+
+    on_loop = []
+
+    def capabilities():
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            on_loop.append(False)
+        else:
+            on_loop.append(True)
+        return {0: (8, 6)}
+
+    monkeypatch.setattr(nvidia, "get_compute_capabilities", capabilities)
+    yue2 = dict(KOKORO, family = "yue2", size_bytes = 4531978293, smallest_size_bytes = 2933424181)
+    catalog = AudioCatalogResponse(**{**CATALOG.model_dump(), "models": [yue2]})
+    _builder(monkeypatch, lambda: catalog)
+    assert client.get("/api/inference/audio/catalog").status_code == 200
+    assert on_loop == [False, False]
