@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import {
   applyModelLoadConfigToRuntime,
@@ -619,6 +620,12 @@ function useStoredChatTitle(threadId: string | null): string | undefined {
   return title && title.id === threadId ? title.title : undefined;
 }
 
+// WebKitGTK restyles the long thread when panel constraints re-register, then again
+// for the staged resize. Keep constraints stable and resize in one step on this renderer.
+const IMMEDIATE_CONTEXT_PANEL =
+  typeof navigator !== "undefined" &&
+  isWebKitGTK(navigator.platform, navigator.userAgent);
+
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
 const BROWSER_PANEL_DEFAULT_SIZE = "50%";
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
@@ -708,7 +715,8 @@ const SingleContent = memo(function SingleContent({
   });
   const showContextPanel = showResearchPanel || browserDocked;
 
-  const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
+  const artifactLayoutActive =
+    showContextPanel || (!IMMEDIATE_CONTEXT_PANEL && isArtifactPanelLayoutActive);
   const artifactPanelSettledOpen =
     showContextPanel &&
     isArtifactPanelLayoutActive &&
@@ -722,9 +730,17 @@ const SingleContent = memo(function SingleContent({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: the open sequence is the re-expand trigger
   useEffect(() => {
-    if (!showContextPanel || browserOpenSequence === 0) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
+    if (IMMEDIATE_CONTEXT_PANEL) {
+      panel.resize(
+        showContextPanel
+          ? (artifactPanelWidthRef.current ?? defaultPanelSizeRef.current)
+          : "0%",
+      );
+      return;
+    }
+    if (!showContextPanel || browserOpenSequence === 0) return;
     if (!panel.isCollapsed() && panel.getSize().asPercentage > 5) return;
     // expand() alone restores the pre-collapse width, which is zero after a drag shut.
     panel.expand();
@@ -732,6 +748,7 @@ const SingleContent = memo(function SingleContent({
   }, [browserOpenSequence, showContextPanel]);
 
   useEffect(() => {
+    if (IMMEDIATE_CONTEXT_PANEL) return;
     const panel = artifactPanelRef.current;
     if (!panel) return;
 
@@ -912,13 +929,14 @@ const SingleContent = memo(function SingleContent({
         <ResizablePanel
           id="chat-thread"
           defaultSize="100%"
-          // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
+          // Keep closed/open constraints stable on WebKitGTK. The zero-width,
+          // collapsed sibling already lets the chat fill the group when closed.
           minSize={
             browserFullView
               ? "0%"
               : chatOnRight
                 ? "34%"
-                : artifactLayoutActive
+                : (IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive)
                   ? "42%"
                   : "100%"
           }
@@ -986,7 +1004,7 @@ const SingleContent = memo(function SingleContent({
           minSize={
             showResearchPanel
               ? "30%"
-              : artifactPanelSettledOpen
+              : (IMMEDIATE_CONTEXT_PANEL || artifactPanelSettledOpen)
                 ? "30%"
                 : "0%"
           }
@@ -995,11 +1013,11 @@ const SingleContent = memo(function SingleContent({
               ? "66%"
               : showResearchPanel
               ? "58%"
-              : artifactLayoutActive
+              : (IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive)
                 ? "58%"
                 : "0%"
           }
-          collapsible={showBrowserPanel}
+          collapsible={IMMEDIATE_CONTEXT_PANEL ? !showResearchPanel : showBrowserPanel}
           collapsedSize="0%"
           className={cn(
             "h-full min-h-0 min-w-0 overflow-visible",
@@ -1009,7 +1027,9 @@ const SingleContent = memo(function SingleContent({
           <div
             ref={contextSurfaceRef}
             data-artifact-surface-visible={
-              isArtifactSurfaceVisible ? "true" : "false"
+              (IMMEDIATE_CONTEXT_PANEL ? showContextPanel : isArtifactSurfaceVisible)
+                ? "true"
+                : "false"
             }
             {...{ "data-browser-floating": browserFloating ? "" : undefined }}
             className={cn(

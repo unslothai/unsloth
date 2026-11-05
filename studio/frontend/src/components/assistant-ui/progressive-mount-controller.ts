@@ -45,11 +45,11 @@ export function isCovered(current: MountWindow): boolean {
 }
 
 /** Returns null once it would cover the thread, so the restriction drops in the same commit. */
-export function widen(current: MountWindow, count: number): MountWindow {
+export function widen(current: MountWindow, count: number, chunk = CHUNK_MESSAGES): MountWindow {
   if (current == null) return null;
   // A start past the end withholds nothing; clamping then subtracting would unmount rows.
   if (current.start >= count) return null;
-  const start = Math.max(0, current.start - CHUNK_MESSAGES);
+  const start = Math.max(0, current.start - chunk);
   if (start <= 0) return null;
   return { start };
 }

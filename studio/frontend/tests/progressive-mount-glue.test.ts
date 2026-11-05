@@ -87,7 +87,7 @@ test("the window is only ever advanced through widen", () => {
     const ok =
       call === "null" ||
       call.startsWith("initialWindow(") ||
-      call.includes("widen(current, count)");
+      call.includes("widen(current, count, MOUNT_CHUNK)");
     assert.ok(
       ok,
       `setMountWindow(${call}) is not one of null / initialWindow / widen`,
@@ -119,7 +119,7 @@ test("the widening step is deferred and transition-wrapped", () => {
   );
   assert.match(
     widening,
-    /const frame = requestAnimationFrame\(/,
+    /frame = requestAnimationFrame\(advance\)/,
     "the widening step must be scheduled on a frame, not a timer",
   );
   assert.doesNotMatch(
@@ -127,6 +127,7 @@ test("the widening step is deferred and transition-wrapped", () => {
     /setTimeout|setInterval|queueMicrotask/,
     "cancelAnimationFrame does not cancel a timer, so a closed window would still widen",
   );
+  assert.match(widening, /if \(inputPointerHeld\(\)\) \{\s*frame = requestAnimationFrame\(advance\);\s*return;/);
 });
 
 test("the anchor is measured against its scroll container, not against the window", () => {
@@ -209,10 +210,10 @@ test("the mount window never writes scrollTop itself", () => {
   assert.match(glue, /adjustForContentInsertedAbove\(shift \?\? 0\)/);
 });
 
-test("the hook's correction stands down while the user is following", () => {
-  // While following, the hook already pins to bottom in the same frame.
+test("the hook pins a follower during the prepend commit", () => {
   const body = section(HOOK, "adjustImplRef.current = (", "const onWheel = ");
-  assert.match(body, /if \(!userDetachedRef\.current\) \{\s*return;/);
+  assert.match(body, /if \(!userDetachedRef\.current\) \{\s*insertionRemainder = 0;\s*if \(!parkIfHeld\(\)\) \{\s*extendFollow\(\);\s*pinIfFollowing\(stabilize\(\)\);/);
+  assert.match(body, /else if \(deltaPx !== 0\)/);
 });
 
 test("the hook's correction is instant, because the viewport is scroll-smooth", () => {
@@ -333,7 +334,8 @@ test("the anchor is the first row the reader can see, not the first row in the l
   assert.match(GLUE, /function pickAnchorRow\(viewport: HTMLElement\)/);
   assert.match(GLUE, /if \(row\.getBoundingClientRect\(\)\.bottom > fold\) \{/);
   // A row can be taller than the viewport, so descend to the fold.
-  assert.match(GLUE, /for \(const child of anchor\.children\)/);
+  assert.match(GLUE, /for \(const child of layoutChildren\(anchor\)\)/);
+  assert.match(GLUE, /getComputedStyle\(child\)\.display === "contents"/);
   assert.match(GLUE, /function isAnchorVisible\(/);
   assert.match(GLUE, /return box\.bottom > fold && box\.top < fold \+ viewport\.clientHeight;/);
   // Pass a post-correction baseline, or a reflow before the next frame is never corrected.

@@ -24,6 +24,7 @@ import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-sco
 import {
   type AnchorSample,
   type MountWindow,
+  CHUNK_MESSAGES,
   anchorCorrection,
   initialWindow,
   widen,
@@ -33,6 +34,11 @@ import {
   rendersAsRow,
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
+import { inputPointerHeld } from "@/lib/input-pointer-state";
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
+
+const MOUNT_CHUNK = typeof navigator !== "undefined"
+  && isWebKitGTK(navigator.platform, navigator.userAgent) ? 8 : CHUNK_MESSAGES;
 
 /** Module-level: consumers are imperative DOM readers, and a thread can mount twice (Compare). */
 interface ActiveCompleter {
@@ -84,6 +90,13 @@ function restoreScrollAnchoring(viewport: HTMLElement | null): void {
   if (viewport.getAttribute("style") === "") viewport.removeAttribute("style");
 }
 
+function* layoutChildren(element: Element): Generator<Element> {
+  for (const child of element.children) {
+    if (getComputedStyle(child).display === "contents") yield* layoutChildren(child);
+    else yield child;
+  }
+}
+
 /** The first row the reader can SEE: a relayout above the fold moves them, not the top row. */
 function pickAnchorRow(viewport: HTMLElement): Element | null {
   const fold = viewport.getBoundingClientRect().top;
@@ -96,6 +109,7 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
     }
   }
   if (!anchor) return null;
+  if (anchor.hasAttribute("data-message-parked")) return anchor;
   if (
     typeof anchor.checkVisibility === "function"
     && !anchor.checkVisibility({ contentVisibilityAuto: true })
@@ -114,7 +128,7 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
   for (let depth = 0; depth < 8; depth += 1) {
     if (anchor.getBoundingClientRect().top >= fold) break;
     let next: Element | null = null;
-    for (const child of anchor.children) {
+    for (const child of layoutChildren(anchor)) {
       if (
         typeof child.checkVisibility === "function"
         && !child.checkVisibility({ contentVisibilityAuto: true })
@@ -260,17 +274,24 @@ function useProgressiveMountWindow(
 
   useEffect(() => {
     if (mountWindow == null) return;
-    const frame = requestAnimationFrame(() => {
+    let frame = 0;
+    const advance = () => {
       // Re-check: a run can start between the commit and this frame.
       if (isRunningNow()) {
         setMountWindow(null);
         return;
       }
+      // Prepending during a native thumb drag changes the range under the pointer.
+      if (inputPointerHeld()) {
+        frame = requestAnimationFrame(advance);
+        return;
+      }
       captureAnchor();
       startTransition(() => {
-        setMountWindow((current) => widen(current, count));
+        setMountWindow((current) => widen(current, count, MOUNT_CHUNK));
       });
-    });
+    };
+    frame = requestAnimationFrame(advance);
     return () => cancelAnimationFrame(frame);
   }, [mountWindow, count, captureAnchor, isRunningNow]);
 
@@ -280,7 +301,13 @@ function useProgressiveMountWindow(
     const captured = anchorRef.current;
     anchorRef.current = null;
     const viewport = viewportRef.current;
-    if (!captured || !viewport) return;
+    if (!viewport) return;
+    if (!captured) {
+      // The initial tail has no earlier anchor. Pin it before its first paint,
+      // just as later prepends are corrected in this commit.
+      adjustForContentInsertedAbove(0);
+      return;
+    }
     const [element, baseline] = captured.element.isConnected
       ? [captured.element, captured as AnchorSample]
       : captured.row?.isConnected && captured.rowSample

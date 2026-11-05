@@ -343,6 +343,8 @@ test("paint containment is limited to large completed full-token bodies", () => 
     memo: React.memo,
     useMemo: React.useMemo,
     useRef: React.useRef,
+    WINDOW_SETTLED_FENCES: false,
+    useOffscreenFenceText: () => false,
     useFenceHighlightLimit: () => ({ progress: null, staged: false }),
     FENCE_CHUNK_LINES,
     sameFenceBodyProps,

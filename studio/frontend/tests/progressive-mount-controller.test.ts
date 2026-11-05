@@ -72,6 +72,17 @@ test("widening only ever moves start down", () => {
   }
 });
 
+test("smaller renderer batches still converge without skipping messages", () => {
+  let current = initialWindow(600, false);
+  let previous = current!.start;
+  while (current !== null) {
+    current = widen(current, 600, 8);
+    const start = current?.start ?? 0;
+    assert.ok(start < previous && previous - start <= 8);
+    previous = start;
+  }
+});
+
 test("widening reaches null from every thread length", () => {
   for (const count of [40, 41, 80, 220, 501, 5000]) {
     assert.ok(stepsToCover(count) >= 1, `${count} never widened`);
