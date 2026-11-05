@@ -10,6 +10,10 @@
 # You should have received a copy of the GNU Lesser General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
+# The model stack first: attention_dispatch imports models/_utils.py, whose package imports models/llama.py,
+# which imports attention_dispatch back. Entered from here first (the CPU route never imports unsloth.models),
+# llama.py found attention_dispatch half initialised; the GPU route imports models first.
+from .. import models as _models  # noqa: F401
 from .packing import (
     configure_padding_free,
     configure_sample_packing,

@@ -196,6 +196,16 @@ def _unregister_cp_sharding_rules() -> None:
     unregister_cp_sharding_rules(clear_the_cache = False)
 
 
+# A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
+_ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
+
+
+# Defined before the imports below: they reach models/llama.py and utils/attention_dispatch.py, which bind it
+# from this partially initialised module when context_parallel is the first one imported (the CPU route).
+def get_cp_manager() -> Optional["ContextParallelManager"]:
+    return _ACTIVE_MANAGER
+
+
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
@@ -206,9 +216,6 @@ from .utils.ulysses_hybrid import (
     is_ulysses_gated_delta,
     wrap_gated_delta_forward,
 )
-
-# A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
-_ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
@@ -233,10 +240,6 @@ def _multimodal_inputs(inputs: dict) -> list:
 
 _INSTALLED_MESH = []
 _INSTALLED_PARALLELISM_CONFIG = []
-
-
-def get_cp_manager() -> Optional["ContextParallelManager"]:
-    return _ACTIVE_MANAGER
 
 
 def _stateful_mixers(model) -> list:

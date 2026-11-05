@@ -211,6 +211,88 @@ _install_cpu_trainer_module()
 del _install_cpu_trainer_module
 
 
+def _cpu_cp_requested(args, kwargs) -> bool:
+    from .parallel_env import env_cp_size
+
+    config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
+    for size in (
+        getattr(config, "context_parallel_size", None),
+        kwargs.get("context_parallel_size"),
+    ):
+        if isinstance(size, int) and not isinstance(size, bool) and size > 1:
+            return True
+    return env_cp_size() > 1
+
+
+def _install_cpu_context_parallel():
+    # _gpu_init.py installs context_parallel.patch_sft_trainer() at import. Its module loads the GPU model
+    # stack, so here it loads on the first trainer that asks for context parallelism (config, trainer kwarg,
+    # UNSLOTH_CP_SIZE / UNSLOTH_PARALLEL): that trainer gets CP, or an error before its __init__ runs, never
+    # plain DDP. Trainers without CP keep the CPU __init__ and never import the GPU stack.
+    import functools
+
+    trainer_cls = _SFTTrainer
+    if not isinstance(trainer_cls, type) or trainer_cls is _SFTConfig:
+        return  # TRL missing: the stub already raises
+    original_init = trainer_cls.__init__
+    cp_keys = (
+        "context_parallel_size",
+        "context_parallel_backend",
+        "context_parallel_rotate_method",
+    )
+    state = {}
+
+    @functools.wraps(original_init)
+    def cp_fields_into_config(self, *args, **kwargs):
+        # The GPU route's Unsloth SFTConfig declares the CP fields and its trainer wrapper folds CP kwargs into
+        # it; stock TRL rejects them, so the CP patch's kwargs land on the config here.
+        cp = {key: kwargs.pop(key) for key in cp_keys if key in kwargs}
+        config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
+        for key, value in cp.items():
+            setattr(config, key, value)
+        return original_init(self, *args, **kwargs)
+
+    @functools.wraps(original_init)
+    def __init__(self, *args, **kwargs):
+        requested = _cpu_cp_requested(args, kwargs)
+        if requested and "init" not in state:
+            current = trainer_cls.__init__
+            trainer_cls.__init__ = (
+                cp_fields_into_config  # patch_sft_trainer wraps the class's __init__
+            )
+            try:
+                from .context_parallel import patch_sft_trainer
+                patch_sft_trainer()
+                state["init"] = trainer_cls.__init__
+            except Exception as error:
+                raise RuntimeError(
+                    "Unsloth: context parallelism was requested (context_parallel_size > 1 or "
+                    "UNSLOTH_CP_SIZE / UNSLOTH_PARALLEL cp), but it could not be set up on the CPU backend: "
+                    f"{type(error).__name__}: {error}. Unset it to train without context parallelism."
+                ) from error
+            finally:
+                trainer_cls.__init__ = current
+        init = state.get("init", original_init)
+        init(self, *args, **kwargs)
+        # A config TRL rebuilt from to_dict() (a plain TrainingArguments) loses CP attributes set on it.
+        if (
+            requested
+            and init
+            is not cp_fields_into_config  # else an outer, hand-installed patch owns the check
+            and getattr(self, "_context_parallel_manager", None) is None
+        ):
+            raise RuntimeError(
+                "Unsloth: context parallelism was requested but the trainer did not set it up on the CPU "
+                "backend (pass a trl.SFTConfig as args); refusing to train without it."
+            )
+
+    trainer_cls.__init__ = __init__
+
+
+_install_cpu_context_parallel()
+del _install_cpu_context_parallel
+
+
 def _load_dataprep(name: str):
     # By file: dataprep/__init__ also imports synthetic.py, which needs a GPU device type.
     import sys
