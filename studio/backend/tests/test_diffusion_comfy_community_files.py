@@ -411,6 +411,51 @@ def test_moss_pipeline_takes_a_supplied_vae():
     assert "vae" in inspect.signature(load_moss_image_pipeline).parameters
 
 
+def test_a_supplied_moss_vae_keeps_its_fp32_weights(tmp_path):
+    pytest.importorskip("diffusers")
+    from diffusers import AutoencoderKLFlux2
+
+    from core.inference.diffusion_comfy_components import (
+        ComponentFileRef,
+        ComponentOverrides,
+        load_override_modules,
+    )
+
+    torch.manual_seed(0)
+    reference = AutoencoderKLFlux2(
+        block_out_channels = (32, 32),
+        down_block_types = ("DownEncoderBlock2D",) * 2,
+        up_block_types = ("UpDecoderBlock2D",) * 2,
+        layers_per_block = 1,
+        latent_channels = 4,
+        norm_num_groups = 8,
+    )
+    reference.save_config(tmp_path / "base" / "vae")
+    path = _save(tmp_path / "vae.safetensors", reference.state_dict())
+
+    def built(family):
+        overrides = ComponentOverrides(
+            files = {"vae": ComponentFileRef(spec = path, local_path = path)},
+            paths = {"vae": path},
+            classes = {"vae": "AutoencoderKLFlux2"},
+        )
+        modules = load_override_modules(
+            overrides,
+            base = str(tmp_path / "base"),
+            dtype = torch.bfloat16,
+            family = family,
+            local_files_only = True,
+        )
+        return modules["vae"].state_dict()
+
+    # MOSS-Image decodes in fp32, so its supplied VAE must not be rounded to the pipeline dtype on the way.
+    moss = built("moss-image")
+    for key, value in reference.state_dict().items():
+        assert moss[key].dtype == value.dtype and torch.equal(moss[key], value), key
+    other = built("krea-2")
+    assert other["decoder.conv_out.weight"].dtype == torch.bfloat16
+
+
 def test_anima_gguf_is_neither_offered_nor_loaded():
     from core.inference.diffusion import DiffusionBackend
     from core.inference.diffusion_families import detect_family, family_gguf_loadable
