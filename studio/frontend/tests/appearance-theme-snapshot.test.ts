@@ -5,6 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { sanitizeAdjustments } from "../src/features/chat-background/model.ts";
+import type { ThemeApplyPlan } from "../src/features/settings/appearance-theme/application/plan-apply.ts";
 import type { ThemeBackground } from "../src/features/settings/appearance-theme/domain/schema.ts";
 import type * as SnapshotModule from "../src/features/settings/appearance-theme/snapshot.ts";
 import { type AppearanceCustomization, DEFAULT_CUSTOMIZATION } from "../src/features/settings/lib/appearance-customization.ts";
@@ -166,7 +167,7 @@ test("off macOS a theme's native-only glass becomes Liquid 3D, and Undo then res
   const host = createHost();
   const snapshot = load(host);
   const before = snapshot.readAppearanceSnapshot();
-  const plan = snapshot.portableGlass(macos);
+  const plan = snapshot.portableGlass<ThemeApplyPlan>({ ...macos, background: "keep", changes: [], droppedFonts: [] });
   assert.equal(plan.glass.material, "liquid-3d");
   assert.equal(plan.glass.style, "liquid-3d");
   snapshot.applyAppearanceSnapshot(plan);
