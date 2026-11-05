@@ -160,6 +160,13 @@ def _run_sh(tmp_path, env = None):
     )
 
 
+# setup.sh never runs on native Windows, where `bash` is the WSL stub and runs nothing.
+_needs_bash = pytest.mark.skipif(
+    sys.platform == "win32" or shutil.which("bash") is None, reason = "setup.sh runs on POSIX only"
+)
+
+
+@_needs_bash
 @pytest.mark.parametrize("check", ["already", "disabled", "unsupported", "offline"])
 def test_setup_sh_stays_local_when_nothing_is_owed(tmp_path, check):
     installer = _stub(tmp_path, check, "ready")
@@ -168,6 +175,7 @@ def test_setup_sh_stays_local_when_nothing_is_owed(tmp_path, check):
     assert _calls(installer) == ["--check-only --json"] and "STEP" not in out.stdout
 
 
+@_needs_bash
 @pytest.mark.parametrize("after,colour", [("ready", ""), ("failed", "W")])
 def test_setup_sh_backfills_a_missing_pair_and_never_fails(tmp_path, after, colour):
     installer = _stub(tmp_path, "missing", after)
@@ -177,6 +185,7 @@ def test_setup_sh_backfills_a_missing_pair_and_never_fails(tmp_path, after, colo
     assert f"STEP|HNSW search|{after}|{colour}" in out.stdout
 
 
+@_needs_bash
 def test_setup_sh_opt_out_and_missing_installer_run_nothing(tmp_path):
     installer = _stub(tmp_path, "missing", "ready")
     assert _run_sh(tmp_path, {"RAG_VEC_ANN_AUTO_INSTALL": "0"}).returncode == 0
