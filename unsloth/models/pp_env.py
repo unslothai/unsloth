@@ -753,9 +753,7 @@ def _global_items(trainer, stage, num_items_in_batch):
 
 
 def _cpu_chunked_ce_model(trainer, model):
-    """The model whose CPU chunked cross entropy (unsloth_zoo.cpu.ops.patch_chunked_causal_lm_loss) this trainer's
-    compute_loss would arm, or None. unsloth_zoo.cpu.trainer arms it only inside its SFTTrainer.compute_loss
-    wrapper, which the pipeline schedule never calls, so the last stage would build full [rows, vocab] logits."""
+    """Model whose zoo CPU chunked CE compute_loss would arm, or None; the pipeline schedule never calls compute_loss."""
     if not getattr(getattr(type(trainer), "compute_loss", None), "_unsloth_cpu", False):
         return None
     loss_type = getattr(trainer.args, "loss_type", None)
@@ -765,7 +763,7 @@ def _cpu_chunked_ce_model(trainer, model):
     unwrapped = accelerator.unwrap_model(model) if accelerator is not None else model
     base = getattr(unwrapped, "base_model", None)
     for candidate in (unwrapped, base, getattr(base, "model", None)):
-        # vars(), as the zoo wrapper: PEFT forwards attribute reads to the inner model.
+        # vars(): PEFT forwards attribute reads to the inner model.
         if candidate is not None and vars(candidate).get("_unsloth_cpu_chunked_ce", False):
             return candidate
     return None

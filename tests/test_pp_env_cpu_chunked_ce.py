@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""UNSLOTH_PP_SIZE on the CPU route: the pipeline step must arm unsloth_zoo's chunked cross entropy the way the
-zoo SFTTrainer.compute_loss wrapper does (unsloth_zoo/cpu/trainer.py), since the pipeline schedule never calls
-compute_loss. Without it the last stage silently built full [rows, vocab] logits."""
+"""CPU pipeline step must arm zoo's chunked CE itself: the schedule never calls compute_loss."""
 
 import pytest
 import torch
@@ -100,10 +98,8 @@ def test_pp_step_arms_cpu_chunked_ce_like_compute_loss(plain_helpers):
     peft, inner = _models()
     stage = _Stage(inner)
     _step(_trainer(peft, stage), peft)
-    assert stage.armed == [True]  # failing before: False, the last stage materialised full logits
-    assert (
-        inner._unsloth_cpu_chunked_ce_active is False
-    )  # disarmed after the step (eval keeps logits)
+    assert stage.armed == [True]
+    assert inner._unsloth_cpu_chunked_ce_active is False
 
 
 def test_pp_step_disarms_when_the_stage_raises(plain_helpers):
@@ -120,8 +116,7 @@ def test_pp_step_disarms_when_the_stage_raises(plain_helpers):
 def test_pp_step_leaves_chunked_ce_off_where_compute_loss_would(
     plain_helpers, zoo_wrapped, loss_type
 ):
-    # A trainer whose compute_loss the zoo CPU route did not wrap (plain Trainer), or a non-nll SFT objective,
-    # keeps the model's own forward, as zoo's wrapper does.
+    # Unwrapped compute_loss or non-nll loss keeps the model's own forward, as zoo does.
     peft, inner = _models()
     stage = _Stage(inner)
     _step(_trainer(peft, stage, zoo_wrapped = zoo_wrapped, loss_type = loss_type), peft)
