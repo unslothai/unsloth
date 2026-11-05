@@ -219,8 +219,8 @@ CONTINUATION_MAX_SIDE = 4096
 def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) -> list:
     """The ``count`` frames at the ``keep`` end of an uploaded clip, as RGB PIL images on the output's ``fps`` clock.
 
-    Frames land on that clock by whole-frame drop and duplicate, so the kept frames play at the rate the rest of the
-    clip is generated at; a clip already at ``fps`` passes through unchanged."""
+    Frames land on that clock by whole-frame drop and duplicate, picked by presentation time so a variable-frame-rate
+    clip keeps even spacing; a clip already at ``fps`` passes through unchanged."""
     import collections
     import math
 
@@ -243,6 +243,17 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
         max_source_frames = math.floor(CONTINUATION_MAX_SECONDS * source_fps + 1e-6)
         next_target = 0
         decoded = 0
+        held: Any = None
+        origin: Optional[float] = None
+
+        def _take(frame: Any, until: float) -> None:
+            # Every output tick before ``until`` (seconds from the first frame) shows ``frame``.
+            nonlocal next_target
+            while next_target / fps < until - 1e-6:
+                if keep != "first" or len(picked) < count:
+                    picked.append(frame)
+                next_target += 1
+
         try:
             for index, frame in enumerate(container.decode(video = 0)):
                 decoded = index + 1
@@ -256,10 +267,15 @@ def decode_continuation_clip(blob: bytes, *, keep: str, fps: int, count: int) ->
                         f"{CONTINUATION_MAX_SIDE} px a side."
                     )
                 # "first" still decodes to the end, so both ends are held to the same limits.
-                while int(next_target * source_fps / fps) <= index:
-                    if keep != "first" or len(picked) < count:
-                        picked.append(frame)
-                    next_target += 1
+                stamp = frame.time if frame.time is not None else index / source_fps
+                if origin is None:
+                    origin = stamp
+                if held is not None:
+                    _take(held, max(stamp - origin, 0.0))
+                held = frame
+            if held is not None:
+                # The last frame lasts one nominal frame, as the clip's duration counts it.
+                _take(held, max(stamp - origin, 0.0) + 1 / source_fps)
         except av.error.FFmpegError as exc:
             raise ValueError("That clip could not be decoded.") from exc
         frames = [frame.to_image().convert("RGB") for frame in list(picked)[:count]]

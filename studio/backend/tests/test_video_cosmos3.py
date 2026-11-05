@@ -1383,6 +1383,43 @@ def test_the_clip_keeps_five_frames_from_the_chosen_end(count, source_fps, fps, 
     assert all(f.mode == "RGB" and f.size == (208, 120) for f in frames)
 
 
+def _vfr_clip(stamps_ms, size = (208, 120)):
+    """An mp4 like _clip, but frame i is shown at stamps_ms[i]."""
+    av = pytest.importorskip("av")
+    import io
+
+    import numpy as np
+
+    for codec in ("libx264", "mpeg4"):
+        buf = io.BytesIO()
+        try:
+            with av.open(buf, "w", format = "mp4") as container:
+                stream = container.add_stream(codec, rate = 1000)
+                stream.width, stream.height = size
+                stream.pix_fmt = "yuv420p"
+                if codec == "libx264":
+                    stream.options = {"qp": "0"}
+                for i, ms in enumerate(stamps_ms):
+                    pixels = np.full((size[1], size[0], 3), (20 * i) % 256, np.uint8)
+                    frame = av.VideoFrame.from_ndarray(pixels, format = "rgb24")
+                    frame.pts = ms
+                    for packet in stream.encode(frame):
+                        container.mux(packet)
+                for packet in stream.encode():
+                    container.mux(packet)
+        except av.error.FFmpegError:
+            continue
+        return buf.getvalue()
+    pytest.skip("PyAV has no mp4 video encoder")
+
+
+def test_a_variable_frame_rate_clip_is_resampled_by_timestamp():
+    # 50 fps for 6 frames, then 8 fps: index-based picking at the average rate would give [0, 0, 1, 1, 2].
+    clip = _vfr_clip([0, 20, 40, 60, 80, 100, 225, 350, 475, 600, 725, 850])
+    frames = vc3.decode_continuation_clip(clip, keep = "first", fps = 24, count = 5)
+    assert _indexes(frames) == [0, 2, 4, 5, 5]
+
+
 def test_short_long_and_unreadable_clips_are_refused(monkeypatch):
     with pytest.raises(ValueError, match = "has 4"):
         vc3.decode_continuation_clip(_clip(4), keep = "last", fps = 24, count = 5)
