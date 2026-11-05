@@ -149,6 +149,7 @@ import {
   type PromptListEntry,
 } from "./api/prompts-api";
 import { PromptCountBadge } from "./prompt-storage/prompt-count-badge";
+import { insertSavedPrompt } from "./prompt-storage/insert-prompt";
 import { McpComposerButton } from "./mcp-composer-button";
 import { SkillsComposerButton, useSkillsSwitch } from "./skills-composer-button";
 import { PermissionModeComposerPill } from "./permission-mode-select";
@@ -2552,7 +2553,7 @@ export function SharedComposer({
             <DropdownMenuItem
               key={`prompt:${p.id}`}
               onSelect={() => {
-                setCurrentText(p.text);
+                insertSavedPrompt(textareaRef.current, p.text, setCurrentText);
                 requestAnimationFrame(() => textareaRef.current?.focus());
               }}
             >
@@ -2675,7 +2676,7 @@ export function SharedComposer({
         open={promptStorageOpen}
         onOpenChange={setPromptStorageOpen}
         onUse={(t) => {
-          setCurrentText(t);
+          insertSavedPrompt(textareaRef.current, t, setCurrentText);
           requestAnimationFrame(() => textareaRef.current?.focus());
         }}
         onRunList={runPromptList}
