@@ -472,23 +472,28 @@ def _has_adapter_metadata(path: Path) -> bool:
 def _continue_from_adapter_allowed(request: TrainingStartRequest) -> bool:
     """LoRA / CPT can load a saved adapter as the starting point; full finetune cannot (#13140).
 
-    Only the CUDA trainer keeps an adapter it loaded; the embedding, decision and Apple Silicon
-    (MLX) runners always build a fresh one on top, so those still need a base model."""
+    The embedding and decision runners always build a fresh adapter on top, so those still need
+    a base model."""
     if request.training_type not in ("LoRA/QLoRA", "Continued Pretraining"):
         return False
-    if getattr(request, "is_embedding", False) or getattr(request, "is_decision", False):
-        return False
-    from core.training.training import should_use_mlx_training_backend
-
-    return not should_use_mlx_training_backend()
+    return not (getattr(request, "is_embedding", False) or getattr(request, "is_decision", False))
 
 
 # The names PEFT and Unsloth's loader open; numbered adapter shards are not loaded.
 _ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapter_model.bin")
+# The MLX loader imports PEFT safetensors (not .bin) and reads its own saved format.
+_MLX_ADAPTER_WEIGHT_FILES = ("adapter_model.safetensors", "adapters.safetensors")
 
 
 def _has_local_adapter_weights(path: Path) -> bool:
-    return path.is_dir() and any((path / name).is_file() for name in _ADAPTER_WEIGHT_FILES)
+    if not path.is_dir():
+        return False
+    from core.training.training import should_use_mlx_training_backend
+
+    names = (
+        _MLX_ADAPTER_WEIGHT_FILES if should_use_mlx_training_backend() else _ADAPTER_WEIGHT_FILES
+    )
+    return any((path / name).is_file() for name in names)
 
 
 _HF_MODEL_ACCESS_DENIED = (
@@ -1340,20 +1345,10 @@ def _validate_training_platform(request: TrainingStartRequest) -> None:
         )
     if hardware.DEVICE != hardware.DeviceType.MLX:
         return
-    if request.training_type == "Continued Pretraining":
-        raise HTTPException(
-            status_code = 400,
-            detail = "Continued Pretraining is not supported for MLX training yet.",
-        )
     if request.is_embedding:
         raise HTTPException(
             status_code = 400,
             detail = "Embedding model training is not supported for MLX training yet.",
-        )
-    if request.is_dataset_audio:
-        raise HTTPException(
-            status_code = 400,
-            detail = "Audio dataset training is not yet supported on Apple Silicon.",
         )
     if request.use_loftq:
         raise HTTPException(
@@ -1549,13 +1544,15 @@ def _normalized_optional_string(value: Any) -> Optional[str]:
 
 def _prepare_resume_resource_provenance(
     request: TrainingStartRequest, resume_run: dict
-) -> tuple[Optional[str], bool, bool, bool, Optional[str]]:
+) -> tuple[Optional[str], bool, bool, bool, Optional[str], dict[str, Any]]:
     stored = training_run_config(resume_run)
     from core.training.provenance import (
         ExactResumeResourcesUnavailable,
         RESOURCE_PROVENANCE_KEY,
         exact_resume_resource_requirements,
+        local_model_resume_expectation,
         resource_provenance_is_complete,
+        streamed_dataset_revision,
     )
 
     try:
@@ -1628,6 +1625,22 @@ def _prepare_resume_resource_provenance(
         ) from error
     for field in TrainingStartRequest.model_fields:
         setattr(request, field, getattr(validated_request, field))
+    overrides: dict[str, Any] = {}
+    stream_revision = streamed_dataset_revision(stored)
+    if stream_revision is not None:
+        # Replay the streamed commit even if the run never attested, not the moving branch.
+        overrides["dataset_revision"] = stream_revision
+    expected_model = local_model_resume_expectation(stored)
+    if expected_model is not None:
+        # The worker checks the base it loads against this; the dataset pin still applies.
+        return (
+            None,
+            False,
+            requires_exact_dataset,
+            False,
+            None,
+            {**overrides, "resume_expected_model": expected_model},
+        )
     marker = stored.get(RESOURCE_PROVENANCE_KEY)
     model_load_mode = (
         _normalized_optional_string(marker.get("model_load_mode"))
@@ -1640,6 +1653,7 @@ def _prepare_resume_resource_provenance(
         requires_exact_dataset,
         resource_provenance_is_complete(stored),
         model_load_mode,
+        overrides,
     )
 
 
@@ -1961,6 +1975,7 @@ async def _admit_training_request(
     resume_requires_exact_resources = False
     resume_requires_exact_model = False
     resume_requires_exact_dataset = False
+    resume_overrides: dict[str, Any] = {}
     if request.resume_from_checkpoint:
         try:
             resume_output_dir = await asyncio.to_thread(
@@ -2010,6 +2025,7 @@ async def _admit_training_request(
             resume_requires_exact_dataset,
             resume_requires_exact_resources,
             resume_model_load_mode,
+            resume_overrides,
         ) = await asyncio.to_thread(
             _prepare_resume_resource_provenance,
             request,
@@ -2047,11 +2063,6 @@ async def _admit_training_request(
             raise HTTPException(
                 status_code = 400,
                 detail = "dataset_streaming is not supported for embedding training; the embedding loader needs the full dataset.",
-            )
-        if _hw.DEVICE == _hw.DeviceType.MLX:
-            raise HTTPException(
-                status_code = 400,
-                detail = "dataset_streaming is not yet supported on Apple Silicon (MLX); the MLX loader materializes the full dataset.",
             )
         if request.max_steps is None or request.max_steps <= 0:
             raise HTTPException(
@@ -2246,6 +2257,7 @@ async def _admit_training_request(
         "gpu_ids": request.gpu_ids,
         "s3_config": request.s3_config.model_dump() if request.s3_config else None,
     }
+    training_kwargs.update(resume_overrides)
 
     # Latest-sidecar models size and train 16-bit (same flip as chat load): 4-bit is disabled for brand-new
     # architectures, so VRAM checks must not underestimate a load the worker refuses.

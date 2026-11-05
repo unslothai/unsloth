@@ -140,7 +140,10 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
     assert ri.audio_cpp_resident_gb is af.estimate_resident_gb
     assert raised.value.status_code == 400 and detail["code"] == "out_of_memory"
     assert [row["label"] for row in detail["smaller_variants"]] == ["Q2", "Q1"]
-    assert detail["message"].startswith("No single GPU has enough free memory for Model M.")
+    assert detail["message"].startswith(
+        "No single GPU has enough free memory for Model M. It needs about 21.5 GB of GPU memory "
+        "while running, and the most free on one GPU is 7.0 GB."
+    )
 
 
 @pytest.mark.parametrize(
@@ -155,6 +158,9 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
         ("voxcpm2", 2.75, 9.5, False),
         ("qwen3_tts", 2.75, 9.5, True),
         ("kokoro_tts", 0.18, 3.0, False),
+        # ACE-Step1.5 Q8_0 on a 16 GB card: measured 11.2 GB, the generic formula said 15.9.
+        ("ace_step", 5.76, 15.0, True),
+        ("ace_step", 5.76, 9.2, False),
     ],
 )
 def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_gb, fits):

@@ -261,13 +261,17 @@ def test_a_fits_one_card_uses_one_card_and_no_cfg_parallel(monkeypatch):
     d = decide(monkeypatch, host, _sizes(dit = 3900, te = 1600))
     assert d.plan is d.one_card and d.plan.offload_policy == dm.OFFLOAD_NONE
     assert d.plan.secondary_ordinal is None and d.plan.layer_split is None
-    assert d.cfg_parallel is not None and "automatic" in d.cfg_parallel
+    # Automatic now offers CFG-parallel on an idle card of the same model: declined here only because the fake
+    # pipeline has no denoiser module (UNSLOTH_DIFFUSION_CFG_PARALLEL_AUTO=0 restores the automatic decline)
+    assert d.cfg_parallel is not None and "no DiT denoiser" in d.cfg_parallel
     p = _placement(d)
     assert p["chosen"] == "one_card"
     assert p["summary"].startswith("placement: one card: everything resident on cuda:0")
     kinds = {r["kind"]: r["reason"] for r in p["rejected"]}
     assert kinds["companion_split"].startswith("not needed")
-    assert "automatic" in kinds["cfg_parallel"]
+    # Automatic now borrows an idle card of the same model for CFG-parallel (every guided model that fits ran
+    # 1.46-1.79x faster on 2x T4); the fake pipeline declines only because it has no denoiser module
+    assert "no DiT denoiser" in kinds["cfg_parallel"]
     assert set(host.mem_get_info_calls) <= {0}
 
 
@@ -288,7 +292,9 @@ def test_b_companion_split_puts_the_text_encoder_on_the_second_card(monkeypatch)
     assert d.plan.offload_policy == dm.OFFLOAD_NONE and d.plan.secondary_ordinal == 1
     assert "text_encoder" in d.plan.secondary_components
     assert d.plan.layer_split is None
-    assert d.cfg_parallel is not None and "automatic" in d.cfg_parallel
+    # Automatic now borrows an idle card of the same model for CFG-parallel (every guided model that fits ran
+    # 1.46-1.79x faster on 2x T4); the fake pipeline declines only because it has no denoiser module
+    assert d.cfg_parallel is not None and "no DiT denoiser" in d.cfg_parallel
     p = _placement(d)
     assert p["chosen"] == "companion_split"
     assert "text_encoder" in p["summary"] and "on cuda:1" in p["summary"]
