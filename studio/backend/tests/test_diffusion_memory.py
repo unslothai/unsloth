@@ -759,6 +759,35 @@ def test_refine_model_offload_streams_only_when_a_component_exceeds_budget(monke
     assert any("text_encoder" in reason for reason in refined.reasons)
 
 
+def test_refine_with_headroom_streams_a_component_that_fits_only_without_activations(monkeypatch):
+    """Video: a GGUF DiT under the budget by itself but not with the forward's headroom beside it (LTX-2.5 Q4_K_M at a
+    16 GiB budget OOMed in its first forward under whole-module offload) streams; the bare check keeps the plan."""
+    Module = _install_sized_torch(monkeypatch)
+    plan = MemoryPlan(
+        requested_mode = "auto",
+        offload_policy = OFFLOAD_MODEL,
+        vae_tiling = True,
+        vae_slicing = True,
+        device_memory = _discrete(16384),
+        estimates = {
+            "safe_device_budget_mib": 15000,
+            "runtime_headroom_mib": 3000,
+            "base_overhead_mib": 500,
+        },
+    )
+    transformer = Module(13300)
+    pipe = types.SimpleNamespace(
+        transformer = transformer, components = {"transformer": transformer, "connectors": Module(6000)}
+    )
+    assert refine_memory_plan_for_components(pipe, plan) is plan
+    refined = refine_memory_plan_for_components(pipe, plan, with_headroom = True)
+    assert refined.offload_policy == OFFLOAD_STREAMING
+    assert any("runtime headroom" in reason for reason in refined.reasons)
+    small = Module(9000)
+    roomy = types.SimpleNamespace(transformer = small, components = {"transformer": small})
+    assert refine_memory_plan_for_components(roomy, plan, with_headroom = True) is plan
+
+
 def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):
     from core.inference.diffusion_memory import largest_streamable_companion_mib
 

@@ -10367,7 +10367,7 @@ class VideoBackend:
                 clear_gpu_cache()
                 raise RuntimeError("Video load was cancelled or superseded.")
             # A component larger than the card OOMs at its first whole-module onload; fall back to leaf streaming.
-            refined = refine_memory_plan_for_components(pipe, plan)
+            refined = refine_memory_plan_for_components(pipe, plan, with_headroom = True)
             if refined is not plan:
                 logger.info("video.memory: %s", refined.reasons[-1])
                 plan = refined

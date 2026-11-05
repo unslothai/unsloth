@@ -3281,8 +3281,17 @@ def refine_balanced_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPl
     )
 
 
-def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan:
-    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together."""
+def refine_memory_plan_for_components(
+    pipe: Any,
+    plan: MemoryPlan,
+    *,
+    with_headroom: bool = False,
+) -> MemoryPlan:
+    """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together.
+
+    ``with_headroom``: a component "fits" only with the plan's runtime headroom and base overhead beside it (the
+    whole-module onload holds the component AND the forward's activations at once); the image path keeps the bare
+    size check."""
     if plan.offload_policy != OFFLOAD_MODEL:
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
@@ -3314,7 +3323,15 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
     if not streamed_sizes:
         return plan
     largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
-    if largest_mib <= int(budget):
+    beside = 0
+    if with_headroom:
+        try:
+            beside = int(plan.estimates.get("runtime_headroom_mib") or 0) + int(
+                plan.estimates.get("base_overhead_mib") or 0
+            )
+        except Exception:  # noqa: BLE001 - malformed estimates: the bare size check
+            beside = 0
+    if largest_mib + beside <= int(budget):
         return plan
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too
     resident_mib = sum(m for n, m in sizes.items() if n not in streamable)
@@ -3330,8 +3347,9 @@ def refine_memory_plan_for_components(pipe: Any, plan: MemoryPlan) -> MemoryPlan
         estimates = estimates,
         reasons = plan.reasons
         + (
-            f"loaded {largest_name} is {largest_mib} MiB, above the {int(budget)} MiB "
-            "device budget; streaming transformer blocks and text-encoder layers",
+            f"loaded {largest_name} is {largest_mib} MiB"
+            + (f" (+{beside} MiB runtime headroom)" if beside else "")
+            + f", above the {int(budget)} MiB device budget; streaming transformer blocks and text-encoder layers",
         ),
     )
 
