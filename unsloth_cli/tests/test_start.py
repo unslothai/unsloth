@@ -1328,7 +1328,9 @@ def test_subagent_model_id_pins_the_resident_mlx_folder(monkeypatch):
         lambda *args, **kwargs: {"is_gguf": False, "is_mlx": True, "gguf_variant": "6-bit"},
     )
     entry = {"id": "mlx-community/Qwen3-4B"}
-    assert start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B:6-bit"
+    assert (
+        start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B:6-bit"
+    )
 
 
 def _kept_model_status(url):

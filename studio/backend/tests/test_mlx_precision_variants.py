@@ -581,7 +581,11 @@ def test_the_resident_folder_survives_the_worker_hop():
     from core.inference.orchestrator import _mirrored_model_entry
 
     # The load route's same-folder reuse reads precision_folder off the parent's mirror.
-    assert _mirrored_model_entry({"precision_folder": "6-bit"}, _REPO)["precision_folder"] == "6-bit"
-    worker = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text(encoding = "utf-8")
+    assert (
+        _mirrored_model_entry({"precision_folder": "6-bit"}, _REPO)["precision_folder"] == "6-bit"
+    )
+    worker = (Path(__file__).resolve().parents[1] / "core/inference/worker.py").read_text(
+        encoding = "utf-8"
+    )
     projection = worker[worker.index('"gguf_variant",\n') :][:200]
     assert '"precision_folder",' in projection

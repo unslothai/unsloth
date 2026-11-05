@@ -377,7 +377,9 @@ def test_stream_drops_the_tool_call_wrapper_around_a_function_call(step):
 
 def test_an_unclosed_wrapper_still_streams_past_the_hold_limit():
     healer = StreamToolCallHealer({"Bash"})
-    events = healer.feed("<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n</function>\n")
+    events = healer.feed(
+        "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n</function>\n"
+    )
     for _ in range(8000):
         events += healer.feed("more text ")
     assert _events_calls(events), "the call must not wait for finalize past the hold limit"
