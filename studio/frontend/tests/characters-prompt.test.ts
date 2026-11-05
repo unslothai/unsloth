@@ -91,6 +91,8 @@ test("lorebook entries fire on whole-word keys, honor secondary logic, and keep 
     [],
   );
   assert.equal(tight.fired.length, 1);
+  const oversized = activateLorebook(book([entry({ constant: true, content: "a".repeat(400) })], { token_budget: 64 }), []);
+  assert.equal(oversized.fired.length, 0, "an entry over the budget is left out, even the first");
 });
 
 test("speaker planning is deterministic per message and follows each reply order", () => {
@@ -264,6 +266,9 @@ test("a group round plans once per user message and goes on until everyone plann
   assert.equal(nextInRound([user, reply("r1", "a", ["a", "b"]), marker("m", "b"), reply("r2", "b")], scene), null);
   const muted: ChatScene = { ...scene, cast: [scene.cast[0], { ...scene.cast[1], muted: true }] };
   assert.equal(nextInRound([user, reply("r1", "a", ["a", "b"])], muted), null, "a muted member is skipped");
+  // A stopped reply ends the round, even after a reply asked for by hand.
+  const stopped = { ...reply("r1", "a", ["a", "b"]), status: { type: "incomplete" } };
+  assert.equal(nextInRound([user, stopped, marker("m", "a"), reply("r2", "a")], scene), null);
   assert.deepEqual(resolveSpeaker({ scene, cast, messages: [user], requested: "b" }), { speakerId: "b" });
   // A one-on-one chat never plans a round.
   assert.deepEqual(resolveSpeaker({ scene, cast: [cast[0]], messages: [user] }), { speakerId: "a" });

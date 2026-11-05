@@ -29,12 +29,7 @@ export function RoleplayController() {
     const scene = useCharactersStore.getState().scenes[threadId];
     if (!scene || scene.cast.length < 2) return;
     const messages = aui.thread().getState().messages;
-    const last = messages[messages.length - 1];
-    if (last?.role !== "assistant") return;
-    const status = (last as { status?: { type?: string; reason?: string } }).status;
-    if (status?.type === "incomplete" || status?.type === "requires-action") return;
-    const custom = (last.metadata?.custom ?? {}) as Record<string, unknown>;
-    if (custom.incomplete) return;
+    if (messages[messages.length - 1]?.role !== "assistant") return;
     const next = nextInRound(messages, scene);
     if (!next) return;
     // Let the finished reply settle into history before the next run reads it.

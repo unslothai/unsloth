@@ -48,6 +48,8 @@ type CastEdit = { characterId: string; muted: boolean };
 
 const inflightScenes = new Map<string, Promise<ChatScene | null>>();
 const sceneWrites = new Map<string, Promise<unknown>>();
+// Bumped by every saved scene write, so a read that started before one never replaces its result.
+const sceneWriteGen = new Map<string, number>();
 let refreshPromise: Promise<void> | null = null;
 // Bumped on sign-out: an answer to a request made before it belongs to the previous account.
 let epoch = 0;
@@ -145,11 +147,14 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     const pending = inflightScenes.get(threadId);
     if (pending && !force) return pending;
     const started = epoch;
+    const gen = sceneWriteGen.get(threadId) ?? 0;
     const request = getChatScene(threadId)
       .then((scene) => {
         if (started !== epoch) return scene;
-        // A write queued during this read answers with a newer scene.
-        if (sceneWrites.has(threadId)) return get().scenes[threadId] ?? scene;
+        // A write queued or saved during this read answers with a newer scene.
+        if (sceneWrites.has(threadId) || (sceneWriteGen.get(threadId) ?? 0) !== gen) {
+          return get().scenes[threadId] ?? scene;
+        }
         set((state) => ({ scenes: { ...state.scenes, [threadId]: scene } }));
         return scene;
       })
@@ -183,6 +188,7 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
           ...(cast ? { cast } : {}),
           ...(settings ? { settings } : {}),
         });
+        sceneWriteGen.set(threadId, (sceneWriteGen.get(threadId) ?? 0) + 1);
         get().setScene(scene);
         return scene;
       });
@@ -200,6 +206,7 @@ if (typeof window !== "undefined") {
     refreshPromise = null;
     inflightScenes.clear();
     sceneWrites.clear();
+    sceneWriteGen.clear();
     useCharactersStore.setState({
       characters: {},
       order: [],

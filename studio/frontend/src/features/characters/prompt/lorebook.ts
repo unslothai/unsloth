@@ -112,7 +112,8 @@ export function activateLorebook(
   let used = 0;
   for (const { entry, reason } of candidates) {
     const cost = estimateTokens(entry.content);
-    if (used + cost > budget && result.fired.length > 0) continue;
+    // The first entry too: a system-block entry is never compacted away, so an oversized one would fail every turn.
+    if (used + cost > budget) continue;
     used += cost;
     const content = entry.content.trim();
     if (entry.position === "at_depth") result.atDepth.push({ depth: Math.max(0, entry.depth ?? 4), content });

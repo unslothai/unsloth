@@ -12,7 +12,17 @@ export type MessageLike = {
   role: string;
   content: unknown;
   metadata?: unknown;
+  status?: { type?: string };
 };
+
+/** A reply that was stopped, failed or is waiting on the user, which ends its round. */
+export function endedEarly(message: MessageLike): boolean {
+  if (message.role !== "assistant") return false;
+  const type = message.status?.type;
+  if (type === "incomplete" || type === "requires-action") return true;
+  const metadata = message.metadata as { custom?: Record<string, unknown> } | undefined;
+  return Boolean(metadata?.custom?.incomplete);
+}
 
 export function textOf(message: { content: unknown }): string {
   const content = message.content as string | readonly { type: string; text?: string }[];
@@ -82,6 +92,8 @@ export function nextInRound(messages: readonly MessageLike[], scene: ChatScene):
   }
   if (start < 0) return null;
   const round = messages.slice(start + 1);
+  // A stopped round stays over, even after a reply someone asked for by hand.
+  if (round.some(endedEarly)) return null;
   const firstReply = round.find((m) => m.role === "assistant");
   const plan = roundPlanOf(firstReply as never);
   if (!plan) return null;
