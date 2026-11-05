@@ -64,8 +64,6 @@ class RemoteCodeUnscannable(Exception):
     """The repo's executable code could not be fully fetched/listed to scan. Raised (not returned empty) so the gate distinguishes "code PRESENT but unreadable" (offline/gated/transient/404/listing failure), which fails CLOSED, from "repo has NO .py" (empty result), where trust_remote_code is a no-op and the load is allowed. Conflating them would block a code-free repo or fail open on code we could not see."""
 
 
-# Hub config reads shared by the passes of ONE advisory scan (the remote-code-scan route); off
-# outside a scope, so the load-time gates in the workers always read the Hub fresh.
 _CONFIG_READS: contextvars.ContextVar = contextvars.ContextVar(
     "unsloth_remote_code_config_reads", default = None
 )
