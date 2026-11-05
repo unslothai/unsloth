@@ -17509,15 +17509,16 @@ def _check_signal_escape_patterns(code: str):
                         self.shell_exec_aliases[alias.asname or alias.name] = fq
             self.generic_visit(node)
 
-        def _module_of(self, node):
+        def _modules_of(self, node):
             if isinstance(node, ast.NamedExpr):
-                return self._module_of(node.value)
+                return self._modules_of(node.value)
             if isinstance(node, ast.Name):
+                modules = []
                 if node.id in self.os_aliases:
-                    return "os"
+                    modules.append("os")
                 if node.id in self.subprocess_aliases:
-                    return "subprocess"
-                return None
+                    modules.append("subprocess")
+                return modules
             name = None
             if isinstance(node, ast.Call) and node.args:
                 f = node.func
@@ -17532,10 +17533,10 @@ def _check_signal_escape_patterns(code: str):
             ):
                 name = _extract_string_from_node(node.slice)
             if name in ("os", "posix", "nt"):
-                return "os"
+                return ["os"]
             if name == "subprocess":
-                return "subprocess"
-            return None
+                return ["subprocess"]
+            return []
 
         def _shell_func_of(self, node):
             if isinstance(node, ast.NamedExpr):
@@ -17543,22 +17544,22 @@ def _check_signal_escape_patterns(code: str):
             if isinstance(node, ast.Name):
                 return self.shell_exec_aliases.get(node.id)
             if isinstance(node, ast.Attribute):
-                module = self._module_of(node.value)
-                if module:
-                    return f"{module}.{node.attr}"
+                for module in self._modules_of(node.value):
+                    if f"{module}.{node.attr}" in _SHELL_EXEC_FUNCS:
+                        return f"{module}.{node.attr}"
             return None
 
         def visit_Assign(self, node):
-            module = self._module_of(node.value)
+            modules = self._modules_of(node.value)
             shell_func = self._shell_func_of(node.value)
             for tgt in node.targets:
                 if not isinstance(tgt, ast.Name):
                     continue
-                if module == "os":
+                if "os" in modules:
                     self.os_aliases.add(tgt.id)
-                elif module == "subprocess":
+                if "subprocess" in modules:
                     self.subprocess_aliases.add(tgt.id)
-                elif shell_func in _SHELL_EXEC_FUNCS:
+                if not modules and shell_func in _SHELL_EXEC_FUNCS:
                     self.shell_exec_aliases[tgt.id] = shell_func
             self.generic_visit(node)
 

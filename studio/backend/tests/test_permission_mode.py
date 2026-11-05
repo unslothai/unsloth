@@ -1206,6 +1206,11 @@ def test_python_high_risk_classifier(code, high_risk):
         ("python", {"code": "import os\nf = os.system\nf('rm -rf ~')"}, True),
         ("python", {"code": "import subprocess as sp\nr = sp.run\nr(['rm', '-rf', '/'])"}, True),
         ("python", {"code": "m = __import__('os')\nm.system('rm -rf ~')"}, True),
+        (
+            "python",
+            {"code": "import os\nm = os\nimport subprocess as m\nm.run(['rm', '-rf', '/'])"},
+            True,
+        ),
         ("python", {"code": "import nt\nnt.system('rm -rf ~')"}, True),
         ("python", {"code": "(f := __import__('os').system)('rm -rf ~')"}, True),
         ("python", {"code": "cmd = input()\n__import__('os').system(cmd)"}, True),
