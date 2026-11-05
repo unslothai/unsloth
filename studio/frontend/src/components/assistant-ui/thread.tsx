@@ -1868,7 +1868,8 @@ const ThreadMessage: FC = () => {
   // A character chat's opening and turn markers are for the model, not the screen. The opening
   // keeps the room a first user message would take, so the greeting clears the header's fade.
   const hiddenTurn = useHiddenRoleplayTurn();
-  if (hiddenTurn === "opening") return <div aria-hidden={true} className="h-[calc(1.75rem*var(--ui-space-scale,1))]" />;
+  // shrink-0: in a short window the thread's flex column would squeeze it to nothing.
+  if (hiddenTurn === "opening") return <div aria-hidden={true} className="h-[calc(1.75rem*var(--ui-space-scale,1))] shrink-0" />;
   if (hiddenTurn) return null;
   let body: ReactNode = null;
   switch (threadMessageKind(role, isEditing)) {
