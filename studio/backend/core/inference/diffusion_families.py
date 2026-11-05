@@ -2394,6 +2394,7 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "Flux3ModularPipeline": "0.42.0",
     "Flux3DistilledModularPipeline": "0.42.0",
     "Krea2Pipeline": "0.39.0",
+    "AnimaModularPipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
     # existed since 0.30 is the same wrong remedy.
@@ -2402,6 +2403,7 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageInpaintPipeline": "0.35.0",
     "FluxKontextPipeline": "0.35.0",
     "HiDreamImagePipeline": "0.34.0",
+    "ChromaPipeline": "0.34.0",
     # WanPipeline arrived with Wan2.1 in 0.33.0. The shipped Wan2.2 family wants weights only 0.35 carries, but this
     # table answers class presence, like the attribute probe before it.
     "WanPipeline": "0.33.0",
