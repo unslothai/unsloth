@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI / kohya LoRA and LyCORIS LoKR files: key normalization and the Kronecker adapter."""
+"""LoRA and LyCORIS LoKR files: key normalization and the Kronecker adapter."""
 
 from __future__ import annotations
 
@@ -173,8 +173,7 @@ def test_peft_loads_around_an_existing_lokr_wrapper():
 
 
 def test_an_embedding_lokr_is_refused_at_load(tmp_path):
-    """ComfyUI's trainer writes LoKR for Anima's ``llm_adapter.embed`` table too; ``KronLinear`` takes dense features,
-    not token ids, so the file fails at load instead of on the first render."""
+    """A LoKR on Anima's ``llm_adapter.embed`` table (token ids, not features) fails at load, not at render."""
     conversion = pytest.importorskip("diffusers.loaders.lora_conversion_utils")
     if not hasattr(conversion, "_convert_non_diffusers_anima_lora_to_diffusers"):
         pytest.skip("this diffusers has no Anima LoRA converter")
@@ -192,7 +191,7 @@ def test_an_embedding_lokr_is_refused_at_load(tmp_path):
     pipe = _Pipe()
     embed = pipe.text_conditioner.embed
     path = tmp_path / "lokr.safetensors"
-    # ComfyUI's LokrAdapter.create_train on the [12, 6] table: w1 [3, 2], w2 [4, 3].
+    # A [12, 6] table: w1 [3, 2], w2 [4, 3].
     save_file(
         {
             "diffusion_model.llm_adapter.embed.lokr_w1": torch.randn(3, 2),

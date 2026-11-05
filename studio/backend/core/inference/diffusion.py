@@ -996,14 +996,13 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     pinned = getattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
     if not pinned:
         if lora_files.kron_only_selection(pipe):
-            # LoKR scales are device tensors (no PEFT pin needed); the CFG replica holds copies, so it is rebuilt.
+            # LoKR scales are tensors written in place; the CFG replica holds copies, so it is rebuilt.
             lora_files.set_kron_weights(pipe, weights)
             invalidate_cfg_replica(pipe, "the LoKR weights changed")
             return True
         return False
     import torch
 
-    # LoKR scales too, so this path covers every baked adapter.
     lora_files.set_kron_weights(pipe, weights)
 
     for module, adapter, _base in pinned:
@@ -10409,8 +10408,7 @@ class DiffusionBackend:
                     split_expected = _layer_split_expected(pipe, plan)
                     # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.
                     if comfy_compile and _has_active_lora(loras):
-                        # A ComfyUI int8 / fp8 file bakes its adapters before the compile, as a quantized build does
-                        # before quantize_: weight changes write pinned scales; a new adapter set needs a reload.
+                        # A quantized single file bakes its adapters before the compile; a new adapter set reloads.
                         baked = self._resolve_lora_set(
                             [(i, w) for (i, w) in loras if w != 0],
                             family = getattr(fam, "name", None),
@@ -13542,7 +13540,7 @@ class DiffusionBackend:
             _refuse_lora_without_loader(getattr(state, "family", None), specs)
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
-        # A ComfyUI-quantized file reports no transformer_quant, but its adapters are baked the same way.
+        # A quantized single file reports no transformer_quant but bakes its adapters the same way.
         if quant in ("int8", "fp8", "nvfp4", "mxfp8") or quant_baked:
             self._adjust_baked_loras(state, pipe, specs, current, quant_baked, cancel)
             return
@@ -13597,8 +13595,7 @@ class DiffusionBackend:
                 # A captured graph bakes PEFT's float scales in; LoKR scales are tensors it reads at run time.
                 if not lora_files.kron_only_selection(pipe):
                     cuda_graph.reset_all(getattr(state, "cuda_graphs", ()))
-                # Same adapters, new scales: the replica takes PEFT's scales. The mirror skips LoKR buffers, so a pipe
-                # holding LoKR adapters rebuilds the replica, as does one whose layers do not line up.
+                # The scale mirror skips LoKR buffers: LoKR or misaligned layers rebuild the replica.
                 kron = lora_files.kron_names(pipe)
                 if kron or not mirror_cfg_replica_adapter_scales(pipe, logger):
                     invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
@@ -15651,7 +15648,7 @@ class DiffusionBackend:
             model_kind = state.kind,
             transformer_quant = state.transformer_quant,
         )
-        # Baked adapters ride inside the compiled build (weight changes write pinned scales).
+        # Baked adapters ride inside the compiled build.
         compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()) and not getattr(
             state.pipe, "_unsloth_loras_baked", False
         )

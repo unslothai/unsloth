@@ -689,8 +689,7 @@ class MOSSImagePipeline(DiffusionPipeline):
     def interrupt(self) -> bool:
         return self._interrupt
 
-    # LoRA on the transformer only, via diffusers' PEFT API. The in-tree transformer keeps the reference / ComfyUI
-    # names (``diffusion_model.layers.N.proj.q``); diffusion_lora_files folds alpha and splits fused qkv first.
+    # LoRA on the transformer only; diffusion_lora_files folds alpha and splits fused qkv first.
     def load_lora_weights(
         self,
         state_dict,

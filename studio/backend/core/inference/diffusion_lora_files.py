@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI / kohya LoRA and LyCORIS LoKR files on the Anima, Krea 2 and MOSS-Image diffusers pipelines.
-
-LoKR runs through ``KronLinear`` (``scale * x @ kron(w1, w2).T`` without the dense delta, as ComfyUI's ``LokrAdapter``).
-Both kinds share one adapter-name space: :func:`set_adapter_weights` / :func:`unload_adapters` replace diffusers'
-``set_adapters`` / ``unload_lora_weights``."""
+"""LoRA and LyCORIS LoKR files on Anima, Krea 2 and MOSS-Image. LoKR runs as ``KronLinear`` slots sharing PEFT's
+adapter names: :func:`set_adapter_weights` / :func:`unload_adapters` replace diffusers' adapter calls."""
 
 from __future__ import annotations
 
@@ -70,7 +67,7 @@ def split_lokr(state: dict) -> tuple[dict, dict]:
 
 
 def normalize_lora(state: dict, family: Optional[str]) -> dict:
-    """Plain LoRA tensors as ``lora_A`` / ``lora_B``, ``.alpha`` folded into ``lora_B`` like ComfyUI (alpha / rank)."""
+    """Plain LoRA tensors as ``lora_A`` / ``lora_B`` with ``.alpha`` folded into ``lora_B`` (alpha / rank)."""
     import torch
 
     renamed: dict = {}
@@ -96,7 +93,7 @@ def normalize_lora(state: dict, family: Optional[str]) -> dict:
 
 
 def _anima_embedding(state: dict) -> dict:
-    """ComfyUI applies an ``llm_adapter.embed`` pair as a Linear delta ``B @ A`` on the ``[vocab, dim]`` embedding
+    """An ``llm_adapter.embed`` pair is a Linear delta ``B @ A`` on the ``[vocab, dim]`` embedding
     table; PEFT's embedding LoRA computes ``(B' @ A').T``, so ``A' = B.T`` and ``B' = A.T``."""
     out = dict(state)
     for key in [k for k in state if ".llm_adapter.embed.lora_A.weight" in k]:
@@ -113,7 +110,7 @@ _MOSS_QKV = re.compile(r"^(.*\.proj\.)qkv\.(lora_[AB])\.weight$")
 
 
 def _moss_fused_qkv(state: dict) -> dict:
-    """ComfyUI's fused ``proj.qkv`` as the in-tree ``proj.q`` / ``k`` / ``v``: ``A`` is shared, ``B``'s rows split."""
+    """The fused ``proj.qkv`` as the in-tree ``proj.q`` / ``k`` / ``v``: ``A`` is shared, ``B``'s rows split."""
     out: dict = {}
     for key, value in state.items():
         match = _MOSS_QKV.match(key)
@@ -145,10 +142,8 @@ def _kron_delta(x: Any, w1: Any, w2: Any, rows: Optional[tuple[int, int]]) -> An
 def _module_class():
     from torch import nn
     class KronLinear(nn.Module):
-        """A Linear plus LoKR deltas, swapped in like a PEFT LoRA layer: a forward hook would be skipped by the fused
-        int8 paths that read a plain Linear's weights, and dropped by MOSS-Image's compiled forward. Each adapter's 0-d
-        ``scale`` buffer is filled in place, so compiled code and CUDA graphs read a new weight without retracing;
-        buffer names repeat on every layer, so a regional compile reuses one trace."""
+        """A Linear plus LoKR deltas, a module rather than a hook (fused int8 paths and compiled forwards skip hooks).
+        Each 0-d ``scale`` buffer is filled in place, so compiled code and CUDA graphs need no retrace."""
 
         def __init__(self, base_layer):
             super().__init__()
@@ -253,7 +248,7 @@ class KronAdapter:
 
 
 def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
-    """``(w1, w2, alpha_scale)`` as ComfyUI computes them: a factor stored as a low-rank pair is its product, and
+    """``(w1, w2, alpha_scale)`` like the reference runtime: a factor stored as a low-rank pair is its product, and
     ``alpha / rank`` applies only when one is (rank = that pair's inner size)."""
     import torch
 
@@ -402,8 +397,8 @@ def _kron_roots(pipe: Any) -> list:
 
 
 def _refresh_group_offload(roots: list) -> None:
-    """Re-apply group offloading on ``roots``, as diffusers does after PEFT injection: groups list their tensors when
-    applied, so LoKR buffers added since would stay on the host, and dropped ones would leave stale entries."""
+    """Re-apply group offloading on ``roots`` (as diffusers does after PEFT injection): groups list their tensors when
+    applied, so LoKR buffers added or dropped since would be missed."""
     if not roots:
         return
     from diffusers.hooks.group_offloading import _maybe_remove_and_reapply_group_offloading
