@@ -6009,9 +6009,9 @@ class DiffusionStatusResponse(BaseModel):
     )
     component_specs: Optional[Dict[str, str]] = Field(
         None,
-        description = "The request-supplied text-encoder / VAE files by pipeline component, as "
-        "text_encoder_file / vae_file take them, so a reload rebuilds the same model; null when none were "
-        "supplied or they were found beside a ComfyUI DiT",
+        description = "The text-encoder / VAE files this load used by pipeline component (supplied, or found "
+        "beside a ComfyUI DiT), as text_encoder_file / vae_file take them, so a reload rebuilds the same model; "
+        "null when every companion came from the base repo",
     )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(

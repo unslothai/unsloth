@@ -95,6 +95,8 @@ class ComponentFileRef:
     local_path: Optional[str] = None
     repo_id: Optional[str] = None
     filename: Optional[str] = None
+    # The local file as named, absolute but not dereferenced: a Hub-cache symlink's target is an extensionless blob.
+    named_path: Optional[str] = None
 
     @property
     def name(self) -> str:
@@ -191,7 +193,9 @@ def parse_component_file(
             raise ComponentFileError(f"{what} '{spec}' cannot be resolved: {exc}") from exc
         if not resolved.is_file():
             raise ComponentFileError(f"{what} '{spec}' does not exist or is not a file")
-        return ComponentFileRef(spec = spec, local_path = str(resolved))
+        return ComponentFileRef(
+            spec = spec, local_path = str(resolved), named_path = os.path.abspath(local)
+        )
     parts = spec.replace("\\", "/").split("/")
     if len(parts) < 3 or not all(parts):
         raise ComponentFileError(

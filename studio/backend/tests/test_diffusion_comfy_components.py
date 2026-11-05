@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import types
 from pathlib import Path
 
@@ -69,6 +70,17 @@ def test_status_summary_names_the_supplied_basename_of_a_symlinked_cache_file(tm
         "../snapshots/rev/ae.safetensors", model_path = str(tmp_path / "blobs")
     )
     assert rel.name == "ae.safetensors"
+    # A reload names the symlink, not the extensionless blob it points at, and it parses again.
+    from core.inference import diffusion
+
+    for one in (ref, rel):
+        token = C.set_active_component_overrides(C.ComponentOverrides(files = {"vae": one}))
+        try:
+            spec = diffusion._active_component_specs()["vae"]
+        finally:
+            C.reset_active_component_overrides(token)
+        assert os.path.isabs(spec) and spec.endswith("ae.safetensors"), spec
+        assert C.parse_component_file(spec, what = "vae_file").local_path == ref.local_path
 
 
 def test_parse_existing_subpath_under_model_dir_is_local(tmp_path):
@@ -1066,7 +1078,7 @@ def test_hidream_standalone_llama_slot_refused_by_name():
 
 
 def test_status_names_the_supplied_files_as_a_reload_takes_them():
-    # A reload (a Flows LoRA bake) rebuilds the same model from these; files found beside a DiT are found again.
+    # A reload (a Flows LoRA bake) rebuilds the same model from these.
     from core.inference import diffusion
 
     overrides = C.ComponentOverrides(
@@ -1089,8 +1101,9 @@ def test_status_names_the_supplied_files_as_a_reload_takes_them():
             "text_encoder": "clip_l.safetensors",
             "vae": "ae.safetensors",
         }
+        # Found beside a DiT: named too, or discovery under the reload's pinned precision may pick another file.
         overrides.discovered = True
-        assert diffusion._active_component_specs() is None
+        assert diffusion._active_component_specs()["text_encoder"] == "/m/te/clip_l.safetensors"
     finally:
         C.reset_active_component_overrides(token)
     assert diffusion._active_component_specs() is None

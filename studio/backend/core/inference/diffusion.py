@@ -1558,14 +1558,15 @@ def _active_component_summary() -> Optional[dict]:
 
 
 def _active_component_specs() -> Optional[dict]:
-    """The request-supplied text-encoder / VAE files by component, as a load request takes them, so a reload
-    rebuilds the same model. None for files found beside a ComfyUI DiT: a reload finds them again."""
+    """The text-encoder / VAE files this load used by component, supplied or found beside a ComfyUI DiT, as a load
+    request takes them, so a reload rebuilds the same model: discovery run again under a pinned precision can rank
+    another file of the folder first."""
     from .diffusion_comfy_components import active_component_overrides
 
     overrides = active_component_overrides()
-    if overrides is None or not overrides.files or overrides.discovered:
+    if overrides is None or not overrides.files:
         return None
-    return {c: ref.local_path or ref.spec for c, ref in overrides.files.items()}
+    return {c: ref.named_path or ref.local_path or ref.spec for c, ref in overrides.files.items()}
 
 
 @dataclass(frozen = True)
