@@ -2392,8 +2392,6 @@ function Get-RocmPinStaleTags {
     }
 }
 
-# Bounded python -c probe: a wedged torch import or Intel driver init would hang forever.
-# Both streams drain async; .Error keeps stderr since callers decide venv fate on it. Mirrors install.ps1.
 # The optional HNSW pair is the one thing a skipped (current) Python stack leaves unchecked: an
 # earlier offline or failed attempt. --check-only is local, so a ready pair costs no network.
 function Invoke-HnswBackfill {
@@ -2416,6 +2414,8 @@ function Invoke-HnswBackfill {
     $global:LASTEXITCODE = 0
 }
 
+# Bounded python -c probe: a wedged torch import or Intel driver init would hang forever.
+# Both streams drain async; .Error keeps stderr since callers decide venv fate on it. Mirrors install.ps1.
 function Invoke-BoundedPythonProbe {
     param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
     # TimedOut separates "never answered" from "answered with a failure".

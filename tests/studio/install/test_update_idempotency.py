@@ -354,6 +354,8 @@ def run_update(
     # Inherited, not replaced: a hand-built environment fails in ways that look like the product.
     env = dict(os.environ)
     env.pop("UNSLOTH_IDEMPOTENCY_E2E", None)
+    # tests/conftest.py turns the HNSW download off for unit tests; the update under test must run it.
+    env.pop("RAG_VEC_ANN_AUTO_INSTALL", None)
     # The pytest venv is not the venv under test.
     for leaked in (
         "VIRTUAL_ENV",

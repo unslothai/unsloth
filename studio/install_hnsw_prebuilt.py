@@ -278,12 +278,15 @@ def _verified(path: Path, wheel: dict) -> bool:
 
 
 def _sources(wheel: dict, catalog: dict) -> list[tuple[str, str]]:
-    mirror = os.environ.get("UNSLOTH_HNSW_MIRROR", "").strip() or catalog.get("mirror", "")
+    # PyPI first, as for every other Studio package; our mirror serves PyPI-blocked networks. An explicit
+    # UNSLOTH_HNSW_MIRROR (enterprise mirror) goes first. Same pinned bytes either way.
+    own = os.environ.get("UNSLOTH_HNSW_MIRROR", "").strip()
+    mirror = own or catalog.get("mirror", "")
     out = []
-    if mirror:
-        out.append(("mirror", mirror.rstrip("/") + "/" + wheel["filename"]))
     if not _env_flag("UNSLOTH_HNSW_PYPI", _FALSY):
         out.append(("pypi", wheel["url"]))
+    if mirror:
+        out.insert(0 if own else len(out), ("mirror", mirror.rstrip("/") + "/" + wheel["filename"]))
     return out
 
 
@@ -478,8 +481,6 @@ def ensure(
         return _result("already" if ok else "failed", reason, info)
     if _disabled():
         return _result("disabled", "RAG_VEC_ANN_AUTO_INSTALL=0 or RAG_VEC_ANN=0", info)
-    if check_only:
-        return _result("missing", "pair not installed", info)
     if not (info["installed"].get("numpy") and info["installed"].get("tqdm")):
         return _result("unsupported", "numpy and tqdm must already be installed", info)
     try:
@@ -491,6 +492,8 @@ def ensure(
     if missing:
         top = info["tags"][0] if info["tags"] else "no tags"
         return _result("unsupported", f"no prebuilt {', '.join(missing)} for {top}", info)
+    if check_only:
+        return _result("missing", "pair not installed", info)
     network = not _offline()
     cache = Path(prefix) / CACHE
     if not network and not all(_verified(cache / w["filename"], w) for w in chosen.values()):

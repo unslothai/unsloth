@@ -105,15 +105,24 @@ def _serve(monkeypatch, responses):
     return calls
 
 
-def test_a_mirror_miss_falls_back_to_pypi(tmp_path, monkeypatch):
+def test_pypi_comes_first_and_the_mirror_serves_when_pypi_is_blocked(tmp_path, monkeypatch):
     wheel = _fake_wheel(tmp_path)
-    calls = _serve(monkeypatch, {wheel["url"]: b"wheel-bytes"})
+    mirrored = "https://mirror.example/" + wheel["filename"]
+    calls = _serve(monkeypatch, {mirrored: b"wheel-bytes"})
     path, source = hp.obtain(wheel, {"mirror": "https://mirror.example/"}, tmp_path, 1e18, True)
-    assert source == "pypi" and path.read_bytes() == b"wheel-bytes"
-    assert calls == ["https://mirror.example/" + wheel["filename"], wheel["url"]]
+    assert source == "mirror" and path.read_bytes() == b"wheel-bytes"
+    assert calls == [wheel["url"], mirrored]
     assert (
         hp.obtain(wheel, {"mirror": "https://mirror.example/"}, tmp_path, 1e18, False)[1] == "cache"
     )
+
+
+def test_an_explicit_mirror_is_tried_before_pypi(tmp_path, monkeypatch):
+    wheel = _fake_wheel(tmp_path)
+    monkeypatch.setenv("UNSLOTH_HNSW_MIRROR", "https://corp.example/hnsw")
+    calls = _serve(monkeypatch, {wheel["url"]: b"wheel-bytes"})
+    assert hp.obtain(wheel, CATALOG, tmp_path, 1e18, True)[1] == "pypi"
+    assert calls == ["https://corp.example/hnsw/" + wheel["filename"], wheel["url"]]
 
 
 def test_bytes_that_do_not_match_the_pin_are_rejected_and_deleted(tmp_path, monkeypatch):
@@ -310,8 +319,9 @@ def test_check_only_never_touches_the_network(flow, monkeypatch):
 )
 def test_unsupported_interpreters_are_reported_not_built(flow, tmp_path, change, detail):
     flow["info"] = _info(tmp_path, **change)
-    r = hp.ensure("py")
-    assert r["status"] == "unsupported" and detail in r["detail"] and not flow["ran"]
+    for check_only in (True, False):
+        r = hp.ensure("py", check_only = check_only)
+        assert r["status"] == "unsupported" and detail in r["detail"] and not flow["ran"]
 
 
 def test_a_pair_installed_elsewhere_is_probed_once(flow, tmp_path):
