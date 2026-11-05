@@ -5,7 +5,8 @@
 
 Code cells are parsed with `ast` and matched against the calls every Unsloth notebook makes
 (`from_pretrained`, `get_peft_model`, `load_dataset`, the trainer config, `save_pretrained_gguf`).
-Anything Studio cannot train (RL and preference trainers, reward functions) is reported, not guessed.
+GRPO, DPO and ORPO trainers become the Fine-tune node's objective; reward functions map to library
+rewards by name. Anything Studio cannot train is reported, not guessed.
 """
 
 from __future__ import annotations
@@ -33,13 +34,24 @@ _CONFIGS = {
     "UnslothTrainingArguments",
     "SentenceTransformerTrainingArguments",
 }
+_RL_TRAINERS = {"GRPOTrainer": "grpo", "DPOTrainer": "dpo", "ORPOTrainer": "orpo"}
+_RL_CONFIGS = {"GRPOConfig", "DPOConfig", "ORPOConfig"}
+_RL_ARGS = {
+    "num_generations": "num_generations",
+    "max_completion_length": "max_completion_length",
+    "max_prompt_length": "max_prompt_length",
+    "temperature": "temperature",
+    "beta": "beta",
+}
+# Notebook reward function name -> library reward. Checked in order, format names first so
+# match_format_exactly is a format reward, not an exact answer.
+_REWARD_NAMES = (
+    (("strict_format", "format_exactly"), "strict-xml-format"),
+    (("soft_format", "format_approximately", "xmlcount"), "soft-xml-format"),
+    (("correct", "check_answer", "exact"), "exact-answer"),
+    (("check_numbers", "numeric", "number"), "numeric-close"),
+)
 _UNSUPPORTED = {
-    "GRPOTrainer": "GRPO reinforcement learning",
-    "GRPOConfig": "GRPO reinforcement learning",
-    "DPOTrainer": "DPO preference training",
-    "DPOConfig": "DPO preference training",
-    "ORPOTrainer": "ORPO preference training",
-    "ORPOConfig": "ORPO preference training",
     "KTOTrainer": "KTO preference training",
     "PPOTrainer": "PPO reinforcement learning",
 }
@@ -61,13 +73,6 @@ _ARGS = {
     "weight_decay": "weight_decay",
 }
 _QUANTS = {"q4_k_m", "q5_k_m", "q8_0", "f16"}
-# What Studio's training request uses when a flow sets nothing: a notebook asking for other LoRA placement,
-# dropout or scaling trains a different adapter, so say so instead of dropping it silently.
-_STUDIO_TARGETS = frozenset(
-    {"q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"}
-)
-# Embedding fine-tunes (FastSentenceTransformer) default to the attention projections only.
-_STUDIO_EMBEDDING_TARGETS = frozenset({"q_proj", "k_proj", "v_proj", "o_proj"})
 _MISSING = object()
 
 
@@ -140,6 +145,8 @@ class _Reader(ast.NodeVisitor):
         self.unsupported: set[str] = set()
         self.approximated: list[str] = []
         self.losses: set[str] = set()
+        self.rewards: list[str] = []
+        self.format_fns: list[str] = []
 
     def value(self, node: ast.AST) -> Any:
         if isinstance(node, ast.Constant):
@@ -213,8 +220,15 @@ class _Reader(ast.NodeVisitor):
             and isinstance(node.func.value, ast.Name)
         ):
             self.forget(node.func.value.id)
-        if fn in _UNSUPPORTED:
+        if fn == "PatchDPOTrainer":
+            pass
+        elif fn in _UNSUPPORTED:
             self.unsupported.add(_UNSUPPORTED[fn])
+        elif fn in _RL_TRAINERS:
+            self.found["objective"] = _RL_TRAINERS[fn]
+            self.found.setdefault("objectives", []).append(_RL_TRAINERS[fn])
+        elif fn in _SFT_TRAINERS:
+            self.found["sft_stage"] = True
         elif fn and fn.endswith("Trainer") and fn not in _SFT_TRAINERS:
             self.unsupported.add(f"{fn} training")
         elif fn and fn.endswith("Loss"):
@@ -270,11 +284,52 @@ class _Reader(ast.NodeVisitor):
                 self.found["split"] = split if isinstance(split, str) else "train"
                 if self.kw(node, "streaming") is True:
                     self.tune["dataset_streaming"] = True
-        elif fn in _CONFIGS:
-            for arg, param in _ARGS.items():
+        elif fn in _CONFIGS or fn in _RL_CONFIGS:
+            args = {**_ARGS, **_RL_ARGS} if fn in _RL_CONFIGS else _ARGS
+            for arg, param in args.items():
                 value = self.kw(node, arg)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    if arg == "max_completion_length" and fn != "GRPOConfig":
+                        # Only GRPO's generation budget reaches the trainer.
+                        self.approximated.append(
+                            f"{fn}(max_completion_length = {value}): not carried over, so responses are "
+                            "not truncated to it"
+                        )
+                        continue
                     self.tune[param] = value
+            cap = self.kw(node, "max_length")
+            if (
+                fn in ("DPOConfig", "ORPOConfig")
+                and isinstance(cap, int)
+                and not isinstance(cap, bool)
+            ):
+                self.found["pref_max_length"] = cap
+            for k in node.keywords if fn == "GRPOConfig" else []:
+                if k.arg == "reward_weights":
+                    value = _literal(k.value)
+                    if value is _MISSING and isinstance(k.value, ast.Name):
+                        value = self.collections.get(k.value.id, _MISSING)
+                    self.found["reward_weights"] = None if value is _MISSING else value
+            loss = self.kw(node, "loss_type")
+            if fn == "GRPOConfig":
+                if isinstance(loss, str):
+                    level = self.kw(node, "importance_sampling_level")
+                    self.tune["grpo_variant"] = "gspo" if level == "sequence" else loss.lower()
+                high = self.kw(node, "epsilon_high")
+                if isinstance(high, (int, float)) and not isinstance(high, bool):
+                    self.tune["epsilon_high"] = float(high)
+                mask = self.kw(node, "mask_truncated_completions")
+                if isinstance(mask, bool):
+                    self.tune["mask_truncated_completions"] = mask
+            elif fn == "DPOConfig":
+                given = next((k.value for k in node.keywords if k.arg == "loss_type"), None)
+                value = loss if loss is not None else (_literal(given) if given else None)
+                # Studio's DPO trains on TRL's default sigmoid loss only.
+                if given is not None and value not in ("sigmoid", ["sigmoid"], ("sigmoid",)):
+                    self.approximated.append(
+                        f"DPOConfig(loss_type = {ast.unparse(given)}): not carried over, so DPO "
+                        "trains with the default sigmoid loss"
+                    )
         elif fn == "get_chat_template":
             template = self.kw(node, "chat_template")
             if isinstance(template, str):
@@ -287,10 +342,12 @@ class _Reader(ast.NodeVisitor):
                 self.found.setdefault("gguf", quant.lower())
         for k in node.keywords:
             if k.arg == "reward_funcs":
-                self.unsupported.add("custom reward functions")
+                items = k.value.elts if isinstance(k.value, (ast.List, ast.Tuple)) else [k.value]
+                self.rewards += [n for n in map(_name, items) if n]
         self.generic_visit(node)
 
     def _lora_settings(self, call: ast.Call) -> None:
+        """The Fine-tune node has fields for these, so they carry over; only a value it cannot read is reported."""
         for k in call.keywords:
             if k.arg not in ("target_modules", "lora_dropout", "use_rslora"):
                 continue
@@ -298,35 +355,43 @@ class _Reader(ast.NodeVisitor):
             if value is _MISSING and isinstance(k.value, ast.Name):
                 name = k.value.id
                 value = self.collections.get(name, self.consts.get(name, _MISSING))
-            if k.arg == "target_modules":
-                if self.found.get("task") == "embedding":
-                    expected, studio = _STUDIO_EMBEDDING_TARGETS, "q/k/v/o projections"
-                else:
-                    expected, studio = _STUDIO_TARGETS, "q/k/v/o/gate/up/down projections"
-                same = isinstance(value, (list, tuple, set)) and set(value) == expected
-                what = "LoRA target_modules"
-            elif k.arg == "lora_dropout":
-                same = (
-                    isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
-                )
-                what = "LoRA dropout"
-                studio = "0"
-            else:
-                same = value is False or value is None
-                what = "use_rslora"
-                studio = "off"
-            if not same:
-                shown = ast.unparse(k.value)[:80]
+            if k.arg == "target_modules" and isinstance(value, str) and value.strip():
+                if value.strip() == "all-linear":
+                    self.tune["target_modules"] = ["all-linear"]
+                    continue
+                # Any other string is a PEFT regex, which the node's module list cannot express.
                 self.approximated.append(
-                    f"{what} = {shown}: Studio's fine-tune uses its default ({studio}), "
-                    "so the adapter differs from the notebook's"
+                    f"target_modules = {value.strip()[:80]!r} is a PEFT regex: the Fine-tune node keeps its own "
+                    "target modules, so the adapter may differ from the notebook's"
                 )
+                continue
+            if k.arg == "target_modules" and isinstance(value, (list, tuple, set)):
+                modules = [m for m in value if isinstance(m, str) and m.strip()]
+                if modules and len(modules) == len(value):
+                    self.tune["target_modules"] = (
+                        sorted(modules) if isinstance(value, set) else modules
+                    )
+                    continue
+            elif (
+                k.arg == "lora_dropout"
+                and isinstance(value, (int, float))
+                and not isinstance(value, bool)
+            ):
+                self.tune["lora_dropout"] = float(value)
+                continue
+            elif k.arg == "use_rslora" and value in (True, False, None):
+                if value is True:
+                    self.tune["lora_variant"] = "rslora"
+                continue
+            shown = ast.unparse(k.value)[:80]
+            self.approximated.append(
+                f"{k.arg} = {shown}: could not be read, so the Fine-tune node keeps its own setting and "
+                "the adapter may differ from the notebook's"
+            )
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         if "format" in node.name.lower():
-            self.approximated.append(
-                f"Formatting function {node.name}(): Studio formats the dataset with its own detected format"
-            )
+            self.format_fns.append(node.name)
         self.generic_visit(node)
 
 
@@ -339,6 +404,26 @@ def _cells(data: bytes) -> list[str]:
     if not isinstance(cells, list):
         raise NotebookImportError("That notebook has no cells")
     return [_source(c) for c in cells if isinstance(c, dict) and c.get("cell_type") == "code"]
+
+
+def _library_rewards(
+    names: list[str], weights: Optional[list[float]] = None
+) -> tuple[list[dict], list[str]]:
+    """Library rewards for the notebook's reward functions, each with its reward_weights entry (1.0 without)."""
+    picked: dict[str, dict] = {}
+    left_out = []
+    for i, name in enumerate(names):
+        low = name.lower()
+        match = next((r for keys, r in _REWARD_NAMES if any(k in low for k in keys)), None)
+        weight = float(weights[i]) if weights else 1.0
+        if match and match in picked:
+            # TRL adds the two functions' rewards, so one library reward carries both weights.
+            picked[match]["weight"] += weight
+        elif match:
+            picked[match] = {"name": match, "weight": weight}
+        else:
+            left_out.append(name)
+    return list(picked.values()), left_out
 
 
 def _on_mlx() -> bool:
@@ -368,10 +453,47 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         reader.unsupported.add("classification fine-tuning (open it in Colab)")
     elif _category(name) == "cpt":
         reader.unsupported.add("continued pretraining on raw text (open it in Colab)")
+    rewards: list[dict] = []
+    if len(reader.found.get("objectives") or ()) > 1:
+        stages = " and ".join(o.upper() for o in reader.found["objectives"])
+        reader.unsupported.add(f"more than one RL stage ({stages})")
+    if reader.found.get("objective") and reader.found.get("sft_stage"):
+        # One Fine-tune node runs one objective; dropping the warm-up would train something else.
+        reader.unsupported.add("an SFT stage followed by RL (two training stages)")
+    if reader.found.get("objective") == "grpo":
+        weights = reader.found.get("reward_weights")
+        readable = (
+            isinstance(weights, (list, tuple))
+            and len(weights) == len(reader.rewards)
+            and all(isinstance(w, (int, float)) and not isinstance(w, bool) for w in weights)
+        )
+        if "reward_weights" in reader.found and not readable:
+            reader.approximated.append(
+                "reward_weights could not be matched to the reward functions, so each reward weighs 1"
+            )
+        rewards, left_out = _library_rewards(reader.rewards, list(weights) if readable else None)
+        if not rewards:
+            reader.unsupported.add(
+                "reward functions with no match in the reward library"
+                + (f" ({', '.join(left_out)})" if left_out else "")
+            )
+        elif left_out:
+            reader.approximated.append(
+                f"Reward functions with no library match, left out: {', '.join(left_out)}"
+            )
     if reader.found.get("task") == "embedding":
         for loss in sorted(reader.losses - _EMBEDDING_LOSSES):
             reader.unsupported.add(f"embedding training with {loss}")
+    reader.approximated += [
+        f"Formatting function {fn}(): Studio formats the dataset with its own detected format"
+        for fn in reader.format_fns
+        if fn not in reader.rewards
+    ]
     found, tune = reader.found, dict(reader.tune)
+    if found.get("pref_max_length"):
+        # A preference trainer's max_length comes from the node's context, so the notebook's cap goes there.
+        cap = found["pref_max_length"]
+        tune["max_seq_length"] = min(int(tune.get("max_seq_length") or cap), cap)
     report: dict[str, Any] = {
         "imported": [],
         "approximated": list(dict.fromkeys(reader.approximated)),
@@ -430,11 +552,33 @@ def read_notebook(data: bytes, name: str = "notebook.ipynb") -> tuple[Optional[d
         tune["task"] = found["task"]
     if isinstance(tune.get("learning_rate"), (int, float)):
         tune["learning_rate"] = float(tune["learning_rate"])
+    objective = found.get("objective")
+    if objective:
+        tune["objective"] = objective
+    if objective == "grpo":
+        tune["rewards"] = rewards
+        system = reader.consts.get("SYSTEM_PROMPT")
+        # The library rewards read <answer> tags; a prompt asking for other tags would never score.
+        if isinstance(system, str) and "<answer>" in system:
+            tune["system_prompt"] = system.strip()
+        else:
+            report["approximated"].append(
+                "System prompt: Studio asks for <reasoning>/<answer> tags, which the library rewards check"
+            )
+        if tune.get("grpo_variant") not in (None, "dapo", "dr_grpo", "bnpo", "grpo", "gspo"):
+            report["approximated"].append(f"Loss type {tune.pop('grpo_variant')}: Studio uses DAPO")
     report["imported"] = [f"Model {found['model']}", f"Dataset {found['dataset']}"] + [
-        f"{k} = {v}" for k, v in tune.items() if k != "base_model"
+        f"{k} = {v}" for k, v in tune.items() if k not in ("base_model", "rewards", "system_prompt")
     ]
+    if rewards:
+        report["imported"].append(
+            "Rewards " + ", ".join(f"{r['name']} x{r['weight']:g}" for r in rewards)
+        )
+    if "system_prompt" in tune:
+        report["imported"].append("System prompt from the notebook")
     if found.get("gguf"):
         report["imported"].append(f"GGUF export ({found['gguf']})")
+
     stem = name.removesuffix(".ipynb")
     doc = notebook_template(
         "notebook-import",

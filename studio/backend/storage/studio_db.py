@@ -11,6 +11,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import logging
 import os
 import platform
@@ -29,6 +30,7 @@ from typing import Any, Callable, Iterable, Iterator, Mapping, Optional
 
 
 from core import chat_originals
+from core.benchmark.parse import pick_default_metric
 from storage import sqlite_gate
 from utils.account_context import is_owner_context
 from utils.paths import (
@@ -526,6 +528,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # DPO/ORPO/GRPO metrics for the History charts, one JSON object per step; NULL for SFT.
+    metric_cols = {row[1] for row in conn.execute("PRAGMA table_info(training_metrics)").fetchall()}
+    if "rl_json" not in metric_cols:
+        conn.execute("ALTER TABLE training_metrics ADD COLUMN rl_json TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_metrics_run_id ON training_metrics(run_id)")
     conn.execute(
         """
@@ -1154,6 +1160,36 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
                    AND c.owner_subject<>research_runs.owner_subject
              )"""
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS eval_runs (
+            id TEXT NOT NULL PRIMARY KEY,
+            task TEXT NOT NULL,
+            model TEXT NOT NULL,
+            metrics_json TEXT NOT NULL,
+            n_samples INTEGER NOT NULL DEFAULT 0,
+            num_fewshot INTEGER,
+            created_at TEXT NOT NULL,
+            output_path TEXT,
+            duration_seconds REAL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS eval_samples (
+            run_id TEXT NOT NULL REFERENCES eval_runs(id) ON DELETE CASCADE,
+            doc_id INTEGER NOT NULL,
+            question TEXT NOT NULL,
+            target TEXT NOT NULL,
+            response TEXT,
+            raw_response TEXT,
+            correct INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(run_id, doc_id)
+        ) WITHOUT ROWID
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_eval_runs_created_at ON eval_runs(created_at)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS research_plan_steps (
@@ -1798,8 +1834,9 @@ def insert_metrics_batch(run_id: str, metrics: list[dict]) -> None:
         conn.executemany(
             """
             INSERT INTO training_metrics
-                (run_id, step, loss, learning_rate, grad_norm, eval_loss, epoch, num_tokens, elapsed_seconds)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (run_id, step, loss, learning_rate, grad_norm, eval_loss, epoch, num_tokens, elapsed_seconds,
+                 rl_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(run_id, step) DO UPDATE SET
                 loss = COALESCE(excluded.loss, loss),
                 learning_rate = COALESCE(excluded.learning_rate, learning_rate),
@@ -1807,7 +1844,8 @@ def insert_metrics_batch(run_id: str, metrics: list[dict]) -> None:
                 eval_loss = COALESCE(excluded.eval_loss, eval_loss),
                 epoch = COALESCE(excluded.epoch, epoch),
                 num_tokens = COALESCE(excluded.num_tokens, num_tokens),
-                elapsed_seconds = COALESCE(excluded.elapsed_seconds, elapsed_seconds)
+                elapsed_seconds = COALESCE(excluded.elapsed_seconds, elapsed_seconds),
+                rl_json = COALESCE(excluded.rl_json, rl_json)
             """,
             [
                 (
@@ -1820,6 +1858,7 @@ def insert_metrics_batch(run_id: str, metrics: list[dict]) -> None:
                     m.get("epoch"),
                     m.get("num_tokens"),
                     m.get("elapsed_seconds"),
+                    json.dumps(m["rl"]) if m.get("rl") else None,
                 )
                 for m in metrics
             ],
@@ -2015,7 +2054,7 @@ def get_run_metrics(id: str) -> dict:
         rows = conn.execute(
             """
             SELECT step, loss, learning_rate, grad_norm, eval_loss, epoch,
-                   num_tokens, elapsed_seconds
+                   num_tokens, elapsed_seconds, rl_json
             FROM training_metrics
             WHERE run_id = ?
             ORDER BY step
@@ -2034,6 +2073,7 @@ def get_run_metrics(id: str) -> dict:
         eval_step_history: list[int] = []
         final_epoch: float | None = None
         final_num_tokens: int | None = None
+        rl_history: list[dict] = []
 
         for row in rows:
             step = row["step"]
@@ -2054,6 +2094,19 @@ def get_run_metrics(id: str) -> dict:
                 final_epoch = row["epoch"]
             if row["num_tokens"] is not None:
                 final_num_tokens = row["num_tokens"]
+            if step > 0 and row["rl_json"]:
+                try:
+                    values = json.loads(row["rl_json"])
+                except (json.JSONDecodeError, TypeError):
+                    values = None
+                if isinstance(values, dict):
+                    # Starlette won't render NaN/inf, which a diverging run can log.
+                    clean = {
+                        k: float(v)
+                        for k, v in values.items()
+                        if isinstance(v, (int, float)) and math.isfinite(v)
+                    }
+                    rl_history.append({"step": step, **clean})
 
         return {
             "step_history": step_history,
@@ -2067,6 +2120,7 @@ def get_run_metrics(id: str) -> dict:
             "eval_step_history": eval_step_history,
             "final_epoch": final_epoch,
             "final_num_tokens": final_num_tokens,
+            "rl_history": rl_history,
         }
     finally:
         conn.close()
@@ -6086,6 +6140,141 @@ def record_external_import_mark(
             """,
             (source, session_id, int(turns), revision),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ── Benchmark runs ──────────────────────────────────
+
+
+def insert_benchmark_run(
+    id: str,
+    task: str,
+    model: str,
+    metrics: list[dict],
+    n_samples: int,
+    output_path: str,
+    duration_seconds: Optional[float] = None,
+    num_fewshot: Optional[int] = None,
+) -> None:
+    """Insert a completed benchmark run summary."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO eval_runs (id, task, model, metrics_json, n_samples, num_fewshot, created_at, output_path, duration_seconds)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                id,
+                task,
+                model,
+                json.dumps(metrics),
+                n_samples,
+                num_fewshot,
+                datetime.now(timezone.utc).isoformat(),
+                output_path,
+                duration_seconds,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def insert_benchmark_samples(run_id: str, samples: list[dict]) -> None:
+    """Insert per-sample results for a benchmark run."""
+    if not samples:
+        return
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT OR IGNORE INTO eval_samples (run_id, doc_id, question, target, response, raw_response, correct)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    run_id,
+                    s["doc_id"],
+                    s["question"],
+                    s["target"],
+                    s.get("response"),
+                    s.get("raw_response"),
+                    1 if s.get("correct") else 0,
+                )
+                for s in samples
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _benchmark_run_from_row(row: sqlite3.Row) -> dict:
+    data = dict(row)
+    metrics = json.loads(data.pop("metrics_json", "[]"))
+    data["metrics"] = metrics
+    # The headline metric is derived, not stored: the priority walk over the
+    # already-filtered metric names is deterministic (see parse.pick_default_metric).
+    data["default_metric"] = pick_default_metric(metrics)
+    return data
+
+
+def list_benchmark_runs() -> list[dict]:
+    """List benchmark runs, newest first."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT * FROM eval_runs ORDER BY created_at DESC").fetchall()
+        return [_benchmark_run_from_row(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_benchmark_run(run_id: str) -> Optional[dict]:
+    """Get a single benchmark run by id."""
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM eval_runs WHERE id = ?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        return _benchmark_run_from_row(row)
+    finally:
+        conn.close()
+
+
+def get_benchmark_samples(run_id: str) -> list[dict]:
+    """Get per-sample results for a benchmark run."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM eval_samples WHERE run_id = ? ORDER BY doc_id",
+            (run_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_benchmark_run_detail(run_id: str) -> Optional[dict]:
+    """Get a benchmark run with its per-sample results."""
+    run = get_benchmark_run(run_id)
+    if run is None:
+        return None
+    samples = get_benchmark_samples(run_id)
+    correct_count = sum(1 for s in samples if s["correct"])
+    run["samples"] = samples
+    run["correct_count"] = correct_count
+    run["total_count"] = len(samples) if samples else run["n_samples"]
+    return run
+
+
+def delete_benchmark_run(run_id: str) -> None:
+    """Delete a benchmark run and its samples (CASCADE)."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM eval_runs WHERE id = ?", (run_id,))
         conn.commit()
     finally:
         conn.close()

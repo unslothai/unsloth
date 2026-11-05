@@ -430,7 +430,33 @@ export const BUDGET = {
   // Scheduled tasks (#13871) add 15.9 KB raw / 5.0 KB transfer (results poll, unseen dots, strings; page and
   // dialog lazy): 6,766.5 -> 6,782.4 KB raw, 2,041.5 -> 2,046.5 KB transfer against main 90164297d, one machine
   // and build, Node 24, 105 chunks. Raised by that growth over main's budget.
+  // The control heights and API page round (#15232) adds 2,639 B raw / 717 B transfer, mostly its token table,
+  // regenerate and tooltip strings in the eager locales (6,945,181 -> 6,947,820 B raw, 2,095,616 -> 2,096,333 B
+  // transfer against 6eeb690f8d, one machine and build, 105 chunks). Raised by that growth.
+  // The run settings dropdown per model (#15247: saved settings store, dropdown, pencil and Reset to Default)
+  // adds 9.9 KB raw / 3.2 KB transfer inside the eager model config page: 6,787.4 -> 6,797.3 KB raw, 2,047.9 ->
+  // 2,051.1 KB transfer against d4be247222, one machine and build, Node 26, 105 chunks. Raised by that growth.
+  // Settings and the row menu on the loaded model in Recommended (#15249) add 82 B raw / 176 B transfer to the eager
+  // model picker (6,960,469 -> 6,960,551 B raw, 2,100,277 -> 2,100,453 B transfer against c9ddc5ab5e, one machine and
+  // build, Node 26, 105 chunks). Raised by that growth.
+  // Cosmos3 video families (#14554): +466 B raw / +218 B transfer. Raised by that.
+  // Lookup-table pricing (#14465): +1,517 B raw / +470 B transfer on top of the lines above (measured merged with
+  // 4db3eaeb55, Node 24, 99 chunks).
+  // The Evals tab on the Benchmarks page (#12521) adds 6,058 B raw / 1,585 B transfer, its strings in the eager en
+  // locale; its runtime driver is a React.lazy chunk. Raised by that on top of main.
   // Flows: +12,232 B raw / +6,300 B transfer over 1610b38cc4 (shared startup chunks); Flows itself stays lazy.
+  // DPO, ORPO and GRPO in Studio (#12601) add 27,796 B raw / 8,585 B transfer (6,842,532 -> 6,870,328 B raw,
+  // 2,060,384 -> 2,068,969 B transfer against 2c7c841f69 and 3ecf7f8ff, one machine and build, 96 chunks): the
+  // objective, column-role and reward strings join the eager English catalog, the RL settings and role mapping sit
+  // in the eager training store, and its icons in the shared icon chunk. Raised by that growth on top of main's
+  // budget, which keeps main's margin (re-added on top of main at 85d63e074). The GRPO prompt preview reading
+  // each row's own system message adds 405 B raw / 154 B transfer (6,906,755 -> 6,907,160 B raw at 528a73372).
+  // Against d4f1ceb19 the PR adds 28,301 B raw / 8,690 B transfer (6,923,052 -> 6,951,353 B raw, 2,085,246 ->
+  // 2,093,936 B transfer, one machine and build, 98 chunks); main itself measured 509 B raw / 228 B transfer over
+  // its own budget there, so this is the head measurement plus about 700 B raw / 300 B transfer for CI builds.
+  // Re-added on top of main's #14582 budget at the e3d92b48e merge: main's +8,926 B raw / +2,367 B transfer
+  // since 85d63e074 on top of the line this replaced.
+  // Merged onto Flows (flows-base-rl): Flows' budget plus the #12601 growth measured against d4f1ceb19.
   // Flows gallery kept as Daniel's (no Studio Card/Skeleton/Textarea/Spinner there): chunk split moves
   // ~1.2 KB transfer into startup (2,053.3 -> 2,054.5 KB, Node 26, 127 chunks). Raised by that.
   // Recipes in Flows add 3,077 B raw / 2,230 B transfer over 27b8977e27 (6,960,305 -> 6,963,382 B raw,
@@ -438,8 +464,11 @@ export const BUDGET = {
   // viewer and run views share dropdown-menu, progress, use-mobile and a dist helper with startup, so those split
   // into their own startup chunks (2,173 B raw / 2,046 B transfer), and the lazy recipe forms split index.min the
   // same way (904 B raw / 184 B transfer). Raised by that growth.
-  transferBytes: 2_106_430,
-  rawBytes: 6_974_022,
+  // Merged onto #15604 (4cc2a30280): this PR's budget plus that growth.
+  // Benchmark and Loop on top of #15611 (42e5f7afd) measure 6,843.0 KB raw / 2,068.1 KB transfer
+  // (Node 26, 123 chunks): the Benchmark card look and Loop frame join the eager editor. Raised to that.
+  transferBytes: 2_118_400,
+  rawBytes: 7_008_000,
 };
 
 // The chunk count is reported but not budgeted. Splitting a page out of the entry raises it while lowering the

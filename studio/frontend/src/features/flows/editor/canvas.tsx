@@ -42,6 +42,7 @@ import { CanvasControls } from "./canvas-controls";
 import { FIT_MIN_ZOOM, dragHasFiles } from "./canvas-rules";
 import {
   checkConnection,
+  inLoopFrame,
   parseHandle,
   wouldCreateCycle,
 } from "./connection-rules";
@@ -710,6 +711,7 @@ export function FlowCanvas({ readOnly = false }: { readOnly?: boolean }) {
       connection.target,
       getSpec(target.type),
       connection.targetHandle,
+      inLoopFrame(doc, connection.source),
     );
     if (!check.ok) return false;
     if (recipeConnectionError(doc, connection.source, connection.target))

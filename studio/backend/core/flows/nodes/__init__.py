@@ -6,6 +6,7 @@
 from core.flows.nodes import (  # noqa: F401
     audio,
     automation,
+    benchmark,
     chat,
     data,
     image,
@@ -23,3 +24,25 @@ from core.flows.nodes import (  # noqa: F401
     video,
     world,
 )
+
+__all__ = [
+    "audio",
+    "automation",
+    "benchmark",
+    "chat",
+    "data",
+    "image",
+    "inputs",
+    "knowledge",
+    "logic",
+    "media_utils",
+    "memory",
+    "output",
+    "story",
+    "table",
+    "text",
+    "training",
+    "transform",
+    "video",
+    "world",
+]

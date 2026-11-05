@@ -30,7 +30,7 @@ export type PortType =
   | "any"
   | "flow";
 
-export type EdgeKind = "data" | "flow";
+export type EdgeKind = "data" | "flow" | "feedback";
 
 export interface FlowParam {
   id: string;
@@ -93,7 +93,7 @@ export interface FlowGroup {
   color?: string | null;
   rect: [number, number, number, number];
   /** "recipe": one Data Recipe; `config` is the recipe minus its columns (they are recipe.column nodes). */
-  kind?: "recipe" | null;
+  kind?: "recipe" | "loop" | null;
   config?: Record<string, unknown> | null;
   run?: Record<string, unknown> | null;
   ui?: Record<string, unknown> | null;
@@ -143,7 +143,8 @@ export type ParamKind =
   | "story"
   | "world"
   | "schema"
-  | "lora_list";
+  | "lora_list"
+  | "reward_list";
 
 export interface ParamSpec {
   id: string;
@@ -160,6 +161,13 @@ export interface ParamSpec {
   options_path?: string;
   bindable?: boolean;
   advanced?: boolean;
+  /** Shown only while each named param holds one of these values. */
+  show_when?: Record<string, string[]>;
+  option_labels?: Record<string, string>;
+  /** Heading the param sits under inside Advanced. */
+  group?: string;
+  /** Shown on the label's info button. */
+  help?: string;
 }
 
 export interface PortSpec {

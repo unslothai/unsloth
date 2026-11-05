@@ -53,6 +53,19 @@ function normalizeNullableFiniteNumber(value: unknown): number | null {
   return isFiniteNumber(value) ? value : null;
 }
 
+function normalizeRlMetrics(value: unknown): Record<string, number> | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const out: Record<string, number> = {};
+  for (const [key, metric] of Object.entries(value)) {
+    if (isFiniteNumber(metric)) {
+      out[key] = metric;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
 function parseTrainingProgressPayload(
   value: unknown,
 ): TrainingProgressPayload | null {
@@ -95,6 +108,7 @@ function parseTrainingProgressPayload(
     grad_norm: normalizeNullableFiniteNumber(payload.grad_norm),
     num_tokens: normalizeNullableFiniteNumber(payload.num_tokens),
     eval_loss: normalizeNullableFiniteNumber(payload.eval_loss),
+    rl_metrics: normalizeRlMetrics(payload.rl_metrics),
   };
 }
 

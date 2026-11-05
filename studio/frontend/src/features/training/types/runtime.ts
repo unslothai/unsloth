@@ -45,6 +45,7 @@ export interface TrainingStatusResponse {
     grad_norm_steps?: number[];
     eval_loss?: number[];
     eval_steps?: number[];
+    rl?: Array<Record<string, number>>;
   } | null;
 }
 
@@ -74,11 +75,18 @@ export interface TrainingProgressPayload {
   grad_norm: number | null;
   num_tokens: number | null;
   eval_loss: number | null;
+  /** DPO/ORPO/GRPO log values keyed as TRL logs them (reward, kl, rewards/margins, ...). */
+  rl_metrics?: Record<string, number> | null;
 }
 
 export interface TrainingSeriesPoint {
   step: number;
   value: number;
+}
+
+export interface RlMetricPoint {
+  step: number;
+  values: Record<string, number>;
 }
 
 export interface TrainingRuntimeState {
@@ -120,6 +128,7 @@ export interface TrainingRuntimeState {
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];
   evalLossHistory: TrainingSeriesPoint[];
+  rlMetricHistory: RlMetricPoint[];
   resetGeneration: number;
   stopRequested: boolean;
   configureRequest: number;

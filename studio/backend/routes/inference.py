@@ -20077,7 +20077,15 @@ async def _load_model_impl(
     speech_codec_path: Optional[str] = None,
 ):
     from core.inference.npu_backend import is_npu_model_path
+    from routes.benchmarks import scoring_active
 
+    if scoring_active():
+        # Every load comes through here, a chat request's automatic model switch included: a
+        # held-out scoring answers with the loaded model, so a switch mid-run would mix models.
+        raise HTTPException(
+            status_code = 409,
+            detail = "A benchmark is scoring the loaded model. Stop it or let it finish, then try again.",
+        )
     if is_npu_model_path(request.model_path):
         return await _load_npu_model(
             request,
@@ -41536,6 +41544,56 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
     return Response(
         content = resp.content,
         status_code = resp.status_code,
+        media_type = "application/json",
+    )
+
+
+# =====================================================================
+
+# llama.cpp tokenize passthrough  (/tokenize → llama-server /tokenize)
+# =====================================================================
+
+
+@router.post("/tokenize")
+@account_access.gpu_busy_route
+async def llama_tokenize(request: Request, current_subject: str = Depends(get_current_subject)):
+    """llama.cpp ``/tokenize`` passthrough (GGUF only).
+
+    Exposed for clients that need the server's exact tokenization — notably
+    lm_eval's ``gguf`` backend, which tokenizes contexts with the model's own
+    tokenizer to split context/continuations at true token boundaries for
+    teacher-forced loglikelihood scoring.
+    """
+    body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    # After the switch: a body naming a model kept beside the primary routes to that slot's server.
+    llama_backend = get_llama_cpp_backend()
+    if not llama_backend.is_loaded:
+        _status, _detail = await _no_model_loaded_error(
+            "No GGUF model loaded. Load a GGUF model first.",
+            _raw_body_model(body) if isinstance(body, dict) else None,
+            request,
+            status = 503,
+        )
+        raise HTTPException(status_code = _status, detail = _detail)
+    if not isinstance(body, dict):
+        raise HTTPException(status_code = 400, detail = "Request body must be a JSON object")
+
+    # llama-server runs with --api-key: forward the child's key.
+    try:
+        async with _cancelable_nonstreaming_client() as _client:
+            _resp = await _client.post(
+                f"{llama_backend.base_url}/tokenize",
+                json = body,
+                headers = _openai_passthrough_upstream_headers(llama_backend = llama_backend),
+                timeout = 30,
+            )
+    except httpx.RequestError as _exc:
+        raise HTTPException(status_code = 502, detail = _friendly_error(_exc))
+    if _resp.status_code != 200:
+        raise _openai_passthrough_error(_resp.status_code, _resp.text)
+    return Response(
+        content = _resp.content,
+        status_code = _resp.status_code,
         media_type = "application/json",
     )
 

@@ -447,10 +447,11 @@ function FlowNodeViewImpl({ id }: NodeProps<RfNode>) {
           {fields && <NodeFieldRows rows={fields.rows} />}
           {LLM_SETTINGS_NODES.has(node.type) && <LlmReloadHint node={node} />}
           {fields && <NodeDisclosure sections={fields.long} />}
-          {(runtime.outputs ||
-            runtime.partial ||
-            runtime.text ||
-            runtime.preview) && (
+          {!look.ownsOutputs &&
+            (runtime.outputs ||
+              runtime.partial ||
+              runtime.text ||
+              runtime.preview) && (
             <div
               data-card-grow={true}
               className={`flow-detail relative px-3 group-data-[sized]/node:flex group-data-[sized]/node:min-h-0 group-data-[sized]/node:flex-1 group-data-[sized]/node:flex-col${copyText ? " pr-9" : ""}`}>

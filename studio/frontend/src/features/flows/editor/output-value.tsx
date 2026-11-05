@@ -4,6 +4,7 @@
 import { isDatasetValue } from "../dataset/dataset-value";
 import { DatasetOutput } from "./dataset-output";
 import { CopyTextButton } from "./copy-text";
+import { DatasetRows, isDatasetPreview } from "./dataset-rows";
 import { MediaThumb, isMediaValue } from "./media";
 import { StructuredOutput, isStructuredValue } from "./value-viewers";
 
@@ -28,8 +29,9 @@ export function OutputValue({ value }: { value: unknown }) {
       </div>
     );
   }
-  if (isDatasetValue(value)) return <DatasetOutput value={value} />;
+  if (isDatasetValue(value) && value.ref) return <DatasetOutput value={value} />;
   if (isStructuredValue(value)) return <StructuredOutput value={value} />;
+  if (isDatasetPreview(value)) return <DatasetRows value={value} />;
   if (typeof value === "string") {
     return (
       <div className="relative">
