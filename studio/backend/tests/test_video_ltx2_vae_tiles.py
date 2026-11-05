@@ -131,7 +131,19 @@ def test_temb_and_causal_reach_every_tile(free):
     assert len(seen) > 1 and all(t is temb and c is False for t, c in seen)
 
 
-def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
+@pytest.mark.parametrize(
+    "error",
+    [
+        lambda: torch.cuda.OutOfMemoryError("fake"),
+        # CPU tiles plan from host RAM; Windows refuses past its commit limit with this, not an OOM type
+        lambda: RuntimeError(
+            "[enforce fail at alloc_cpu.cpp:117] data. DefaultCPUAllocator: not enough memory: "
+            "you tried to allocate 123 bytes."
+        ),
+    ],
+    ids = ["cuda", "cpu_allocator"],
+)
+def test_oom_retries_in_stock_size_tiles(free, monkeypatch, error):
     vae = _ltx_vae()
     z = torch.randn(1, 8, 1, 22, 38)
     vae.enable_tiling()
@@ -151,7 +163,7 @@ def test_oom_retries_in_stock_size_tiles(free, monkeypatch):
     ):
         calls.append((th, tw, fp32_accum))
         if len(calls) == 1:
-            raise torch.cuda.OutOfMemoryError("fake")
+            raise error()
         return real(vae_, z_, temb, causal, th, tw, fp32_accum)
 
     monkeypatch.setattr(vt, "_decode_tiles", flaky)
