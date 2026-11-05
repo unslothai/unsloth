@@ -241,6 +241,23 @@ def test_an_inconclusive_probe_keeps_the_install_but_marks_it_unverified(flow, t
     assert hp.read_marker(str(tmp_path))["result"] == "ok"
 
 
+def test_an_install_that_dies_halfway_leaves_the_pair_unimportable(flow, tmp_path, monkeypatch):
+    def run_first(cmds, timeout):
+        # Both wheels' files and metadata landed, then the installer timed out.
+        flow["info"]["installed"].update({n: v for n, v in hp.PAIR})
+        raise TimeoutError("uv pip install timed out")
+
+    monkeypatch.setattr(hp, "_run_first", run_first)
+    r = hp.ensure("py")
+    assert r["status"] == "failed" and not flow["wants"]
+    # vec_ann.usearch() refuses an unverified marker (test_rag_hnsw_runtime).
+    assert hp.read_marker(str(tmp_path))["result"] == "unverified"
+    # Setup's fast path does not call it installed; the next full run probes it.
+    assert hp.ensure("py", check_only = True)["status"] == "missing"
+    assert hp.ensure("py")["status"] == "already" and flow["wants"]
+    assert hp.read_marker(str(tmp_path))["result"] == "ok"
+
+
 @pytest.mark.parametrize("numkong", ["7.8.7", "8.0.0"])
 def test_a_pair_from_an_older_install_is_probed_not_replaced(flow, tmp_path, numkong):
     flow["info"] = _info(tmp_path, installed = {"usearch": "2.26.6", "numkong": numkong})

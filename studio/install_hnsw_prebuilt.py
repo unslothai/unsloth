@@ -575,6 +575,8 @@ def ensure(
                 sources.add(source)
             source = "+".join(sorted(sources))
             remaining = max(30.0, deadline - time.monotonic())
+            # Until a probe passes, files from a failed, killed or timed-out install stay unimportable.
+            _write_marker(prefix, fp, None, "install not finished")
             _run_first(_pip_cmd(python, "install", files, prefix), remaining)
             ok, reason = probe(python)
             if ok is False:
