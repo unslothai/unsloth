@@ -120,6 +120,7 @@ def _anima_state(prefix: str, blocks: int = 2) -> dict:
 
 @pytest.mark.parametrize("prefix", ["net.", "model.diffusion_model."])
 def test_anima_file_splits_into_transformer_and_text_conditioner(prefix):
+    pytest.importorskip("diffusers")
     from core.inference.diffusion_anima import _block_count, split_anima_checkpoint
 
     transformer, adapter = split_anima_checkpoint(_anima_state(prefix, blocks = 3))
@@ -132,6 +133,7 @@ def test_anima_file_splits_into_transformer_and_text_conditioner(prefix):
 
 
 def test_anima_refuses_a_quantized_or_adapterless_file():
+    pytest.importorskip("diffusers")
     from core.inference.diffusion_anima import split_anima_checkpoint
 
     state = _anima_state("net.")
@@ -218,6 +220,7 @@ def _comfy_layout(transformer, conditioner) -> dict:
 
 
 def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monkeypatch):
+    pytest.importorskip("diffusers")
     import core.inference.diffusion_single_file_converters as converters
     from core.inference.diffusion_anima import load_anima_single_file, split_anima_checkpoint
 
@@ -359,6 +362,7 @@ def test_family_entries():
 
 
 def test_scheduler_overrides_switch_to_beta_sigmas():
+    pytest.importorskip("diffusers")
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flow_shift import (
@@ -399,9 +403,11 @@ def test_qwen3_5_text_encoder_is_classified_and_fits_moss():
 
 
 def test_moss_pipeline_takes_a_supplied_vae():
+    pytest.importorskip("diffusers")
     import inspect
 
     from core.inference.diffusion_moss_image import load_moss_image_pipeline
+
     assert "vae" in inspect.signature(load_moss_image_pipeline).parameters
 
 
