@@ -2679,6 +2679,126 @@ def test_an_unmapped_apu_load_that_fits_is_left_exactly_as_asked(tmp_path, monke
     assert backend.last_load_warning is None
 
 
+_GiB = 1024**3
+# The DeepSeek-V4.1-Flash UD-IQ1_S Engram table: 256 x 768022850 IQ4_NL rows.
+_DEEPSEEK41_TABLE = 110_595_290_400
+
+
+def _igpu_backend(
+    tmp_path,
+    monkeypatch,
+    *,
+    avail_mib,
+    gguf_gb = 216.97,
+    table = _DEEPSEEK41_TABLE,
+    igpu = True,
+    load_mode_auto = True,
+):
+    """An integrated CUDA SoC (RTX Spark N1X, DGX Spark): llama.cpp resolves both auto modes off,
+    and the APU preflight prices the pool against system RAM."""
+    backend, gguf = _apu_backend(
+        tmp_path, gguf_gb = gguf_gb, avail_mib = avail_mib, monkeypatch = monkeypatch
+    )
+    backend._lazy_auto_resolves_off = lambda **_kw: igpu
+    backend._gguf_tensor_scan = lambda _path: (
+        "deepseek41",
+        {
+            "per_layer_token_embd.weight": table,
+            "blk.0.ffn_up_exps.weight": int(gguf_gb * _GiB) - table,
+        },
+        0,
+    )
+    caps = dict(LlamaCppBackend.probe_server_capabilities.__func__(LlamaCppBackend, None))
+    caps.update(
+        supports_load_mode = True,
+        supports_load_mode_auto = load_mode_auto,
+        supports_lazy_mode = True,
+        lazy_mode_flag = "--lazy-mode",
+    )
+    monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", lambda *a, **k: caps)
+    return backend, gguf
+
+
+def _modes(cmd, flag):
+    return [cmd[i + 1] for i, tok in enumerate(cmd) if tok == flag and i + 1 < len(cmd)]
+
+
+def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(tmp_path, monkeypatch):
+    """DC-060: on an iGPU llama.cpp's auto is none, so a 217 GB model nobody pinned to a mode read
+    its whole 103 GiB Engram table into one host buffer. The override must apply to auto there."""
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    assert _modes(cmd, "--lazy-mode") == ["on"], cmd
+    warning = backend.last_load_warning or ""
+    assert "On this integrated GPU llama.cpp loads without memory mapping by default" in warning
+    assert "lookup tables are read from disk as needed" in warning
+    assert "was set to load without memory mapping" not in warning
+    assert backend._memory_state == (False, False)
+
+
+def test_an_igpu_load_that_fits_keeps_llama_cpps_default(tmp_path, monkeypatch):
+    """The control: room to run, so nothing is overridden; none is the faster load on an iGPU."""
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 400 * 1024)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--load-mode" not in cmd and "--lazy-mode" not in cmd, cmd
+    assert backend.last_load_warning is None
+
+
+@pytest.mark.parametrize(
+    "igpu, load_mode_auto",
+    [(False, True), (True, False)],
+    ids = ["discrete-gpu-auto-is-mmap", "build-without-auto"],
+)
+def test_auto_is_left_alone_where_it_already_maps(tmp_path, monkeypatch, igpu, load_mode_auto):
+    """A device with mmap support, or a build whose default is mmap everywhere: auto already
+    pages, so the oversized load launches as before."""
+    backend, gguf = _igpu_backend(
+        tmp_path, monkeypatch, avail_mib = 17 * 1024, igpu = igpu, load_mode_auto = load_mode_auto
+    )
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert "--load-mode" not in cmd and "--lazy-mode" not in cmd, cmd
+    assert "memory mapping instead" not in (backend.last_load_warning or "")
+
+
+def test_a_user_lazy_mode_survives_the_igpu_override(tmp_path, monkeypatch):
+    """The mapping is owed, the lazy mode is the user's: only an unset one is restored."""
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+
+    cmd = _launch(backend, gguf, extra_args = ["--lazy-mode", "off"])["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    assert _modes(cmd, "--lazy-mode") == ["off"], cmd
+    assert "lookup tables are read from disk" not in (backend.last_load_warning or "")
+
+
+def test_an_igpu_model_without_a_table_is_only_mapped(tmp_path, monkeypatch):
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024, table = 0)
+
+    cmd = _launch(backend, gguf)["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    assert "--lazy-mode" not in cmd, cmd
+
+
+def test_an_explicit_none_on_an_igpu_also_streams_the_table(tmp_path, monkeypatch):
+    """The existing rewrite of a user's none keeps its wording; on an iGPU it gains the lazy read,
+    or mmap prefetch would still read the whole table."""
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+
+    cmd = _launch(backend, gguf, extra_args = ["--load-mode", "none"])["cmd"]
+
+    assert not _unmapped_tokens(cmd), cmd
+    assert _modes(cmd, "--lazy-mode") == ["on"], cmd
+    assert "was set to load without memory mapping" in (backend.last_load_warning or "")
+
+
 def _unmapped_tokens(cmd):
     """The tokens in ``cmd`` that select a mode llama.cpp does not mmap."""
     out = []
@@ -5779,7 +5899,7 @@ def test_a_device_list_still_sees_an_auto_filtered_vulkan_igpu(monkeypatch):
     assert src.index("_vulkan_igpu_ids = (") < src.index(
         "_gpu_mem = self._vulkan_auto_gpu_memory(_gpu_mem)"
     )
-    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 5
+    assert src.count("integrated_gpu_ids = _vulkan_igpu_ids") == 7
 
 
 def test_the_oversized_readings_share_their_preflights_ram_snapshot():
@@ -7075,3 +7195,33 @@ def test_the_checkpoint_discount_removes_only_the_checkpoints():
         without = backend._slots_that_fit_on_gpu(*args, ctx_checkpoints = 0, **kw)
         assert with_ckpts == without
     assert without[1] is False and without[2] < 8
+
+
+@pytest.mark.parametrize(
+    "note, expected",
+    [
+        (
+            llama_cpp_module._PAGEABLE_AUTO_OVERRIDE_NOTE,
+            llama_cpp_module._PAGEABLE_AUTO_OVERRIDE_TEXT_ONLY_NOTICE,
+        ),
+        (
+            llama_cpp_module._PAGEABLE_OVERRIDE_NOTE,
+            llama_cpp_module._PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE,
+        ),
+    ],
+    ids = ["igpu-auto", "user-none"],
+)
+def test_the_text_only_notice_keeps_who_chose_the_unmapped_mode(note, expected):
+    """Dropping the pinned projector leaves only the override's note; the iGPU one must not claim
+    the user asked for an unmapped load."""
+    backend = LlamaCppBackend()
+    apu_msg = "This model needs about 70 GB but only about 60 GB of memory is available."
+    backend._last_load_warning = apu_msg + note
+    backend._reprice_after_dropping_pinned_projector(
+        apu_msg = apu_msg,
+        host_msg = None,
+        model_size = 50 * 1024**3,
+        pinned_bytes = 2 * 1024**3,
+        avail_mib = 60 * 1024,
+    )
+    assert backend._last_load_warning == expected

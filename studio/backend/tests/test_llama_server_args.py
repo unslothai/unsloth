@@ -1568,3 +1568,66 @@ def test_translate_ngram_mod_does_not_consume_a_following_flag(chain_with_mtp):
     out = translate_ngram_mod_args(args, "legacy", chain_with_mtp = chain_with_mtp)
     assert out[-2:] == ["--top-k", "/restricted/model.gguf"]
     validate_extra_args(out)
+
+
+# On an iGPU llama.cpp resolves --load-mode auto to none (ggml mmap_support is false there).
+
+
+@pytest.mark.parametrize(
+    "argv, env, auto",
+    [
+        ([], {}, True),
+        (["--load-mode", "auto"], {}, True),
+        (["--load-mode=auto"], {}, True),
+        (["--load-mode", "none", "--load-mode", "auto"], {}, True),
+        ([], {"LLAMA_ARG_LOAD_MODE": "auto"}, True),
+        (["--load-mode", "auto"], {"LLAMA_ARG_LOAD_MODE": "mmap"}, True),
+        (["--load-mode", "mmap"], {}, False),
+        (["--load-mode", "none"], {}, False),
+        ([], {"LLAMA_ARG_LOAD_MODE": "mmap"}, False),
+        (["--mlock"], {}, False),
+        (["--mmap"], {}, False),
+        (["--no-mmap"], {}, False),
+        ([], {"LLAMA_ARG_NO_MMAP": "0"}, False),
+        ([], {"LLAMA_ARG_DIO": "1"}, False),
+        (["--load-mode"], {}, True),
+    ],
+)
+def test_load_mode_left_auto(argv, env, auto):
+    assert _lsa.load_mode_left_auto(argv, env) is auto
+
+
+def test_auto_reserves_ram_only_where_llama_cpp_resolves_it_to_none():
+    assert _lsa.resolve_effective_load_state([], {}) == (False, False, False)
+    assert _lsa.resolve_effective_load_state([], {}, auto_unmapped = True) == (False, True, False)
+    assert _lsa.resolve_effective_memory_state(["--load-mode", "auto"], {}, auto_unmapped = True) == (
+        False,
+        True,
+    )
+    # A chosen mode is what it says, whatever the device.
+    assert _lsa.resolve_effective_load_state(["--load-mode", "mmap"], {}, auto_unmapped = True) == (
+        False,
+        False,
+        False,
+    )
+    assert _lsa.resolve_effective_load_state(["--load-mode", "dio"], {}, auto_unmapped = True) == (
+        False,
+        False,
+        True,
+    )
+
+
+def test_the_pageable_rewrite_maps_an_unselected_mode_on_an_igpu():
+    out, overridden = _lsa.force_pageable_load(["--fit", "on"], {}, auto_unmapped = True)
+    assert out == ["--fit", "on", "--load-mode", "mmap"] and overridden
+    assert _lsa.resolve_effective_memory_state(out, {}, auto_unmapped = True) == (False, False)
+    # An inherited LLAMA_ARG_LOAD_MODE=auto loses to the appended argv.
+    env = {"LLAMA_ARG_LOAD_MODE": "auto"}
+    out, _ = _lsa.force_pageable_load([], env, auto_unmapped = True)
+    assert _lsa.resolve_effective_memory_state(out, env, auto_unmapped = True) == (False, False)
+    # Off an iGPU auto already maps; a chosen mmap needs nothing either way.
+    assert _lsa.force_pageable_load([], {}) == ([], [])
+    assert _lsa.force_pageable_load(["--load-mode", "mmap"], {}, auto_unmapped = True) == (
+        ["--load-mode", "mmap"],
+        [],
+    )
