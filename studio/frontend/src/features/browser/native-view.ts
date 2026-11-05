@@ -19,7 +19,7 @@ import { abandonDownload, beginDownload, finishDownload, useDownloadActivity } f
 import { proxiedFavicon } from "./favicon";
 import { useBrowserHistoryStore } from "./history-store";
 import { decideNativeDownload } from "./native-downloads";
-import { FLOATING_ATTRIBUTE, FLOATING_MOVE_EVENT, FLOATING_SCALE_VAR } from "./floating-events";
+import { FLOATING_ATTRIBUTE, FLOATING_MOVE_EVENT, FLOATING_SCALE_VAR, floatingNativeZoom } from "./floating-events";
 import { outsideThread } from "./outside-thread";
 import { callNative as call, localOriginGranted, nativeClearing, onNativeViewsClosed, setLocalViewCloser } from "./native-support";
 import { useBrowserPrefsStore } from "./prefs-store";
@@ -751,7 +751,7 @@ function desiredView(): Desired {
     tabId: tab.id,
     url: entry.url,
     entry: entryKey(entry),
-    zoom: tab.zoom * floatingScale(tab.id),
+    zoom: floatingNativeZoom(tab.zoom, floatingScale(tab.id)),
     bounds: {
       x: Math.round(rect.left),
       y: Math.round(rect.top),

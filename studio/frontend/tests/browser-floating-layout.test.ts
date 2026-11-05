@@ -44,3 +44,12 @@ test("closed while the model still works in it, the browser floats on the model'
   closeOrFloatBrowser();
   assert.equal(store().open, false);
 });
+
+test("a native page zoomed out before floating stays at the native zoom floor instead of failing", async () => {
+  const { NATIVE_MIN_ZOOM, floatingNativeZoom } = await import("../src/features/browser/floating-events.ts");
+  assert.equal(floatingNativeZoom(1, 0.5), 0.5);
+  assert.equal(floatingNativeZoom(0.25, 0.615), NATIVE_MIN_ZOOM);
+  assert.equal(floatingNativeZoom(0.4, 0.5), NATIVE_MIN_ZOOM);
+  // Docked, the tab's own zoom goes through untouched.
+  assert.equal(floatingNativeZoom(0.25, 1), 0.25);
+});
