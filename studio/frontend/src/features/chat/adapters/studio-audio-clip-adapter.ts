@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
+import { MAX_AUDIO_SIZE, MAX_AUDIO_SIZE_LABEL } from "@/lib/audio-utils";
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { micClipFilename } from "../utils/mic-target";
@@ -31,6 +32,7 @@ export function listenForAudioClip(
   let stream: MediaStream | null = null;
   let recorder: PcmRecorder | null = null;
   let stopLevelMeter = () => {};
+  let limitTimer: ReturnType<typeof setTimeout> | undefined;
   let ended = false;
   let resolveEnded: () => void = () => {};
   const endedPromise = new Promise<void>((resolve) => {
@@ -38,6 +40,7 @@ export function listenForAudioClip(
   });
 
   const release = () => {
+    clearTimeout(limitTimer);
     stopLevelMeter();
     for (const track of stream?.getTracks() ?? []) track.stop();
     stream = null;
@@ -145,6 +148,11 @@ export function listenForAudioClip(
       }
       recorder = new PcmRecorder(stream);
       recorder.start();
+      // The attachment refuses a clip over the audio limit, so stop just under it instead.
+      limitTimer = setTimeout(() => {
+        toast.info(`Recording stopped at the ${MAX_AUDIO_SIZE_LABEL} audio limit.`);
+        void session.stop();
+      }, recorder.secondsWithin(MAX_AUDIO_SIZE) * 1000);
       stopLevelMeter = startDictationLevelMeter(stream);
       session.status = { type: "running" };
       for (const callback of speechStartCallbacks) callback();
