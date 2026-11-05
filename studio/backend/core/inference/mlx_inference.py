@@ -2266,6 +2266,69 @@ def _mlx_stream_detokenizer(source):
     return independent
 
 
+@functools.cache
+def _eager_spm_detokenizer_class():
+    from mlx_lm.tokenizer_utils import SPMStreamingDetokenizer
+    class EagerSPMStreamingDetokenizer(SPMStreamingDetokenizer):
+        def __init__(
+            self,
+            tokenizer,
+            trim_space = True,
+        ):
+            self._trims_first_space = trim_space
+            super().__init__(tokenizer, trim_space = trim_space)
+
+        def reset(self):
+            super().reset()
+            self.trim_space = self._trims_first_space
+
+        # mlx-lm trims every flush while the text is still empty; only the first may be trimmed.
+        def _try_flush(self, force = False):
+            pending = self._unflushed
+            super()._try_flush(force)
+            if pending and not self._unflushed:
+                self.trim_space = False
+
+        def add_token(
+            self,
+            token,
+            skip_special_token_ids = (),
+        ):
+            if token not in skip_special_token_ids:
+                super().add_token(token)
+
+    return EagerSPMStreamingDetokenizer
+
+
+class _SpmPieces(list):
+    @property
+    def vocab(self):  # mlx-lm 0.31.x
+        return {piece: index for index, piece in enumerate(self)}
+
+    def convert_ids_to_tokens(self, ids):  # mlx-lm >= 0.32
+        return [self[index] for index in ids]
+
+
+def _stream_spm_tokens_eagerly(processor):
+    """mlx-vlm's SPM detokenizer holds each piece until the next word starts; mlx-lm's does not."""
+    held = getattr(processor, "detokenizer", None)
+    if (type(held).__module__, type(held).__name__) != (
+        "mlx_vlm.tokenizer_utils",
+        "SPMStreamingDetokenizer",
+    ):
+        return
+    # Reusing mlx-vlm's pieces skips a second ~1 s walk of a 262k vocab.
+    pieces = getattr(held, "tokenmap", None)
+    if pieces and None not in pieces:
+        source = _SpmPieces(pieces)
+    else:
+        source = getattr(processor, "tokenizer", processor)
+    try:
+        processor.detokenizer = _eager_spm_detokenizer_class()(source, trim_space = held.trim_space)
+    except Exception as exc:  # noqa: BLE001 -- mlx-vlm's still streams the same text, only later
+        logger.debug("MLX streaming detokenizer kept as loaded (%s)", exc)
+
+
 class _MlxStreamedText:
     """A reply rebuilt from the ids the runtime sampled, for turns carrying native controls.
 
@@ -6228,6 +6291,7 @@ class MLXInferenceBackend:
             processor = tokenizer_or_processor
             if is_lora:
                 processor = load_mlx_adapter_processor(processor, model_name, hf_token)
+            _stream_spm_tokens_eagerly(processor)
             self._model = model
             self._processor = processor
             self._tokenizer = getattr(processor, "tokenizer", processor)
