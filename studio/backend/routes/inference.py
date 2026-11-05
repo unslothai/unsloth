@@ -41564,8 +41564,9 @@ async def llama_tokenize(request: Request, current_subject: str = Depends(get_cu
     tokenizer to split context/continuations at true token boundaries for
     teacher-forced loglikelihood scoring.
     """
-    llama_backend = get_llama_cpp_backend()
     body = await _auto_switch_from_request_body(request, current_subject, gguf_only = True)
+    # After the switch: a body naming a model kept beside the primary routes to that slot's server.
+    llama_backend = get_llama_cpp_backend()
     if not llama_backend.is_loaded:
         _status, _detail = await _no_model_loaded_error(
             "No GGUF model loaded. Load a GGUF model first.",

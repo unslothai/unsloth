@@ -633,3 +633,48 @@ def test_a_reservation_starts_clean_of_the_last_runs_logs_and_outcome(monkeypatc
     # B's load fails and frees the slot: A's error still is not B's.
     assert backend.cancel(token = "b")
     assert backend.get_last_error() is None
+
+
+def test_tokenize_reaches_the_slot_the_request_routes_to(monkeypatch):
+    # Keep multiple models loaded: the body names B, kept beside the primary A.
+    import httpx
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import inference as inference_routes
+
+    seen = []
+
+    def handler(req):
+        seen.append(str(req.url))
+        return httpx.Response(200, json = {"tokens": [1]})
+
+    primary = SimpleNamespace(is_loaded = False, base_url = "http://a.invalid", _auth_headers = {})
+    kept = SimpleNamespace(is_loaded = True, base_url = "http://b.invalid", _auth_headers = {})
+    routed = {"slot": None}
+
+    async def route(
+        request,
+        subject,
+        gguf_only = False,
+    ):
+        # The switch helper routes the request to B's slot.
+        routed["slot"] = "b"
+        return await request.json()
+
+    monkeypatch.setattr(
+        inference_routes, "get_llama_cpp_backend", lambda: kept if routed["slot"] else primary
+    )
+    monkeypatch.setattr(inference_routes, "_auto_switch_from_request_body", route)
+    monkeypatch.setattr(
+        inference_routes,
+        "_cancelable_nonstreaming_client",
+        lambda: httpx.AsyncClient(transport = httpx.MockTransport(handler)),
+    )
+    app = FastAPI()
+    app.dependency_overrides[get_current_subject] = lambda: "unsloth"
+    app.include_router(inference_routes.router, prefix = "/v1")
+    res = TestClient(app).post("/v1/tokenize", json = {"model": "B", "content": "hi"})
+    assert res.status_code == 200, res.text
+    assert seen == ["http://b.invalid/tokenize"]
