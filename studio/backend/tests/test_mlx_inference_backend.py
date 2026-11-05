@@ -11114,6 +11114,38 @@ def test_mlx_passes_an_explicit_budget_through_both_paths(monkeypatch):
     assert _run_vlm_budget(monkeypatch, _IMAGE_TURN, object(), 4096) == 4096
 
 
+@pytest.mark.parametrize("limit", [None, 16])
+def test_mlx_refuses_a_prompt_that_fills_the_served_window(monkeypatch, limit):
+    # A rotating cache would otherwise drop the prompt's start during prefill.
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    fits = _BUDGET_PROMPT_N + 1
+    assert _run_text_budget(monkeypatch, limit, served = fits) == (limit or 1)
+    assert _run_vlm_budget(monkeypatch, _TEXT_TURN, None, limit, served = fits) == (limit or 1)
+    with pytest.raises(ContextBudgetExceeded) as refused:
+        _run_text_budget(monkeypatch, limit, served = _BUDGET_PROMPT_N)
+    assert (refused.value.request_tokens, refused.value.context_tokens) == (fits, _BUDGET_PROMPT_N)
+    with pytest.raises(ContextBudgetExceeded):
+        _run_vlm_budget(monkeypatch, _TEXT_TURN, None, limit, served = _BUDGET_PROMPT_N)
+    with pytest.raises(ContextBudgetExceeded):
+        _run_text_budget(monkeypatch, limit, served = 300, cached = list(range(300)))
+
+
+@pytest.mark.parametrize("limit", [None, 16])
+def test_mlx_batch_rows_refuse_a_prompt_that_fills_the_served_window(monkeypatch, limit):
+    from core.inference import mlx_inference
+    from core.inference.context_refusal import ContextBudgetExceeded
+
+    backend = _install_fake_text_stack(monkeypatch, {"generated": [7]}, [])
+    monkeypatch.setattr(mlx_inference, "_mlx_sampling_processors", lambda **_kw: None)
+    row = mlx_inference._row_kwargs({"prompt_ids": [1, 2, 3], "max_new_tokens": limit})
+    backend._served_context = 4
+    assert backend._plan_text_row([], **row).max_tokens == (limit or 1)
+    backend._served_context = 3
+    with pytest.raises(ContextBudgetExceeded):
+        backend._plan_text_row([], **row)
+
+
 def test_mlx_unset_budget_falls_back_when_the_prompt_cannot_be_counted(monkeypatch):
     from core.inference.runtime_context import UNSET_GENERATION_BUDGET
 
