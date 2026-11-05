@@ -93,6 +93,7 @@ import { pickNativeModelFolder } from "@/features/native-intents";
 import {
   type NpuModel,
   type NpuPickerSource,
+  NpuRuntimeVersions,
   NpuSetupNotice,
   npuDownloadLabel,
   npuResumeLabel,
@@ -8556,6 +8557,10 @@ export function HubModelPicker({
                         {npuBrowseRows.map((model) =>
                           renderNpuRow(model, false),
                         )}
+                        <NpuRuntimeVersions
+                          catalog={npuCatalog}
+                          className="px-2.5 pb-1 pt-1.5"
+                        />
                       </>
                     )}
                   </>
