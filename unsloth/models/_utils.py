@@ -4764,9 +4764,7 @@ elif DEVICE_TYPE == "cuda":
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
     if os.environ.get("UNSLOTH_ROCM_FLASH_ATTN_DIFFUSION_ONLY") == "1":
-        # Studio installed a Triton-backend flash-attn for diffusion and enabled it itself: LLM
-        # attention stays on SDPA, as without it. Setting FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
-        # explicitly opts training in (Studio then leaves this unset).
+        # Studio's diffusion-only Triton flash-attn: keep LLM attention on SDPA.
         import transformers.utils.import_utils
 
         transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False

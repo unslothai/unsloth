@@ -1126,12 +1126,8 @@ def _rocm_flash_traced_reason(
         return "compiled or captured"
 
 
-# Dynamo restarts a frame's analysis after a graph break and replays it against its speculation log, so the
-# constant-marked segments must answer the second pass as they did the first. A bucket timed by a traced call in
-# between would otherwise turn an untimed segment into a known one and skip the ``_rocm_flash_traced_reason`` call
-# the log expects (SpeculationLogDivergence: Wan2.2 under regional compile on gfx1151 with flash-attn installed).
-# The memo key is the verdict table minus what traced calls added: stored and eager verdicts, a cleared table (new
-# SDPA baseline) or a swapped one all give a new key, so later traces see them.
+# Dynamo replays a frame after a graph break, so segments must answer as on the first pass (else
+# SpeculationLogDivergence, Wan2.2 on gfx1151). Key excludes verdicts added by traced calls.
 _ROCM_FLASH_TRACED_KEYS: set = set()
 _ROCM_FLASH_SEGMENTS_MEMO: dict = {}
 

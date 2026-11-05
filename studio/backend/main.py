@@ -30,8 +30,7 @@ try:
 except Exception:
     pass
 
-# A Triton-only flash-attn (setup installs it on RDNA3/4) imports only with its backend switch set;
-# before anything imports flash_attn, and inherited by spawned workers. Never on CUDA hosts.
+# Triton-only flash-attn (RDNA3/4) imports only with its backend switch; set before any flash_attn import.
 try:
     from utils.rocm_flash_attn import default_triton_amd_env as _default_triton_amd_env
     _default_triton_amd_env()

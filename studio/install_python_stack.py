@@ -8057,7 +8057,6 @@ def _flash_attn_importable() -> bool:
     """
     try:
         result = subprocess.run(
-            # A Triton-only ROCm build imports only with its backend switch, as Studio sets it.
             [sys.executable, "-c", _rocm_flash_attn.IMPORT_PROBE],
             stdout = subprocess.DEVNULL,
             stderr = subprocess.DEVNULL,
@@ -8114,7 +8113,6 @@ def _ensure_flash_attn() -> None:
     # a failed flash-attn probe proves staleness only when torch still imports.
     stale = env is not None and _installed_distribution_version("flash-attn") is not None
     if env is not None and env.get("hip_version") and not IS_WINDOWS:
-        # No flash-attn wheel exists for ROCm; RDNA3/4 get its pure-Python Triton backend.
         _ensure_rocm_triton_flash_attn(env, stale)
         return
     wheel_url = _build_flash_attn_wheel_url(env) if env else None
@@ -8203,10 +8201,7 @@ def _temporary_environ(values: dict[str, str]):
 
 
 def _ensure_rocm_triton_flash_attn(env: dict[str, str], stale: bool) -> None:
-    """flash-attn's Triton AMD backend on Linux ROCm RDNA3/4 (gfx11xx / gfx12xx): a pure-Python
-    build from a pinned commit, seconds to install. Best effort: any failure leaves the native
-    SDPA path, which is what Studio diffusion uses without it. Opt out with
-    UNSLOTH_STUDIO_SKIP_ROCM_FLASHATTN_INSTALL=1 (or UNSLOTH_STUDIO_SKIP_FLASHATTN_INSTALL=1)."""
+    """Best-effort Triton AMD flash-attn on ROCm RDNA3/4; failure leaves SDPA."""
     reason = _rocm_flash_attn.install_skip_reason(
         platform = sys.platform,
         hip_version = env.get("hip_version"),
