@@ -288,6 +288,7 @@ def test_the_backend_fingerprint_matches_the_installer():
     )
     assert vec_ann.hnsw_fingerprint() == hp.interpreter_info(sys.executable)["fp"], out.stderr
     assert vec_ann.PAIR == hp.PAIR_STR and vec_ann.MARKER == hp.MARKER
+    assert vec_ann.LOCK == hp.LOCK and vec_ann.LOCK_STALE_S == hp._LOCK_STALE_S
 
 
 @pytest.mark.parametrize("env", ["RAG_VEC_ANN_AUTO_INSTALL", "RAG_VEC_ANN"])

@@ -30,6 +30,8 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _NET_TIMEOUT = 30.0
 _PROBE_TIMEOUT = 60.0
 _LOCK_STALE_S = 1800.0
+# Held from download to marker; the backend will not import the pair while it is live.
+LOCK = ".unsloth-hnsw.lock"
 # Same allowlist as backend/utils/s3_runtime.py: TLS / proxy, never credentials or index overrides.
 _CHILD_ENV_KEYS = {
     "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR",
@@ -503,9 +505,7 @@ def ensure(
     if not network and not all(_verified(cache / w["filename"], w) for w in chosen.values()):
         return _result("offline", "offline and the wheels are not cached", info)
     try:
-        lock = _Lock(
-            Path(prefix) / ".unsloth-hnsw.lock", max(1.0, min(60.0, deadline - time.monotonic()))
-        )
+        lock = _Lock(Path(prefix) / LOCK, max(1.0, min(60.0, deadline - time.monotonic())))
         with lock:
             info = interpreter_info(python)
             if _pair_installed(info) and _marker_says(read_marker(prefix), fp) == "ok":

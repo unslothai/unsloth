@@ -487,8 +487,8 @@ def _on_ann_available() -> None:
         _awaiting_ann.clear()
         for key in waiting:
             _too_big.pop(key, None)
-            if key not in _entries:
-                _schedule(key)
+            # An exact entry keeps answering until the HNSW build publishes and replaces it.
+            _schedule(key)
 
 
 def _ann_dir(db_file: str) -> str:
@@ -590,6 +590,10 @@ def _publish_ann(key: tuple, entry: _AnnEntry) -> None:
     with _lock:
         _ann[key] = entry
         _ann.move_to_end(key)
+        # Search prefers a current exact entry; a scope that has HNSW keeps none, as when usearch was there from the start.
+        old = _entries.get(key)
+        if old is not None and old.epoch == entry.epoch:
+            _publish(key, None)
     for _, base in _saved_generations(key):
         if base != entry.base:
             _stale_files.add(base)

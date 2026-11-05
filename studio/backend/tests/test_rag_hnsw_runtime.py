@@ -6,6 +6,7 @@ background fetch, and moves to HNSW once the fetch lands; failures back off and 
 
 import importlib.abc
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -339,6 +340,32 @@ def test_a_corrupt_marker_still_imports(tripwire, tmp_path):
     (tmp_path / vec_ann.MARKER).write_text("{", encoding = "utf-8")
     vec_ann.usearch()
     assert tripwire.hit
+
+
+def test_a_live_install_lock_skips_the_import_until_it_goes(tripwire, tmp_path):
+    lock = tmp_path / vec_ann.LOCK
+    lock.write_text("123", encoding = "utf-8")
+    assert vec_ann.usearch() is None and not tripwire.hit
+    old = time.time() - vec_ann.LOCK_STALE_S - 5
+    os.utime(lock, (old, old))
+    vec_ann.usearch()
+    assert tripwire.hit
+
+
+def test_an_exact_cached_waiting_scope_moves_to_hnsw_when_the_pair_lands(
+    rag_conn, no_pair, monkeypatch
+):
+    pytest.importorskip("usearch")
+    rows = _vectors(300)
+    _add(rag_conn, "d", rows)
+    _dense(rag_conn, rows[4])
+    assert vec_cache.drain(60) and vec_cache._entries and no_pair
+    monkeypatch.undo()
+    monkeypatch.setenv("RAG_VEC_ANN_MIN_ROWS", "50")
+    no_pair[0]()
+    assert vec_cache.drain(60) and vec_cache._ann and not vec_cache._entries
+    hits, scanned = _dense(rag_conn, rows[4])
+    assert not scanned and hits[0][0] == "d:4"
 
 
 def test_the_installer_is_found_without_importing_the_studio_update_stack(monkeypatch):
