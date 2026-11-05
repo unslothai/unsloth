@@ -4126,6 +4126,10 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # llama-server's own --fit-target default ("target margin per device for --fit,
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
+# Extra --fit-target an oversized load paged on an iGPU keeps free: the GPU share and the pages read
+# from disk come out of one memory. On a 127 GiB Strix Halo (Windows, Vulkan) a 147 GiB GGUF aborted
+# at warm-up with llama.cpp's 1 GiB margin and with 8 GiB, and ran with 16 GiB.
+_IGPU_PAGED_FIT_HEADROOM_MIB = 15360
 
 # Windows + NVIDIA since driver 536.40: WDDM spills VRAM overflow to host RAM instead of failing, so the reserve matches llama.cpp fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -7788,6 +7792,11 @@ _PAGEABLE_AUTO_OVERRIDE_NOTE = (
 )
 # Appended when the override also reads the lookup tables lazily.
 _PAGEABLE_LAZY_TABLE_NOTE = " Its lookup tables are read from disk as needed."
+# Appended when the override also leaves GPU headroom for the mapped pages.
+_PAGEABLE_HEADROOM_NOTE = (
+    " Less of the model is placed on the GPU, leaving shared memory free for the weights read "
+    "from disk."
+)
 # The override is reported, not undone: the running server is already memory-mapped.
 _PAGEABLE_OVERRIDE_TEXT_ONLY_NOTICE = (
     "This model was set to load without memory mapping, and with its vision projector "
@@ -15743,6 +15752,27 @@ class LlamaCppBackend:
             return []
         return [flag, "on"]
 
+    @staticmethod
+    def _paged_fit_headroom_flags(
+        argv: Iterable[str], env: Optional[Mapping[str, str]], user_args: Optional[Iterable[str]]
+    ) -> list[str]:
+        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the margin the launch
+        already keeps, for a load paged on an iGPU: without it llama.cpp's fitter fills the shared
+        memory with the GPU share and leaves nothing for the mapped pages. Empty when the fitter is
+        off, the user set a margin, or the margin is a per-device list."""
+        args = [str(a) for a in argv or ()]
+        if not fit_is_effectively_on(args, env) or _fit_target_values(user_args or (), env):
+            return []
+        raw = _last_flag_value(args, {"-fitt", "--fit-target"})
+        if (
+            raw is not None
+            and len([p for p in str(raw).replace("/", ",").split(",") if p.strip()]) > 1
+        ):
+            return []
+        have = _single_device_fit_margin(args, None)
+        base = _LLAMA_FIT_TARGET_DEFAULT_MIB if have is None else have
+        return ["--fit-target", str(math.ceil(base + _IGPU_PAGED_FIT_HEADROOM_MIB))]
+
     def _page_an_oversized_unmapped_load(
         self,
         cmd: Iterable[str],
@@ -15751,12 +15781,14 @@ class LlamaCppBackend:
         *,
         auto_unmapped: bool = False,
         lazy_table_flags: Optional[Callable[[list], list]] = None,
+        fit_headroom_flags: Optional[Callable[[list], list]] = None,
     ) -> tuple[list, Optional[str]]:
         """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks.
 
         ``auto_unmapped`` (``_auto_load_mode_unmapped``): llama.cpp loads this child unmapped by
-        default, so a mode nothing selected is rewritten too, and ``lazy_table_flags(argv)``
-        restores the lookup-table streaming that device turned off."""
+        default, so a mode nothing selected is rewritten too, ``lazy_table_flags(argv)``
+        restores the lookup-table streaming that device turned off, and
+        ``fit_headroom_flags(argv)`` keeps shared memory free for the mapped pages."""
         original = cmd if isinstance(cmd, list) else list(cmd or ())
         _mlock_now, _reserves_ram_now = resolve_effective_memory_state(
             original, env, auto_unmapped = auto_unmapped
@@ -15781,14 +15813,26 @@ class LlamaCppBackend:
             except Exception:  # noqa: BLE001 -- the mapping alone still lets the load finish
                 logger.debug("Lookup tables: could not price lazy reads.", exc_info = True)
         paged = [*paged, *lazy]
+        headroom: list = []
+        if auto_unmapped and fit_headroom_flags is not None:
+            try:
+                headroom = list(fit_headroom_flags(paged) or [])
+            except Exception:  # noqa: BLE001 -- the mapping still applies without the margin
+                logger.debug("Fit headroom: could not read the launch's margin.", exc_info = True)
+        paged = [*paged, *headroom]
         logger.warning(
             "Overriding the unmapped load mode (%s) for an oversized model: it would "
-            "allocate the whole model in host RAM instead of paging it in.%s",
+            "allocate the whole model in host RAM instead of paging it in.%s%s",
             ", ".join(overridden),
             f" Lookup tables: {' '.join(lazy)}." if lazy else "",
+            f" GPU headroom: {' '.join(headroom)}." if headroom else "",
         )
         note = _PAGEABLE_AUTO_OVERRIDE_NOTE if from_auto else _PAGEABLE_OVERRIDE_NOTE
-        return paged, note + (_PAGEABLE_LAZY_TABLE_NOTE if lazy else "")
+        return paged, (
+            note
+            + (_PAGEABLE_LAZY_TABLE_NOTE if lazy else "")
+            + (_PAGEABLE_HEADROOM_NOTE if headroom else "")
+        )
 
     @property
     def last_load_warning(self) -> Optional[str]:
@@ -30675,6 +30719,9 @@ class LlamaCppBackend:
                     lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
                         model_path, server_caps, argv, env
                     ),
+                    fit_headroom_flags = lambda argv: self._paged_fit_headroom_flags(
+                        argv, env, extra_args
+                    ),
                 )
                 if _pageable_note:
                     # Record the argv that actually launches, and snapshot it too, since arch-crash retry restores it.
@@ -32247,6 +32294,9 @@ class LlamaCppBackend:
                             ),
                             lazy_table_flags = lambda argv: self._paged_lookup_table_flags(
                                 model_path, server_caps, argv, env
+                            ),
+                            fit_headroom_flags = lambda argv: self._paged_fit_headroom_flags(
+                                argv, env, extra_args
                             ),
                         )
                         if _retry_pageable_note:

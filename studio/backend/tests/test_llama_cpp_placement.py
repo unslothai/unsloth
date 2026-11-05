@@ -2756,9 +2756,12 @@ def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(tmp
     assert _modes(cmd, "--load-mode") == ["mmap"], cmd
     assert _modes(cmd, "--lazy-mode") == ["on"], cmd
     assert resolve_effective_load_state(cmd, {}, auto_unmapped = True)[1] is False
+    # The fitter keeps shared memory free for the mapped pages, or it fills it with the GPU share.
+    assert _modes(cmd, "--fit-target")[-1:] == ["16384"], cmd
     warning = backend.last_load_warning or ""
     assert "On this integrated GPU llama.cpp loads without memory mapping by default" in warning
     assert "lookup tables are read from disk as needed" in warning
+    assert "leaving shared memory free for the weights read from disk" in warning
     assert "was set to load without memory mapping" not in warning
     assert backend._memory_state == (False, False)
 
@@ -2770,6 +2773,7 @@ def test_an_igpu_load_that_fits_keeps_llama_cpps_default(tmp_path, monkeypatch):
     cmd = _launch(backend, gguf)["cmd"]
 
     assert "--load-mode" not in cmd and "--lazy-mode" not in cmd, cmd
+    assert "--fit-target" not in cmd, cmd
     assert backend.last_load_warning is None
 
 
@@ -2788,6 +2792,7 @@ def test_auto_is_left_alone_where_it_already_maps(tmp_path, monkeypatch, igpu, l
     cmd = _launch(backend, gguf)["cmd"]
 
     assert "--load-mode" not in cmd and "--lazy-mode" not in cmd, cmd
+    assert "--fit-target" not in cmd, cmd
     assert "memory mapping instead" not in (backend.last_load_warning or "")
 
 
@@ -2800,6 +2805,40 @@ def test_a_user_lazy_mode_survives_the_igpu_override(tmp_path, monkeypatch):
     assert _modes(cmd, "--load-mode") == ["mmap"], cmd
     assert _modes(cmd, "--lazy-mode") == ["off"], cmd
     assert "lookup tables are read from disk" not in (backend.last_load_warning or "")
+
+
+def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
+    backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
+
+    cmd = _launch(backend, gguf, extra_args = ["--fit-target", "4096"])["cmd"]
+
+    assert _modes(cmd, "--load-mode") == ["mmap"], cmd
+    assert _modes(cmd, "--fit-target") == ["4096"], cmd
+    assert "leaving shared memory free" not in (backend.last_load_warning or "")
+
+
+@pytest.mark.parametrize(
+    "argv, env, user, expected",
+    [
+        (["--fit", "on"], {}, [], ["--fit-target", "16384"]),
+        # Studio's own margin (a drafter's reserve) is kept, and the headroom goes on top.
+        (["--fit", "on", "--fit-target", "3072"], {}, [], ["--fit-target", "18432"]),
+        (["--fit", "off"], {}, [], []),
+        (["--fit", "on", "--fit-target", "1024,2048"], {}, [], []),
+        (["--fit", "on", "--fit-target", "4096"], {}, ["--fit-target", "4096"], []),
+        (["--fit", "on"], {"LLAMA_ARG_FIT_TARGET": "2048"}, [], []),
+    ],
+    ids = [
+        "default",
+        "adds-to-studio-margin",
+        "fitter-off",
+        "per-device-list",
+        "user-argv",
+        "user-env",
+    ],
+)
+def test_the_igpu_fit_headroom(argv, env, user, expected):
+    assert LlamaCppBackend._paged_fit_headroom_flags(argv, env, user) == expected
 
 
 def test_an_igpu_model_without_a_table_is_only_mapped(tmp_path, monkeypatch):
