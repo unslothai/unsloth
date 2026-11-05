@@ -138,6 +138,9 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.68 > 2.7
     assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
     assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
+    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): 240 s cover peaks at 11.2 GB / 14.7 GB.
+    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.16 > 11.2
+    assert af.estimate_resident_gb(10090406336, "ace_step") == 15.8 > 14.7
 
 
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():
@@ -154,6 +157,50 @@ def test_smaller_variants_estimate_with_the_family(monkeypatch):
     rows = af.smaller_variants(model)
     assert [(row["label"], row["estimate_gb"]) for row in rows] == [("Q3", 6.5), ("Q1", 4.5)]
     assert [row["label"] for row in af.smaller_variants(model, free_gb = 7.3)] == ["Q3", "Q1"]
+
+
+def test_a_sibling_package_a_few_bytes_smaller_is_not_offered(monkeypatch):
+    monkeypatch.setattr(af, "offload_options", lambda model: [])
+    # ACE-Step1.5-GGUF on the Hub: base/Q8_0 is 1,152 bytes under turbo/Q8_0 and needs as much.
+    sizes = {
+        "turbo/BF16": 10090406336,
+        "turbo/Q8_0": 6185468096,
+        "base/Q8_0": 6185466944,
+        "base/BF16": 10090405184,
+    }
+    variants = tuple(
+        AudioCppVariant(key, (RepoFile(f"{key}.gguf", size),), f"{key}.gguf", label = key)
+        for key, size in sizes.items()
+    )
+    model = replace(
+        _model(),
+        family = "ace_step",
+        variant = variants[1],
+        variants = variants,
+        default_variant = variants[1].key,
+    )
+    assert af.smaller_variants(model) == []
+    refusal = af.classify_audio_cpp_failure(
+        "No single GPU has enough free memory for this native audio model.", model = model
+    )
+    assert "Smaller variants" not in refusal.message and "smaller_variants" not in refusal.extras
+
+
+def test_placement_refusal_states_the_estimate_and_the_free_memory(monkeypatch):
+    monkeypatch.setattr(af, "offload_options", lambda model: [])
+    text = "No single GPU has enough free memory for this native audio model."
+    model = _model(sizes = (4, 1), current = 0)
+    required = af.estimate_resident_gb(4 * 1024**3)
+    refusal = af.classify_audio_cpp_failure(text, model = model, free_gb = 9.3, required_gb = required)
+    assert refusal.message.startswith(
+        "No single GPU has enough free memory for Model M. It needs about 11.5 GB of GPU memory "
+        "while running, and the most free on one GPU is 9.3 GB. Free GPU memory,"
+    )
+    assert refusal.message.endswith("Smaller variants: Q1 (~4.0 GB).")
+    unknown = af.classify_audio_cpp_failure(text, model = model, required_gb = required)
+    assert "It needs about 11.5 GB of GPU memory while running. Free GPU memory," in unknown.message
+    bare = af.classify_audio_cpp_failure(text, model = model)
+    assert bare.message.startswith("No single GPU has enough free memory for Model M. Free GPU")
 
 
 def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):
