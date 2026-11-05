@@ -1046,6 +1046,7 @@ RESIDENT_BUILD_KEYS = (
     "attention_backend",
     "transformer_cache",
     "family_override",
+    "gpu_ids",
 )
 # Status reports what engaged, and an automatic pick is tuned where an explicit one takes the defaults (a static
 # cache's schedule; an automatic fp8 text encoder keeps CLIP-L dense, an explicit one casts it): only an explicit ask

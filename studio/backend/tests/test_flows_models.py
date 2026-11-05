@@ -580,6 +580,9 @@ def test_a_reload_keeps_a_dense_text_encoder_dense():
     }
     knobs = _common.resident_build_knobs(status)
     assert knobs["text_encoder_quant"] == "off" and knobs["transformer_quant"] == "int8"
+    # The cards the load named, physical ids as asked; an automatic pick stays automatic.
+    assert _common.resident_build_knobs({**status, "gpu_ids": [1]})["gpu_ids"] == [1]
+    assert "gpu_ids" not in _common.resident_build_knobs(status)
     # An automatic fp8 text encoder (T5 cast, CLIP-L kept dense) is asked automatically again: an explicit fp8
     # would cast CLIP-L too.
     status.update(text_encoder_quant = "fp8")

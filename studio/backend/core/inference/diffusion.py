@@ -1557,6 +1557,13 @@ def _active_component_summary() -> Optional[dict]:
     return overrides.summary() if overrides is not None and overrides.files else None
 
 
+# The physical gpu_ids a load request named (None: automatic), set on the load's own thread and committed with its
+# state, so a reload asks for the same cards rather than ranking every visible one.
+_REQUESTED_GPU_IDS: contextvars.ContextVar[Optional[tuple]] = contextvars.ContextVar(
+    "unsloth_diffusion_requested_gpu_ids", default = None
+)
+
+
 def _active_component_specs() -> Optional[dict]:
     """The text-encoder / VAE files this load used by component, supplied or found beside a ComfyUI DiT, as a load
     request takes them, so a reload rebuilds the same model: discovery run again under a pinned precision can rank
@@ -1629,6 +1636,7 @@ class _LoadState:
     gguf_filename: Optional[str] = None
     component_files: Optional[dict] = None
     component_specs: Optional[dict] = None
+    requested_gpu_ids: Optional[tuple] = None
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick. Committed WITH the
     # pipeline, so a load in flight never moves the resident model's card.
     gpu_ordinal: Optional[int] = None
@@ -5542,6 +5550,7 @@ class DiffusionBackend:
                 _load_token = token,
                 _cancel_event = cancel_event,
                 _gpu_ordinals = gpu_ordinals,
+                _requested_gpu_ids = tuple(gpu_ids) if gpu_ids else None,
                 _hub_token = hub_token,
             ),
             daemon = True,
@@ -5555,6 +5564,7 @@ class DiffusionBackend:
     @vram_budget_scope("image", load = True)
     def _run_load(self, **kwargs: Any) -> None:
         token = kwargs.get("_load_token")
+        _REQUESTED_GPU_IDS.set(kwargs.pop("_requested_gpu_ids", None))
         # This load's own event: a later load replaces self._cancel_event rather than clearing it.
         cancel_event = kwargs.pop("_cancel_event", None) or self._cancel_event
         # An API-initiated load promises to download NOTHING: it may only open what is already cached. Read once here
@@ -11074,6 +11084,7 @@ class DiffusionBackend:
                         gguf_filename = gguf_filename,
                         component_files = _active_component_summary(),
                         component_specs = _active_component_specs(),
+                        requested_gpu_ids = _REQUESTED_GPU_IDS.get(),
                         variant_hint = _image_variant_hint(
                             fam.name,
                             Path(single_file_path).name if single_file_path else None,
@@ -15094,6 +15105,7 @@ class DiffusionBackend:
             "gguf_filename": state.gguf_filename,
             "component_files": state.component_files,
             "component_specs": getattr(state, "component_specs", None),
+            "gpu_ids": list(getattr(state, "requested_gpu_ids", None) or ()) or None,
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename

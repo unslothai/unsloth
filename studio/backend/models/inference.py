@@ -6007,6 +6007,10 @@ class DiffusionStatusResponse(BaseModel):
         description = "Supplied text-encoder / VAE files by pipeline component (e.g. text_encoder_2: "
         "t5xxl_fp8_e4m3fn_scaled.safetensors); null when every companion came from the base repo",
     )
+    gpu_ids: Optional[List[int]] = Field(
+        None,
+        description = "The CUDA / ROCm physical indices the load request named, or null when it was automatic",
+    )
     component_specs: Optional[Dict[str, str]] = Field(
         None,
         description = "The text-encoder / VAE files this load used by pipeline component (supplied, or found "
