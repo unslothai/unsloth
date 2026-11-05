@@ -7,18 +7,16 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { ggufCompactionRequestFields } from "@/features/chat/utils/auto-compaction";
 import { isServedByLlamaCpp } from "@/features/model-picker/model-config/per-model-config";
 import { readFastApiError } from "@/lib/format-fastapi-error";
-import { castOf, resolvePersona, textOf, toPromptCharacter } from "../chat-runtime";
+import { loadParticipants, textOf, toPromptCharacter } from "../chat-runtime";
 import { roleplayMetaOf } from "../meta";
 import { buildImpersonationMessages, stripSpeakerPrefix } from "../prompt/build";
 import { useCharactersStore } from "../store";
 
 /** Writes the persona's next line with the loaded model, for the user to edit and send. */
 export async function writeMyReply(threadId: string, messages: readonly ThreadMessage[], signal?: AbortSignal): Promise<string> {
-  const store = useCharactersStore.getState();
-  const scene = store.scenes[threadId];
+  const scene = useCharactersStore.getState().scenes[threadId];
   if (!scene) throw new Error("This chat has no characters.");
-  const cast = castOf(scene, store.characters);
-  const persona = resolvePersona(scene, store.personas);
+  const { cast, persona } = await loadParticipants(scene);
   const chat = messages.filter((m) => m.role === "user" || m.role === "assistant");
   const prompt = buildImpersonationMessages({
     cast: cast.map(toPromptCharacter),

@@ -88,6 +88,33 @@ async function ensureLoaded(): Promise<void> {
   ]);
 }
 
+/**
+ * The chat's characters and persona, loaded for a model call. Refuses rather than fall back: a stale
+ * library would drop a member from the prompt, and unloaded personas would speak as the account.
+ */
+export async function loadParticipants(scene: ChatScene): Promise<{ cast: Character[]; persona: ResolvedPersona }> {
+  const store = useCharactersStore.getState();
+  await ensureLoaded();
+  let cast = castOf(scene, useCharactersStore.getState().characters);
+  if (cast.length < scene.cast.length) {
+    const refreshed = await store.refresh().then(
+      () => true,
+      () => false,
+    );
+    cast = castOf(scene, useCharactersStore.getState().characters);
+    if (!refreshed && cast.length < scene.cast.length) throw new CharacterChatUnavailableError(null);
+  }
+  const { personas, personasStatus } = useCharactersStore.getState();
+  if (personasStatus !== "ready" || (scene.personaId && !personas.some((p) => p.id === scene.personaId))) {
+    const refreshed = await store.refreshPersonas().then(
+      () => true,
+      () => false,
+    );
+    if (!refreshed) throw new CharacterChatUnavailableError(null);
+  }
+  return { cast, persona: resolvePersona(scene, useCharactersStore.getState().personas) };
+}
+
 /** Whether this thread is known to be a character chat, from what the store has already loaded. */
 export function isKnownCharacterChat(threadId: string | null | undefined): boolean {
   if (!threadId) return false;
@@ -118,28 +145,7 @@ export async function prepareCharacterRun(args: {
     if (!scene && knownCharacterChat) throw new CharacterChatUnavailableError(error);
   }
   if (!scene) return null;
-  await ensureLoaded();
-  let cast = castOf(scene, useCharactersStore.getState().characters);
-  if (cast.length < scene.cast.length) {
-    // A member added elsewhere is not in this tab's library yet.
-    const refreshed = await store.refresh().then(
-      () => true,
-      () => false,
-    );
-    cast = castOf(scene, useCharactersStore.getState().characters);
-    if (!refreshed && cast.length < scene.cast.length) throw new CharacterChatUnavailableError(null);
-  }
-  let { personas } = useCharactersStore.getState();
-  const personaKnown = !scene.personaId || personas.some((p) => p.id === scene.personaId);
-  if (useCharactersStore.getState().personasStatus !== "ready" || !personaKnown) {
-    // Unloaded personas would silently send as the account instead of the chat's persona.
-    const refreshed = await store.refreshPersonas().then(
-      () => true,
-      () => false,
-    );
-    if (!refreshed) throw new CharacterChatUnavailableError(null);
-    personas = useCharactersStore.getState().personas;
-  }
+  const { cast, persona } = await loadParticipants(scene);
   if (cast.length === 0) {
     // Every character in the chat was deleted: it carries on as an ordinary chat.
     if (scene.cast.length === 0) return null;
@@ -153,7 +159,6 @@ export async function prepareCharacterRun(args: {
     requested: typeof requested === "string" ? requested : null,
   });
   if (!speaker) return null;
-  const persona = resolvePersona(scene, personas);
   const chat = messages.filter((m) => m.role === "user" || m.role === "assistant");
   const built = buildCharacterPrompt({
     cast: cast.map(toPromptCharacter),
