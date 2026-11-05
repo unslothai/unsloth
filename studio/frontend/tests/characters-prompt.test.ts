@@ -10,7 +10,7 @@ import {
   stripSpeakerPrefix,
   type PromptCharacter,
 } from "../src/features/characters/prompt/build.ts";
-import { activateLorebook } from "../src/features/characters/prompt/lorebook.ts";
+import { activateLorebook, parseKeyList } from "../src/features/characters/prompt/lorebook.ts";
 import { applyMacros } from "../src/features/characters/prompt/macros.ts";
 import { tidyRoleplayDisplay } from "../src/features/characters/prompt/display.ts";
 import { nextInRound, resolveSpeaker, textOf } from "../src/features/characters/prompt/round.ts";
@@ -347,6 +347,24 @@ test("lorebook regex keys run in linear time and match as JS regexes do", () => 
   for (const key of ["/(a)\\1/", "/(?=a)a/", "/(?<!x)a/"]) {
     assert.equal(activateLorebook(book([entry({ keys: [key], content: "c" })]), ["aa"]).fired.length, 0, key);
   }
+});
+
+test("card text with long unclosed macros and tags stays linear", () => {
+  const ctx = { char: "Bo", user: "Ann", now: new Date(0), group: [] };
+  const spaces = " ".repeat(100_000);
+  const started = Date.now();
+  applyMacros(`{{${spaces}x`, ctx);
+  applyMacros("{{//".repeat(20_000) + "tail", ctx);
+  applyMacros(`{{roll:d1${spaces}x}}`, ctx);
+  tidyRoleplayDisplay(`<a${"b".repeat(100_000)}`);
+  assert.ok(Date.now() - started < 1000);
+  assert.equal(applyMacros("a{{// note }}b{{ char }}{{//open", ctx), "abBo{{//open");
+  assert.equal(applyMacros("{{roll: 2d1 + 3 }}", ctx), "5");
+  assert.equal(tidyRoleplayDisplay("<stats>\nok\n</stats>"), "\nok\n");
+});
+
+test("lorebook keys split on commas, except inside a regex key", () => {
+  assert.deepEqual(parseKeyList(" sword, /a{2,4}/i , /[,/]x/,blade ,, "), ["sword", "/a{2,4}/i", "/[,/]x/", "blade"]);
 });
 
 test("a replayed reply with tools between its texts keeps their order", () => {

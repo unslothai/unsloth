@@ -55,6 +55,32 @@ function secondaryPasses(entry: LorebookEntry, text: string): boolean {
   }
 }
 
+/** Keys typed as one comma-separated line; a /regex/ key keeps its own commas, as in /a{2,4}/. */
+export function parseKeyList(text: string): string[] {
+  const keys: string[] = [];
+  let at = 0;
+  while (at < text.length) {
+    while (at < text.length && /\s/.test(text[at])) at += 1;
+    let from = at;
+    if (text[at] === "/") {
+      let inClass = false;
+      for (from = at + 1; from < text.length; from += 1) {
+        const ch = text[from];
+        if (ch === "\\") from += 1;
+        else if (ch === "[") inClass = true;
+        else if (ch === "]") inClass = false;
+        else if (ch === "/" && !inClass) break;
+      }
+    }
+    const comma = text.indexOf(",", from);
+    const end = comma < 0 ? text.length : comma;
+    const key = text.slice(at, end).trim();
+    if (key) keys.push(key);
+    at = end + 1;
+  }
+  return keys;
+}
+
 /** Which lorebook entries the recent chat calls for, split by where they go in the prompt. */
 export function activateLorebook(
   book: Lorebook | null | undefined,

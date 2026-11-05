@@ -753,11 +753,6 @@ class ChatGenerationSupervisor:
             iterator = getattr(response, "body_iterator", None)
             if iterator is None:
                 raise RuntimeError("Local generation did not return an event stream")
-            stops = [payload.stop] if isinstance(payload.stop, str) else payload.stop
-            if stops and (payload.provider_id or payload.provider_type):
-                # External providers are sent no stop sequences (a character chat's other speakers).
-                from routes.inference import _cut_studio_reply_at_stops
-                iterator = _cut_studio_reply_at_stops(iterator, stops)
             decoder = _SSEDecoder()
             last_keepalive = time.monotonic()
             next_raw_task = asyncio.create_task(iterator.__anext__())

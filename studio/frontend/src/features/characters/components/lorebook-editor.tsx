@@ -19,6 +19,7 @@ import { ArrowDown01Icon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState } from "react";
 import type { Lorebook, LorebookEntry, LorebookPosition } from "../types";
+import { parseKeyList } from "../prompt/lorebook";
 
 const PAGE = 25;
 
@@ -157,14 +158,10 @@ export function LorebookEditor({ book, onChange }: { book: Lorebook | null; onCh
                         <Input
                           defaultValue={entry.keys.join(", ")}
                           title={t("characters.lorebook.keysHint")}
-                          onBlur={(event) =>
-                            update(index, {
-                              keys: event.target.value
-                                .split(",")
-                                .map((key) => key.trim())
-                                .filter(Boolean),
-                            })
-                          }
+                          onBlur={(event) => {
+                            if (event.target.value === entry.keys.join(", ")) return;
+                            update(index, { keys: parseKeyList(event.target.value) });
+                          }}
                         />
                       </label>
                     </div>

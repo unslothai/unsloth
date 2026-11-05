@@ -19,8 +19,10 @@ function pad(value: number): string {
   return String(value).padStart(2, "0");
 }
 
+// Card text reaches these regexes on the UI thread, so none may have adjacent overlapping quantifiers:
+// "{{" or "{{roll:d1" followed by a long whitespace run would otherwise backtrack polynomially.
 function roll(spec: string, random: () => number): string {
-  const match = /^\s*(\d*)d(\d+)\s*([+-]\s*\d+)?\s*$/i.exec(spec);
+  const match = /^(\d*)d(\d+)\s*([+-]\s*\d+)?$/i.exec(spec.trim());
   if (!match) {
     const sides = Number.parseInt(spec, 10);
     return Number.isFinite(sides) && sides > 0 ? String(1 + Math.floor(random() * sides)) : spec;
@@ -38,16 +40,27 @@ function choices(body: string): string[] {
   return body.split(/(?<!\\),/).map((part) => part.replace(/\\,/g, ","));
 }
 
+/** Removes {{// comments}}; indexOf rather than a lazy regex, which rescans to the end for each unclosed one. */
+function stripComments(text: string): string {
+  let out = "";
+  let from = 0;
+  for (;;) {
+    const open = text.indexOf("{{//", from);
+    const close = open < 0 ? -1 : text.indexOf("}}", open + 4);
+    if (close < 0) return out + text.slice(from);
+    out += text.slice(from, open);
+    from = close + 2;
+  }
+}
+
 export function applyMacros(text: string, context: MacroContext): string {
   if (!text) return "";
   const now = context.now ?? new Date();
   const random = context.random ?? Math.random;
   const group = context.group ?? [context.char];
-  let out = text
-    .replace(/\{\{\/\/[\s\S]*?\}\}/g, "")
-    .replace(/<BOT>/gi, context.char)
-    .replace(/<USER>/gi, context.user);
-  out = out.replace(/\{\{\s*([^{}]*?)\s*\}\}/g, (whole, raw: string) => {
+  let out = stripComments(text).replace(/<BOT>/gi, context.char).replace(/<USER>/gi, context.user);
+  out = out.replace(/\{\{([^{}]*)\}\}/g, (whole, inner: string) => {
+    const raw = inner.trim();
     const lower = raw.toLowerCase();
     switch (lower) {
       case "char":

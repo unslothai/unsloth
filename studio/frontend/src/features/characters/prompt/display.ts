@@ -27,7 +27,8 @@ export function tidyRoleplayDisplay(text: string): string {
       }
       // Code keeps every line, tags included.
       if (fence !== null) return line;
-      const tag = /^[ \t]*<\/?([a-z][\w-]*)[^<>]*>[ \t]*$/i.exec(line)?.[1];
+      // (?![\w-]) keeps [^<>]* from re-reading the name, which made a long unclosed "<name" quadratic.
+      const tag = /^[ \t]*<\/?([a-z][\w-]*)(?![\w-])[^<>]*>[ \t]*$/i.exec(line)?.[1];
       return tag && !HTML_TAGS.has(tag.toLowerCase()) ? "" : line;
     })
     .join("\n");

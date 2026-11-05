@@ -30613,7 +30613,7 @@ async def _relay_split_thinking(
 
 
 async def _cut_studio_reply_at_stops(chunks, stops: list[str]):
-    """A Studio chat run's stop sequences, enforced on an external provider's stream, which is sent none.
+    """Stop sequences enforced on an explicit external provider's stream, which is sent none.
 
     Studio's stream carries reasoning as <think>...</think> in content, emitted whole by the proxy, so
     only text outside it is cut.
@@ -30767,6 +30767,14 @@ async def openai_chat_completions(
         cancel_on_disconnect = True,
     )
     if connection is None or not isinstance(response, StreamingResponse):
+        stops = _normalize_stop_sequences(payload.stop)
+        if (
+            stops
+            and (payload.provider_id or payload.provider_type)
+            and isinstance(response, StreamingResponse)
+        ):
+            # The provider client sends no stop sequences, e.g. a character chat's other speakers.
+            response.body_iterator = _cut_studio_reply_at_stops(response.body_iterator, stops)
         return response
     response.body_iterator = _relay_split_thinking(
         _relay_recording_tool_extras(response.body_iterator, current_subject),
