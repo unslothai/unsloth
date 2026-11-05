@@ -43,6 +43,7 @@ import {
   sttEngineFor,
   sttEngineStatusFor,
   unloadSttModel,
+  useChatRuntimeStore,
   useExternalProvidersStore,
   validateSttModel,
 } from "@/features/chat";
@@ -487,6 +488,14 @@ export function VoiceTab() {
   const micDeviceId = useVoiceSettingsStore((s) => s.micDeviceId);
   const setMicDeviceId = useVoiceSettingsStore((s) => s.setMicDeviceId);
   const dictationEngine = useVoiceSettingsStore((s) => s.dictationEngine);
+  const micTarget = useVoiceSettingsStore((s) => s.micTarget);
+  const setMicTarget = useVoiceSettingsStore((s) => s.setMicTarget);
+  const modelHearsAudio = useChatRuntimeStore(
+    (s) =>
+      !s.modelLoading &&
+      s.models.find((model) => model.id === s.params.checkpoint)
+        ?.hasAudioInput === true,
+  );
   const setDictationEngine = useVoiceSettingsStore((s) => s.setDictationEngine);
   const sttModel = useVoiceSettingsStore((s) => s.sttModel);
   const setSttModel = useVoiceSettingsStore((s) => s.setSttModel);
@@ -1169,6 +1178,44 @@ export function VoiceTab() {
       </header>
 
       <SettingsSection title={t("settings.voice.dictation.sectionTitle")}>
+        <SettingsRow
+          label={t("settings.voice.dictation.micTargetLabel")}
+          description={
+            !modelHearsAudio
+              ? t("settings.voice.dictation.micTargetModelUnavailable")
+              : micTarget === "model"
+                ? t("settings.voice.dictation.micTargetModelDescription")
+                : t("settings.voice.dictation.micTargetAsrDescription")
+          }
+        >
+          <Select
+            value={micTarget}
+            onValueChange={(value) =>
+              setMicTarget(value === "model" ? "model" : "asr")
+            }
+          >
+            <SelectTrigger
+              data-testid="mic-target-trigger"
+              aria-label={t("settings.voice.dictation.micTargetLabel")}
+              className="w-56"
+              size="sm"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="asr">
+                {t("settings.voice.dictation.micTargetAsr")}
+              </SelectItem>
+              <SelectItem
+                value="model"
+                data-testid="mic-target-model"
+                disabled={!modelHearsAudio && micTarget !== "model"}
+              >
+                {t("settings.voice.dictation.micTargetModel")}
+              </SelectItem>
+            </SelectContent>
+          </Select>
+        </SettingsRow>
         <SettingsRow
           label={t("settings.voice.dictation.engineLabel")}
           description={

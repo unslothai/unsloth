@@ -77,6 +77,10 @@ export function isSttModelLanguageCompatible(
 
 export type DictationEngine = "browser" | "model" | "custom";
 
+/** What the composer mic does: "asr" transcribes into the box, "model" attaches the clip
+ *  for an audio-input chat model (falls back to "asr" when the loaded model has none). */
+export type MicTarget = "asr" | "model";
+
 /** Mirrors the backend `SttLoadRequest.device`; "gpu" is not offered since it adds nothing. */
 export type SttDevice = "auto" | "cpu";
 
@@ -101,6 +105,9 @@ export interface VoiceSettingsState {
   /** "browser" uses Web Speech API; "model" chooses the local backend from the model. */
   dictationEngine: DictationEngine;
   setDictationEngine: (value: DictationEngine) => void;
+
+  micTarget: MicTarget;
+  setMicTarget: (value: MicTarget) => void;
 
   /** STT model used when dictationEngine is "model". */
   sttModel: SttModel;
@@ -216,6 +223,9 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
 
       dictationEngine: isTauri ? "model" : "browser",
       setDictationEngine: (dictationEngine) => set({ dictationEngine }),
+
+      micTarget: "asr",
+      setMicTarget: (micTarget) => set({ micTarget }),
 
       sttModel: DEFAULT_STT_MODEL,
       setSttModel: (value) =>
@@ -384,6 +394,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           ...current,
           micDeviceId: asString(saved?.micDeviceId, "default"),
           dictationEngine,
+          micTarget: saved?.micTarget === "model" ? "model" : "asr",
           sttModel,
           sttGgufVariant:
             sttModel === savedSttModel
