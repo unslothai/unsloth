@@ -97,7 +97,10 @@ def test_manual_external_compaction_starts_checkpoint_below_threshold(archive_re
     _persist(THREAD, messages)
     payload = _payload(THREAD).model_copy(update = {"compact_context": True})
     fitted, truncation, _ = ri._fit_external_context(
-        messages, payload, tools = [tools_mod.SEARCH_CONVERSATION_TOOL], tool_loop = True,
+        messages,
+        payload,
+        tools = [tools_mod.SEARCH_CONVERSATION_TOOL],
+        tool_loop = True,
     )
     assert truncation and truncation.get("checkpoint_started")
     assert truncation.get("manual")

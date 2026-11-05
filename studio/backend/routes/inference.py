@@ -28459,7 +28459,9 @@ def _fit_external_context(
     policy = _request_context_policy(payload)
     ratio = _request_compaction_headroom_ratio(payload)
     thread_id = payload.thread_id
-    recall_offered = any((t.get("function") or {}).get("name") == "search_conversation" for t in (tools or []))
+    recall_offered = any(
+        (t.get("function") or {}).get("name") == "search_conversation" for t in (tools or [])
+    )
     can_reset = _can_reset_epoch(thread_id, recall_offered)
     sticky, sticky_is_checkpoint, sticky_manual = _sticky_compaction_details(
         thread_id,
@@ -29209,10 +29211,22 @@ async def _proxy_to_external_provider(
     if payload.compact_context:
         from core.inference.llama_cpp import _can_reset_epoch
         from core.inference.tools import SEARCH_CONVERSATION_TOOL
-        if not studio_tool_loop or not payload.thread_id or _tool_calls_are_disabled(payload) or not external_studio_tools:
-            raise HTTPException(status_code = 400, detail = "Remote compaction requires a saved chat with local tools enabled.")
+
+        if (
+            not studio_tool_loop
+            or not payload.thread_id
+            or _tool_calls_are_disabled(payload)
+            or not external_studio_tools
+        ):
+            raise HTTPException(
+                status_code = 400,
+                detail = "Remote compaction requires a saved chat with local tools enabled.",
+            )
         if not _can_reset_epoch(payload.thread_id, True):
-            raise HTTPException(status_code = 400, detail = "The conversation archive is unavailable; remote compaction was not performed.")
+            raise HTTPException(
+                status_code = 400,
+                detail = "The conversation archive is unavailable; remote compaction was not performed.",
+            )
         if "search_conversation" not in _catalog_names(external_studio_tools):
             external_studio_tools = [*external_studio_tools, SEARCH_CONVERSATION_TOOL]
     run_studio_tool_loop = bool(external_studio_tools)
@@ -29290,7 +29304,10 @@ async def _proxy_to_external_provider(
     _external_context_fitter = None
     _compaction_fallback = None
     if payload.compact_context and not payload.compaction_threshold and not _provider_compacts:
-        raise HTTPException(status_code = 400, detail = "Remote compaction needs the backend context window. Configure context size or expose /props.")
+        raise HTTPException(
+            status_code = 400,
+            detail = "Remote compaction needs the backend context window. Configure context size or expose /props.",
+        )
     _external_manual_compact_pending = bool(payload.compact_context)
     if payload.compaction_threshold and _rolling_context_policy(payload) is not None:
         _request_branch = chat_messages
