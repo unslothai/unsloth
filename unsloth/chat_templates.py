@@ -135,6 +135,7 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
         except Exception:
             pass
 
+    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
     rows = malformed = empty = found = 0
     problems, lengths = [], []
     for i, row in enumerate(dataset):
@@ -150,7 +151,7 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
             empty += 1
         if response_part is not None and response_part in text:
             found += 1
-        lengths.append(len(tokenizer(text, add_special_tokens = add_special_tokens).input_ids))
+        lengths.append(len(text_tokenizer(text, add_special_tokens = add_special_tokens).input_ids))
 
     over = sum(length > max_seq_length for length in lengths)
     template = getattr(tokenizer, "_unsloth_chat_template_name", None)

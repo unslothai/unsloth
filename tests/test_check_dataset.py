@@ -162,3 +162,24 @@ def test_row_tools_are_rendered_into_length():
     )
     assert as_list["lengths"][0] == as_str["lengths"][0] == plain + 10
     assert as_list["over_max_seq_length"] == 1
+
+
+class _ImagesFirstProcessor:
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+        self.chat_template = tokenizer.chat_template
+
+    def apply_chat_template(self, *args, **kwargs):
+        return self.tokenizer.apply_chat_template(*args, **kwargs)
+
+    def __call__(self, images = None, text = None, **kwargs):
+        if images is not None:
+            raise ValueError("Incorrect image source")
+        return self.tokenizer(text, **kwargs)
+
+
+def test_vision_processor_measures_with_inner_tokenizer():
+    tok = _tokenizer()
+    rows = ROWS[:5]
+    report = check_dataset(rows, _ImagesFirstProcessor(tok), max_seq_length = 8)
+    assert report["lengths"] == check_dataset(rows, tok, max_seq_length = 8)["lengths"]
