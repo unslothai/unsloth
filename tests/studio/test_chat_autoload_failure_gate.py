@@ -133,6 +133,8 @@ export type Scenario = {
   detectedChatOnly?: boolean;
   /** Health reads after the detectHardware read before the verdict lands (a busy host). */
   detectionReads?: number;
+  /** The detectHardware read never answers; the user stops the send shortly after. */
+  stallHealth?: boolean;
   variants: Record<string, any>;
   lastLoaded: any;
   validate: (payload: any) => any;
@@ -615,6 +617,10 @@ let DETECTION_READS_LEFT = -1;
 async function fetchDeviceType(options?: any) {
   if (options?.detectHardware) {
     EVENTS.push({ kind: "detectHardware" });
+    if (SCENARIO.stallHealth) {
+      setTimeout(() => (globalThis as any).__stopSend?.(), 50);
+      return new Promise(() => {});
+    }
     SCENARIO.detectionDeferred = false;
     DETECTION_READS_LEFT = SCENARIO.detectionReads ?? 0;
   } else if (DETECTION_READS_LEFT > 0) {
@@ -989,8 +995,15 @@ def _run(
         + textwrap.dedent(
             f"""
         setScenario({scenario_expr});
-        const signal = new AbortController().signal;
-        const result = await {entry};
+        const run = new AbortController();
+        const signal = run.signal;
+        globalThis.__stopSend = () => run.abort(new DOMException("Stopped", "AbortError"));
+        let result;
+        try {{
+          result = await {entry};
+        }} catch (error) {{
+          result = {{ thrown: error?.name ?? String(error) }};
+        }}
         const s = storeState();
         console.log(JSON.stringify({{
           result,
@@ -1774,6 +1787,15 @@ def test_a_deferred_verdict_that_outlasts_the_health_wait_is_still_awaited():
     ]
     assert "org/st" not in _loaded_paths(out)
     assert _loaded_paths(out) == [DEFAULT_MODEL]
+
+
+def test_a_stalled_health_read_does_not_outlive_a_stopped_send():
+    out = _run(
+        "scenario({ chatOnly: true, platformFetched: true, detectionDeferred: true, stallHealth: true,"
+        " modelRepos: [{ repo_id: 'org/st', load_id: 'org/st', size_bytes: 1 }] })"
+    )
+    assert out["result"] == {"thrown": "AbortError"}
+    assert _loaded_paths(out) == []
 
 
 def test_a_deferred_verdict_with_only_gguf_cached_does_not_detect_hardware():

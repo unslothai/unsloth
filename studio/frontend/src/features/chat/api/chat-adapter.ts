@@ -3377,22 +3377,38 @@ const AUTO_LOAD_VERDICT_WAIT_MS = 60_000;
 const AUTO_LOAD_VERDICT_POLL_MS = 500;
 
 async function awaitMeasuredVerdict(signal?: AbortSignal): Promise<void> {
-  try {
-    await fetchDeviceType({ detectHardware: true });
-  } catch {
-    return;
-  }
   const deadline = Date.now() + AUTO_LOAD_VERDICT_WAIT_MS;
+  // readHealth has no timeout or signal: a stalled read must not outlive the deadline or a stopped send.
+  const bounded = (read: () => Promise<unknown>) =>
+    new Promise<"ok" | "failed" | "timeout">((resolve, reject) => {
+      const timer = setTimeout(() => settle("timeout"), Math.max(0, deadline - Date.now()));
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      function cleanup() {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+      function settle(outcome: "ok" | "failed" | "timeout") {
+        cleanup();
+        resolve(outcome);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      read().then(
+        () => settle("ok"),
+        () => settle("failed"),
+      );
+    });
+  signal?.throwIfAborted();
+  if ((await bounded(() => fetchDeviceType({ detectHardware: true }))) !== "ok") return;
   while (Date.now() < deadline) {
     signal?.throwIfAborted();
     const platform = usePlatformStore.getState();
     if (!platform.capabilitiesUnknown() || platform.detectionDeferred) return;
     await new Promise((resolve) => setTimeout(resolve, AUTO_LOAD_VERDICT_POLL_MS));
-    try {
-      await fetchDeviceType({ force: true });
-    } catch {
-      return;
-    }
+    signal?.throwIfAborted();
+    if ((await bounded(() => fetchDeviceType({ force: true }))) !== "ok") return;
   }
 }
 
