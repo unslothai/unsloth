@@ -39,7 +39,7 @@ def _not_blank(value: str) -> str:
 Name = Annotated[str, Field(max_length = 200), AfterValidator(_not_blank)]
 LongText = Annotated[str, Field(max_length = _LONG)]
 ShortText = Annotated[str, Field(max_length = 200)]
-Tag = Annotated[str, Field(max_length = 100), AfterValidator(_not_blank)]
+Tag = Annotated[str, Field(max_length = cards.MAX_TAG_CHARS), AfterValidator(_not_blank)]
 
 
 class DepthPrompt(BaseModel):

@@ -26,7 +26,9 @@ MAX_CARD_BYTES = 40 * 1024 * 1024
 MAX_FIELD_CHARS = 200_000
 MAX_GREETINGS = 64
 MAX_TAGS = 64
+MAX_TAG_CHARS = 100
 _CARD_CHUNK_KEYS = ("ccv3", "chara")
+_ARCHIVE_URIS = ("embeded://", "embedded://", "__asset:")
 # Fields Studio edits; everything else in a card's data is carried through untouched.
 EDITABLE_TEXT_FIELDS = (
     "name",
@@ -302,7 +304,7 @@ def _read_charx(data: bytes) -> tuple[dict, Optional[bytes]]:
             icons.sort(key = lambda a: 0 if a.get("name") == "main" else 1)
             for asset in icons:
                 uri = str(asset.get("uri") or "")
-                for prefix in ("embeded://", "embedded://", "__asset:"):
+                for prefix in _ARCHIVE_URIS:
                     if uri.startswith(prefix):
                         candidates.append(uri[len(prefix) :])
         candidates.extend(sorted(n for n in names if n.startswith("assets/icon/")))
@@ -324,15 +326,20 @@ def _text(value: Any) -> str:
     return value.replace("\r\n", "\n")[:MAX_FIELD_CHARS]
 
 
-def _string_list(value: Any, limit: int) -> list[str]:
+def _string_list(
+    value: Any,
+    limit: int,
+    max_chars: int = MAX_FIELD_CHARS,
+) -> list[str]:
     if isinstance(value, str):
         value = [part.strip() for part in value.split(",")]
     if not isinstance(value, list):
         return []
     out: list[str] = []
     for item in value:
-        if isinstance(item, str) and item.strip() and item.strip() not in out:
-            out.append(_text(item.strip()))
+        text = _text(item)[:max_chars].strip() if isinstance(item, str) else ""
+        if text and text not in out:
+            out.append(text)
         if len(out) >= limit:
             break
     return out
@@ -419,7 +426,10 @@ def normalize_card(card: dict) -> dict[str, Any]:
             for g in _as_list(data.get("alternate_greetings"))
             if isinstance(g, str) and g.strip()
         ][:MAX_GREETINGS],
-        "tags": _string_list(data.get("tags") if "tags" in data else card.get("tags"), MAX_TAGS),
+        # MAX_TAG_CHARS matches the editor's limit, so an imported card stays editable.
+        "tags": _string_list(
+            data.get("tags") if "tags" in data else card.get("tags"), MAX_TAGS, MAX_TAG_CHARS
+        ),
         "talkativeness": talkativeness,
         "favorite": bool(extensions.get("fav") or card.get("fav")),
         "depth_prompt": depth_prompt,
@@ -635,8 +645,16 @@ def build_card_v2(character: dict) -> dict:
 def build_card_v3(character: dict) -> dict:
     data = _overlay(character, _base_data(character))
     data.setdefault("group_only_greetings", [])
-    if not isinstance(data.get("assets"), list) or not data["assets"]:
-        data["assets"] = [{"type": "icon", "uri": "ccdefault:", "name": "main", "ext": "png"}]
+    # The export carries only the portrait, so a CHARX archive's own files are not referenced, and
+    # the main icon is the file itself (ccdefault:).
+    kept = [
+        asset
+        for asset in (data.get("assets") if isinstance(data.get("assets"), list) else [])
+        if isinstance(asset, dict)
+        and not str(asset.get("uri") or "").startswith(_ARCHIVE_URIS)
+        and not (asset.get("type") == "icon" and asset.get("name") == "main")
+    ]
+    data["assets"] = [{"type": "icon", "uri": "ccdefault:", "name": "main", "ext": "png"}, *kept]
     if character.get("createdAt"):
         data.setdefault("creation_date", int(character["createdAt"]) // 1000)
     if character.get("updatedAt"):

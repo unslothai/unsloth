@@ -57,6 +57,8 @@ export interface BuiltPrompt {
   speaker: PromptCharacter;
   lore: ActivatedLore;
   sections: PromptSection[];
+  /** History is written with speaker names: a group, or a chat that was one. */
+  named: boolean;
 }
 
 export const SOLO_FRAME =
@@ -240,8 +242,12 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     .join("\n\n");
 
   const history = input.history;
+  const spoken = new Map<string, string>();
+  for (const entry of history) if (entry.meta?.kind === "reply") spoken.set(entry.meta.speakerId, entry.meta.speakerName);
+  // A chat that was a group keeps its history attributed after its other members leave.
+  const named = group || history.some((entry) => entry.meta?.kind === "turn") || [...spoken.keys()].some((id) => id !== speaker.id);
   const nameOf = (id: string | undefined, fallback: string) =>
-    cast.find((c) => c.id === id)?.name ?? fallback;
+    cast.find((c) => c.id === id)?.name ?? (id ? spoken.get(id) : undefined) ?? fallback;
   const nextReplyName = (index: number): string | null => {
     const next = history[index + 1];
     if (next?.role === "assistant" && next.meta?.kind === "reply") return nameOf(next.meta.speakerId, next.meta.speakerName);
@@ -254,11 +260,11 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     // A marker asks the named character to speak again without a new user message.
     if (meta?.kind === "turn") return [nudgeText(nameOf(meta.speakerId, speaker.name))];
     if (meta?.kind === "opening") return [entry.text.trim() || "[Start a new chat]"];
-    if (entry.role === "assistant") return [replayedReply(entry.text, replyNameOf(meta, cast, speaker.name), group)];
+    if (entry.role === "assistant") return [replayedReply(entry.text, replyNameOf(meta, cast, speaker.name), named)];
     // Names only: a re-rolled {{random}} or a fresh {{time}} would rewrite old turns on every send.
     const text = applyNameMacros(entry.text, steadyChar, user).trim();
-    const lines = [group ? `${user}: ${text}` : text];
-    const answeredBy = !last && group ? nextReplyName(index) : null;
+    const lines = [named ? `${user}: ${text}` : text];
+    const answeredBy = !last && named ? nextReplyName(index) : null;
     if (answeredBy) lines.push(nudgeText(answeredBy));
     return lines;
   });
@@ -289,14 +295,18 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
       // The nudge stays last, after any notes that landed on the marker.
       const nudge = lastParts.shift();
       if (nudge) lastParts.push(nudge);
-    } else if (group) {
+    } else if (named) {
       lastParts.push(nudgeText(speaker.name));
     }
   }
   const texts = parts.map((lines) => lines.filter(Boolean).join("\n\n"));
 
   const stop = [`\n${user}:`];
-  if (group) for (const member of cast) if (member.id !== speaker.id) stop.push(`\n${member.name}:`);
+  if (named) {
+    const others = new Set([...cast.map((c) => c.name), ...spoken.values()]);
+    others.delete(speaker.name);
+    for (const name of others) stop.push(`\n${name}:`);
+  }
 
-  return { system, texts, stop, speaker, lore, sections };
+  return { system, texts, stop, speaker, lore, sections, named };
 }

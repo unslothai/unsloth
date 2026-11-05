@@ -607,3 +607,32 @@ def test_starter_cards_are_original_and_export_cleanly(client):
     character = client.get("/api/characters").json()["characters"][0]
     exported = client.get(f"/api/characters/{character['id']}/export?format=png")
     assert exported.status_code == 200 and exported.content.startswith(b"\x89PNG")
+
+
+def test_imported_tags_fit_the_editor_and_charx_assets_do_not_leak_into_exports(client):
+    card = {**V2, "data": {**V2["data"], "tags": ["x" * 150, "ok"]}}
+    imported = _import(client, json.dumps(card).encode(), "long.json").json()["character"]
+    assert imported["tags"] == ["x" * 100, "ok"]
+    assert (
+        client.patch(
+            f"/api/characters/{imported['id']}", json = {"tags": imported["tags"]}
+        ).status_code
+        == 200
+    )
+
+    assets = [
+        {
+            "type": "icon",
+            "uri": "embeded://assets/icon/images/main.png",
+            "name": "main",
+            "ext": "png",
+        },
+        {"type": "emotion", "uri": "embeded://assets/emotion/joy.png", "name": "joy", "ext": "png"},
+        {"type": "background", "uri": "https://example.com/bg.png", "name": "bg", "ext": "png"},
+    ]
+    v3 = {"spec": "chara_card_v3", "spec_version": "3.0", "data": {**V2["data"], "assets": assets}}
+    exported = cards.build_card_v3({"name": "Mira", "card": v3})
+    assert exported["data"]["assets"] == [
+        {"type": "icon", "uri": "ccdefault:", "name": "main", "ext": "png"},
+        assets[2],
+    ]

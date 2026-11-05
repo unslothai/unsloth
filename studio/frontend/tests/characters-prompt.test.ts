@@ -369,6 +369,37 @@ test("names with $ patterns are inserted literally", () => {
   assert.equal(applyMacros("<BOT>".repeat(16_000), ctx).length, 32_000);
 });
 
+test("a group reduced to one character keeps its history attributed", () => {
+  const built = buildCharacterPrompt({
+    cast: [character({ id: "ann", name: "Ann" })],
+    speakerId: "ann",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [
+      { role: "user", text: "[Start]", meta: { kind: "opening" } },
+      { role: "assistant", text: "Hi.", meta: { kind: "reply", speakerId: "ann", speakerName: "Ann" } },
+      { role: "user", text: "[Bob's turn]", meta: { kind: "turn", speakerId: "bob" } },
+      { role: "assistant", text: "Yo.", meta: { kind: "reply", speakerId: "bob", speakerName: "Bob" } },
+      { role: "user", text: "Hello" },
+    ],
+    now: NOW,
+  });
+  assert.equal(built.texts[1], "Ann: Hi.");
+  assert.equal(built.texts[2], nudgeText("Bob"));
+  assert.equal(built.texts[3], "Bob: Yo.");
+  assert.ok(built.stop.includes("\nBob:") && !built.stop.includes("\nAnn:"));
+  const solo = buildCharacterPrompt({
+    cast: [character({ id: "ann", name: "Ann" })],
+    speakerId: "ann",
+    persona: { name: "Pat", description: "" },
+    scene: {},
+    history: [{ role: "assistant", text: "Hi.", meta: { kind: "reply", speakerId: "ann", speakerName: "Ann" } }],
+    now: NOW,
+  });
+  assert.equal(solo.texts[0], "Hi.");
+  assert.equal(solo.named, false);
+});
+
 test("lorebook keys split on commas, except inside a regex key", () => {
   assert.deepEqual(parseKeyList(" sword, /a{2,4}/i , /[,/]x/,blade ,, "), ["sword", "/a{2,4}/i", "/[,/]x/", "blade"]);
 });

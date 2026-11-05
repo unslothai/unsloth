@@ -70,3 +70,18 @@ def test_lines_without_choices_pass_through():
     )
     assert stream.startswith(": keep-alive\n\n" + tool_event)
     assert _text(stream)[0] == "ok"
+
+
+def test_think_tags_split_across_chunks_still_bound_the_reasoning():
+    events = [
+        _event("<thi"),
+        _event("nk>plan\nAnn: no</th"),
+        _event("ink>Fine.\nAnn: yes"),
+        "data: [DONE]\n\n",
+    ]
+    text, finishes = _text(_run(events, ["\nAnn:"])[0])
+    assert text == "<think>plan\nAnn: no</think>Fine." and finishes[-1] == "stop"
+    text, _finishes = _text(
+        _run([_event("Hi\nA"), _event("<think>x</think>"), _event("ok")], ["\nAnn:"])[0]
+    )
+    assert text == "Hi\nA<think>x</think>ok"
