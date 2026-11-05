@@ -6280,6 +6280,9 @@ html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper {
   opacity: calc(.7 * (.4 + .6 * var(--wallpaper-conversation, 0)));
 }
+html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"][data-wallpaper-media] > .chat-wallpaper[data-ready] {
+  opacity: calc(.56 * (.4 + .6 * var(--wallpaper-conversation, 0)));
+}
 html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) .unsloth-composer-surface,
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-preview-composer {
   --glass-composer-boost: 9%;
@@ -6750,6 +6753,24 @@ html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace]
   background-color: transparent;
   -webkit-backdrop-filter: blur(16px);
   backdrop-filter: blur(16px);
+}
+/* Unstuck it frosted a strip of wallpaper with nothing beneath; frost only once rows scroll under it. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .library-header-row.sticky:not([data-stuck]) {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Model hub panes: a light frost on a layer, so sticky headers inside still see their own backdrop. */
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] [data-hub-pane] {
+  isolation: isolate;
+}
+html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] [data-hub-pane]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(8px) saturate(var(--glass-saturate));
+  backdrop-filter: blur(8px) saturate(var(--glass-saturate));
 }
 /* Follow the actual sidebar edge during resize. The decorative layer stays
    behind the scrolling pane and below the Windows caption. */

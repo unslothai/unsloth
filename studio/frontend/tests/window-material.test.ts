@@ -203,6 +203,17 @@ test("glass dims the wallpaper on other pages like an open chat, and blurs it no
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\] > \.chat-wallpaper\[data-ready\],[^{]*\{\n  opacity: calc\(\.7 \* /);
 	assert.doesNotMatch(css, /\.chat-wallpaper-artwork[^{]*\{\n  filter: blur\(/);
+	assert.match(css, /\[data-wallpaper-route="page"\]\[data-wallpaper-media\] > \.chat-wallpaper\[data-ready\] \{\n  opacity: calc\(\.56 \* /);
+	const root = readFileSync(new URL("../src/app/routes/__root.tsx", import.meta.url), "utf8");
+	assert.match(root, /data-wallpaper-media=\{isImagesRoute \|\| isVideoRoute \|\| isAudioRoute \|\| undefined\}/);
+});
+
+test("glass frosts the model hub panes on a layer and leaves the unstuck library header clear", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\[data-hub-pane\]::before \{\n  content: "";\n  position: absolute;\n  inset: 0;\n  z-index: -1;\n  pointer-events: none;\n  -webkit-backdrop-filter: blur\(8px\)/);
+	assert.match(css, /\.library-header-row\.sticky:not\(\[data-stuck\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
+	const hub = readFileSync(new URL("../src/features/hub/hub-page.tsx", import.meta.url), "utf8");
+	assert.equal(hub.match(/data-hub-pane=""/g)?.length, 3);
 });
 
 test("dark glass chat row menus keep the glass rim over the flat sidebar-menu shadow", () => {
