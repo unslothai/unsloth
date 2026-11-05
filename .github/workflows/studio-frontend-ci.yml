@@ -41,6 +41,7 @@ on:
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
+      - 'tests/studio/playwright_long_thread_gate.py'
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
@@ -90,6 +91,7 @@ on:
       - 'tests/studio/playwright_user_message_time.py'
       - 'tests/studio/playwright_progressive_rows.py'
       - 'tests/studio/playwright_long_chat_renders.py'
+      - 'tests/studio/playwright_long_thread_gate.py'
       - 'tests/studio/playwright_model_picker_renders.py'
       - 'tests/studio/playwright_recipe_drag_renders.py'
       - 'tests/studio/playwright_gallery_strip_renders.py'
@@ -569,6 +571,15 @@ jobs:
           SMOKE_HEAVY_REPEATS: '1'
           PW_ART_DIR: logs/playwright_heavy_thread
         run: python3 tests/studio/playwright_heavy_thread.py
+
+      # Ratio, not timing: style cost per keystroke in a 200-turn chat over a 40-turn chat, both
+      # built for production and seeded with reasoning, tool cards, code, KaTeX and tables inside
+      # the app's own ancestors. A selector that walks the whole thread (#16603) grows with the
+      # chat; work that does not depend on its length stays flat, so a slow runner cannot fail it.
+      - name: Browser gate for long-chat typing cost
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 20
+        run: python3 tests/studio/playwright_long_thread_gate.py
 
       # A failure means the click that dismissed a menu also reached the control under it.
       - name: Browser check for non-modal menu dismissal
