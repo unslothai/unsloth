@@ -17,7 +17,7 @@ const npuLoad = runtime.slice(
 const pickers = source("features/model-picker/components/model-selector/pickers.tsx");
 const npuRow = pickers.slice(
   pickers.indexOf("const renderNpuRow = "),
-  pickers.indexOf("const npuBrowseForcedOpen = "),
+  pickers.indexOf("const showNpuBrowse ="),
 );
 const configPage = source("features/model-picker/components/model-config-page.tsx");
 
