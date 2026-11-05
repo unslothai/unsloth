@@ -335,3 +335,10 @@ test("light glass border clearing leaves focused and invalid fields their ring b
 	assert.ok(cleared.length >= 2);
 	for (const sel of cleared) assert.match(sel, /:focus-visible, \[aria-invalid="true"\]\)/, sel);
 });
+
+test("focused glass surfaces on pages show their Tailwind focus ring over the glass edge", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /\[data-slot="sidebar-inset"\] :focus-visible:is\(\[class\*="focus-visible:ring"\]\) \{\n  box-shadow: var\(--tw-inset-shadow, 0 0 #0000\), var\(--tw-inset-ring-shadow, 0 0 #0000\), var\(--tw-ring-offset-shadow, 0 0 #0000\), var\(--tw-ring-shadow, 0 0 #0000\), var\(--tw-shadow, 0 0 #0000\) !important;/);
+	const cards = readFileSync(new URL("../src/features/library/components/library-cards.tsx", import.meta.url), "utf8");
+	assert.match(cards, /focus-visible:ring-2/);
+});
