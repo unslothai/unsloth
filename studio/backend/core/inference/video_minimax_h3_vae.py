@@ -68,7 +68,6 @@ def plan_h3_vae_levers(
         if mode != _SPEED_EAGER:
             levers.append(LEVER_FP16_ENCODER)
     levers += [LEVER_FUSED_DECODER, LEVER_TILE_BATCH]
-    # G4 3.25 -> 2.27 s, L4 23.3 -> 15.7 s per decode at LPIPS 0.0004 / 0.0013 vs bf16; eager stays rounding-level.
     int8 = _env(H3_VAE_INT8_ENV)
     if int8 in _TRUE or (int8 not in _FALSE and mode != _SPEED_EAGER):
         levers.append(LEVER_INT8_DECODER)
