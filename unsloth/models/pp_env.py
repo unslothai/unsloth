@@ -579,7 +579,8 @@ def pp_trainer_refusals(
     layout,
     compute_loss_func = None,
     model = None,
-    trains = True,
+    train_dataset = None,
+    eval_dataset = None,
 ):
     """Before Trainer.__init__ splits anything: the trainers / arguments the pipeline step cannot honour."""
     hint = _hint()
@@ -645,7 +646,7 @@ def pp_trainer_refusals(
             + "."
             + hint
         )
-    _refuse_split_router_aux_at_init(trainer_cls, args, layout, model, trains)
+    _refuse_split_router_aux_at_init(trainer_cls, args, layout, model, train_dataset, eval_dataset)
 
 
 def _router_aux_coef_at_init(trainer_cls, args, model):
@@ -676,12 +677,30 @@ def _router_aux_coef_at_init(trainer_cls, args, model):
     return coef if on else 0
 
 
+def _largest_batch(dataset, batch_size, dp, packing):
+    """Rows in the largest batch one rank gets from `dataset`, or None when only the step can know: no dataset
+    (train() / evaluate() cannot run on it), no len(), or packing (TRL rebuilds the rows inside __init__)."""
+    batch_size = int(batch_size or 0)
+    if dataset is None or batch_size < 1 or packing:
+        return None
+    if isinstance(dataset, dict):
+        sizes = [_largest_batch(d, batch_size, dp, packing) for d in dataset.values()]
+        return None if not sizes or None in sizes else max(sizes)
+    try:
+        rows = len(dataset)
+    except TypeError:
+        return None
+    # A dataset smaller than the batch gives smaller batches; the sampler splits rows over the dp ranks.
+    return min(batch_size, -(-rows // max(int(dp or 1), 1)))
+
+
 def _refuse_split_router_aux_at_init(
     trainer_cls,
     args,
     layout,
     model,
-    trains = True,
+    train_dataset = None,
+    eval_dataset = None,
 ):
     """_refuse_split_router_aux before the stage split; the per-step check covers what only the step knows."""
     if args is None or not _router_aux_coef_at_init(trainer_cls, args, model):
@@ -692,13 +711,30 @@ def _refuse_split_router_aux_at_init(
     except Exception:
         schedule = layout.schedule
     want = int(layout.microbatches or 2 * layout.pp)
-    # No train_dataset: train() cannot run, so only the eval batch can split.
-    batches = [(int(getattr(args, "per_device_train_batch_size", 0) or 0), True)] if trains else []
+    dp = getattr(layout, "dp", 1)
+    packing = bool(getattr(args, "packing", False))
+    eval_packing = getattr(args, "eval_packing", None)
+    batches = [
+        (
+            _largest_batch(
+                train_dataset, getattr(args, "per_device_train_batch_size", 0), dp, packing
+            ),
+            True,
+        )
+    ]
     strategy = getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no"))
     if str(getattr(strategy, "value", strategy) or "no").lower() != "no":
-        batches.append((int(getattr(args, "per_device_eval_batch_size", 0) or 0), False))
+        packed = packing if eval_packing is None else bool(eval_packing)
+        batches.append(
+            (
+                _largest_batch(
+                    eval_dataset, getattr(args, "per_device_eval_batch_size", 0), dp, packed
+                ),
+                False,
+            )
+        )
     for batch_size, train in batches:
-        if batch_size < 1:
+        if not batch_size:
             continue
         try:
             m, _ = _plan_microbatches(

@@ -1300,7 +1300,12 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
             a.router_aux_loss_coef = coef
         return a
 
-    refuse = pp_env._refuse_split_router_aux_at_init
+    rows = list(range(64))
+
+    def refuse(*a, **k):
+        k = {"train_dataset": rows, "eval_dataset": rows, **k}
+        return pp_env._refuse_split_router_aux_at_init(*a, **k)
+
     T, SFT = transformers.Trainer, type("SFTTrainer", (transformers.Trainer,), {})
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(T, args(2), layout(), model)
@@ -1329,9 +1334,38 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(T, eval_only, layout(), model)
     if not pp_env._gpipe_needs_stage_count():
-        refuse(T, eval_only, layout(), model, trains = False)
+        refuse(T, eval_only, layout(), model, train_dataset = None)
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
-        refuse(T, args(8, eval_strategy = "steps", eval_bs = 4), layout(), model, trains = False)
+        refuse(T, args(8, eval_strategy = "steps", eval_bs = 4), layout(), model, train_dataset = None)
+    # Batches are no larger than the dataset (per dp rank); no len() or packing: only the step knows.
+    if not pp_env._gpipe_needs_stage_count():
+        refuse(T, args(8), layout(), model, train_dataset = [0])
+        refuse(
+            T, args(8), types.SimpleNamespace(**vars(layout()), dp = 4), model, train_dataset = rows[:4]
+        )
+        refuse(
+            T,
+            args(8, eval_strategy = "steps", eval_bs = 8),
+            layout(),
+            model,
+            train_dataset = None,
+            eval_dataset = {"a": [0]},
+        )
+    with pytest.raises(NotImplementedError, match = "into 2 micro-batches"):
+        refuse(T, args(8), layout(), model, train_dataset = [0, 1])
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(
+            T,
+            args(8, eval_strategy = "steps", eval_bs = 8),
+            layout(),
+            model,
+            train_dataset = None,
+            eval_dataset = {"a": [0], "b": rows},
+        )
+    refuse(T, args(8), layout(), model, train_dataset = iter(rows))
+    packed = args(8)
+    packed.packing = True
+    refuse(T, packed, layout(), model)
 
 
 def test_pp_env_refusals_know_whether_the_trainer_trains(monkeypatch):
@@ -1349,7 +1383,11 @@ def test_pp_env_refusals_know_whether_the_trainer_trains(monkeypatch):
         "env_layout",
         lambda: types.SimpleNamespace(pp = 2, tp = 1, env_vars = "UNSLOTH_PP_SIZE=2"),
     )
-    monkeypatch.setattr(pp_env, "pp_trainer_refusals", lambda *a, **k: seen.append(k["trains"]))
+    monkeypatch.setattr(
+        pp_env,
+        "pp_trainer_refusals",
+        lambda *a, **k: seen.append((k["train_dataset"], k["eval_dataset"])),
+    )
     trainer = object.__new__(transformers.Trainer)
     init = transformers.Trainer.__init__
     a = types.SimpleNamespace()
@@ -1359,7 +1397,7 @@ def test_pp_env_refusals_know_whether_the_trainer_trains(monkeypatch):
     )
     unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (None, a, None, [1]), {})
     unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (None, a), {"eval_dataset": [1]})
-    assert seen == [False, True, True, False]
+    assert seen == [(None, None), ([1], None), ([1], None), (None, [1])]
 
 
 def test_pending_expert_lora_counts_in_the_capability_query():
