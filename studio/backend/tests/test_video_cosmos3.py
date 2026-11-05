@@ -403,7 +403,13 @@ def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     monkeypatch.setattr(vc3, "logger", log)
     refusal = vc3.guardrail_refusal(repo)
     if repo == NANO and guardrail == "absent":
-        for part in (f"'{NANO}'", "pip install cosmos-guardrail", _GUARDRAIL_REPO, "HF_TOKEN", f"{_OPT_OUT_ENV}=0"):
+        for part in (
+            f"'{NANO}'",
+            "pip install cosmos-guardrail",
+            _GUARDRAIL_REPO,
+            "HF_TOKEN",
+            f"{_OPT_OUT_ENV}=0",
+        ):
             assert part in refusal, part
         assert vc3.guardrail_refusal(NANO, index = _ckpt(EDGE)["model_index"]) is None
     else:
@@ -796,7 +802,12 @@ def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_run
     with pytest.raises(ValueError) as refused:
         _loaded(NANO)
     message = str(refused.value)
-    for part in (f"'{NANO}'", f"https://huggingface.co/{_GUARDRAIL_REPO}", "HF_TOKEN", f"{_OPT_OUT_ENV}=0"):
+    for part in (
+        f"'{NANO}'",
+        f"https://huggingface.co/{_GUARDRAIL_REPO}",
+        "HF_TOKEN",
+        f"{_OPT_OUT_ENV}=0",
+    ):
         assert part in message, part
     assert "401 Client Error" not in message
     # Another repo's gate keeps its own error.
