@@ -528,8 +528,7 @@ class StreamToolCallHealer:
                 and _closed_signal_span(self._buffer) is None
             ):
                 parsed, spans = [], []
-            # A call closed inside a wrapper still open (Qwen3.5's <function=...> in <tool_call>):
-            # promoting it now would relay the wrapper's tags as text, so wait for the close.
+            # Qwen3.5's <function=...> closes inside a still-open <tool_call>; promoting it now would relay the wrapper as text.
             if (
                 parsed
                 and len(self._buffer) <= _MAX_HOLD_CHARS

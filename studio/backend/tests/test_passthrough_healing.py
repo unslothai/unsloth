@@ -353,7 +353,6 @@ def test_stream_keeps_a_bracket_call_inside_an_open_block_in_its_arguments():
 
 @pytest.mark.parametrize("step", [1, 5])
 def test_stream_drops_the_tool_call_wrapper_around_a_function_call(step):
-    # Qwen3.5 wraps <function=...> in <tool_call>; the inner call closes before the wrapper does.
     def call(command):
         return (
             "<tool_call>\n<function=Bash>\n<parameter=command>\n"

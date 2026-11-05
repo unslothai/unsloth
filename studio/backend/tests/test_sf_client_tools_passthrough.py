@@ -356,7 +356,6 @@ def test_nudge_retry_cut_at_length_keeps_the_cut(monkeypatch):
 
 @pytest.mark.parametrize("content", [None, ""])
 def test_call_only_turn_reaches_the_local_template_with_content(monkeypatch, content):
-    # Templates such as Qwen3's read message.content and raise on a call-only turn without it.
     backend = _ScriptedBackend(_fixed("done"))
     call = {
         "id": "c1",

@@ -294,7 +294,6 @@ test("an MLX model runs Claude Code and Codex like a GGUF", () => {
   const mlx = statusGgufVerdict("mlx-community/Qwen3-4B-4bit", false, true);
   assert.equal(mlx, true);
   assert.equal(pickCompatibleAgent([], "claude", mlx as boolean, VISIBLE_AGENTS), null);
-  // A server predating is_mlx still refuses a transformers model.
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false, undefined), false);
   assert.equal(statusGgufVerdict("unsloth/Qwen3-1.7B", false, false), false);
   assert.equal(statusGgufVerdict(null, false, true), null);
@@ -414,14 +413,11 @@ test("a root-loaded MLX resident keeps its root checkpoint instead of a folder",
     first: "2-bit",
     keepRoot: true,
   };
-  // A stale automatic folder or the listing's default would reload the shared model.
   assert.equal(pickAgentVariant(folders, choice), null);
-  // An explicit pick still wins.
   assert.equal(
     pickAgentVariant(folders, { ...choice, remembered: "4bit" }),
     "4bit",
   );
-  // Anything else picks as before: preferred, then default, then the first offered.
   assert.equal(
     pickAgentVariant(folders, { ...choice, keepRoot: false }),
     "2-bit",

@@ -268,7 +268,6 @@ function localGgufEntries(
   return entries;
 }
 
-// GGUF or MLX: both serve every agent here; a transformers model is never adopted.
 function activeAgentModelSelection(
   status: InferenceStatusResponse | null,
 ): { model: string; variant: string | null; named: boolean } | null {

@@ -19009,7 +19009,6 @@ async def _load_model_impl(
                 return reused
         from hub.utils.mlx_variants import is_precision_folder
 
-        # A precision-folder request (6-bit/) may reuse only that resident folder; a root request never does.
         if not is_direct_gguf_request and (
             not request.gguf_variant or is_precision_folder(request.gguf_variant)
         ):

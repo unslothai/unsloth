@@ -122,8 +122,7 @@ export function buildAgentShellCommands(
   };
 }
 
-// Codex (/v1/responses) and Claude Code (/v1/messages) run on llama-server or MLX, not transformers;
-// `isGguf` below means either.
+// `isGguf` below means GGUF or MLX: both serve /v1/messages and /v1/responses, transformers does not.
 export const GGUF_ONLY_AGENTS: readonly string[] = ["codex", "claude"];
 
 export function agentRunsOnActiveModel(
@@ -226,7 +225,7 @@ export function compatibilityFromSources(
   return resolveGgufCompatibility(fromStore, status.isGguf);
 }
 
-// An explicit pick wins; a root-loaded MLX resident keeps its root, since any folder reloads it at another precision.
+// A root-loaded MLX resident keeps its root: any folder would reload it at another precision.
 export function pickAgentVariant(
   available: ReadonlySet<string>,
   choice: {

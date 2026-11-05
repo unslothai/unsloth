@@ -2170,7 +2170,6 @@ def _resident_runtime_payload(status: dict, payload: dict) -> dict:
 
 
 def _resident_variant(status: dict) -> Optional[str]:
-    # An MLX resident reports its precision folder (6-bit) here, as a GGUF one reports its quant.
     return status.get("gguf_variant") if status.get("is_gguf") or status.get("is_mlx") else None
 
 
@@ -2890,11 +2889,9 @@ def _this_host_loads_mlx() -> bool:
 
 
 def _server_loads_mlx(base: str, key: str) -> bool:
-    # A non-GGUF model on an MLX host loads as MLX, which serves both agents; anything unknown keeps the GGUF gate.
     deadline = time.monotonic() + 30
     while True:
         try:
-            # Detection is deferred until asked for; each call waits only a short budget for it.
             health = _http_json("GET", f"{base}/api/health?detect_hardware=true", key, timeout = 30)
         except Exception:
             return False
@@ -2953,7 +2950,6 @@ def _preflight_agent_gguf(
     if not _is_hub_model_id(repo):
         return
     files = _hub_gguf_files(repo)
-    # A requested quant asks for GGUF, which an MLX load would silently drop.
     variant = gguf_variant or inline_variant
     asks_gguf = _asks_gguf_quant(variant) or repo.lower().endswith(".gguf")
     if files is not None and not files and (asks_gguf or not _this_host_loads_mlx()):
@@ -3072,7 +3068,6 @@ def _attach_gguf_check(
             and isinstance(info, dict)
             and info.get("variant_format") == "mlx"
         ):
-            # Folder names are case-sensitive on the Hub, unlike llama.cpp quant labels.
             folders = {row.get("quant") for row in variants if isinstance(row, dict)}
             if variant and variant.strip() not in folders:
                 _fail_gguf_variant_missing(candidate, variant, variants)
@@ -3094,7 +3089,6 @@ def _attach_gguf_check(
                 return
             if not variant and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    # GGUF weights the load cannot pick stay refused; only a GGUF-less repo may load as MLX.
                     if variants:
                         _fail_agent_needs_gguf(agent, candidate)
                     _refuse_non_gguf(agent, candidate, base, key, variant)
@@ -3174,7 +3168,6 @@ def _require_gguf_for_agent(agent: _GgufAgent, base: str, key: str, model_id: st
         return
     is_gguf = status.get("is_gguf")
     # InferenceStatusResponse declares is_gguf non-optional under a response_model, so a current server always sends it. Absent means "not that endpoint", never "non-GGUF".
-    # MLX serves /v1/messages and /v1/responses in process; only the transformers path is refused.
     if is_gguf is None or is_gguf or status.get("is_mlx"):
         return
     # is_gguf carries a False default, so an idle server answers False while naming no model. The request that follows gets the server's own "No GGUF model loaded" anyway.

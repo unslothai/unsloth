@@ -36,7 +36,6 @@ from typer.testing import CliRunner
 import unsloth_cli.commands.start as start
 
 BASE = "http://127.0.0.1:8888"
-# The autouse _gguf_only_host fixture replaces this on the module.
 _REAL_SERVER_LOADS_MLX = start._server_loads_mlx
 MODEL = {"id": "unsloth/gemma-4-26B-A4B-it-GGUF", "context_length": 131072}
 
@@ -1329,7 +1328,6 @@ def test_subagent_model_id_keeps_a_bare_id_for_an_mlx_folder(monkeypatch):
     )
     entry = {"id": "mlx-community/Qwen3-4B"}
     assert start._subagent_model_id(BASE, "key", entry, None, None) == "mlx-community/Qwen3-4B"
-    # An explicit folder, inline or by flag, would 404 the same way.
     assert start._subagent_model_id(BASE, "key", entry, f"{entry['id']}:bf16", None) == entry["id"]
     assert start._subagent_model_id(BASE, "key", entry, entry["id"], "bf16") == entry["id"]
 
@@ -5725,13 +5723,11 @@ def test_an_unchanged_mlx_folder_is_not_a_settings_change():
     assert start._load_settings_differ(
         status, start.LoadOptions(gguf_variant = "8bit"), frozenset({"gguf_variant"})
     )
-    # Folder names are case-sensitive: 6-BIT would load the root, so it is a change.
     assert start._load_settings_differ(
         status, start.LoadOptions(gguf_variant = "6-BIT"), frozenset({"gguf_variant"})
     )
     assert start._resident_serves_variant(status, "6-bit")
     assert not start._resident_serves_variant(status, "6-BIT")
-    # GGUF quant labels stay case-insensitive, as llama.cpp resolves them.
     assert start._resident_serves_variant({"is_gguf": True, "gguf_variant": "Q8_0"}, "q8_0")
 
 
@@ -11305,7 +11301,6 @@ def test_require_gguf_for_agent_accepts_an_mlx_model(monkeypatch, capsys):
         ),
         ({"device_type": "mac", "apple_silicon": False}, False),
         ({"device_type": "linux", "apple_silicon": False}, False),
-        # Hardware not yet detected: no platform fields at all.
         ({"status": "healthy"}, False),
         (OSError("down"), False),
     ],
@@ -11317,7 +11312,6 @@ def test_server_loads_mlx_reads_the_servers_platform(monkeypatch, health, loads_
 
 
 def test_server_loads_mlx_waits_out_hardware_detection(monkeypatch):
-    # A fresh server answers within a short budget, before detection has filled in the platform.
     answers = iter(
         [
             {"status": "healthy", "hardware_detecting": True},
@@ -11342,7 +11336,6 @@ def test_attach_check_defers_a_non_gguf_repo_on_an_mlx_server(monkeypatch, capsy
         start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit"
     )
     assert "needs a GGUF model" not in capsys.readouterr().err
-    # GGUF weights a variantless load cannot pick stay refused on an MLX server too.
     _fake_variants(
         monkeypatch,
         {
@@ -11353,13 +11346,11 @@ def test_attach_check_defers_a_non_gguf_repo_on_an_mlx_server(monkeypatch, capsy
     )
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CLAUDE_GGUF_AGENT, BASE, "sk-test", "/models/Foo-GGUF")
-    # A requested quant asks for GGUF: an MLX load would drop it, so an empty listing still refuses.
     _fake_variants(monkeypatch, {"variants": [], "loadable": None, "loadable_variants": None})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(
             start._CODEX_GGUF_AGENT, BASE, "sk-test", "mlx-community/Qwen3-4B-4bit", "Q8_0"
         )
-    # A .gguf file the server calls unloadable (a drafter it alone can place) never loads as MLX.
     monkeypatch.setattr(start, "_direct_gguf_companion_is_uncertain", lambda repo: True)
     _fake_variants(monkeypatch, {"variants": [], "loadable": False})
     with pytest.raises(typer.Exit):
@@ -11373,7 +11364,6 @@ def test_claude_preflight_accepts_non_gguf_repo_on_an_mlx_host(monkeypatch, caps
     monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
     start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit")
     assert "needs a GGUF model" not in capsys.readouterr().err
-    # A requested quant still needs GGUF weights, inline or by flag.
     with pytest.raises(typer.Exit):
         start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, "mlx-community/Qwen3-0.6B-4bit:Q8_0")
     with pytest.raises(typer.Exit):
@@ -11394,11 +11384,9 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:6-bit")
     start._preflight_agent_gguf(start._CODEX_GGUF_AGENT, repo, gguf_variant = "8bit")
     assert "needs a GGUF model" not in capsys.readouterr().err
-    # A missing folder would load the root checkpoint instead.
     with pytest.raises(typer.Exit):
         start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:4bit")
     assert "has no precision folder 4bit" in capsys.readouterr().err
-    # Hub folder names are case-sensitive: FP16 would 404 and load the root.
     with pytest.raises(typer.Exit):
         start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:8BIT")
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
@@ -11419,7 +11407,6 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     for wanted in ("Q8_0", "4bit", "6-BIT"):
         with pytest.raises(typer.Exit):
             start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, wanted)
-    # A root-only repo lists no folders, so any suffix names one it does not have.
     for answer in (
         {"variants": [], "loadable": False},
         {"variants": [], "loadable": None, "loadable_variants": None},

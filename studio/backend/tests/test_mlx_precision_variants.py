@@ -580,7 +580,6 @@ def test_offline_lists_a_cached_precision_folder(monkeypatch, tmp_path):
 def test_the_resident_folder_survives_the_worker_hop():
     from core.inference.orchestrator import _mirrored_model_entry
 
-    # The load route's same-folder reuse reads precision_folder off the parent's mirror.
     assert (
         _mirrored_model_entry({"precision_folder": "6-bit"}, _REPO)["precision_folder"] == "6-bit"
     )
