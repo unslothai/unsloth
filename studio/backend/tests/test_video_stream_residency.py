@@ -37,7 +37,6 @@ def test_applies_only_to_block_streamed_single_dit_wan_hunyuanvideo_and_ltx2_on_
     assert not _applies(family = "wan2.2-t2v-a14b", is_moe = True)
     assert _applies(family = "ltx-2")
     assert _applies(family = "ltx-2", offload_policy = "streaming")
-    # matched by name: LTX-2.5 (another decoder stack) and lookalike names stay out
     assert not _applies(family = "ltx-2.5")
     assert not _applies(family = "ltx-2-custom")
     assert not _applies(family = "ltx-2", is_moe = True)
