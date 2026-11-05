@@ -81,7 +81,10 @@ def test_the_exact_tier_keeps_stock_adaln_on_nvidia(fake_kernels, monkeypatch, d
     # speed "off" is the bit-exact reference: the bit-identical RoPE still installs, the AdaLN kernel does not.
     _nvidia(monkeypatch)
     rf.install_for_pipe(_PipeLike(), dtype, "cuda")
-    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda", adaln = False) == {"rope": True, "adaln": 0}
+    assert rf.install_for_pipe(_PipeLike(), dtype, "cuda", adaln = False) == {
+        "rope": True,
+        "adaln": 0,
+    }
     assert fmod.apply_rotary_emb is rf._ROPE_FNS[rf._MODULES[0]]
     assert nm.AdaLayerNormZero.forward is _STOCK_FWD["AdaLayerNormZero"]
 
@@ -262,7 +265,9 @@ def test_load_and_teardown_wiring():
         for mode in (None, "eager", "default"):
             ap.install_stage(
                 ap.STAGE_LOAD,
-                ap.PatchContext(pipe = pipe, dtype = "bf16", device = "cuda", logger = "log", speed_mode = mode),
+                ap.PatchContext(
+                    pipe = pipe, dtype = "bf16", device = "cuda", logger = "log", speed_mode = mode
+                ),
             )
             diffusion._uninstall_fused_dit_patches()
     finally:
