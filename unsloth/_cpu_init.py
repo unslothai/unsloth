@@ -22,6 +22,12 @@ DEVICE_COUNT = 0
 
 install_cpu_training_defaults()
 
+# The GPU route installs this from models/_utils.py: every_n_layers (dict or keyword, any transformers version)
+# kept across FastCPUModel's own gradient_checkpointing_enable re-calls (get_peft_model, for_training).
+from ._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
+
+patch_gradient_checkpointing_enable_kwargs()
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
