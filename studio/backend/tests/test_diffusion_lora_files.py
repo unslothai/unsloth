@@ -205,6 +205,89 @@ def test_an_embedding_lokr_is_refused_at_load(tmp_path):
     assert lf.kron_names(pipe) == ()
 
 
+class _Net(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.blocks = torch.nn.ModuleList([_Block(), _Block(24)])
+
+
+class _RecordingPipe:
+    def __init__(self, loads = True):
+        self.transformer = _Net()
+        self.loads = loads
+        self.loaded: dict = {}
+
+    def load_lora_weights(
+        self,
+        state,
+        adapter_name = None,
+    ):
+        if self.loads:
+            self.loaded[adapter_name] = dict(state)
+
+    def get_list_adapters(self):
+        return {"transformer": list(self.loaded)} if self.loaded else {}
+
+
+def test_kohya_keys_resolve_to_the_layer_they_name(tmp_path):
+    from safetensors.torch import save_file
+
+    a, b = torch.randn(2, 24), torch.randn(24, 2)
+    path = tmp_path / "kohya.safetensors"
+    save_file(
+        {
+            "lora_unet_blocks_1_proj_q.lora_down.weight": a,
+            "lora_unet_blocks_1_proj_q.lora_up.weight": b,
+            "lora_unet_blocks_1_proj_q.alpha": torch.tensor(1.0),
+            "lycoris_blocks_0_proj_q.lokr_w1": torch.randn(4, 3),
+            "lycoris_blocks_0_proj_q.lokr_w2": torch.randn(9, 8),
+        },
+        path,
+    )
+    pipe = _RecordingPipe()
+    lf.load_adapter(pipe, str(path), "k", "moss-image")
+    loaded = pipe.loaded["k"]
+    assert sorted(loaded) == [
+        "diffusion_model.blocks.1.proj.q.lora_A.weight",
+        "diffusion_model.blocks.1.proj.q.lora_B.weight",
+    ]
+    assert torch.allclose(loaded["diffusion_model.blocks.1.proj.q.lora_B.weight"], b * 0.5)
+    assert isinstance(pipe.transformer.blocks[0].proj["q"], lf.kron_linear_class())
+
+
+def test_a_lora_that_loads_into_no_layer_is_refused(tmp_path):
+    from safetensors.torch import save_file
+
+    path = tmp_path / "te_only.safetensors"
+    save_file(
+        {
+            "lora_te_layers_0_mlp_up.lora_down.weight": torch.randn(2, 8),
+            "lora_te_layers_0_mlp_up.lora_up.weight": torch.randn(8, 2),
+        },
+        path,
+    )
+    with pytest.raises(ValueError, match = "none of its LoRA keys"):
+        lf.load_adapter(_RecordingPipe(loads = False), str(path), "k", "moss-image")
+
+
+def test_a_dora_lokr_is_refused(tmp_path):
+    from safetensors.torch import save_file
+
+    path = tmp_path / "dora.safetensors"
+    save_file(
+        {
+            "diffusion_model.blocks.0.proj.q.lokr_w1": torch.randn(4, 3),
+            "diffusion_model.blocks.0.proj.q.lokr_w2": torch.randn(9, 8),
+            "diffusion_model.blocks.0.proj.q.dora_scale": torch.ones(1, 24),
+        },
+        path,
+    )
+    pipe = _RecordingPipe()
+    with pytest.raises(ValueError, match = "DoRA"):
+        lf.load_adapter(pipe, str(path), "k", "moss-image")
+    assert lf.kron_names(pipe) == ()
+
+
 def test_compiled_block_reads_a_new_lokr_weight():
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")

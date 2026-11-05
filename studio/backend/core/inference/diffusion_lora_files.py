@@ -17,6 +17,8 @@ KRON_ATTR = "_unsloth_kron_adapters"
 # Adapter names whose file held LoKR modules only: diffusers has no PEFT adapter of that name to set.
 KRON_ONLY_ATTR = "_unsloth_kron_only"
 _PREFIXES = ("diffusion_model.", "model.diffusion_model.", "transformer.")
+# Kohya / SimpleTuner keys: the reference layer path with its dots written as underscores.
+_KOHYA_PREFIXES = ("lora_unet_", "lycoris_")
 _LOKR_SUFFIXES = (
     "lokr_w1",
     "lokr_w2",
@@ -59,8 +61,9 @@ def split_lokr(state: dict) -> tuple[dict, dict]:
     for key, value in state.items():
         if _lokr_stem(key) is not None:
             continue
-        if key.endswith(".alpha") and key[: -len(".alpha")] in lokr:
-            lokr[key[: -len(".alpha")]]["alpha"] = value
+        stem, _, suffix = key.rpartition(".")
+        if suffix in ("alpha", "dora_scale") and stem in lokr:
+            lokr[stem][suffix] = value
             continue
         rest[key] = value
     return lokr, rest
@@ -265,6 +268,8 @@ def _kron_factors(parts: dict) -> tuple[Any, Any, float]:
         dim = int(parts["lokr_w2_b"].shape[0])
     if w1.dim() != 2 or w2.dim() != 2:
         raise ValueError("only Linear LoKR modules are supported")
+    if "dora_scale" in parts:
+        raise ValueError("LoKR modules trained with DoRA (dora_scale) are not supported")
     alpha = parts.get("alpha")
     scale = float(alpha) / dim if alpha is not None and dim else 1.0
     return w1.to(torch.float32), w2.to(torch.float32), scale
@@ -358,12 +363,51 @@ def _attach_lokr(pipe: Any, name: str, lokr: dict, family: Optional[str]) -> int
     return len(adapters)
 
 
+def _resolve_kohya_stem(pipe: Any, stem: str, family: Optional[str]) -> str:
+    """The one dotted path, of every way to re-split ``stem``'s underscores, that names a layer of this model."""
+    tokens = stem.split("_")
+    if len(tokens) > 16:
+        raise ValueError(f"LoRA key {stem} names no layer of this model")
+    found = []
+    for mask in range(1 << (len(tokens) - 1)):
+        path = tokens[0] + "".join(
+            ("." if mask >> i & 1 else "_") + token for i, token in enumerate(tokens[1:])
+        )
+        try:
+            _lokr_targets(pipe, path, family)
+        except Exception:  # noqa: BLE001 -- this split names no layer
+            continue
+        found.append(path)
+    if len(found) != 1:
+        raise ValueError(f"LoRA key {stem} names no single layer of this model")
+    return found[0]
+
+
+def _dotted_kohya_keys(pipe: Any, state: dict, family: Optional[str]) -> dict:
+    out: dict = {}
+    paths: dict = {}
+    for key, value in state.items():
+        prefix = next((p for p in _KOHYA_PREFIXES if key.startswith(p)), None)
+        if prefix is None:
+            out[key] = value
+            continue
+        stem, _, suffix = key[len(prefix) :].partition(".")
+        if stem not in paths:
+            paths[stem] = _resolve_kohya_stem(pipe, stem, family)
+        out[f"diffusion_model.{paths[stem]}.{suffix}"] = value
+    return out
+
+
+def _adapter_loaded(pipe: Any, name: str) -> bool:
+    return any(name in names for names in (pipe.get_list_adapters() or {}).values())
+
+
 def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None:
     """One file under ``name``: plain LoRA via ``pipe.load_lora_weights``, LoKR modules as ``KronLinear`` slots."""
     if family not in NORMALIZED_FAMILIES:
         pipe.load_lora_weights(path, adapter_name = name)
         return
-    state = read_lora_file(path)
+    state = _dotted_kohya_keys(pipe, read_lora_file(path), family)
     lokr, rest = split_lokr(state)
     plain = normalize_lora(rest, family)
     if not any(".lora_" in k for k in plain):
@@ -377,6 +421,9 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
             _rewrap_kron(wrappers)
             if wrappers:
                 _refresh_group_offload(_kron_roots(pipe))
+        # diffusers drops keys outside the components it loads into without an error.
+        if not _adapter_loaded(pipe, name):
+            raise ValueError(f"{name}: none of its LoRA keys name a layer of this model")
     if lokr:
         attached = _attach_lokr(pipe, name, lokr, family)
         _refresh_group_offload(_kron_roots(pipe))
