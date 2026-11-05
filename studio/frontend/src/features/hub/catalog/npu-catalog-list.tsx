@@ -10,6 +10,7 @@ import {
   npuDownloadLabel,
   npuResumeLabel,
   npuRowsFor,
+  npuRuntimeLabel,
   npuSizeLabel,
   useNpuCatalog,
 } from "@/features/npu";
@@ -30,6 +31,9 @@ export function NpuCatalogList({
 }) {
   const catalog = useNpuCatalog(source);
   if (!catalog) return null;
+  const runtime = catalog.ready
+    ? npuRuntimeLabel(catalog.status.versions)
+    : null;
 
   const body = () => {
     if (!catalog.ready) return <NpuSetupNotice catalog={catalog} />;
@@ -70,6 +74,14 @@ export function NpuCatalogList({
       className="mx-auto flex min-h-0 w-full max-w-[var(--hub-measure)] flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-3"
     >
       {body()}
+      {runtime ? (
+        <p
+          data-testid="hub-npu-runtime"
+          className="mt-auto px-3 pt-4 text-ui-11 text-muted-foreground/70"
+        >
+          {runtime}
+        </p>
+      ) : null}
     </div>
   );
 }

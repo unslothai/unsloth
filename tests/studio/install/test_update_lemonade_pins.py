@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -41,9 +43,9 @@ def _release(tag: str, names: dict[str, str], **overrides) -> dict:
     return {"tag_name": tag, "assets": assets}
 
 
-def _hasher(url: str) -> tuple[str, int]:
+def _hasher(url: str, glibc = None) -> tuple:
     data = _blob(url.rsplit("/", 1)[1])
-    return hashlib.sha256(data).hexdigest(), len(data)
+    return hashlib.sha256(data).hexdigest(), len(data), glibc
 
 
 def _newer(version: str) -> str:
@@ -65,7 +67,7 @@ def _releases(lemonade: str, flm: str, **overrides):
         ),
         "ROCm/FastFlowLM": _release(flm, up._fastflowlm_assets(flm.lstrip("v")), **overrides),
     }
-    return lambda repo: by_repo[repo]
+    return lambda repo: [by_repo[repo]]
 
 
 def test_newer_releases_move_both_pins_in_the_installers_format():
@@ -125,8 +127,8 @@ def test_an_asset_without_a_published_digest_is_refused():
 
 def test_a_release_missing_an_asset_is_refused():
     release = _release(NEW_FLM, {"linux-x64": f"fastflowlm_{NEW_FLM[1:]}_linux.tar.gz"})
-    releases = {"lemonade-sdk/lemonade": {"tag_name": "v1.0.0", "assets": []}}
-    releases["ROCm/FastFlowLM"] = release
+    releases = {"lemonade-sdk/lemonade": [{"tag_name": "v1.0.0", "assets": []}]}
+    releases["ROCm/FastFlowLM"] = [release]
     with pytest.raises(RuntimeError, match = "windows_amd64.zip"):
         up.update_pins(lp.load_pins(), releases.__getitem__, _hasher)
 
@@ -134,7 +136,7 @@ def test_a_release_missing_an_asset_is_refused():
 def test_write_is_idempotent_and_only_limits_the_sections(tmp_path, monkeypatch):
     path = tmp_path / "pins.json"
     path.write_text(json.dumps(lp.load_pins(), indent = 2) + "\n", encoding = "utf-8")
-    monkeypatch.setattr(up, "fetch_latest_release", _releases(NEW_LEMONADE, NEW_FLM))
+    monkeypatch.setattr(up, "fetch_stable_releases", _releases(NEW_LEMONADE, NEW_FLM))
     monkeypatch.setattr(up, "hash_asset", _hasher)
     assert up.main(["--pins", str(path), "--check"]) == 1
     assert up.main(["--pins", str(path), "--write", "--only", "fastflowlm"]) == 0
@@ -145,3 +147,86 @@ def test_write_is_idempotent_and_only_limits_the_sections(tmp_path, monkeypatch)
     before = path.read_text(encoding = "utf-8")
     assert up.main(["--pins", str(path), "--write", "--only", "fastflowlm"]) == 0
     assert path.read_text(encoding = "utf-8") == before
+
+
+def _lemonade_only(*tags: str):
+    releases = [_release(tag, up._lemonade_assets(tag.lstrip("v"))) for tag in tags]
+    return lambda repo: releases if repo == "lemonade-sdk/lemonade" else []
+
+
+def _glibc_by_version(floors: dict[str, tuple[int, int]]):
+    """A hasher whose Linux tarballs need the glibc given per release version."""
+
+    def hasher(url: str) -> tuple:
+        name = url.rsplit("/", 1)[1]
+        glibc = next((g for v, g in floors.items() if f"-{v}-ubuntu" in name), None)
+        return _hasher(url, glibc)
+
+    return hasher
+
+
+def test_a_release_needing_a_newer_glibc_falls_back_to_the_newest_that_runs(capsys):
+    pins = lp.load_pins()
+    major = up.version_key(pins["lemonade"]["version"])[0]
+    broken, good, older = f"{major + 2}.0.1", f"{major + 1}.0.2", f"{major + 1}.0.1"
+    hasher = _glibc_by_version({broken: (2, 43), good: (2, 38), older: (2, 35)})
+    releases = _lemonade_only(f"v{older}", f"v{broken}", f"v{good}")
+    new, changes = up.update_pins(pins, releases, hasher, only = "lemonade")
+    assert changes == [f"lemonade: {pins['lemonade']['version']} -> {good}"]
+    assert new["lemonade"]["version"] == good
+    assert "needs glibc 2.43 > 2.39" in capsys.readouterr().err
+
+
+def test_only_releases_needing_a_newer_glibc_change_nothing():
+    pins = lp.load_pins()
+    broken = _newer(pins["lemonade"]["version"])
+    hasher = _glibc_by_version({broken[1:]: (2, 40)})
+    assert up.update_pins(pins, _lemonade_only(broken), hasher, only = "lemonade") == (pins, [])
+
+
+def test_the_glibc_limit_itself_is_accepted():
+    pins = lp.load_pins()
+    tag = _newer(pins["lemonade"]["version"])
+    hasher = _glibc_by_version({tag[1:]: up.MAX_LINUX_GLIBC})
+    _, changes = up.update_pins(pins, _lemonade_only(tag), hasher, only = "lemonade")
+    assert changes == [f"lemonade: {pins['lemonade']['version']} -> {tag[1:]}"]
+
+
+def test_candidate_tags_are_not_releases():
+    pins = lp.load_pins()
+    newer = _newer(pins["lemonade"]["version"])
+    assert (
+        up.newer_releases([{"tag_name": "candidate-" + newer}], pins["lemonade"]["version"]) == []
+    )
+
+
+def _tarball(files: dict[str, bytes]) -> io.BytesIO:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj = buffer, mode = "w:gz") as archive:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    buffer.seek(0)
+    return buffer
+
+
+def test_the_glibc_floor_reads_only_elf_files():
+    elf = b"\x7fELF" + b"\0" * 60 + b"GLIBC_2.2.5\0GLIBC_2.38\0GLIBC_2.34\0"
+    lib = b"\x7fELF" + b"\0" * 60 + b"GLIBC_2.43\0"
+    script = b"#!/bin/sh\n# needs GLIBC_2.99\n"
+    assert up.tar_glibc_floor(_tarball({"x/lemond": elf, "x/flm": script})) == (2, 38)
+    assert up.tar_glibc_floor(_tarball({"x/lemond": elf, "x/lib/libfoo.so": lib})) == (2, 43)
+    assert up.tar_glibc_floor(_tarball({"x/README": b"GLIBC_2.50"})) is None
+
+
+def test_a_digest_mismatch_is_refused_even_when_glibc_would_skip_it():
+    pins = lp.load_pins()
+    tag = _newer(pins["lemonade"]["version"])
+    name = f"lemonade-embeddable-{tag[1:]}-ubuntu-x64.tar.gz"
+    release = _release(
+        tag, up._lemonade_assets(tag[1:]), **{name: {"digest": "sha256:" + "0" * 64}}
+    )
+    hasher = _glibc_by_version({tag[1:]: (2, 43)})
+    with pytest.raises(RuntimeError, match = "GitHub publishes"):
+        up.update_pins(pins, lambda repo: [release], hasher, only = "lemonade")

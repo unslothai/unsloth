@@ -10,6 +10,7 @@ export {
   npuDownloadLabel,
   npuResumeLabel,
   npuRowsFor,
+  npuRuntimeLabel,
   npuSizeLabel,
 } from "./api";
 export { NpuSetupNotice } from "./npu-setup-notice";
