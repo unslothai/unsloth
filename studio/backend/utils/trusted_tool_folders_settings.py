@@ -47,6 +47,9 @@ def _refusal(real: str) -> "str | None":
         return "a system folder, your home folder, or the folder holding every home"
     if any(os_sandbox._paths_overlap(real, root) for root in os_sandbox.studio_state_roots()):
         return "Unsloth's own data folder, or a folder holding it"
+    # The sandbox would drop it at launch, so saving it would report trust that never applies.
+    if not os_sandbox._grantable_read_roots((real,)):
+        return "a folder with a credential file (.env, token) or a Hugging Face token at its top"
     return None
 
 

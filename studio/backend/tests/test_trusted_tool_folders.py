@@ -229,6 +229,15 @@ class TestSaving:
                 trusted.set_trusted_tool_folders([str(value)])
         assert store == {}
 
+    @pytest.mark.parametrize("name", [".env", "token", ".git-credentials"])
+    def test_refuses_a_folder_the_sandbox_would_not_grant(self, scratch, store, name):
+        folder = scratch / "tools"
+        folder.mkdir()
+        (folder / name).write_text("x")
+        with pytest.raises(ValueError, match = "credential"):
+            trusted.set_trusted_tool_folders([str(folder)])
+        assert store == {}
+
     def test_refuses_a_file(self, scratch, store):
         path = scratch / "tool.sh"
         path.write_text("x")
