@@ -481,7 +481,10 @@ def test_malformed_cards_are_read_or_refused_cleanly():
 
 
 def test_a_named_lorebook_is_refused_not_imported_as_a_character():
-    for entries in ({"0": {"uid": 0, "key": ["Gull Rock"], "content": "A lighthouse."}}, [{"keys": ["a"], "content": "b"}]):
+    for entries in (
+        {"0": {"uid": 0, "key": ["Gull Rock"], "content": "A lighthouse."}},
+        [{"keys": ["a"], "content": "b"}],
+    ):
         book = {"name": "Saltmere Harbor", "entries": entries}
         with pytest.raises(cards.CardError, match = "lorebook"):
             cards.parse_card_file(json.dumps(book).encode(), "harbor-lore.json")
@@ -530,9 +533,7 @@ def test_starter_characters_arrive_once_with_portraits_and_stay_deleted(client):
     rin = next(c for c in starters if c["name"] == "Rin Takeda")
     full = client.get(f"/api/characters/{rin['id']}").json()
     assert full["firstMes"] and full["alternateGreetings"] and full["characterBook"]["entries"]
-    assert (
-        client.get(f"/api/characters/{rin['id']}/avatar").headers["content-type"] == "image/webp"
-    )
+    assert client.get(f"/api/characters/{rin['id']}/avatar").headers["content-type"] == "image/webp"
 
     # A second load adds nothing, and a deleted starter does not come back.
     assert client.delete(f"/api/characters/{rin['id']}").status_code == 204
