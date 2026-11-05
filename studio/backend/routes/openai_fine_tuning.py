@@ -1209,7 +1209,10 @@ async def list_fine_tuning_jobs(
         # Started meanwhile but not yet live or in history (a loading batch): keep its cursor valid.
         if alias in now or (
             alias not in listed
-            and (run is None or await asyncio.to_thread(get_run, run[0]) is None)
+            and (
+                run is None
+                or (run[0] not in live and await asyncio.to_thread(get_run, run[0]) is None)
+            )
         ):
             pending.append(now.get(alias, job))
     return await asyncio.to_thread(

@@ -1926,3 +1926,40 @@ def test_a_cursor_on_a_batch_member_that_starts_during_the_request_still_pages(
 
     jobs, seen = _run(flow())
     assert seen == [jobs[1].id, jobs[0].id, "ftjob_20261021_101500_ab12cd34"]
+
+
+def test_a_batch_member_listed_by_run_id_mid_request_is_not_listed_twice(batch_queue, monkeypatch):
+    client, _calls, _live, gpu, _backend = batch_queue
+    save_alias, get_run = openai_fine_tuning._save_alias, openai_fine_tuning.get_run
+    first_saved, release = threading.Event(), threading.Event()
+
+    def save_alias_held(alias, *args):
+        if not first_saved.is_set():
+            first_saved.set()
+            release.wait(timeout = 30)
+        save_alias(alias, *args)
+
+    def get_run_saving_meanwhile(run_id):
+        if run_id.endswith("member00") and not release.is_set():
+            release.set()
+            for _ in range(300):
+                if not openai_fine_tuning._ALIASES:
+                    break
+                threading.Event().wait(0.1)
+        return get_run(run_id)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = [await _create(client, uploaded.id, suffix = s) for s in "ab"]
+        monkeypatch.setattr(openai_fine_tuning, "_save_alias", save_alias_held)
+        monkeypatch.setattr(openai_fine_tuning, "get_run", get_run_saving_meanwhile)
+        gpu["busy"] = False
+        drain = asyncio.ensure_future(openai_fine_tuning._drain_once())
+        await asyncio.to_thread(first_saved.wait, 30)
+        listed = await client.fine_tuning.jobs.list()
+        await drain
+        return jobs, listed
+
+    jobs, listed = _run(flow())
+    ids = [j.id for j in listed.data]
+    assert len(ids) == len(set(ids)) == 2
