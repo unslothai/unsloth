@@ -1005,3 +1005,27 @@ def test_a_column_trained_as_the_system_message_is_not_guessed_as_the_question(m
     ctx.inputs["checkpoint"] = {"kind": "checkpoint", "name": "run-1", "system_column": "prompt"}
     asyncio.run(benchmark.benchmark(ctx))
     assert sent[-1]["recipe"]["prompt_column"] == "prompt"
+
+
+def test_a_whole_conversation_hold_out_is_scored_on_its_closing_answer(monkeypatch):
+    async def loaded(ctx):
+        return "run-1", False
+
+    async def read_rows(ctx, dataset, limit):
+        return [
+            {
+                "messages": [
+                    {"role": "user", "content": "Capital of France?"},
+                    {"role": "assistant", "content": "Paris"},
+                ]
+            }
+        ]
+
+    monkeypatch.setattr(benchmark, "_load_target", loaded)
+    monkeypatch.setattr(benchmark, "_read_rows", read_rows)
+    sent = []
+    # Reference match, no columns set: a standard SFT hold-out scores as it is.
+    asyncio.run(benchmark.benchmark(_Ctx(_routes(sent))))
+    spec = sent[0]["recipe"]
+    assert spec["prompt_column"] == "messages" and spec["reference_column"] is None
+    assert spec["scorer"] == "reference"

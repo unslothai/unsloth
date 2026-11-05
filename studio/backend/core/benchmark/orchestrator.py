@@ -327,6 +327,13 @@ class BenchmarkOrchestrator:
             self._reserved_until = time.monotonic() + ttl
             self._reservation_stopped = False
             self._run_token = token
+            # The last run's logs, outcome and progress are its owner's: cleared before the slot
+            # (and what it shows) passes to this caller, who may be another account.
+            self._log_buffer.clear()
+            self._run_start_seq = self._log_seq
+            self._last_error = None
+            self._last_op_status = None
+            clear_progress()
             self._result_account = account if account is not None else current_account()
             return True
 

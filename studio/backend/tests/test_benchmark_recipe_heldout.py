@@ -609,3 +609,29 @@ def test_a_set_system_prompt_replaces_a_system_column_too():
     assert run_benchmark({**spec, "system_override": True}, chat = chat)["candidate"]["passed"] == 1
     # Not an override: the row's own system message wins, as training sent it.
     assert run_benchmark(spec, chat = chat)["candidate"]["passed"] == 0
+
+
+def test_a_whole_conversation_is_asked_without_its_answer_and_scored_on_it():
+    asked, judged = [], []
+
+    def chat(target, messages):
+        if target == "judge":
+            judged.append(messages[-1]["content"])
+            return "PASS"
+        asked.append(messages)
+        return "Paris"
+
+    turns = [
+        {"role": "user", "content": "Capital of France?"},
+        {"role": "assistant", "content": "Paris"},
+    ]
+    rows = [{"messages": turns}]
+    spec = {"rows": rows, "prompt_column": "messages", "scorer": "reference"}
+    result = run_benchmark(spec, chat = chat)
+    # The held-out answer is never sent, and it is what the answer is scored against.
+    assert asked[0] == turns[:1]
+    assert result["candidate"]["passed"] == 1
+    assert result["samples"]["candidate"][0]["question"] == "Capital of France?"
+    assert result["samples"]["candidate"][0]["target"] == "Paris"
+    run_benchmark({**spec, "scorer": "judge"}, chat = chat)
+    assert "Instruction:\nCapital of France?\n\nReference answer:\nParis" in judged[0]

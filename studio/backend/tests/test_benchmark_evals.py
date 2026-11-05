@@ -617,3 +617,19 @@ def test_a_cancel_token_stops_only_the_run_started_with_it(monkeypatch):
     # Without a token, Stop still cancels whatever is running, as the Evals page does.
     backend.try_begin(None, "mine")
     assert backend.cancel()
+
+
+def test_a_reservation_starts_clean_of_the_last_runs_logs_and_outcome(monkeypatch):
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {"t": {}}})
+    seq = backend.try_begin(account = "A", token = "a")
+    backend._append_log("stderr", "/home/a/models/secret.gguf failed to load")
+    backend.finish(seq, error = "A's diagnostic")
+    assert backend.get_last_error() == "A's diagnostic"
+    # B's Flows Benchmark reserves the slot: nothing of A's run is shown to it.
+    assert backend.reserve(account = "B", token = "b")
+    assert backend.get_logs_since(backend.get_run_start_seq())[0] == []
+    assert backend.get_logs_since(0)[0] == []
+    assert backend.get_last_error() is None and backend.get_last_op_status() is None
+    # B's load fails and frees the slot: A's error still is not B's.
+    assert backend.cancel(token = "b")
+    assert backend.get_last_error() is None

@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from typing import Any, Optional
 from urllib.parse import quote
 
-from core.benchmark.recipe_heldout import prompt_text, reference_text
+from core.benchmark.recipe_heldout import cell_messages, prompt_text, row_reference, split_answer
 from core.flows.nodes._common import note_loaded, resident_name
 from utils.datasets.cells import cell_text
 from core.flows.registry import FlowNodeError, NodeContext, handler
@@ -403,6 +403,13 @@ def _system_prompt(ctx: NodeContext) -> str:
 SYSTEM_GUESSES = ("system", "system_prompt")
 
 
+def _conversation_column(rows: list[dict], column: Optional[str]) -> bool:
+    """Whether ``column`` holds whole conversations that close on an assistant answer."""
+    cell = next((r[column] for r in rows if column and r.get(column) is not None), None)
+    turns = cell_messages(cell) if cell is not None else None
+    return bool(turns) and bool(split_answer(turns)[1].strip())
+
+
 def _system_column(ctx: NodeContext, columns: list[str]) -> Optional[str]:
     """The column whose value was each training row's system message: the one the checkpoint's
     mapping named, else one named like a system prompt (training's formatter finds it by name).
@@ -457,6 +464,10 @@ async def _recipe_heldout(
     guessable = [c for c in columns if c not in unasked]
     named_prompt = str(ctx.params.get("prompt_column") or "").strip()
     prompt_col = guess_column(columns if named_prompt else guessable, named_prompt, PROMPT_GUESSES)
+    if not prompt_col and not named_prompt:
+        # A whole-conversation SFT row (`messages`, `conversations`): its turns are the question
+        # and its closing assistant answer the reference.
+        prompt_col = next((c for c in guessable if _conversation_column(rows, c)), None)
     if not prompt_col:
         raise FlowNodeError("Set the prompt column under Advanced: no column looks like a prompt")
     if (
@@ -480,7 +491,7 @@ async def _recipe_heldout(
     # The failures output keeps the original rows.
     asked = _labelled(asked, (prompt_col, reference_col), ctx)
     scorer = SCORERS.get(str(ctx.params.get("scorer") or ""), "reference")
-    if scorer == "reference" and not reference_col:
+    if scorer == "reference" and not reference_col and not _conversation_column(asked, prompt_col):
         raise FlowNodeError(
             "Reference match needs a reference column; set it under Advanced or use LLM judge"
         )
@@ -536,7 +547,7 @@ async def _recipe_heldout(
             {
                 "doc_id": i,
                 "question": prompt_text(asked[i].get(prompt_col)),
-                "target": reference_text(asked[i].get(reference_col)) if reference_col else None,
+                "target": row_reference(asked[i], prompt_col, reference_col) or None,
                 "raw_response": err,
             }
             for i, err in errored.items()
