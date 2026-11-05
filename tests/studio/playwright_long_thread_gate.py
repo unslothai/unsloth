@@ -6,10 +6,11 @@
 The production build of smoke-thread-weight.html (vite.long-thread.config.ts) is seeded with an
 agent-style history (open reasoning, tool cards, web sources, compaction markers, code, KaTeX,
 tables) inside the app's own ancestors (`?shell=1`). The same page is measured at a small and a
-large size, interleaved, and the gate compares Chromium's style-recalc time per keystroke and per
-wheel step between them. A ratio, not an absolute budget, so a slow runner does not fail it: work
-that is independent of the chat's length stays near 1x, while a selector that walks the whole
-thread (#16603: a descendant `:has()` on the workspace) grows with it.
+large size, interleaved. While keys are typed, Chromium's selector statistics give the time spent
+matching selectors. Two checks, both blind to how fast the runner is: total matching time per
+keystroke must not grow with the chat (a ratio), and `:has()` matching per keystroke must stay
+tiny in the large chat. A descendant `:has()` on an element that holds the thread (#16603) walks
+every message on every keystroke: about 100 ms per key against 0.2 ms once fixed.
 """
 
 from __future__ import annotations
@@ -34,14 +35,14 @@ FRONTEND = REPO / "studio" / "frontend"
 DIST = Path(os.environ.get("LONG_THREAD_DIST", REPO / ".playwright-cli" / "long-thread-production"))
 SMALL = int(os.environ.get("LONG_THREAD_SMALL", "40"))
 LARGE = int(os.environ.get("LONG_THREAD_LARGE", "200"))
-REPEATS = int(os.environ.get("LONG_THREAD_REPEATS", "3"))
-# Measured on #16603: a whole-thread `:has()` makes per-keystroke style cost grow with the chat
-# (about 4x at 4x the turns); without it the cost stays flat, within the noise of a loaded host.
-# A floor keeps sub-millisecond noise from turning into a large ratio. Scroll is reported, not
-# gated: wheel steps already restyle every hover-styled control in the thread on main (separate,
-# older cost), so its ratio cannot tell a new regression apart.
-MAX_TYPE_RATIO = float(os.environ.get("LONG_THREAD_MAX_TYPE_RATIO", "2.5"))
-TYPE_FLOOR_MS = 1.0
+REPEATS = int(os.environ.get("LONG_THREAD_REPEATS", "2"))
+# Measured on #16603 (40 -> 200 turns, per keystroke): selector matching 134 -> 626 ms and :has()
+# 36 -> 108 ms with the whole-thread `:has()`; 0.9 -> 1.0 ms and 0.22 -> 0.24 ms without it.
+# The floor keeps sub-millisecond noise from becoming a large ratio. Style-recalc time and scroll
+# are reported, not gated: on a loaded runner they move with the host.
+MAX_MATCH_RATIO = float(os.environ.get("LONG_THREAD_MAX_MATCH_RATIO", "2.0"))
+MATCH_FLOOR_MS = 2.0
+MAX_HAS_MS = float(os.environ.get("LONG_THREAD_MAX_HAS_MS", "5.0"))
 SCROLL_FLOOR_MS = 2.0
 KEYS = "the quick brown fox jumps over"
 SEED_OPTIONS = {"agent": {"rounds": 2, "compactionEvery": 10, "sources": True, "rich": True}}
@@ -102,12 +103,38 @@ def measure(browser, base: str, turns: int) -> dict:
     page.keyboard.press("x")
     page.keyboard.press("Backspace")
     page.wait_for_timeout(500)
+    events: list = []
+    done: list = []
+    cdp.on("Tracing.dataCollected", lambda d: events.extend(d["value"]))
+    cdp.on("Tracing.tracingComplete", lambda d: done.append(True))
     m0 = metrics(cdp)
+    cdp.send(
+        "Tracing.start",
+        {
+            "traceConfig": {
+                "includedCategories": ["devtools.timeline", "disabled-by-default-blink.debug"]
+            },
+            "transferMode": "ReportEvents",
+        },
+    )
     for ch in KEYS:
         page.keyboard.press("Space" if ch == " " else ch)
         page.wait_for_timeout(60)
     page.wait_for_timeout(300)
+    cdp.send("Tracing.end")
+    while not done:
+        page.wait_for_timeout(50)
     m1 = metrics(cdp)
+    match_us = has_us = 0.0
+    worst: dict[str, float] = {}
+    for event in events:
+        stats = (event.get("args") or {}).get("selector_stats")
+        for timing in (stats or {}).get("selector_timings", []):
+            us = timing.get("elapsed (us)", 0)
+            match_us += us
+            if ":has(" in timing["selector"]:
+                has_us += us
+                worst[timing["selector"]] = worst.get(timing["selector"], 0) + us
     typed_ok = page.evaluate("() => window.__threadWeight.composerText()") == KEYS
     # Scroll from the middle, so both sizes move through the same kind of content instead of the
     # short chat running into its top and turning the remaining wheel steps into no-ops.
@@ -128,6 +155,9 @@ def measure(browser, base: str, turns: int) -> dict:
         "turns": turns,
         "shape": shape,
         "typed_ok": typed_ok,
+        "match_ms": match_us / 1000 / len(KEYS),
+        "has_ms": has_us / 1000 / len(KEYS),
+        "worst_has": max(worst, key = worst.get)[:200] if worst else "",
         "type_style_ms": 1000 * (m1["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / len(KEYS),
         "type_layout_ms": 1000 * (m1["LayoutDuration"] - m0["LayoutDuration"]) / len(KEYS),
         "scroll_style_ms": 1000 * (m2["RecalcStyleDuration"] - m1["RecalcStyleDuration"]) / steps,
@@ -168,28 +198,34 @@ def main() -> int:
             failures.append(f"fixture did not render what it claims at {turns} turns: {shape}")
         if not all(x["typed_ok"] for x in results):
             failures.append(f"typed text was lost at {turns} turns")
-    type_ratio = max(med(LARGE, "type_style_ms"), TYPE_FLOOR_MS) / max(
-        med(SMALL, "type_style_ms"), TYPE_FLOOR_MS
+    match_ratio = max(med(LARGE, "match_ms"), MATCH_FLOOR_MS) / max(
+        med(SMALL, "match_ms"), MATCH_FLOOR_MS
     )
-    scroll_ratio = max(med(LARGE, "scroll_style_ms"), SCROLL_FLOOR_MS) / max(
-        med(SMALL, "scroll_style_ms"), SCROLL_FLOOR_MS
+    large_has = med(LARGE, "has_ms")
+    print(
+        f"selector matching per keystroke: {SMALL} turns {med(SMALL, 'match_ms'):.2f} ms, {LARGE} turns "
+        f"{med(LARGE, 'match_ms'):.2f} ms, ratio {match_ratio:.2f} (max {MAX_MATCH_RATIO})"
+    )
+    print(f":has() matching per keystroke at {LARGE} turns: {large_has:.2f} ms (max {MAX_HAS_MS})")
+    print(
+        f"style recalc per keystroke, tracing on (reported only): {med(SMALL, 'type_style_ms'):.2f} -> {med(LARGE, 'type_style_ms'):.2f} ms"
     )
     print(
-        f"style per keystroke: {SMALL} turns {med(SMALL, 'type_style_ms'):.2f} ms, {LARGE} turns "
-        f"{med(LARGE, 'type_style_ms'):.2f} ms, ratio {type_ratio:.2f} (max {MAX_TYPE_RATIO})"
+        f"style recalc per wheel step (reported only): {med(SMALL, 'scroll_style_ms'):.2f} -> {med(LARGE, 'scroll_style_ms'):.2f} ms"
     )
-    print(
-        f"style per wheel step: {SMALL} turns {med(SMALL, 'scroll_style_ms'):.2f} ms, {LARGE} turns "
-        f"{med(LARGE, 'scroll_style_ms'):.2f} ms, ratio {scroll_ratio:.2f} (reported only)"
-    )
-    if type_ratio > MAX_TYPE_RATIO:
+    if match_ratio > MAX_MATCH_RATIO:
         failures.append(
-            f"typing style cost grows with the chat: {type_ratio:.2f}x at {LARGE // SMALL}x the turns"
+            f"selector matching per keystroke grows with the chat: {match_ratio:.2f}x at {LARGE // SMALL}x the turns"
+        )
+    if large_has > MAX_HAS_MS:
+        worst = max(runs[LARGE], key = lambda x: x["has_ms"])["worst_has"]
+        failures.append(
+            f":has() matching costs {large_has:.1f} ms per keystroke at {LARGE} turns; worst: {worst}"
         )
     for f in failures:
         print(f"FAIL: {f}")
     if not failures:
-        print("PASS: typing cost does not grow with the chat")
+        print("PASS: selector work per keystroke does not grow with the chat")
     return 1 if failures else 0
 
 

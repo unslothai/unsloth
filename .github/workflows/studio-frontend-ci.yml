@@ -578,7 +578,7 @@ jobs:
       # chat; work that does not depend on its length stays flat, so a slow runner cannot fail it.
       - name: Browser gate for long-chat typing cost
         working-directory: ${{ github.workspace }}
-        timeout-minutes: 20
+        timeout-minutes: 30
         run: python3 tests/studio/playwright_long_thread_gate.py
 
       # A failure means the click that dismissed a menu also reached the control under it.
