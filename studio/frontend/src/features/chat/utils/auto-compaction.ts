@@ -50,14 +50,12 @@ export function apiCompactionRequestFields(options: {
   context_window?: number;
 } {
   const { autoCompactEnabled, contextLength, compactNow = false } = options;
-  if (compactNow) {
-    return { context_overflow: "truncate_oldest", compact_context: true };
-  }
-  if (!autoCompactEnabled) return {};
+  if (!autoCompactEnabled && !compactNow) return {};
   // without a catalogued window, the backend reads the self-hosted server's reported window
-  if (!contextLength || contextLength <= 0) return { context_overflow: "truncate_oldest" };
+  if (!contextLength || contextLength <= 0) return { context_overflow: "truncate_oldest", ...(compactNow ? { compact_context: true } : {}) };
   return {
     context_overflow: "truncate_oldest",
+    ...(compactNow ? { compact_context: true } : {}),
     compaction_threshold: Math.min(
       API_COMPACTION_THRESHOLD_MAX,
       Math.floor(contextLength * (1 - API_COMPACTION_HEADROOM)),

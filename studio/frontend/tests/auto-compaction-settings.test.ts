@@ -187,7 +187,7 @@ test("an explicit external /compact request bypasses the automatic-compaction se
       contextLength: 8192,
       compactNow: true,
     }),
-    { context_overflow: "truncate_oldest", compact_context: true },
+    { context_overflow: "truncate_oldest", compact_context: true, compaction_threshold: 6144, context_window: 8192 },
   );
 });
 
