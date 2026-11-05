@@ -5682,8 +5682,7 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 	}
 }
 
-/* The browser floating over the chat; floating-preview.ts places it. Unlayered, over the pop
-   surface's hidden state. No transition: a drag's transform must drop without easing back. */
+/* Placed by floating-preview.ts. No transition: a drag's transform must drop without easing back. */
 .chat-artifact-pop-surface.chat-browser-floating {
 	z-index: 35;
 	opacity: 1;

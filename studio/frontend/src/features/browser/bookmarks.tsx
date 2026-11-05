@@ -341,7 +341,7 @@ export function BookmarkStar({
                 bookmark && "text-primary hover:text-primary [&_path]:fill-current",
               )}
             >
-              {/* Half a pixel up: its points weigh the star toward the bottom of its box. */}
+              {/* Optically centred: the star's points weigh it low. */}
               <HugeiconsIcon icon={StarIcon} strokeWidth={1.75} className="size-3.75 -translate-y-[0.5px]" />
             </button>
           </PopoverAnchor>

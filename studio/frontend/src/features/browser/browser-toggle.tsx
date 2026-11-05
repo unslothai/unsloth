@@ -32,9 +32,8 @@ function openNewTab(layout: Layout) {
   if (layout === "floating") state.setFloating(true);
 }
 
-/** The chat header's new tab button: a click opens a tab in the last layout (beside the chat, or the
- *  floating preview once chosen), hovering offers full view and, beside a chat (`floatable`), floating. Hidden while the panel is open, unless
- *  `hideWhenOpen` is false: a project's overlay may not be showing it. */
+/** The chat header's new tab button: a click opens a tab in the current layout, hovering offers the others.
+ *  Hidden while the panel is open, unless `hideWhenOpen` is false: a project's overlay may not be showing it. */
 export function BrowserToggleButton({
   active = true,
   hideWhenOpen = true,

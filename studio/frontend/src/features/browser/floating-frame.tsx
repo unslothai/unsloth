@@ -16,7 +16,6 @@ const HANDLES: { edge: FloatingEdge; className: string }[] = [
   { edge: "se", className: "-bottom-1.5 -right-1.5 size-4 cursor-nwse-resize" },
 ];
 
-/** Edges and corners that resize the floating preview. */
 export function FloatingResizeHandles() {
   return (
     <>

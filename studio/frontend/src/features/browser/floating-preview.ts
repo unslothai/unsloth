@@ -17,8 +17,6 @@ import {
   FLOATING_SCALE_VAR,
 } from "./floating-events";
 
-/** The page floating over the chat: where it sits and how big, kept across reloads. */
-
 const STORAGE_KEY = "unsloth_browser_floating_preview";
 const EDGE_GAP = 12;
 const MIN_WIDTH = 260;
@@ -27,7 +25,6 @@ const MIN_HEIGHT = 180;
 const RIGHT_SNAP_PX = 16;
 // The page keeps a layout at least this wide however small the preview gets.
 const MIN_LAYOUT_WIDTH = 480;
-// The preview's 1px frame on each side.
 const FRAME_PX = 2;
 
 export type FloatingEdge =
@@ -48,11 +45,10 @@ type Geometry = {
   height: number;
 };
 type Box = { left: number; top: number; width: number; height: number };
-/** Where the preview may go, and the composer it keeps clear of. */
 type Room = Box & { composer: Box | null };
 
 let geometry: Geometry | null = null;
-// The width the page was laid out at beside the chat; the preview shows it scaled down, not reflowed.
+// The page's side-pane layout width, shown scaled down.
 let layoutWidth: number | null = null;
 
 function finite(value: unknown): value is number {
@@ -132,7 +128,6 @@ function composerIn(split: HTMLElement): Box | null {
   return null;
 }
 
-/** The chat the preview floats over, below its header. */
 function roomFor(surface: HTMLElement): Room | null {
   const split = surface.closest<HTMLElement>(".chat-artifact-split");
   if (!split) return null;
@@ -159,7 +154,6 @@ function roomFor(surface: HTMLElement): Room | null {
     : null;
 }
 
-/** Off the composer, above or below it, whichever is nearer and fits; left over it when neither does. */
 function clearOfComposer(box: Box, room: Room): Box {
   const composer = room.composer;
   if (!composer || !overlaps(box, composer)) return box;
@@ -219,14 +213,13 @@ function currentBox(room: Room): Box {
   return boxIn(room, geometry ?? defaultGeometry(room));
 }
 
-/** The page's scale in the preview: its layout width shown in the preview's width, never enlarged. */
 function scaleFor(box: Box): number {
   if (!layoutWidth) return 1;
   const scale = Math.min(
     1,
     Math.max(0.05, (box.width - FRAME_PX) / layoutWidth),
   );
-  // Rounded, so a native page is zoomed only when the preview's size really changes.
+  // Rounded, so a native page is re-zoomed only on a real size change.
   return Math.round(scale * 1000) / 1000;
 }
 
@@ -250,11 +243,9 @@ const PLACED_PROPERTIES = [
   "height",
   FLOATING_SCALE_VAR,
 ] as const;
-// Below this a press on the header is a click (a double-click docks), not a drag.
+// Below this a press is a click (a double-click docks), not a drag.
 const DRAG_SLOP_PX = 3;
 
-/** Places `surface` as the preview and keeps it in the chat as the window, sidebar or composer
- *  resizes; the cleanup undoes it. The page keeps the layout width it had beside the chat. */
 export function floatSurface(surface: HTMLElement): () => void {
   const saved = PLACED_PROPERTIES.map((name) =>
     surface.style.getPropertyValue(name),
@@ -295,7 +286,6 @@ export function floatSurface(surface: HTMLElement): () => void {
   };
 }
 
-/** `start` moved by (dx, dy) on `edge`, kept in the room and above the minimum size. */
 function resized(
   start: Box,
   edge: FloatingEdge,
@@ -326,7 +316,6 @@ function resized(
   return { left, top, width: right - left, height: bottom - top };
 }
 
-/** A move steps over the composer; a resize stops at it: the edge dragged toward it halts there. */
 function settled(
   start: Box,
   previous: Box,
@@ -370,9 +359,7 @@ const CURSORS: Record<FloatingEdge, string> = {
 
 const announceMove = () => window.dispatchEvent(new Event(FLOATING_MOVE_EVENT));
 
-/** Drags the preview from `edge`. A move rides a transform (no layout per frame); a resize only
- *  rescales the page, at most once per frame. A sheet over the viewport keeps the page's frame
- *  from taking the pointer. */
+/** A move rides a transform and a resize only rescales, once per frame; a sheet keeps the page's frame off the pointer. */
 export function startFloatingGesture(
   event: ReactPointerEvent<HTMLElement>,
   edge: FloatingEdge,
@@ -396,7 +383,7 @@ export function startFloatingGesture(
   const startY = event.clientY;
   let latest = start;
   let frame = 0;
-  // Put up on the first real move: a sheet there from the press would take the click and double-click.
+  // Only on the first real move: from the press it would take the double-click.
   // `[data-slot$="-overlay"]`: native-view.ts treats it as covering the page, so input stays here.
   let sheet: HTMLElement | null = null;
   const begin = () => {
@@ -417,7 +404,7 @@ export function startFloatingGesture(
       edge === "move" ? "move" : "resize",
     );
   };
-  // Docked or closed mid-drag (a shortcut, a chat switch): the surface is no longer the preview's.
+  // Docked or closed mid-drag: the surface is no longer the window's.
   const floating = () => surface.hasAttribute(FLOATING_ATTRIBUTE);
   const draw = () => {
     frame = 0;
@@ -468,7 +455,6 @@ export function startFloatingGesture(
   window.addEventListener("pointercancel", finish);
 }
 
-/** Arrow keys move the preview; with Shift they resize it from its bottom-right corner. */
 export function nudgeFloating(event: ReactKeyboardEvent<HTMLElement>): void {
   const delta = nudgeDelta(event.key, false);
   const surface = event.currentTarget.closest<HTMLElement>(

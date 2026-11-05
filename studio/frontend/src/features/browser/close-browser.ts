@@ -4,7 +4,6 @@
 import { agentChat } from "./agent/agent-store";
 import { useBrowserStore } from "./store";
 
-/** True while a chat run is still using this chat's browser: one the user has not stopped, with its tab still open. */
 export function agentUsingBrowser(): boolean {
   const state = useBrowserStore.getState();
   const agent = agentChat(state.chat);
@@ -15,9 +14,7 @@ export function agentUsingBrowser(): boolean {
   );
 }
 
-/** The reader closing the browser beside a chat. While the model is still at work in it, it floats
- *  over the chat instead, showing the model's tab, so the run stays in view (and, in a web browser,
- *  keeps its page loaded). Closing the preview then closes it. */
+/** Mid-run, closing floats the model's tab instead (a web browser keeps its page loaded); closing that closes. */
 export function closeOrFloatBrowser(): void {
   const state = useBrowserStore.getState();
   if (state.floating || !agentUsingBrowser()) {

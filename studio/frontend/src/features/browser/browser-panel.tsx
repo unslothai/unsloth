@@ -243,8 +243,7 @@ const NAV_ICON = "size-4";
 const ANNOTATE_BUTTON = "size-7 shrink-0 rounded-[9px] p-0 text-foreground";
 // Half a pixel right and down: the frame's whole top-left corner and the pointer aimed back at it
 // read as up and left of centre, though the strokes are centred.
-// A notch under the row's 16px: its dashed square fills the box edge to edge, so at full size it outweighs
-// the download arrow and the float glyph beside it.
+// Under the row's 16px: its dashed square fills the box, so at full size it reads larger.
 const ANNOTATE_GLYPH = "size-[calc(var(--spacing)*3.84)] translate-x-[0.5px] translate-y-[0.5px]";
 const NAV_STROKE = 2;
 const URLBAR =
@@ -616,7 +615,7 @@ function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number)
   };
 }
 
-// The chat header's button and icon size (its temporary chat and run settings), so the two rows match.
+// The chat header's button size, so the two rows match.
 const STRIP_BUTTON = "size-[calc(30px*var(--ui-space-scale,1))]";
 
 function TabStrip({
@@ -759,7 +758,7 @@ function TabStrip({
         onClick={() => setFullView(!fullView)}
         className={STRIP_BUTTON}
       >
-        {/* Its corner marks sit inside the box, so at the shared size it reads smaller than the plus. */}
+        {/* Its marks sit inside the box, so it is drawn larger to match the plus. */}
         <HugeiconsIcon
           icon={fullView ? ExitFullViewIcon : EnterFullViewIcon}
           strokeWidth={1.75}
@@ -853,7 +852,7 @@ function AddressBar({
             autoCapitalize="off"
             autoCorrect="off"
             className={cn(
-              // pb-px: the UI font's lowercase sits low in its line box; this lifts it half a pixel.
+              // pb-px: the UI font's lowercase sits low in its line box.
               "h-8 w-full min-w-0 bg-transparent pe-1 pb-px text-ui-12p5 text-foreground outline-none placeholder:text-muted-foreground",
               editing ? "ps-2.5" : "ps-0",
               // The input keeps the full URL, so focusing never changes its text or selection.
@@ -1271,8 +1270,7 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           sideOffset={6}
           className="browser-menu min-w-72 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
           onCloseAutoFocus={(event) => {
-            // A click outside that focused something (the address bar) keeps it: the menu's close
-            // runs after that click, and handing focus back to this button would undo it.
+            // A click outside that took focus (the address bar) keeps it.
             const active = document.activeElement;
             const focusedOutside =
               active instanceof HTMLElement &&
@@ -1458,8 +1456,7 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
-/** Keeps keyboard focus in the browser across a layout switch, which unmounts the button pressed.
- *  Only for the keyboard: a mouse press leaves focus where it was, without a focus ring. */
+/** Keyboard focus survives a layout switch that unmounts the pressed button; a mouse press is left alone. */
 function focusAfterLayout(selector: string): void {
   if (!document.activeElement?.matches(":focus-visible")) return;
   requestAnimationFrame(() =>
@@ -1488,11 +1485,9 @@ function goBackIn(tab: BrowserTab | undefined): void {
   }
 }
 
-// The preview's header stays compact: it is chrome over a small window, not a toolbar.
 const FLOATING_BUTTON = "size-6 rounded-[7px]";
 const FLOATING_GLYPH = "size-3.5";
 
-/** The floating preview's header: drag it to move the preview, double-click it to dock. */
 function FloatingBar({ tab, active }: { tab: BrowserTab | undefined; active: boolean }) {
   const t = useT();
   const tabTitle = useTabTitle();
@@ -1561,10 +1556,8 @@ function FloatingBar({ tab, active }: { tab: BrowserTab | undefined; active: boo
   );
 }
 
-/** The browser sits beside a chat (BrowserPanel `floatable`), so it can float over it. */
 const FloatableContext = createContext(false);
 
-/** Last in the toolbar before its menu, as in t3code. */
 function FloatButton() {
   const t = useT();
   if (!useContext(FloatableContext)) return null;
@@ -2399,9 +2392,7 @@ function DeviceBar() {
   );
 }
 
-// Floating, a framed page keeps its side-pane layout and is drawn scaled down (floating-preview.ts),
-// so shrinking the preview never reflows it and the agent works on the layout it already read.
-// A native page is zoomed to the same effect instead (native-view.ts).
+// Floating keeps the side-pane layout, scaled down, so resizing never reflows the page; native pages zoom instead.
 const FLOATING_PAGE_STYLE = {
   width: `calc(100% / var(${FLOATING_SCALE_VAR}, 1))`,
   height: `calc(100% / var(${FLOATING_SCALE_VAR}, 1))`,
@@ -2460,8 +2451,7 @@ function retainedTabs(mounted: readonly string[], tabs: BrowserTab[], activeTabI
   return { live, pendingDrafts };
 }
 
-/** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown.
- *  `floating`: shown as the small preview over the chat, page only. `floatable`: beside a chat, so it can float. */
+/** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
 export const BrowserPanel = memo(function BrowserPanel({
   active = true,
   floating = false,
@@ -2524,8 +2514,7 @@ export const BrowserPanel = memo(function BrowserPanel({
   const htmlAnnotating = frameAvailable && activeEntry?.kind === "file" &&
     fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
-  // The tab native-view.ts shows as a native page (its pageRect): that one is zoomed, not transformed.
-  // Files, new tabs and error pages are DOM even where native browsing is on, so they scale here.
+  // Only a page native-view.ts shows (its pageRect) is zoomed instead; files and new tabs are DOM.
   const nativeShown = native && activeEntry?.kind === "web" && !activeTab?.nativeError;
 
   return (

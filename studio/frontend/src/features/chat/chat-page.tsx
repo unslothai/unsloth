@@ -654,7 +654,7 @@ const SingleContent = memo(function SingleContent({
   const rememberArtifactPanelWidth = useCallback(() => {
     const size = artifactPanelRef.current?.getSize().asPercentage;
     if (size == null) return;
-    // Dragged shut means closed, or floating while the model still works in it.
+    // Dragged shut means closed.
     if (size <= 5) {
       closeOrFloatBrowser();
       return;
@@ -684,7 +684,7 @@ const SingleContent = memo(function SingleContent({
   }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
-  // Floating, the page leaves the side pane for a preview over the chat, staying mounted where it is.
+  // Floating stays mounted here, so switching layouts never reloads the page.
   const browserFloating =
     useBrowserStore((state) => state.floating) && showBrowserPanel && !browserFullView;
   const browserDocked = showBrowserPanel && !browserFloating;

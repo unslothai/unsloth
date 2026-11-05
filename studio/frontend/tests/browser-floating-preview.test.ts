@@ -5,7 +5,6 @@ import assert from "node:assert/strict";
 import { register } from "node:module";
 import { test } from "node:test";
 
-// The browser floating over the chat: placed in the chat below its header, moved and resized in it.
 register("./helpers/toast-resolver.mjs", import.meta.url);
 
 type Listener = (event: { clientX: number; clientY: number; buttons: number }) => void;
@@ -42,7 +41,6 @@ Object.assign(globalThis, {
 // The chat: x 300..1300, y 0..900, its header 48 tall.
 const header = { getBoundingClientRect: () => rect(300, 0, 1000, 48) };
 const root = { querySelector: () => header };
-// The composer, when a test puts one there.
 let composer: DOMRect | null = null;
 const composerForm = {
   offsetParent: {},
@@ -55,7 +53,6 @@ const split = {
   querySelector: () => composerForm,
   querySelectorAll: () => (composer ? [composerForm] : []),
 };
-// The side pane the page was in before it floated.
 let dockedWidth = 600;
 const attributes = new Set<string>(["data-browser-floating"]);
 const style: Record<string, string> = {};
@@ -99,7 +96,6 @@ test("the preview opens at the chat's top right, below its header, and gives the
   // 38% of the 976px room is 371; 12px in from the right and below the header.
   assert.deepEqual(placed(), [1300 - 12 - 371, 48 + 12, 371, Math.round(371 * 0.68)]);
   assert.equal(style.position, "fixed");
-  // The page keeps the 600px layout it had beside the chat, drawn at the preview's width.
   assert.equal(style["--browser-floating-scale"], String(Math.round(((371 - 2) / 600) * 1000) / 1000));
   release();
   assert.equal(style["--browser-floating-scale"], undefined);
@@ -166,14 +162,12 @@ test("the preview steps over the composer rather than covering it, and a resize 
   dockedWidth = 0;
   const release = floatSurface(surface as never);
   const [left, , width, height] = placed();
-  // Dropped onto the composer, it settles just above it.
   drag("move", [left + 10, placed()[1] + 10], [800, 780]);
   assert.equal(placed()[1] + height, 760 - 12);
   assert.equal(placed()[2], width);
   const above = placed();
   drag("s", [above[0] + 10, above[1] + above[3]], [above[0] + 10, above[1] + above[3] + 200]);
   assert.deepEqual(placed(), above);
-  // Grown up and out from its top-left corner, it may widen past the composer's edge but not reach into it.
   drag("sw", [above[0], above[1] + above[3]], [above[0] - 100, above[1] + above[3] + 200]);
   const grown = placed();
   assert.equal(grown[0], above[0] - 100);

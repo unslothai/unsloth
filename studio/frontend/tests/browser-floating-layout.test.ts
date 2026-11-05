@@ -37,7 +37,6 @@ test("closed while the model still works in it, the browser floats on the model'
   closeOrFloatBrowser();
   assert.deepEqual([store().open, store().floating, store().activeTabId], [true, true, agentTab]);
   closeOrFloatBrowser();
-  // The float was the run's, not a layout the reader chose: the next open is beside the chat again.
   assert.deepEqual([store().open, store().floating], [false, false]);
   store().openPanel();
   patchAgentChat(store().chat, { stoppedRun: "run-1" });
@@ -50,7 +49,6 @@ test("a native page zoomed out before floating stays at the native zoom floor in
   assert.equal(floatingNativeZoom(1, 0.5), 0.5);
   assert.equal(floatingNativeZoom(0.25, 0.615), NATIVE_MIN_ZOOM);
   assert.equal(floatingNativeZoom(0.4, 0.5), NATIVE_MIN_ZOOM);
-  // Docked, the tab's own zoom goes through untouched.
   assert.equal(floatingNativeZoom(0.25, 1), 0.25);
 });
 

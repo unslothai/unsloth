@@ -634,8 +634,7 @@ function markHole(): boolean {
   return true;
 }
 
-/** A floating page sits over the chat, which is no ancestor of it: the chat's boxes, from the
- *  preview up to the chat's root, are masked so they don't paint over it. */
+/** The chat under a floating page is no ancestor of it, so its boxes are masked too. */
 function floatingUnderlay(chain: HTMLElement[]): HTMLElement[] {
   const floating = chain.findIndex((node) => node.hasAttribute?.(FLOATING_ATTRIBUTE));
   if (floating < 0) return [];
@@ -730,7 +729,6 @@ function insetToasts(rect: DOMRect | null): void {
   else style.removeProperty(BROWSER_PAGE_INSET_VAR);
 }
 
-/** Floating, the page is zoomed down with the preview so it keeps its side-pane layout (floating-preview.ts). */
 function floatingScale(tabId: string): number {
   const surface = placeholder(tabId)?.closest?.<HTMLElement>(`[${FLOATING_ATTRIBUTE}]`);
   const scale = Number.parseFloat(surface?.style?.getPropertyValue?.(FLOATING_SCALE_VAR) ?? "");
@@ -1147,8 +1145,7 @@ export function startNativeViews(): () => void {
   const sync = () => {
     frame = 0;
     if (layered === null) return;
-    // A page on top waits out a floating preview's drag under its snapshot, rather than being
-    // moved and captured again every frame; the drop places it.
+    // A page on top waits out a floating drag under its snapshot, not a capture per frame.
     if (!layered && parkedView !== null && document.querySelector?.("[data-floating-gesture]")) return;
     markHole();
     const desired = desiredView();
@@ -1199,8 +1196,7 @@ export function startNativeViews(): () => void {
   document.addEventListener("pointerover", reachedPage, true);
   // A dragged or resized panel ends where the pointer lets go.
   document.addEventListener("pointerup", schedule, true);
-  // A layered page follows the floating preview as it moves; one on top waits for the drop,
-  // its snapshot moving with the preview, rather than being captured again every frame.
+  // A layered page follows the floating window; one on top waits for the drop (see sync).
   const floatingMoved = () => {
     if (layered || !document.querySelector("[data-floating-gesture]")) schedule();
   };

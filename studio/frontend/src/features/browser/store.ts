@@ -334,10 +334,9 @@ type BrowserState = {
   bookmarkSequence: number;
   device: DeviceMode;
   fullView: boolean;
-  /** The page floats over the chat as a small movable preview. A layout choice for every chat, kept across closes. */
+  /** The floating window layout, for every chat and kept across closes. */
   floating: boolean;
-  /** Floating only because it was closed while the model still used it (close-browser.ts): its
-   *  own close puts the layout back to what the reader had chosen. */
+  /** Floated by a close mid-run (close-browser.ts): its own close restores the chosen layout. */
   floatedForAgent: boolean;
   chatDock: ChatDock;
   chatSide: ChatSide;
@@ -882,7 +881,7 @@ export const useBrowserStore = create<BrowserState>((set, get) => {
       ),
     setChatDock: (chatDock) => set({ chatDock }),
     splitWithChatOn: (chatSide) => set({ fullView: false, floating: false, floatedForAgent: false, chatSide }),
-    // Marks are placed on the page as laid out beside the chat, which floating scales down.
+    // Marks would land on the unscaled page.
     setFloating: (floating) =>
       set(
         floating
