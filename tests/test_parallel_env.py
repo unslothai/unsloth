@@ -1323,6 +1323,43 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(SFT, args(4, coef = 0.1), layout(), model)  # TRL turns it on inside its __init__
     refuse(T, args(4), layout(), model.model)  # not a carried family: the split decides
+    # No train_dataset (evaluation only): the unused training batch is not checked.
+    config.output_router_logits = True
+    eval_only = args(8, eval_strategy = "steps", eval_bs = 1)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, eval_only, layout(), model)
+    if not pp_env._gpipe_needs_stage_count():
+        refuse(T, eval_only, layout(), model, trains = False)
+    with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
+        refuse(T, args(8, eval_strategy = "steps", eval_bs = 4), layout(), model, trains = False)
+
+
+def test_pp_env_refusals_know_whether_the_trainer_trains(monkeypatch):
+    import types
+
+    import transformers
+
+    from unsloth.models import _utils as unsloth_utils
+    from unsloth.models import pp_env, tp_env
+
+    seen = []
+    monkeypatch.setenv("UNSLOTH_PP_SIZE", "2")
+    monkeypatch.setattr(
+        tp_env,
+        "env_layout",
+        lambda: types.SimpleNamespace(pp = 2, tp = 1, env_vars = "UNSLOTH_PP_SIZE=2"),
+    )
+    monkeypatch.setattr(pp_env, "pp_trainer_refusals", lambda *a, **k: seen.append(k["trains"]))
+    trainer = object.__new__(transformers.Trainer)
+    init = transformers.Trainer.__init__
+    a = types.SimpleNamespace()
+    unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (), {"args": a})
+    unsloth_utils._pipeline_parallel_env_refusals(
+        trainer, init, (), {"args": a, "train_dataset": [1]}
+    )
+    unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (None, a, None, [1]), {})
+    unsloth_utils._pipeline_parallel_env_refusals(trainer, init, (None, a), {"eval_dataset": [1]})
+    assert seen == [False, True, True, False]
 
 
 def test_pending_expert_lora_counts_in_the_capability_query():

@@ -579,6 +579,7 @@ def pp_trainer_refusals(
     layout,
     compute_loss_func = None,
     model = None,
+    trains = True,
 ):
     """Before Trainer.__init__ splits anything: the trainers / arguments the pipeline step cannot honour."""
     hint = _hint()
@@ -644,7 +645,7 @@ def pp_trainer_refusals(
             + "."
             + hint
         )
-    _refuse_split_router_aux_at_init(trainer_cls, args, layout, model)
+    _refuse_split_router_aux_at_init(trainer_cls, args, layout, model, trains)
 
 
 def _router_aux_coef_at_init(trainer_cls, args, model):
@@ -675,7 +676,13 @@ def _router_aux_coef_at_init(trainer_cls, args, model):
     return coef if on else 0
 
 
-def _refuse_split_router_aux_at_init(trainer_cls, args, layout, model):
+def _refuse_split_router_aux_at_init(
+    trainer_cls,
+    args,
+    layout,
+    model,
+    trains = True,
+):
     """_refuse_split_router_aux before the stage split; the per-step check covers what only the step knows."""
     if args is None or not _router_aux_coef_at_init(trainer_cls, args, model):
         return
@@ -685,7 +692,8 @@ def _refuse_split_router_aux_at_init(trainer_cls, args, layout, model):
     except Exception:
         schedule = layout.schedule
     want = int(layout.microbatches or 2 * layout.pp)
-    batches = [(int(getattr(args, "per_device_train_batch_size", 0) or 0), True)]
+    # No train_dataset: train() cannot run, so only the eval batch can split.
+    batches = [(int(getattr(args, "per_device_train_batch_size", 0) or 0), True)] if trains else []
     strategy = getattr(args, "eval_strategy", getattr(args, "evaluation_strategy", "no"))
     if str(getattr(strategy, "value", strategy) or "no").lower() != "no":
         batches.append((int(getattr(args, "per_device_eval_batch_size", 0) or 0), False))
