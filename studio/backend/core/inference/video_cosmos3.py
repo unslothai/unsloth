@@ -20,6 +20,13 @@ SAFETY_CHECKER_ENV = "UNSLOTH_COSMOS3_SAFETY_CHECKER"
 # Passed as None to from_pretrained: Studio renders video only.
 NONE_COMPONENTS = ("sound_tokenizer",)
 GUARDRAIL_PACKAGE = "cosmos_guardrail"
+# cosmos_guardrail downloads its weights from this gated repo when the pipeline is built.
+GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
+_GUARDRAIL_ACCESS = (
+    f"The guardrail downloads its weights from the gated Hugging Face repo {GUARDRAIL_REPO}: accept its licence at "
+    f"https://huggingface.co/{GUARDRAIL_REPO}, then add a Hugging Face token that has access in Unsloth settings (or "
+    f"set HF_TOKEN)."
+)
 # Fallback when the index is not on disk yet (validation is network-free).
 _BASE_SAFETY_CHECKER = {
     "nvidia/cosmos3-nano": True,
@@ -108,7 +115,22 @@ def guardrail_refusal(repo_id: str, index: Optional[dict] = None) -> Optional[st
     return (
         f"'{repo_id}' runs NVIDIA's Cosmos guardrail (its model_index.json does not turn enable_safety_checker off, and "
         f"the pipeline's default is on), which needs the cosmos_guardrail package: pip install cosmos-guardrail into "
-        f"Studio's Python environment, restart Studio, and retry. To run without it, set {SAFETY_CHECKER_ENV}=0; the "
+        f"Studio's Python environment, restart Studio, and retry. {_GUARDRAIL_ACCESS} To run without it, set "
+        f"{SAFETY_CHECKER_ENV}=0; the model card's terms and safe use stay your responsibility."
+    )
+
+
+def guardrail_access_refusal(repo_id: str, exc: BaseException) -> Optional[str]:
+    """The load error for a gated-repo refusal of the guardrail's own weights, else None."""
+    from .diffusion import _HUB_REPO_RE, _gated_in_chain
+
+    gated = _gated_in_chain(exc)
+    found = _HUB_REPO_RE.search(str(gated)) if gated is not None else None
+    if found is None or found.group(1).rstrip(".").lower() != GUARDRAIL_REPO.lower():
+        return None
+    return (
+        f"'{repo_id}' could not start NVIDIA's Cosmos guardrail, because Hugging Face refused this account access to "
+        f"{GUARDRAIL_REPO}. {_GUARDRAIL_ACCESS} Then load again. To run without it, set {SAFETY_CHECKER_ENV}=0; the "
         f"model card's terms and safe use stay your responsibility."
     )
 

@@ -403,7 +403,7 @@ def test_guardrail_refusal_and_pipeline_kwargs(monkeypatch, repo, guardrail):
     monkeypatch.setattr(vc3, "logger", log)
     refusal = vc3.guardrail_refusal(repo)
     if repo == NANO and guardrail == "absent":
-        for part in (f"'{NANO}'", "pip install cosmos-guardrail", f"{_OPT_OUT_ENV}=0"):
+        for part in (f"'{NANO}'", "pip install cosmos-guardrail", _GUARDRAIL_REPO, "HF_TOKEN", f"{_OPT_OUT_ENV}=0"):
             assert part in refusal, part
         assert vc3.guardrail_refusal(NANO, index = _ckpt(EDGE)["model_index"]) is None
     else:
@@ -765,6 +765,44 @@ def test_a_wan_load_keeps_the_stock_encode(cosmos3_runtime, monkeypatch):
     backend, status = _loaded("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
     assert status["vae_tiling"] is True
     assert not getattr(backend._state.pipe.vae.encode, "_unsloth_untiled_encode", False)
+
+
+_GUARDRAIL_REPO = "nvidia/Cosmos-1.0-Guardrail"
+
+
+def _gated_load(repo):
+    """The guardrail's 401 as diffusers raises it, a GatedRepoError naming the resolve URL, under an OSError."""
+    from huggingface_hub.errors import GatedRepoError
+
+    class _Gated(GatedRepoError):
+        def __init__(self, message):
+            Exception.__init__(self, message)
+
+    def from_pretrained(cls, source, **kwargs):
+        try:
+            raise _Gated(
+                f"401 Client Error. Cannot access gated repo for url https://huggingface.co/{repo}/resolve/cf03c03/"
+                f"blocklist/custom/notable.\nAccess to model {repo} is restricted. Please log in."
+            )
+        except _Gated as exc:
+            raise OSError("could not build the safety checker") from exc
+
+    return classmethod(from_pretrained)
+
+
+def test_a_gated_guardrail_download_is_refused_with_the_access_steps(cosmos3_runtime, monkeypatch):
+    _set_guardrail(monkeypatch, "installed")
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load(_GUARDRAIL_REPO))
+    with pytest.raises(ValueError) as refused:
+        _loaded(NANO)
+    message = str(refused.value)
+    for part in (f"'{NANO}'", f"https://huggingface.co/{_GUARDRAIL_REPO}", "HF_TOKEN", f"{_OPT_OUT_ENV}=0"):
+        assert part in message, part
+    assert "401 Client Error" not in message
+    # Another repo's gate keeps its own error.
+    monkeypatch.setattr(_FakeCosmos3Pipeline, "from_pretrained", _gated_load("nvidia/Cosmos3-Nano"))
+    with pytest.raises(OSError, match = "safety checker"):
+        _loaded(NANO)
 
 
 def test_nano_without_the_guardrail_is_refused_before_the_load_starts(cosmos3_runtime, monkeypatch):

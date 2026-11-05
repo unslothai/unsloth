@@ -9451,11 +9451,22 @@ class VideoBackend:
                 device = target.torch_device if target.device == "cuda" else None,
             )
             # The pre-downloaded snapshot dir keeps from_pretrained off the hub; hub id when pre-download was skipped.
-            pipe = pipeline_cls.from_pretrained(
-                _base_local_dir or fetch_base,
-                **_pinned_base_kwargs(),
-                **pipe_kwargs,
-            )
+            try:
+                pipe = pipeline_cls.from_pretrained(
+                    _base_local_dir or fetch_base,
+                    **_pinned_base_kwargs(),
+                    **pipe_kwargs,
+                )
+            except Exception as exc:
+                if fam.name not in COSMOS3_FAMILIES:
+                    raise
+                from .video_cosmos3 import guardrail_access_refusal
+
+                refusal = guardrail_access_refusal(str(repo_id), exc)
+                if refusal is None:
+                    raise
+                logger.warning("video.cosmos3: guardrail download refused: %s", exc)
+                raise ValueError(refusal) from exc
             if cast_missed:
                 from .diffusion_cast_cache import defer_writes
 
