@@ -348,12 +348,18 @@ def _lokr_targets(
 
 
 def _attach_lokr(pipe: Any, name: str, lokr: dict, family: Optional[str]) -> int:
+    from torch import nn
+
     adapters: list[KronAdapter] = []
     try:
         for stem, parts in lokr.items():
             w1, w2, scale = _kron_factors(parts)
             for root, module, rows in _lokr_targets(pipe, stem, family):
                 base = _base_layer(module)
+                if isinstance(base, nn.Embedding):  # 2-D like a Linear, but its input is token ids
+                    raise ValueError(
+                        f"LoKR module {_strip(stem)} targets an embedding table; only Linear LoKR modules are supported"
+                    )
                 out_f, in_f = (
                     (int(d) for d in base.weight.shape) if base.weight.dim() == 2 else (0, 0)
                 )

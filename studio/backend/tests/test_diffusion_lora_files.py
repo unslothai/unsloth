@@ -173,6 +173,41 @@ def test_peft_loads_around_an_existing_lokr_wrapper():
     assert type(wrapper.base_layer).__name__ == "Linear" and hasattr(wrapper.base_layer, "lora_A")
 
 
+def test_an_embedding_lokr_is_refused_at_load(tmp_path):
+    """ComfyUI's trainer writes LoKR for every weighted module, Anima's ``llm_adapter.embed`` table included. Its 2-D
+    weight passes the shape check, but the wrapper's delta takes dense features, so the file must fail at load rather
+    than on the first render."""
+    conversion = pytest.importorskip("diffusers.loaders.lora_conversion_utils")
+    if not hasattr(conversion, "_convert_non_diffusers_anima_lora_to_diffusers"):
+        pytest.skip("this diffusers has no Anima LoRA converter")
+    from safetensors.torch import save_file
+
+    class _Conditioner(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed = torch.nn.Embedding(12, 6)
+
+    class _Pipe:
+        def __init__(self):
+            self.text_conditioner = _Conditioner()
+
+    pipe = _Pipe()
+    embed = pipe.text_conditioner.embed
+    path = tmp_path / "lokr.safetensors"
+    # ComfyUI's LokrAdapter.create_train on the [12, 6] table: w1 [3, 2], w2 [4, 3].
+    save_file(
+        {
+            "diffusion_model.llm_adapter.embed.lokr_w1": torch.randn(3, 2),
+            "diffusion_model.llm_adapter.embed.lokr_w2": torch.randn(4, 3),
+        },
+        path,
+    )
+    with pytest.raises(ValueError, match = "embedding"):
+        lf.load_adapter(pipe, str(path), "k", "anima")
+    assert pipe.text_conditioner.embed is embed
+    assert lf.kron_names(pipe) == ()
+
+
 def test_compiled_block_reads_a_new_lokr_weight():
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")
