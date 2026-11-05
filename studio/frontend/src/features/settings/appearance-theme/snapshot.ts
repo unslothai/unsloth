@@ -5,6 +5,7 @@ import {
   beginBackgroundUpload,
   finishBackgroundUpload,
   hydrateBackground,
+  nativeMaterialAvailable,
   resetChatBackground,
   sanitizeAdjustments,
   uploadBackgroundImage,
@@ -50,14 +51,23 @@ export function readAppearanceSnapshot(): AppearanceSnapshot {
 
 /**
  * Writes palette, customization and glass in one pass; the background is separate. Theme mode and
- * interface scale are never touched. A native-only material off macOS is kept and shown as solid,
- * as the glass controls already do.
+ * interface scale are never touched. Off macOS the native-only material becomes Liquid 3D, since the
+ * glass switch would read it as on while it renders solid.
  */
 export function applyAppearanceSnapshot(next: AppearanceTarget): void {
   useAppearanceCustomStore.getState().replaceAll(next.customization);
   setPalette(next.palette);
-  const { material, style, strength, lens, menus } = next.glass;
-  useMaterialStore.setState({ material, style, strength, lens, menus, nativeFailed: false });
+  const { strength, lens, menus } = next.glass;
+  const portable = (m: typeof next.glass.material) =>
+    m === "macos" && !nativeMaterialAvailable() ? "liquid-3d" : m;
+  useMaterialStore.setState({
+    material: portable(next.glass.material),
+    style: portable(next.glass.style) as typeof next.glass.style,
+    strength,
+    lens,
+    menus,
+    nativeFailed: false,
+  });
 }
 
 /** Puts back a background read by readAppearanceSnapshot; null means none. Resolves false if it could not be stored. */

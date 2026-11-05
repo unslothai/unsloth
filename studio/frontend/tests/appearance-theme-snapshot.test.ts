@@ -21,6 +21,7 @@ function createHost() {
     background: null as null | { adjustments: unknown; blob: Blob },
   };
   const upload = { result: true }; let ticket = 0;
+  const native = { available: false };
   const stubs = {
     "../stores/appearance-custom-store.ts": {
       useAppearanceCustomStore: {
@@ -46,6 +47,7 @@ function createHost() {
     "@/lib/base64-bytes": { decodeBase64Bytes },
     "@/features/chat-background": {
       sanitizeAdjustments,
+      nativeMaterialAvailable: () => native.available,
       useBackgroundStore: { getState: () => ({ value: state.background }) },
       useMaterialStore: {
         getState: () => ({ ...state.material }),
@@ -67,7 +69,7 @@ function createHost() {
       },
     },
   };
-  return { calls, state, upload, stubs };
+  return { calls, state, upload, native, stubs };
 }
 
 const load = (host: ReturnType<typeof createHost>) =>
@@ -156,4 +158,17 @@ test("restoreBackground resolves with whether the background could be stored", a
   host.upload.result = false;
   assert.equal(await snapshot.restoreBackground(prev), false);
   assert.equal(await snapshot.restoreBackground(null), false);
+});
+
+test("off macOS a native-only material becomes Liquid 3D, so the glass switch matches what renders", () => {
+  const macos = { ...NEXT, glass: { ...GLASS, material: "macos", style: "macos" } } as SnapshotModule.AppearanceTarget;
+  const host = createHost();
+  load(host).applyAppearanceSnapshot(macos);
+  assert.equal(host.state.material.material, "liquid-3d");
+  assert.equal(host.state.material.style, "liquid-3d");
+  const mac = createHost();
+  mac.native.available = true;
+  load(mac).applyAppearanceSnapshot(macos);
+  assert.equal(mac.state.material.material, "macos");
+  assert.equal(mac.state.material.style, "macos");
 });
