@@ -58,3 +58,20 @@ export function videoDurationOptions(
   }
   return out;
 }
+
+/** The duration option a restored clip maps to at its own rate: its frame count when the loaded family offers it,
+ *  else the option nearest its length, so a clip from another family never sets a count this one refuses. */
+export function restoredClipDuration(
+  options: Array<{ frames: number; seconds: number }>,
+  frames: number,
+  fps: number,
+): { frames: number; seconds: number } | null {
+  const exact = options.find((o) => o.frames === frames);
+  if (exact) return exact;
+  const seconds = frames / fps;
+  let best: { frames: number; seconds: number } | null = null;
+  for (const o of options) {
+    if (best == null || Math.abs(o.seconds - seconds) < Math.abs(best.seconds - seconds)) best = o;
+  }
+  return best;
+}
