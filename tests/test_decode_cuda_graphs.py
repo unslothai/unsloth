@@ -203,6 +203,8 @@ def test_lora_change_between_generations_recaptures(name, stale_control, monkeyp
         pinned = G._state(_causal(model)).fingerprint
         monkeypatch.setattr(G, "_fingerprint", lambda *a: pinned)
     params = [p for n, p in model.named_parameters() if "lora_" in n and p.requires_grad]
+    # for_training() frees the graphs; keep them here, so the fingerprint alone must catch the edits.
+    monkeypatch.setattr(G, "release_for_training", lambda model: None)
     FastLanguageModel.for_training(model)
     opt = torch.optim.SGD(params, lr = 1.0)
     for p in params:

@@ -884,7 +884,10 @@ def test_pp_env_gradient_accumulation_and_microbatches(ga, bs, mb, schedule, arc
         _spawn("env", 2, env, bs = bs, ga = ga, evaluate = False, post = False, arch = arch)
     ):
         _close(res, ref, what = rank)
-        _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"])
+        # _close already pins every loss and grad norm. The trained adapter after several steps carries
+        # more of the reduction-order noise: GitHub runners put gemma3_ga1_bs4's lora_A 1.6e-5 from the
+        # reference on two PRs (1 of 64 elements), against at most 3.7e-6 here.
+        _same_tensors(res["adapter"] or ref["adapter"], ref["adapter"], atol = 5e-5)
 
 
 @needs_pipelining

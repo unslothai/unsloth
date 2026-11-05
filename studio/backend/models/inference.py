@@ -36,7 +36,7 @@ from core.inference.runtime_context import MAX_REQUESTABLE_CONTEXT
 from utils.upload_limits import VIDEO_INPUT_REFERENCE_JSON_MAX_BYTES
 from core.inference.video_families import MAX_VIDEO_NUM_FRAMES
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES
-from models.providers import ProviderReasoningConfig
+from models.providers import ProviderReasoningConfig, normalize_provider_extra_headers
 from utils.reasoning_budget import validate_reasoning_budget_message
 
 # A 24 MB reference audio as a base64 data URL, with room for its header.
@@ -1706,6 +1706,10 @@ class _InferenceRuntimeFields(BaseModel):
     audio_convert_route: Optional[str] = Field(
         None, description = "Seed-VC route the running server was started with."
     )
+    audio_clone: Optional[Dict[str, Any]] = Field(
+        None,
+        description = "Clone rules (transcript, emotion clip, voice description); None when it does not clone.",
+    )
 
     @model_validator(mode = "after")
     def derive_audio_workflows(self):
@@ -2841,7 +2845,9 @@ class SandboxAttachment(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
-    """Accept unknown fields so future OpenAI fields are not dropped before route code runs. Mirrors AnthropicMessagesRequest and ResponsesRequest."""
+    """OpenAI-compatible chat completion request.
+
+    Non-OpenAI extension fields are marked with 'x-unsloth'."""
 
     model_config = {"extra": "allow"}
     # "off" with the client's own confirm_tool_calls=false: no prompt at all, even without OS isolation.
@@ -3266,6 +3272,22 @@ class ChatCompletionRequest(BaseModel):
         None,
         description = "[x-unsloth] Override base URL for the external provider.",
     )
+    extra_headers: Optional[dict[str, str]] = Field(
+        None,
+        description = (
+            "[x-unsloth] Extra request headers when the request carries an API key. "
+            "Saved connections send these from the stored record instead, so an "
+            "explicit key cannot bind saved metadata."
+        ),
+    )
+
+    @field_validator("extra_headers", mode = "before")
+    @classmethod
+    def _validate_chat_extra_headers(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        return normalize_provider_extra_headers(value)
+
     enable_prompt_caching: Optional[Union[bool, str]] = Field(
         None,
         description = (
@@ -3985,7 +4007,7 @@ class ResponsesUnknownInputItem(BaseModel):
     """Catch-all for unmodelled Responses input item types.
 
     Covers ``reasoning`` items and future types, so unrelated turns don't 422.
-    Normalisation replays reasoning text and drops every other unknown item.
+    Normalisation replays reasoning text, refuses ``item_reference``, drops the rest.
     """
 
     type: str
@@ -5555,6 +5577,13 @@ class GalleryImage(BaseModel):
     batch_size: int = Field(
         1, description = "Batch size used; with batch_index it lets restore replay this image"
     )
+    generation_seconds: Optional[float] = Field(
+        None,
+        description = "Elapsed generation seconds until images are ready to save, shared by the request",
+    )
+    generation_count: Optional[int] = Field(
+        None, description = "Number of images in the timed request; absent on older records"
+    )
     model: Optional[str] = Field(None, description = "Model repo id that produced it")
     # The load-time BUILD. The repo id alone does not identify a pipeline (quant choice, torchao scheme, baked adapters), so without these a recipe cannot be rebuilt.
     engine: Optional[str] = Field(
@@ -5585,6 +5614,11 @@ class GalleryImage(BaseModel):
         None,
         description = "Offload policy actually engaged: none | group | model | sequential. Part of "
         "the build: an offloaded pipeline declines the torchao text-encoder modes.",
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where this generation's denoiser ran: resident | partial | "
+        "streamed (streamed blocks move from CPU on every step). Null for other policies and older records.",
     )
     speed_mode: Optional[str] = Field(
         None,
@@ -5951,6 +5985,11 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "planner has to say so: a gated base is staged from its ungated mirror, so the entry's "
         "repo id is not the id the caller picked and the role cannot be recovered downstream.",
     )
+    hosted_denoiser: bool = Field(
+        False,
+        description = "This checkpoint entry holds a hosted denoiser replacing the pipeline's "
+        "dense weights, which a pinned snapshot of that pipeline does not contain.",
+    )
 
 
 class DiffusionDownloadPlanResponse(BaseModel):
@@ -6056,6 +6095,11 @@ class DiffusionStatusResponse(BaseModel):
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | streaming | sequential"
+    )
+    denoiser_offload: Optional[str] = Field(
+        None,
+        description = "Under group offload, where the denoiser lives now: resident (only the text encoders "
+        "stream) | partial | streamed (blocks move from CPU on every step). Null for other policies.",
     )
     vae_tiling: bool = Field(False, description = "Whether VAE tiling/slicing is enabled")
     memory_mode: Optional[str] = Field(None, description = "Requested memory mode")

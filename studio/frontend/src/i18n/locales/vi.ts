@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const vi = {
+  turns: {
+    label: "Lượt {number}",
+    bookmarkedLabel: "Lượt {number}, đã đánh dấu",
+    bookmark: "Đánh dấu lượt",
+    removeBookmark: "Bỏ đánh dấu",
+    navigator: "Các lượt",
+  },
   chatBackground: {
     noBackground: "Không có nền",
     sizing: "Kích thước ảnh",
@@ -199,6 +206,9 @@ export const vi = {
         history: "Đang đọc lịch sử duyệt web của bạn",
         move: "Đang di chuyển chuột",
         drag: "Đang kéo",
+        tabs: "Đang xem các thẻ",
+        readFile: "Đang đọc tệp",
+        editFile: "Đang chỉnh sửa tệp",
       },
     },
     title: "Trình duyệt",
@@ -354,6 +364,8 @@ export const vi = {
     askBeforeDownloadingSetting: "Hỏi trước khi tải xuống",
     askBeforeDownloadingSettingDescription:
       "Xác nhận tệp từ trang web trước khi lưu.",
+    askBeforeProgramDownloadsSetting: "Hỏi trước khi tải xuống chương trình",
+    askBeforeProgramDownloadsSettingDescription: "Xác nhận các tệp có thể chạy chương trình, như .exe hoặc .dmg, ngay cả khi các lượt tải xuống khác không hỏi.",
     downloadSitesSetting: "Quyền tải xuống của trang web",
     downloadSitesSettingDescription:
       "Các trang web bạn đã chọn luôn cho phép hoặc luôn chặn tải xuống.",
@@ -362,6 +374,7 @@ export const vi = {
     downloadSitesFor: "Tải xuống từ {host}",
     downloadSitesRemove: "Quên {host}",
     downloadSiteAllow: "Luôn cho phép",
+    downloadSiteAllowAll: "Cho phép cả chương trình",
     downloadSiteBlock: "Luôn chặn",
     downloadPrompt: {
       title: "Tải xuống tệp này?",
@@ -369,6 +382,9 @@ export const vi = {
       dangerous:
         "Những tệp như thế này có thể chạy chương trình trên máy tính của bạn. Chỉ tải xuống nếu bạn tin tưởng {host}.",
       remember: "Ghi nhớ cho lần sau",
+      once: "Hỏi vào lần sau",
+      site: "Luôn cho {host}",
+      all: "Luôn tải xuống, từ mọi trang",
       cancel: "Hủy",
       download: "Tải xuống",
       blocked: "Đã chặn một lượt tải xuống từ {host}.",
@@ -730,6 +746,8 @@ export const vi = {
     plainText: "Khung soạn thảo văn bản thuần",
     plainTextDescription:
       "Giữ mã, Markdown và liên kết dưới dạng văn bản nguyên bản. Tắt để hiển thị bản xem trước có định dạng.",
+    richPaste: "Dán văn bản có định dạng",
+    richPasteDescription: "Dán liên kết, bảng và định dạng dưới dạng Markdown. {shortcut} dán văn bản thuần. Trình soạn văn bản định dạng đầy đủ sắp ra mắt.",
     showContext: "Mức sử dụng cửa sổ ngữ cảnh",
     sendShortcut: "Phím tắt gửi",
     sendMultiline: "{mod} + Enter cho lời nhắc nhiều dòng",
@@ -1157,6 +1175,7 @@ export const vi = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Đặt mật khẩu của chủ sở hữu bản cài đặt trước khi thêm tài khoản khác. Bạn sẽ dùng mật khẩu này để đăng nhập khi bản cài đặt có nhiều tài khoản.",
       signsInAs: "Đăng nhập với tên {username}",
       signsInAsOwner: "Đăng nhập với tên {alias} hoặc {username}",
       signInName: "Tên đăng nhập của bạn",
@@ -2037,6 +2056,26 @@ export const vi = {
       chatDefaults: "Mặc định cho trò chuyện",
       autoTitleNewChats: "Tự động đặt tiêu đề cho cuộc trò chuyện mới",
       autoTitleNewChatsDescription: "Tạo tiêu đề từ tin nhắn đầu tiên.",
+      mlWarmup: {
+        sectionTitle: "Hiệu suất khởi động",
+        description: "Chuẩn bị trước các tính năng đã chọn để sử dụng lần đầu nhanh hơn. Mặc định tất cả đều tắt. Khi bật, các tùy chọn có thể tải các thư viện phụ thuộc dùng chung và tăng mức sử dụng RAM khi không hoạt động.",
+        restartRequired: "Thay đổi có hiệu lực sau khi khởi động lại Unsloth.",
+        hardwareLabel: "Phát hiện phần cứng",
+        hardwareDescription: "Phát hiện GPU và chuẩn bị PyTorch.",
+        textLabel: "Mô hình văn bản",
+        textDescription: "Chuẩn bị khả năng hỗ trợ mô hình văn bản của Transformers.",
+        datasetsLabel: "Chuẩn bị tập dữ liệu",
+        datasetsDescription: "Chuẩn bị Datasets và các thư viện phụ thuộc để xem trước và xử lý dữ liệu.",
+        mediaLabel: "Mô hình hình ảnh và video",
+        mediaDescription: "Chuẩn bị Diffusers và các thư viện phụ thuộc dùng chung của mô hình.",
+        advanced: "Nâng cao",
+        quantizationLabel: "Kiểm tra trước lượng tử hóa hình ảnh",
+        quantizationDescription: "Kiểm tra khả năng hỗ trợ trước lần đầu tải mô hình hình ảnh đã lượng tử hóa. Có thể tạm thời làm tăng mức sử dụng RAM.",
+        requiredBySelections: "Bắt buộc đối với các tùy chọn bạn đã chọn.",
+        disabledByEnv: "Bị tắt bởi UNSLOTH_STUDIO_DISABLE_TORCH_WARM trong môi trường backend.",
+        loadError: "Không thể tải cài đặt chuẩn bị sẵn khi khởi động.",
+        saveError: "Không thể lưu cài đặt chuẩn bị sẵn khi khởi động.",
+      },
       helperLlm: {
         sectionTitle: "LLM trợ giúp",
         preloadOnStartup: "Lưu sẵn LLM trợ giúp vào bộ nhớ đệm khi khởi động",
@@ -2101,6 +2140,7 @@ export const vi = {
         loadError: "Không thể tải cài đặt tự động chuyển mô hình.",
         saveError: "Không thể lưu cài đặt tự động chuyển mô hình.",
         idleError: "Nhập 0 để giữ mô hình được nạp, hoặc ít nhất 60 giây.",
+        idleUnsaved: "Chưa được lưu.",
         keepKv: "Giữ ngữ cảnh trò chuyện qua các lần gỡ",
         keepKvDescription:
           "Lưu KV cache trước khi gỡ do không hoạt động, hoặc trước khi một mô hình hình ảnh hay video chiếm GPU, để các cuộc trò chuyện được tiếp tục không phải đọc lại lịch sử. Tối đa 10 GB trên ổ đĩa.",
@@ -2166,6 +2206,14 @@ export const vi = {
           off: "Chạy mọi lệnh gọi công cụ mà không hỏi. Mã Python và terminal vẫn chạy trong sandbox, giới hạn những tệp mà chúng có thể truy cập trên máy tính của bạn. Nếu không có sandbox hệ điều hành hoạt động, các lệnh gọi rủi ro sẽ hỏi trước.",
           full: "Chạy mọi lệnh gọi công cụ mà không hỏi và tắt sandbox mã, nên mã Python và terminal có thể đọc và thay đổi bất kỳ tệp nào mà tài khoản của bạn có quyền truy cập.",
         },
+      },
+      display: {
+        title: "Hiển thị",
+        timeFormat: "Định dạng giờ",
+        timeFormatDescription: "Hiển thị giờ theo định dạng 12 giờ hoặc 24 giờ.",
+        timeFormatSystem: "Mặc định hệ thống",
+        timeFormat12: "12 giờ",
+        timeFormat24: "24 giờ",
       },
       notifications: {
         sectionTitle: "Thông báo",
@@ -2534,6 +2582,9 @@ export const vi = {
           "Màu sắc dùng trong toàn bộ Unsloth, ở chế độ sáng và tối.",
         standard: "Tiêu chuẩn",
         moreThemes: "Thêm chủ đề",
+      },
+      composer: {
+        title: "Khung soạn tin",
       },
       code: {
         title: "Mã",
@@ -3176,6 +3227,8 @@ export const vi = {
         "Thông báo đang bị chặn. Hãy cho phép thông báo của Unsloth trong cài đặt trình duyệt hoặc hệ thống, rồi thử lại.",
       replyNotificationKeywords:
         "notify notification alert done finished complete ready response reply background minimized desktop sound thông báo cảnh báo xong hoàn tất sẵn sàng trả lời chạy nền thu nhỏ âm thanh",
+      showLinkPreviews: "Xem trước liên kết",
+      showLinkPreviewsDescription: "Hiển thị bản xem trước khi di chuột qua liên kết nguồn.",
       showResponseModel: "Mô hình trả lời",
       showResponseModelDescription:
         "Hiển thị thông tin mô hình trong câu trả lời của trợ lý.",
@@ -3192,9 +3245,10 @@ export const vi = {
       inlineEditResponse: "Nút Sửa câu trả lời trên câu trả lời",
       inlineEditResponseDescription:
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
-      composerAtBottom: "Khung soạn thảo ở dưới cùng",
-      composerAtBottomDescription:
-        "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",
+      turnNavigation: "Điều hướng lượt",
+      turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
+      composerPosition: "Vị trí khung soạn thảo",
+      composerPositionDescription: "Vị trí của khung soạn thảo khi bắt đầu cuộc trò chuyện mới, từ đầu trang xuống tận cuối trang.",
       projectAttachments: "Chia sẻ tệp trong cả dự án",
       projectAttachmentsDescription:
         "Cho phép mọi cuộc trò chuyện trong dự án dùng các tệp đính kèm mới.",
@@ -3708,6 +3762,9 @@ export const vi = {
         docsLabel: "Mở tài liệu API quyết định",
         description:
           "Trả lời các câu hỏi có/không, trắc nghiệm và chấm điểm về văn bản bằng một mô hình trên máy này hoặc một mô hình quyết định từ Kết nối. Hoạt động với TypeSafe SDK.",
+        codeTitle: "Gọi từ mã",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Các ứng dụng MCP khác kết nối tại đây bằng cùng một token.",
         enable: "Phục vụ yêu cầu",
         enableDescription:
           "Phục vụ /v1/systemone. Khi bật, mô hình sẽ được tải xuống.",
@@ -3861,8 +3918,6 @@ export const vi = {
         repoCheckoutFallback:
           "Nếu bạn vẫn còn bản checkout của kho mã, hãy chạy trình cài đặt cục bộ từ đó:",
         restartAfterUpdate: "Khởi động lại Unsloth sau khi cập nhật.",
-        desktopManaged:
-          "Ứng dụng máy tính tự động kiểm tra phiên bản mới. Bạn cũng có thể kiểm tra hoặc cập nhật tại đây bất cứ lúc nào.",
         desktopReady: "Cập nhật ứng dụng máy tính",
         desktopReadyDescription:
           "Kiểm tra xem có phiên bản ứng dụng máy tính mới hơn không.",
@@ -3872,7 +3927,7 @@ export const vi = {
         desktopAvailableDescription:
           "Cập nhật ngay, ứng dụng máy tính sẽ khởi động lại khi hoàn tất.",
         desktopExternalServer:
-          "Ứng dụng đã kết nối với một máy chủ Unsloth đang chạy sẵn và không thể cập nhật máy chủ đó. Hãy dừng máy chủ đó, rồi thoát và mở lại ứng dụng máy tính để cập nhật.",
+          "Đang kết nối với một máy chủ Unsloth trên cổng {port} mà ứng dụng này không khởi động, ví dụ `unsloth studio` trong terminal. Hãy dừng máy chủ tại nơi đã khởi động nó, rồi thoát và mở lại ứng dụng để cập nhật.",
         desktopManualInstall:
           "Mở trang phát hành để cài đặt gói Linux mới nhất.",
         desktopCheckFailed: "Không thể kiểm tra bản cập nhật",
@@ -4185,8 +4240,6 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
-          appleSilicon:
-            "Chưa hỗ trợ truyền trực tuyến trên Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",
@@ -5447,6 +5500,8 @@ export const vi = {
     removeLevel: "Xóa mức {n}",
     addLevel: "Thêm mức",
     jsonHelp: "Nội dung yêu cầu. Nút Chạy sẽ gửi đúng như những gì đã viết.",
+    copyBody: "Sao chép nội dung",
+    copyCurl: "Sao chép dưới dạng cURL",
     examples: "Ví dụ",
     presetToolApproval: "Phê duyệt lệnh gọi công cụ của tác tử",
     presetPromptInjection: "Phát hiện tấn công chèn lời nhắc",
@@ -5844,5 +5899,61 @@ export const vi = {
     later: "Để sau",
     update: "Cập nhật",
     undo: "Hoàn tác",
+  },
+  generationStats: {
+    working: "Đang xử lý...",
+    processingPrompt: "Đang xử lý lời nhắc {percent}%",
+    compactingContext: "Đang thu gọn ngữ cảnh...",
+    timeLeft: "còn {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "bản nháp được chấp nhận {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Thời gian của tin nhắn",
+      firstToken: "Token đầu tiên",
+      speedInStep: "Tốc độ (trong bước)",
+      effective: "Hiệu dụng",
+      output: "Đầu ra",
+      denoising: "Khử nhiễu",
+      stepsOne: "{count} bước",
+      steps: "{count} bước",
+      blocksOne: "{count} khối",
+      blocks: "{count} khối",
+      canvas: "Khung vẽ",
+      generation: "Quá trình tạo",
+      answerTokens: "Token câu trả lời",
+      prompt: "Lời nhắc",
+      total: "Tổng",
+      chunks: "Đoạn",
+      promptEval: "Xử lý lời nhắc",
+      promptSpeed: "Tốc độ lời nhắc",
+      speed: "Tốc độ",
+      tokens: "Token",
+      draftAccepted: "Bản nháp được chấp nhận",
+      denoisingSteps: "Bước khử nhiễu",
+      blocksLabel: "Khối",
+      cacheHits: "Lượt dùng bộ nhớ đệm",
+      cacheWrites: "Lượt ghi bộ nhớ đệm",
+      stopReason: "Lý do dừng",
+      stoppedByYou: "Bạn đã dừng",
+      endOfTurn: "Kết thúc lượt",
+      lengthLimit: "Giới hạn độ dài",
+      toolCall: "Lệnh gọi công cụ",
+      contentFilter: "Bộ lọc nội dung",
+    },
+    placement: {
+      title: "Vị trí trọng số",
+      allOnCpu: "Cả {total} lớp trên CPU",
+      split: "{gpu} trong {total} lớp trên GPU, {cpu} trên CPU",
+      allOnGpu: "Cả {total} lớp trên GPU",
+      expertCache: "Cả {total} lớp trên GPU, mọi expert trong RAM ({amount} bộ nhớ đệm expert trên GPU)",
+      expertSpillOne: "Cả {total} lớp trên GPU, trọng số expert của {count} lớp trong RAM",
+      expertSpill: "Cả {total} lớp trên GPU, trọng số expert của {count} lớp trong RAM",
+      inUnifiedMemory: "{amount} trong bộ nhớ hợp nhất",
+      inSharedMemory: "{amount} trong bộ nhớ dùng chung",
+      inVram: "{amount} trong VRAM",
+      inRam: "{amount} trong RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

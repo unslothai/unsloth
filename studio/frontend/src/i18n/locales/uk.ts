@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const uk = {
+  turns: {
+    label: "Хід {number}",
+    bookmarkedLabel: "Хід {number}, у закладках",
+    bookmark: "Додати хід у закладки",
+    removeBookmark: "Прибрати закладку",
+    navigator: "Ходи",
+  },
   chatBackground: {
     noBackground: "Без тла",
     sizing: "Масштабування зображення",
@@ -199,6 +206,9 @@ export const uk = {
         history: "Читання вашої історії переглядів",
         move: "Переміщення миші",
         drag: "Перетягування",
+        tabs: "Перегляд вкладок",
+        readFile: "Читання файлу",
+        editFile: "Редагування файлу",
       },
     },
     title: "Браузер",
@@ -354,6 +364,8 @@ export const uk = {
     askBeforeDownloadingSetting: "Питати перед завантаженням",
     askBeforeDownloadingSettingDescription:
       "Підтверджувати файли з вебсайтів перед їх збереженням.",
+    askBeforeProgramDownloadsSetting: "Питати перед завантаженням програм",
+    askBeforeProgramDownloadsSettingDescription: "Підтверджувати файли, які можуть запускати програми, як-от .exe або .dmg, навіть якщо для інших завантажень питання не ставиться.",
     downloadSitesSetting: "Дозволи сайтів на завантаження",
     downloadSitesSettingDescription:
       "Сайти, для яких ви вирішили завжди дозволяти або блокувати завантаження.",
@@ -362,6 +374,7 @@ export const uk = {
     downloadSitesFor: "Завантаження з {host}",
     downloadSitesRemove: "Забути {host}",
     downloadSiteAllow: "Завжди дозволяти",
+    downloadSiteAllowAll: "Дозволяти й програми",
     downloadSiteBlock: "Завжди блокувати",
     downloadPrompt: {
       title: "Завантажити цей файл?",
@@ -369,6 +382,9 @@ export const uk = {
       dangerous:
         "Такі файли можуть запускати програми на вашому комп’ютері. Завантажуйте його, лише якщо довіряєте {host}.",
       remember: "Запам’ятати на наступний раз",
+      once: "Запитати наступного разу",
+      site: "Завжди для {host}",
+      all: "Завжди завантажувати, з будь-якого сайту",
       cancel: "Скасувати",
       download: "Завантажити",
       blocked: "Заблоковано завантаження з {host}.",
@@ -735,6 +751,8 @@ export const uk = {
     plainText: "Поле введення простого тексту",
     plainTextDescription:
       "Залишати код, Markdown і посилання звичайним текстом. Вимкніть, щоб показувати відформатований попередній перегляд.",
+    richPaste: "Вставлення форматованого тексту",
+    richPasteDescription: "Вставляє посилання, таблиці й форматування як Markdown. {shortcut} вставляє звичайний текст. Повноцінний редактор форматованого тексту незабаром.",
     showContext: "Використання контекстного вікна",
     sendShortcut: "Сполучення клавіш для надсилання",
     sendMultiline: "{mod} + Enter для багаторядкових запитів",
@@ -1163,6 +1181,7 @@ export const uk = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Перш ніж додавати інший обліковий запис, установіть пароль власника цієї інсталяції. Ви використовуватимете його для входу, коли в інсталяції буде кілька облікових записів.",
       signsInAs: "Вхід як {username}",
       signsInAsOwner: "Вхід як {alias} або {username}",
       signInName: "Ваше ім’я для входу",
@@ -2046,6 +2065,26 @@ export const uk = {
       chatDefaults: "Типові параметри чату",
       autoTitleNewChats: "Автоматичні назви нових чатів",
       autoTitleNewChatsDescription: "Генерувати назву з першого повідомлення.",
+      mlWarmup: {
+        sectionTitle: "Продуктивність під час запуску",
+        description: "Підготуйте вибрані функції для швидшого першого використання. За замовчуванням усі параметри вимкнено. Вони можуть завантажувати спільні залежності та збільшувати використання RAM у стані простою.",
+        restartRequired: "Зміни набудуть чинності після перезапуску Unsloth.",
+        hardwareLabel: "Виявлення обладнання",
+        hardwareDescription: "Виявити GPU та підготувати PyTorch.",
+        textLabel: "Текстові моделі",
+        textDescription: "Підготувати підтримку текстових моделей Transformers.",
+        datasetsLabel: "Підготовка наборів даних",
+        datasetsDescription: "Підготувати Datasets та її залежності для попереднього перегляду й обробки.",
+        mediaLabel: "Моделі зображень і відео",
+        mediaDescription: "Підготувати Diffusers і спільні залежності моделей.",
+        advanced: "Додатково",
+        quantizationLabel: "Попередні перевірки квантування зображень",
+        quantizationDescription: "Перевірити підтримку перед першим завантаженням квантованої моделі зображень. Може ненадовго збільшити використання RAM.",
+        requiredBySelections: "Необхідно для вибраних параметрів.",
+        disabledByEnv: "Вимкнено змінною UNSLOTH_STUDIO_DISABLE_TORCH_WARM у середовищі бекенда.",
+        loadError: "Не вдалося завантажити налаштування попередньої підготовки під час запуску.",
+        saveError: "Не вдалося зберегти налаштування попередньої підготовки під час запуску.",
+      },
       helperLlm: {
         sectionTitle: "Допоміжна LLM",
         preloadOnStartup: "Попередньо кешувати допоміжну LLM під час запуску",
@@ -2112,6 +2151,7 @@ export const uk = {
         saveError: "Не вдалося зберегти налаштування автоперемикання моделей.",
         idleError:
           "Введіть 0, щоб модель залишалася завантаженою, або щонайменше 60 секунд.",
+        idleUnsaved: "Ще не збережено.",
         keepKv: "Зберігати контекст чату між вивантаженнями",
         keepKvDescription:
           "Зберігати KV-кеш перед вивантаженням через простій або перед тим, як модель зображень чи відео займе GPU, щоб відновлені чати не перечитували історію. До 10 GB на диску.",
@@ -2181,6 +2221,14 @@ export const uk = {
           off: "Виконує кожен виклик інструмента без запиту. Код Python і термінала однаково виконується в пісочниці, яка обмежує, до яких файлів на вашому комп’ютері він має доступ. Без робочої пісочниці ОС ризиковані виклики спершу запитують дозвіл.",
           full: "Виконує кожен виклик інструмента без запиту та вимикає пісочницю коду, тож код Python і термінала може читати й змінювати будь-який файл, доступний вашому обліковому запису.",
         },
+      },
+      display: {
+        title: "Відображення",
+        timeFormat: "Формат часу",
+        timeFormatDescription: "Показувати час у 12- або 24-годинному форматі.",
+        timeFormatSystem: "Як у системі",
+        timeFormat12: "12-годинний",
+        timeFormat24: "24-годинний",
       },
       notifications: {
         sectionTitle: "Сповіщення",
@@ -2554,6 +2602,9 @@ export const uk = {
           "Кольори, що використовуються в Unsloth у світлому й темному режимах.",
         standard: "Стандартна",
         moreThemes: "Інші теми",
+      },
+      composer: {
+        title: "Поле введення",
       },
       code: {
         title: "Код",
@@ -3202,6 +3253,8 @@ export const uk = {
         "Сповіщення заблоковано. Дозвольте їх для Unsloth у налаштуваннях браузера або системи, а потім повторіть спробу.",
       replyNotificationKeywords:
         "сповіщення сповістити оповіщення готово завершено виконано відповідь фон згорнуто робочий стіл звук notification",
+      showLinkPreviews: "Попередній перегляд посилань",
+      showLinkPreviewsDescription: "Показувати попередній перегляд під час наведення на посилання на джерела.",
       showResponseModel: "Модель відповіді",
       showResponseModelDescription:
         "Показувати відомості про модель у відповідях асистента.",
@@ -3218,9 +3271,10 @@ export const uk = {
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",
-      composerAtBottom: "Поле введення внизу",
-      composerAtBottomDescription:
-        "Починати нові чати з полем введення внизу сторінки, а не посередині.",
+      turnNavigation: "Навігація ходами",
+      turnNavigationDescription: "Показує ваші повідомлення смугою біля лівого краю довгих чатів. Наведіть, щоб переглянути хід, натисніть, щоб перейти до нього, і додавайте закладки, щоб знаходити ходи.",
+      composerPosition: "Розташування поля введення",
+      composerPositionDescription: "Де розташоване поле введення в новому чаті: від верху сторінки до самого низу.",
       projectAttachments: "Спільні файли в проєкті",
       projectAttachmentsDescription:
         "Робити нові вкладення чату доступними для всіх чатів проєкту.",
@@ -3738,6 +3792,9 @@ export const uk = {
         docsLabel: "Відкрити документацію API рішень",
         description:
           "Відповідайте на запитання «так/ні», з кількома варіантами та з оцінкою щодо тексту за допомогою моделі на цьому комп’ютері або моделі рішень із розділу «Підключення». Працює з TypeSafe SDK.",
+        codeTitle: "Виклик із коду",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Інші клієнти MCP підключаються сюди з тим самим токеном.",
         enable: "Обслуговувати запити",
         enableDescription:
           "Обслуговує /v1/systemone. Увімкнення завантажує модель.",
@@ -3890,8 +3947,6 @@ export const uk = {
         repoCheckoutFallback:
           "Якщо у вас досі є checkout репозиторію, запустіть із нього локальний інсталятор:",
         restartAfterUpdate: "Після оновлення перезапустіть Unsloth.",
-        desktopManaged:
-          "Застосунок для комп’ютера автоматично перевіряє наявність нових версій. Ви також можете будь-коли перевірити або оновити його тут.",
         desktopReady: "Оновлення застосунку для комп’ютера",
         desktopReadyDescription:
           "Перевірте, чи доступна новіша версія застосунку для комп’ютера.",
@@ -3901,7 +3956,7 @@ export const uk = {
         desktopAvailableDescription:
           "Оновіть зараз, і застосунок для комп’ютера перезапуститься після завершення.",
         desktopExternalServer:
-          "Застосунок під’єднався до вже запущеного сервера Unsloth і не може його оновити. Зупиніть цей сервер, потім закрийте й знову відкрийте застосунок для комп’ютера, щоб оновити його.",
+          "Під’єднано до сервера Unsloth на порту {port}, який цей застосунок не запускав, наприклад `unsloth studio` у терміналі. Зупиніть його там, де його було запущено, потім закрийте й знову відкрийте застосунок, щоб оновити його.",
         desktopManualInstall:
           "Відкрийте сторінку випуску, щоб інсталювати найновіший пакет для Linux.",
         desktopCheckFailed: "Не вдалося перевірити наявність оновлень",
@@ -4224,8 +4279,6 @@ export const uk = {
             "Схоже, цей набір даних містить зображення, які не можна передавати потоком.",
           audioDataset:
             "Схоже, цей набір даних містить аудіо, яке не можна передавати потоком.",
-          appleSilicon:
-            "Потокове передавання ще не підтримується на Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "лише відповіді асистента",
@@ -5491,6 +5544,8 @@ export const uk = {
     removeLevel: "Вилучити рівень {n}",
     addLevel: "Додати рівень",
     jsonHelp: "Тіло запиту. «Виконати» надсилає його без змін.",
+    copyBody: "Копіювати тіло",
+    copyCurl: "Копіювати як cURL",
     examples: "Приклади",
     presetToolApproval: "Схвалювати виклики інструментів агентом",
     presetPromptInjection: "Виявляти ін’єкції в запити",
@@ -5888,5 +5943,61 @@ export const uk = {
     later: "Пізніше",
     update: "Оновити",
     undo: "Скасувати",
+  },
+  generationStats: {
+    working: "Виконання...",
+    processingPrompt: "Обробка запиту {percent}%",
+    compactingContext: "Стиснення контексту...",
+    timeLeft: "залишилось {eta}",
+    tokensOne: "токени: {count}",
+    tokens: "токени: {count}",
+    tokensOf: "токени: {done} / {total}",
+    draftAccepted: "чернетка: прийнято {accepted}/{drafted} ({percent}%)",
+    timing: {
+      trigger: "Час генерування повідомлення",
+      firstToken: "Перший токен",
+      speedInStep: "Швидкість (у кроці)",
+      effective: "Ефективна",
+      output: "Вивід",
+      denoising: "Знешумлення",
+      stepsOne: "кроки: {count}",
+      steps: "кроки: {count}",
+      blocksOne: "блоки: {count}",
+      blocks: "блоки: {count}",
+      canvas: "Полотно",
+      generation: "Генерування",
+      answerTokens: "Токени відповіді",
+      prompt: "Запит",
+      total: "Усього",
+      chunks: "Фрагменти",
+      promptEval: "Обробка запиту",
+      promptSpeed: "Швидкість запиту",
+      speed: "Швидкість",
+      tokens: "Токени",
+      draftAccepted: "Прийнято з чернетки",
+      denoisingSteps: "Кроки знешумлення",
+      blocksLabel: "Блоки",
+      cacheHits: "Влучання в кеш",
+      cacheWrites: "Записи в кеш",
+      stopReason: "Причина зупинки",
+      stoppedByYou: "Зупинено вами",
+      endOfTurn: "Кінець відповіді",
+      lengthLimit: "Ліміт довжини",
+      toolCall: "Виклик інструмента",
+      contentFilter: "Фільтр вмісту",
+    },
+    placement: {
+      title: "Розміщення ваг",
+      allOnCpu: "Усі шари ({total}) на CPU",
+      split: "Шари: {gpu} з {total} на GPU, {cpu} на CPU",
+      allOnGpu: "Усі шари ({total}) на GPU",
+      expertCache: "Усі шари ({total}) на GPU, усі експерти в RAM (кеш експертів {amount} на GPU)",
+      expertSpillOne: "Усі шари ({total}) на GPU, ваги експертів {count} шару в RAM",
+      expertSpill: "Усі шари ({total}) на GPU, ваги експертів у RAM, шарів: {count}",
+      inUnifiedMemory: "{amount} в уніфікованій пам’яті",
+      inSharedMemory: "{amount} у спільній пам’яті",
+      inVram: "{amount} у VRAM",
+      inRam: "{amount} у RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

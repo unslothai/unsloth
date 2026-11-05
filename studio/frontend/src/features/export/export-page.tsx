@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useTimeFormat, withTimeFormat } from "@/lib/time-format";
 import { useAppShellReadySignal } from "@/components/app-readiness";
 import { SectionBox } from "@/components/section-box";
 import { SegmentedControl } from "@/components/segmented-control";
@@ -206,6 +207,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
 
 export function ExportPage() {
   const t = useT();
+  useTimeFormat();
   const signalReady = useAppShellReadySignal();
   const { hfToken, setHfToken } = useHfTokenStore(
     useShallow((s) => ({
@@ -1261,10 +1263,13 @@ export function ExportPage() {
                                 const timeStr = tsMatch
                                   ? new Date(
                                       Number(tsMatch[1]) * 1000,
-                                    ).toLocaleString(undefined, {
-                                      dateStyle: "medium",
-                                      timeStyle: "short",
-                                    })
+                                    ).toLocaleString(
+                                      undefined,
+                                      withTimeFormat({
+                                        dateStyle: "medium",
+                                        timeStyle: "short",
+                                      }),
+                                    )
                                   : null;
                                 return (
                                   <SelectItem key={m.name} value={m.name}>

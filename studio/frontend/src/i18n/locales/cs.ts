@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const cs = {
+  turns: {
+    label: "Kolo {number}",
+    bookmarkedLabel: "Kolo {number}, se záložkou",
+    bookmark: "Přidat záložku ke kolu",
+    removeBookmark: "Odebrat záložku",
+    navigator: "Kola",
+  },
   chatBackground: {
     noBackground: "Bez pozadí",
     sizing: "Velikost obrázku",
@@ -199,6 +206,9 @@ export const cs = {
         history: "Čtení vaší historie prohlížení",
         move: "Pohyb myši",
         drag: "Přetahování",
+        tabs: "Prohlížení karet",
+        readFile: "Čtení souboru",
+        editFile: "Úprava souboru",
       },
     },
     title: "Prohlížeč",
@@ -354,6 +364,8 @@ export const cs = {
     askBeforeDownloadingSetting: "Ptát se před stažením",
     askBeforeDownloadingSettingDescription:
       "Potvrzovat soubory z webů před jejich uložením.",
+    askBeforeProgramDownloadsSetting: "Ptát se před stažením programů",
+    askBeforeProgramDownloadsSettingDescription: "Potvrzovat soubory, které mohou spouštět programy, například .exe nebo .dmg, i když se ostatní stahování neptají.",
     downloadSitesSetting: "Oprávnění webů ke stahování",
     downloadSitesSettingDescription:
       "Weby, ze kterých jste zvolili vždy povolit nebo blokovat stahování.",
@@ -362,6 +374,7 @@ export const cs = {
     downloadSitesFor: "Stahování z webu {host}",
     downloadSitesRemove: "Zapomenout {host}",
     downloadSiteAllow: "Vždy povolit",
+    downloadSiteAllowAll: "Povolit i programy",
     downloadSiteBlock: "Vždy blokovat",
     downloadPrompt: {
       title: "Stáhnout tento soubor?",
@@ -369,6 +382,9 @@ export const cs = {
       dangerous:
         "Soubory tohoto typu mohou ve vašem počítači spouštět programy. Stáhněte ho, jen pokud webu {host} důvěřujete.",
       remember: "Zapamatovat si příště",
+      once: "Zeptat se příště",
+      site: "Vždy pro {host}",
+      all: "Vždy stahovat ze všech webů",
       cancel: "Zrušit",
       download: "Stáhnout",
       blocked: "Stahování z webu {host} bylo zablokováno.",
@@ -730,6 +746,8 @@ export const cs = {
     plainText: "Pole zprávy s prostým textem",
     plainTextDescription:
       "Ponechá kód, Markdown a odkazy jako doslovný text. Po vypnutí se zobrazí formátovaný náhled.",
+    richPaste: "Vkládání formátovaného textu",
+    richPasteDescription: "Vkládá odkazy, tabulky a formátování jako Markdown. {shortcut} vloží prostý text. Plný editor formátovaného textu brzy.",
     showContext: "Využití kontextového okna",
     sendShortcut: "Zkratka pro odeslání",
     sendMultiline: "{mod} + Enter pro víceřádkové prompty",
@@ -1158,6 +1176,7 @@ export const cs = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Před přidáním dalšího účtu nastavte heslo vlastníka instalace. Až bude mít instalace více účtů, budete ho používat k přihlášení.",
       signsInAs: "Přihlašuje se jako {username}",
       signsInAsOwner: "Přihlašuje se jako {alias} nebo {username}",
       signInName: "Vaše přihlašovací jméno",
@@ -2040,6 +2059,26 @@ export const cs = {
       chatDefaults: "Výchozí nastavení chatu",
       autoTitleNewChats: "Automaticky pojmenovávat nové chaty",
       autoTitleNewChatsDescription: "Vygenerovat název z první zprávy.",
+      mlWarmup: {
+        sectionTitle: "Výkon při spuštění",
+        description: "Připravte vybrané funkce pro rychlejší první použití. Všechny možnosti jsou ve výchozím nastavení vypnuté. Mohou načítat sdílené závislosti a zvyšovat využití RAM při nečinnosti.",
+        restartRequired: "Změny se projeví po restartování Unsloth.",
+        hardwareLabel: "Detekce hardwaru",
+        hardwareDescription: "Detekovat GPU a připravit PyTorch.",
+        textLabel: "Textové modely",
+        textDescription: "Připravit podporu textových modelů Transformers.",
+        datasetsLabel: "Příprava datových sad",
+        datasetsDescription: "Připravit Datasets a jeho závislosti pro náhledy a zpracování.",
+        mediaLabel: "Obrazové a video modely",
+        mediaDescription: "Připravit Diffusers a sdílené závislosti modelů.",
+        advanced: "Pokročilé",
+        quantizationLabel: "Předběžné kontroly kvantizace obrazových modelů",
+        quantizationDescription: "Zkontrolovat podporu před prvním načtením kvantizovaného obrazového modelu. Může krátkodobě zvýšit využití RAM.",
+        requiredBySelections: "Vyžadováno vybranými možnostmi.",
+        disabledByEnv: "Vypnuto proměnnou UNSLOTH_STUDIO_DISABLE_TORCH_WARM v prostředí backendu.",
+        loadError: "Nastavení předběžné přípravy při spuštění se nepodařilo načíst.",
+        saveError: "Nastavení předběžné přípravy při spuštění se nepodařilo uložit.",
+      },
       helperLlm: {
         sectionTitle: "Pomocný LLM",
         preloadOnStartup: "Při spuštění předem stáhnout pomocný LLM",
@@ -2109,6 +2148,7 @@ export const cs = {
           "Nastavení automatického přepínání modelu se nepodařilo uložit.",
         idleError:
           "Zadejte 0, chcete-li model ponechat načtený, nebo alespoň 60 sekund.",
+        idleUnsaved: "Zatím neuloženo.",
         keepKv: "Zachovat kontext chatu i po uvolnění",
         keepKvDescription:
           "Uložit mezipaměť KV před uvolněním při nečinnosti nebo před tím, než GPU převezme model obrázků či videa, aby obnovené chaty nemusely znovu číst historii. Až 10 GB na disku.",
@@ -2176,6 +2216,14 @@ export const cs = {
           off: "Provádí každé volání nástroje bez ptaní. Kód v Pythonu a terminálu stále běží v sandboxu, který omezuje, ke kterým souborům ve vašem počítači má přístup. Bez funkčního sandboxu operačního systému se riskantní volání nejprve zeptají.",
           full: "Provádí každé volání nástroje bez ptaní a vypne sandbox pro kód, takže kód v Pythonu a terminálu může číst a měnit jakýkoli soubor, ke kterému má váš účet přístup.",
         },
+      },
+      display: {
+        title: "Zobrazení",
+        timeFormat: "Formát času",
+        timeFormatDescription: "Zobrazovat čas ve 12hodinovém nebo 24hodinovém formátu.",
+        timeFormatSystem: "Podle systému",
+        timeFormat12: "12hodinový",
+        timeFormat24: "24hodinový",
       },
       notifications: {
         sectionTitle: "Oznámení",
@@ -2547,6 +2595,9 @@ export const cs = {
           "Barvy používané v celém Unsloth, ve světlém i tmavém režimu.",
         standard: "Standardní",
         moreThemes: "Další motivy",
+      },
+      composer: {
+        title: "Editor zpráv",
       },
       code: {
         title: "Kód",
@@ -3193,6 +3244,8 @@ export const cs = {
         "Oznámení jsou blokována. Povolte je pro Unsloth v nastavení prohlížeče nebo systému a zkuste to znovu.",
       replyNotificationKeywords:
         "oznámení upozornění hotovo dokončeno připraveno odpověď pozadí minimalizováno zvuk notify notification alert done finished complete ready response reply background minimized desktop sound",
+      showLinkPreviews: "Náhledy odkazů",
+      showLinkPreviewsDescription: "Zobrazovat náhledy při najetí na odkazy na zdroje.",
       showResponseModel: "Model odpovědi",
       showResponseModelDescription:
         "Zobrazovat v odpovědích asistenta podrobnosti o modelu.",
@@ -3209,9 +3262,10 @@ export const cs = {
       inlineEditResponse: "Upravit odpověď přímo u odpovědí",
       inlineEditResponseDescription:
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
-      composerAtBottom: "Pole zprávy dole",
-      composerAtBottomDescription:
-        "Zahajovat nové chaty s polem zprávy v dolní části stránky místo uprostřed.",
+      turnNavigation: "Navigace v kolech",
+      turnNavigationDescription: "Zobrazí vaše zprávy jako lištu u levého okraje dlouhých chatů. Najetím zobrazíte náhled kola, kliknutím na něj přejdete a záložkami si kola označíte.",
+      composerPosition: "Umístění pole zprávy",
+      composerPositionDescription: "Kde je pole zprávy při zahájení nového chatu, od horní části stránky až dolů.",
       projectAttachments: "Sdílet soubory v rámci projektu",
       projectAttachmentsDescription:
         "Zpřístupnit nové přílohy chatu všem chatům v projektu.",
@@ -3726,6 +3780,9 @@ export const cs = {
         docsLabel: "Otevřít dokumentaci Decision API",
         description:
           "Odpovídejte na otázky typu ano/ne, s výběrem z možností a s hodnocením týkající se textu pomocí modelu v tomto počítači nebo rozhodovacího modelu z Připojení. Funguje se sadou TypeSafe SDK.",
+        codeTitle: "Volání z kódu",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Ostatní klienti MCP se sem připojují se stejným tokenem.",
         enable: "Obsluhovat požadavky",
         enableDescription: "Obsluhuje /v1/systemone. Zapnutím se stáhne model.",
         enableRemoteDescription: "Obsluhuje /v1/systemone.",
@@ -3877,8 +3934,6 @@ export const cs = {
         repoCheckoutFallback:
           "Pokud stále máte klon repozitáře, spusťte z něj místní instalátor:",
         restartAfterUpdate: "Po aktualizaci Unsloth restartujte.",
-        desktopManaged:
-          "Desktopová aplikace kontroluje nové verze automaticky. Kontrolu nebo aktualizaci můžete kdykoli spustit i zde.",
         desktopReady: "Aktualizace desktopové aplikace",
         desktopReadyDescription:
           "Zkontrolujte, zda je k dispozici novější verze desktopové aplikace.",
@@ -3888,7 +3943,7 @@ export const cs = {
         desktopAvailableDescription:
           "Aktualizujte nyní; po dokončení se desktopová aplikace restartuje.",
         desktopExternalServer:
-          "Aplikace se připojila k již spuštěnému serveru Unsloth a nemůže ho aktualizovat. Zastavte tento server, potom desktopovou aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
+          "Připojeno k serveru Unsloth na portu {port}, který tato aplikace nespustila, například `unsloth studio` v terminálu. Zastavte ho tam, kde byl spuštěn, potom aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
         desktopManualInstall:
           "Otevřete stránku vydání a nainstalujte nejnovější balíček pro Linux.",
         desktopCheckFailed: "Aktualizace se nepodařilo zkontrolovat",
@@ -4206,8 +4261,6 @@ export const cs = {
             "Tato datová sada vypadá jako obrázky, které nelze streamovat.",
           audioDataset:
             "Tato datová sada vypadá jako zvuk, který nelze streamovat.",
-          appleSilicon:
-            "Streamování zatím není na Apple Silicon (MLX) podporováno.",
         },
         options: {
           trainOnCompletions: "pouze odpovědi asistenta",
@@ -5466,6 +5519,8 @@ export const cs = {
     removeLevel: "Odebrat úroveň {n}",
     addLevel: "Přidat úroveň",
     jsonHelp: "Tělo požadavku. Spuštění ho odešle přesně tak, jak je napsané.",
+    copyBody: "Kopírovat tělo",
+    copyCurl: "Kopírovat jako cURL",
     examples: "Příklady",
     presetToolApproval: "Schvalovat volání nástrojů agenta",
     presetPromptInjection: "Odhalit prompt injection",
@@ -5861,5 +5916,61 @@ export const cs = {
     later: "Později",
     update: "Aktualizovat",
     undo: "Vrátit zpět",
+  },
+  generationStats: {
+    working: "Probíhá zpracování...",
+    processingPrompt: "Zpracování promptu {percent} %",
+    compactingContext: "Zhušťování kontextu...",
+    timeLeft: "zbývá {eta}",
+    tokensOne: "tokeny: {count}",
+    tokens: "tokeny: {count}",
+    tokensOf: "tokeny: {done} / {total}",
+    draftAccepted: "návrh: přijato {accepted}/{drafted} ({percent} %)",
+    timing: {
+      trigger: "Časování zprávy",
+      firstToken: "První token",
+      speedInStep: "Rychlost (v kroku)",
+      effective: "Efektivní",
+      output: "Výstup",
+      denoising: "Odšumování",
+      stepsOne: "kroky: {count}",
+      steps: "kroky: {count}",
+      blocksOne: "bloky: {count}",
+      blocks: "bloky: {count}",
+      canvas: "Plátno",
+      generation: "Generování",
+      answerTokens: "Tokeny odpovědi",
+      prompt: "Prompt",
+      total: "Celkem",
+      chunks: "Části",
+      promptEval: "Vyhodnocení promptu",
+      promptSpeed: "Rychlost promptu",
+      speed: "Rychlost",
+      tokens: "Tokeny",
+      draftAccepted: "Přijatý návrh",
+      denoisingSteps: "Kroky odšumování",
+      blocksLabel: "Bloky",
+      cacheHits: "Zásahy mezipaměti",
+      cacheWrites: "Zápisy do mezipaměti",
+      stopReason: "Důvod zastavení",
+      stoppedByYou: "Zastaveno vámi",
+      endOfTurn: "Konec odpovědi",
+      lengthLimit: "Limit délky",
+      toolCall: "Volání nástroje",
+      contentFilter: "Filtr obsahu",
+    },
+    placement: {
+      title: "Umístění vah",
+      allOnCpu: "Všechny vrstvy ({total}) na CPU",
+      split: "{gpu} z {total} vrstev na GPU, {cpu} na CPU",
+      allOnGpu: "Všechny vrstvy ({total}) na GPU",
+      expertCache: "Všechny vrstvy ({total}) na GPU, všichni experti v RAM ({amount} mezipaměti expertů na GPU)",
+      expertSpillOne: "Všechny vrstvy ({total}) na GPU, váhy expertů {count} vrstvy v RAM",
+      expertSpill: "Všechny vrstvy ({total}) na GPU, váhy expertů v RAM, vrstev: {count}",
+      inUnifiedMemory: "{amount} ve sjednocené paměti",
+      inSharedMemory: "{amount} ve sdílené paměti",
+      inVram: "{amount} ve VRAM",
+      inRam: "{amount} v RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

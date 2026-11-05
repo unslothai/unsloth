@@ -2,6 +2,13 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 export const it = {
+  turns: {
+    label: "Turno {number}",
+    bookmarkedLabel: "Turno {number}, nei segnalibri",
+    bookmark: "Aggiungi turno ai segnalibri",
+    removeBookmark: "Rimuovi segnalibro",
+    navigator: "Turni",
+  },
   chatBackground: {
     noBackground: "Nessuno sfondo",
     sizing: "Dimensionamento immagine",
@@ -188,6 +195,9 @@ export const it = {
         history: "Legge la cronologia di navigazione",
         move: "Muove il mouse",
         drag: "Trascina",
+        tabs: "Guarda le schede",
+        readFile: "Legge il file",
+        editFile: "Modifica il file",
       },
     },
     title: "Browser",
@@ -317,18 +327,24 @@ export const it = {
     downloadLocationReset: "Ripristina",
     askBeforeDownloadingSetting: "Chiedi prima di scaricare",
     askBeforeDownloadingSettingDescription: "Conferma i file dai siti web prima di salvarli.",
+    askBeforeProgramDownloadsSetting: "Chiedi prima di scaricare programmi",
+    askBeforeProgramDownloadsSettingDescription: "Conferma i file che possono eseguire programmi, come .exe o .dmg, anche quando gli altri download non lo chiedono.",
     downloadSitesSetting: "Autorizzazioni di download per sito",
     downloadSitesSettingDescription: "Siti da cui hai scelto di consentire o bloccare sempre i download.",
     downloadSitesNone: "Spunta Ricorda per la prossima volta quando ti viene chiesto e il sito apparirà qui.",
     downloadSitesFor: "Download da {host}",
     downloadSitesRemove: "Dimentica {host}",
     downloadSiteAllow: "Consenti sempre",
+    downloadSiteAllowAll: "Consenti anche i programmi",
     downloadSiteBlock: "Blocca sempre",
     downloadPrompt: {
       title: "Scaricare questo file?",
       description: "{host} vuole salvare {name} sul tuo computer.",
       dangerous: "File come questo possono eseguire programmi sul tuo computer. Scaricalo solo se ti fidi di {host}.",
       remember: "Ricorda per la prossima volta",
+      once: "Chiedi la prossima volta",
+      site: "Sempre per {host}",
+      all: "Scarica sempre, da tutti i siti",
       cancel: "Annulla",
       download: "Scarica",
       blocked: "Bloccato un download da {host}.",
@@ -642,6 +658,8 @@ export const it = {
     title: "Composizione dei messaggi",
     plainText: "Composizione in testo semplice",
     plainTextDescription: "Mantieni codice, Markdown e link come testo letterale. Disattiva per mostrare un’anteprima formattata.",
+    richPaste: "Incolla testo formattato",
+    richPasteDescription: "Incolla link, tabelle e formattazione come Markdown. {shortcut} incolla testo semplice. Editor di testo formattato completo in arrivo.",
     showContext: "Mostra l’utilizzo della finestra di contesto",
     sendShortcut: "Scorciatoia di invio",
     sendMultiline: "{mod} + Enter per i messaggi su più righe",
@@ -955,6 +973,7 @@ export const it = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Imposta la password del proprietario dell'installazione prima di aggiungere un altro account. La userai per accedere quando questa installazione avrà più account.",
       signsInAs: "Accede come {username}",
       signsInAsOwner: "Accede come {alias} o {username}",
       signInName: "Il tuo nome di accesso",
@@ -1772,6 +1791,26 @@ export const it = {
       autoTitleNewChats: "Titola automaticamente le nuove chat",
       autoTitleNewChatsDescription:
         "Genera un titolo breve a partire dal primo messaggio.",
+      mlWarmup: {
+        sectionTitle: "Prestazioni all'avvio",
+        description: "Prepara le funzionalità selezionate per velocizzarne il primo utilizzo. Sono tutte disattivate per impostazione predefinita. Queste opzioni possono caricare dipendenze condivise e aumentare l'uso di RAM quando l'applicazione è inattiva.",
+        restartRequired: "Le modifiche si applicano dopo il riavvio di Unsloth.",
+        hardwareLabel: "Rilevamento hardware",
+        hardwareDescription: "Rilevare le GPU e preparare PyTorch.",
+        textLabel: "Modelli di testo",
+        textDescription: "Preparare il supporto di Transformers per i modelli di testo.",
+        datasetsLabel: "Preparazione dei dataset",
+        datasetsDescription: "Preparare Datasets e le sue dipendenze per le anteprime e l'elaborazione.",
+        mediaLabel: "Modelli di immagini e video",
+        mediaDescription: "Preparare Diffusers e le dipendenze condivise dei modelli.",
+        advanced: "Avanzate",
+        quantizationLabel: "Controlli preliminari della quantizzazione delle immagini",
+        quantizationDescription: "Verificare la compatibilità prima del primo caricamento di un modello di immagini quantizzato. Può aumentare brevemente l'uso di RAM.",
+        requiredBySelections: "Richiesto dalle opzioni selezionate.",
+        disabledByEnv: "Disattivato da UNSLOTH_STUDIO_DISABLE_TORCH_WARM nell'ambiente del backend.",
+        loadError: "Caricamento delle impostazioni di preparazione all'avvio non riuscito.",
+        saveError: "Salvataggio delle impostazioni di preparazione all'avvio non riuscito.",
+      },
       helperLlm: {
         sectionTitle: "LLM di supporto",
         preloadOnStartup: "Scarica in anticipo l'LLM di supporto all'avvio",
@@ -1834,6 +1873,7 @@ export const it = {
           "Salvataggio delle impostazioni di cambio automatico del modello non riuscito.",
         idleError:
           "Inserisci 0 per mantenere il modello in memoria, oppure almeno 60 secondi.",
+        idleUnsaved: "Non ancora salvato.",
         keepKv:
           "Mantieni il contesto della chat tra gli scaricamenti",
         keepKvDescription:
@@ -1907,6 +1947,14 @@ export const it = {
           full:
             "Esegue ogni chiamata agli strumenti senza chiedere e disattiva la sandbox del codice, così il codice Python e da terminale può leggere e modificare qualsiasi file accessibile al tuo account.",
         },
+      },
+      display: {
+        title: "Visualizzazione",
+        timeFormat: "Formato ora",
+        timeFormatDescription: "Mostra gli orari nel formato a 12 o 24 ore.",
+        timeFormatSystem: "Predefinito di sistema",
+        timeFormat12: "12 ore",
+        timeFormat24: "24 ore",
       },
       notifications: {
         sectionTitle: "Notifiche",
@@ -2261,6 +2309,9 @@ export const it = {
         description: "Colori usati in Unsloth, nei temi chiaro e scuro.",
         standard: "Standard",
         moreThemes: "Altri temi",
+      },
+      composer: {
+        title: "Editor",
       },
       code: {
         title: "Codice",
@@ -2866,6 +2917,8 @@ export const it = {
         "Le notifiche sono bloccate. Consentile per Unsloth nelle impostazioni del browser o del sistema, poi riprova.",
       replyNotificationKeywords:
         "notifica avvisare avviso finito completato pronto risposta background ridotto notify notification alert done finished reply background",
+      showLinkPreviews: "Anteprime dei link",
+      showLinkPreviewsDescription: "Mostra le anteprime passando il puntatore sui link alle fonti.",
       showResponseModel: "Mostra il modello della risposta",
       showResponseModelDescription:
         "Mostra i metadati del modello nelle risposte dell'assistente.",
@@ -2880,8 +2933,10 @@ export const it = {
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
-      composerAtBottom: "Casella di testo in basso",
-      composerAtBottomDescription: "Avvia le nuove chat con la casella di testo in fondo alla pagina invece che al centro.",
+      turnNavigation: "Navigazione dei turni",
+      turnNavigationDescription: "Mostra i tuoi messaggi come una barra sul bordo sinistro delle chat lunghe. Passa sopra un turno per l’anteprima, fai clic per raggiungerlo e aggiungilo ai segnalibri per ritrovarlo.",
+      composerPosition: "Posizione della casella di testo",
+      composerPositionDescription: "Dove si trova la casella di testo quando inizi una nuova chat, dalla parte alta della pagina fino in fondo.",
       projectAttachments: "Condividi i file nel progetto",
       projectAttachmentsDescription:
         "Rende i nuovi allegati disponibili in tutte le chat del progetto.",
@@ -3359,6 +3414,9 @@ export const it = {
         docs: "Documentazione",
         docsLabel: "Apri la documentazione dell'API decisionale",
         description: "Rispondi a domande sì/no, a scelta multipla e a punteggio sul testo con un modello su questo computer o un modello decisionale dalle Connessioni. Funziona con l'SDK di TypeSafe.",
+        codeTitle: "Chiamalo dal codice",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Gli altri client MCP si collegano qui con lo stesso token.",
         enable: "Rispondi alle richieste",
         enableDescription: "Gestisce /v1/systemone. Attivandolo si scarica il modello.",
         enableRemoteDescription: "Gestisce /v1/systemone.",
@@ -3503,8 +3561,6 @@ export const it = {
         repoCheckoutFallback:
           "Se hai ancora il checkout del repository, esegui l'installer locale da lì:",
         restartAfterUpdate: "Riavvia Unsloth dopo l'aggiornamento.",
-        desktopManaged:
-          "L'app desktop verifica automaticamente la presenza di nuove versioni. Puoi anche controllare o aggiornare qui in qualsiasi momento.",
         desktopReady: "Aggiornamenti dell'app desktop",
         desktopReadyDescription:
           "Verifica se è disponibile una versione più recente dell'app desktop.",
@@ -3516,7 +3572,7 @@ export const it = {
         desktopAvailableDescription:
           "Aggiorna ora: al termine, l'app desktop verrà riavviata.",
         desktopExternalServer:
-          "L’app si è connessa a un server Unsloth già in esecuzione e non può aggiornarlo. Arresta quel server, poi chiudi e riapri l’app desktop per aggiornare.",
+          "Connessa a un server Unsloth sulla porta {port} che questa app non ha avviato, come `unsloth studio` in un terminale. Arrestalo dove è stato avviato, poi chiudi e riapri l’app per aggiornare.",
         desktopManualInstall:
           "Apri la pagina della release per installare il pacchetto Linux più recente.",
         desktopCheckFailed:
@@ -4010,8 +4066,6 @@ export const it = {
             "Questo dataset sembra contenere immagini, che non possono essere trasmesse in streaming.",
           audioDataset:
             "Questo dataset sembra contenere audio, che non può essere trasmesso in streaming.",
-          appleSilicon:
-            "Lo streaming non è ancora supportato su Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "solo completamenti dell'assistente",
@@ -5123,6 +5177,8 @@ export const it = {
     removeLevel: "Rimuovi il livello {n}",
     addLevel: "Aggiungi livello",
     jsonHelp: "Il corpo della richiesta. Esegui lo invia così com'è.",
+    copyBody: "Copia body",
+    copyCurl: "Copia come cURL",
     examples: "Esempi",
     presetToolApproval: "Approvare le chiamate agli strumenti di un agente",
     presetPromptInjection: "Individuare la prompt injection",
@@ -5504,5 +5560,61 @@ export const it = {
     later: "Più tardi",
     update: "Aggiorna",
     undo: "Annulla",
+  },
+  generationStats: {
+    working: "Elaborazione...",
+    processingPrompt: "Elaborazione del prompt {percent}%",
+    compactingContext: "Compattazione del contesto...",
+    timeLeft: "{eta} rimanenti",
+    tokensOne: "{count} token",
+    tokens: "{count} token",
+    tokensOf: "{done} / {total} token",
+    draftAccepted: "draft {accepted}/{drafted} accettati ({percent}%)",
+    timing: {
+      trigger: "Tempi del messaggio",
+      firstToken: "Primo token",
+      speedInStep: "Velocità (nello step)",
+      effective: "Effettiva",
+      output: "Output",
+      denoising: "Denoising",
+      stepsOne: "{count} step",
+      steps: "{count} step",
+      blocksOne: "{count} blocco",
+      blocks: "{count} blocchi",
+      canvas: "Canvas",
+      generation: "Generazione",
+      answerTokens: "Token di risposta",
+      prompt: "Prompt",
+      total: "Totale",
+      chunks: "Chunk",
+      promptEval: "Valutazione prompt",
+      promptSpeed: "Velocità prompt",
+      speed: "Velocità",
+      tokens: "Token",
+      draftAccepted: "Draft accettati",
+      denoisingSteps: "Step di denoising",
+      blocksLabel: "Blocchi",
+      cacheHits: "Hit della cache",
+      cacheWrites: "Scritture in cache",
+      stopReason: "Motivo dell'arresto",
+      stoppedByYou: "Interrotto da te",
+      endOfTurn: "Fine del turno",
+      lengthLimit: "Limite di lunghezza",
+      toolCall: "Chiamata a strumento",
+      contentFilter: "Filtro dei contenuti",
+    },
+    placement: {
+      title: "Posizione dei pesi",
+      allOnCpu: "Tutti i {total} livelli sulla CPU",
+      split: "{gpu} livelli su {total} sulla GPU, {cpu} sulla CPU",
+      allOnGpu: "Tutti i {total} livelli sulla GPU",
+      expertCache: "Tutti i {total} livelli sulla GPU, tutti gli esperti in RAM ({amount} di cache degli esperti sulla GPU)",
+      expertSpillOne: "Tutti i {total} livelli sulla GPU, pesi degli esperti di {count} livello in RAM",
+      expertSpill: "Tutti i {total} livelli sulla GPU, pesi degli esperti di {count} livelli in RAM",
+      inUnifiedMemory: "{amount} in memoria unificata",
+      inSharedMemory: "{amount} in memoria condivisa",
+      inVram: "{amount} in VRAM",
+      inRam: "{amount} in RAM",
+    },
   },
 } as const;

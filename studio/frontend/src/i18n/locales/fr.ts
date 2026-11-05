@@ -5,6 +5,13 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en.ts";
 
 export const fr = {
+  turns: {
+    label: "Tour {number}",
+    bookmarkedLabel: "Tour {number}, en favori",
+    bookmark: "Ajouter le tour aux favoris",
+    removeBookmark: "Retirer des favoris",
+    navigator: "Tours",
+  },
   chatBackground: {
     noBackground: "Aucun arrière-plan",
     sizing: "Dimensionnement de l’image",
@@ -191,6 +198,9 @@ export const fr = {
         history: "Lecture de votre historique de navigation",
         move: "Déplacement de la souris",
         drag: "Glisser-déposer",
+        tabs: "Consultation des onglets",
+        readFile: "Lecture du fichier",
+        editFile: "Modification du fichier",
       },
     },
     title: "Navigateur",
@@ -320,18 +330,24 @@ export const fr = {
     downloadLocationReset: "Réinitialiser",
     askBeforeDownloadingSetting: "Demander avant de télécharger",
     askBeforeDownloadingSettingDescription: "Confirmer les fichiers provenant de sites web avant de les enregistrer.",
+    askBeforeProgramDownloadsSetting: "Demander avant de télécharger des programmes",
+    askBeforeProgramDownloadsSettingDescription: "Confirmer les fichiers capables d’exécuter des programmes, comme .exe ou .dmg, même quand les autres téléchargements ne demandent rien.",
     downloadSitesSetting: "Autorisations de téléchargement par site",
     downloadSitesSettingDescription: "Sites dont vous avez choisi de toujours autoriser ou bloquer les téléchargements.",
     downloadSitesNone: "Cochez Se souvenir pour la prochaine fois lorsqu'on vous le demande, et le site apparaîtra ici.",
     downloadSitesFor: "Téléchargements depuis {host}",
     downloadSitesRemove: "Oublier {host}",
     downloadSiteAllow: "Toujours autoriser",
+    downloadSiteAllowAll: "Autoriser aussi les programmes",
     downloadSiteBlock: "Toujours bloquer",
     downloadPrompt: {
       title: "Télécharger ce fichier ?",
       description: "{host} souhaite enregistrer {name} sur votre ordinateur.",
       dangerous: "Ce type de fichier peut exécuter des programmes sur votre ordinateur. Ne le téléchargez que si vous faites confiance à {host}.",
       remember: "Se souvenir pour la prochaine fois",
+      once: "Demander la prochaine fois",
+      site: "Toujours pour {host}",
+      all: "Toujours télécharger, depuis tous les sites",
       cancel: "Annuler",
       download: "Télécharger",
       blocked: "Un téléchargement depuis {host} a été bloqué.",
@@ -645,6 +661,8 @@ export const fr = {
     title: "Saisie des messages",
     plainText: "Saisie en texte brut",
     plainTextDescription: "Conserver le code, le Markdown et les liens en texte brut. Désactivez pour afficher un aperçu mis en forme.",
+    richPaste: "Coller le texte enrichi",
+    richPasteDescription: "Colle liens, tableaux et mise en forme en Markdown. {shortcut} colle du texte brut. Éditeur de texte enrichi complet bientôt disponible.",
     showContext: "Afficher l’utilisation de la fenêtre de contexte",
     sendShortcut: "Raccourci d’envoi",
     sendMultiline: "{mod} + Enter pour les messages sur plusieurs lignes",
@@ -1056,6 +1074,7 @@ export const fr = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Définissez le mot de passe du propriétaire de l’installation avant d’ajouter un autre compte. Vous l’utiliserez pour vous connecter une fois que cette installation aura plusieurs comptes.",
       signsInAs: "Se connecte en tant que {username}",
       signsInAsOwner: "Se connecte en tant que {alias} ou {username}",
       signInName: "Votre nom de connexion",
@@ -1873,6 +1892,26 @@ export const fr = {
       autoTitleNewChats: "Titrer automatiquement les nouvelles discussions",
       autoTitleNewChatsDescription:
         "Générer un titre court à partir du premier message.",
+      mlWarmup: {
+        sectionTitle: "Performances au démarrage",
+        description: "Préparez les fonctionnalités sélectionnées pour accélérer leur première utilisation. Toutes sont désactivées par défaut. Ces options peuvent charger des dépendances partagées et augmenter l'utilisation de RAM au repos.",
+        restartRequired: "Les modifications s'appliquent après le redémarrage d'Unsloth.",
+        hardwareLabel: "Détection du matériel",
+        hardwareDescription: "Détecter les GPU et préparer PyTorch.",
+        textLabel: "Modèles de texte",
+        textDescription: "Préparer la prise en charge des modèles de texte par Transformers.",
+        datasetsLabel: "Préparation des jeux de données",
+        datasetsDescription: "Préparer Datasets et ses dépendances pour les aperçus et le traitement.",
+        mediaLabel: "Modèles d'image et de vidéo",
+        mediaDescription: "Préparer Diffusers et les dépendances partagées des modèles.",
+        advanced: "Avancé",
+        quantizationLabel: "Vérifications préalables à la quantification d'image",
+        quantizationDescription: "Vérifier la compatibilité avant le premier chargement d'un modèle d'image quantifié. Peut brièvement augmenter l'utilisation de RAM.",
+        requiredBySelections: "Requis par vos sélections.",
+        disabledByEnv: "Désactivé par UNSLOTH_STUDIO_DISABLE_TORCH_WARM dans l'environnement du backend.",
+        loadError: "Échec du chargement des paramètres de préparation au démarrage.",
+        saveError: "Échec de l'enregistrement des paramètres de préparation au démarrage.",
+      },
       helperLlm: {
         sectionTitle: "LLM assistant",
         preloadOnStartup: "Précharger le LLM assistant au démarrage",
@@ -1929,6 +1968,7 @@ export const fr = {
         saveError:
           "Échec de l'enregistrement des paramètres de changement automatique de modèle.",
         idleError: "Saisissez 0 pour garder le modèle chargé, ou au moins 60 secondes.",
+        idleUnsaved: "Pas encore enregistré.",
         autoDownload: "Télécharger les modèles manquants",
         autoDownloadDescription:
           "Récupérer un GGUF indiqué dans une requête API qui n'est pas encore téléchargé. Toute personne disposant d'une clé API peut alors consommer de l'espace disque et de la bande passante.",
@@ -1985,6 +2025,14 @@ export const fr = {
           "Impossible de charger les paramètres de connexion des comptes gérés.",
         saveError:
           "Impossible d'enregistrer les paramètres de connexion des comptes gérés.",
+      },
+      display: {
+        title: "Affichage",
+        timeFormat: "Format de l'heure",
+        timeFormatDescription: "Afficher l'heure au format 12 heures ou 24 heures.",
+        timeFormatSystem: "Valeur par défaut du système",
+        timeFormat12: "12 heures",
+        timeFormat24: "24 heures",
       },
       notifications: {
         sectionTitle: "Notifications",
@@ -2359,6 +2407,9 @@ export const fr = {
         description: "Couleurs utilisées dans Unsloth, en mode clair et sombre.",
         standard: "Standard",
         moreThemes: "Plus de thèmes",
+      },
+      composer: {
+        title: "Zone de saisie",
       },
       code: {
         title: "Code",
@@ -2966,6 +3017,8 @@ export const fr = {
         "Les notifications sont bloquées. Autorisez-les pour Unsloth dans les réglages du navigateur ou du système, puis réessayez.",
       replyNotificationKeywords:
         "notification notifier alerte terminé fini prêt réponse arrière-plan réduit notify notification alert done finished reply background",
+      showLinkPreviews: "Aperçus des liens",
+      showLinkPreviewsDescription: "Afficher un aperçu au survol des liens vers les sources.",
       showResponseModel: "Afficher le modèle de réponse",
       showResponseModelDescription:
         "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
@@ -2980,8 +3033,10 @@ export const fr = {
         "détails vitesse jetons statistiques couches déchargement verbose developer stats speed tok/s prefill decode layers offload vram experts",
       inlineEditResponse: "Modifier la réponse sur les réponses",
       inlineEditResponseDescription: "Afficher Modifier la réponse sur chaque réponse, plutôt que dans le menu Plus.",
-      composerAtBottom: "Zone de saisie en bas",
-      composerAtBottomDescription: "Commencer les nouvelles discussions avec la zone de saisie en bas de la page plutôt qu'au centre.",
+      turnNavigation: "Navigation par tours",
+      turnNavigationDescription: "Affiche vos messages sous forme de barre sur le bord gauche des longues discussions. Survolez un tour pour l’aperçu, cliquez pour y aller et ajoutez-le aux favoris pour le retrouver.",
+      composerPosition: "Position de la zone de saisie",
+      composerPositionDescription: "Emplacement de la zone de saisie au début d'une nouvelle discussion, du haut de la page jusqu'en bas.",
       projectAttachments: "Partager les fichiers dans tout le projet",
       projectAttachmentsDescription:
         "Rend les nouvelles pièces jointes accessibles à toutes les discussions du projet.",
@@ -3462,6 +3517,9 @@ export const fr = {
         docs: "Documentation",
         docsLabel: "Ouvrir la documentation de l'API de décision",
         description: "Répondez à des questions oui/non, à choix multiples et à score sur du texte avec un modèle sur cette machine ou un modèle de décision issu des Connexions. Compatible avec le SDK TypeSafe.",
+        codeTitle: "Appeler depuis le code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Les autres clients MCP se connectent ici avec le même jeton.",
         enable: "Répondre aux requêtes",
         enableDescription: "Sert /v1/systemone. L'activer télécharge le modèle.",
         enableRemoteDescription: "Sert /v1/systemone.",
@@ -3607,8 +3665,6 @@ export const fr = {
         repoCheckoutFallback:
           "Si vous avez encore le checkout du dépôt, lancez l'installateur local depuis celui-ci :",
         restartAfterUpdate: "Redémarrez Unsloth après la mise à jour.",
-        desktopManaged:
-          "L’application de bureau recherche automatiquement les nouvelles versions. Vous pouvez également rechercher ou installer une mise à jour ici à tout moment.",
         desktopReady: "Mises à jour de l’application de bureau",
         desktopReadyDescription:
           "Vérifiez si une version plus récente de l’application de bureau est disponible.",
@@ -3620,7 +3676,7 @@ export const fr = {
         desktopAvailableDescription:
           "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
         desktopExternalServer:
-          "L’application est connectée à un serveur Unsloth déjà en cours d’exécution et ne peut pas le mettre à jour. Arrêtez ce serveur, puis quittez et rouvrez l’application de bureau pour effectuer la mise à jour.",
+          "Connectée à un serveur Unsloth sur le port {port} que cette application n’a pas démarré, comme `unsloth studio` dans un terminal. Arrêtez-le là où il a été démarré, puis quittez et rouvrez l’application pour effectuer la mise à jour.",
         desktopManualInstall:
           "Ouvrez la page des versions pour installer le dernier paquet Linux.",
         desktopCheckFailed: "Impossible de rechercher les mises à jour",
@@ -3946,8 +4002,6 @@ export const fr = {
             "Ce jeu de données semble contenir des images, ce qui empêche son utilisation en streaming.",
           audioDataset:
             "Ce jeu de données semble contenir de l'audio, ce qui empêche son utilisation en streaming.",
-          appleSilicon:
-            "Le streaming n'est pas encore pris en charge sur Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "réponses de l'assistant uniquement",
@@ -5138,6 +5192,8 @@ export const fr = {
     removeLevel: "Retirer le niveau {n}",
     addLevel: "Ajouter un niveau",
     jsonHelp: "Le corps de la requête. Exécuter l'envoie tel quel.",
+    copyBody: "Copier le corps",
+    copyCurl: "Copier en cURL",
     examples: "Exemples",
     presetToolApproval: "Approuver les appels d'outils d'un agent",
     presetPromptInjection: "Détecter l'injection de prompt",
@@ -5519,5 +5575,61 @@ export const fr = {
     later: "Plus tard",
     update: "Mettre à jour",
     undo: "Annuler",
+  },
+  generationStats: {
+    working: "Traitement en cours...",
+    processingPrompt: "Traitement du prompt {percent} %",
+    compactingContext: "Compactage du contexte...",
+    timeLeft: "reste {eta}",
+    tokensOne: "{count} token",
+    tokens: "{count} tokens",
+    tokensOf: "{done} / {total} tokens",
+    draftAccepted: "brouillon {accepted}/{drafted} acceptés ({percent} %)",
+    timing: {
+      trigger: "Temps du message",
+      firstToken: "Premier token",
+      speedInStep: "Vitesse (par étape)",
+      effective: "Effective",
+      output: "Sortie",
+      denoising: "Débruitage",
+      stepsOne: "{count} étape",
+      steps: "{count} étapes",
+      blocksOne: "{count} bloc",
+      blocks: "{count} blocs",
+      canvas: "Canevas",
+      generation: "Génération",
+      answerTokens: "Tokens de réponse",
+      prompt: "Prompt",
+      total: "Total",
+      chunks: "Fragments",
+      promptEval: "Évaluation du prompt",
+      promptSpeed: "Vitesse du prompt",
+      speed: "Vitesse",
+      tokens: "Tokens",
+      draftAccepted: "Brouillon accepté",
+      denoisingSteps: "Étapes de débruitage",
+      blocksLabel: "Blocs",
+      cacheHits: "Lectures du cache",
+      cacheWrites: "Écritures du cache",
+      stopReason: "Motif d’arrêt",
+      stoppedByYou: "Arrêté par vous",
+      endOfTurn: "Fin de la réponse",
+      lengthLimit: "Limite de longueur",
+      toolCall: "Appel d’outil",
+      contentFilter: "Filtre de contenu",
+    },
+    placement: {
+      title: "Placement des poids",
+      allOnCpu: "Toutes les {total} couches sur le CPU",
+      split: "{gpu} couches sur {total} sur le GPU, {cpu} sur le CPU",
+      allOnGpu: "Toutes les {total} couches sur le GPU",
+      expertCache: "Toutes les {total} couches sur le GPU, tous les experts en RAM ({amount} de cache d’experts sur le GPU)",
+      expertSpillOne: "Toutes les {total} couches sur le GPU, poids des experts de {count} couche en RAM",
+      expertSpill: "Toutes les {total} couches sur le GPU, poids des experts de {count} couches en RAM",
+      inUnifiedMemory: "{amount} en mémoire unifiée",
+      inSharedMemory: "{amount} en mémoire partagée",
+      inVram: "{amount} en VRAM",
+      inRam: "{amount} en RAM",
+    },
   },
 } satisfies DeepPartialMessageTree<typeof en>;

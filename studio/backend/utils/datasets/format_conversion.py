@@ -165,7 +165,11 @@ def standardize_chat_format(
                 if not _normalize_role_alias(original_role):
                     original_role = message.get("role") or message.get("from") or ""
                 if original_content is None:
-                    original_content = message.get("content") or message.get("value") or ""
+                    original_content = message.get("content")
+                if original_content is None:
+                    original_content = message.get("value")
+                if original_content is None and not message.get("tool_calls"):
+                    original_content = ""
 
                 # Unknown alias left as written; blank is "user", as most templates reject one.
                 normalized_role = _normalize_role_alias(original_role)
@@ -175,10 +179,15 @@ def standardize_chat_format(
                     else "user"
                 )
 
-                if is_vlm:
+                if is_vlm and original_content is not None:
                     original_content = [{"type": "text", "text": original_content}]
 
-                new_message = {"role": standard_role, "content": original_content}
+                new_message = {
+                    key: value
+                    for key, value in message.items()
+                    if key not in (role_key, content_key, "from", "value")
+                }
+                new_message.update(role = standard_role, content = original_content)
                 new_convo.append(new_message)
 
             all_convos.append(new_convo)

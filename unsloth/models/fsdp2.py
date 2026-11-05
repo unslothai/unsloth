@@ -452,6 +452,79 @@ def install_fsdp2_prepare_hook():
 
     setattr(fsdp2_prepare_model, _PATCHED, True)
     accelerator_module.fsdp2_prepare_model = fsdp2_prepare_model
+    install_fsdp2_bnb_optimizer_hook()
+    return True
+
+
+_BNB_ALTERNATIVE = (
+    "Use optim = 'adamw_8bit' / 'paged_adamw_8bit' (bitsandbytes Adam / AdamW step each rank's local "
+    "shard), or optim = 'adamw_torch' / 'adamw_torch_fused'."
+)
+
+
+def _localize_or_refuse_bnb(objects):
+    """accelerate's FSDP2 swaps the optimizer's parameters for DTensors in Accelerator._prepare_fsdp2;
+    bitsandbytes' kernels take plain tensors. A bitsandbytes Adam / AdamW is made to step the local
+    shards (fsdp2_bnb_optim, as native FSDP2 does); any other bitsandbytes optimizer is refused here,
+    before its first step would fail with "got mixed torch.Tensor and DTensor" (unsloth#3551)."""
+    from .fsdp2_native import _inner_optimizer, _is_bnb_optimizer_class, _optimizer_on_cpu
+    for obj in objects:
+        if not isinstance(obj, torch.optim.Optimizer):
+            continue
+        inner = _inner_optimizer(obj)
+        if not _is_bnb_optimizer_class(type(inner)):
+            continue
+        from .fsdp2_bnb_optim import (
+            bnb_local_shards_enabled,
+            bnb_steps_cpu_tensors,
+            localize_bnb_optimizer,
+        )
+
+        name = type(inner).__name__
+        if not bnb_local_shards_enabled():
+            raise ValueError(
+                f"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' {name} cannot step, "
+                "and UNSLOTH_FSDP2_BNB_LOCAL=0 turns off stepping the local shards. Unset it, or use "
+                "optim = 'adamw_torch' / 'adamw_torch_fused'."
+            )
+        if _optimizer_on_cpu(inner) and not bnb_steps_cpu_tensors():
+            raise ValueError(
+                f"Unsloth: FSDP2 keeps the parameters on the CPU (CPU offload), and this bitsandbytes "
+                f"cannot step CPU tensors with {name}. Upgrade bitsandbytes (>= 0.50), turn CPU offload "
+                "off, or use optim = 'adamw_torch'."
+            )
+        if not localize_bnb_optimizer(inner):
+            raise ValueError(
+                f"Unsloth: FSDP2 shards parameters as DTensors, which bitsandbytes' {name} cannot step "
+                f"(only bitsandbytes Adam / AdamW step local shards). {_BNB_ALTERNATIVE}"
+            )
+        _print_rank0(
+            f"Unsloth: FSDP2 keeps the bitsandbytes optimizer ({name}): it steps each rank's local "
+            "shard of the DTensor parameters (8-bit state per shard)."
+        )
+
+
+def install_fsdp2_bnb_optimizer_hook():
+    """Wrap Accelerator._prepare_fsdp2: after it maps the optimizer onto the DTensor parameters,
+    localize (or refuse) a bitsandbytes optimizer."""
+    try:
+        from accelerate import Accelerator
+    except Exception:
+        return False
+    original = getattr(Accelerator, "_prepare_fsdp2", None)
+    if original is None:
+        return False
+    if getattr(original, _PATCHED, False):
+        return True
+
+    @functools.wraps(original)
+    def _prepare_fsdp2(self, *args, **kwargs):
+        result = original(self, *args, **kwargs)
+        _localize_or_refuse_bnb(result if isinstance(result, (tuple, list)) else (result,))
+        return result
+
+    setattr(_prepare_fsdp2, _PATCHED, True)
+    Accelerator._prepare_fsdp2 = _prepare_fsdp2
     return True
 
 
