@@ -69,6 +69,8 @@ def _empty_server(
         timeout = 30,
         error = None,
     ):
+        if url.endswith(("/api/inference/images/status", "/api/inference/video/status")):
+            return fake_studio.state.get(url.rsplit("/", 2)[-2], {"loaded": False})
         if url.split("?")[0].endswith("/api/inference/status") and not fake_studio.state["models"]:
             fake_studio.append((method, url, payload))
             if isinstance(status, Exception):
@@ -228,6 +230,26 @@ def test_idle_picker_rechecks_after_a_selection(fake_studio, picker, monkeypatch
     assert "belongs to another account" in result.output
     assert picker["listed"] == 1
     assert _loads(fake_studio) == []
+
+
+@pytest.mark.parametrize("media", ["images", "video"])
+@pytest.mark.parametrize("when", ["before-prompt", "during-prompt"])
+def test_picker_never_loads_over_hidden_media(fake_studio, picker, monkeypatch, media, when):
+    _empty_server(fake_studio, monkeypatch)
+    hidden = {"loaded": True, "yours": False}
+    if when == "before-prompt":
+        fake_studio.state[media] = hidden
+
+    def answer(prompt):
+        fake_studio.state[media] = hidden
+        return "2"
+
+    monkeypatch.setattr("builtins.input", answer)
+    result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
+    assert _loads(fake_studio) == []
+    assert picker["listed"] == (1 if when == "during-prompt" else 0)
+    assert result.exit_code == 1
+    assert "another account" in result.output
 
 
 def test_remote_server_never_lists_local_files(fake_studio, picker, monkeypatch):

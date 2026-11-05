@@ -5099,7 +5099,21 @@ def _picker_server_is_idle(base: str, key: str) -> bool:
         _fail(
             "Couldn't verify whether Unsloth has a resident model. Retry or pass --model explicitly."
         )
-    return not (status["loaded"] or status["loading"] or status.get("active_model"))
+    if status["loaded"] or status["loading"] or status.get("active_model"):
+        return False
+    # An empty chat slot can still share the GPU with another account's image or video model.
+    for route in ("images", "video"):
+        try:
+            media = _http_json("GET", f"{base}/api/inference/{route}/status", key)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            _fail_request(exc, "Couldn't verify media model ownership before opening the picker")
+        if not isinstance(media, dict) or not isinstance(media.get("loaded"), bool):
+            _fail("Couldn't verify media model ownership. Retry or pass --model explicitly.")
+        if media.get("yours") is False:
+            _fail(
+                "A media model belongs to another account. Pass --model explicitly to request a load."
+            )
+    return True
 
 
 def _pick_model_for_idle_server(
