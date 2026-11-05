@@ -721,3 +721,16 @@ def test_every_generate_path_is_wrapped(path, name):
         # After the per-call eager plan, so the graphs-on threshold follows what this call decodes with.
         eager = [i for i, item in enumerate(items) if "eager_scope()" in item]
         assert all(items.index("_lora_fold_generate(self, args, kwargs)") > i for i in eager), items
+
+
+def test_restore_uploads_fix_up_stores_in_bounded_chunks(_clean, monkeypatch):
+    """The unfold runs while the KV cache is still live: each exact_unfold call gets at most one chunk."""
+    monkeypatch.setattr(fold, "_RESTORE_CHUNK_BYTES", 1)
+    model = _make(MODELS[0])
+    before = _bits(model)
+    engaged, _ = _generate(model)
+    assert engaged is True
+    targets = fold.stats()["last"]["targets"]
+    assert targets > 1 and _clean.folds == 1 and _clean.unfolds == targets
+    assert _same_bits(before, _bits(model))
+    assert fold.stats()["restored"] == 1

@@ -444,6 +444,26 @@ def _record_fold(info, targets, fold_s):
         }
 
 
+_RESTORE_CHUNK_BYTES = 64 << 20
+
+
+def _restore_chunks(targets):
+    chunk, size = [], 0
+    for t in targets:
+        n = sum(
+            b.numel() * b.element_size()
+            for b in (getattr(t, "host_idx", None), getattr(t, "host_val", None))
+            if isinstance(b, torch.Tensor)
+        )
+        if chunk and size + n > _RESTORE_CHUNK_BYTES:
+            yield chunk
+            chunk, size = [], 0
+        chunk.append(t)
+        size += n
+    if chunk:
+        yield chunk
+
+
 def _restore(model, api, targets, flagged, stream):
     global _POISONED
     for module in flagged:
@@ -451,7 +471,10 @@ def _restore(model, api, targets, flagged, stream):
     if not targets:
         return
     try:
-        api.exact_unfold(targets, stream = stream)
+        # In chunks: the KV cache and decode buffers are still live here, so only one chunk's fix-up
+        # store is on the GPU at a time instead of every target's at once.
+        for chunk in _restore_chunks(targets):
+            api.exact_unfold(chunk, stream = stream)
     except BaseException as error:
         # No more folds; this model refuses to generate on its unknown weights.
         _POISONED = repr(error)
