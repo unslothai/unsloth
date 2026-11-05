@@ -9,6 +9,7 @@ import {
   useRoleplayUserParts,
 } from "@/features/characters/chat/message-parts";
 import { CharacterChatPicker } from "@/features/characters/chat/start-picker";
+import { groupRoundPending } from "@/features/characters/chat-runtime";
 import {
   RoleplaySpeakerBar,
   useRoleplayComposerPlaceholder,
@@ -560,6 +561,8 @@ type PromptQueueTarget = {
   /** Forget the captured local model so a held prompt resolves the one loaded when it is sent. */
   releaseModel: () => void;
   isIndexing: () => boolean;
+  /** A character chat's group round has speakers still to reply, which the queue waits out like a run. */
+  roundPending: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
   usesDeepResearch: boolean;
@@ -947,6 +950,7 @@ async function dispatchQueuedPrompt(
   // recheck loading after the document probe.
   if (
     hasIndexingDocuments ||
+    item.target.roundPending() ||
     (item.target.usesLocalModel && useChatRuntimeStore.getState().modelLoading)
   ) {
     promptQueueActiveRunIds.delete(run.id);
@@ -4629,6 +4633,12 @@ const Composer: FC<{
         promptQueueTargetMountedRef.current &&
         isTargetCurrentThread() &&
         indexingActiveRef.current,
+      roundPending: () => {
+        const thread = getThreadRuntime();
+        const state = getThreadListItemState();
+        const threadId = state?.remoteId ?? referenceThreadId ?? initialDocumentThreadId;
+        return thread ? groupRoundPending(threadId, thread.getState().messages) : false;
+      },
       getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
       usesLocalModel:
