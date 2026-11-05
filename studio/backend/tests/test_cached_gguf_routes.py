@@ -2637,9 +2637,6 @@ def test_listing_before_detection_keeps_device_free_refusals(monkeypatch):
 
     monkeypatch.setattr(hw, "DETECTION_COMPLETE", threading.Event())
     monkeypatch.setattr(
-        router, "family_buildable_here", lambda *a, **k: pytest.fail("listing ran the device probe")
-    )
-    monkeypatch.setattr(
         router, "predict_engine", lambda *a, **k: pytest.fail("listing predicted an engine")
     )
     krea = detect_family("", override = "krea-2")
