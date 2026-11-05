@@ -1543,8 +1543,11 @@ function VideoGenerator({
   }, [status?.loaded, supportsFirstFrame, supportsLastFrame]);
   const supportsContinuation = supportsVideoContinuation(status);
   useEffect(() => {
-    if (status?.loaded && !supportsContinuation) setContinuationClip(null);
-  }, [status?.loaded, supportsContinuation]);
+    if (status?.loaded && !supportsContinuation && continuationClip) {
+      setContinuationClip(null);
+      toast.info("Removed the clip to continue: this model cannot continue a clip");
+    }
+  }, [status?.loaded, supportsContinuation, continuationClip]);
   useEffect(() => {
     if (status?.loaded && !supportsReferences) {
       setReferenceImages([]);

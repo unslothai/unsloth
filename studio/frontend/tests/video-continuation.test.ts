@@ -70,7 +70,10 @@ test("the clip section renders only for a family that declares it, and a clip an
     keyframes.match(/if \(next && continuationClip\) \{\s*setContinuationClip\(null\);/g)?.length,
     2,
   );
-  assert.match(page, /if \(status\?\.loaded && !supportsContinuation\) setContinuationClip\(null\);/);
+  assert.match(
+    page,
+    /if \(status\?\.loaded && !supportsContinuation && continuationClip\) \{\s*setContinuationClip\(null\);\s*toast\.info\("Removed the clip to continue: this model cannot continue a clip"\);/,
+  );
 });
 
 test("the payload spreads the continuation fields and the gallery labels a continued clip", () => {
