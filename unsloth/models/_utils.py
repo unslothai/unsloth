@@ -4763,7 +4763,17 @@ elif DEVICE_TYPE == "cuda":
         HAS_FLASH_ATTENTION = False
 elif DEVICE_TYPE == "hip":
     SUPPORTS_BFLOAT16 = torch.cuda.is_bf16_supported()
-    if _package_available("flash_attn"):
+    if os.environ.get("UNSLOTH_ROCM_FLASH_ATTN_DIFFUSION_ONLY") == "1":
+        # Studio installed a Triton-backend flash-attn for diffusion and enabled it itself: LLM
+        # attention stays on SDPA, as without it. Setting FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE
+        # explicitly opts training in (Studio then leaves this unset).
+        import transformers.utils.import_utils
+
+        transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+        import transformers.utils
+
+        transformers.utils.is_flash_attn_2_available = lambda *args, **kwargs: False
+    elif _package_available("flash_attn"):
         # Check for CUDA linking errors "undefined symbol: _ZNK3c106SymIntltEl" and for softcapping; see #1437.
         try:
             try:

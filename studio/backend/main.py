@@ -30,6 +30,14 @@ try:
 except Exception:
     pass
 
+# A Triton-only flash-attn (setup installs it on RDNA3/4) imports only with its backend switch set;
+# before anything imports flash_attn, and inherited by spawned workers. Never on CUDA hosts.
+try:
+    from utils.rocm_flash_attn import default_triton_amd_env as _default_triton_amd_env
+    _default_triton_amd_env()
+except Exception:
+    pass
+
 # normalize allocator booleans before torch parses them; spawned workers inherit the environment.
 from utils.allocator_conf import normalize_allocator_conf as _normalize_allocator_conf
 
