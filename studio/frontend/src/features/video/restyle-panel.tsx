@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,8 +12,12 @@ import {
   cancelVideoRestyle,
   fetchVideoRestyleClip,
   fetchVideoRestyleProgress,
+  fetchVideoRestyleStatus,
+  previewVideoRestyle,
   startVideoRestyle,
+  type VideoRestylePreview,
   type VideoRestyleProgress,
+  type VideoRestyleStatus,
 } from "./api";
 
 const POLL_MS = 1000;
@@ -21,11 +26,21 @@ const IMAGE_RE = /\.(png|jpe?g|webp|bmp)$/i;
 
 const PHASE_LABEL: Record<string, string> = {
   edges: "Tracing edges",
-  loading: "Loading Cosmos3",
+  loading: "Loading Cosmos3 (the first run takes about a minute)",
   generate: "Restyling",
   decode: "Decoding video",
   export: "Saving",
 };
+
+const CLIPS = [
+  { kind: "input", label: "Input" },
+  { kind: "control", label: "Edges (what the model follows)" },
+  { kind: "output", label: "Restyled" },
+] as const;
+
+function seconds(value: number): string {
+  return `${value.toFixed(1)} s`;
+}
 
 function useObjectUrl(blob: Blob | null): string | null {
   const url = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
@@ -48,15 +63,24 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const [seed, setSeed] = useState("");
   const [progress, setProgress] = useState<VideoRestyleProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<VideoRestyleStatus | null>(null);
+  const [preview, setPreview] = useState<VideoRestylePreview | null>(null);
+  const [previewing, setPreviewing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [inputClip, setInputClip] = useState<Blob | null>(null);
+  const [controlClip, setControlClip] = useState<Blob | null>(null);
   const [outputClip, setOutputClip] = useState<Blob | null>(null);
-  const inputUrl = useObjectUrl(inputClip);
-  const outputUrl = useObjectUrl(outputClip);
-  const inputRef = useRef<HTMLVideoElement>(null);
-  const outputRef = useRef<HTMLVideoElement>(null);
+  const urls = {
+    input: useObjectUrl(inputClip),
+    control: useObjectUrl(controlClip),
+    output: useObjectUrl(outputClip),
+  };
+  const players = useRef<Record<string, HTMLVideoElement | null>>({});
   const loadedFor = useRef<string | null>(null);
+  const previewFor = useRef(0);
 
   const running = progress?.active === true;
+  const unavailable = status !== null && !status.available;
 
   const refresh = useCallback(async () => {
     try {
@@ -67,17 +91,47 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       }
       if (next.phase === "done" && next.id && loadedFor.current !== next.id) {
         loadedFor.current = next.id;
-        const [input, output] = await Promise.all([
-          fetchVideoRestyleClip(next.id, "input"),
-          fetchVideoRestyleClip(next.id, "output"),
-        ]);
+        const [input, control, output] = await Promise.all(
+          CLIPS.map((clip) => fetchVideoRestyleClip(next.id as string, clip.kind)),
+        );
         setInputClip(input);
+        setControlClip(control);
         setOutputClip(output);
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }, []);
+
+  useEffect(() => {
+    if (!active) {
+      return;
+    }
+    fetchVideoRestyleStatus()
+      .then(setStatus)
+      .catch(() => setStatus(null));
+  }, [active]);
+
+  // Show what the model will follow before anything heavy runs.
+  const choose = async (next: { video: File | null; frames: File[] }) => {
+    setVideo(next.video);
+    setFrames(next.frames);
+    setPreview(null);
+    setError(null);
+    if (!next.video && next.frames.length === 0) {
+      return;
+    }
+    const ticket = ++previewFor.current;
+    setPreviewing(true);
+    try {
+      const result = await previewVideoRestyle(next);
+      if (ticket === previewFor.current) setPreview(result);
+    } catch (err) {
+      if (ticket === previewFor.current) setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (ticket === previewFor.current) setPreviewing(false);
+    }
+  };
 
   useEffect(() => {
     if (!active) {
@@ -92,8 +146,11 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   }, [active, running, refresh]);
 
   const submit = async () => {
+    if (submitting) return;
+    setSubmitting(true);
     setError(null);
     setInputClip(null);
+    setControlClip(null);
     setOutputClip(null);
     try {
       const parsedSeed = seed.trim() === "" ? null : Number.parseInt(seed, 10);
@@ -107,12 +164,14 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  // Keep the two players on the same frame.
+  // Keep the players on the same frame.
   const syncPlay = (play: boolean) => {
-    for (const el of [inputRef.current, outputRef.current]) {
+    for (const el of Object.values(players.current)) {
       if (!el) continue;
       if (play) {
         el.currentTime = 0;
@@ -127,6 +186,9 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
   const step = progress?.step ?? 0;
   const total = progress?.total ?? 0;
   const phase = progress?.phase ?? null;
+  const busy = running || submitting;
+  const trimmed =
+    preview?.source_seconds != null && preview.source_seconds > preview.seconds + 0.05;
 
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto @[50rem]:flex-row @[50rem]:overflow-hidden">
@@ -137,14 +199,24 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
           </h2>
           <p className="text-xs text-muted-foreground">
             Cosmos3-Nano-Sim-Transfer keeps the clip's shapes and motion (from its edges) and
-            repaints it from your prompt. Up to 121 frames at 832 x 480, 30 fps.
+            repaints it from your prompt. Uses the first 4 seconds, at 832 x 480 and 30 fps.
           </p>
         </div>
+
+        {unavailable && (
+          <Alert data-testid="restyle-unavailable">
+            <AlertTitle>Restyle is not set up here</AlertTitle>
+            <AlertDescription>
+              {status?.reason} It needs an NVIDIA GPU with about 40 GB of memory and has only been
+              tested on Linux.
+            </AlertDescription>
+          </Alert>
+        )}
 
         <div className="grid gap-2">
           <Label>Input</Label>
           <div className="flex flex-wrap gap-2">
-            <Button asChild={true} variant="outline" size="sm" disabled={running}>
+            <Button asChild={true} variant="outline" size="sm" disabled={busy}>
               <label>
                 Choose video
                 <input
@@ -152,14 +224,13 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
                   accept="video/*"
                   className="hidden"
                   onChange={(e) => {
-                    setVideo(e.target.files?.[0] ?? null);
-                    setFrames([]);
+                    void choose({ video: e.target.files?.[0] ?? null, frames: [] });
                     e.target.value = "";
                   }}
                 />
               </label>
             </Button>
-            <Button asChild={true} variant="outline" size="sm" disabled={running}>
+            <Button asChild={true} variant="outline" size="sm" disabled={busy}>
               <label>
                 Choose frame folder
                 <input
@@ -173,8 +244,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
                       .filter((f) => IMAGE_RE.test(f.name))
                       .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
                       .slice(0, MAX_FRAMES);
-                    setFrames(picked);
-                    setVideo(null);
+                    void choose({ video: null, frames: picked });
                     e.target.value = "";
                   }}
                 />
@@ -184,6 +254,29 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
           <span className="truncate text-xs text-muted-foreground">
             {source ?? "No input chosen"}
           </span>
+          {previewing && (
+            <span className="text-xs text-muted-foreground">Reading the clip...</span>
+          )}
+          {preview && (
+            <div className="grid gap-1.5" data-testid="restyle-preview">
+              <div className="grid grid-cols-2 gap-2">
+                <img
+                  src={`data:image/jpeg;base64,${preview.frame_jpeg}`}
+                  alt="A frame of the input"
+                  className="w-full rounded-md bg-black"
+                />
+                <img
+                  src={`data:image/jpeg;base64,${preview.edges_jpeg}`}
+                  alt="The edges the model follows for that frame"
+                  className="w-full rounded-md bg-black"
+                />
+              </div>
+              <span className="text-xs text-muted-foreground">
+                Control: edges (Canny). Uses {preview.frames} frames, {seconds(preview.seconds)}
+                {trimmed && ` of a ${seconds(preview.source_seconds as number)} clip`}.
+              </span>
+            </div>
+          )}
         </div>
 
         <div className="grid gap-2">
@@ -194,7 +287,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             onChange={(e) => setPrompt(e.target.value)}
             placeholder="Make it a red rally car at golden hour"
             rows={4}
-            disabled={running}
+            disabled={busy}
           />
         </div>
 
@@ -206,7 +299,7 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             value={seed}
             onChange={(e) => setSeed(e.target.value.replace(/[^0-9]/g, ""))}
             placeholder="Random"
-            disabled={running}
+            disabled={busy}
           />
         </div>
 
@@ -215,8 +308,11 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             Cancel
           </Button>
         ) : (
-          <Button disabled={!source || !prompt.trim()} onClick={() => void submit()}>
-            Restyle
+          <Button
+            disabled={!source || !prompt.trim() || submitting || previewing || unavailable}
+            onClick={() => void submit()}
+          >
+            {submitting ? "Uploading..." : "Restyle"}
           </Button>
         )}
 
@@ -248,17 +344,16 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
       </div>
 
       <div className="flex min-h-[60dvh] min-w-0 flex-1 flex-col items-center justify-center gap-4 p-6 @[50rem]:min-h-0">
-        {inputUrl && outputUrl ? (
+        {urls.input && urls.control && urls.output ? (
           <>
-            <div className="grid w-full max-w-6xl grid-cols-1 gap-3 @[60rem]:grid-cols-2">
-              {[
-                { label: "Input", url: inputUrl, ref: inputRef },
-                { label: "Restyled", url: outputUrl, ref: outputRef },
-              ].map((clip) => (
-                <figure key={clip.label} className="grid gap-1.5">
+            <div className="grid w-full max-w-7xl grid-cols-1 gap-3 @[60rem]:grid-cols-3">
+              {CLIPS.map((clip) => (
+                <figure key={clip.kind} className="grid gap-1.5">
                   <video
-                    ref={clip.ref}
-                    src={clip.url}
+                    ref={(el) => {
+                      players.current[clip.kind] = el;
+                    }}
+                    src={urls[clip.kind] ?? undefined}
                     muted={true}
                     loop={true}
                     playsInline={true}
@@ -269,18 +364,21 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
                 </figure>
               ))}
             </div>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
               <Button size="sm" variant="outline" onClick={() => syncPlay(true)}>
-                Play both
+                Play all
               </Button>
               <Button size="sm" variant="outline" onClick={() => syncPlay(false)}>
                 Pause
               </Button>
+              {progress?.seed != null && (
+                <span className="text-xs text-muted-foreground">Seed {progress.seed}</span>
+              )}
             </div>
           </>
         ) : (
           <p className="text-sm text-muted-foreground">
-            The input and the restyled clip play here side by side.
+            The input, its edges and the restyled clip play here side by side.
           </p>
         )}
       </div>

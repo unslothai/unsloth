@@ -43,6 +43,8 @@ _LATENT_RE = re.compile(r"cosmos3: latent frame (\d+)/(\d+)")
 _DECODE_RE = re.compile(r"cosmos3: \d+ latent frames in")
 
 _TERMINAL = ("done", "error", "cancelled")
+# The fitted input, its edge control and the restyled clip, served for a three-way view.
+MEDIA_KINDS = ("input", "control", "output")
 
 
 class RestyleError(ValueError):
@@ -133,8 +135,29 @@ def frames_from_video(
     except RestyleError:
         raise
     except Exception as exc:  # noqa: BLE001 -- any decode failure is a bad upload
-        raise RestyleError(f"Could not read the video: {exc}") from exc
+        logger.info("restyle: could not decode upload: %s", exc)
+        raise RestyleError(
+            "Could not read this video. Try an MP4 (H.264), WebM or MOV file, or a folder of frames."
+        ) from exc
+    if not out:
+        raise RestyleError("The video has no frames.")
     return out
+
+
+def video_seconds(data: bytes) -> Optional[float]:
+    """Length of the uploaded clip, or None when the container doesn't say."""
+    import av
+
+    try:
+        with av.open(io.BytesIO(data)) as container:
+            if container.duration:
+                return container.duration / 1_000_000
+            stream = container.streams.video[0]
+            if stream.duration and stream.time_base:
+                return float(stream.duration * stream.time_base)
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def frames_from_images(items: list[tuple[str, bytes]], limit: int = MAX_FRAMES) -> list[Any]:
@@ -225,15 +248,62 @@ def _png_b64(array: Any) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def control_frames_b64(frames: list[Any]) -> list[str]:
-    """Each fitted RGB frame as a 3-channel Canny PNG, base64."""
+def control_frames(frames: list[Any]) -> list[Any]:
+    """Each fitted RGB frame's Canny map as a 3-channel uint8 array."""
     import numpy as np
 
-    out = []
-    for frame in frames:
-        edges = canny_edges(np.asarray(frame))
-        out.append(_png_b64(np.repeat(edges[..., None], 3, axis = -1)))
-    return out
+    return [np.repeat(canny_edges(np.asarray(f))[..., None], 3, axis = -1) for f in frames]
+
+
+def control_frames_b64(frames: list[Any]) -> list[str]:
+    """Each fitted RGB frame as a 3-channel Canny PNG, base64."""
+    return [_png_b64(edges) for edges in control_frames(frames)]
+
+
+def _jpeg_b64(array: Any) -> str:
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.fromarray(array).save(buf, format = "JPEG", quality = 85)
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def preview(frames: list[Any], source_seconds: Optional[float] = None) -> dict[str, Any]:
+    """What a restyle of ``frames`` would use: frame count, length, and one frame with its edges."""
+    import numpy as np
+
+    if not frames:
+        raise RestyleError("No frames found in the upload.")
+    count = snap_frame_count(len(frames))
+    frame = np.asarray(fit_frame(frames[count // 2]))
+    return {
+        "frames": count,
+        "seconds": count / float(FPS),
+        "source_seconds": source_seconds,
+        "width": WIDTH,
+        "height": HEIGHT,
+        "frame_jpeg": _jpeg_b64(frame),
+        "edges_jpeg": _jpeg_b64(control_frames([frame])[0]),
+    }
+
+
+def availability(env: Optional[dict[str, str]] = None) -> dict[str, Any]:
+    """Whether a restyle can run here, with the reason shown to the user when it can't."""
+    try:
+        model_files(env)
+    except RestyleError:
+        return {
+            "available": False,
+            "reason": "The Cosmos3-Nano-Sim-Transfer weights are not set up on this machine.",
+        }
+    from core.inference.sd_cpp_engine import find_sd_server_binary
+
+    if not find_sd_server_binary():
+        return {
+            "available": False,
+            "reason": "No stable-diffusion.cpp server with Cosmos3 support is installed.",
+        }
+    return {"available": True, "reason": None}
 
 
 def build_restyle_request(
@@ -350,6 +420,9 @@ class RestyleRunner:
             raise RestyleError("No frames found in the upload.")
         count = snap_frame_count(len(frames))
         files = model_files()
+        seed = (
+            int(seed) if seed is not None else int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF
+        )
         with self._lock:
             if self._state.get("active") or self._reservation not in (None, reservation):
                 raise RestyleBusy("A restyle is already running.")
@@ -370,15 +443,14 @@ class RestyleRunner:
                 "num_frames": count,
                 "error": None,
                 "video": None,
+                "seed": seed,
                 "started_at": time.time(),
             }
         return {
             "id": job_id,
             "prompt": prompt.strip(),
             "frames": [fit_frame(f) for f in frames[:count]],
-            "seed": int(seed)
-            if seed is not None
-            else int.from_bytes(os.urandom(4), "little") & 0x7FFFFFFF,
+            "seed": seed,
             "files": files,
         }
 
@@ -389,7 +461,7 @@ class RestyleRunner:
         owner: Optional[str] = None,
     ) -> Optional[Path]:
         with self._lock:
-            if kind not in ("input", "output") or self._state.get("id") != job_id:
+            if kind not in MEDIA_KINDS or self._state.get("id") != job_id:
                 return None
             if owner is not None and not self.owned_by(owner):
                 return None
@@ -461,6 +533,8 @@ class RestyleRunner:
         save: Optional[Callable[[bytes, dict], Any]] = None,
     ) -> None:
         """Worker body; every outcome lands in the progress state, nothing is raised."""
+        from PIL import Image
+
         from core.inference.sd_cpp_engine import SdCppCancelled
         from core.inference.video_minimax_h3 import transcode_video_to_mp4
 
@@ -469,7 +543,11 @@ class RestyleRunner:
         try:
             assert workdir is not None
             (workdir / "input.mp4").write_bytes(encode_mp4(frames))
-            control = control_frames_b64(frames)
+            edges = control_frames(frames)
+            (workdir / "control.mp4").write_bytes(
+                encode_mp4([Image.fromarray(e) for e in edges])
+            )
+            control = [_png_b64(e) for e in edges]
             if self._cancel.is_set():
                 raise SdCppCancelled("cancelled")
             payload = build_restyle_request(

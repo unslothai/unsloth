@@ -221,7 +221,8 @@ def test_runner_end_to_end_with_fake_server(weights, monkeypatch):
 
     assert all(k in saved[0][1] for k in video_gallery._REQUIRED_META)
     GalleryVideo(id = "v1", url = "/x", **saved[0][1])
-    for kind in ("input", "output"):
+    assert state["seed"] == 3
+    for kind in ("input", "control", "output"):
         assert runner.media_path(state["id"], kind) is not None
     assert runner.media_path("other", "output") is None
     # The resident server is reused for the next restyle.
@@ -473,3 +474,60 @@ def test_media_path_waits_for_start_to_swap_owner_and_state(weights):
     runner._lock.release()
     reader.join(5)
     assert out == [None]
+
+
+def test_frames_from_video_error_is_plain():
+    with pytest.raises(vr.RestyleError) as err:
+        vr.frames_from_video(b"not a video")
+    assert "MP4" in str(err.value) and "Errno" not in str(err.value)
+
+
+def test_preview_reports_frames_used_and_edges():
+    out = vr.preview(_frames(140), source_seconds = 18.0)
+    assert out["frames"] == vr.MAX_FRAMES and out["seconds"] == pytest.approx(121 / 30)
+    assert out["source_seconds"] == 18.0
+    for key in ("frame_jpeg", "edges_jpeg"):
+        image = Image.open(io.BytesIO(base64.b64decode(out[key])))
+        assert image.size == (vr.WIDTH, vr.HEIGHT)
+    with pytest.raises(vr.RestyleError):
+        vr.preview(_frames(3))
+
+
+def test_availability_names_what_is_missing(weights, monkeypatch, tmp_path):
+    monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: None)
+    out = vr.availability()
+    assert not out["available"] and "stable-diffusion.cpp" in out["reason"]
+    monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: "/bin/sd-server")
+    assert vr.availability() == {"available": True, "reason": None}
+    assert not vr.availability({})["available"]
+
+
+def test_random_seed_is_reported(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    job = runner.start(prompt = "x", frames = _frames(5))
+    assert runner.progress()["seed"] == job["seed"]
+
+
+def test_route_preview_and_status(weights, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from auth.authentication import get_current_subject
+    from routes import video_restyle as route
+
+    app = FastAPI()
+    app.include_router(route.router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "owner"
+    client = TestClient(app)
+    res = client.post(
+        "/api/inference/video/restyle/preview",
+        files = [("video", ("a.mp4", _clip(30, 20), "video/mp4"))],
+    )
+    assert res.status_code == 200 and res.json()["frames"] == 17
+    res = client.post(
+        "/api/inference/video/restyle/preview",
+        files = [("video", ("a.mp4", b"junk", "video/mp4"))],
+    )
+    assert res.status_code == 400 and "MP4" in res.json()["detail"]
+    monkeypatch.setattr("core.inference.sd_cpp_engine.find_sd_server_binary", lambda: None)
+    assert client.get("/api/inference/video/restyle/status").json()["available"] is False

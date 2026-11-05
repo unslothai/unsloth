@@ -51,6 +51,35 @@ async def _read_upload(request: Request) -> tuple[dict[str, Any], list[tuple[str
     return fields, files
 
 
+async def _frames_from_upload(files: list[tuple[str, bytes]]) -> tuple[list[Any], Optional[float]]:
+    videos = [data for name, data in files if name.startswith("video:")]
+    frames_in = [
+        (name.split(":", 1)[1], data) for name, data in files if name.startswith("frames:")
+    ]
+    if len(videos) == 1 and not frames_in:
+        frames = await asyncio.to_thread(video_restyle.frames_from_video, videos[0])
+        return frames, await asyncio.to_thread(video_restyle.video_seconds, videos[0])
+    if frames_in and not videos:
+        return await asyncio.to_thread(video_restyle.frames_from_images, frames_in), None
+    raise RestyleError("Send one video file or a folder of frames.")
+
+
+@router.get("/video/restyle/status")
+async def restyle_status(current_subject: str = Depends(get_current_subject)):
+    return await asyncio.to_thread(video_restyle.availability)
+
+
+@router.post("/video/restyle/preview")
+async def preview_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
+    """The frame count a restyle would use and one frame with its edge control; runs no model."""
+    _, files = await _read_upload(request)
+    try:
+        frames, seconds = await _frames_from_upload(files)
+        return await asyncio.to_thread(video_restyle.preview, frames, seconds)
+    except RestyleError as exc:
+        raise HTTPException(status_code = 400, detail = str(exc))
+
+
 @router.post("/video/restyle")
 async def start_restyle(request: Request, current_subject: str = Depends(get_current_subject)):
     try:
@@ -65,10 +94,6 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
 
 async def _start_reserved(request: Request, reservation: str):
     fields, files = await _read_upload(request)
-    videos = [data for name, data in files if name.startswith("video:")]
-    frames_in = [
-        (name.split(":", 1)[1], data) for name, data in files if name.startswith("frames:")
-    ]
     seed: Optional[int] = None
     if fields.get("seed"):
         try:
@@ -76,12 +101,7 @@ async def _start_reserved(request: Request, reservation: str):
         except ValueError:
             raise HTTPException(status_code = 400, detail = "seed must be an integer.")
     try:
-        if len(videos) == 1 and not frames_in:
-            frames = await asyncio.to_thread(video_restyle.frames_from_video, videos[0])
-        elif frames_in and not videos:
-            frames = await asyncio.to_thread(video_restyle.frames_from_images, frames_in)
-        else:
-            raise RestyleError("Send one video file or a folder of frames.")
+        frames, _ = await _frames_from_upload(files)
         job = await asyncio.to_thread(
             video_restyle.runner.start,
             prompt = fields.get("prompt") or "",
