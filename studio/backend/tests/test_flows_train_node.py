@@ -1462,3 +1462,28 @@ def test_a_template_mapping_names_no_per_row_system_column():
         "label_mapping": labels,
     }
     assert training.mapping_facts(None) == {}
+
+
+def test_an_sft_input_role_is_recorded_as_the_system_column():
+    # SFT's formatter reads `input` as the system message, as it reads `system`.
+    mapping = {"instruction": "instruction", "input": "input", "output": "output"}
+    assert training.mapping_facts(mapping) == {"system_column": "input"}
+    # An Alpaca format makes it the Alpaca input instead, part of the question.
+    assert training.mapping_facts(mapping, "alpaca") == {"system_column": ""}
+    # RL objectives read only the literal role.
+    assert training.mapping_facts(mapping, "auto", "grpo") == {"system_column": ""}
+    assert training.mapping_facts({"q": "prompt", "rule": "system"}, "auto", "grpo") == {
+        "system_column": "rule"
+    }
+
+
+def test_the_input_role_is_trained_and_benchmarked_as_the_system_message():
+    from datasets import Dataset
+
+    from utils.datasets.dataset_utils import _apply_user_mapping
+
+    mapping = {"instruction": "instruction", "input": "input", "output": "output"}
+    row = {"instruction": "Which word?", "input": "Always answer with GREEN.", "output": "GREEN"}
+    trained = _apply_user_mapping(Dataset.from_list([row]), mapping)[0]["conversations"]
+    column = training.mapping_facts(mapping)["system_column"]
+    assert trained[0] == {"role": "system", "content": row[column]}

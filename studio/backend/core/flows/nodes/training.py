@@ -309,7 +309,9 @@ async def finetune(ctx: NodeContext) -> dict:
     system = trained_system_prompt(config, row)
     if system:
         checkpoint["system_prompt"] = system
-    checkpoint.update(mapping_facts(config.get("custom_format_mapping")))
+    checkpoint.update(
+        mapping_facts(config.get("custom_format_mapping"), config.get("format_type"), objective)
+    )
     return {
         "checkpoint": checkpoint,
         "metrics": metrics,
@@ -422,16 +424,28 @@ def drafter_request(params: dict) -> dict:
     }
 
 
-def mapping_facts(mapping: Any) -> dict:
+def mapping_facts(
+    mapping: Any,
+    format_type: Any = "auto",
+    objective: Any = "sft",
+) -> dict:
     """How training read the rows, so Benchmark asks and scores the hold-out the same way: each
     row's own system message (none when the mapping names no system column), and the names
     numeric labels became."""
     if not isinstance(mapping, dict) or not mapping:
         return {}
+    from utils.datasets.dataset_utils import _TO_CHATML
+
     # Any `__` metadata selects the template mapping, which drops system columns: its one system
-    # prompt is `__system_prompt`, the checkpoint's system_prompt.
-    templated = any(str(k).startswith("__") for k in mapping)
-    per_row = [] if templated else [c for c, role in mapping.items() if role == "system"]
+    # prompt is `__system_prompt`, the checkpoint's system_prompt. An Alpaca format makes a system
+    # column the Alpaca input, part of the question.
+    templated = any(str(k).startswith("__") for k in mapping) or format_type == "alpaca"
+    if (objective or "sft") == "sft":
+        # SFT's formatter reads role aliases: an `input` column is the system message.
+        roles = {c: _TO_CHATML.get(role) for c, role in mapping.items() if isinstance(role, str)}
+    else:
+        roles = dict(mapping)
+    per_row = [] if templated else [c for c, role in roles.items() if role == "system"]
     facts = {"system_column": per_row[0] if per_row else ""}
     labels = mapping.get("__label_mapping")
     if isinstance(labels, dict) and labels:
