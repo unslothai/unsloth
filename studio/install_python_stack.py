@@ -12635,7 +12635,6 @@ def install_python_stack() -> int:
             except SystemExit:
                 _note(f"{_LLGUIDANCE_PIN} failed to install; MLX response_format stays unavailable")
 
-    # 11e. Every platform and torch mode, outside skip_base.
     _hnsw_prebuilt_step()
 
     # 12. Patch metadata for single-env compatibility

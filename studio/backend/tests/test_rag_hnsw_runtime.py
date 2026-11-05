@@ -107,7 +107,6 @@ def test_the_fetch_landing_moves_a_waiting_scope_to_hnsw_without_a_write(
     _, scanned = _dense(rag_conn, rows[5])
     assert scanned and vec_cache.drain(60)
     _, scanned = _dense(rag_conn, rows[5])
-    # Each search of a waiting scope asks again; hnsw_runtime dedupes and backs off on its own.
     assert scanned and not vec_cache._ann and no_pair
     pytest.importorskip("usearch")
     # The fetch landed: the real import works again (undo also restores the default cache budget).
@@ -210,7 +209,6 @@ def test_a_pair_landing_mid_build_still_promotes_the_scope_after(rag_conn, monke
     monkeypatch.setattr(vec_ann, "usearch", lambda: real() if state["avail"] else None)
 
     def lands_now(cb):
-        # The install finishes while this scope's build is still running.
         state["avail"] = True
         cb()
         return True
@@ -440,7 +438,6 @@ def test_a_pair_that_lands_during_the_scopes_own_build_still_switches_it(rag_con
     state = {"avail": False, "cb": []}
     monkeypatch.setattr(vec_ann, "usearch", lambda: real() if state["avail"] else None)
 
-    # Already settled ready: request() starts nothing and calls nothing back.
     def request(cb):
         if state["avail"]:
             return False
@@ -453,7 +450,6 @@ def test_a_pair_that_lands_during_the_scopes_own_build_still_switches_it(rag_con
     def enabled():
         r = orig_enabled()
         if not r and not state["avail"]:
-            # The install lands on the runtime thread mid-build.
             state["avail"] = True
             vec_cache._on_ann_available()
         return r

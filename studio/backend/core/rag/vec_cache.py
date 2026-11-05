@@ -599,7 +599,7 @@ def _publish_ann(key: tuple, entry: _AnnEntry) -> None:
     with _lock:
         _ann[key] = entry
         _ann.move_to_end(key)
-        # Search prefers a current exact entry; a scope that has HNSW keeps none, as when usearch was there from the start.
+        # A scope with HNSW keeps no exact entry.
         old = _entries.get(key)
         if old is not None and old.epoch == entry.epoch:
             _publish(key, None)
