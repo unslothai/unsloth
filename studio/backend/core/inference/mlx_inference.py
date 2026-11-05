@@ -2300,6 +2300,15 @@ def _eager_spm_detokenizer_class():
     return EagerSPMStreamingDetokenizer
 
 
+class _SpmPieces(list):
+    @property
+    def vocab(self):  # mlx-lm 0.31.x
+        return {piece: index for index, piece in enumerate(self)}
+
+    def convert_ids_to_tokens(self, ids):  # mlx-lm >= 0.32
+        return [self[index] for index in ids]
+
+
 def _stream_spm_tokens_eagerly(processor):
     """mlx-vlm's SPM detokenizer holds each piece until the next word starts; mlx-lm's does not."""
     held = getattr(processor, "detokenizer", None)
@@ -2308,10 +2317,14 @@ def _stream_spm_tokens_eagerly(processor):
         "SPMStreamingDetokenizer",
     ):
         return
+    # Reusing mlx-vlm's pieces skips a second ~1 s walk of a 262k vocab.
+    pieces = getattr(held, "tokenmap", None)
+    if pieces and None not in pieces:
+        source = _SpmPieces(pieces)
+    else:
+        source = getattr(processor, "tokenizer", processor)
     try:
-        processor.detokenizer = _eager_spm_detokenizer_class()(
-            getattr(processor, "tokenizer", processor), trim_space = held.trim_space
-        )
+        processor.detokenizer = _eager_spm_detokenizer_class()(source, trim_space = held.trim_space)
     except Exception as exc:  # noqa: BLE001 -- mlx-vlm's still streams the same text, only later
         logger.debug("MLX streaming detokenizer kept as loaded (%s)", exc)
 
