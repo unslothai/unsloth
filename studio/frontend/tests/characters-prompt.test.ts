@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   buildCharacterPrompt,
   nudgeText,
+  shapeReplayMessage,
   stripSpeakerPrefix,
   type PromptCharacter,
 } from "../src/features/characters/prompt/build.ts";
@@ -325,6 +326,18 @@ test("a short lorebook regex key that repeats a group is skipped, not run", () =
   assert.ok(Date.now() - started < 1000);
   const ok = activateLorebook(book([entry({ keys: ["/dra(g|k)ons?\\b/i", "/[(]+x/"], content: "yes" })]), ["Two DRAKONS", "((x"]);
   assert.equal(ok.fired.length, 1);
+});
+
+test("a replayed reply with tools between its texts keeps their order", () => {
+  const tool = { type: "tool-call", toolName: "web_search" };
+  const reply = { role: "assistant", content: [{ type: "text", text: "Bo: Let me look." }, tool, { type: "text", text: "Found it." }] };
+  assert.deepEqual(shapeReplayMessage(reply, "unused", "Bo", true).content, [
+    { type: "text", text: "Bo: Let me look." },
+    tool,
+    { type: "text", text: "Found it." },
+  ]);
+  const plain = { role: "assistant", content: [tool, { type: "text", text: "Bo: Hi" }] };
+  assert.deepEqual(shapeReplayMessage(plain, "Bo: Hi.", "Bo", true).content, [tool, { type: "text", text: "Bo: Hi." }]);
 });
 
 test("a title is not a name: mentions and labels skip Captain, Professor and the like", () => {

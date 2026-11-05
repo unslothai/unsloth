@@ -111,6 +111,48 @@ export function stripSpeakerPrefix(text: string, name: string): string {
   return text.replace(new RegExp(`^\\s*["“]?(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*:(?:\\*\\*)?\\s*`, "i"), "");
 }
 
+/** A stored reply as history replays it: no leading "Name:", and in a group the speaker's name in front. */
+export function replayedReply(text: string, name: string, group: boolean): string {
+  const body = stripSpeakerPrefix(text, name).trim();
+  return group ? `${name}: ${body}` : body;
+}
+
+export function replyNameOf(
+  meta: RoleplayMessageMeta | null | undefined,
+  cast: readonly { id: string; name: string }[],
+  fallback: string,
+): string {
+  if (meta?.kind !== "reply") return fallback;
+  return cast.find((c) => c.id === meta.speakerId)?.name ?? meta.speakerName;
+}
+
+type ContentPart = { type: string; text?: string };
+
+/**
+ * A message with its text swapped for the prompt's version. A reply with tool calls between its texts
+ * keeps that order, which tool replay relies on, and only its first text takes the speaker formatting.
+ */
+export function shapeReplayMessage<M extends { role: string; content: unknown }>(
+  message: M,
+  text: string,
+  replyName: string,
+  group: boolean,
+): M {
+  const parts = message.content as readonly ContentPart[];
+  const firstText = parts.findIndex((part) => part.type === "text");
+  if (message.role === "assistant" && parts.filter((part) => part.type === "text").length > 1) {
+    const content = parts.map((part, index) =>
+      index === firstText ? { ...part, text: replayedReply(part.text ?? "", replyName, group) } : part,
+    );
+    return { ...message, content };
+  }
+  const others = parts.filter((part) => part.type !== "text");
+  const replacement = { type: "text", text };
+  const content =
+    firstText < 0 ? [replacement, ...others] : [...others.slice(0, firstText), replacement, ...others.slice(firstText)];
+  return { ...message, content };
+}
+
 function exampleBlock(raw: string, char: string, user: string, now: Date, group: string[]): string {
   const text = applyMacros(raw, { char, user, now, group }).replace(/\r\n/g, "\n");
   const blocks = text
@@ -212,11 +254,7 @@ export function buildCharacterPrompt(input: BuildInput): BuiltPrompt {
     // A marker asks the named character to speak again without a new user message.
     if (meta?.kind === "turn") return [nudgeText(nameOf(meta.speakerId, speaker.name))];
     if (meta?.kind === "opening") return [entry.text.trim() || "[Start a new chat]"];
-    if (entry.role === "assistant") {
-      const name = meta?.kind === "reply" ? nameOf(meta.speakerId, meta.speakerName) : speaker.name;
-      const text = stripSpeakerPrefix(entry.text, name).trim();
-      return [group ? `${name}: ${text}` : text];
-    }
+    if (entry.role === "assistant") return [replayedReply(entry.text, replyNameOf(meta, cast, speaker.name), group)];
     // Names only: a re-rolled {{random}} or a fresh {{time}} would rewrite old turns on every send.
     const text = applyNameMacros(entry.text, steadyChar, user).trim();
     const lines = [group ? `${user}: ${text}` : text];

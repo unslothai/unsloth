@@ -10,7 +10,7 @@ import { cn } from "@/lib/utils";
 import { PencilEdit02Icon, PlayIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useAui, useAuiState } from "@assistant-ui/react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Portrait } from "../components/portrait";
 import { ROLEPLAY_SPEAKER_RUN_KEY } from "../chat-runtime";
 import { roleplayMetaOf } from "../meta";
@@ -66,6 +66,8 @@ export function RoleplaySpeakerBar() {
   const ask = useAskToReply();
   const [writing, setWriting] = useState(false);
   const abort = useRef<AbortController | null>(null);
+  // The bar stays mounted across chat switches, so a draft still running belongs to the chat it started in.
+  useEffect(() => () => abort.current?.abort(), [threadId]);
   if (!thread || !threadId) return null;
   const muted = new Set(thread.scene.cast.filter((m) => m.muted).map((m) => m.characterId));
   const canWrite = Boolean(checkpoint) && !isExternalModelId(checkpoint);
@@ -78,8 +80,9 @@ export function RoleplaySpeakerBar() {
     setWriting(true);
     abort.current = new AbortController();
     try {
-      const text = await writeMyReply(threadId!, aui.thread().getState().messages, abort.current.signal);
-      if (text) aui.composer().setText(text);
+      const origin = threadId!;
+      const text = await writeMyReply(origin, aui.thread().getState().messages, abort.current.signal);
+      if (text && useChatRuntimeStore.getState().activeThreadId === origin) aui.composer().setText(text);
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         toast.error(t("characters.chat.writeFailed"), { description: error instanceof Error ? error.message : String(error) });

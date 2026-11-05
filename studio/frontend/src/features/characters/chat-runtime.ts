@@ -7,7 +7,13 @@ import { loginDisplayName } from "@/features/profile/hooks/use-effective-profile
 import { useUserProfileStore } from "@/features/profile/stores/user-profile-store";
 import { decodeJwtSubject } from "@/features/profile/utils/jwt-subject";
 import { roleplayMetaOf } from "./meta";
-import { buildCharacterPrompt, type BuiltPrompt, type PromptCharacter } from "./prompt/build";
+import {
+  buildCharacterPrompt,
+  replyNameOf,
+  shapeReplayMessage,
+  type BuiltPrompt,
+  type PromptCharacter,
+} from "./prompt/build";
 import { castOf, resolveSpeaker, textOf } from "./prompt/round";
 import { useCharactersStore } from "./store";
 import type { Character, ChatScene, Persona, ResolvedPersona } from "./types";
@@ -31,18 +37,6 @@ export interface CharacterRun {
   /** Stamped on the reply as `metadata.custom.roleplay`. */
   replyMeta: { kind: "reply"; speakerId: string; speakerName: string; plan?: string[] };
   built: BuiltPrompt;
-}
-
-function withText(message: ThreadMessage, text: string): ThreadMessage {
-  const parts = message.content as readonly { type: string }[];
-  const firstText = parts.findIndex((part) => part.type === "text");
-  const others = parts.filter((part) => part.type !== "text");
-  const replacement = { type: "text" as const, text };
-  const next =
-    firstText < 0
-      ? [replacement, ...others]
-      : [...others.slice(0, firstText), replacement, ...others.slice(firstText)];
-  return { ...message, content: next } as unknown as ThreadMessage;
 }
 
 export function toPromptCharacter(character: Character): PromptCharacter {
@@ -150,9 +144,14 @@ export async function prepareCharacterRun(args: {
     })),
   });
   const byId = new Map(chat.map((m, index) => [m.id, built.texts[index]]));
+  const group = cast.length > 1;
   // By id, so a later copy of the message (one with attachment paths added) is shaped the same.
-  const shape = <M extends { id: string }>(message: M): M =>
-    byId.has(message.id) ? (withText(message as unknown as ThreadMessage, byId.get(message.id)!) as unknown as M) : message;
+  const shape = <M extends { id: string }>(message: M): M => {
+    if (!byId.has(message.id)) return message;
+    const thread = message as unknown as ThreadMessage;
+    const name = replyNameOf(roleplayMetaOf(thread), cast, built.speaker.name);
+    return shapeReplayMessage(thread, byId.get(message.id)!, name, group) as unknown as M;
+  };
   return {
     system: built.system,
     messages: messages.map(shape),
