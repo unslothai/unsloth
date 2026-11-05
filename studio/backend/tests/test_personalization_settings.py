@@ -88,7 +88,7 @@ def test_customization_defaults():
     c = p.appearance.customization
     assert c.contrast == 50
     assert c.composerOutline is None
-    assert c.reduceMotion == "system"
+    assert c.reduceMotion == "off"
     assert c.fontSmoothing is True
     assert c.pointerCursors is False
     assert c.codeLineNumbers is False

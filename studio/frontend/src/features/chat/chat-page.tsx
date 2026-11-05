@@ -25,6 +25,7 @@ import {
   useModelReasoningEffortStore,
 } from "@/features/model-picker";
 import { ProjectComposer, Thread } from "@/components/assistant-ui/thread";
+import { LibraryAttachmentTargetContext } from "@/features/library";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -103,7 +104,10 @@ import { cn } from "@/lib/utils";
 import { setInAppLinkHandler } from "@/lib/open-link";
 import {
   BrowserToggleButton,
+  FloatingResizeHandles,
   chatKeyOfThread,
+  closeOrFloatBrowser,
+  floatSurface,
   openUrlInBrowser,
   pinBrowserPage,
   setBrowserPanelAvailable,
@@ -252,6 +256,13 @@ import {
   RegisterCompareHandle,
   SharedComposer,
 } from "./shared-composer";
+import {
+  isLoadingPick,
+  loadComparePaneModel,
+  registerComparePaneRunPreparer,
+} from "./compare-run-ownership";
+import { checkpointMatchesPick } from "./lib/resident-model-match";
+import { compareModelDisplayName } from "./lib/external-model-label";
 import { BypassPermissionsConfirmDialog } from "./bypass-permissions-menu-item";
 import { RootSandboxSetupDialog } from "./sandbox-setup-dialog";
 import {
@@ -652,11 +663,11 @@ const SingleContent = memo(function SingleContent({
     if (size == null) return;
     // Dragged shut means closed.
     if (size <= 5) {
-      closeBrowser();
+      closeOrFloatBrowser();
       return;
     }
     artifactPanelWidthRef.current = `${size}%`;
-  }, [closeBrowser]);
+  }, []);
   const hasInitializedArtifactPanelRef = useRef(false);
   const [isArtifactLayoutAnimating, setIsArtifactLayoutAnimating] =
     useState(false);
@@ -680,10 +691,14 @@ const SingleContent = memo(function SingleContent({
   }, [browserOpenSequence, browserOpen, browserOverlaid, showResearchPanel, closeResearchPanel]);
   const browserFullView =
     useBrowserStore((state) => state.fullView) && showBrowserPanel;
+  // Floating stays mounted here, so switching layouts never reloads the page.
+  const browserFloating =
+    useBrowserStore((state) => state.floating) && showBrowserPanel && !browserFullView;
+  const browserDocked = showBrowserPanel && !browserFloating;
   const chatDock = useBrowserStore((state) => state.chatDock);
   const chatOnRight =
     useBrowserStore((state) => state.chatSide === "right") &&
-    showBrowserPanel &&
+    browserDocked &&
     !browserFullView;
   const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
   useEffect(() => {
@@ -691,7 +706,7 @@ const SingleContent = memo(function SingleContent({
       ? BROWSER_PANEL_DEFAULT_SIZE
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
-  const showContextPanel = showResearchPanel || showBrowserPanel;
+  const showContextPanel = showResearchPanel || browserDocked;
 
   const artifactLayoutActive = showContextPanel || isArtifactPanelLayoutActive;
   const artifactPanelSettledOpen =
@@ -785,7 +800,7 @@ const SingleContent = memo(function SingleContent({
   useEffect(() => {
     const surface = contextSurfaceRef.current;
     const root = surface?.closest<HTMLElement>("[data-chat-content-root]");
-    if (!surface || !root || !showBrowserPanel) return;
+    if (!surface || !root || !browserDocked) return;
     let width = "";
     const insets = () =>
       root.querySelectorAll<HTMLElement>(":scope > [data-side-panel-inset]");
@@ -818,7 +833,13 @@ const SingleContent = memo(function SingleContent({
         element.style.removeProperty("--studio-side-panel-left");
       }
     };
-  }, [showBrowserPanel, chatOnRight]);
+  }, [browserDocked, chatOnRight]);
+
+  useLayoutEffect(() => {
+    const surface = contextSurfaceRef.current;
+    if (!surface || !browserFloating) return;
+    return floatSurface(surface);
+  }, [browserFloating]);
 
   // Moving the chat re-sorts panels to default sizes; restore the browser's width (full view fills).
   const browserLayout = `${browserFullView}:${chatOnRight}`;
@@ -827,14 +848,14 @@ const SingleContent = memo(function SingleContent({
     if (seenBrowserLayoutRef.current === browserLayout) return;
     seenBrowserLayoutRef.current = browserLayout;
     const panel = artifactPanelRef.current;
-    if (!panel || !showBrowserPanel) return;
+    if (!panel || !browserDocked) return;
     const frameId = window.requestAnimationFrame(() => {
       panel.resize(
         artifactPanelWidthRef.current ?? defaultPanelSizeRef.current,
       );
     });
     return () => window.cancelAnimationFrame(frameId);
-  }, [browserLayout, showBrowserPanel]);
+  }, [browserLayout, browserDocked]);
 
   // With no chat beside it, the chat header would sit over the browser's tabs.
   useEffect(() => {
@@ -990,11 +1011,13 @@ const SingleContent = memo(function SingleContent({
             data-artifact-surface-visible={
               isArtifactSurfaceVisible ? "true" : "false"
             }
+            {...{ "data-browser-floating": browserFloating ? "" : undefined }}
             className={cn(
               "chat-artifact-pop-surface flex h-full min-h-0 min-w-0 flex-col overflow-visible",
-              (showResearchPanel || showBrowserPanel) &&
+              (showResearchPanel || browserDocked) &&
                 (chatOnRight ? "border-r" : "border-l"),
-              (showResearchPanel || showBrowserPanel) && "border-border/70",
+              (showResearchPanel || browserDocked) && "border-border/70",
+              browserFloating && "chat-browser-floating",
             )}
             style={showBrowserPanel ? { transform: "none" } : undefined}
           >
@@ -1006,7 +1029,8 @@ const SingleContent = memo(function SingleContent({
                />
              ) : showBrowserPanel ? (
               <Suspense fallback={null}>
-                <BrowserPanel active={chatActive} />
+                <BrowserPanel active={chatActive} floating={browserFloating} floatable={true} />
+                {browserFloating ? <FloatingResizeHandles /> : null}
               </Suspense>
             ) : null}
           </div>
@@ -1145,6 +1169,8 @@ const CompareContent = memo(function CompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  loadPaneModel,
+  cancelPaneModelLoad,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -1156,6 +1182,8 @@ const CompareContent = memo(function CompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  loadPaneModel: (selection: SelectedModelInput) => Promise<void>;
+  cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const { state: compareRead, retry: retryCompareRead } =
     useCompareVariant(pairId);
@@ -1183,6 +1211,8 @@ const CompareContent = memo(function CompareContent({
       onModelsChange={onModelsChange}
       deleteDisabled={deleteDisabled}
       onExitCompare={onExitCompare}
+      loadPaneModel={loadPaneModel}
+      cancelPaneModelLoad={cancelPaneModelLoad}
     />
   );
 });
@@ -1549,6 +1579,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange,
   deleteDisabled,
   onExitCompare,
+  loadPaneModel,
+  cancelPaneModelLoad,
 }: {
   pairId: string;
   projectId?: string | null;
@@ -1560,6 +1592,8 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
   onExitCompare?: () => void;
+  loadPaneModel: (selection: SelectedModelInput) => Promise<void>;
+  cancelPaneModelLoad: () => Promise<boolean>;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [model1ThreadId, setModel1ThreadId] = useState<string>();
@@ -1590,6 +1624,50 @@ const GeneralCompareContent = memo(function GeneralCompareContent({
     id: "",
     isLora: false,
   });
+
+  useEffect(
+    () =>
+      registerComparePaneRunPreparer(pairId, async (pane, signal) => {
+        const sel = pane === "model1" ? model1 : model2;
+        if (!sel.id) return;
+        const store = () => useChatRuntimeStore.getState();
+        // A shared Send has already loaded this pane's model, so it is active here.
+        await loadComparePaneModel(
+          {
+            name: compareModelDisplayName(sel.id),
+            isActive: () =>
+              checkpointMatchesPick(
+                store().params.checkpoint,
+                store().activeGgufVariant,
+                sel,
+              ),
+            isLoading: () => isLoadingPick(store().loadingModelPick, sel),
+            cancelLoad: () => void cancelPaneModelLoad(),
+            load: () =>
+              loadPaneModel({
+                id: sel.id,
+                isLora: sel.isLora,
+                ggufVariant: sel.ggufVariant,
+                ...(sel.ggufVariant || sel.id.toLowerCase().endsWith(".gguf")
+                  ? { isGguf: true }
+                  : {}),
+                isDiffusion: sel.isDiffusion,
+                config:
+                  sel.config ??
+                  resolveResidentInitialConfig(sel.id, sel.ggufVariant ?? null)
+                    .config,
+                keepSpeculative: true,
+                throwOnError: true,
+                previousConfig: currentRuntimePerModelConfig({
+                  includeMaxSeqLength: true,
+                }),
+              }),
+          },
+          signal,
+        );
+      }),
+    [pairId, model1, model2, loadPaneModel, cancelPaneModelLoad],
+  );
 
   const handleModelsChange = useCallback(
     (deletedModel?: DeletedModelRef) => {
@@ -4609,7 +4687,7 @@ export function ChatPage({
               "right-[var(--thread-scrollbar-gutter,10px)] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem*var(--ui-space-scale,1)+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
-          <div data-wallpaper-chrome-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
+          <div data-wallpaper-chrome-controls="" data-chat-model-controls="" className="group/chat-model-controls pointer-events-auto flex min-w-0 items-center gap-1">
             {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
               <Button
                 type="button"
@@ -4786,6 +4864,7 @@ export function ChatPage({
               <BrowserToggleButton
                 active={active}
                 hideWhenOpen={view.mode === "single" || showBrowserOverlay}
+                floatable={view.mode === "single"}
               />
             ) : null}
             {view.mode === "single" &&
@@ -4858,6 +4937,7 @@ export function ChatPage({
             aborting generation (#8908). Any key here brings the bug back. Compare renders as a
             sibling so it hides this rather than unmounting it, since ComparePane builds its own
             providers and nesting throws. */}
+        <LibraryAttachmentTargetContext.Provider value={active ? shownChatKey : null}>
         {baseView ? (
           <div
             className={
@@ -4930,9 +5010,12 @@ export function ChatPage({
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
             onExitCompare={exitCompare}
+            loadPaneModel={selectModel}
+            cancelPaneModelLoad={cancelLoading}
           />
         ) : null}
 
+        </LibraryAttachmentTargetContext.Provider>
         {showBrowserOverlay ? <BrowserOverlay /> : null}
       </div>
 

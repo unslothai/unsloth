@@ -231,7 +231,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   contrast: 50,
   composerOutline: null,
   pointerCursors: false,
-  reduceMotion: "system",
+  reduceMotion: "off",
   fontSmoothing: true,
   codeLineNumbers: false,
   codeWordWrap: false,
@@ -576,7 +576,7 @@ export function sanitizeCustomizationWithIssues(value: unknown): {
     reduceMotion: readChoice(
       source.reduceMotion,
       ["system", "on", "off"],
-      "system",
+      "off",
       "reduceMotion",
       report,
     ),

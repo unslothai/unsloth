@@ -203,6 +203,11 @@ function tab(
         accounts[0].login_alias = stored;
         return stored;
       },
+      renameAccount: async (accountId: string, username: string) => {
+        calls.push(`rename:${accountId}:${username}`);
+        if (mutationError) throw new Error(mutationError);
+        accounts[1].username = username.trim().toLowerCase();
+      },
       setAccountModelAllowlist: async (
         accountId: string,
         allowlist: string[] | null,
@@ -600,6 +605,51 @@ test("model access edits one account's allowlist and an empty list restores ever
     ],
   );
   assert.ok(!content(view.render()).includes(en.settings.accounts.modelAccessLimited));
+});
+
+test("rename edits one account's sign-in name and keeps the dialog open on a refusal", async () => {
+  const submit = async (view: ReturnType<typeof tab>, value: string) => {
+    const input = () =>
+      nodes(view.render()).find((node) => node.props.id === "rename-account-username");
+    assert.equal(input()!.props.value, "alice");
+    (input()!.props.onChange as (event: unknown) => void)({ target: { value } });
+    const form = nodes(view.render()).find(
+      (node) =>
+        node.type === "form" &&
+        nodes(node.props.children).some((child) => child.props.id === "rename-account-username"),
+    );
+    (form!.props.onSubmit as (event: unknown) => void)({ preventDefault() {} });
+    await tick();
+    await tick();
+  };
+  const view = tab();
+  await click(await view.initialize(), en.settings.accounts.rename);
+  assert.ok(
+    content(view.render()).includes(
+      translate("settings.accounts.renameTitle", { username: "alice" }),
+    ),
+  );
+  await submit(view, " Alicia ");
+  assert.deepEqual(
+    view.calls.filter((call) => call.startsWith("rename:")),
+    ["rename:alice-id: Alicia "],
+  );
+  const renameDialog = (tree: unknown) =>
+    nodes(tree).find(
+      (node) =>
+        node.type === "Dialog" &&
+        content(node).includes(en.settings.accounts.renameDescription),
+    );
+  const tree = view.render();
+  assert.equal(renameDialog(tree)?.props.open, false);
+  assert.ok(nodes(tree).some((node) => node.props["data-testid"] === "account-alicia"));
+
+  const refused = tab(true, "Username is unavailable");
+  await click(await refused.initialize(), en.settings.accounts.rename);
+  await submit(refused, "bob");
+  const after = refused.render();
+  assert.equal(renameDialog(after)?.props.open, true);
+  assert.ok(content(renameDialog(after)).includes("Username is unavailable"));
 });
 
 test("rows show each profile name and avatar with the name to sign in with", async () => {

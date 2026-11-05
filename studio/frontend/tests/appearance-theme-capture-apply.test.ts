@@ -69,7 +69,7 @@ test("a non-default look survives export, parse and apply onto defaults", () => 
   const plan = apply(BASE, roundTrip(FULL, true));
   assert.equal(plan.palette, "cherry");
   // Personal fields never leave the device, so they come from the target.
-  assert.deepEqual(plan.customization, { ...FULL.customization, pointerCursors: false, reduceMotion: "system" });
+  assert.deepEqual(plan.customization, { ...FULL.customization, pointerCursors: false, reduceMotion: "off" });
   assert.deepEqual(pick(plan.glass, GLASS), pick(FULL.glass, GLASS));
 });
 

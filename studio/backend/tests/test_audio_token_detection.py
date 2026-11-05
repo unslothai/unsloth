@@ -683,3 +683,139 @@ def test_lfm3_audio_on_the_hub_is_audio_vlm(monkeypatch):
         model = "LiquidAI/LFM3-Audio-2B",
     )
     assert (audio_type, definitive) == ("audio_vlm", True)
+
+
+# Gemma 4's transformers 5 tokenizer_config: no added_tokens_decoder, a named audio_token. Every size
+# carries it; only E2B/E4B/12B have an audio encoder.
+_V5_AUDIO_TOKENIZER = {"audio_token": "<|audio|>", "image_token": "<|image|>"}
+_WITH_ENCODER = {"model_type": "gemma4", "audio_config": {"model_type": "gemma4_audio"}}
+_WITHOUT_ENCODER = {"model_type": "gemma4", "audio_config": None}
+
+
+def _escaped(tok_config):
+    return json.dumps(tok_config).replace("<", chr(92) + "u003c").replace(">", chr(92) + "u003e")
+
+
+@pytest.mark.parametrize(
+    "tok_config, model_config, expected",
+    [
+        (_V5_AUDIO_TOKENIZER, _WITH_ENCODER, ("audio_vlm", True)),
+        (_V5_AUDIO_TOKENIZER, _WITHOUT_ENCODER, (None, True)),
+        (_V5_AUDIO_TOKENIZER, None, (None, False)),
+        ({"image_token": "<|image|>"}, _WITH_ENCODER, (None, True)),
+        (
+            {**_V5_AUDIO_TOKENIZER, "added_tokens_decoder": {"0": {"content": "<|bicodec_x|>"}}},
+            _WITH_ENCODER,
+            ("bicodec", True),
+        ),
+    ],
+)
+def test_a_declared_audio_token_needs_an_audio_encoder(tok_config, model_config, expected):
+    from utils.models.model_config import _classify_audio_tokenizer
+    assert _classify_audio_tokenizer(tok_config, lambda: model_config) == expected
+
+
+@pytest.mark.parametrize(
+    "tokenizer_text", [json.dumps(_V5_AUDIO_TOKENIZER), _escaped(_V5_AUDIO_TOKENIZER)]
+)
+@pytest.mark.parametrize(
+    "model_config, expected", [(_WITH_ENCODER, "audio_vlm"), (_WITHOUT_ENCODER, None)]
+)
+def test_a_cached_gemma4_snapshot_is_typed_by_its_audio_encoder(
+    monkeypatch, tmp_path, tokenizer_text, model_config, expected
+):
+    repo_dir, _ = _cached_snapshot(
+        tmp_path,
+        "acme/tts-model",
+        {"tokenizer_config.json": tokenizer_text, "config.json": json.dumps(model_config)},
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(monkeypatch, repo_dir)
+
+    assert (audio_type, definitive, reads) == (expected, True, [])
+
+
+@pytest.mark.parametrize(
+    "tokenizer_text", [json.dumps(_V5_AUDIO_TOKENIZER), _escaped(_V5_AUDIO_TOKENIZER)]
+)
+@pytest.mark.parametrize("config_text", ["{half", None])
+def test_a_cached_config_it_cannot_read_leaves_the_hub_to_answer(
+    monkeypatch, tmp_path, tokenizer_text, config_text
+):
+    # None: a tokenizer-only download, whose snapshot never fetched config.json.
+    files = {"tokenizer_config.json": tokenizer_text}
+    if config_text is not None:
+        files["config.json"] = config_text
+    repo_dir, _ = _cached_snapshot(tmp_path, "acme/tts-model", files)
+
+    (audio_type, _definitive), reads, _documents = _detect_against_cache(
+        monkeypatch,
+        repo_dir,
+        listed = ("tokenizer_config.json", "config.json"),
+        responses = [_Resp(200, _V5_AUDIO_TOKENIZER), _Resp(200, _WITH_ENCODER)],
+    )
+
+    assert audio_type == "audio_vlm"
+    assert reads[-1].endswith("/config.json")
+
+
+def test_a_cached_adapter_repo_answers_without_the_hub(monkeypatch, tmp_path):
+    # An adapter repo never ships config.json, so its absence is not a partial download.
+    repo_dir, _ = _cached_snapshot(
+        tmp_path,
+        "acme/tts-model",
+        {"tokenizer_config.json": json.dumps(_V5_AUDIO_TOKENIZER), "adapter_config.json": "{}"},
+    )
+
+    (audio_type, definitive), reads, _documents = _detect_against_cache(
+        monkeypatch, repo_dir, listed = ("tokenizer_config.json", "adapter_config.json")
+    )
+
+    assert (audio_type, definitive, reads) == (None, True, [])
+
+
+def test_a_local_folder_without_a_config_is_definitively_not_audio(tmp_path):
+    from utils.models import model_config
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(_V5_AUDIO_TOKENIZER))
+
+    assert model_config._detect_audio_from_tokenizer(str(tmp_path), local_files_only = True) == (
+        None,
+        True,
+    )
+
+
+@pytest.mark.parametrize(
+    "config_response, expected",
+    [
+        (_Resp(200, _WITH_ENCODER), ("audio_vlm", True)),
+        (_Resp(200, _WITHOUT_ENCODER), (None, True)),
+        (_Resp(404), (None, True)),
+        (_Resp(503), (None, False)),
+    ],
+)
+def test_the_hub_config_decides_a_declared_audio_token(monkeypatch, config_response, expected):
+    responses = [_Resp(200, _V5_AUDIO_TOKENIZER), config_response, _Resp(404)]
+    assert _detect_checked(monkeypatch, responses) == expected
+
+
+def test_an_unread_encoder_config_stays_unknown_past_a_readable_processor(monkeypatch):
+    # Gemma 4's processor_config carries no top-level audio_token, so it must not settle the answer.
+    responses = [
+        _Resp(200, _V5_AUDIO_TOKENIZER),
+        _Resp(503),
+        _Resp(404),
+        _Resp(200, {"feature_extractor": {}}),
+    ]
+    assert _detect_checked(monkeypatch, responses) == (None, False)
+
+
+def test_a_local_folder_with_an_escaped_audio_token_reads_its_encoder(tmp_path):
+    from utils.models import model_config
+
+    (tmp_path / "tokenizer_config.json").write_text(_escaped(_V5_AUDIO_TOKENIZER))
+    (tmp_path / "config.json").write_text(json.dumps(_WITH_ENCODER))
+
+    assert model_config._detect_audio_from_tokenizer(str(tmp_path), local_files_only = True) == (
+        "audio_vlm",
+        True,
+    )

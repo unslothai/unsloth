@@ -283,6 +283,7 @@ from ._utils import (
 )
 from ._utils import *
 from ._utils import _ignore_block_swap_params_for_ddp
+from .float8_training import enable_fp8_lora, restore_fp8_lora_for_inference
 from ._utils import _tensor_parallel_for_inference, _tensor_parallel_for_training
 from ._uma_safetensors import is_integrated_unified_memory_gpu
 from ._utils import estimate_training_reserve_bytes as _zoo_reserve_estimate
@@ -314,6 +315,7 @@ from .loader_utils import (
     planner_class_mismatch_reason,
     planner_model_class,
     exclude_no_placement_params,
+    backfill_fp8_modules_to_convert,
     planner_quantization_kwargs,
     raise_if_bnb_cpu_spill,
     requested_device_map,
@@ -4080,6 +4082,16 @@ class FastBaseModel:
                 local_files_only = local_files_only,
                 revision = _revision,
             )
+        backfill_fp8_modules_to_convert(
+            auto_config,
+            model_name,
+            token,
+            _revision,
+            local_files_only = local_files_only,
+            subfolder = kwargs.get("subfolder"),
+            cache_dir = kwargs.get("cache_dir"),
+            variant = kwargs.get("variant"),
+        )
         # Remote classes shadowing a native name can differ in attention flags.
         _builds_remote_class, _remote_class = resolve_remote_code_model_class(
             auto_model,
@@ -5114,6 +5126,9 @@ class FastBaseModel:
                     revision = _tokenizer_revision,
                 )
                 model, _fallback_tok = patch_tokenizer(model, _fallback_tok)
+                from ..tokenizer_utils import _sync_pad_token_id
+
+                model = _sync_pad_token_id(model, _fallback_tok)
                 # Re-attach as a processor wrapper if the original was a processor (audio ones included).
                 if any(
                     hasattr(tokenizer, k)
@@ -5815,6 +5830,7 @@ class FastBaseModel:
             m.for_training = functools.partial(FastBaseModel.for_training, m)
             m.for_inference = functools.partial(FastBaseModel.for_inference, m)
             m = m.model
+        enable_fp8_lora(model)
         # Detect a stray pre-train forward so train() can drop the torch.compile graph cache it would otherwise poison (see prepare_for_training_mode).
         _unsloth_install_pretrain_detector(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
@@ -6010,6 +6026,7 @@ class FastBaseModel:
                 "Unsloth: I think you're passing a tokenizer, not the model to for_inference!"
             )
         _tensor_parallel_for_inference(model)
+        restore_fp8_lora_for_inference(model)
 
         def _for_inference(m):
             if hasattr(m, "gradient_checkpointing"):
@@ -6088,6 +6105,7 @@ class FastBaseModel:
             m = m.model
         _for_training(m)
         apply_training_mode()
+        enable_fp8_lora(model)
         # Since transformers 4.53, this must be turned on explicitly.
         for module in checkpointing:
             set_module_gradient_checkpointing(module, use_gradient_checkpointing)

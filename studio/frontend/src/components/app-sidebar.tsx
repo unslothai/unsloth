@@ -81,6 +81,7 @@ import { useAnimatedThemeToggle } from "@/components/ui/animated-theme-toggler";
 import {
   DesktopTitlebarNavigation,
   shouldUseCustomWindowTitlebar,
+  usesWindowsTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 // deep imports avoid the Images index because its ImagesPage re-export would undo the code split.
@@ -1434,9 +1435,10 @@ export function AppSidebar() {
 
   // MLX self-heal or late detection can change the verdict after first health; re-poll.
   useEffect(() => {
-    // Also while deferred: under the kill switch health settles nothing.
+    // Deferred detection starts only on demand, so there is no background verdict to poll.
+    if (detectionDeferred) return;
     const selfHealSettled =
-      !chatOnly || (chatOnlyReason !== "mlx_unavailable" && !detectionDeferred);
+      !chatOnly || chatOnlyReason !== "mlx_unavailable";
     // And on any platform while the verdict itself is out. fetchDeviceType spends its bounded wait at
     // most once per page load, so a host that detects slower keeps the provisional reply and nothing
     // else re-reads it: the rows above would spin and /studio would hold its loading panel for the rest
@@ -3406,7 +3408,7 @@ export function AppSidebar() {
         ? { label: "Install Training", onClick: () => setFullInstallOpen(true) }
         : undefined,
       spinner: trainingInProgress,
-      pending: capabilitiesUnknown,
+      pending: capabilitiesUnknown && !detectionDeferred,
       pendingTooltip: t("shell.navigation.trainChecking"),
       onClick: () => {
         if (trainBlocked) {
@@ -3430,7 +3432,7 @@ export function AppSidebar() {
       active: pathname === "/video" || pathname.startsWith("/video/"),
       disabled: videoDisabled,
       tooltip: videoDisabledHint,
-      pending: capabilitiesUnknown,
+      pending: capabilitiesUnknown && !detectionDeferred,
       pendingTooltip: t("shell.navigation.videoChecking"),
       onClick: () => {
         navigateFromRow({ to: "/video" });
@@ -5897,6 +5899,7 @@ export function AppSidebar() {
     <Sidebar
       collapsible="icon"
       collapseToZero={isTauri}
+      data-windows-glass-frame={(pinned && usesWindowsTitlebar()) || undefined}
       variant="sidebar"
       className={cn(
         "font-heading group-data-[collapsible=icon]:[&_[data-sidebar=sidebar]]:bg-[var(--sidebar-surface)]",
@@ -5911,7 +5914,8 @@ export function AppSidebar() {
             ? "shrink-0 p-0 pt-[calc(var(--studio-content-top-inset,0px)+var(--studio-chat-header-padding-top,11px))]"
             : usesNativeMacTitlebar
               ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+calc(17px*var(--ui-space-scale,1)))]"
-              : "pl-3 pr-3 pt-[calc(14px*var(--ui-space-scale,1))] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
+              : // The chat header's top padding, so the two rows line up.
+                "pl-3 pr-3 pt-[var(--studio-chat-header-padding-top,11px)] pb-[calc(8px*var(--ui-space-scale,1))] group-data-[collapsible=icon]:px-0",
         )}
       >
         {showSidebarBrand && (
@@ -5977,10 +5981,10 @@ export function AppSidebar() {
                         useChatSearchStore.getState().open();
                         closeMobileIfOpen();
                       }}
-                      className="relative top-px inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      className="inline-flex size-[calc(30px*var(--ui-space-scale,1))] cursor-pointer items-center justify-center rounded-[10px] text-nav-fg transition-colors hover:bg-nav-surface-hover hover:text-black dark:hover:text-white focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                       aria-label={t("shell.navigation.search")}
                     >
-                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-4" />
+                      <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} className="size-icon" />
                     </button>
                   </TooltipPrimitive.Trigger>
                   <TooltipContent
@@ -6633,6 +6637,7 @@ export function AppSidebar() {
             travel in this band and a full-width gradient washed it out. */}
         <div
           ref={attachFade}
+          data-slot="sidebar-footer-fade"
           aria-hidden="true"
           className={cn(
             // from-[8px] holds the fade opaque across the hard clip, matching the list's pb-2.
