@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Anima (CircleStone Labs): a Cosmos-Predict2 DiT plus an LLM adapter over a Qwen3-0.6B encoder.
-
-diffusers ships Anima as modular blocks only, so ``AnimaPipeline`` is a classic ``DiffusionPipeline`` face
-over ``AnimaAutoBlocks``, the way ``diffusion_flux3`` wraps FLUX.3. A ComfyUI / Civitai single file holds
-the DiT AND the adapter (``net.llm_adapter.*``, diffusers' ``AnimaTextConditioner``); both come out of it
-here. The 2.9B community expansion is the same layout with 40 blocks instead of 28."""
+"""Anima: a Cosmos-Predict2 DiT plus an LLM adapter (``AnimaTextConditioner``) over a Qwen3-0.6B encoder. diffusers
+ships it as modular blocks only, which ``AnimaPipeline`` wraps as ``diffusion_flux3`` wraps FLUX.3."""
 
 from __future__ import annotations
 
@@ -64,10 +60,8 @@ def is_anima_family(fam: Any) -> bool:
 
 
 def split_anima_checkpoint(checkpoint: dict) -> tuple[dict, dict]:
-    """``(transformer, text_conditioner)`` state dicts in diffusers names from a ComfyUI-layout file.
-
-    Raises on a ComfyUI-quantised file (``comfy_quant`` / ``weight_scale`` entries): its codes would load as
-    plain weights."""
+    """``(transformer, text_conditioner)`` diffusers state dicts; a ComfyUI-quantised file raises (its codes would
+    load as plain weights)."""
     from diffusers.loaders.single_file_utils import (
         convert_cosmos_transformer_checkpoint_to_diffusers,
     )
@@ -107,8 +101,8 @@ def _block_count(state: dict) -> int:
 
 
 def _assign_on_meta(cls: Any, config: dict, state: dict, dtype) -> Any:
-    """``cls`` built on meta and handed ``state``'s tensors, cast as ``from_pretrained`` casts them: floats to
-    ``dtype`` (``_keep_in_fp32_modules`` fp32), buffers made at init left as made. Strict on keys and shapes."""
+    """``cls`` on meta, given ``state``'s tensors cast as ``from_pretrained`` casts them: init-time buffers (the
+    rotary ``inv_freq``) stay fp32, so no ``.to(dtype)``."""
     import torch
     from accelerate import init_empty_weights
 
@@ -135,11 +129,8 @@ def load_anima_single_file(
     local_files_only: bool = False,
     cache_dir: Optional[str] = None,
 ) -> tuple[Any, Any]:
-    """``(CosmosTransformer3DModel, AnimaTextConditioner)`` from one ComfyUI-layout Anima file, on CPU.
-
-    Configs come from ``config_source`` (the diffusers base); ``num_layers`` follows the file, so the 2.9B
-    (40-block) expansion loads with the 2B config. The models take the file's tensors (no fp32 model beside
-    them), under the host RAM check of the other single-file loaders."""
+    """``(CosmosTransformer3DModel, AnimaTextConditioner)`` from one ComfyUI-layout file, on CPU. ``num_layers``
+    follows the file, so the 40-block 2.9B expansion loads with the 28-block base config."""
     from diffusers import AnimaTextConditioner, CosmosTransformer3DModel
     from safetensors.torch import load_file
 
@@ -215,8 +206,6 @@ _COMPONENTS = (
 
 
 class _AnimaPipelineMixin:
-    """Anima as a ``DiffusionPipeline``; the denoise runs in diffusers' modular Anima blocks."""
-
     model_cpu_offload_seq = "text_encoder->text_conditioner->transformer->vae"
     _optional_components: list = []
     _callback_tensor_inputs = ["latents"]
@@ -346,8 +335,8 @@ class _AnimaPipelineMixin:
     def _step_hooks(
         self, mp, callback: Optional[Callable], num_inference_steps: int, first_call: bool
     ):
-        """``callback_on_step_end`` after every scheduler step, and ``self.progress_bar`` opened at the first
-        denoiser forward (where the generate path's denoise-phase hook looks), as in diffusion_flux3."""
+        """``callback_on_step_end`` per scheduler step; ``progress_bar`` opened at the first denoiser forward, where
+        ``denoise_phase`` hooks (as diffusion_flux3)."""
         pipe = self
 
         @contextlib.contextmanager
@@ -418,9 +407,7 @@ def load_anima_pipeline(
     cache_dir: Optional[str] = None,
     check_cancelled: Optional[Callable[[], None]] = None,
 ) -> Any:
-    """A ready ``AnimaPipeline`` for the diffusers repo / folder ``repo_id`` (on CPU; the caller places it).
-
-    Handed-in components replace the repo's; the rest load from its subfolders."""
+    """``AnimaPipeline`` from the diffusers repo / folder ``repo_id``, on CPU; handed-in components replace its own."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     if not anima_available():

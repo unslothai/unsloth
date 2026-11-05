@@ -211,7 +211,6 @@ def test_the_route_validation_passes_a_gguf_native_can_take(monkeypatch, tmp_pat
 def test_diffusers_takes_a_moss_safetensors_single_file(monkeypatch, tmp_path):
     from core.inference.diffusion import DiffusionBackend
 
-    # A ComfyUI / Civitai .safetensors loads on diffusers through the in-tree transformer; only the GGUF is sd.cpp's.
     _set_device(monkeypatch, "cuda")
     _set_runnable(monkeypatch)
     _set_binary(monkeypatch, _binary(tmp_path, "sd-cli", marker = True))

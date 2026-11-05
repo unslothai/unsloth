@@ -54,7 +54,6 @@ EXPECTED = {
 }
 # Measured and deliberately left on the bf16 encoder by default: a small encoder (about 5B or less) stays bf16 unless
 # ComfyUI's template quantizes it (FLUX.1's T5, Z-Image, Lumina-2, klein), and HiDream / Ideogram 4 missed the bar.
-# Chroma shares FLUX.1's T5; Anima's encoder is a 0.6B Qwen3.
 KEEP_BF16 = (
     "flux.1",
     "z-image",

@@ -172,7 +172,6 @@ _TO_COSMOS = (
 
 
 def _tiny_anima(tmp_path):
-    """A tiny diffusers Anima base folder (configs only) and its two models, randomly initialised."""
     from diffusers import AnimaTextConditioner, CosmosTransformer3DModel
 
     torch.manual_seed(0)
@@ -207,7 +206,6 @@ def _tiny_anima(tmp_path):
 
 
 def _comfy_layout(transformer, conditioner) -> dict:
-    """The two models as one ComfyUI-layout Anima file holds them, under ``net.``."""
     state = {}
     for key, value in transformer.state_dict().items():
         for new, old in _TO_COSMOS:
@@ -228,7 +226,7 @@ def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monke
     assert set(split_anima_checkpoint(dict(comfy))[0]) == set(transformer.state_dict())
     path = _save(tmp_path / "anima.safetensors", comfy)
 
-    # The models are built on meta: no full fp32 copy is initialised before the file's tensors arrive.
+    # Built on meta: no fp32 model is initialised before the file's tensors arrive.
     init_devices = set()
     reset = torch.nn.Linear.reset_parameters
 
@@ -260,8 +258,7 @@ def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monke
 
 
 def test_every_anima_image_is_its_own_generation_chunk():
-    # As FLUX.3: the wrapper runs one modular call per image, so each image gets its own encode / denoise / decode
-    # phase and text-encoder release.
+    # One modular call per image (as FLUX.3), so each image is its own chunk.
     from core.inference.diffusion import _generation_chunks
     from core.inference.diffusion_families import detect_family
 
