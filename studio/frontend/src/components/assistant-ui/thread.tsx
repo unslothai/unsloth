@@ -95,7 +95,12 @@ import {
 import { KnowledgeBaseToolUI } from "@/components/assistant-ui/tool-ui-knowledge-base";
 import { ReadSkillToolUI } from "@/components/assistant-ui/tool-ui-read-skill";
 import { SkillMentionPopover } from "@/components/assistant-ui/skill-mentions";
-import { isRewindCommand, useRewindDialogStore } from "@/features/chat";
+import {
+  ChatSkillsDialog,
+  isRewindCommand,
+  isSkillsCommand,
+  useRewindDialogStore,
+} from "@/features/chat";
 import { RenderHtmlToolUI } from "@/components/assistant-ui/tool-ui-render-html";
 import { PythonToolUI } from "@/components/assistant-ui/tool-ui-python";
 import { TerminalToolUI } from "@/components/assistant-ui/tool-ui-terminal";
@@ -3038,6 +3043,7 @@ const Composer: FC<{
   const effectiveDeepResearchEnabled = deepResearchEnabled && !researchUsed;
   const [researchWebsiteAccessOpen, setResearchWebsiteAccessOpen] =
     useState(false);
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
   useEffect(() => {
     if (!researchUsed) return;
     if (hasResearchMessage && researchThreadId) {
@@ -5509,6 +5515,17 @@ const Composer: FC<{
         !overlay &&
         !hasAttachments &&
         !hasPendingAudio &&
+        isSkillsCommand(composerText)
+      ) {
+        event.preventDefault();
+        aui.composer().setText("");
+        setSkillsDialogOpen(true);
+        return;
+      }
+      if (
+        !overlay &&
+        !hasAttachments &&
+        !hasPendingAudio &&
         isCompactCommand(composerText)
       ) {
         event.preventDefault();
@@ -5902,6 +5919,10 @@ const Composer: FC<{
       <DeepResearchWebsiteAccessDialog
         open={researchWebsiteAccessOpen && effectiveDeepResearchEnabled}
         onOpenChange={setResearchWebsiteAccessOpen}
+      />
+      <ChatSkillsDialog
+        open={skillsDialogOpen}
+        onOpenChange={setSkillsDialogOpen}
       />
       <ChatAudioUploadMount audioUpload={audioUpload} />
     </>
