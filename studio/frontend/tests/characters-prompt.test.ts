@@ -354,6 +354,8 @@ test("lorebook regex keys run in linear time and match as JS regexes do", () => 
     }
   }
   assert.equal(activateLorebook(book([entry({ keys: ["a".repeat(50_000)], content: "c" })]), ["hello"]).fired.length, 0);
+  const long = activateLorebook(book([entry({ keys: ["dragon"], content: "c" })], { scan_depth: 2 }), ["ok", `${"x".repeat(16_000)} A dragon appears.`]);
+  assert.equal(long.fired.length, 1, "the newest text of a long reply is scanned");
   for (const key of ["/(a)\\1/", "/(?=a)a/", "/(?<!x)a/"]) {
     assert.equal(activateLorebook(book([entry({ keys: [key], content: "c" })]), ["aa"]).fired.length, 0, key);
   }

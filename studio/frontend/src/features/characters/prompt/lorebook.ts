@@ -98,7 +98,8 @@ export function activateLorebook(
   const result: ActivatedLore = { before: [], after: [], atDepth: [], fired: [] };
   if (!book || !Array.isArray(book.entries) || book.entries.length === 0) return result;
   const depth = Math.max(1, book.scan_depth || 4);
-  const scanText = recentNewestFirst.slice(0, depth).join("\n").slice(0, MAX_SCAN_CHARS);
+  // Oldest to newest, keeping the tail: an over-long window drops the oldest text, not a reply's ending.
+  const scanText = recentNewestFirst.slice(0, depth).reverse().join("\n").slice(-MAX_SCAN_CHARS);
   const candidates: { entry: LorebookEntry; reason: "constant" | "keyword" }[] = [];
   for (const entry of book.entries) {
     if (entry.enabled === false || !entry.content?.trim()) continue;
