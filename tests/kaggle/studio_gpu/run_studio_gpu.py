@@ -2242,16 +2242,28 @@ class Payload:
 
             if api_key:
                 client.token = api_key
-                code, body = client.post(
-                    "/v1/chat/completions",
-                    {
-                        "model": "default",
-                        "messages": [{"role": "user", "content": "Say hello in one word."}],
-                        "max_tokens": 32,
-                        "temperature": 0.0,
-                    },
-                    timeout = self.args.chat_timeout,
-                )
+                # The server answers before `unsloth run` finishes loading its model (no startup hardware warmup
+                # gates /api/health any more): retry "No model loaded" while the process lives, up to the deadline.
+                load_deadline = time.time() + self.args.health_deadline
+                while True:
+                    code, body = client.post(
+                        "/v1/chat/completions",
+                        {
+                            "model": "default",
+                            "messages": [{"role": "user", "content": "Say hello in one word."}],
+                            "max_tokens": 32,
+                            "temperature": 0.0,
+                        },
+                        timeout = self.args.chat_timeout,
+                    )
+                    if not (
+                        code == 400
+                        and "No model loaded" in str(body)
+                        and proc.poll() is None
+                        and time.time() < load_deadline
+                    ):
+                        break
+                    time.sleep(3.0)
                 detail["completion_status"] = code
                 text = ""
                 if code == 200 and isinstance(body, dict):
