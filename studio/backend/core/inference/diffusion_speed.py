@@ -995,6 +995,44 @@ def _denoiser_unet(pipe: Any) -> Any:
     return None
 
 
+def fused_qkv_added_bytes(pipe: Any) -> int:
+    """Device bytes the default tier's U-Net QKV fuse adds. diffusers' ``fuse_projections`` builds ``to_qkv`` /
+    ``to_kv`` beside the ``to_q`` / ``to_k`` / ``to_v`` it keeps, so a U-Net that moves whole (model offload) or stays
+    resident carries both (SDXL: 4897 MiB grows to 6132 MiB). 0 when the tier would not fuse."""
+    unet = _denoiser_unet(pipe)
+    if unet is None:
+        return 0
+    try:
+        import torch
+        from .diffusion_native_quant import is_native_quantised
+
+        if any(is_native_quantised(dit) for dit in _denoiser_dits(pipe)):
+            return 0
+        if unfused_projections_will_drop(unet):
+            return 0  # the fused weights replace the projections they were built from
+        total = 0
+        for module in unet.modules():
+            if not callable(getattr(module, "fuse_projections", None)) or getattr(
+                module, "fused_projections", False
+            ):
+                continue
+            names = (
+                ("to_k", "to_v")
+                if getattr(module, "is_cross_attention", False)
+                else ("to_q", "to_k", "to_v")
+            )
+            if getattr(module, "add_q_proj", None) is not None:
+                names += ("add_q_proj", "add_k_proj", "add_v_proj")
+            for name in names:
+                linear = getattr(module, name, None)
+                for t in (getattr(linear, "weight", None), getattr(linear, "bias", None)):
+                    if isinstance(t, torch.Tensor):
+                        total += t.numel() * t.element_size()
+        return total
+    except Exception:  # noqa: BLE001 - unreadable: no extra bytes claimed
+        return 0
+
+
 def compiled_shapes_are_static(pipe: Any, speed_mode: Optional[str]) -> bool:
     """Whether this load's compiled artifacts are per-(width, height, batch); the compile cache keys on it."""
     mode = normalize_speed_mode(speed_mode)
@@ -2028,6 +2066,7 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             ):  # the pipe-level fuse resets every VAE processor to FusedAttnProcessor2_0
                 from . import diffusion_vae_fused  # noqa: PLC0415
                 diffusion_vae_fused.install_attention_processors(vae)
+            drop_unfused_projections(_denoiser_unet(pipe), logger)
             return True
         except Exception as exc:  # noqa: BLE001 - optimisation only
             _warn(logger, "fuse_qkv_projections", exc)
@@ -2042,6 +2081,151 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             except Exception as exc:  # noqa: BLE001 - optimisation only
                 _warn(logger, "fuse_qkv_projections", exc)
     return engaged
+
+
+DROP_UNFUSED_QKV_ENV = "UNSLOTH_DIFFUSION_DROP_UNFUSED_QKV"
+_DROPPED_ATTR = "_unsloth_dropped_projections"
+
+
+def _fused_attention_drops(module: Any) -> tuple:
+    """The projections diffusers' fused processor no longer calls: self attention runs ``to_qkv`` (q, k, v unused),
+    cross attention ``to_q`` + ``to_kv`` (k, v unused)."""
+    if not getattr(module, "fused_projections", False):
+        return ()
+    if getattr(module, "is_cross_attention", False):
+        return ("to_k", "to_v") if getattr(module, "to_kv", None) is not None else ()
+    return ("to_q", "to_k", "to_v") if getattr(module, "to_qkv", None) is not None else ()
+
+
+def _drop_unfused_enabled() -> bool:
+    return (os.environ.get(DROP_UNFUSED_QKV_ENV) or "").strip().lower() not in (
+        "0",
+        "off",
+        "false",
+        "no",
+    )
+
+
+def _droppable_projection(module: Any, name: str) -> bool:
+    """A projection the drop may delete: a plain Linear without hooks (quantised / wrapped ones are left alone)."""
+    from torch import nn
+
+    p = getattr(module, name, None)
+    return type(p) is nn.Linear and not (
+        p._forward_pre_hooks or p._forward_hooks or hasattr(p, "_hf_hook")
+    )
+
+
+def _drop_plan(unet: Any) -> list:
+    """``(module, names)`` the drop would delete on a fused ``unet``; empty when it is off, a PEFT adapter is attached
+    (it targets to_q / to_k / to_v) or any projection is not a plain hook-free Linear (all or nothing)."""
+    if unet is None or not _drop_unfused_enabled():
+        return []
+    if any(hasattr(m, "lora_A") for m in unet.modules()):
+        return []
+    plan = []
+    for module in unet.modules():
+        names = _fused_attention_drops(module)
+        if not names:
+            continue
+        if not all(_droppable_projection(module, n) for n in names):
+            return []
+        plan.append((module, names))
+    return plan
+
+
+def unfused_projections_will_drop(unet: Any) -> bool:
+    """Whether the fuse's unfused copies will be dropped on this (not yet fused) U-Net: drop on, no PEFT adapter, and
+    every projection the fused processor stops calling is a plain hook-free Linear."""
+    if unet is None or not _drop_unfused_enabled():
+        return False
+    try:
+        if any(hasattr(m, "lora_A") for m in unet.modules()):
+            return False
+        seen = False
+        for module in unet.modules():
+            if not callable(getattr(module, "fuse_projections", None)) or getattr(
+                module, "fused_projections", False
+            ):
+                continue
+            if getattr(module, "add_q_proj", None) is not None:
+                return False  # the added projections are fused too and never dropped
+            names = (
+                ("to_k", "to_v")
+                if getattr(module, "is_cross_attention", False)
+                else ("to_q", "to_k", "to_v")
+            )
+            if not all(_droppable_projection(module, n) for n in names):
+                return False
+            seen = True
+        return seen
+    except Exception:  # noqa: BLE001 - unreadable: count the copies
+        return False
+
+
+def drop_unfused_projections(unet: Any, logger: Any = None) -> int:
+    """Delete the unfused projections a U-Net QKV fuse left beside ``to_qkv`` / ``to_kv`` (SDXL: 1235 MiB). Kept when
+    a PEFT adapter is attached (it targets them) or the modules carry hooks; ``restore_unfused_projections`` rebuilds
+    them bit-exactly from the fused weights. UNSLOTH_DIFFUSION_DROP_UNFUSED_QKV=0 keeps them."""
+    try:
+        import torch
+
+        plan = _drop_plan(unet)
+        freed = 0
+        for module, names in plan:
+            shapes = []
+            for n in names:
+                p = getattr(module, n)
+                freed += sum(t.numel() * t.element_size() for t in p.parameters())
+                shapes.append((n, p.in_features, p.out_features, p.bias is not None))
+                delattr(module, n)
+            setattr(module, _DROPPED_ATTR, tuple(shapes))
+        if plan and torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        if plan and logger is not None:
+            logger.info(
+                "diffusion.speed: dropped the unfused projections beside the fused QKV on %d attention modules "
+                "(%d MiB)",
+                len(plan),
+                freed >> 20,
+            )
+        return freed
+    except Exception as exc:  # noqa: BLE001 - memory only: a failed drop keeps what is left
+        _warn(logger, "dropping the unfused projections", exc)
+        return 0
+
+
+def restore_unfused_projections(unet: Any) -> int:
+    """Rebuild the projections ``drop_unfused_projections`` deleted, row slices of the fused weights (bit-exact: the
+    fuse concatenated them unchanged). Returns the modules restored."""
+    if unet is None:
+        return 0
+    import torch
+    from torch import nn
+
+    restored = 0
+    for module in unet.modules():
+        shapes = getattr(module, _DROPPED_ATTR, None)
+        if not shapes:
+            continue
+        fused = module.to_kv if getattr(module, "is_cross_attention", False) else module.to_qkv
+        rows = 0
+        for name, fin, fout, has_bias in shapes:
+            lin = nn.Linear(fin, fout, bias = has_bias, device = "meta")
+            with torch.no_grad():
+                grad = bool(fused.weight.requires_grad)
+                lin.weight = nn.Parameter(
+                    fused.weight[rows : rows + fout].clone(), requires_grad = grad
+                )
+                if has_bias:
+                    lin.bias = nn.Parameter(
+                        fused.bias[rows : rows + fout].clone(), requires_grad = grad
+                    )
+            setattr(module, name, lin)
+            rows += fout
+        delattr(module, _DROPPED_ATTR)
+        restored += 1
+    return restored
 
 
 def _warn(logger: Any, what: str, exc: Exception) -> None:
