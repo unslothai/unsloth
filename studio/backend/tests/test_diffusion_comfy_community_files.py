@@ -420,6 +420,7 @@ def test_family_entries():
 
 def test_scheduler_overrides_switch_to_beta_sigmas():
     pytest.importorskip("diffusers")
+    pytest.importorskip("scipy")  # diffusers' beta sigmas need it
     from diffusers import FlowMatchEulerDiscreteScheduler
 
     from core.inference.diffusion_flow_shift import (
