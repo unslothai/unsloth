@@ -1736,6 +1736,12 @@ def _clef_availability(checkpoint, reason: Optional[str]) -> dict:
 
 
 def _systemone_response(request: Request) -> SystemOneSettingsResponse:
+    from core.systemone.native_worker import reuse_found_binary
+    with reuse_found_binary():
+        return _systemone_answer(request)
+
+
+def _systemone_answer(request: Request) -> SystemOneSettingsResponse:
     from pathlib import Path
 
     from core.systemone import catalog, laya_runtime
