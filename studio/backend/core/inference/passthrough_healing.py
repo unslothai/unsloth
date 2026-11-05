@@ -530,7 +530,11 @@ class StreamToolCallHealer:
                 parsed, spans = [], []
             # A call closed inside a wrapper still open (Qwen3.5's <function=...> in <tool_call>):
             # promoting it now would relay the wrapper's tags as text, so wait for the close.
-            if parsed and _inside_open_wrapper(self._buffer, spans[0][0]):
+            if (
+                parsed
+                and len(self._buffer) <= _MAX_HOLD_CHARS
+                and _inside_open_wrapper(self._buffer, spans[0][0])
+            ):
                 return events
             if not parsed:
                 # Its close tags are gate tokens, so a closed gate means no closed span.
