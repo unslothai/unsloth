@@ -30,6 +30,7 @@ def _reset():
         g8._UNLISTED_PROBE,
         g8._UNLISTED_OK,
         g8._UNLISTED_TIMING,
+        g8._UNLISTED_TILE,
     ):
         d.clear()
     g8._UNLISTED_CARDS.clear()
@@ -51,17 +52,36 @@ class _Fake:
         cap,
         probe = True,
         timing = None,
+        race = None,
     ):
-        self.probes, self.timed = [], []
+        self.probes, self.timed, self.raced = [], [], []
         self.timing = timing if timing is not None else {"fused": 10.0, "stock": 20.0}
+        # race: {tile: us} for the race tiles that pass their probe (None: every race tile fails it)
+        self.race = race
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         monkeypatch.setattr(torch.cuda, "get_device_capability", lambda index = None: cap)
         monkeypatch.setattr(g8, "is_rocm_torch", lambda t: False)
         monkeypatch.setattr(g8, "_triton_version_ok", lambda version = None: True)
         monkeypatch.setattr(g8, "_kernels", lambda: object())
         monkeypatch.setattr(g8, "_op", lambda: "op")
-        monkeypatch.setattr(g8, "_probe", lambda index, cfg: self.probes.append(cfg) or probe)
+        monkeypatch.setattr(g8, "_probe", self._probe_fn(probe))
         monkeypatch.setattr(g8, "_unlisted_latency", self._latency)
+        monkeypatch.setattr(g8, "_unlisted_race", self._race)
+
+    def _probe_fn(self, probe):
+        def fn(index, cfg):
+            self.probes.append(cfg)
+            if cfg == g8._FALLBACK_CONFIG:
+                return probe
+            return self.race is not None and cfg in self.race
+
+        return fn
+
+    def _race(self, index, cfgs):
+        self.raced.append(cfgs)
+        if isinstance(self.race, Exception):
+            raise self.race
+        return {cfg: (self.race or {}).get(cfg, 10.0) for cfg in cfgs}
 
     def _latency(self, index, cfg):
         self.timed.append(cfg)
@@ -117,7 +137,9 @@ def test_kill_switches(monkeypatch, env):
 def test_latency_gate(monkeypatch, timing, ok):
     fake = _Fake(monkeypatch, (8, 6), timing = timing)
     assert g8.device_config(0) == (g8._FALLBACK_CONFIG if ok else None)
-    assert fake.probes == [g8._FALLBACK_CONFIG] and fake.timed == [g8._FALLBACK_CONFIG]
+    assert fake.probes[0] == g8._FALLBACK_CONFIG and fake.timed == [g8._FALLBACK_CONFIG]
+    # race tiles are probed only past the latency check
+    assert fake.probes[1:] == (list(g8._UNLISTED_RACE_TILES) if ok else [])
     assert g8._DEVICE_TILES[0] == ()
 
 
@@ -139,14 +161,15 @@ def test_decision_is_cached_per_device_and_the_switch_acts_between_loads(monkeyp
     fake = _Fake(monkeypatch, (8, 6))
     assert g8.device_config(0) == g8._FALLBACK_CONFIG
     assert g8.device_config(0) == g8._FALLBACK_CONFIG
-    assert len(fake.probes) == 1 and len(fake.timed) == 1
+    n = len(fake.probes)
+    assert len(fake.timed) == 1
     monkeypatch.setenv(g8.INT8_GEMM_UNLISTED_ENV, "0")
     assert g8.device_config(0) is None and g8._DEVICE_CFG[0] is None
     monkeypatch.delenv(g8.INT8_GEMM_UNLISTED_ENV)
     assert g8.device_config(0) == g8._FALLBACK_CONFIG
-    assert len(fake.probes) == 1 and len(fake.timed) == 1
+    assert len(fake.probes) == n and len(fake.timed) == 1
     assert g8.device_config(1) == g8._FALLBACK_CONFIG  # another card: its own probe and check
-    assert len(fake.probes) == 2 and len(fake.timed) == 2
+    assert len(fake.probes) == 2 * n and len(fake.timed) == 2
 
 
 @pytest.mark.parametrize("cap", [(8, 9), (10, 0), (7, 5)])
@@ -288,3 +311,65 @@ def test_switch_joins_the_compile_cache_key(monkeypatch):
     assert g8.INT8_GEMM_UNLISTED_ENV not in cc.graph_switches()
     monkeypatch.setenv(g8.INT8_GEMM_UNLISTED_ENV, "0")
     assert cc.graph_switches()[g8.INT8_GEMM_UNLISTED_ENV] == "off"
+
+
+_A100_TILE, _L4_TILE = g8._UNLISTED_RACE_TILES
+
+
+def test_race_tiles_fit_a_99kb_part_and_are_the_listed_tiles():
+    # sm86 / sm87 parts have 99 KB of shared memory per block; a tile over it would only drop out at the probe
+    for bm, bn, bk, _gm, _warps, stages in g8._UNLISTED_RACE_TILES:
+        assert (bm * bk + bk * bn) * (stages - 1) <= 99 * 1024
+    assert set(g8._UNLISTED_RACE_TILES) <= set(g8._ARCH_CONFIG.values())
+
+
+def test_race_keeps_the_fastest_probed_tile(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 9.0, _L4_TILE: 7.0})
+    assert g8.device_config(0) == _L4_TILE
+    assert fake.raced == [(g8._FALLBACK_CONFIG, _A100_TILE, _L4_TILE)]
+    assert g8._UNLISTED_TIMING[0]["tile"] == _L4_TILE and g8._UNLISTED_TIMING[0]["fused"] == 7.0
+    assert g8.device_config(0) == _L4_TILE and len(fake.raced) == 1  # raced once per device
+
+
+def test_race_tie_keeps_the_fallback(monkeypatch):
+    _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 10.0, _L4_TILE: 10.0})
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+
+
+def test_race_times_only_tiles_that_pass_their_probe(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), race = {_A100_TILE: 5.0})
+    assert g8.device_config(0) == _A100_TILE
+    assert fake.raced == [(g8._FALLBACK_CONFIG, _A100_TILE)]
+
+
+def test_no_probed_race_tile_never_races(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6))
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+    assert fake.raced == []
+
+
+def test_failed_race_keeps_the_fallback(monkeypatch):
+    _Fake(monkeypatch, (8, 6), race = RuntimeError("capture failed"))
+    monkeypatch.setattr(g8, "_probe", lambda index, cfg: True)
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+
+
+def test_race_needs_the_latency_check(monkeypatch):
+    fake = _Fake(monkeypatch, (8, 6), timing = {"fused": 30.0, "stock": 20.0}, race = {_L4_TILE: 1.0})
+    assert g8.device_config(0) is None
+    assert fake.raced == []
+
+
+@pytest.mark.parametrize("env", [g8.INT8_GEMM_UNLISTED_ENV, g8.INT8_GEMM_ENV])
+def test_force_never_races(monkeypatch, env):
+    monkeypatch.setenv(env, "1")
+    fake = _Fake(monkeypatch, (8, 6), race = {_L4_TILE: 1.0})
+    assert g8.device_config(0) == g8._FALLBACK_CONFIG
+    assert fake.raced == []
+
+
+@pytest.mark.parametrize("cap", [(8, 0), (8, 9), (12, 0)])
+def test_listed_archs_never_race(monkeypatch, cap):
+    fake = _Fake(monkeypatch, cap, race = {_A100_TILE: 1.0, _L4_TILE: 1.0})
+    assert g8.device_config(0) == g8._ARCH_CONFIG[cap]
+    assert fake.raced == [] and fake.timed == []

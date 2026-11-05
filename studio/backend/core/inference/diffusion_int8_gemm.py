@@ -59,6 +59,13 @@ _ARCH_CONFIG = {
 _FALLBACK_CONFIG = (128, 128, 64, 8, 4, 4)
 # Measured slower than cuBLAS: not probed unless forced.
 _UNLISTED_SKIP = ((10, 0), (10, 3))
+# Unlisted archs that pass the fallback's probe and latency check then race these tiles (the listed archs' own) against
+# it once per device and keep the fastest; each must pass the same bit-exact probe first (a tile that overflows the
+# part's shared memory fails to compile there and drops out).
+_UNLISTED_RACE_TILES = (
+    (128, 128, 128, 8, 4, 3),
+    (256, 128, 128, 8, 8, 3),
+)
 
 # First match wins, bounds inclusive. No L4 rule on purpose: power-capped clocks lose end to end.
 # (major, minor) -> ((N_lo, N_hi, K_lo, K_hi, tile), ...), M >= _SHAPE_MIN_M only.
@@ -586,6 +593,30 @@ def _unlisted_latency(index: int, cfg: tuple) -> dict:
     """{"fused": us, "stock": us} summed over ``_UNLISTED_LATENCY_SHAPES``, each arm captured in a CUDA graph and
     replayed, best of seven interleaved rounds. Stock = cuBLAS ``_int_mm``; its epilogue fuses into the consumer, so
     each arm ends in one read of its output (int32 for stock, bf16 here) standing in for that consumer."""
+    return _graph_latency(
+        index,
+        {
+            "fused": lambda a, w, xs, ws: _launch(a, w, xs, ws, None, cfg).amax(),
+            "stock": lambda a, w, xs, ws: _int_mm_stock(a, w).amax(),
+        },
+    )
+
+
+def _int_mm_stock(a: Any, w: Any) -> Any:
+    import torch
+    return torch._int_mm(a, w.t())
+
+
+def _unlisted_race(index: int, cfgs: tuple) -> dict:
+    """{tile: us} for each tile in ``cfgs``, timed like ``_unlisted_latency`` (interleaved, best of seven)."""
+    fns = {}
+    for cfg in cfgs:
+        fns[cfg] = lambda a, w, xs, ws, cfg = cfg: _launch(a, w, xs, ws, None, cfg).amax()
+    return _graph_latency(index, fns)
+
+
+def _graph_latency(index: int, fns: dict) -> dict:
+    """{name: us} over ``_UNLISTED_LATENCY_SHAPES`` for each ``fns`` arm, captured in a CUDA graph and replayed."""
     import torch
     from .diffusion_cuda_graph import CAPTURE_MODE, _capturing, synchronize_outside_capture
 
@@ -598,10 +629,6 @@ def _unlisted_latency(index: int, cfg: tuple) -> dict:
         xs = torch.full((m,), 1e-3, device = dev, dtype = torch.bfloat16)
         ws = torch.full((n,), 1e-3, device = dev, dtype = torch.bfloat16)
         ops.append((a, w, xs, ws))
-    fns = {
-        "fused": lambda a, w, xs, ws: _launch(a, w, xs, ws, None, cfg).amax(),
-        "stock": lambda a, w, xs, ws: torch._int_mm(a, w.t()).amax(),
-    }
     reps = 2
     graphs = {}
     with torch.cuda.device(dev):
@@ -638,7 +665,8 @@ def _unlisted_latency(index: int, cfg: tuple) -> dict:
 
 def unlisted_config(index: int) -> Optional[tuple]:
     """Unlisted sm80+ card: ``_FALLBACK_CONFIG`` when it passed the bit-exact probe (once per device) and the latency
-    check (once per (device, mode); skipped under force), else None. Outside any trace / capture."""
+    check (once per (device, mode); skipped under force), else None; past the check, the fastest probed tile of
+    ``_unlisted_tile``. Outside any trace / capture."""
     import torch
 
     mode = unlisted_mode()
@@ -660,11 +688,39 @@ def unlisted_config(index: int) -> Optional[tuple]:
                             ok = False
                     _UNLISTED_OK[key] = ok
                 cfg = _FALLBACK_CONFIG if _UNLISTED_OK[key] else None
+                if cfg is not None and mode != "force":
+                    cfg = _unlisted_tile(index)
     except Exception:  # noqa: BLE001
         cfg = None
     _DEVICE_TILES[index] = ()
     _DEVICE_CFG[index] = cfg
     return cfg
+
+
+_UNLISTED_TILE: dict = {}
+
+
+def _unlisted_tile(index: int) -> tuple:
+    """Once per device: ``_FALLBACK_CONFIG`` raced against the ``_UNLISTED_RACE_TILES`` that pass the bit-exact probe;
+    the fastest wins (ties keep the fallback). Any failure keeps the fallback, which already beat cuBLAS."""
+    if index not in _UNLISTED_TILE:
+        best = _FALLBACK_CONFIG
+        try:
+            cands = tuple(
+                t for t in _UNLISTED_RACE_TILES if t != _FALLBACK_CONFIG and _probe(index, t)
+            )
+            if cands:
+                timing = _unlisted_race(index, (_FALLBACK_CONFIG,) + cands)
+                for tile in cands:
+                    if timing[tile] < timing[best]:
+                        best = tile
+                if index in _UNLISTED_TIMING:
+                    _UNLISTED_TIMING[index]["fused"] = round(timing[best], 1)
+                    _UNLISTED_TIMING[index]["tile"] = best
+        except Exception:  # noqa: BLE001 - the fallback stays
+            best = _FALLBACK_CONFIG
+        _UNLISTED_TILE[index] = best
+    return _UNLISTED_TILE[index]
 
 
 # (M, N, K, bias, fp32 scales). Ragged N / K stay on 16: an off-16 probe compiles the spilling variant (see ``_aligned``).
@@ -1365,7 +1421,9 @@ def _swap_on(
             if gemm
             else "keep cuBLAS",
             *torch.cuda.get_device_capability(index),
-            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS)"
+            f" (latency check: {timing['fused']:.0f} vs {timing['stock']:.0f} us cuBLAS"
+            + (f", tile {timing['tile']}" if timing.get("tile") else "")
+            + ")"
             if timing
             else "",
             (
