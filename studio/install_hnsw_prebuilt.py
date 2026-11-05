@@ -174,6 +174,8 @@ def _offline() -> bool:
 def _child_env() -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if k in _CHILD_ENV_KEYS}
     env["PIP_CONFIG_FILE"] = os.devnull
+    # Child output is decoded as UTF-8; make the Python children write it.
+    env["PYTHONIOENCODING"] = "utf-8"
     return env
 
 

@@ -15,6 +15,7 @@ import subprocess
 import sys
 
 import pytest
+from unsloth_pwsh_runner import run_pwsh
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 STACK_PATH = REPO_ROOT / "studio" / "install_python_stack.py"
@@ -214,7 +215,7 @@ def _run_ps1(tmp_path, env = None):
     )
     full_env = {k: v for k, v in os.environ.items() if k != "RAG_VEC_ANN_AUTO_INSTALL"}
     full_env.update(env or {})
-    return subprocess.run(
+    return run_pwsh(
         [pwsh, "-NoProfile", "-Command", script], capture_output = True, text = True, env = full_env
     )
 

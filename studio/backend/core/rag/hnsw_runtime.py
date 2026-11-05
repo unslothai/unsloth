@@ -107,6 +107,14 @@ def _env() -> dict:
     return {k: v for k, v in os.environ.items() if k in keys or k in _PASS_KEYS}
 
 
+try:
+    from utils.child_stdio import utf8_child_env
+except Exception:  # noqa: BLE001
+
+    def utf8_child_env(env: dict) -> dict:
+        return {**env, "PYTHONIOENCODING": "utf-8"}
+
+
 def _hidden():
     try:
         from utils.subprocess_compat import windows_hidden_subprocess_kwargs
@@ -127,7 +135,7 @@ def _run_installer() -> dict:
             encoding = "utf-8",
             errors = "replace",
             timeout = TIMEOUT_S,
-            env = _env(),
+            env = utf8_child_env(_env()),
             **_hidden(),
         ).stdout
     except subprocess.TimeoutExpired:
