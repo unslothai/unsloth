@@ -40,6 +40,8 @@ def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(att, "_ROCM_FLASH_LOCAL", __import__("threading").local(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BUCKETS", {}, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_STORED_MISSES", set(), raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_SEGMENTS_MEMO", {}, raising = False)
+    monkeypatch.setattr(att, "_ROCM_FLASH_TRACED_KEYS", set(), raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_BASELINE", [None], raising = False)
     monkeypatch.setattr(att, "_rocm_flash_probe_fits", lambda device, need: True, raising = False)
     monkeypatch.setattr(att, "_ROCM_FLASH_ROUTED", {})
@@ -2490,3 +2492,30 @@ def test_traced_probe_survives_a_dynamo_restart_of_the_frame(monkeypatch):
     q16 = torch.zeros(1, 17000, 2, 16, dtype = torch.bfloat16)
     assert float(compiled(q16).flatten()[0]) == -1.0
     torch._dynamo.reset()
+
+
+def test_a_new_sdpa_baseline_drops_the_memoized_segments(monkeypatch):
+    # A load that changes the enabled native SDPA kernels clears the verdicts; the traced segments built from the old
+    # verdicts must go with them, or a later trace would bake the old baseline's route into its graph.
+    att._ROCM_FLASH_BUCKETS[("cuda:0", "torch.bfloat16", 32, 2, 16, 4096, 4096, 1)] = True
+    monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: "sdpa-A")
+    att._sync_rocm_flash_baseline()
+    att._ROCM_FLASH_SEGMENTS_MEMO[("stale",)] = ((8192, 4096, True, None),)
+    att._ROCM_FLASH_TRACED_KEYS.add(("cuda:0", "torch.bfloat16", 32, 2, 16, 8192, 8192, 1))
+    monkeypatch.setattr(att, "_native_sdpa_baseline", lambda: "sdpa-B")
+    att._sync_rocm_flash_baseline()
+    assert att._ROCM_FLASH_SEGMENTS_MEMO == {} and att._ROCM_FLASH_TRACED_KEYS == set()
+    assert att._ROCM_FLASH_BUCKETS == {}
+
+
+def test_segments_memo_key_follows_eager_verdicts_not_traced_ones(monkeypatch):
+    args = ("cuda:0", "torch.bfloat16", 2, 16, ((32, 2, 16),), None, 1)
+    k0 = att._rocm_flash_segments_key(args)
+    traced = ("cuda:0", "torch.bfloat16", 32, 2, 16, 8192, 8192, 1)
+    att._ROCM_FLASH_BUCKETS[traced] = True
+    att._ROCM_FLASH_TRACED_KEYS.add(traced)
+    assert (
+        att._rocm_flash_segments_key(args) == k0
+    )  # a traced call's verdict keeps the key (Dynamo restart)
+    att._ROCM_FLASH_BUCKETS[("cuda:0", "torch.bfloat16", 32, 2, 16, 16384, 16384, 1)] = False
+    assert att._rocm_flash_segments_key(args) != k0  # an eager / stored verdict moves it

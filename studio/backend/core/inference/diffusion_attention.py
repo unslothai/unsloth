@@ -973,6 +973,8 @@ def _sync_rocm_flash_baseline() -> None:
         ROCM_FLASH_ADMISSIONS.clear()
         _ROCM_FLASH_BUCKETS.clear()
         _ROCM_FLASH_STORED_MISSES.clear()
+        _ROCM_FLASH_SEGMENTS_MEMO.clear()
+        _ROCM_FLASH_TRACED_KEYS.clear()
         _ROCM_FLASH_BASELINE[0] = current
 
 
@@ -1113,13 +1115,13 @@ def _rocm_flash_traced_reason(
         dtype = getattr(torch, dtype_name.rpartition(".")[2], None)
         if not isinstance(dtype, torch.dtype):
             return "compiled or captured"
-        before = len(_ROCM_FLASH_BUCKETS)
+        before = set(_ROCM_FLASH_BUCKETS)
         try:
             return _rocm_flash_bucket_reason(
                 device, dtype, geometries, q_bucket, kv_bucket, b_bucket
             )
         finally:
-            _ROCM_FLASH_TRACED_ADDED[0] += max(0, len(_ROCM_FLASH_BUCKETS) - before)
+            _ROCM_FLASH_TRACED_KEYS.update(set(_ROCM_FLASH_BUCKETS) - before)
     except Exception:  # noqa: BLE001
         return "compiled or captured"
 
@@ -1128,17 +1130,17 @@ def _rocm_flash_traced_reason(
 # constant-marked segments must answer the second pass as they did the first. A bucket timed by a traced call in
 # between would otherwise turn an untimed segment into a known one and skip the ``_rocm_flash_traced_reason`` call
 # the log expects (SpeculationLogDivergence: Wan2.2 under regional compile on gfx1151 with flash-attn installed).
-# Verdicts a traced call adds do not move the key; stored and eager verdicts do, so later traces see them.
-_ROCM_FLASH_TRACED_ADDED = [0]
+# The memo key is the verdict table minus what traced calls added: stored and eager verdicts, a cleared table (new
+# SDPA baseline) or a swapped one all give a new key, so later traces see them.
+_ROCM_FLASH_TRACED_KEYS: set = set()
 _ROCM_FLASH_SEGMENTS_MEMO: dict = {}
 
 
 def _rocm_flash_segments_key(args: tuple) -> tuple:
-    return (
-        *args,
-        id(_active_rocm_flash_gate()),
-        len(_ROCM_FLASH_BUCKETS) - _ROCM_FLASH_TRACED_ADDED[0],
+    known = frozenset(
+        (k, v) for k, v in _ROCM_FLASH_BUCKETS.items() if k not in _ROCM_FLASH_TRACED_KEYS
     )
+    return (*args, id(_active_rocm_flash_gate()), known)
 
 
 # Traced query lengths are routed by segments up to this many tokens; longer ones guard on their own bucket.
