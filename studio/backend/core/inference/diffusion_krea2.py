@@ -149,8 +149,7 @@ def load_krea2_pipeline(
     check_cancelled: Optional[Callable[[], None]] = None,
     vae = None,
 ):
-    """local_files_only raises rather than fetching a component after the resident pipeline was evicted.
-    ``vae`` is a supplied (ComfyUI ``qwen_image_vae``) module; the base repo's is loaded only without one."""
+    """local_files_only raises rather than fetching a component after the resident pipeline was evicted."""
     check_cancelled = check_cancelled or (lambda: None)
     check_cancelled()
     import diffusers

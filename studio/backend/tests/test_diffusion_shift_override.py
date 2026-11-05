@@ -62,8 +62,7 @@ EXPECTED_NODES = {
     "hidream-i1": SHIFT_NODE_SD3,
     "moss-image": SHIFT_NODE_SD3,
     "chroma": SHIFT_NODE_SD3,  # the template's ModelSamplingAuraFlow is the same time_snr_shift
-    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching, Anima runs its modular
-    # pipeline's scheduler (shift 3, as ComfyUI).
+    # Not offered: Ideogram 4 runs its own mu/std preset, SDXL is not flow matching, Anima keeps its shift 3.
     "anima": None,
     "ideogram-4": None,
     "sdxl": None,

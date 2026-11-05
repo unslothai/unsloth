@@ -27,9 +27,7 @@ FP8_STORAGE_ENV = "UNSLOTH_DIFFUSION_FP8_STORAGE"
 CONVERSION_RECORD_KEY = "unsloth_comfy_conversion"
 
 INT8_TENSORWISE = "int8_tensorwise"
-# ConvRot W4: signed int4 codes packed two per int8 byte (low nibble = even column), one scale per row, under the
-# int8 format's ConvRot. Unpacked, a layer IS an int8_tensorwise ConvRot layer, so it loads as one; Studio's int8
-# runtime then quantizes activations to int8 (ComfyUI: int4), which only narrows the error.
+# Unpacked, a ConvRot W4A4 layer IS an int8_tensorwise ConvRot layer, run with int8 activations (ComfyUI: int4).
 CONVROT_W4A4 = "convrot_w4a4"
 FP8_E4M3 = "float8_e4m3fn"
 FP8_FORMATS = {"float8_e4m3fn": "F8_E4M3", "float8_e5m2": "F8_E5M2"}
@@ -126,7 +124,6 @@ def _w4a4_group(raw: Any) -> int:
 def _w4a4_layer_problem(
     name: str, raw: Any, weight: Optional[dict], header: dict, keys: set
 ) -> Optional[str]:
-    """Why a ``convrot_w4a4`` layer cannot load as int8 ConvRot, or None."""
     params = raw.get("params") if isinstance(raw.get("params"), dict) else {}
     linear = raw.get("linear_dtype", params.get("linear_dtype", "int4"))
     group = _w4a4_group(raw)
@@ -234,8 +231,6 @@ def scan_comfy_quant(path: Optional[str]) -> Optional[ComfyQuantScan]:
             if key.endswith(".scale_weight"):
                 declared.setdefault(key[: -len(".scale_weight")], {"format": fmt})
 
-    # A converter that wrote the weights under the ComfyUI container prefix but declared the layers without it
-    # (seen: Civitai MOSS-Image files): ComfyUI strips the prefix before matching, so match the same layer here.
     for name in [n for n in declared if n + ".weight" not in keys]:
         for prefix in _DECLARATION_PREFIXES:
             if prefix + name + ".weight" in keys and prefix + name not in declared:

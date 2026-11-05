@@ -1494,11 +1494,11 @@ def _generation_chunks(
     *,
     layer_count: Any = None,
 ) -> list:
-    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 runs one image per
-    modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
+    """Per-forward chunks of ``(prompt, seed)`` jobs. Layered: one input per forward. FLUX.3 and Anima run one image
+    per modular call, so each image is its own chunk: every one then gets its own encode, denoise and decode phase, and
     the text-encoder release that comes with entering denoise (one chunk of several images would release it once,
     and the next image's encode would bring it back for the rest of the chunk)."""
-    if layer_count or is_flux3_family(family):
+    if layer_count or is_flux3_family(family) or is_anima_family(family):
         return [[job] for job in jobs]
     return chunk_jobs(jobs, batch_size)
 
@@ -1511,8 +1511,7 @@ def _component_index(
     hf_token: Optional[str],
     local_files_only: bool,
 ) -> dict:
-    """``{component: [library, class]}`` the supplied-component planner fits files against: the base's
-    model_index.json, or for Anima (a modular base without one) its fixed component classes."""
+    """The base's model_index.json components, or Anima's fixed classes (its modular base ships none)."""
     if is_anima_family(fam):
         return {name: [lib, cls] for name, (_folder, lib, cls) in ANIMA_COMPONENT_FOLDERS.items()}
     from .diffusion_comfy_components import read_model_index
@@ -1527,7 +1526,6 @@ def _component_index(
 
 
 def _fixed_component_folders(fam: Any) -> Optional[dict]:
-    """The folder each component of a modular base loads from (FLUX.3, Anima); None reads the manifest."""
     if is_flux3_family(fam):
         return FLUX3_COMPONENT_FOLDERS
     if is_anima_family(fam):
@@ -1536,7 +1534,6 @@ def _fixed_component_folders(fam: Any) -> Optional[dict]:
 
 
 def _modular_companions(fam: Any) -> Optional[tuple[str, ...]]:
-    """Companion folders a modular base supplies beside a single-file denoiser; None reads the manifest."""
     if is_flux3_family(fam):
         return FLUX3_COMPONENTS
     if is_anima_family(fam):
@@ -5139,8 +5136,7 @@ class DiffusionBackend:
         # Too-old diffusers matters only for a diffusers build (not native sd.cpp); imported here since the router imports this module's siblings.
         from .diffusion_engine_router import family_buildable_here
 
-        # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check. A
-        # .safetensors single file (ComfyUI / Civitai) loads on diffusers through the in-tree transformer.
+        # MOSS-Image GGUFs are sd.cpp only: refuse before eviction and before the diffusers class check.
         if getattr(fam, "native_transformer_files_only", False) and (
             (
                 kind == "single_file"
@@ -9673,7 +9669,6 @@ class DiffusionBackend:
                                 _install_gguf_dim_restore(logger)
                             anima_conditioner = None
                             if is_anima_family(fam):
-                                # One file holds the DiT and the text conditioner (LLM adapter); configs from the base.
                                 from .diffusion_anima import load_anima_single_file
                                 transformer, anima_conditioner = load_anima_single_file(
                                     single_file_path,
@@ -9811,8 +9806,6 @@ class DiffusionBackend:
                                 )
                             elif is_anima_family(fam):
                                 from .diffusion_anima import load_anima_pipeline
-
-                                # Supplied ComfyUI text_encoders / vae files replace the base repo's.
                                 anima_supplied = supplied_component_pipe_kwargs(
                                     fetch_base,
                                     dtype = dtype,

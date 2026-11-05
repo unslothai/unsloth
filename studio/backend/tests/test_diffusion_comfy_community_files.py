@@ -143,6 +143,129 @@ def test_anima_refuses_a_quantized_or_adapterless_file():
         split_anima_checkpoint({k: v for k, v in state.items() if "llm_adapter" not in k})
 
 
+# diffusers -> Cosmos-Predict2 names: diffusers' converter renames, undone in reverse order.
+_TO_COSMOS = (
+    ("proj_out", "final_layer.linear"),
+    ("norm_out.linear_2", "final_layer.adaln_modulation.2"),
+    ("norm_out.linear_1", "final_layer.adaln_modulation.1"),
+    ("patch_embed.proj", "x_embedder.proj.1"),
+    ("ff.net.2", "mlp.layer2"),
+    ("ff.net.0.proj", "mlp.layer1"),
+    ("norm_k", "k_norm"),
+    ("norm_q", "q_norm"),
+    ("to_out.0", "output_proj"),
+    ("to_v", "v_proj"),
+    ("to_k", "k_proj"),
+    ("to_q", "q_proj"),
+    ("attn2", "cross_attn"),
+    ("attn1", "self_attn"),
+    ("norm3.linear_2", "adaln_modulation_mlp.2"),
+    ("norm3.linear_1", "adaln_modulation_mlp.1"),
+    ("norm2.linear_2", "adaln_modulation_cross_attn.2"),
+    ("norm2.linear_1", "adaln_modulation_cross_attn.1"),
+    ("norm1.linear_2", "adaln_modulation_self_attn.2"),
+    ("norm1.linear_1", "adaln_modulation_self_attn.1"),
+    ("transformer_blocks", "blocks"),
+    ("time_embed.norm", "t_embedding_norm"),
+    ("time_embed.t_embedder", "t_embedder.1"),
+)
+
+
+def _tiny_anima(tmp_path):
+    from diffusers import AnimaTextConditioner, CosmosTransformer3DModel
+
+    torch.manual_seed(0)
+    transformer = CosmosTransformer3DModel(
+        in_channels = 4,
+        out_channels = 4,
+        num_attention_heads = 2,
+        attention_head_dim = 16,
+        num_layers = 2,
+        mlp_ratio = 2.0,
+        text_embed_dim = 16,
+        adaln_lora_dim = 4,
+        max_size = (2, 8, 8),
+        patch_size = (1, 2, 2),
+        rope_scale = (1.0, 1.0, 1.0),
+        concat_padding_mask = True,
+        extra_pos_embed_type = None,
+    )
+    conditioner = AnimaTextConditioner(
+        source_dim = 16,
+        target_dim = 16,
+        model_dim = 16,
+        num_layers = 1,
+        num_attention_heads = 2,
+        target_vocab_size = 32,
+        min_sequence_length = 8,
+    )
+    base = tmp_path / "base"
+    transformer.save_config(base / "transformer")
+    conditioner.save_config(base / "text_conditioner")
+    return str(base), transformer, conditioner
+
+
+def _comfy_layout(transformer, conditioner) -> dict:
+    state = {}
+    for key, value in transformer.state_dict().items():
+        for new, old in _TO_COSMOS:
+            key = key.replace(new, old)
+        state["net." + key] = value
+    for key, value in conditioner.state_dict().items():
+        state["net.llm_adapter." + key] = value
+    state["net.pos_embedder.seq"] = torch.zeros(1)
+    return state
+
+
+def test_anima_single_file_loads_on_meta_and_matches_its_weights(tmp_path, monkeypatch):
+    import core.inference.diffusion_single_file_converters as converters
+    from core.inference.diffusion_anima import load_anima_single_file, split_anima_checkpoint
+
+    base, transformer, conditioner = _tiny_anima(tmp_path)
+    comfy = _comfy_layout(transformer, conditioner)
+    assert set(split_anima_checkpoint(dict(comfy))[0]) == set(transformer.state_dict())
+    path = _save(tmp_path / "anima.safetensors", comfy)
+
+    # Built on meta: no fp32 model is initialised before the file's tensors arrive.
+    init_devices = set()
+    reset = torch.nn.Linear.reset_parameters
+
+    def _reset(self):
+        init_devices.add(self.weight.device.type)
+        return reset(self)
+
+    charged = []
+    monkeypatch.setattr(torch.nn.Linear, "reset_parameters", _reset)
+    monkeypatch.setattr(converters, "charge_host_ram", charged.append)
+    loaded, loaded_conditioner = load_anima_single_file(
+        path, base, torch.bfloat16, local_files_only = True
+    )
+    assert init_devices == {"meta"}
+    # Each fp32 -> bf16 cast is charged to the host RAM budget before it allocates.
+    assert sum(charged) == 2 * sum(v.numel() for k, v in comfy.items() if "pos_embedder" not in k)
+    for model, ref in ((loaded, transformer), (loaded_conditioner, conditioner)):
+        assert not model.training
+        got = model.state_dict()
+        assert set(got) == set(ref.state_dict())
+        for key, value in ref.state_dict().items():
+            assert got[key].dtype == torch.bfloat16
+            assert torch.equal(got[key], value.to(torch.bfloat16)), key
+    # A buffer built at init (the rotary inv_freq) stays as built, as from_pretrained leaves it.
+    for (name, buf), (_, ref_buf) in zip(
+        loaded_conditioner.named_buffers(), conditioner.named_buffers()
+    ):
+        assert buf.dtype == ref_buf.dtype and torch.equal(buf, ref_buf), name
+
+
+def test_every_anima_image_is_its_own_generation_chunk():
+    # One modular call per image (as FLUX.3), so each image is its own chunk.
+    from core.inference.diffusion import _generation_chunks
+    from core.inference.diffusion_families import detect_family
+
+    jobs = [("a", 1), ("a", 2), ("b", 3)]
+    assert _generation_chunks(detect_family("", override = "anima"), jobs, 1) == [[j] for j in jobs]
+
+
 def _shapes(keys) -> dict:
     return {k: [4, 4] for k in keys}
 

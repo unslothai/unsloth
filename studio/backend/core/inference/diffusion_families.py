@@ -95,10 +95,9 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
-    # False for a family with no GGUF loader on either engine (Anima: its single files hold the DiT and the text
-    # conditioner, which only the safetensors loader splits), so the picker never offers a GGUF the load refuses.
+    # False: no GGUF loader on either engine (Anima), so the picker hides its GGUFs and the load refuses them.
     gguf_loadable: bool = True
-    # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
+    # Transformer-only GGUFs load only via sd.cpp (MOSS-Image); its .safetensors single files load on diffusers.
     native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
@@ -140,8 +139,7 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
-    # Scheduler config keys set after the ComfyUI shift, for a family whose template samples on another spacing
-    # (Chroma: ComfyUI's "beta" schedule = use_beta_sigmas). Empty keeps the shipped spacing.
+    # Scheduler config set after the ComfyUI shift (Chroma: ComfyUI's "beta" schedule is use_beta_sigmas).
     scheduler_overrides: tuple[tuple[str, Any], ...] = field(default_factory = tuple)
     # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
     comfy_shift_node: Optional[str] = None
@@ -1204,18 +1202,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
         fp16_incompatible = True,
     ),
-    # Chroma (lodestones): an 8.9B FLUX.1-schnell derivative with real CFG, T5-XXL only (no CLIP) and the FLUX.1 VAE.
-    # ComfyUI's template: 26 steps, CFG 3.5, ModelSamplingAuraFlow shift 1 on the "beta" schedule. Shift 1 needs the beta
-    # spacing: on the linear one it renders soft, washed out and often letterboxed (and the shipped shift 3 still
-    # letterboxes some prompts), so both are set.
+    # Chroma: ComfyUI's template runs shift 1 on the "beta" schedule; shift 1 on the linear spacing renders washed out
+    # and letterboxed, and the shipped shift 3 still letterboxes some prompts, so both are set.
     DiffusionFamily(
         name = "chroma",
         comfy_shift_node = "sd3",
         label = "Chroma",
-        # Quantized activations drift Chroma. Same seed against a plain diffusers render of the same weights, mean
-        # |diff| / 255: fp8 W8A8 16.05 vs 3.53 with it off (and 2 of 6 seeds letterboxed, none without); int8 W8A8 on a
-        # GGUF 16.06 vs 4.40. Every activation-quantizing scheme is denied, so fp8 and GGUF weights widen to bf16
-        # (ComfyUI's manual cast) and no load re-quantizes the denoiser.
+        # Quantized activations drift Chroma from a bf16 render (fp8 letterboxes some seeds): every
+        # activation-quantizing scheme is denied, so fp8 and GGUF weights widen to bf16 (ComfyUI's manual cast).
         profile = FamilyProfile(scheme_deny = frozenset({"fp8", "int8", "nvfp4", "mxfp8"})),
         pipeline_class = "ChromaPipeline",
         transformer_class = "ChromaTransformer2DModel",
@@ -1225,9 +1219,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         aliases = ("chroma1", "chroma1-hd", "chroma-hd"),
         fp16_incompatible = True,
     ),
-    # Anima (CircleStone Labs): a Cosmos-Predict2 DiT driven by a Qwen3-0.6B encoder through an LLM adapter, on the
-    # Qwen-Image VAE. diffusers ships modular blocks only; diffusion_anima wraps them. A ComfyUI / Civitai single file
-    # carries the DiT and the adapter; the 2.9B community expansion is the same layout with 40 blocks.
+    # Anima: a Cosmos-Predict2 DiT, an LLM adapter over Qwen3-0.6B and the Qwen-Image VAE (diffusion_anima).
     DiffusionFamily(
         name = ANIMA_FAMILY_NAME,
         label = "Anima",
@@ -2178,8 +2170,7 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
-    # Anima: the ComfyUI Base v1 template runs 30 steps at CFG 4. Keyed by the base repo every Anima file resolves to:
-    # a bare "anima" key would match Animagine XL (an SDXL checkpoint) file names first.
+    # Anima's ComfyUI template, keyed by base repo: a bare "anima" key would match Animagine XL (SDXL) files first.
     ("circlestone-labs/anima", 30, 4.0),
     # Chroma: the ComfyUI Chroma1-HD template (26 steps, CFG 3.5).
     ("chroma", 26, 3.5),
