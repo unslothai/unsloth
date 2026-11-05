@@ -56,6 +56,13 @@ def pick_default_metric(metrics: list) -> str:
     for candidate in _DEFAULT_METRIC_PRIORITY:
         if candidate in names:
             return candidate
+    # A task's own filter (MMLU-Pro's "exact_match,custom-extract", BBH's "exact_match,get-answer"):
+    # the same metric families in the same order, under whatever filter the task names.
+    families = dict.fromkeys(c.split(",", 1)[0] for c in _DEFAULT_METRIC_PRIORITY)
+    for family in families:
+        found = sorted(n for n in names if isinstance(n, str) and n.split(",", 1)[0] == family)
+        if found:
+            return found[0]
     return ""
 
 

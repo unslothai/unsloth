@@ -678,3 +678,21 @@ def test_tokenize_reaches_the_slot_the_request_routes_to(monkeypatch):
     res = TestClient(app).post("/v1/tokenize", json = {"model": "B", "content": "hi"})
     assert res.status_code == 200, res.text
     assert seen == ["http://b.invalid/tokenize"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # MMLU-Pro and BBH CoT at the pinned lm-eval revision.
+        "exact_match,custom-extract",
+        "exact_match,get-answer",
+    ],
+)
+def test_a_task_specific_filter_still_heads_the_run(name):
+    metrics = [
+        {"name": name, "score": 0.75},
+        {"name": "exact_match_stderr,get-answer", "score": 0.1},
+    ]
+    assert pick_default_metric(metrics) == name
+    # Exact names keep their priority over a family match.
+    assert pick_default_metric([*metrics, {"name": "acc_norm", "score": 0.5}]) == "acc_norm"
