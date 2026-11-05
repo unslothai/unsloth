@@ -138,8 +138,7 @@ def test_kron_adapter_row_slice_for_a_fused_qkv_factor():
 
 
 def test_peft_loads_around_an_existing_lokr_wrapper():
-    """A plain LoRA added after a LoKR on the same layer: PEFT injects into the bare Linear, and the LoKR wrapper is put
-    back around the PEFT layer."""
+    """A LoRA added after a LoKR on one layer: PEFT injects into the bare Linear, then the wrapper goes back on."""
     pytest.importorskip("peft")
     from core.inference.diffusion_torchao_patches import install_peft_torchao_dispatch_guard
 
@@ -174,9 +173,8 @@ def test_peft_loads_around_an_existing_lokr_wrapper():
 
 
 def test_an_embedding_lokr_is_refused_at_load(tmp_path):
-    """ComfyUI's trainer writes LoKR for every weighted module, Anima's ``llm_adapter.embed`` table included. Its 2-D
-    weight passes the shape check, but the wrapper's delta takes dense features, so the file must fail at load rather
-    than on the first render."""
+    """ComfyUI's trainer writes LoKR for Anima's ``llm_adapter.embed`` table too; ``KronLinear`` takes dense features,
+    not token ids, so the file fails at load instead of on the first render."""
     conversion = pytest.importorskip("diffusers.loaders.lora_conversion_utils")
     if not hasattr(conversion, "_convert_non_diffusers_anima_lora_to_diffusers"):
         pytest.skip("this diffusers has no Anima LoRA converter")
@@ -230,9 +228,8 @@ def test_moss_and_anima_have_a_lora_loader():
 
 @pytest.mark.parametrize("use_stream", [False, True])
 def test_lokr_attached_under_group_offload_moves_with_its_group(tmp_path, use_stream):
-    """A LoKR file applied to a transformer that already streams through diffusers group offload (Studio attaches
-    adapters at generate time): the offload groups are rebuilt, so the factors onload with their block, and unloading
-    rebuilds them again."""
+    """A LoKR attached at generate time to a group-offloaded transformer: the groups are rebuilt, so the factors onload
+    with their block, and again on unload."""
     if not torch.cuda.is_available():
         pytest.skip("needs CUDA")
     from diffusers.hooks import apply_group_offloading

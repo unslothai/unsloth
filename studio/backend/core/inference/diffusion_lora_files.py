@@ -1,20 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""ComfyUI / kohya LoRA files on diffusers pipelines.
+"""ComfyUI / kohya LoRA and LyCORIS LoKR files on the Anima, Krea 2 and MOSS-Image diffusers pipelines.
 
-Community adapters are written for ComfyUI's loader, which reads conventions diffusers' converters do not:
-
-- a per-module ``.alpha`` scale (strength = alpha / rank), and ``lora_down`` / ``lora_up`` names;
-- an Anima embedding adapter (``llm_adapter.embed``) stored as a Linear pair;
-- MOSS-Image adapters named after the reference layout, including ComfyUI's fused ``proj.qkv``;
-- LyCORIS LoKR (``lokr_w1`` / ``lokr_w2``), a Kronecker product rather than a low-rank pair.
-
-Plain LoRAs are normalized to the ``lora_A`` / ``lora_B`` layout each family's diffusers loader takes. LoKR modules
-are applied by a ``KronLinear`` wrapper adding ``scale * x @ kron(w1, w2).T`` without ever building the dense
-delta, the same arithmetic as ComfyUI's ``LokrAdapter``. Both kinds share one adapter-name space, so
-:func:`set_adapter_weights` and :func:`unload_adapters` stand in for diffusers' ``set_adapters`` /
-``unload_lora_weights`` wherever Studio changes the selection."""
+LoKR runs through ``KronLinear`` (``scale * x @ kron(w1, w2).T`` without the dense delta, as ComfyUI's ``LokrAdapter``).
+Both kinds share one adapter-name space: :func:`set_adapter_weights` / :func:`unload_adapters` replace diffusers'
+``set_adapters`` / ``unload_lora_weights``."""
 
 from __future__ import annotations
 
@@ -38,7 +29,6 @@ _LOKR_SUFFIXES = (
     "lokr_w2_b",
     "lokr_t2",
 )
-# Families whose diffusers LoRA path needs this normalization (the others keep diffusers' own reading of the file).
 NORMALIZED_FAMILIES = ("anima", "krea-2", "moss-image")
 
 
@@ -62,8 +52,7 @@ def _lokr_stem(key: str) -> Optional[str]:
 
 
 def split_lokr(state: dict) -> tuple[dict, dict]:
-    """``(lokr, rest)``: LoKR tensors grouped by module stem, and every other tensor. A ``.alpha`` goes with its LoKR
-    module when that module is LoKR."""
+    """``(lokr, rest)``: LoKR tensors by module stem (each with its ``.alpha``), and every other tensor."""
     lokr: dict[str, dict] = {}
     for key, value in state.items():
         stem = _lokr_stem(key)
@@ -81,8 +70,7 @@ def split_lokr(state: dict) -> tuple[dict, dict]:
 
 
 def normalize_lora(state: dict, family: Optional[str]) -> dict:
-    """Plain LoRA tensors in the ``diffusion_model.<module>.lora_A/B.weight`` layout diffusers' converters read, with
-    ``.alpha`` folded into ``lora_B`` (ComfyUI: ``strength * alpha / rank``)."""
+    """Plain LoRA tensors as ``lora_A`` / ``lora_B``, ``.alpha`` folded into ``lora_B`` like ComfyUI (alpha / rank)."""
     import torch
 
     renamed: dict = {}
@@ -157,12 +145,10 @@ def _kron_delta(x: Any, w1: Any, w2: Any, rows: Optional[tuple[int, int]]) -> An
 def _module_class():
     from torch import nn
     class KronLinear(nn.Module):
-        """A Linear plus LoKR deltas, swapped in for the Linear the way a PEFT LoRA layer is. A wrapper rather than a
-        forward hook: the fused paths that call a plain Linear's weights directly (MOSS-Image's int8 runner, the shared
-        int8 GEMM) step aside for any non-Linear module, as they do for PEFT, and a compiled forward always traces it.
-        Each adapter is a slot of non-persistent buffers (``w1``, ``w2`` and a 0-d ``scale`` written in place, so a
-        compiled build or a CUDA graph reads a new weight without retracing); the names are the same on every layer, so
-        the repeated blocks a regional compile reuses trace to the same code."""
+        """A Linear plus LoKR deltas, swapped in like a PEFT LoRA layer: a forward hook would be skipped by the fused
+        int8 paths that read a plain Linear's weights, and dropped by MOSS-Image's compiled forward. Each adapter's 0-d
+        ``scale`` buffer is filled in place, so compiled code and CUDA graphs read a new weight without retracing;
+        buffer names repeat on every layer, so a regional compile reuses one trace."""
 
         def __init__(self, base_layer):
             super().__init__()
@@ -214,8 +200,6 @@ def _parent_of(root: Any, module: Any) -> tuple[Any, str]:
 
 
 class KronAdapter:
-    """One adapter's slot on one :class:`KronLinear` (created around the layer on first use)."""
-
     def __init__(
         self,
         root: Any,
@@ -315,7 +299,6 @@ def _base_layer(module: Any) -> Any:
 def _lokr_targets(
     pipe: Any, stem: str, family: Optional[str]
 ) -> list[tuple[Any, Any, Optional[tuple[int, int]]]]:
-    """``[(component, module, row slice)]`` the file's module ``stem`` maps to on ``pipe``."""
     key = _strip(stem)
     if family == "krea-2":
         from .diffusion_single_file_converters import krea2_checkpoint_to_diffusers
@@ -381,8 +364,7 @@ def _attach_lokr(pipe: Any, name: str, lokr: dict, family: Optional[str]) -> int
 
 
 def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None:
-    """Load one adapter file under ``name``: plain LoRA tensors through ``pipe.load_lora_weights`` (normalized for
-    :data:`NORMALIZED_FAMILIES`), LoKR modules as :class:`KronAdapter` slots on a ``KronLinear`` wrapper."""
+    """One file under ``name``: plain LoRA via ``pipe.load_lora_weights``, LoKR modules as ``KronLinear`` slots."""
     if family not in NORMALIZED_FAMILIES:
         pipe.load_lora_weights(path, adapter_name = name)
         return
@@ -392,8 +374,7 @@ def load_adapter(pipe: Any, path: str, name: str, family: Optional[str]) -> None
     if not any(".lora_" in k for k in plain):
         plain = {}
     if plain:
-        # PEFT wraps only the Linears it knows: take earlier LoKR wrappers out while it injects, then back around
-        # whatever now sits at each path (a PEFT layer, when the same layer gained a LoRA).
+        # PEFT injects only into bare Linears: unwrap LoKR while it runs, then rewrap whatever sits there now.
         wrappers = _unwrap_kron(pipe)
         try:
             pipe.load_lora_weights(plain, adapter_name = name)
@@ -421,9 +402,8 @@ def _kron_roots(pipe: Any) -> list:
 
 
 def _refresh_group_offload(roots: list) -> None:
-    """Re-apply group offloading on ``roots``, as diffusers does after injecting or removing PEFT layers: the offload
-    groups list their tensors when applied, so LoKR buffers registered since would stay on the host, and dropped ones
-    would leave stale entries. A component without group offloading is unchanged."""
+    """Re-apply group offloading on ``roots``, as diffusers does after PEFT injection: groups list their tensors when
+    applied, so LoKR buffers added since would stay on the host, and dropped ones would leave stale entries."""
     if not roots:
         return
     from diffusers.hooks.group_offloading import _maybe_remove_and_reapply_group_offloading
@@ -458,8 +438,7 @@ def kron_names(pipe: Any) -> tuple[str, ...]:
 
 
 def set_adapter_weights(pipe: Any, names: list, weights: list) -> None:
-    """``pipe.set_adapters`` across both kinds: LoKR slots take their weight directly; PEFT adapters go through
-    diffusers (a name that is LoKR-only has no PEFT adapter to set)."""
+    """``pipe.set_adapters`` for both kinds; a LoKR-only name has no PEFT adapter to set."""
     set_kron_weights(pipe, dict(zip(names, weights)))
     kron_only = pipe.__dict__.get(KRON_ONLY_ATTR, set())
     pairs = [(n, w) for n, w in zip(names, weights) if n not in kron_only]
@@ -468,7 +447,6 @@ def set_adapter_weights(pipe: Any, names: list, weights: list) -> None:
 
 
 def kron_only_selection(pipe: Any) -> bool:
-    """Whether every adapter in ``pipe._unsloth_loras`` is LoKR-only, so every scale is a tensor read at run time."""
     names = [entry[0] for entry in getattr(pipe, "_unsloth_loras", ()) or ()]
     kron_only = pipe.__dict__.get(KRON_ONLY_ATTR, set())
     return bool(names) and all(name in kron_only for name in names)
@@ -482,7 +460,6 @@ def set_kron_weights(pipe: Any, weights: dict) -> None:
 
 
 def unload_adapters(pipe: Any) -> None:
-    """``pipe.unload_lora_weights`` plus every LoKR wrapper."""
     roots = _kron_roots(pipe)
     for adapters in pipe.__dict__.pop(KRON_ATTR, {}).values():
         for adapter in adapters:

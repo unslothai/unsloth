@@ -989,15 +989,14 @@ def _set_pinned_lora_scales(pipe: Any, weights: dict) -> bool:
     pinned = getattr(pipe, _PINNED_LORA_SCALES_ATTR, None)
     if not pinned:
         if lora_files.kron_only_selection(pipe):
-            # LoKR scales are device tensors already, so a LoKR-only bake keeps its graphs with no PEFT pin. A
-            # CFG-parallel replica holds copies of them, so it is rebuilt.
+            # LoKR scales are device tensors (no PEFT pin needed); the CFG replica holds copies, so it is rebuilt.
             lora_files.set_kron_weights(pipe, weights)
             invalidate_cfg_replica(pipe, "the LoKR weights changed")
             return True
         return False
     import torch
 
-    # LoKR adapters keep their scale as a tensor already; written here so this path covers every baked adapter.
+    # LoKR scales too, so this path covers every baked adapter.
     lora_files.set_kron_weights(pipe, weights)
 
     for module, adapter, _base in pinned:
@@ -10236,9 +10235,8 @@ class DiffusionBackend:
                     split_expected = _layer_split_expected(pipe, plan)
                     # A torchao (or torchao-free resident) int8 DiT must be compiled: eager is ~30x slower, losing to GGUF.
                     if comfy_compile and _has_active_lora(loras):
-                        # A ComfyUI-quantized file is already int8 / fp8, so its adapters attach here, before the
-                        # compile, as a quantized build's do before quantize_: weight changes then run on the compiled
-                        # build (pinned scales), and only a different adapter set needs a reload.
+                        # A ComfyUI int8 / fp8 file bakes its adapters before the compile, as a quantized build does
+                        # before quantize_: weight changes write pinned scales; a new adapter set needs a reload.
                         baked = self._resolve_lora_set(
                             [(i, w) for (i, w) in loras if w != 0],
                             family = getattr(fam, "name", None),

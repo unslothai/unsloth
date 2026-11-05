@@ -1076,8 +1076,7 @@ def test_diffusers_weight_change_falls_back_to_reload_when_set_adapters_fails(
 
 @pytest.mark.parametrize("baked", [True, False])
 def test_a_lokr_only_weight_change_keeps_the_cuda_graphs(monkeypatch, tmp_path, baked):
-    """LoKR scales are device tensors read at run time, so a LoKR-only strength change (disabling it included) writes
-    them in place and leaves the captured graphs alone; the CFG-parallel replica, which holds copies, is dropped."""
+    """A LoKR-only strength change (or disable) writes scale tensors in place: graphs kept, CFG replica dropped."""
     import threading
 
     from core.inference import diffusion as diffusion_mod
