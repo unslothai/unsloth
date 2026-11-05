@@ -363,6 +363,12 @@ test("card text with long unclosed macros and tags stays linear", () => {
   assert.equal(tidyRoleplayDisplay("<stats>\nok\n</stats>"), "\nok\n");
 });
 
+test("names with $ patterns are inserted literally", () => {
+  const ctx = { char: "$'", user: "A$&B", now: new Date(0), group: [] };
+  assert.equal(applyMacros("<BOT> {{char}} <USER> {{user}}", ctx), "$' $' A$&B A$&B");
+  assert.equal(applyMacros("<BOT>".repeat(16_000), ctx).length, 32_000);
+});
+
 test("lorebook keys split on commas, except inside a regex key", () => {
   assert.deepEqual(parseKeyList(" sword, /a{2,4}/i , /[,/]x/,blade ,, "), ["sword", "/a{2,4}/i", "/[,/]x/", "blade"]);
 });

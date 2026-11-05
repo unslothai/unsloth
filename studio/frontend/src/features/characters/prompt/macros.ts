@@ -58,7 +58,10 @@ export function applyMacros(text: string, context: MacroContext): string {
   const now = context.now ?? new Date();
   const random = context.random ?? Math.random;
   const group = context.group ?? [context.char];
-  let out = stripComments(text).replace(/<BOT>/gi, context.char).replace(/<USER>/gi, context.user);
+  // Names go in through callbacks: as replacement strings, "$&" or "$'" in a name would expand.
+  let out = stripComments(text)
+    .replace(/<BOT>/gi, () => context.char)
+    .replace(/<USER>/gi, () => context.user);
   out = out.replace(/\{\{([^{}]*)\}\}/g, (whole, inner: string) => {
     const raw = inner.trim();
     const lower = raw.toLowerCase();
@@ -116,5 +119,5 @@ export function applyMacros(text: string, context: MacroContext): string {
 
 /** Only the name macros, for text that must read the same on every send. */
 export function applyNameMacros(text: string, char: string, user: string): string {
-  return text.replace(/\{\{\s*char\s*\}\}|<BOT>/gi, char).replace(/\{\{\s*user\s*\}\}|<USER>/gi, user);
+  return text.replace(/\{\{\s*char\s*\}\}|<BOT>/gi, () => char).replace(/\{\{\s*user\s*\}\}|<USER>/gi, () => user);
 }
