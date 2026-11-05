@@ -11166,14 +11166,7 @@ def skip_checkpointing(model, layers = 0):
     return chosen
 
 
-from .._gc_kwargs import (
-    _apply_every_n_layers,
-    _OFFLOADING_CHECKPOINT_SHIMS,
-    _checkpoint_offloads,
-    _GC_KWARGS_WARNED,
-    _gc_kwargs_note,
-    patch_gradient_checkpointing_enable_kwargs,
-)
+from .._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
 
 patch_gradient_checkpointing_enable_kwargs()
 
