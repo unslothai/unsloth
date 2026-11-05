@@ -7888,8 +7888,7 @@ def _load_probe_memo_scope():
 
 
 def _companion_repo_files(hf_repo: str, hf_token: Optional[str]) -> list[str]:
-    """Listing shared by one load's back-to-back companion lookups until a companion download
-    starts; failures are never kept, so each lookup still retries."""
+    """One load's companion lookups share a listing until a download; failures are never kept."""
     from huggingface_hub import list_repo_files
 
     store = getattr(_LOAD_PROBE_STATE, "companion_listings", None)
