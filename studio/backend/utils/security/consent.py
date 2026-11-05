@@ -20,13 +20,9 @@ from utils.security.remote_code_scan import (
     CRITICAL,
     HIGH,
     MEDIUM,
-    _NOT_READ,
     RemoteCodeUnscannable,
-    _config_read_key,
-    _remember_absent,
-    _remember_config,
-    _remembered_config,
     config_declares_auto_map,
+    hub_config_path,
     remote_code_config_paths,
     remote_code_fingerprint,
     repo_remote_code_files,
@@ -154,40 +150,15 @@ def _load_remote_code_configs(
                     configs.append(json.loads(p.read_text(encoding = "utf-8-sig")))
             return configs
 
-        from huggingface_hub import hf_hub_download
-        from hub.utils.hf_tokens import anonymous_retrying
-
-        hf_hub_download = anonymous_retrying(hf_hub_download)
-        from huggingface_hub.utils import EntryNotFoundError
-        from utils.hf_cache_settings import active_hf_hub_cache
-        from utils.hf_probe import hf_file_definitely_absent
-
         configs = []
         for name in remote_code_config_paths(load_subdirs):
-            read_key = _config_read_key(model_name, name, hf_token)
-            p = _remembered_config(read_key)
-            if p is None:
-                continue
-            if p is _NOT_READ:
-                # Probe optional configs without caching 404s; other failures still fail closed.
-                if hf_file_definitely_absent(model_name, name, token = hf_token):
-                    _remember_config(read_key, None)
-                    continue
-                try:
-                    p = hf_hub_download(
-                        repo_id = model_name,
-                        filename = name,
-                        token = hf_token,
-                        cache_dir = active_hf_hub_cache(),
-                    )
-                except EntryNotFoundError as exc:
-                    _remember_absent(read_key, exc)
-                    continue
-                except Exception:
-                    # Transient/auth failure is not "absent" -> fail closed to "unknown" so the caller scans.
-                    return None
-                _remember_config(read_key, p)
-            configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
+            try:
+                p = hub_config_path(model_name, name, hf_token)
+            except Exception:
+                # Transient/auth failure is not "absent" -> fail closed to "unknown" so the caller scans.
+                return None
+            if p is not None:
+                configs.append(json.loads(Path(p).read_text(encoding = "utf-8-sig")))
         # Every config was read or a genuine 404 -> an empty list is a definitive "no auto_map".
         return configs
     except Exception as exc:
