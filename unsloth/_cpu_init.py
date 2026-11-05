@@ -22,6 +22,11 @@ DEVICE_COUNT = 0
 
 install_cpu_training_defaults()
 
+# Same every_n_layers / offload router the GPU route installs from models/_utils.py.
+from ._gc_kwargs import patch_gradient_checkpointing_enable_kwargs
+
+patch_gradient_checkpointing_enable_kwargs()
+
 print(
     f"Unsloth {__version__}: no GPU found, training on CPU ({__import__('platform').machine()}, "
     f"{torch.get_num_threads()} threads, bfloat16 = {cpu_bf16_supported()}). CPU training is much "
