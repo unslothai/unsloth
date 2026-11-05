@@ -35,6 +35,14 @@ def _fresh(monkeypatch):
     hnsw_runtime.reset()
 
 
+def _undo(monkeypatch):
+    """monkeypatch.undo() also reverts _fresh's env (tests/conftest.py sets RAG_VEC_ANN_AUTO_INSTALL=0)."""
+    monkeypatch.undo()
+    monkeypatch.setenv("RAG_VEC_ANN_MIN_ROWS", "50")
+    monkeypatch.setenv("RAG_VEC_CACHE", "1")
+    monkeypatch.delenv("RAG_VEC_ANN_AUTO_INSTALL", raising = False)
+
+
 def _settle(timeout = 10.0):
     end = time.monotonic() + timeout
     while hnsw_runtime._inflight and time.monotonic() < end:
@@ -110,7 +118,7 @@ def test_the_fetch_landing_moves_a_waiting_scope_to_hnsw_without_a_write(
     assert scanned and not vec_cache._ann and no_pair
     pytest.importorskip("usearch")
     # The fetch landed: the real import works again (undo also restores the default cache budget).
-    monkeypatch.undo()
+    _undo(monkeypatch)
     monkeypatch.setenv("RAG_VEC_ANN_MIN_ROWS", "50")
     assert vec_ann.usearch() is not None
     no_pair[0]()
@@ -126,7 +134,7 @@ def test_an_hnsw_build_that_fails_after_the_fetch_is_not_retried(rag_conn, no_pa
     _add(rag_conn, "d", rows)
     _dense(rag_conn, rows[0])
     assert vec_cache.drain(60) and len(no_pair) == 1
-    monkeypatch.undo()
+    _undo(monkeypatch)
     monkeypatch.setenv("RAG_VEC_ANN_MIN_ROWS", "50")
     monkeypatch.setenv("RAG_VEC_CACHE_MB", "0.001")
     attempts = []
@@ -329,7 +337,7 @@ def test_request_never_raises(monkeypatch):
 
     monkeypatch.setattr(hnsw_runtime.threading, "Thread", boom)
     assert hnsw_runtime.request(lambda: None) is False and not hnsw_runtime._inflight
-    monkeypatch.undo()
+    _undo(monkeypatch)
     monkeypatch.setattr(
         hnsw_runtime, "_run_installer", lambda: (_ for _ in ()).throw(RuntimeError("x"))
     )
@@ -414,7 +422,7 @@ def test_an_exact_cached_waiting_scope_moves_to_hnsw_when_the_pair_lands(
     _add(rag_conn, "d", rows)
     _dense(rag_conn, rows[4])
     assert vec_cache.drain(60) and vec_cache._entries and no_pair
-    monkeypatch.undo()
+    _undo(monkeypatch)
     monkeypatch.setenv("RAG_VEC_ANN_MIN_ROWS", "50")
     no_pair[0]()
     assert vec_cache.drain(60) and vec_cache._ann and not vec_cache._entries

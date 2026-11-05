@@ -19,6 +19,23 @@ import time
 import urllib.request
 from pathlib import Path
 
+# Gate pasted from backend/utils/native_tls.py inline_gate_source(); test_native_tls_entrypoints.py checks it.
+_TRUSTSTORE_VENDOR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend", "vendor")
+_flag = os.environ.get("UNSLOTH_STUDIO_NATIVE_TLS", "").strip().lower()
+_owned = os.environ.get("UNSLOTH_STUDIO_DESKTOP_OWNER_KIND", "") == "tauri"
+if _flag in ("1", "true", "yes") or (
+    _flag not in ("0", "false", "no")
+    and (sys.platform in ("darwin", "win32") or (sys.platform.startswith("linux") and _owned))
+):
+    try:
+        if _TRUSTSTORE_VENDOR not in sys.path:
+            sys.path.append(_TRUSTSTORE_VENDOR)
+        import truststore
+        truststore.inject_into_ssl()
+    except Exception:
+        pass
+del _flag, _owned
+
 PAIR = (("usearch", "2.26.6"), ("numkong", "7.8.6"))
 PAIR_STR = " ".join(f"{n}=={v}" for n, v in PAIR)
 CATALOG = Path(__file__).resolve().with_name("hnsw_prebuilt_pins.json")
