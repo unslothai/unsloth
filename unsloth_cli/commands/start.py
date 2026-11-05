@@ -2228,6 +2228,7 @@ def _resolve_model(
     load: LoadOptions = LoadOptions(),
     preload_check = None,
     infer_resident: bool = True,
+    require_idle: bool = False,
 ) -> dict:
     models = _loaded_models(base, key)
     load_requested = False
@@ -2391,7 +2392,11 @@ def _resolve_model(
                 typer.echo(f"Applying new load settings to {active_id}.")
                 typer.echo("This unloads the current model for every attached session.")
                 announced_switch = True
-        elif not active_id and _inference_status(base, key).get("yours") is False:
+        elif (
+            not require_idle
+            and not active_id
+            and _inference_status(base, key).get("yours") is False
+        ):
             typer.echo(
                 "Switching the Unsloth server from another account's model to "
                 f"{_display_model_spec(requested, load.gguf_variant)}."
@@ -2471,6 +2476,9 @@ def _resolve_model(
             # The server cannot tell an explicit `--context-length 0` reset from the 0 that every UI load sends, so it treats 0 as "no preference" and would answer already_loaded. Say outright that this one is a reload, but only when status PROVED a difference: on an older server _load_settings_differ cannot tell, and forcing there would evict on every attach.
             if attach_public_id is not None and status_snapshot and inferred_differs:
                 payload["force_reload"] = True
+        # Both picker flows can outlive the server state they observed before prompting.
+        if require_idle and not _picker_server_is_idle(base, key):
+            _fail("The model state changed while the picker was open. Run the command again.")
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
         except Exception:
@@ -4999,6 +5007,18 @@ def _picked_load_options(model: Optional[str], load: LoadOptions) -> LoadOptions
     return load
 
 
+def _allowed_picker_models(base: str, key: str, models: list[str]) -> set:
+    try:
+        response = _http_json("POST", f"{base}/api/auth/model-access", key, models)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+        _fail_request(
+            exc, "Couldn't check account model access; pass --model to select one explicitly"
+        )
+    if not isinstance(response, dict) or not isinstance(response.get("allowed"), list):
+        _fail("Couldn't check account model access. Pass --model to select one explicitly.")
+    return set(response["allowed"])
+
+
 def _ask_for_local_model(
     gguf_only: bool,
     reason: str,
@@ -5034,20 +5054,7 @@ def _ask_for_local_model(
         )
         if not check_access:
             return picker(Console(), prompt = "Load", empty_hint = hint, entries = entries)
-        try:
-            response = _http_json(
-                "POST",
-                f"{base}/api/auth/model-access",
-                key,
-                [entry.model for entry in entries],
-            )
-        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
-            _fail_request(
-                exc, "Couldn't check account model access; pass --model to select one explicitly"
-            )
-        if not isinstance(response, dict) or not isinstance(response.get("allowed"), list):
-            _fail("Couldn't check account model access. Pass --model to select one explicitly.")
-        allowed = set(response["allowed"])
+        allowed = _allowed_picker_models(base, key, [entry.model for entry in entries])
         return picker(
             Console(),
             prompt = "Load",
@@ -5132,7 +5139,7 @@ def _pick_model_for_idle_server(
         account.get(field) for field in ("account_id", "username", "role")
     ):
         return None
-    picked = _ask_for_local_model(
+    return _ask_for_local_model(
         gguf_only,
         "No model is loaded in Unsloth. Pick one on this device to load:",
         gguf_variant,
@@ -5140,10 +5147,6 @@ def _pick_model_for_idle_server(
         base = base,
         key = key,
     )
-    # The user can leave the prompt open while another session starts loading.
-    if not _picker_server_is_idle(base, key):
-        _fail("The model state changed while the picker was open. Run the command again.")
-    return picked
 
 
 def _connect(
@@ -5186,12 +5189,19 @@ def _connect(
         launch = launch,
         server_options = server_options,
     )
+    appeared_during_pick = local_model_picked and server is None
+    if appeared_during_pick and not (is_loopback_url(base) and verify_studio_identity(base)):
+        _fail(
+            "A server appeared while the picker was open. Run the command again to connect to it."
+        )
     # The server resolves relative paths against its own cwd; only a local Studio shares our filesystem.
     if model and server is None and is_loopback_url(base) and _is_model_path(model):
         if os.path.exists(os.path.expanduser(model)) and verify_studio_identity(base):
             model = os.path.abspath(os.path.expanduser(model))
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
+        if appeared_during_pick and model not in _allowed_picker_models(base, key, [model]):
+            _fail("The selected model is unavailable to this account. Run the command again.")
         if model is None and server is None:
             picked = _pick_model_for_idle_server(base, key, gguf_only, load.gguf_variant)
             if picked is not None:
@@ -5244,6 +5254,7 @@ def _connect(
             preload_check = None if server is not None else preload_check,
             # That server was started FROM these knobs, so inferring a target here would reload what was just loaded.
             infer_resident = server is None,
+            require_idle = local_model_picked and server is None,
         )
         status = _inference_status(base, key, entry["id"]) if model else {}
         # A GGUF can be active while the resolved entry is another resident model.

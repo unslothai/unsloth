@@ -121,8 +121,34 @@ def test_repository_gguf_fallback_remains_supported():
     )
 
 
-def test_local_selection_survives_server_appearing_during_prompt(fake_studio, picker, monkeypatch):
-    _empty_server(fake_studio, monkeypatch)
+@pytest.mark.parametrize("state", ["idle", "foreign", "busy", "denied", "unverified", "unknown"])
+def test_local_selection_revalidates_server_appearing_during_prompt(
+    fake_studio, picker, monkeypatch, state
+):
+    status = {
+        "foreign": {"yours": False, "loaded": [], "loading": []},
+        "busy": {"loaded": ["resident"], "loading": []},
+        "unknown": {},
+    }.get(state)
+    _empty_server(fake_studio, monkeypatch, status = status)
+    original = start._http_json
+    checked = []
+
+    def http(
+        method,
+        url,
+        key,
+        payload = None,
+        **kwargs,
+    ):
+        if url.endswith("/api/auth/model-access"):
+            checked.extend(payload)
+            return {"allowed": [] if state == "denied" else payload}
+        return original(method, url, key, payload = payload, **kwargs)
+
+    monkeypatch.setattr(start, "_http_json", http)
+    if state == "unverified":
+        monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
     fake_studio.state["providers"] = [{**GEMINI_CONNECTION, "models": [LOCAL_ID]}]
     monkeypatch.setattr(
         catalog,
@@ -138,6 +164,14 @@ def test_local_selection_survives_server_appearing_during_prompt(fake_studio, pi
     monkeypatch.setattr(start, "find_studio_server", discover)
     monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
     picker["answers"] = ["1"]
-    result = start._connect(None, None, serve = True, launch = True, connections = True)
-    assert result[2]["id"] == LOCAL_ID
-    assert _loads(fake_studio) == [{"model_path": LOCAL_ID}]
+    if state == "idle":
+        result = start._connect(None, None, serve = True, launch = True, connections = True)
+        assert result[2]["id"] == LOCAL_ID
+        assert _loads(fake_studio) == [{"model_path": LOCAL_ID}]
+        assert checked == [LOCAL_ID]
+    else:
+        with pytest.raises(typer.Exit):
+            start._connect(None, None, serve = True, launch = True, connections = True)
+        assert _loads(fake_studio) == []
+        if state == "unverified":
+            assert checked == []
