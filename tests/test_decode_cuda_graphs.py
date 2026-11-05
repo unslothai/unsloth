@@ -141,8 +141,7 @@ def test_graph_decode_is_bitwise_eager(name, load_in_4bit, bsz, monkeypatch):
 @cuda
 @pytest.mark.parametrize("bsz", [1, 4])
 def test_qwen2_sliding_window_graph_decode_is_bitwise_eager(bsz, monkeypatch):
-    """Qwen2 configs can carry a sliding window: once the cache outgrows it, the replayed step
-    attends over the same trailing window as the eager one."""
+    """Past the sliding window, replay attends over the same trailing window as eager."""
     model, tok = _load(MODELS[2], False)
     for module in model.modules():
         config = getattr(module, "config", None)
