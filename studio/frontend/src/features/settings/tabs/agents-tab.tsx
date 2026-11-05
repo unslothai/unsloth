@@ -998,14 +998,22 @@ export function AgentsTab() {
         if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
         }
+        const resident = activeModelRef.current;
+        // A root-loaded MLX resident has no folder: picking one would reload it at another precision.
+        const keepRoot =
+          info.variant_format === "mlx" &&
+          resident?.variant === null &&
+          modelKey(resident.model) === modelKey(selectedModel);
         const nextVariant =
           pickVariant(available, [
             rememberedVariant(selectedModel),
             preferredVariant,
-            info.default_variant,
           ]) ??
-          uniqueVariants[0]?.quant ??
-          null;
+          (keepRoot
+            ? null
+            : (pickVariant(available, [info.default_variant]) ??
+              uniqueVariants[0]?.quant ??
+              null));
         setSelectedVariant(nextVariant);
       })
       .catch(() => {

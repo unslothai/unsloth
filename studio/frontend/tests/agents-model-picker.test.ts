@@ -282,3 +282,18 @@ test("the API tab shows the VS Code note too", () => {
     /\{agent === "vscode" && \([\s\S]*?t\("settings\.agents\.vscodeNote"\)/,
   );
 });
+
+test("a root-loaded MLX resident keeps its root checkpoint instead of a folder", () => {
+  const start = TAB.indexOf("const keepRoot =");
+  const pick = TAB.slice(
+    start,
+    TAB.indexOf("setSelectedVariant(nextVariant)", start),
+  );
+  assert.ok(pick.includes('info.variant_format === "mlx"'));
+  assert.ok(pick.includes("resident?.variant === null"));
+  assert.ok(
+    pick.indexOf("rememberedVariant(selectedModel)") <
+      pick.indexOf("keepRoot\n") &&
+      pick.indexOf("keepRoot\n") < pick.indexOf("info.default_variant"),
+  );
+});
