@@ -2529,7 +2529,7 @@ def test_a_streamed_encode_runs_each_layer_onloaded_alone_and_matches(monkeypatc
     with worker._streamed(parts, "cpu"):
         assert onloaded(language.embed_tokens) and onloaded(language.norm)
         assert language.scale.data_ptr() != host[id(language._buffers["scale"])] if False else True
-        assert model.lm_head.weight is language.embed_tokens.weight  # the tie survives
+        assert model.lm_head.weight is language.embed_tokens.weight
         assert not onloaded(model.model.vision_tower)
         handles = [
             layer.register_forward_pre_hook(
@@ -2657,7 +2657,6 @@ def test_one_video_per_prompt_skips_the_repeat_copy_unless_it_would_alias_the_ca
     assert pe.data_ptr() != client.embeds.data_ptr()
     pe.add_(1)
     assert torch.equal(client.embeds, torch.arange(24, dtype = torch.bfloat16).view(1, 4, 6))
-    # More than one video still repeats.
     repeats.clear()
     pe = encode(_CachedClient(torch.float32), 2)
     assert pe.shape == (2, 4, 6) and [r for r in repeats if len(r) == 3] == [(1, 4, 6)]

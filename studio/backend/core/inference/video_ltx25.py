@@ -1088,8 +1088,7 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             embeds = cached.to(device = device, dtype = dtype)
             mask = mask.to(device = device)
             seq_len = embeds.shape[1]
-            # One video per prompt: a ``.to`` that moved or cast already made a private copy (~370 MB at LTX-2.5's
-            # 1024 x 49 x 3840), so a second one from ``repeat`` is skipped. A no-op ``.to`` still aliases the cache.
+            # A ``.to`` that moved or cast already copied, so one video skips ``repeat``; a no-op ``.to`` aliases the cache.
             if (
                 num_videos_per_prompt != 1
                 or embeds.data_ptr() == cached.data_ptr()
