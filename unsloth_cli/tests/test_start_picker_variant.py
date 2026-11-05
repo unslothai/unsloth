@@ -251,6 +251,7 @@ def test_picked_repo_finds_requested_quant_outside_main(
         ("tiny-UD-NVFP4.gguf", "UD-NVFP4"),
         ("tiny-NVFP4-4.25bpw.gguf", "NVFP4-4.25bpw"),
         ("NVFP4/model.gguf", "NVFP4"),
+        ("Q6_K/build/model.gguf", "Q6_K"),
         ("other-build/tiny-Q8_0.gguf", "other-build/tiny-Q8_0.gguf"),
     ],
 )
@@ -265,7 +266,7 @@ def test_agent_picker_preload_agrees_with_local_loader(
 
     snapshot = Path(cached_gguf_pick).parent
     expected = snapshot / filename
-    expected.parent.mkdir(exist_ok = True)
+    expected.parent.mkdir(parents = True, exist_ok = True)
     expected.write_bytes(b"GGUF" + bytes(4092))
     assert _find_local_gguf_by_variant(str(snapshot), selector) == str(expected)
     _empty_server(fake_studio, monkeypatch)
@@ -285,3 +286,18 @@ def test_agent_picker_preload_agrees_with_local_loader(
     assert _find_local_gguf_by_variant(payload["model_path"], payload["gguf_variant"]) == str(
         expected
     )
+
+
+def test_cached_picker_checks_only_the_selected_shard_family(cached_gguf_pick):
+    snapshot = Path(cached_gguf_pick).parent
+    empty = snapshot / "a-Q8_0.gguf"
+    empty.touch()
+    first = snapshot / "b-Q8_0-00001-of-00002.gguf"
+    second = snapshot / "b-Q8_0-00002-of-00002.gguf"
+    for file in (first, second):
+        file.write_bytes(b"GGUF" + bytes(4092))
+
+    assert [e.model for e in REAL_CATALOG(gguf_variant = first.name)] == [str(first)]
+    assert REAL_CATALOG(gguf_variant = empty.name) == []
+    second.write_bytes(b"")
+    assert REAL_CATALOG(gguf_variant = first.name) == []

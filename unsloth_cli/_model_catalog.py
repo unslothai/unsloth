@@ -464,20 +464,20 @@ def _directory_variant_target(
     cached_repo: Optional[str] = None,
 ) -> Optional[str]:
     """Resolve a complete local quant, keeping the directory for path-qualified selectors."""
-    from hub.utils.gguf import gguf_variant_key
-    from hub.utils.inventory_scan import complete_snapshot_variants
     from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
 
     directory = directory.absolute()
     target = _find_local_gguf_by_variant(str(directory), variant)
-    if target is None or not Path(target).is_relative_to(directory):
+    if target is None:
         return None
-    relative = Path(target).relative_to(directory).as_posix()
-    quant = gguf_variant_key(relative)
-    if quant not in complete_snapshot_variants(str(directory)):
+    file = Path(target)
+    if not file.is_relative_to(directory) or not file.is_file() or not _gguf_file_is_loadable(file):
         return None
     if cached_repo:
+        from hub.utils.gguf import gguf_variant_key
         from hub.utils.gguf_sources import cached_gguf_manifest_complete, cached_gguf_source_partial
+
+        quant = gguf_variant_key(file.relative_to(directory).as_posix())
         if not cached_gguf_manifest_complete(
             cached_repo, quant, directory
         ) or cached_gguf_source_partial(cached_repo, quant, directory):

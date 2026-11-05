@@ -4986,7 +4986,7 @@ def _picked_load_options(model: Optional[str], load: LoadOptions) -> LoadOptions
                 "Choose the matching file, or pass --model naming the repository or directory "
                 "to select a different quant."
             )
-    elif variant.lower().endswith(".gguf") and Path(model).is_dir():
+    elif Path(model).is_dir():
         from hub.utils.gguf import gguf_variant_family
 
         # Directory preflight advertises shard-stripped stems. Preserve the exact file selected.
