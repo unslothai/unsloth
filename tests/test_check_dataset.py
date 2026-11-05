@@ -4,7 +4,7 @@
 import pytest
 
 tokenizers = pytest.importorskip("tokenizers")
-from transformers import PreTrainedTokenizerFast
+from transformers import PreTrainedTokenizerFast, ProcessorMixin
 
 from unsloth.chat_templates import check_dataset, get_chat_template
 
@@ -164,7 +164,7 @@ def test_row_tools_are_rendered_into_length():
     assert as_list["over_max_seq_length"] == 1
 
 
-class _ImagesFirstProcessor:
+class _ImagesFirstProcessor(ProcessorMixin):
     def __init__(self, tokenizer):
         self.tokenizer = tokenizer
         self.chat_template = tokenizer.chat_template
@@ -188,3 +188,10 @@ def test_vision_processor_measures_with_inner_tokenizer():
     rows = ROWS[:5]
     report = check_dataset(rows, _ImagesFirstProcessor(tok), max_seq_length = 8)
     assert report["lengths"] == check_dataset(rows, tok, max_seq_length = 8)["lengths"]
+
+
+def test_tokenizer_with_backend_attribute_is_not_unwrapped():
+    tok = _tokenizer()
+    expected = check_dataset(ROWS[:5], tok, max_seq_length = 8)["lengths"]
+    tok.tokenizer = object()
+    assert check_dataset(ROWS[:5], tok, max_seq_length = 8)["lengths"] == expected

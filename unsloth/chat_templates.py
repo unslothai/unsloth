@@ -135,7 +135,7 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
         except Exception:
             pass
 
-    text_tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
+    text_tokenizer = tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer
     rows = malformed = empty = found = 0
     problems, lengths = [], []
     for i, row in enumerate(dataset):
