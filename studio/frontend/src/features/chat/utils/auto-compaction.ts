@@ -17,8 +17,9 @@ export function ggufCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
-  // Character chats only drop their oldest turns: a checkpoint's recall tool and its
-  // instructions would break the scene, and the cards stay in the system message anyway.
+  // Character chats use the rolling window. Dropped turns are still archived and recalled
+  // silently each turn, while a checkpoint would copy old roleplay lines into the system
+  // prompt as standing instructions and show its recall as a tool call in the reply.
   rolling?: boolean;
 }): {
   context_overflow?: "error" | "truncate_oldest";
