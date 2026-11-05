@@ -185,8 +185,12 @@ def reference_text(value: Any) -> str:
     turns = cell_messages(value)
     if turns is None:
         return cell_text(value)
-    answer = [t for t in turns if t["role"] == "assistant"] or turns
-    return "\n".join(cell_text(t["content"]) for t in answer)
+    # A whole conversation (a preference row's chosen reply) answers with its closing turn only;
+    # the earlier assistant turns are context, as training reads them.
+    closing = split_answer(turns)[1]
+    if closing:
+        return closing
+    return "\n".join(cell_text(t["content"]) for t in turns)
 
 
 def _score_answer(

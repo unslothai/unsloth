@@ -649,3 +649,16 @@ def test_a_reference_with_thinking_is_matched_as_the_answer_is():
         chat = lambda target, messages: answer,
     )
     assert result["candidate"]["passed"] == 1
+
+
+def test_a_conversation_reference_is_its_closing_reply():
+    from core.benchmark.recipe_heldout import reference_text
+
+    chosen = [
+        {"role": "user", "content": "Capital of France?"},
+        {"role": "assistant", "content": "Paris"},
+        {"role": "user", "content": "And Germany?"},
+        {"role": "assistant", "content": "Berlin"},
+    ]
+    assert reference_text(chosen) == "Berlin"
+    assert reference_text([{"role": "assistant", "content": "Paris"}]) == "Paris"

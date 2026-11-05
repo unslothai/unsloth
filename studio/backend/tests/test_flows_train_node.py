@@ -1618,3 +1618,54 @@ def test_a_loop_s_seed_bookkeeping_never_reaches_training(monkeypatch):
     # Automatic formatting then reads the question and the answer, every round.
     trained = next(r for n, r in _uploads(ctx).items() if n.endswith("-train.jsonl"))
     assert training.auto_mapping(trained[0]) == {"question": "user", "answer": "assistant"}
+
+
+@pytest.mark.parametrize("objective", ["grpo", "dpo", "orpo"])
+def test_an_rl_alpaca_row_is_benchmarked_with_its_input(monkeypatch, objective):
+    import studio_mcp.tools.jobs as jobs
+
+    from core.flows.nodes.benchmark import mapped_question
+
+    row = {
+        "instruction": "Translate to French",
+        "input": "The weather is lovely today.",
+        "output": "Il fait beau.",
+        "answer": "Il fait beau.",
+        "chosen": "Il fait beau.",
+        "rejected": "Bonjour.",
+    }
+
+    async def run_folder(caller, out):
+        return "run-1", None
+
+    monkeypatch.setattr(jobs, "_run_folder", run_folder)
+    monkeypatch.setattr(training, "POLL_S", 0)
+    monkeypatch.setattr(training, "_first_row", lambda dataset, token: dict(row))
+    ctx = _Ctx(None, objective = objective)
+    ctx.inputs = {"dataset": {"kind": "dataset", "source": "hf", "ref": "org/ds"}}
+    ctx.on_cancel = lambda fn: None
+    ctx.check_cancelled = lambda: None
+
+    def routes(method, path, params, body):
+        if path == "/api/train/start":
+            return {"job_id": "j1"}
+        if path == "/api/train/status":
+            return {
+                "job_id": "j1",
+                "training_phase": "completed",
+                "phase": "completed",
+                "details": {"step": 1, "total_steps": 1, "loss": 1.0, "output_dir": "/x/run-1"},
+            }
+        if path == "/api/train/metrics":
+            return {"loss_history": [1.0]}
+        raise AssertionError(path)
+
+    ctx.routes = routes
+    facts = asyncio.run(training.finetune(ctx))["checkpoint"]
+    spec = {
+        "columns": facts["user_columns"],
+        "join": facts.get("user_join"),
+        "inputs": facts.get("input_columns"),
+    }
+    # format_rl_dataset asks "instruction\n\ninput"; Benchmark and the Loop rebuild the same.
+    assert mapped_question(row, spec) == "Translate to French\n\nThe weather is lovely today."

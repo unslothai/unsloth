@@ -314,12 +314,20 @@ async def finetune(ctx: NodeContext) -> dict:
         checkpoint["system_prompt"] = system
     if automatic:
         mapping = await asyncio.to_thread(auto_mapping, row)
-    elif objective != "sft" and isinstance(row, dict):
-        from core.training.rl import resolve_role_columns
+    alpaca_input = False
+    if objective != "sft" and isinstance(row, dict):
+        from core.training.rl import _IGNORE_ROLE, resolve_role_columns
         try:
             # The columns GRPO, DPO or ORPO read, mapped or found by name.
             found = resolve_role_columns(
                 list(row), objective, mapping if isinstance(mapping, dict) else None
+            )
+            # As format_rl_dataset asks an Alpaca row: its instruction, then its unmapped input.
+            alpaca_input = (
+                found.get("prompt") == "instruction"
+                and "input" in row
+                and "input" not in found.values()
+                and (mapping or {}).get("input") != _IGNORE_ROLE
             )
             mapping = {
                 **{c: r for r, c in found.items()},
@@ -327,7 +335,10 @@ async def finetune(ctx: NodeContext) -> dict:
             }
         except (KeyError, ValueError):
             pass
-    checkpoint.update(mapping_facts(mapping, config.get("format_type"), objective))
+    facts = mapping_facts(mapping, config.get("format_type"), objective)
+    if alpaca_input:
+        facts.update(user_join = "alpaca", input_columns = ["input"])
+    checkpoint.update(facts)
     return {
         "checkpoint": checkpoint,
         "metrics": metrics,
