@@ -3285,13 +3285,12 @@ def refine_memory_plan_for_components(
     pipe: Any,
     plan: MemoryPlan,
     *,
-    with_headroom: bool = False,
+    headroom_mib: int = 0,
 ) -> MemoryPlan:
     """Switches to granular streaming only when a loaded component cannot fit; keeps whole-module offload if all fit, and checks streamed parts fit together.
 
-    ``with_headroom``: a component "fits" only with the plan's runtime headroom and base overhead beside it (the
-    whole-module onload holds the component AND the forward's activations at once); the image path keeps the bare
-    size check."""
+    ``headroom_mib``: what the component's own phase holds beside it (a whole-module onload holds the component AND
+    that phase's activations at once); the caller prices it per phase. 0 (the image path) is the bare size check."""
     if plan.offload_policy != OFFLOAD_MODEL:
         return plan
     budget = plan.estimates.get("safe_device_budget_mib")
@@ -3323,14 +3322,7 @@ def refine_memory_plan_for_components(
     if not streamed_sizes:
         return plan
     largest_name, largest_mib = max(streamed_sizes.items(), key = lambda item: item[1])
-    beside = 0
-    if with_headroom:
-        try:
-            beside = int(plan.estimates.get("runtime_headroom_mib") or 0) + int(
-                plan.estimates.get("base_overhead_mib") or 0
-            )
-        except Exception:  # noqa: BLE001 - malformed estimates: the bare size check
-            beside = 0
+    beside = max(0, int(headroom_mib or 0))
     if largest_mib + beside <= int(budget):
         return plan
     # what streaming leaves resident, all at once: over budget here means streaming OOMs too

@@ -780,12 +780,12 @@ def test_refine_with_headroom_streams_a_component_that_fits_only_without_activat
         transformer = transformer, components = {"transformer": transformer, "connectors": Module(6000)}
     )
     assert refine_memory_plan_for_components(pipe, plan) is plan
-    refined = refine_memory_plan_for_components(pipe, plan, with_headroom = True)
+    refined = refine_memory_plan_for_components(pipe, plan, headroom_mib = 3500)
     assert refined.offload_policy == OFFLOAD_STREAMING
     assert any("runtime headroom" in reason for reason in refined.reasons)
     small = Module(9000)
     roomy = types.SimpleNamespace(transformer = small, components = {"transformer": small})
-    assert refine_memory_plan_for_components(roomy, plan, with_headroom = True) is plan
+    assert refine_memory_plan_for_components(roomy, plan, headroom_mib = 3500) is plan
 
 
 def test_largest_streamable_companion_mib_measures_only_the_text_encoders(monkeypatch):
