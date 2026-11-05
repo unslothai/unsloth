@@ -69,7 +69,9 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
         else:
             raise RestyleError("Send one video file or a folder of frames.")
         job = await asyncio.to_thread(
-            video_restyle.runner.start, prompt = fields.get("prompt") or "", frames = frames,
+            video_restyle.runner.start,
+            prompt = fields.get("prompt") or "",
+            frames = frames,
             seed = seed,
             owner = current_account_id(),
         )

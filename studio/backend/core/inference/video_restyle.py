@@ -358,7 +358,12 @@ class RestyleRunner:
             "files": files,
         }
 
-    def media_path(self, job_id: str, kind: str, owner: Optional[str] = None) -> Optional[Path]:
+    def media_path(
+        self,
+        job_id: str,
+        kind: str,
+        owner: Optional[str] = None,
+    ) -> Optional[Path]:
         if kind not in ("input", "output") or self._state.get("id") != job_id:
             return None
         if owner is not None and not self.owned_by(owner):
