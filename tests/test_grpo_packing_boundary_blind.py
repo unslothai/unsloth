@@ -82,10 +82,22 @@ def test_every_packed_path_is_refused_once(model):
     assert model.__dict__["_unsloth_seq_packing_nograd_ok"] is False
     assert model.__dict__["_unsloth_seq_packing_grad_ok"] is False
     assert model.__dict__["_unsloth_prefix_grouper_nograd_disabled"] is True
-    # Decided once per trainer: a later call does not re-walk the model.
+    # Decided once per model: a later call does not re-walk it.
     model.__dict__["_unsloth_seq_packing_grad_ok"] = True
     _helper()(trainer, model)
     assert model.__dict__["_unsloth_seq_packing_grad_ok"] is True
+
+
+def test_ref_model_scored_first_still_protects_the_policy():
+    # TRL scores a separate ref_model before the policy when the old-logps pass is skipped.
+    trainer = _trainer()
+    ref = _Model(_blind_module("ZayaCCAProjection"))
+    policy = _Model(_blind_module("ZayaCCAProjection"))
+    _helper()(trainer, ref)
+    _helper()(trainer, policy)
+    for model in (ref, policy):
+        assert model.__dict__["_unsloth_seq_packing_grad_ok"] is False
+        assert model.__dict__["_unsloth_seq_packing_nograd_ok"] is False
 
 
 def test_an_ordinary_model_keeps_packing():

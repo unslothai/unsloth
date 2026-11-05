@@ -1668,16 +1668,16 @@ def _unsloth_grpo_autocast_forced_float32(self):
 
 
 def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
-    """Packed GRPO forwards off, once per trainer, for models whose compressors / recurrences mix packed rows
-    (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed self-verify. Zoo's grad PrefixGrouper
-    verifies only against the grad packed forward, so turning that off covers it."""
-    if getattr(self, "_unsloth_packing_boundary_checked", False):
-        return
-    self._unsloth_packing_boundary_checked = True
+    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
+    recurrences mix packed rows (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed
+    self-verify. Zoo's grad PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
     try:
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
+            return
+        unwrapped._unsloth_packing_boundary_checked = True
         from unsloth.utils.packing import packing_boundary_blocker
 
-        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
         config = getattr(unwrapped, "config", None)
         blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
     except Exception:
