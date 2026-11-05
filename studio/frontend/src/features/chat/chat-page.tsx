@@ -3381,6 +3381,7 @@ export function ChatPage({
   useEffect(() => {
     setProjectBrowserBaseline(projectViewId ? useBrowserStore.getState().openSequence : null);
   }, [projectViewId]);
+  const nativeAttachmentScopesByThread = useRef(new Map<string, string>());
   const artifactViewKey =
     view.mode === "single"
       ? `single:${view.threadId ?? view.newThreadNonce ?? "new"}`
@@ -3390,10 +3391,13 @@ export function ChatPage({
 
   // A project can open successive drafts without changing its route. Keep late
   // native file reads bound to the draft that received the drop.
+  // Keep the same queue when a saved project chat opens on its thread route.
   const nativeAttachmentTargetKey =
     view.mode === "project"
       ? `project:${view.projectId}:${projectNewThreadNonce}`
-      : artifactViewKey;
+      : view.mode === "single" && view.threadId
+        ? nativeAttachmentScopesByThread.current.get(view.threadId) ?? artifactViewKey
+        : artifactViewKey;
 
   const attachmentScope =
     view.mode === "single" && !search.thread && !search.new && !search.project
@@ -3467,7 +3471,6 @@ export function ChatPage({
   // A project draft keeps its owner when it is saved and opened through its
   // thread route. Remember each saved chat, so revisiting it after another
   // project cannot adopt that project's pending files.
-  const nativeAttachmentScopesByThread = useRef(new Map<string, string>());
   if (projectChatShownId) {
     nativeAttachmentScopesByThread.current.set(
       projectChatShownId,

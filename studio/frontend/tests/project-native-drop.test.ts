@@ -69,7 +69,12 @@ function evaluate<T>(body: string, bindings: Record<string, unknown>): T {
   )(() => stubJsxRuntime(), {}, ...Object.values(bindings)) as T;
 }
 
-function pageOptions(view: View, nonce: string, store: unknown): DropOptions {
+function pageOptions(
+  view: View,
+  nonce: string,
+  store: unknown,
+  savedScopes: Map<string, string>,
+): DropOptions {
   const keyStart = findNode(
     (node) =>
       ts.isVariableDeclaration(node) &&
@@ -93,6 +98,7 @@ function pageOptions(view: View, nonce: string, store: unknown): DropOptions {
       view,
       search: {},
       projectNewThreadNonce: nonce,
+      nativeAttachmentScopesByThread: { current: savedScopes },
       active: true,
       nativePathLeasesSupported: true,
       hasActiveModel: false,
@@ -190,6 +196,7 @@ async function harness(
   view: View,
   nonce = "draft-one",
   register = async (path: string) => intent(path),
+  savedScopes = new Map<string, string>(),
 ) {
   const { useNativeIntentStore: realStore } = loadWithStubs<
     typeof import("../src/features/native-intents/store.ts")
@@ -203,7 +210,7 @@ async function harness(
       select(realStore.getState()),
     { getState: realStore.getState },
   );
-  let options = pageOptions(view, nonce, store);
+  let options = pageOptions(view, nonce, store, savedScopes);
   const optionsRef = { current: options };
   let overlay: ReturnType<typeof useNativeModelDrop> = { status: "idle" };
   let mounted = false;
@@ -281,7 +288,7 @@ async function harness(
     dispatch: (type: string, paths: string[]) =>
       deliver({ payload: { type, paths, position: { x: 0, y: 0 } } }),
     navigate(nextView: View, nextNonce = nonce) {
-      options = pageOptions(nextView, nextNonce, store);
+      options = pageOptions(nextView, nextNonce, store, savedScopes);
       hook.useNativeModelDrop(options);
     },
     dispose: () => dispose?.(),
@@ -435,9 +442,8 @@ for (const [label, nextView, nextNonce] of [
 function ownerScopeRenders() {
   const start = findNode(
     (node) =>
-      ts.isVariableDeclaration(node) &&
-      node.name.getText(source) === "nativeAttachmentScopesByThread",
-  ).parent.parent.getStart(source);
+      ts.isIfStatement(node) && node.expression.getText(source) === "projectChatShownId",
+  ).getStart(source);
   const end = findNode(
     (node) =>
       ts.isVariableDeclaration(node) &&
@@ -460,7 +466,7 @@ function ownerScopeRenders() {
       return evaluate<string | null>(
         `${source.text.slice(start, end)} return baseAttachmentOwnerScope;`,
         {
-          useRef: () => remembered,
+          nativeAttachmentScopesByThread: remembered,
           baseView,
           baseAttachmentTargetKey,
           projectChatShownId,
@@ -546,3 +552,40 @@ test("Compare keeps the background project's owner while unrelated singles remai
     );
   }
 });
+
+for (const finishInSavedChat of [true, false]) {
+  const destination = finishInSavedChat ? "its thread route" : "another chat";
+  test(`a saved project's drop survives registration finishing in ${destination}`, async () => {
+    let release!: () => void;
+    const registration = new Promise<void>((resolve) => { release = resolve; });
+    const project: View = { mode: "project", projectId: "project" };
+    const saved: View = { mode: "single", threadId: "saved" };
+    const other: View = { mode: "single", threadId: "other" };
+    const owner = ownerScopeRenders();
+    const h = await harness(project, "draft", async (path) => {
+      await registration;
+      return intent(path);
+    }, owner.remembered);
+    try {
+      owner.render({
+        baseView: project,
+        baseAttachmentTargetKey: h.options.attachmentTargetKey!,
+        projectChatShownId: saved.threadId,
+      });
+      const drop = h.dispatch("drop", ["/tmp/notes.pdf"]);
+      h.navigate(finishInSavedChat ? saved : other);
+      release();
+      await drop;
+      const store = h.store.getState();
+      if (!finishInSavedChat) {
+        assert.deepEqual(store.takeOpenDocumentAttachments(h.options.attachmentTargetKey!), []);
+        h.navigate(saved);
+      }
+      const files = store.takeOpenDocumentAttachments(h.options.attachmentTargetKey!);
+      assert.deepEqual(files.map((item) => item.id), ["/tmp/notes.pdf"]);
+    } finally {
+      release();
+      h.dispose();
+    }
+  });
+}
