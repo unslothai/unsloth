@@ -1494,6 +1494,7 @@ export function ApiMonitorPage(): ReactElement {
     <>
       {/* In the macOS titlebar row like Chat's header; click-through so the row still drags. */}
       <div
+        data-page-model-header=""
         className={cn(
           "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
           !isMobileShell &&

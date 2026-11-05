@@ -211,7 +211,9 @@ test("glass dims the wallpaper on other pages like an open chat, and blurs it no
 
 test("glass leaves the unstuck library header clear", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /\.library-header-row\.sticky:not\(\[data-stuck\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
+	assert.match(css, /:is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n  -webkit-backdrop-filter: none;\n  backdrop-filter: none;/);
+	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
+	assert.match(api, /data-page-model-header=""\n\s*className=\{cn\(\n\s*"pointer-events-none sticky top-0/);
 	assert.doesNotMatch(css, /data-hub-pane/);
 });
 
@@ -242,4 +244,11 @@ test("menus, popovers and dialogs point every hover token at the glass hover", (
 		assert.match(rule, new RegExp(`--${token}: var\\(--glass-hover\\);`));
 		assert.match(rule, new RegExp(`--color-${token}: var\\(--glass-hover\\);`));
 	}
+});
+
+test("glass sheen runs at 75% except on the composer", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.05\)/);
+	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
+	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
 });
