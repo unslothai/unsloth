@@ -561,3 +561,76 @@ def test_a_single_file_resident_reloads_as_that_file():
     assert "base_repo" not in _common.resident_build_knobs(
         {"repo_id": "org/pipe", "model_kind": "pipeline", "base_repo": "org/pipe"}
     )
+
+
+def test_a_reload_keeps_a_dense_text_encoder_dense():
+    # "off" reports a null request and an engaged "off": unset, the reload would pick the family's auto int8.
+    status = {
+        "loaded": True,
+        "repo_id": "Qwen/Qwen-Image",
+        "model_kind": "pipeline",
+        "text_encoder_quant": None,
+        "resolved": {
+            "text_encoder_quant": {"value": "off"},
+            "transformer_quant": {"value": "int8"},
+        },
+    }
+    knobs = _common.resident_build_knobs(status)
+    assert knobs["text_encoder_quant"] == "off" and knobs["transformer_quant"] == "int8"
+
+
+def test_a_reload_keeps_the_supplied_text_encoder_and_vae_files():
+    status = {
+        "loaded": True,
+        "repo_id": "/models/diffusion_models/flux1-dev-Q8_0.gguf",
+        "model_kind": "gguf",
+        "component_files": {"text_encoder_2": "t5xxl_fp8.safetensors", "vae": "ae.safetensors"},
+        "component_specs": {
+            "text_encoder": "/models/text_encoders/clip_l.safetensors",
+            "text_encoder_2": "/models/text_encoders/t5xxl_fp8.safetensors",
+            "vae": "/models/vae/ae.safetensors",
+        },
+    }
+    knobs = _common.resident_build_knobs(status)
+    assert knobs["text_encoder_file"] == [
+        "/models/text_encoders/clip_l.safetensors",
+        "/models/text_encoders/t5xxl_fp8.safetensors",
+    ]
+    assert knobs["vae_file"] == "/models/vae/ae.safetensors"
+    one = _common.resident_build_knobs(
+        {**status, "component_specs": {"text_encoder": "org/te/te.safetensors"}}
+    )
+    assert one["text_encoder_file"] == "org/te/te.safetensors" and "vae_file" not in one
+
+
+@pytest.mark.parametrize("asked", [None, "IQ4_XS-3.97bpw"])
+def test_a_bpw_resident_reloads_under_its_own_variant(monkeypatch, asked):
+    # Status names the bare quant (IQ4_XS); the Hub lists the 3.53 and 3.97 bpw builds apart.
+    repo = "someone/flux2-GGUF"
+    loads = []
+
+    async def fake_load_media(caller, ctx, **kwargs):
+        loads.append(kwargs)
+
+    monkeypatch.setattr(loading, "load_media", fake_load_media)
+    monkeypatch.setattr(_common, "_caller", lambda ctx: ctx.caller)
+    monkeypatch.setattr(_common, "_LOADED_VARIANT", {})
+    monkeypatch.setattr(_common, "_BAKED_LORAS", {})
+    status = {
+        "loaded": True,
+        "repo_id": repo,
+        "gguf_variant": "IQ4_XS",
+        "model_kind": "gguf",
+        "gguf_filename": "flux2-IQ4_XS-3.97bpw.gguf",
+        "transformer_quant": "int8",
+    }
+    named = {"repo": repo, "variant": asked} if asked else None
+    assert asyncio.run(_common._reload_with_loras(_ImageCtx(status), named, []))
+    (load,) = loads
+    assert load["variant"] == "IQ4_XS-3.97bpw"
+    assert load["knobs"]["gguf_filename"] == "flux2-IQ4_XS-3.97bpw.gguf"
+    loads.clear()
+    asyncio.run(_common._baked_loras_ready(_ImageCtx(status), named, [{"id": FOX, "weight": 1.0}]))
+    (load,) = loads
+    assert load["variant"] == "IQ4_XS-3.97bpw"
+    assert load["knobs"]["gguf_filename"] == "flux2-IQ4_XS-3.97bpw.gguf"

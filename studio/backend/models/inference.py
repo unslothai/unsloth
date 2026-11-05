@@ -4880,7 +4880,12 @@ class DiffusionLoadRequest(BaseModel):
         if value is None:
             return None
         items = [value] if isinstance(value, str) else list(value)
-        items = [item.strip() for item in items if isinstance(item, str) and item.strip()]
+        # A `ref:` handle (image status `component_specs` as an API caller reads it) back to its path.
+        items = [
+            resolve_inventory_handle(item.strip())
+            for item in items
+            if isinstance(item, str) and item.strip()
+        ]
         if len(set(items)) != len(items):
             raise ValueError("text_encoder_file lists the same file twice")
         if len(items) > 4:
@@ -4890,7 +4895,7 @@ class DiffusionLoadRequest(BaseModel):
     @field_validator("vae_file")
     @classmethod
     def _blank_vae_file(cls, value):
-        return (value or "").strip() or None
+        return resolve_inventory_handle((value or "").strip()) or None
 
     def supplied_text_encoder_files(self) -> Optional[list[str]]:
         value = self.text_encoder_file
@@ -6001,6 +6006,12 @@ class DiffusionStatusResponse(BaseModel):
         None,
         description = "Supplied text-encoder / VAE files by pipeline component (e.g. text_encoder_2: "
         "t5xxl_fp8_e4m3fn_scaled.safetensors); null when every companion came from the base repo",
+    )
+    component_specs: Optional[Dict[str, str]] = Field(
+        None,
+        description = "The request-supplied text-encoder / VAE files by pipeline component, as "
+        "text_encoder_file / vae_file take them, so a reload rebuilds the same model; null when none were "
+        "supplied or they were found beside a ComfyUI DiT",
     )
     cpu_offload: bool = Field(False, description = "Whether CPU offload is engaged")
     offload_policy: Optional[str] = Field(

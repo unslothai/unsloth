@@ -1557,6 +1557,17 @@ def _active_component_summary() -> Optional[dict]:
     return overrides.summary() if overrides is not None and overrides.files else None
 
 
+def _active_component_specs() -> Optional[dict]:
+    """The request-supplied text-encoder / VAE files by component, as a load request takes them, so a reload
+    rebuilds the same model. None for files found beside a ComfyUI DiT: a reload finds them again."""
+    from .diffusion_comfy_components import active_component_overrides
+
+    overrides = active_component_overrides()
+    if overrides is None or not overrides.files or overrides.discovered:
+        return None
+    return {c: ref.local_path or ref.spec for c, ref in overrides.files.items()}
+
+
 @dataclass(frozen = True)
 class _LoadState:
     """Everything about the currently-loaded pipeline, swapped as one unit."""
@@ -1616,6 +1627,7 @@ class _LoadState:
     # The single-file checkpoint basename this load committed (None for a pipeline). Part of the build identity.
     gguf_filename: Optional[str] = None
     component_files: Optional[dict] = None
+    component_specs: Optional[dict] = None
     # The torch ordinal this pipeline's weights were placed on, or None for an automatic pick. Committed WITH the
     # pipeline, so a load in flight never moves the resident model's card.
     gpu_ordinal: Optional[int] = None
@@ -11060,6 +11072,7 @@ class DiffusionBackend:
                         resolved = resolved,
                         gguf_filename = gguf_filename,
                         component_files = _active_component_summary(),
+                        component_specs = _active_component_specs(),
                         variant_hint = _image_variant_hint(
                             fam.name,
                             Path(single_file_path).name if single_file_path else None,
@@ -15079,6 +15092,7 @@ class DiffusionBackend:
             "model_kind": state.kind,
             "gguf_filename": state.gguf_filename,
             "component_files": state.component_files,
+            "component_specs": getattr(state, "component_specs", None),
             "gguf_variant": (
                 extract_quant_token(state.gguf_filename)
                 if state.kind == "gguf" and state.gguf_filename

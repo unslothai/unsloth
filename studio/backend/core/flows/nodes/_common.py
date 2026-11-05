@@ -1031,7 +1031,8 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
 
 
 # The resident image build's own load settings: a reload that only changes its LoRAs rebuilds the same model
-# (its exact checkpoint file, precision, memory and speed settings), not the repo's defaults.
+# (its exact checkpoint file, supplied text-encoder / VAE files, precision, memory and speed settings), not the
+# repo's defaults.
 RESIDENT_BUILD_KEYS = (
     "display_repo_id",
     "model_kind",
@@ -1049,16 +1050,18 @@ RESIDENT_BUILD_KEYS = (
 
 def resident_build_knobs(status: dict) -> dict:
     """The load settings of the image model ``status`` (``/images/status``) reports, as a load request takes
-    them: each engaged value the request accepts, so an "auto" precision that engaged fp8 reloads as fp8."""
+    them: each engaged value the request accepts, so an "auto" precision that engaged fp8 reloads as fp8 and a
+    dense text encoder reloads "off" (unset, it would pick the family's automatic precision)."""
     from models.inference import DiffusionLoadRequest
 
     repo = str(status.get("repo_id") or "")
+    resolved = status.get("resolved") if isinstance(status.get("resolved"), dict) else {}
     knobs: dict = {}
     for key in RESIDENT_BUILD_KEYS:
         value = status.get(key)
-        if key == "transformer_quant":
-            resolved = (status.get("resolved") or {}).get("transformer_quant")
-            engaged = resolved.get("value") if isinstance(resolved, dict) else None
+        if key in ("transformer_quant", "text_encoder_quant"):
+            engaged = resolved.get(key)
+            engaged = engaged.get("value") if isinstance(engaged, dict) else None
             value = engaged or value
         if value is None or value == "":
             continue
@@ -1070,7 +1073,24 @@ def resident_build_knobs(status: dict) -> dict:
         except Exception:
             continue
         knobs[key] = value
+    specs = status.get("component_specs") if isinstance(status.get("component_specs"), dict) else {}
+    encoders = [str(v) for c, v in sorted(specs.items()) if c.startswith("text_encoder") and v]
+    if encoders:
+        knobs["text_encoder_file"] = encoders if len(encoders) > 1 else encoders[0]
+    if specs.get("vae"):
+        knobs["vae_file"] = str(specs["vae"])
     return knobs
+
+
+def resident_variant(status: dict, asked: Optional[str] = None) -> Optional[str]:
+    """The resident build's GGUF variant as the Hub listing keys it: status drops a -3.97bpw style suffix,
+    so the file names it; else the variant the node asked for, else the status's."""
+    from hub.utils.gguf import quant_token_with_bpw
+
+    name = str(status.get("gguf_filename") or "")
+    if status.get("model_kind") == "gguf" and name.lower().endswith(".gguf"):
+        return quant_token_with_bpw(name) or asked or status.get("gguf_variant")
+    return asked or status.get("gguf_variant") or None
 
 
 # slot -> (repo, adapter ids, diffusion load count) Flows baked into a quantized build.
@@ -1114,8 +1134,7 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
         None,
         kind = "image",
         model = str(status.get("repo_id") or repo),
-        variant = status.get("gguf_variant")
-        or (model.get("variant") if isinstance(model, dict) else None),
+        variant = resident_variant(status, model.get("variant") if isinstance(model, dict) else None),
         hf_token = None,
         deadline = time.monotonic() + LOAD_DEADLINE_S,
         knobs = {
@@ -1149,7 +1168,8 @@ async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[li
         return False
     # Named as this node names it, so the next node's residency check still matches.
     repo = (model.get("repo") if isinstance(model, dict) else None) or resident
-    variant = status.get("gguf_variant") or None
+    asked = model.get("variant") if isinstance(model, dict) else None
+    variant = resident_variant(status, asked)
     wanted = frozenset(item["id"] for item in loras or [] if item.get("weight", 1.0) > 0)
     ctx.log(
         f"Reloading {repo} with its new LoRA weights baked in: this load streams the transformer, so its "
@@ -1172,7 +1192,7 @@ async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[li
     )
     note_loaded(ctx, "image", str(repo))
     count = gpu_arbiter.load_count(gpu_arbiter.DIFFUSION)
-    _LOADED_VARIANT["image"] = (str(repo).lower(), (variant or "").lower(), count)
+    _LOADED_VARIANT["image"] = (str(repo).lower(), (asked or variant or "").lower(), count)
     if wanted:
         _BAKED_LORAS["image"] = (str(repo).lower(), wanted, count)
     return True

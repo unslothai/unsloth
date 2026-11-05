@@ -1063,3 +1063,34 @@ def test_hidream_standalone_llama_slot_refused_by_name():
         C.assign_components(
             [(ref, header)], None, {"text_encoder_4": "LlamaForCausalLM"}, family = "hidream-i1"
         )
+
+
+def test_status_names_the_supplied_files_as_a_reload_takes_them():
+    # A reload (a Flows LoRA bake) rebuilds the same model from these; files found beside a DiT are found again.
+    from core.inference import diffusion
+
+    overrides = C.ComponentOverrides(
+        files = {
+            "text_encoder": C.ComponentFileRef(
+                spec = "../te/clip_l.safetensors", local_path = "/m/te/clip_l.safetensors"
+            ),
+            "vae": C.ComponentFileRef(
+                spec = "org/vae/ae.safetensors", repo_id = "org/vae", filename = "ae.safetensors"
+            ),
+        }
+    )
+    token = C.set_active_component_overrides(overrides)
+    try:
+        assert diffusion._active_component_specs() == {
+            "text_encoder": "/m/te/clip_l.safetensors",
+            "vae": "org/vae/ae.safetensors",
+        }
+        assert diffusion._active_component_summary() == {
+            "text_encoder": "clip_l.safetensors",
+            "vae": "ae.safetensors",
+        }
+        overrides.discovered = True
+        assert diffusion._active_component_specs() is None
+    finally:
+        C.reset_active_component_overrides(token)
+    assert diffusion._active_component_specs() is None

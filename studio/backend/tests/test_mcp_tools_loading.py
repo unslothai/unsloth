@@ -257,6 +257,48 @@ def test_a_gguf_image_repo_sends_its_gguf_filename(monkeypatch, fast_polls, extr
     assert lookup_token == extra.get("hf_token")
 
 
+# A rebuild of the resident checkpoint names its file: the bare quant status reports (IQ4_XS) would miss the
+# -3.97bpw build in the listing or pick a bare sibling, so the file is loaded and checked as named.
+@pytest.mark.parametrize("variant", ["IQ4_XS", "IQ4_XS-3.97bpw"])
+def test_a_named_checkpoint_file_is_loaded_and_checked_as_named(monkeypatch, fast_polls, variant):
+    exact = "flux2-IQ4_XS-3.97bpw.gguf"
+    prefix = "/api/inference/images"
+    listing = {
+        "repo_id": FLUX_GGUF,
+        "variants": [
+            {"filename": f"flux2-{q}.gguf", "quant": q}
+            for q in ("IQ4_XS", "IQ4_XS-3.53bpw", "IQ4_XS-3.97bpw")
+        ],
+    }
+    resident = {"loaded": True, "repo_id": FLUX_GGUF, "model_kind": "gguf", "gguf_filename": exact}
+    studio = fake_studio(
+        {
+            ("GET", "/api/hub/gguf-variants"): listing,
+            ("POST", f"{prefix}/download-plan"): {"entries": [], "plan_failed": False},
+            ("POST", f"{prefix}/load"): {"loaded": False},
+            ("GET", f"{prefix}/load-progress"): READY,
+            ("GET", f"{prefix}/status"): resident,
+            ("POST", f"{prefix}/unload"): {"loaded": False},
+        }
+    )
+    knobs = {"model_kind": "gguf", "gguf_filename": exact, "transformer_quant": "int8"}
+    result = asyncio.run(
+        loading.load_media(
+            make_caller(studio_app = studio),
+            None,
+            kind = "image",
+            model = FLUX_GGUF,
+            variant = variant,
+            hf_token = None,
+            knobs = knobs,
+        )
+    )
+    assert result.loaded is True
+    (sent,) = media_load_bodies(studio, f"{prefix}/load")
+    assert sent == {"model_path": FLUX_GGUF, **knobs}
+    assert bodies(studio, f"{prefix}/download-plan") == [{"model_path": FLUX_GGUF, **knobs}]
+
+
 def test_a_plan_entry_supplies_the_checkpoint_file(monkeypatch, fast_polls):
     entry = {"repo_id": "a/b", "files": [], "bytes": 1, "checkpoint": True}
     plan = {"entries": [{**entry, "gguf_filename": "model.safetensors"}]}
