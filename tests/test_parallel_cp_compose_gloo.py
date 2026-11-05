@@ -547,11 +547,29 @@ def _ref(
 
 def _rows_per_step(res):
     """The dataset rows each optimizer step trained on (one rank's view)."""
+    assert "error" not in res, ("a worker failed", res.get("error"), res.get("trace"))
     ga, read = res["ga"], res["rows_read"]
     return [
         sorted(r for mb in read[i : i + ga] for r in mb)
         for i in range(0, len(read) - len(read) % ga, ga)
     ]
+
+
+# torch < 2.13 refuses fewer micro-batches than stages in every single-stage schedule, GPipe included
+# (torch/distributed/pipelining/schedules.py, PipelineScheduleSingle.__init__, line 579 on 2.10.0); 2.13 keeps the
+# check in Schedule1F1B only (line 1020). pp_schedules.py turns torch's ValueError into this refusal.
+_ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 stages"
+
+
+def _skip_if_one_microbatch_refused(results):
+    """The pipeline refused one micro-batch over two stages on this torch (every rank): the cell cannot run here."""
+    errors = [res.get("error") or "" for res in results]
+    if errors and all(_ONE_MICROBATCH_REFUSED in e for e in errors):
+        import torch as _torch
+        pytest.skip(
+            f"torch {_torch.__version__}'s GPipe schedule refuses 1 micro-batch over 2 stages (torch < 2.13), and "
+            "the pipeline takes the router aux loss over one micro-batch only: " + errors[0][:200]
+        )
 
 
 def _same_rows(
@@ -561,6 +579,9 @@ def _same_rows(
 ):
     """Every step of the composed run trains on exactly the rows one process trains on (data parallel replicas
     split them, cp / tp / pp peers share theirs), and no side read a row twice (no second epoch)."""
+    for rank, res in enumerate([want, *results]):
+        assert "error" not in res, (what, "reference" if rank == 0 else f"rank {rank - 1}", res.get("error"),
+                                    res.get("trace"))
     expected = _rows_per_step(want)
     flat = [r for step in expected for r in step]
     assert len(flat) == len(set(flat)), (what, "one process read a row twice", want["rows_read"])
@@ -832,6 +853,7 @@ def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(ga, aux):
     assert ref["output_router_logits"] is aux, ref
     env = {"UNSLOTH_PP_SIZE": "2", "UNSLOTH_PP_MICROBATCHES": "1", "UNSLOTH_PP_SCHEDULE": "gpipe"}
     results = _spawn("train", 2, env, **kw)
+    _skip_if_one_microbatch_refused(results)
     _same_rows(results, ref, what = (ga, aux))
     assert sorted(res.get("stage") for res in results) == [0, 1], results
     for rank, res in enumerate(results):
