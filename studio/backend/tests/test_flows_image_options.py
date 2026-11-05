@@ -588,7 +588,7 @@ def test_loras_on_a_quantized_build_reload_it_with_them_baked_in(monkeypatch):
     status = {
         "loaded": True,
         "repo_id": KREA["repo"],
-        "resolved": {"transformer_quant": {"value": "int8"}},
+        "resolved": {"transformer_quant": {"requested": "int8", "value": "int8"}},
         "baked_loras": [],
     }
     ctx = _StatusCtx(status)
@@ -605,12 +605,14 @@ def test_loras_on_a_quantized_build_reload_it_with_them_baked_in(monkeypatch):
         )
     )
     assert len(loads) == 1
-    assert loads[0]["model"] == KREA["repo"] and loads[0]["knobs"] == {"loras": WATERCOLOR}
+    # The resident int8 build again, now with the LoRAs.
+    assert loads[0]["model"] == KREA["repo"]
+    assert loads[0]["knobs"] == {"transformer_quant": "int8", "loras": WATERCOLOR}
     other = [{"id": "krea/Krea-2-LoRA-ink", "weight": 0.8}]
     asyncio.run(
         _common.generate_image(ctx, model = KREA, prompt = "a lighthouse", options = {"loras": other})
     )
-    assert len(loads) == 2 and loads[1]["knobs"] == {"loras": other}
+    assert len(loads) == 2 and loads[1]["knobs"] == {"transformer_quant": "int8", "loras": other}
 
 
 def test_loras_on_a_bf16_build_apply_at_generate_time(monkeypatch):

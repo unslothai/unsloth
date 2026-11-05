@@ -642,7 +642,14 @@ async def load_media(
 
     async def prepare() -> None:
         # Hub and plan reads run inside the job, so a slow one never holds the call past ``wait_s``.
-        if variant or "gguf" in model.lower():
+        exact = opt_text(knobs.get("gguf_filename"))
+        if exact:
+            # A rebuild of one checkpoint (Flows reloading the resident build) names its file: no variant
+            # lookup, which by the bare quant would miss a -3.97bpw build, and the readiness check matches it.
+            body["gguf_filename"] = exact
+            if opt_text(knobs.get("model_kind")):
+                body["model_kind"] = knobs["model_kind"]
+        elif variant or "gguf" in model.lower():
             entry = await _gguf_filename(caller, model, variant)
             if entry:
                 body["gguf_filename"] = entry["filename"]

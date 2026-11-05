@@ -294,10 +294,16 @@ async def stream_sse(
 
 
 class RouteError(Exception):
-    def __init__(self, status: int, detail: str):
+    def __init__(
+        self,
+        status: int,
+        detail: str,
+        refusal: Optional[str] = None,
+    ):
         super().__init__(detail)
         self.status = status
         self.detail = detail
+        self.refusal = refusal
 
 
 def route_detail(body: bytes) -> str:
@@ -320,7 +326,11 @@ def route_detail(body: bytes) -> str:
 
 def parse_body(response: httpx.Response) -> Any:
     if response.status_code >= 400:
-        raise RouteError(response.status_code, route_detail(response.content))
+        raise RouteError(
+            response.status_code,
+            route_detail(response.content),
+            response.headers.get("x-unsloth-refusal"),
+        )
     ctype = response.headers.get("content-type", "")
     if "json" in ctype or response.content.lstrip()[:1] in (b"{", b"["):
         try:

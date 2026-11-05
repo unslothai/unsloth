@@ -1030,8 +1030,100 @@ async def _controlnet_ready(ctx: Any, model: Optional[dict]) -> None:
     _own_media_reload("image", repo, variant)
 
 
+# The resident image build's own load settings: a reload that only changes its LoRAs rebuilds the same model
+# (its exact checkpoint file, family, supplied text-encoder / VAE files, precision, memory, speed and cache
+# settings), not the repo's defaults.
+RESIDENT_BUILD_KEYS = (
+    "display_repo_id",
+    "model_kind",
+    "gguf_filename",
+    "base_repo",
+    "cpu_offload",
+    "memory_mode",
+    "speed_mode",
+    "text_encoder_quant",
+    "transformer_quant",
+    "attention_backend",
+    "transformer_cache",
+    "family_override",
+    "gpu_ids",
+)
+# Status reports what engaged, and an automatic pick is tuned or gated where an explicit one is not (a static cache's
+# schedule; an automatic fp8 text encoder keeps CLIP-L dense, an explicit one casts it; an explicit fp8 transformer is
+# refused under balanced offload, an automatic one engages there): only an explicit ask is sent back, so an automatic
+# one is made again. A text encoder left dense stays dense.
+ASKED_BUILD_KEYS = (
+    "transformer_cache",
+    "attention_backend",
+    "text_encoder_quant",
+    "transformer_quant",
+)
+
+
+def resident_build_knobs(status: dict) -> dict:
+    """The load settings of the image model ``status`` (``/images/status``) reports, as a load request takes
+    them: per setting, the first the request accepts of its explicit ask and its reported value (none where an
+    automatic pick is tuned, so it is made again). Unset, a setting falls back to the automatic policy: a dense text
+    encoder would reload as int8, a cache asked "off" as the family's auto cache, a family picked by hand as the one
+    the file detects as."""
+    from models.inference import DiffusionLoadRequest
+
+    repo = str(status.get("repo_id") or "")
+    resolved = status.get("resolved") if isinstance(status.get("resolved"), dict) else {}
+    knobs: dict = {}
+    for key in RESIDENT_BUILD_KEYS:
+        record = resolved.get(key) if isinstance(resolved.get(key), dict) else {}
+        if key == "family_override":
+            # The family the load built (detected or picked): the same file can fit a sibling family.
+            reported = status.get("family")
+        elif key == "text_encoder_quant":
+            reported = "off" if str(record.get("value") or "").lower() == "off" else None
+        elif key in ASKED_BUILD_KEYS:
+            reported = None
+        else:
+            reported = status.get(key)
+        candidates = (
+            [record.get("requested"), reported]
+            if key in ASKED_BUILD_KEYS
+            else [reported, record.get("requested")]
+        )
+        for value in candidates:
+            if value is None or value == "":
+                continue
+            if key == "base_repo" and (status.get("model_kind") == "pipeline" or value == repo):
+                # A pipeline is its own base: naming it again would only re-gate the same repo.
+                break
+            try:
+                DiffusionLoadRequest(model_path = repo or "x", **{key: value})
+            except Exception:
+                continue
+            knobs[key] = value
+            break
+    specs = status.get("component_specs") if isinstance(status.get("component_specs"), dict) else {}
+    encoders = [str(v) for c, v in sorted(specs.items()) if c.startswith("text_encoder") and v]
+    if encoders:
+        knobs["text_encoder_file"] = encoders if len(encoders) > 1 else encoders[0]
+    if specs.get("vae"):
+        knobs["vae_file"] = str(specs["vae"])
+    return knobs
+
+
+def resident_variant(status: dict, asked: Optional[str] = None) -> Optional[str]:
+    """The resident build's GGUF variant as the Hub listing keys it: status drops a -3.97bpw style suffix,
+    so the file names it; else the variant the node asked for, else the status's."""
+    from hub.utils.gguf import quant_token_with_bpw
+
+    name = str(status.get("gguf_filename") or "")
+    if status.get("model_kind") == "gguf" and name.lower().endswith(".gguf"):
+        return quant_token_with_bpw(name) or asked or status.get("gguf_variant")
+    return asked or status.get("gguf_variant") or None
+
+
+# slot -> (repo, adapter ids, diffusion load count) Flows baked into a quantized build.
 _BAKED_LORAS: dict[str, tuple[str, frozenset, int]] = {}
 QUANT_BUILDS = ("int8", "fp8", "nvfp4", "mxfp8")
+# Copy of diffusion_memory.IMAGE_REFUSAL_STREAMED_LORA so Flows avoids importing diffusion_memory.
+STREAMED_LORA_REFUSAL = "streamed-lora-weights"
 
 
 async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict]) -> None:
@@ -1062,15 +1154,19 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
     ctx.log(
         f"Reloading {repo} with its LoRAs baked in: a quantized ({engaged}) build takes them at load time"
     )
+    # The resident build again (its checkpoint file, precision, memory and speed settings), with the LoRAs.
     await loading.load_media(
         _caller(ctx),
         None,
         kind = "image",
-        model = repo,
-        variant = model.get("variant") if isinstance(model, dict) else None,
+        model = str(status.get("repo_id") or repo),
+        variant = resident_variant(status, model.get("variant") if isinstance(model, dict) else None),
         hf_token = None,
         deadline = time.monotonic() + LOAD_DEADLINE_S,
-        knobs = {"loras": sorted(loras, key = lambda item: item["id"])},
+        knobs = {
+            **resident_build_knobs(status),
+            "loras": sorted(loras, key = lambda item: item["id"]),
+        },
     )
     note_loaded(ctx, "image", str(repo))
     _own_media_reload("image", str(repo), model.get("variant") if isinstance(model, dict) else None)
@@ -1079,6 +1175,53 @@ async def _baked_loras_ready(ctx: Any, model: Optional[dict], loras: list[dict])
         wanted,
         gpu_arbiter.load_count(gpu_arbiter.DIFFUSION),
     )
+
+
+async def _reload_with_loras(ctx: Any, model: Optional[dict], loras: Optional[list[dict]]) -> bool:
+    """Reload a block-streamed load with the requested LoRAs baked in (plain when none) so the render can retry."""
+    from core.inference import gpu_arbiter
+    from studio_mcp import loading
+
+    _BAKED_LORAS.pop("image", None)
+    _LOADED_VARIANT.pop("image", None)
+    try:
+        status = await ctx.call("GET", IMAGE_STATUS)
+    except FlowNodeError:
+        return False
+    status = status if isinstance(status, dict) else {}
+    resident = status.get("repo_id")
+    if not status.get("loaded") or not resident:
+        return False
+    # Named as this node names it, so the next node's residency check still matches.
+    repo = (model.get("repo") if isinstance(model, dict) else None) or resident
+    asked = model.get("variant") if isinstance(model, dict) else None
+    variant = resident_variant(status, asked)
+    wanted = frozenset(item["id"] for item in loras or [] if item.get("weight", 1.0) > 0)
+    ctx.log(
+        f"Reloading {repo} with its new LoRA weights baked in: this load streams the transformer, so its "
+        "baked weights are fixed"
+        if wanted
+        else f"Reloading {repo} without LoRAs: this load streams the transformer, so its baked weights are fixed"
+    )
+    knobs = resident_build_knobs(status)
+    if wanted:
+        knobs["loras"] = sorted(loras, key = lambda item: item["id"])
+    await loading.load_media(
+        _caller(ctx),
+        None,
+        kind = "image",
+        model = str(resident),
+        variant = variant,
+        hf_token = None,
+        deadline = time.monotonic() + LOAD_DEADLINE_S,
+        knobs = knobs,
+    )
+    note_loaded(ctx, "image", str(repo))
+    count = gpu_arbiter.load_count(gpu_arbiter.DIFFUSION)
+    _LOADED_VARIANT["image"] = (str(repo).lower(), (asked or variant or "").lower(), count)
+    if wanted:
+        _BAKED_LORAS["image"] = (str(repo).lower(), wanted, count)
+    return True
 
 
 async def generate_image(
@@ -1191,11 +1334,22 @@ async def generate_image(
                 preview = preview if isinstance(preview, str) and len(preview) < 400_000 else None,
             )
 
-    poller = asyncio.create_task(poll())
+    async def render() -> Any:
+        poller = asyncio.create_task(poll())
+        try:
+            return await ctx.call("POST", "/api/inference/images/generate", json = body)
+        finally:
+            poller.cancel()
+
     try:
-        payload = await ctx.call("POST", "/api/inference/images/generate", json = body)
-    finally:
-        poller.cancel()
+        payload = await render()
+    except FlowNodeError as exc:
+        # Only block-streamed loads refuse (others re-bake in place): one reload, one retry.
+        if getattr(exc, "refusal", None) != STREAMED_LORA_REFUSAL or control is not None:
+            raise
+        if not await _reload_with_loras(ctx, model, lora_body):
+            raise
+        payload = await render()
     rows = payload.get("images") if isinstance(payload, dict) else None
     if not isinstance(rows, list) or not rows:
         raise FlowNodeError("Unsloth Studio returned no images")
