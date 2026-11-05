@@ -4,6 +4,8 @@
 """FLUX.3's modular text step routes its per-prompt encode through the facade's ``encode_prompt``, so the
 cross-render prompt cache and the dead-tail probe apply. CPU only; a fake step stands in for diffusers'."""
 
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -92,6 +94,10 @@ class _Face(f3._Flux3KleinPipelineMixin):
 @pytest.fixture
 def face(monkeypatch):
     _TextStep.calls = []
+    try:
+        import diffusers  # noqa: F401 -- modular_pipeline imports it
+    except ImportError:
+        monkeypatch.setitem(sys.modules, "diffusers", types.ModuleType("diffusers"))
     monkeypatch.setattr(f3, "flux3_blocks", lambda name: SimpleNamespace(init_pipeline = _Modular))
     monkeypatch.delenv("UNSLOTH_DIFFUSION_PROMPT_CACHE", raising = False)
     return _Face()
