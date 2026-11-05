@@ -450,3 +450,16 @@ test("without Web Locks a sign-in that replaced the session is not taken for a p
   assert.deepEqual(f.tokens, { access: "other-access", refresh: "other-refresh" });
   assert.equal(f.clears(), 0);
 });
+
+test("without Web Locks a legacy session's first refresh survives a peer winning the mark write", async (t) => {
+  const f = fixture(t, [() => {
+    f.state.mark = "peer-mark";
+    f.tokens.access = "new-access";
+    f.tokens.refresh = "new-refresh";
+    return new Response(null, { status: 401 });
+  }]);
+  f.state.mark = null;
+  assert.equal(await f.api.refreshSessionOutcome(), "ok");
+  assert.deepEqual(f.tokens, { access: "new-access", refresh: "new-refresh" });
+  assert.equal(f.clears(), 0);
+});

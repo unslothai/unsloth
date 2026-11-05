@@ -328,11 +328,14 @@ async function peerRotated(
   sessionMark: string | null,
 ): Promise<boolean> {
   const deadline = Date.now() + REFRESH_PEER_WAIT_MS;
+  let mark = sessionMark;
   for (;;) {
+    const currentMark = getAuthSessionMark();
+    mark ??= currentMark;
     if (
       startGeneration !== logoutGeneration ||
       accountTransitionPending() ||
-      getAuthSessionMark() !== sessionMark
+      currentMark !== mark
     )
       return false;
     const current = getRefreshToken();
@@ -346,7 +349,7 @@ async function runRefresh(
   refreshToken: string,
   preserveSessionMark = false,
   // Without Web Locks (insecure origins) another tab may spend the same single-use token first;
-  // only a rotation inside this session mark counts as that peer's.
+  // only a rotation inside this session mark counts as that peer's. null: anchor at the 401.
   peerSessionMark?: string | null,
 ): Promise<RefreshOutcome> {
   const startGeneration = logoutGeneration;
@@ -415,6 +418,7 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
 
   const generation = logoutGeneration;
   const locks = typeof window !== "undefined" ? window.navigator?.locks : undefined;
+  const priorMark = getAuthSessionMark();
   const sessionMark = ensureAuthSessionMark();
   if (getRefreshToken() !== refreshToken) return "unavailable";
   const promise = locks
@@ -443,7 +447,8 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
           clearTimeout(timer);
         }
       })()
-    : runRefresh(refreshToken, false, sessionMark);
+    : // A mark minted here can lose a peer tab's concurrent write, so it is not proof of a switch.
+      runRefresh(refreshToken, false, priorMark === null ? null : sessionMark);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
   try {
