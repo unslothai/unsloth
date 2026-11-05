@@ -80,7 +80,9 @@ def test_a_credential_inside_the_folder_still_asks(folder):
     assert _asks(folder / "sub" / ".git-credentials") is True
 
 
-@pytest.mark.parametrize("relative", ["sub/.git-credentials", "deep/er/token", ".ssh/config", "a/.env"])
+@pytest.mark.parametrize(
+    "relative", ["sub/.git-credentials", "deep/er/token", ".ssh/config", "a/.env"]
+)
 def test_a_folder_with_a_nested_credential_is_not_granted(folder, relative):
     # The sandbox binds the folder whole, so a script there could read it without any prompt.
     path = folder / relative
