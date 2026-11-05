@@ -2047,6 +2047,7 @@ export const it = {
           "Nessun limite finché non viene impostato un valore. Un download limitato usa HTTPS.",
         speedLimitNoLimit: "Nessun limite",
         speedLimitInvalid: "Inserisci un numero in Mbit/s oppure lascia il campo vuoto.",
+        speedLimitUsesHttps: "I download usano HTTPS finché è impostato un limite di velocità. I file oltre 50 GB usano comunque Xet, senza il limite.",
       },
       uploads: {
         sectionTitle: "Caricamenti",

@@ -4,10 +4,23 @@
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
+const DOWNLOAD_SPEED_LIMIT_EVENT = "unsloth-download-speed-limit-change";
+
 /** Mbit/s; null means no limit. */
 export type DownloadSpeedLimitSettings = {
   mbps: number | null;
 };
+
+export function subscribeDownloadSpeedLimitSettings(
+  listener: (settings: DownloadSpeedLimitSettings) => void,
+) {
+  const handleChange = (event: Event) => {
+    listener((event as CustomEvent<DownloadSpeedLimitSettings>).detail);
+  };
+  window.addEventListener(DOWNLOAD_SPEED_LIMIT_EVENT, handleChange);
+  return () =>
+    window.removeEventListener(DOWNLOAD_SPEED_LIMIT_EVENT, handleChange);
+}
 
 export async function loadDownloadSpeedLimitSettings(): Promise<DownloadSpeedLimitSettings> {
   const res = await authFetch("/api/settings/download-speed-limit");
@@ -32,5 +45,9 @@ export async function updateDownloadSpeedLimitSettings(
       await readFastApiError(res, "Failed to update download speed limit"),
     );
   }
-  return (await res.json()) as DownloadSpeedLimitSettings;
+  const settings = (await res.json()) as DownloadSpeedLimitSettings;
+  window.dispatchEvent(
+    new CustomEvent(DOWNLOAD_SPEED_LIMIT_EVENT, { detail: settings }),
+  );
+  return settings;
 }

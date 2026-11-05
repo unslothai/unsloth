@@ -2107,6 +2107,7 @@ export const hi = {
           "कोई सीमा नहीं जब तक कोई मान सेट न हो। सीमित डाउनलोड HTTPS का उपयोग करता है।",
         speedLimitNoLimit: "कोई सीमा नहीं",
         speedLimitInvalid: "Mbit/s में कोई संख्या दर्ज करें या फ़ील्ड खाली छोड़ दें।",
+        speedLimitUsesHttps: "जब तक गति सीमा सेट है, डाउनलोड HTTPS का उपयोग करते हैं। 50 GB से बड़ी फ़ाइलें अब भी बिना सीमा के Xet का उपयोग करती हैं।",
       },
       uploads: {
         sectionTitle: "अपलोड",

@@ -2204,6 +2204,7 @@ export const th = {
           "ไม่จำกัดจนกว่าจะตั้งค่าตัวเลข การดาวน์โหลดที่ถูกจำกัดจะใช้ HTTPS",
         speedLimitNoLimit: "ไม่จำกัด",
         speedLimitInvalid: "กรอกตัวเลขเป็น Mbit/s หรือเว้นว่างไว้",
+        speedLimitUsesHttps: "การดาวน์โหลดจะใช้ HTTPS ขณะที่ตั้งค่าขีดจำกัดความเร็วไว้ ไฟล์ที่ใหญ่กว่า 50 GB ยังคงใช้ Xet โดยไม่จำกัดความเร็ว",
       },
       uploads: {
         sectionTitle: "การอัปโหลด",

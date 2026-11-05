@@ -2178,6 +2178,7 @@ export const he = {
           "ללא מגבלה אלא אם הוגדר ערך. הורדה מוגבלת משתמשת ב-HTTPS.",
         speedLimitNoLimit: "ללא מגבלה",
         speedLimitInvalid: "הזינו מספר ב-Mbit/s או השאירו את השדה ריק.",
+        speedLimitUsesHttps: "כל עוד מוגדרת מגבלת מהירות, ההורדות משתמשות ב-HTTPS. קבצים מעל 50GB עדיין משתמשים ב-Xet, ללא המגבלה.",
       },
       uploads: {
         sectionTitle: "העלאות",

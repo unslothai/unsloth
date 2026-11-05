@@ -2245,6 +2245,7 @@ export const sv = {
           "Ingen gräns om inget värde anges. En begränsad nedladdning använder HTTPS.",
         speedLimitNoLimit: "Ingen gräns",
         speedLimitInvalid: "Ange ett tal i Mbit/s eller lämna fältet tomt.",
+        speedLimitUsesHttps: "Så länge en hastighetsgräns är satt använder nedladdningar HTTPS. Filer över 50 GB använder fortfarande Xet, utan gränsen.",
       },
       uploads: {
         sectionTitle: "Uppladdningar",

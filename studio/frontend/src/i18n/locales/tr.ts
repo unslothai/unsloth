@@ -2299,6 +2299,7 @@ export const tr = {
           "Bir değer girilmedikçe sınır yoktur. Sınırlı indirme HTTPS kullanır.",
         speedLimitNoLimit: "Sınır yok",
         speedLimitInvalid: "Mbit/s cinsinden bir sayı girin veya alanı boş bırakın.",
+        speedLimitUsesHttps: "Hız sınırı ayarlıyken indirmeler HTTPS kullanır. 50 GB'tan büyük dosyalar sınırsız olarak Xet kullanmaya devam eder.",
       },
       uploads: {
         sectionTitle: "Karşıya yüklemeler",

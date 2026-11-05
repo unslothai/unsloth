@@ -2100,6 +2100,7 @@ export const ko = {
           "값을 설정하지 않으면 제한이 없습니다. 제한된 다운로드는 HTTPS를 사용합니다.",
         speedLimitNoLimit: "제한 없음",
         speedLimitInvalid: "Mbit/s 단위의 숫자를 입력하거나 비워 두세요.",
+        speedLimitUsesHttps: "속도 제한이 설정되어 있는 동안 다운로드는 HTTPS를 사용합니다. 50GB를 넘는 파일은 여전히 Xet을 사용하며 제한이 적용되지 않습니다.",
       },
       uploads: {
         sectionTitle: "업로드",

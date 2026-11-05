@@ -2310,6 +2310,7 @@ export const vi = {
           "Không giới hạn trừ khi đặt một giá trị. Tải xuống bị giới hạn dùng HTTPS.",
         speedLimitNoLimit: "Không giới hạn",
         speedLimitInvalid: "Nhập một số Mbit/s hoặc để trống.",
+        speedLimitUsesHttps: "Khi đặt giới hạn tốc độ, các lượt tải xuống dùng HTTPS. Các tệp trên 50 GB vẫn dùng Xet, không bị giới hạn.",
       },
       uploads: {
         sectionTitle: "Tải lên",

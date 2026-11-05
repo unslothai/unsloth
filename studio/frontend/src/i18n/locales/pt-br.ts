@@ -2115,6 +2115,7 @@ export const ptBR = {
           "Sem limite até que um valor seja definido. Um download limitado usa HTTPS.",
         speedLimitNoLimit: "Sem limite",
         speedLimitInvalid: "Digite um número em Mbit/s ou deixe o campo vazio.",
+        speedLimitUsesHttps: "Os downloads usam HTTPS enquanto houver um limite de velocidade. Arquivos acima de 50 GB continuam usando Xet, sem o limite.",
       },
       uploads: {
         sectionTitle: "Uploads",

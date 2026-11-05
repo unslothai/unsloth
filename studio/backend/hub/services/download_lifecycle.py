@@ -259,10 +259,16 @@ def resolve_requested_use_xet(
     largest_file_bytes: Optional[int] = None,
 ) -> tuple[bool, str]:
     """Resolve the current transport mode, falling back to the legacy ``use_xet`` flag."""
+    mode = (transport_mode or "").strip().lower()
     if get_download_speed_limit_mbps():
         # Only the HTTP stream can be paced: hf_xet transfers natively.
-        return (False, "HTTP (download speed limit)")
-    mode = (transport_mode or "").strip().lower()
+        if download_registry.http_size_ceiling_reason(largest_file_bytes) is None:
+            return (False, "HTTP (download speed limit)")
+        if mode != download_registry.TRANSPORT_HTTP:
+            return (
+                resolve_effective_use_xet(True),
+                "Xet (download speed limit not applied: HTTPS cannot fetch a file this large)",
+            )
     if mode == download_registry.TRANSPORT_HTTP:
         return (False, "HTTP (requested)")
     if mode == download_registry.TRANSPORT_XET:

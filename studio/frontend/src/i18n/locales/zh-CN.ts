@@ -2082,6 +2082,7 @@ export const zhCN = {
           "未设置数值时不限速。限速下载使用 HTTPS。",
         speedLimitNoLimit: "不限速",
         speedLimitInvalid: "请输入 Mbit/s 数值，或留空。",
+        speedLimitUsesHttps: "设置了速度限制时，下载使用 HTTPS。超过 50 GB 的文件仍使用 Xet，不受限制。",
       },
       uploads: {
         sectionTitle: "上传",

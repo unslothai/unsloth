@@ -2126,6 +2126,7 @@ export const fr = {
           "Aucune limite tant qu'aucune valeur n'est définie. Un téléchargement limité utilise HTTPS.",
         speedLimitNoLimit: "Aucune limite",
         speedLimitInvalid: "Saisissez un nombre en Mbit/s ou laissez le champ vide.",
+        speedLimitUsesHttps: "Les téléchargements utilisent HTTPS tant qu'une limite de vitesse est définie. Les fichiers de plus de 50 Go utilisent toujours Xet, sans la limite.",
       },
       uploads: {
         sectionTitle: "Téléversements",

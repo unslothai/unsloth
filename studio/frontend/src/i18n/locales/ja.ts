@@ -2094,6 +2094,7 @@ export const ja = {
           "値を設定しない限り制限はありません。制限中のダウンロードは HTTPS を使用します。",
         speedLimitNoLimit: "制限なし",
         speedLimitInvalid: "Mbit/s の数値を入力するか、空欄のままにしてください。",
+        speedLimitUsesHttps: "速度制限が設定されている間、ダウンロードは HTTPS を使用します。50 GB を超えるファイルは引き続き Xet を使用し、制限は適用されません。",
       },
       uploads: {
         sectionTitle: "アップロード",

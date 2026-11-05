@@ -147,6 +147,20 @@ def test_a_limit_keeps_a_download_on_http(store, mode):
     assert "limit" in reason.lower()
 
 
+@pytest.mark.parametrize("mode", ["xet", "auto", None])
+@pytest.mark.parametrize("limit", [None, 8])
+def test_a_file_too_large_for_https_stays_on_xet(store, monkeypatch, mode, limit):
+    monkeypatch.setattr(
+        download_lifecycle, "resolve_effective_use_xet", lambda requested: requested
+    )
+    store[speed_limit.DOWNLOAD_SPEED_LIMIT_SETTING_KEY] = limit
+    use_xet, reason = download_lifecycle.resolve_requested_use_xet(
+        mode, True, largest_file_bytes = 54_400_261_312
+    )
+    assert use_xet is True
+    assert ("limit" in reason.lower()) is (limit is not None)
+
+
 _BIG = hashlib.sha256(b"paced").digest() * (24 * 1024 * 1024 // 32)
 
 

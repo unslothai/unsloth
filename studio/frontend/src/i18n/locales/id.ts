@@ -2304,6 +2304,7 @@ export const id = {
           "Tanpa batas kecuali ada angka yang diatur. Unduhan yang dibatasi memakai HTTPS.",
         speedLimitNoLimit: "Tanpa batas",
         speedLimitInvalid: "Masukkan angka dalam Mbit/s, atau biarkan kolom kosong.",
+        speedLimitUsesHttps: "Unduhan menggunakan HTTPS selama batas kecepatan diatur. File di atas 50 GB tetap menggunakan Xet, tanpa batas.",
       },
       uploads: {
         sectionTitle: "Unggahan",

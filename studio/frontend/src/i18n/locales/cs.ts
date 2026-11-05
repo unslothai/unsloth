@@ -2323,6 +2323,7 @@ export const cs = {
           "Bez limitu, dokud nezadáte hodnotu. Omezené stahování používá HTTPS.",
         speedLimitNoLimit: "Bez limitu",
         speedLimitInvalid: "Zadejte počet Mbit/s nebo nechte pole prázdné.",
+        speedLimitUsesHttps: "Když je nastaven limit rychlosti, stahování používá HTTPS. Soubory nad 50 GB stále používají Xet, bez limitu.",
       },
       uploads: {
         sectionTitle: "Nahrávání",

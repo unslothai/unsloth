@@ -2335,6 +2335,7 @@ export const pl = {
           "Brak limitu, dopóki nie ustawisz wartości. Ograniczone pobieranie używa HTTPS.",
         speedLimitNoLimit: "Brak limitu",
         speedLimitInvalid: "Wpisz liczbę w Mbit/s albo zostaw pole puste.",
+        speedLimitUsesHttps: "Gdy ustawiony jest limit prędkości, pobieranie używa HTTPS. Pliki większe niż 50 GB nadal używają Xet, bez limitu.",
       },
       uploads: {
         sectionTitle: "Przesyłanie",
