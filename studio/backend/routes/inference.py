@@ -30667,14 +30667,25 @@ async def _cut_studio_reply_at_stops(chunks, stops: list[str]):
                 if tail:
                     chunk = {"choices": [{"index": 0, "delta": {"content": tail}}]}
                     yield "data: " + json.dumps(chunk) + "\n\n"
-            elif data and '"choices"' in data:
+            elif data:
                 try:
-                    chunk = json.loads(data)
+                    chunk = json.loads(data) if '"choices"' in data else None
                 except ValueError:
                     chunk = None
                 choices = chunk.get("choices") if isinstance(chunk, dict) else None
-                for choice in choices if isinstance(choices, list) else []:
-                    delta = choice.get("delta") if isinstance(choice, dict) else None
+                choices = choices if isinstance(choices, list) else []
+                deltas = [c.get("delta") if isinstance(c, dict) else None for c in choices]
+                # A tool event or call marks a place in the text, so held-back text goes out before it.
+                if (
+                    not isinstance(chunk, dict)
+                    or "_toolEvent" in chunk
+                    or any(isinstance(d, dict) and d.get("tool_calls") for d in deltas)
+                ):
+                    held = stop.flush()
+                    if held:
+                        tail = {"choices": [{"index": 0, "delta": {"content": held}}]}
+                        yield "data: " + json.dumps(tail) + "\n\n"
+                for choice, delta in zip(choices, deltas):
                     content = delta.get("content") if isinstance(delta, dict) else None
                     if isinstance(content, str):
                         out = stop.feed(content)
@@ -30683,20 +30694,10 @@ async def _cut_studio_reply_at_stops(chunks, stops: list[str]):
                         ) and stop.hit is None:
                             out += stop.flush()
                         delta["content"] = out
-                    elif isinstance(delta, dict) and delta.get("tool_calls"):
-                        held = stop.flush()
-                        if held:
-                            delta["content"] = held
                     if stop.hit is not None:
                         choice["finish_reason"] = "stop"
                 if isinstance(chunk, dict):
                     line = "data: " + json.dumps(chunk)
-            elif data:
-                # A tool event marks a place in the text, so held-back text goes out before it.
-                held = stop.flush()
-                if held:
-                    chunk = {"choices": [{"index": 0, "delta": {"content": held}}]}
-                    yield "data: " + json.dumps(chunk) + "\n\n"
             yield line + "\n"
             if stop.hit is not None:
                 yield "\ndata: [DONE]\n\n"

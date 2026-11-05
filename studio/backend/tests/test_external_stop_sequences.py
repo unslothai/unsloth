@@ -95,3 +95,19 @@ def test_held_text_goes_out_before_a_tool_event():
     )
     before, after = stream.split(tool_event)
     assert _text(before)[0] == "Let me search for that." and _text(after)[0] == "Found."
+
+
+def test_held_text_goes_out_before_a_hosted_tool_event_with_choices():
+    event = {
+        "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+        "_toolEvent": {"type": "tool_start"},
+    }
+    tool_event = "data: " + json.dumps(event) + "\n\n"
+    stream, _closed = _run(
+        [_event("Let me search for that."), tool_event, _event("Found."), "data: [DONE]\n\n"],
+        ["\nUser:"],
+    )
+    lines = [line for line in stream.splitlines() if line.startswith("data:")]
+    at = next(i for i, line in enumerate(lines) if "_toolEvent" in line)
+    assert _text("\n".join(lines[:at]))[0] == "Let me search for that."
+    assert _text("\n".join(lines[at + 1 :]))[0] == "Found."
