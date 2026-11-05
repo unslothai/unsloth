@@ -892,8 +892,22 @@ def media_fit_kwargs(
     return kwargs
 
 
-def settle_unpriced_chat_beside_media(policy: str) -> None:
-    """Media beside an unpriced chat model: When they fit evicts it, Always refuses."""
+def _evict_or_refuse_locked(names, policy, allow_evict, acting, evicted) -> None:
+    """Apply the same eviction permission at admission and after a load's footprint is known."""
+    if not names:
+        return
+    if policy == "always":
+        raise arb.refusal_for(
+            [slot for name in names for slot in arb.resident_slots(name)], arb.KIND_LABELS[names[0]]
+        )
+    if not allow_evict:
+        raise arb.GpuOwnerBusyError(names[-1])
+    for name in names:
+        _evict_resident(name, acting, evicted, [])
+
+
+def settle_unpriced_chat_beside_media(policy: str, *, allow_evict: bool = True) -> None:
+    """Settle an unpriced Metal chat load under the permission used at admission."""
     if policy not in ("fit", "always") or not _on_metal():
         return
     from utils.account_context import current_account_id
@@ -901,15 +915,7 @@ def settle_unpriced_chat_beside_media(policy: str) -> None:
     with arb._lock:
         arb._sync_from_view()
         media = [name for name in MEDIA_OWNERS if name in arb._residents]
-        if not media:
-            return
-        if policy == "always":
-            raise arb.refusal_for(
-                [slot for name in media for slot in arb.resident_slots(name)],
-                arb.KIND_LABELS[media[0]],
-            )
-        for name in media:
-            _evict_resident(name, current_account_id(), None, [])
+        _evict_or_refuse_locked(media, policy, allow_evict, current_account_id(), None)
 
 
 def forget_media_price(owner: str, cancel: Any = None) -> None:
@@ -1038,16 +1044,8 @@ def coreside_locked(
             kept.remove(name)
 
     def evict_or_refuse(names: list[str]) -> None:
-        if not names:
-            return
-        if policy == "always":
-            raise arb.refusal_for(
-                [slot for n in names for slot in arb.resident_slots(n)], arb.KIND_LABELS[names[0]]
-            )
-        if not allow_evict:
-            raise arb.GpuOwnerBusyError(names[-1])
+        _evict_or_refuse_locked(names, policy, allow_evict, acting, evicted)
         for name in names:
-            _evict_resident(name, acting, evicted, [])
             kept.remove(name)
 
     if not kept:

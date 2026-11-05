@@ -439,8 +439,8 @@ def test_an_mlx_load_is_credited_what_it_replaces_and_more_rows_reprice_it():
     )
     assert "gguf_replaced_credit_mib" not in source
     assert credit < source.index("mlx_credit_mib = mlx_credit_mib", credit)
-    settle = source.index("settle_unpriced_chat_beside_media, multi_model_mode")
-    assert settle < source.index("backend.unload_model, config.identifier", settle)
+    settle = source.index("await _settle_unpriced_mlx_load(")
+    assert "allow_evict = allow_gpu_owner_eviction" in source[settle : settle + 300]
 
 
 def test_a_pinned_non_gguf_chat_load_keeps_its_requested_gpus(monkeypatch):

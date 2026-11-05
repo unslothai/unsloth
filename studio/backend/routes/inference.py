@@ -12129,6 +12129,25 @@ def _unified_metal_host() -> bool:
     return _on_metal()
 
 
+async def _settle_unpriced_mlx_load(
+    backend, identifier: str, policy: str, *, allow_evict: bool
+) -> None:
+    from core.inference.gpu_arbiter import (
+        GpuBusyForAnotherAccountError,
+        GpuOwnerBusyError,
+        MultiModelAlwaysRefusal,
+    )
+    from core.inference.gpu_residency import settle_unpriced_chat_beside_media
+    try:
+        await asyncio.to_thread(settle_unpriced_chat_beside_media, policy, allow_evict = allow_evict)
+    except (MultiModelAlwaysRefusal, GpuOwnerBusyError) as exc:
+        await asyncio.to_thread(backend.unload_model, identifier)
+        await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
+        if isinstance(exc, GpuBusyForAnotherAccountError):
+            raise exc.as_http_exception() from exc
+        raise
+
+
 def _mlx_cache_bounded(entry: dict, slots: int = 1) -> bool:
     from core.inference.gpu_residency import mlx_cache_bounded
     return mlx_cache_bounded(entry, slots)
@@ -19820,19 +19839,12 @@ async def _load_model_impl(
                 }
             elif mlx_chat_need is not None:
                 # Admitted at a price the loaded cache does not keep to: settle as an unpriced load would have.
-                from core.inference.gpu_arbiter import (
-                    GpuBusyForAnotherAccountError,
-                    MultiModelAlwaysRefusal,
+                await _settle_unpriced_mlx_load(
+                    backend,
+                    config.identifier,
+                    multi_model_mode,
+                    allow_evict = allow_gpu_owner_eviction,
                 )
-                from core.inference.gpu_residency import settle_unpriced_chat_beside_media
-                try:
-                    await asyncio.to_thread(settle_unpriced_chat_beside_media, multi_model_mode)
-                except (MultiModelAlwaysRefusal, GpuBusyForAnotherAccountError) as exc:
-                    await asyncio.to_thread(backend.unload_model, config.identifier)
-                    await asyncio.to_thread(backend._shutdown_subprocess, 5.0)
-                    if isinstance(exc, GpuBusyForAnotherAccountError):
-                        raise exc.as_http_exception() from exc
-                    raise
 
         if request._advertised_id:
             backend._openai_advertised_id = request._advertised_id
