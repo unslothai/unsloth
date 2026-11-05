@@ -453,7 +453,7 @@ jobs:
       # ─────────────────────────────────────────────────────────────
       - name: TruffleHog (secrets in diff)
         continue-on-error: true
-        uses: trufflesecurity/trufflehog@c85580b712841eda4c53bc28fc6ace6100e8c16c  # v3.99.4
+        uses: trufflesecurity/trufflehog@31ce31ee1abbcc7dc8eee5764c17121c3044c8b2  # v3.99.7
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha || '' }}
