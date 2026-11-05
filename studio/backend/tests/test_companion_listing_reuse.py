@@ -163,7 +163,6 @@ def test_transient_failures_still_retry_per_lookup(hub, monkeypatch):
         first = _lookup(backend, "mtp", _none)
         second = _lookup(backend, "dspark", _none)
     assert first == second == (None, {"listed": False, "listed_live": False})
-    # One failed attempt, one good listing, then the reuse.
     assert len(hub.calls) == 2
 
 
