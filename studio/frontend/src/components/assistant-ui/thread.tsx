@@ -2368,7 +2368,7 @@ export const Thread: FC<{
             <div
               ref={spacerRef}
               className={cn(
-                "shrink-0",
+                "aui-thread-bottom-spacer shrink-0",
                 hideComposer
                   ? "h-16"
                   : composerHeight == null

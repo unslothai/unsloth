@@ -6710,6 +6710,16 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 .novel-dialogue .thread-bottom-fade {
   display: none;
 }
+/* The panel is short, so the last reply ends just above the speaker bar: the composer gap and the
+   scroll-to-bottom row (hidden at the bottom) give their room back. The button still sticks above
+   the composer when scrolled up. */
+.novel-dialogue .aui-thread-bottom-spacer {
+  margin-top: -24px;
+  pointer-events: none;
+}
+.novel-dialogue .aui-thread-viewport-footer {
+  margin-top: calc(-28px * var(--ui-space-scale, 1));
+}
 .novel-figure:focus-visible .novel-figure-picture {
   outline: 2px solid var(--ring);
   outline-offset: 3px;
