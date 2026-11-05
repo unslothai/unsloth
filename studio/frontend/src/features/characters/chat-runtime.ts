@@ -99,6 +99,8 @@ export async function prepareCharacterRun(args: {
   threadId: string | undefined;
   messages: readonly ThreadMessage[];
   runConfig?: { custom?: Record<string, unknown> } | null;
+  /** Re-read the scene first, since another tab may have changed the cast or persona. */
+  revalidate?: boolean;
 }): Promise<CharacterRun | null> {
   const { threadId, messages } = args;
   if (!threadId) return null;
@@ -108,7 +110,8 @@ export async function prepareCharacterRun(args: {
   const knownCharacterChat = isKnownCharacterChat(threadId) || messages.some((m) => roleplayMetaOf(m) !== null);
   let scene: ChatScene | null;
   try {
-    scene = await store.loadScene(threadId);
+    // Only a known character chat is re-read; an ordinary chat cannot gain characters.
+    scene = await store.loadScene(threadId, args.revalidate === true && Boolean(store.scenes[threadId]));
   } catch (error) {
     scene = store.scenes[threadId] ?? null;
     if (!scene && knownCharacterChat) throw new CharacterChatUnavailableError(error);

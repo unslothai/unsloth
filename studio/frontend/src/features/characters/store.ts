@@ -36,10 +36,10 @@ interface CharactersState {
   patchScene: (
     threadId: string,
     patch: {
-      /** A function runs on the cast as the previous write left it, so queued cast edits do not undo each other. */
+      // A function runs on the scene as the previous write left it, so queued edits do not undo each other.
       cast?: CastEdit[] | ((current: CastEdit[]) => CastEdit[]);
       personaId?: string | null;
-      settings?: SceneSettings;
+      settings?: SceneSettings | ((current: SceneSettings) => SceneSettings);
     },
   ) => Promise<ChatScene>;
 }
@@ -136,12 +136,21 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
   removePersona: (id) => set((state) => ({ personas: state.personas.filter((p) => p.id !== id) })),
   loadScene: (threadId, force = false) => {
     if (!force && threadId in get().scenes) return Promise.resolve(get().scenes[threadId] ?? null);
+    // A queued write answers with the newest scene, so a re-read waits for it instead.
+    const write = sceneWrites.get(threadId);
+    if (force && write) {
+      const current = () => get().scenes[threadId] ?? null;
+      return write.then(current, current);
+    }
     const pending = inflightScenes.get(threadId);
     if (pending && !force) return pending;
     const started = epoch;
     const request = getChatScene(threadId)
       .then((scene) => {
-        if (started === epoch) set((state) => ({ scenes: { ...state.scenes, [threadId]: scene } }));
+        if (started !== epoch) return scene;
+        // A write queued during this read answers with a newer scene.
+        if (sceneWrites.has(threadId)) return get().scenes[threadId] ?? scene;
+        set((state) => ({ scenes: { ...state.scenes, [threadId]: scene } }));
         return scene;
       })
       .finally(() => inflightScenes.delete(threadId));
@@ -160,12 +169,14 @@ export const useCharactersStore = create<CharactersState>((set, get) => ({
     const write = previous
       .catch(() => undefined)
       .then(async () => {
+        const { cast: castEdit, settings: settingsEdit, ...rest } = patch;
         const latest = get().scenes[threadId];
-        const settings = patch.settings ? { ...(latest?.settings ?? {}), ...patch.settings } : undefined;
+        const base = latest?.settings ?? {};
+        const edit = typeof settingsEdit === "function" ? settingsEdit(base) : settingsEdit;
+        const settings = edit ? { ...base, ...edit } : undefined;
         const current = [...(latest?.cast ?? [])]
           .sort((a, b) => a.position - b.position)
           .map((m) => ({ characterId: m.characterId, muted: m.muted }));
-        const { cast: castEdit, ...rest } = patch;
         const cast = typeof castEdit === "function" ? castEdit(current) : castEdit;
         const scene = await updateChatScene(threadId, {
           ...rest,

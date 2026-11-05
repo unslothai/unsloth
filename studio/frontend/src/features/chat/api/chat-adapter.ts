@@ -5201,6 +5201,7 @@ export function createOpenAIStreamAdapter(
         threadId: resolvedThreadId,
         messages: survivingMessages,
         runConfig,
+        revalidate: true,
       });
       const roleplayCustom = characterRun ? { roleplay: characterRun.replyMeta } : {};
       const { messages: renderedMessages, sandboxAttachments } =

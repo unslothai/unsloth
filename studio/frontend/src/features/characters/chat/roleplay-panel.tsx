@@ -69,6 +69,7 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
   const members = [...scene.cast].sort((a, b) => a.position - b.position);
   // A group needs someone left to answer: with every member muted, a sent message has no speaker.
   const leavesNoSpeaker = (next: { muted: boolean }[]) => next.length > 1 && next.every((m) => m.muted);
+  type CastEdit = { characterId: string; muted: boolean };
   // Only the changed keys: patchScene merges them into the latest settings when the write runs.
   const setSettings = (next: Partial<SceneSettings>) => void patch({ settings: next });
 
@@ -80,10 +81,15 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
           {cast.map((character) => {
             const member = members.find((m) => m.characterId === character.id);
             const muted = Boolean(member?.muted);
-            const toggle = (list: { characterId: string; muted: boolean }[]) =>
-              list.map((m) => (m.characterId === character.id ? { ...m, muted: !m.muted } : m));
-            const remove = (list: { characterId: string; muted: boolean }[]) =>
-              list.filter((m) => m.characterId !== character.id);
+            // Checked again when the write runs: an earlier queued edit may have muted the others.
+            const guarded = (edit: (list: CastEdit[]) => CastEdit[]) => (list: CastEdit[]) => {
+              const next = edit(list);
+              return leavesNoSpeaker(next) ? list : next;
+            };
+            const toggle = guarded((list) =>
+              list.map((m) => (m.characterId === character.id ? { ...m, muted: !m.muted } : m)),
+            );
+            const remove = guarded((list) => list.filter((m) => m.characterId !== character.id));
             return (
               <li key={character.id} className="group/member flex items-center gap-2.5 rounded-xl py-1 pl-1 pr-1 hover:bg-nav-surface-hover">
                 <Portrait
@@ -194,14 +200,20 @@ export function RoleplayPanel({ threadId }: { threadId: string }) {
           placeholder={t("characters.panel.authorsNotePlaceholder")}
           value={settings.authorsNote?.text ?? ""}
           onSave={(text) =>
-            setSettings({ authorsNote: text ? { text, depth: settings.authorsNote?.depth ?? 4 } : undefined })
+            void patch({
+              settings: (current) => ({
+                authorsNote: text ? { text, depth: current.authorsNote?.depth ?? 4 } : undefined,
+              }),
+            })
           }
         />
         <label className="flex items-center gap-2 self-end text-ui-12 text-nav-fg-muted">
           {t("characters.panel.noteDepth")}
           <DepthInput
             value={settings.authorsNote?.depth ?? 4}
-            onSave={(depth) => setSettings({ authorsNote: { text: settings.authorsNote?.text ?? "", depth } })}
+            onSave={(depth) =>
+              void patch({ settings: (current) => ({ authorsNote: { text: current.authorsNote?.text ?? "", depth } }) })
+            }
           />
         </label>
       </div>
