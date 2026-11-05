@@ -269,11 +269,32 @@ def test_load_and_teardown_wiring():
                 ),
             )
             diffusion._uninstall_fused_dit_patches()
+        # An unset dense request resolves to "off" but is not an explicit off.
+        ap.install_stage(
+            ap.STAGE_LOAD,
+            ap.PatchContext(
+                pipe = pipe,
+                dtype = "bf16",
+                device = "cuda",
+                logger = "log",
+                speed_mode = "off",
+                explicit_off = False,
+            ),
+        )
+        diffusion._uninstall_fused_dit_patches()
     finally:
         diffusion_rocm_fused.install_for_pipe = orig_install
         diffusion_rocm_fused.uninstall = orig_uninstall
     assert ("install", (pipe, "bf16", "cuda", "log"), {"adaln": False}) in seen
-    assert seen.count(("install", (pipe, "bf16", "cuda", "log"), {"adaln": True})) == 3
+    assert seen.count(("install", (pipe, "bf16", "cuda", "log"), {"adaln": True})) == 4
+    stage_load = next(
+        c
+        for c in ast.walk(load)
+        if isinstance(c, ast.Call)
+        and any(isinstance(a, ast.Attribute) and a.attr == "STAGE_LOAD" for a in c.args)
+    )
+    explicit = next(k.value for k in stage_load.keywords if k.arg == "explicit_off")
+    assert "speed_mode is not None" in ast.unparse(explicit)
     assert ("uninstall",) in seen
 
 
