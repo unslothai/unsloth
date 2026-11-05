@@ -171,7 +171,11 @@ MEASURED = (7.73, 9.51, 12.86)
 GENERIC = (8.33, 12.05, 19.03)
 
 
-def _cards(monkeypatch, *answers, driver = True):
+def _cards(
+    monkeypatch,
+    *answers,
+    driver = True,
+):
     from utils.hardware import nvidia
 
     queue = [answer for answer in answers for _ in YUE2_BYTES]
