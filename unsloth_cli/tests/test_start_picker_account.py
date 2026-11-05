@@ -103,7 +103,7 @@ def test_picked_file_validation_uses_the_authenticated_scan_root(
 
     def inventory(*, gguf_variant):
         assert current_account().account_id == account.account_id
-        return [catalog._directory_variant_entry(root, gguf_variant, "Downloaded", "model")]
+        return [catalog._gguf_variant_entry(root, gguf_variant, "Downloaded", "model")]
 
     monkeypatch.setattr(catalog, "list_chat_models", inventory)
     start._connect(

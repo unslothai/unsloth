@@ -343,3 +343,20 @@ def test_loose_gguf_files_follow_requested_quant(tmp_path, monkeypatch):
     assert [entry.model for entry in catalog.local_folder_entries(gguf_variant = "Q8_0")] == [
         str(root / "tiny-Q8_0.gguf")
     ]
+
+
+def test_loose_shard_filename_yields_the_loadable_first_shard(tmp_path, monkeypatch):
+    ensure_studio_backend_path(seed_cache_env = False)
+    from hub.services.models.local_inventory import _scan_models_dir
+    from utils.models.model_config import _direct_gguf_for_variant
+
+    paths = [tmp_path / f"tiny-Q8_0-{i:05d}-of-00002.gguf" for i in (1, 2)]
+    for path in paths:
+        path.write_bytes(b"GGUF" + bytes(4092))
+    first, second = paths
+    rows = _scan_models_dir(tmp_path)
+    monkeypatch.setattr(catalog, "_local_catalog_rows", lambda: rows)
+    assert _direct_gguf_for_variant(str(second), second.name) == str(first)
+    [entry] = catalog.local_folder_entries(gguf_variant = second.name)
+    assert entry.model == str(first)
+    assert _direct_gguf_for_variant(entry.model, entry.file_variant) == str(first)
