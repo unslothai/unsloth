@@ -65,6 +65,7 @@ studio = [
     "node_prebuilt_pins.json",
     "lemonade_prebuilt_pins.json",
     "q4nx_converter_pins.json",
+    "hnsw_prebuilt_pins.json",
     "src-tauri/icons/icon.icns",
     "src-tauri/icons/icon.png",
     "frontend/dist/**/*",
@@ -168,8 +169,6 @@ studio = [
     "av>=12.3.0",
     # No win_arm64 wheel or sdist; RAG treats a missing sqlite_vec as unavailable.
     "sqlite-vec==0.1.9 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
-    # Mirrors studio.txt: HNSW for gigantic RAG scopes, wheels for every target incl. win_arm64.
-    "usearch==2.26.6",
     # Mirrors studio.txt: pymupdf publishes a win_arm64 wheel only for 1.28.2.
     "pymupdf==1.27.2.3 ; sys_platform != 'win32' or platform_machine != 'ARM64'",
     "pymupdf==1.28.2 ; sys_platform == 'win32' and platform_machine == 'ARM64'",
@@ -180,6 +179,11 @@ studio = [
 
 # Optional AWS S3 dataset loading; kept out of the default Studio installation.
 s3 = ["boto3>=1.34.0"]
+# HNSW for gigantic RAG scopes. Studio installs this pair itself (studio/install_hnsw_prebuilt.py).
+hnsw = [
+    "usearch==2.26.6 ; python_version >= '3.11'",
+    "numkong==7.8.6 ; python_version >= '3.11'",
+]
 
 triton = [
     # Not raised past 3.0.0: torch 2.6.0 pins triton==3.2.0, so a higher floor makes it unresolvable.

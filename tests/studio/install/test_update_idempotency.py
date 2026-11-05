@@ -125,6 +125,8 @@ INDEX_DIGEST = (
     "else:\n"
     "    digest = hashlib.sha256()\n"
     "    for name in sorted(index):\n"
+    "        if name in ('usearch', 'numkong'):\n"
+    "            continue\n"
     "        digest.update(f'{name}=={index[name][0]}\\n'.encode('utf-8'))\n"
     "    print(digest.hexdigest())\n"
 )
@@ -531,6 +533,11 @@ def snapshot(venv_python: pathlib.Path) -> dict:
 
     state["uv_cache_marker"] = _digest(studio_home / "cache" / "uv-cache-dir")
     state["no_torch_marker"] = (venv / ".unsloth-no-torch").is_file()
+    # The optional HNSW pair's probe record: a no-op update reads it, never rewrites it.
+    hnsw_marker = venv / ".unsloth-hnsw.json"
+    state["hnsw_marker"] = (
+        (_digest(hnsw_marker), hnsw_marker.stat().st_mtime_ns) if hnsw_marker.is_file() else None
+    )
     for name in (".venv_t5_530", ".venv_t5_550", ".venv_t5_510"):
         state[name] = _tree_state(studio_home / name)
 
