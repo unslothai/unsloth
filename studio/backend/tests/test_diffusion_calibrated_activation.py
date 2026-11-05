@@ -660,3 +660,53 @@ def test_controlnet_surcharge_still_applies_to_transformer_families_named_like_s
         _guard(6 * GIB, 24 * GIB, calibrated = True, controlnet = True, **kw).action
         == dm.ACTIVATION_REFUSE
     )
+
+
+# Real Colab L4 load of Alpha-VLLM/Lumina-Image-2.0 at bf16 (transformer_quant none): the planner inputs it logged.
+LUMINA2_BF16 = dict(model_dense_mib = 10_124, companion_dense_mib = 5_149, text_encoder_dense_mib = 4_959)
+LUMINA2_INT8 = dict(LUMINA2_BF16, model_dense_mib = 7_876)
+
+
+def _l4_plan(sizes, act):
+    """A Colab L4 as Studio read it (22_563 MiB total, 20_321 MiB budget): flat bf16 needs 20_364 MiB."""
+    return plan_diffusion_memory(
+        target = _target(),
+        device_memory = DeviceMemory("cuda", "cuda", "discrete_vram", 22_369, 22_563),
+        runtime_headroom_mib = 8192,
+        calibrated_activation = act,
+        **sizes,
+    )
+
+
+def test_lumina_2_measured_activation_keeps_the_int8_transformer_resident_on_16gb():
+    """The flat 8 GiB guess streamed Lumina-2's int8 transformer every step on 16 GB cards; the measured peak fits it."""
+    act = calibrated_image_activation("lumina-2")
+    flat, plan = _plan(16, LUMINA2_INT8, None), _plan(16, LUMINA2_INT8, act)
+    assert flat.offload_policy == OFFLOAD_GROUP and flat.stream_transformer
+    assert plan.offload_policy == OFFLOAD_GROUP
+    assert plan.stream_transformer is False and plan.stream_text_encoders is True
+    assert not plan.vae_tiling
+
+
+def test_lumina_2_measured_activation_keeps_int8_resident_on_an_l4():
+    """On a 22.5 GB L4 the flat guess streamed the encoder every render; with an int8 DiT everything now fits. bf16
+    keeps streaming the encoder: the measured first-decode peak leaves it short of resident."""
+    act = calibrated_image_activation("lumina-2", max_speed = False)
+    for sizes in (LUMINA2_BF16, LUMINA2_INT8):
+        flat = _l4_plan(sizes, None)
+        assert flat.offload_policy == OFFLOAD_GROUP and flat.stream_text_encoders
+    plan = _l4_plan(LUMINA2_INT8, act)
+    assert plan.offload_policy == OFFLOAD_NONE and not plan.vae_tiling
+    assert _l4_plan(LUMINA2_BF16, act).offload_policy == OFFLOAD_GROUP
+
+
+def test_lumina_2_measured_activation_never_picks_a_slower_tier():
+    for sizes in (LUMINA2_BF16, LUMINA2_INT8):
+        act = calibrated_image_activation("lumina-2")
+        best = None
+        for gib in (8, 10, 12, 14, 15, 16, 18, 20, 22, 24, 32, 48):
+            flat, plan = _plan(gib, sizes, None), _plan(gib, sizes, act)
+            rank = _rank(plan, sizes)
+            assert rank <= _rank(flat, sizes), (gib, plan.reasons)
+            assert best is None or rank <= best, gib
+            best = rank

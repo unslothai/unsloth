@@ -1673,6 +1673,11 @@ _MEASURED_IMAGE_ACTIVATION_MIB: dict[
     "z-image": ((744, 1_199, 2_666, 2_456, 4_327), (744, 1_271, 2_669, 2_456, 4_327)),
     # SDXL base, T4 fp16, 1024 (2048 tiled decode 2_455; untiled 7_706 left to the OOM retry); compiled unmeasured.
     "sdxl": ((9, 327, 2_434, 2_434, 2_455), (9, 327, 2_434, 2_434, 2_455)),
+    # Lumina-Image-2.0 bf16, CFG 4, eager / default / max and int8, worst per column (A100 and L4): Gemma-2-2B encode
+    # 80 resident, 1_130 streamed. Denoise 486 eager (250 compiled, 285 int8; 1_914 eager at 2048^2). The 16-channel FLUX
+    # VAE decodes in 2_439 eager, but the first decode of the default / max tiers peaks at 4_497 (A100; 3_471 on an
+    # L4) for its cudnn benchmark workspace; later ones take 1_413. Tiling is a no-op at 1024^2 (2048^2 tiled: 2_466).
+    "lumina-2": ((1_130, 486, 4_497, 4_497, 4_497), (1_130, 486, 4_497, 4_497, 4_497)),
 }
 # U-Nets cannot stream encoders on group tiers: the measurement only decides all-resident vs whole-module offload.
 _RESIDENT_ONLY_CALIBRATED = frozenset({"sdxl"})
