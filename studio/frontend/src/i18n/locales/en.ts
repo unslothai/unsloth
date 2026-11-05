@@ -1581,6 +1581,12 @@ export const en = {
       levelFullAccessNote: "Full access turns the sandbox off. This setting applies again when you pick another level.",
       learnMore: "Learn more",
       managedNote: "The owner of this Unsloth server sets up the OS sandbox.",
+      trustedFoldersTitle: "Trusted folders",
+      trustedFoldersLabel: "Run without asking",
+      trustedFoldersDescription: "Python and Terminal may read and run files in these folders without asking for approval, in your own chats only. Writing to them still asks. One folder per line.",
+      trustedFoldersPlaceholder: "/Users/you/tools",
+      trustedFoldersLoadError: "Could not load the trusted folders.",
+      trustedFoldersSaveError: "Could not save the trusted folders.",
     },
     debugging: {
       description: "Read the Unsloth logs without leaving the app.",

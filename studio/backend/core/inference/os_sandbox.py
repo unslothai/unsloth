@@ -703,7 +703,8 @@ def editable_source_roots() -> tuple[str, ...]:
 
 
 def model_library_roots() -> tuple[str, ...]:
-    """Registered model folders the approval gate reads silently; NOT the whole read-silent set, which has /etc."""
+    """Registered model folders and the owner's trusted tool folders, which the approval gate reads silently;
+    NOT the whole read-silent set, which has /etc."""
     try:
         from . import tool_path_approval
         from utils.paths.storage_roots import well_known_model_dirs
@@ -712,7 +713,24 @@ def model_library_roots() -> tuple[str, ...]:
             *well_known_model_dirs(),
         )
     except Exception:  # noqa: BLE001 - never fail a launch over the approval gate
+        candidates = ()
+    kept = list(_grantable_read_roots(candidates))
+    kept.extend(root for root in trusted_tool_folder_roots() if root not in kept)
+    return tuple(kept)
+
+
+def trusted_tool_folder_roots() -> tuple[str, ...]:
+    """Filtered as a model folder is, so the gate never silences a folder the jails would refuse to grant."""
+    try:
+        from utils.trusted_tool_folders_settings import trusted_tool_folders_for_caller
+        return _grantable_read_roots(trusted_tool_folders_for_caller())
+    except Exception:  # noqa: BLE001 - never fail a launch over a stored setting
         return ()
+
+
+def _grantable_read_roots(candidates) -> tuple[str, ...]:
+    from . import tool_path_approval
+
     state = studio_state_roots()
     forbidden = _never_a_model_library()
     hf_homes = _hf_home_roots()
