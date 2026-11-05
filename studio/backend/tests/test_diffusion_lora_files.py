@@ -273,8 +273,10 @@ class _RecordingPipe:
         return {"transformer": list(self.loaded)} if self.loaded else {}
 
 
-def test_kohya_keys_resolve_to_the_layer_they_name(tmp_path):
+def test_kohya_keys_resolve_to_the_layer_they_name(tmp_path, monkeypatch):
     from safetensors.torch import save_file
+
+    monkeypatch.setattr(lf, "_refresh_group_offload", lambda roots: None)  # no diffusers needed
 
     a, b = torch.randn(2, 24), torch.randn(24, 2)
     path = tmp_path / "kohya.safetensors"
