@@ -1624,6 +1624,9 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- end }}"""
 '''
 GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
+# Unsloth's gemma-4-thinking primes it in the generation prompt for every size, in every release
+_gemma4_thinking_prompt_empty_thought = "    {%- if not thinking -%}\n        {{ '<|channel>thought\n<channel|>' }}\n    {%- endif -%}\n"
+assert _gemma4_thinking_prompt_empty_thought in gemma4_thinking_template
 
 
 def _gemma4_wants_empty_thought(*holders):
@@ -1632,8 +1635,7 @@ def _gemma4_wants_empty_thought(*holders):
         template = getattr(holder, "chat_template", None)
         if isinstance(template, dict): template = template.get("default")
         if not isinstance(template, str): continue
-        # Unsloth's gemma-4-thinking primes it for every size
-        if template.endswith(gemma4_thinking_template): continue
+        template = template.replace(_gemma4_thinking_prompt_empty_thought, "")
         if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
             return True
     return False
