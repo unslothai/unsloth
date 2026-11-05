@@ -3284,6 +3284,7 @@ def _merge_codex_config(
 # Keep custom-model behavior aligned with Codex's own unknown-model fallback. This Apache-2.0 prompt is copied from openai/codex rust-v0.144.0 models-manager/prompt.md.
 _CODEX_FALLBACK_PROMPT = Path(__file__).parent.parent / "codex_fallback_prompt.md"
 _CODEX_MODEL_CATALOG_MIN_VERSION = (0, 110, 0)
+_CODEX_PROFILE_FILE_MIN_VERSION = (0, 134, 0)
 _CODEX_PATCH_LINE_ENDINGS_MIN_VERSION = (0, 148, 0)
 # Older Codex sends no reasoning for a model without reasoning summaries, and older Pi has no samplingParams.
 _CODEX_REASONING_REQUEST_MIN_VERSION = (0, 145, 0)
@@ -7540,7 +7541,14 @@ def codex(
     install_hint = _npm_install_hint("@openai/codex")
     # Before the install prompt: _install_agent runs a remote installer, and this can refuse outright, so asking first fetches a tool the run cannot use.
     _preflight_agent_gguf(_CODEX_GGUF_AGENT, model, serve = serve, launch = launch)
-    _require_agent_for_launch("codex", install_hint, launch and not app)
+    executable = _require_agent_for_launch("codex", install_hint, launch and not app)
+    version = executable and _codex_executable_version(executable)
+    if version and version < _CODEX_PROFILE_FILE_MIN_VERSION:
+        _fail(
+            f"Codex {'.'.join(map(str, _CODEX_PROFILE_FILE_MIN_VERSION))} or newer is needed, "
+            f"but `codex` here is {'.'.join(map(str, version))}. Update it with "
+            "`npm install -g @openai/codex@latest`."
+        )
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
         codex_effort = None

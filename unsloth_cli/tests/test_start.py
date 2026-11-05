@@ -4279,6 +4279,32 @@ def test_agent_too_old_to_send_the_flags_keeps_the_server_pin(
         assert "model_reasoning_effort" not in profile
 
 
+@pytest.mark.parametrize("subagent", [[], ["--as-subagent"], ["--auto-route"]])
+@pytest.mark.parametrize(
+    "version, launches", [((0, 133, 0), False), ((0, 134, 0), True), (None, True)]
+)
+def test_codex_too_old_for_profile_files_stops_before_launch(
+    version, launches, subagent, fake_studio, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: f"/bin/{name}")
+    monkeypatch.setattr(
+        start, "_require_agent_for_launch", lambda name, hint, launch: f"/bin/{name}"
+    )
+    monkeypatch.setattr(start, "_codex_executable_version", lambda executable: version)
+    launched = []
+    monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
+    result = CliRunner().invoke(start.start_app, ["codex", *subagent])
+    assert bool(launched) is launches
+    if launches:
+        assert result.exit_code == 0, result.output
+    else:
+        assert result.exit_code == 1
+        assert "Codex 0.134.0 or newer is needed, but `codex` here is 0.133.0" in result.output
+        assert "npm install -g @openai/codex@latest" in result.output
+        assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
+
+
 def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(
     fake_studio, tmp_path, monkeypatch
 ):
