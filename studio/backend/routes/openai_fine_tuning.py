@@ -1132,9 +1132,8 @@ def _run_created(run: dict[str, Any]) -> int:
 def _runs_by_creation(
     live: dict[str, dict[str, Any]],
 ) -> Iterator[tuple[int, dict[str, Any], bool]]:
-    # History comes newest start first, and no job starts before it was created: a buffered
-    # row created after the current row's start can be emitted, as no later row is newer.
-    # Live runs started after every history row.
+    # History is newest start first and no job starts before it is created, so a buffered row
+    # created after this row's start is final. Live runs started after every history row.
     buffered = [
         (-job["created_at"], -inf, seq, job, False) for seq, job in enumerate(live.values())
     ]
@@ -1156,8 +1155,7 @@ def _runs_by_creation(
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # By creation time, queue entries first on ties: a started job keeps its place across pages,
-    # even when a later-created job batched and started ahead of it.
+    # By creation time, queue entries first on ties: a started job keeps its place across pages.
     remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
     for created_at, row, is_run in _runs_by_creation(live):
         while remaining and remaining[0]["created_at"] >= created_at:

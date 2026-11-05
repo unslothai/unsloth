@@ -1914,7 +1914,6 @@ def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
             jobs.append(await _create(client, uploaded.id, suffix = suffix, extra_body = extra))
             clock["t"] += 10
         gpu["busy"] = False
-        # A and C batch while B (DoRA) waits.
         await openai_fine_tuning._drain_once()
         for i in range(2):
             history_row(f"job_20261021_101500_member0{i}", "2026-11-04T00:00:00+00:00")
@@ -1934,7 +1933,6 @@ def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
 
 
 def test_history_lists_by_creation_time_reading_only_what_a_page_needs(monkeypatch):
-    # 300 runs started a second apart; the oldest job waited in the queue and started last.
     runs = [
         {"id": f"run{i}", "started_at": f"2026-11-04T00:{i // 60:02d}:{i % 60:02d}+00:00"}
         for i in range(300)
