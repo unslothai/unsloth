@@ -977,17 +977,14 @@ function VramBadge({
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
 
-/** The audio.cpp estimate as the load check's refusal states it ("12.2 GB"). */
 function residentGbLabel(gb: number): string {
   return `${gb.toFixed(1)} GB`;
 }
 
-// Wide enough for "99.9GB to run" and a "99.9GB" size, so the estimate and the fit mark to its
-// left line up across quant rows whatever each file size's width.
+// Fixed widths ("99.9GB to run", "99.9GB") keep the estimate and fit mark aligned across rows.
 const RESIDENT_COLUMN = "mr-1.5 min-w-[13ch] text-right";
 const RESIDENT_SIZE_COLUMN = "min-w-[6ch] text-right";
 
-/** An audio.cpp load estimate set like the size beside it ("9.5GB to run"), explained on hover. */
 function ResidentText({
   value,
   className,
@@ -2927,8 +2924,7 @@ function GgufVariantExpander({
   );
 
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
-  // audio.cpp variants carry the backend's own estimate: judged on it, as their load check is, against
-  // the largest card, since automatic placement takes the one with the most free memory.
+  // audio.cpp variants: the backend estimate against the largest card, where they are placed.
   const largestGpuGb = useInferenceGpuInfo().maxDeviceMemoryGb;
   const cardGb = anyBudgetGb ? largestGpuGb : 0;
   const getVariantFit = useCallback(
@@ -3286,7 +3282,6 @@ function GgufVariantExpander({
                   className={RESIDENT_COLUMN}
                 />
               ) : null}
-              {/* The size stays rightmost, so it lines up across rows as on every other picker. */}
               <span
                 className={cn(
                   "font-mono text-ui-10 text-muted-foreground tabular-nums",
@@ -4982,8 +4977,6 @@ export function HubModelPicker({
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
-        // audio.cpp: the backend's estimate against the largest card, the number its load check compares.
-        // The badge asks whether any variant fits, as the fit filter does; the meta shows the default.
         const resident = r.estimatedResidentGb;
         const residentFit = audioCppRowFit(r, rowInferenceGpu.maxDeviceMemoryGb);
         if (resident && residentFit) {

@@ -3242,7 +3242,6 @@ def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignor
 
 
 def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
-    # The picker shows this beside the file size, so it is the number a refusal would state.
     from core.inference.audio_cpp_failures import estimate_resident_gb
 
     names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-bf16.gguf"]

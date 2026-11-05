@@ -847,8 +847,6 @@ def test_cached_path_of_a_folder_skips_a_newer_snapshot_missing_voice_files(hub)
 
 @pytest.mark.parametrize("local_path, packaged", [("audio-cpp/Yue2-3B-GGUF", True), ("dir", False)])
 def test_a_package_repo_row_lists_its_packages(hub, tmp_path, monkeypatch, local_path, packaged):
-    # YuE2's On Device row sends its repo id as local_path, like a folder row: list the packages
-    # (model + VAE + sidecars), not the raw GGUF files. A real directory is still scanned as one.
     from hub.services.models import gguf_variants
 
     sentinel = object()

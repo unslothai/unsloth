@@ -240,9 +240,7 @@ export function hfModelFitsDevice(
     id: string;
     totalParams?: number;
     estimatedSizeBytes?: number;
-    /** audio.cpp only: GiB of GPU memory the load check requires. */
     estimatedResidentGb?: number;
-    /** audio.cpp only: the same for the smallest variant a GPU runs. */
     smallestResidentGb?: number;
     curatedSizeBytes?: number;
     isGguf?: boolean;
@@ -250,7 +248,6 @@ export function hfModelFitsDevice(
   },
   gpu: {
     memoryTotalGb: number;
-    /** The largest single card; absent means memoryTotalGb is one card. */
     maxDeviceMemoryGb?: number;
     systemRamAvailableGb: number;
     budgetKnown?: boolean;
@@ -270,9 +267,7 @@ export function hfModelFitsDevice(
     !gpu.budgetKnown
   )
     return true;
-  // audio.cpp loads whole on the card with the most free memory, not the lowest ordinal: the estimate
-  // of its smallest variant against the largest card decides, as on the row badge, so a model whose
-  // default quant is too big stays listed when a smaller one fits.
+  // audio.cpp: listed when its smallest variant fits the largest card, where it is placed.
   const resident = audioCppRowFit(
     model,
     gpu.maxDeviceMemoryGb ?? gpu.memoryTotalGb,

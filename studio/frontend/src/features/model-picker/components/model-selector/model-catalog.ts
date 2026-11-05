@@ -1350,9 +1350,8 @@ export function recommendedQuantForDevice<T extends GgufVariantSizes>(
   preferred: T | null = null,
   gpuGb = 0,
 ): T | null {
-  // Judged on the download footprint, which includes companion GGUFs (mmproj, drafter), or on the
-  // audio.cpp estimate where there is one. A `streamed` quant (tables left on disk) runs but never
-  // outranks one that fits fully resident.
+  // Judged on the download footprint, which includes companion GGUFs (mmproj, drafter).
+  // A `streamed` quant (tables left on disk) runs but never outranks one that fits fully resident.
   const fitOfVariant = (variant: T) =>
     classifyVariantFitOnCard(fitOf, variant, gpuGb);
   // Zero size means unknown (old backend or stat error) and must not compete as comfortable.

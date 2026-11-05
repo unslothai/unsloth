@@ -572,8 +572,6 @@ def _linux_nvidia_procfs_gpu_count() -> int:
 
 
 def has_nvidia_driver() -> bool:
-    """True when nvidia-smi resolves or the kernel driver lists a GPU. Tells an empty capability or
-    inventory query on an NVIDIA host (unreadable) from a host with no NVIDIA card."""
     return (
         shutil.which(_nvidia_smi_executable()) is not None or _linux_nvidia_procfs_gpu_count() > 0
     )

@@ -1102,7 +1102,6 @@ async def _audio_cpp_variants_answer(
                     display_label = variant.label,
                     size_bytes = variant.size_bytes,
                     download_size_bytes = variant.size_bytes + companion_bytes,
-                    # What the load check compares, so the picker cannot disagree with a refusal.
                     estimated_resident_gb = estimate_resident_gb(variant.size_bytes, model.family),
                     download_remaining_bytes = remaining,
                     downloaded = downloaded,
@@ -1607,8 +1606,7 @@ async def get_gguf_variants_answer(
     hf_token = account_access.account_hf_token(hf_token)
     from core.inference.audio_cpp_models import is_umbrella_id
 
-    # An umbrella folder row is never a directory: its On Device row sends the row id as local_path,
-    # and so does an audio.cpp package repo's (YuE2), which must list as its packages.
+    # Umbrella folder and package repo (YuE2) On Device rows send their row id as local_path.
     row_id = bool(local_path) and local_path.strip().lower() == (repo_id or "").strip().lower()
     if not local_path or is_umbrella_id(repo_id) or row_id:
         audio_cpp_answer = await _audio_cpp_variants_answer(repo_id, hf_token, offline)

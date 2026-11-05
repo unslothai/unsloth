@@ -109,9 +109,7 @@ export interface HfModelResult {
   gated?: false | "auto" | "manual";
   totalParams?: number;
   estimatedSizeBytes?: number;
-  /** audio.cpp only: GiB of GPU memory the load check requires. */
   estimatedResidentGb?: number;
-  /** audio.cpp only: the same for the smallest variant a GPU runs. */
   smallestResidentGb?: number;
   curatedSizeBytes?: number;
   isGguf: boolean;

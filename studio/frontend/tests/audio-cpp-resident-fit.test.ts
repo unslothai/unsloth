@@ -29,7 +29,6 @@ test("a row shows the load estimate beside the file size, not in its place", () 
 });
 
 const GB = 1024 ** 3;
-// YuE2 and ACE-Step on the Hub, with the backend's load-check estimates (#16627).
 const yue2 = [
   {
     quant: "Q4_0",
@@ -54,7 +53,6 @@ const aceQ8 = { size_bytes: 6185468096, estimated_resident_gb: 12.17 };
 const card10 = { gpuGb: 10, systemRamGb: 32 };
 
 test("an audio.cpp variant is judged on the load check's estimate, not its file size", () => {
-  // The llama.cpp rule reads a 5.8 GiB file as fitting a 10 GiB card; the check needs 12.17 GiB.
   assert.notEqual(classifyGgufFit(aceQ8.size_bytes, card10), "oom");
   assert.equal(classifyGgufVariantFit(aceQ8, card10), "oom");
   assert.equal(classifyGgufVariantFit(yue2[1], card10), "fits");
@@ -75,7 +73,6 @@ test("without an estimate, or without a known GPU, the llama.cpp rule still deci
 });
 
 test("the fits-on-device filter keeps a row when any of its quants fits the card", () => {
-  // The YuE2 catalog row: Q8_0 by default (9.51 GiB), Q4_0 the smallest (7.73 GiB).
   const row = {
     id: "audio-cpp/YuE2-GGUF",
     isGguf: true,
@@ -92,7 +89,6 @@ test("the fits-on-device filter keeps a row when any of its quants fits the card
   for (const [gpuGb, listed, quant] of [
     // Nothing fits: RAM must not lift the row onto a card every quant reads as oom.
     [6, false, undefined],
-    // Only Q4_0 fits: the row stays, and opening it picks Q4_0.
     [8, true, "Q4_0"],
     [10, true, "Q8_0"],
   ] as const) {
@@ -112,10 +108,8 @@ test("the fits-on-device filter keeps a row when any of its quants fits the card
         quant,
       );
   }
-  // An older backend sends no smallest estimate: the default variant's decides.
   const { smallestResidentGb: _, ...defaultOnly } = row;
   assert.equal(hfModelFitsDevice(defaultOnly, card(8)), false);
-  // Without any estimate the size rule, which counts RAM, still decides.
   const { estimatedResidentGb: __, ...plain } = defaultOnly;
   assert.equal(hfModelFitsDevice(plain, card(6)), true);
 });
@@ -131,8 +125,7 @@ test("the recommended and default quant follow the estimate on a 10 GiB card", (
 });
 
 test("an audio.cpp row is judged on the largest card, where automatic placement loads it", () => {
-  // GPU0 10 GiB beside GPU1 24 GiB: task scoping narrows the capacity to GPU0, but the load check
-  // places on the card with the most free memory, so ACE-Step (Q8_0 12.17 GiB) runs on GPU1.
+  // 10 GiB GPU0 beside 24 GiB GPU1: scoping narrows to GPU0, but the load puts ACE-Step on GPU1.
   const host = {
     available: true,
     memoryTotalGb: 34,

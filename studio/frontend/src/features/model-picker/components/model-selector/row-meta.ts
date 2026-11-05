@@ -82,7 +82,7 @@ const META_WHITESPACE_RE = /\s+/;
 export function classifyMetaToken(raw: string): MetaToken | null {
   const t = raw.trim();
   if (!t) return null;
-  // "12.2 GB to run" (an audio.cpp load estimate) is read beside the size, not as one.
+  // Before the size test, which "12.2 GB to run" (an audio.cpp estimate) also matches.
   if (META_RUN_RE.test(t)) {
     return { kind: "resident", label: t.replace(META_RUN_RE, "").trim() };
   }
@@ -105,7 +105,6 @@ export function parseMetaTokens(meta?: string | null): {
   formats: { label: string; tone: FormatTone }[];
   param?: string;
   size?: string;
-  /** The audio.cpp load estimate without its "to run" ("12.2 GB"). */
   resident?: string;
   texts: string[];
 } {

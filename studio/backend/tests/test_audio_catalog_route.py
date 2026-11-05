@@ -82,7 +82,6 @@ def test_a_builder_failure_answers_503_without_its_text(client, monkeypatch):
 
 
 def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
-    # Set per request, not cached with the catalog: the estimate reads this host's GPUs.
     from core.inference.audio_cpp_failures import estimate_resident_gb
 
     sized = dict(
@@ -102,7 +101,6 @@ def test_a_sized_row_carries_the_load_checks_estimate(client, monkeypatch):
 
 
 def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
-    # YuE2's estimate asks nvidia-smi for compute capabilities, which can take seconds.
     import asyncio
 
     from utils.hardware import nvidia

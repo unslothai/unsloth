@@ -319,7 +319,6 @@ def _row(
                 picked = list(package.files) if package is not None else picked
             variant = None if picked else _ranked(files, folder, policy)
             size = sum(f.size for f in picked) if picked else (variant and variant.size_bytes)
-            # The smallest variant a GPU runs: a row fits a card when any of its quants does.
             smallest = min(
                 (
                     v.size_bytes

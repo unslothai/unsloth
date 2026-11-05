@@ -433,7 +433,6 @@ def test_a_build_with_a_late_family_probe_is_retried_sooner(env, monkeypatch):
 
 
 def test_a_package_row_is_sized_by_every_file_it_loads():
-    # YuE2 loads its model GGUF with the VAE and sidecars, so the row and its estimate count them.
     sizes = {
         "sidecars/yue2-model-config.json": 1_000,
         "sidecars/yue2-generation-config.json": 1_000,
@@ -449,14 +448,12 @@ def test_a_package_row_is_sized_by_every_file_it_loads():
     repo = "audio-cpp/Yue2-3B-GGUF"
     row = catalog._row(repo, repo, "", "yue2", {"packages": [q8, q4]}, files)
     assert row.size_bytes == sum(size for path, size in sizes.items() if "q4_0" not in path)
-    # The fit filter keeps the row on a card only Q4_0 fits, so it also carries the smallest package.
     assert row.smallest_size_bytes == sum(
         size for path, size in sizes.items() if "q8_0" not in path
     )
 
 
 def test_the_smallest_variant_skips_quants_a_gpu_cannot_run():
-    # TQ2_1 has only a CPU kernel, so it says nothing about which card the row fits.
     files = [RepoFile("kitten-tq2_1.gguf", 10_000_000), RepoFile("kitten-q8_0.gguf", 40_000_000)]
     repo = "someone/Kitten-GGUF"
     row = catalog._row(repo, repo, "", "kokoro_tts", {}, files)

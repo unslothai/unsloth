@@ -33,9 +33,7 @@ export interface AudioCatalogRow {
   languages: readonly string[] | null;
   status: AudioCatalogStatus | null;
   size_bytes: number | null;
-  /** GiB of GPU memory the load check requires; absent on an older backend. */
   estimated_resident_gb?: number | null;
-  /** The same for the smallest variant a GPU runs; absent on an older backend. */
   smallest_estimated_resident_gb?: number | null;
   downloaded: boolean;
   unsupported_reason: string | null;

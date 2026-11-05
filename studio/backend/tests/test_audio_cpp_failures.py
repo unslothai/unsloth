@@ -138,8 +138,7 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.68 > 2.7
     assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
     assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
-    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): a 240 s cover peaks at 11.2 / 14.7 GiB on CUDA,
-    # 11.2 GiB on a Radeon 8060S and 15.3 GiB for BF16 on Vulkan.
+    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): a 240 s cover peaks at 11.22 / 15.31 GiB.
     assert af.estimate_resident_gb(6185468096, "ace_step") == 12.17 > 11.22 + 0.9
     assert af.estimate_resident_gb(10090406336, "ace_step") == 16.36 > 15.31 + 0.9
 
@@ -147,13 +146,10 @@ def test_estimate_uses_the_measured_family_profile():
 @pytest.mark.parametrize(
     "family, size_bytes, peak_gib, expected",
     [
-        # Stable Audio 3 Small Q8_0 / F16 and Medium Q8_0 / F16 (Hub bytes): 4 batched takes at
-        # the cap, the higher of CUDA and Vulkan on an RTX 3090.
         ("stable_audio", 1683576608, 2.24, 3.47),
         ("stable_audio", 2358473088, 2.80, 4.60),
         ("stable_audio", 3582601408, 5.34, 6.66),
         ("stable_audio", 5834365856, 9.48, 10.43),
-        # MiDashengLM-Gen Q8_0 at the 80 s cap; HeartMuLa Q8_0, 240 s, 20,000 characters, on Vulkan.
         ("midashenglm_gen", 3381370752, 4.42, 5.40),
         ("heartmula", 7659762592, 19.58, 20.53),
     ],
@@ -163,9 +159,7 @@ def test_music_profiles_cover_their_measured_peak(family, size_bytes, peak_gib, 
     assert estimate == expected and estimate >= peak_gib + 0.9
 
 
-# YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16. Their highest peaks with
-# 20,000 characters of lyrics at the 360 s cap, on an RTX 3090 through Vulkan: 6.5 / 8.6 / 11.9 GiB
-# (CUDA: 6.6 / 8.1 / 11.0 GiB; RTX 6000 Ada CUDA: 6.8 / 8.3 / 11.2 GiB).
+# YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16.
 YUE2_BYTES = (2933424181, 4531978293, 7529267253)
 MEASURED = (7.73, 9.51, 12.86)
 GENERIC = (8.33, 12.05, 19.03)
@@ -193,12 +187,9 @@ def _yue2():
         ({0: (8, 6)}, True, MEASURED),
         ({0: (8, 9)}, True, MEASURED),
         ({0: (12, 0)}, True, MEASURED),
-        # No NVIDIA driver (AMD, Intel): the same weights, the same profile.
         ({}, False, MEASURED),
-        # Any pre-Ampere NVIDIA card, alone or beside a newer one: the generic formula.
         ({0: (7, 5)}, True, GENERIC),
         ({0: (8, 9), 1: (7, 5)}, True, GENERIC),
-        # An NVIDIA host whose capability query failed (timed out): the card may be pre-Ampere.
         ({}, True, GENERIC),
     ],
 )
@@ -222,7 +213,6 @@ def test_an_nvidia_host_is_told_from_one_without_nvidia(monkeypatch, smi, procfs
 
 
 def test_the_yue2_estimate_follows_the_current_inventory(monkeypatch):
-    # An older card is added, then removed again: each read is honored.
     _cards(monkeypatch, {0: (8, 6)}, {0: (8, 6), 1: (7, 5)}, {0: (8, 6)})
     assert (_yue2(), _yue2(), _yue2()) == (MEASURED, GENERIC, MEASURED)
 
@@ -285,7 +275,6 @@ def test_placement_refusal_states_the_estimate_and_the_free_memory(monkeypatch):
     assert "It needs about 11.5 GB of GPU memory while running. Free GPU memory," in unknown.message
     bare = af.classify_audio_cpp_failure(text, model = model)
     assert bare.message.startswith("No single GPU has enough free memory for Model M. Free GPU")
-    # YuE2 Q8_0 on a 10 GB card: one decimal would read "needs 9.5, and 9.5 is free".
     close = af.classify_audio_cpp_failure(text, model = model, free_gb = 9.5, required_gb = 9.51)
     assert (
         "It needs about 9.51 GB of GPU memory while running, and the most free on one GPU is 9.50 GB."

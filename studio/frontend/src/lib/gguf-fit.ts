@@ -21,8 +21,7 @@ export interface GgufFitInput {
   gpuCount?: number;
   /** Apple MLX loader budget (`GpuInfo.unifiedLoadBudgetGb`): past it, `fits` becomes `marginal`. */
   unifiedLoadBudgetGb?: number | null;
-  /** The largest single GPU (`GpuInfo.maxDeviceMemoryGb`), which audio.cpp estimates are judged on;
-   * absent means gpuGb is one card. */
+  /** The largest single GPU, which audio.cpp estimates are judged on; absent: gpuGb is one card. */
   largestGpuGb?: number;
 }
 
@@ -112,8 +111,6 @@ export interface GgufVariantSizes {
   estimated_resident_gb?: number | null;
 }
 
-/** The audio.cpp load check's verdict on one card from its resident estimate, or null without an
- *  estimate (any other GGUF) or a known GPU. */
 export function audioCppResidentFit(
   residentGb: number | null | undefined,
   gpuGb: number,
@@ -136,7 +133,6 @@ export function audioCppRowFit(
   );
 }
 
-/** A variant's fit: the audio.cpp estimate where the backend gave one, else the llama.cpp rule. */
 export function classifyVariantFitOnCard(
   fitOf: (sizeBytes: number) => GgufFitClass,
   variant: GgufVariantSizes,

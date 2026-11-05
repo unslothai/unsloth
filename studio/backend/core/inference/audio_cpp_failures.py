@@ -160,8 +160,7 @@ _NOT_BEFORE_AMPERE = frozenset({"yue2"})
 
 
 def _may_have_pre_ampere_nvidia_card() -> bool:
-    """Read on every call: gpu_query caches the inventory and drops it on invalidation. An NVIDIA host
-    whose capabilities can't be read (a timed-out query) counts as possibly pre-Ampere."""
+    """Uncached (gpu_query caches); unreadable NVIDIA capabilities count as pre-Ampere."""
     from utils.hardware import nvidia
 
     capabilities = nvidia.get_compute_capabilities()
@@ -270,7 +269,6 @@ def classify_audio_cpp_failure(
         key = f"{key}_cpu" if on_cpu and key in ("out_of_memory", "capacity") else key
         need = ""
         if placement and required_gb is not None:
-            # Two decimals when one would print the same figure twice (9.51 needed, 9.50 free).
             digits = 2 if free_gb is not None and f"{required_gb:.1f}" == f"{free_gb:.1f}" else 1
             need = f" It needs about {required_gb:.{digits}f} GB of GPU memory while running"
             need += (

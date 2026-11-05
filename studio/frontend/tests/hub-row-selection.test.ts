@@ -43,8 +43,7 @@ for (const row of ["catalog-row", "hub-result-row"]) {
 }
 
 test("the picker reads one fit per variant, companions included", () => {
-  // Fit must judge the full footprint (getVariantFit), not the bare checkpoint size; an audio.cpp
-  // variant is judged on its load estimate (classifyVariantFitOnCard), which reads the footprint too.
+  // Fit must judge the full footprint (getVariantFit), not the bare checkpoint size.
   assert.doesNotMatch(PICKERS, /getGgufFit\(v\.size_bytes\)/);
   const at = PICKERS.indexOf("const getVariantFit = useCallback(");
   assert.notEqual(at, -1, "getVariantFit is missing");

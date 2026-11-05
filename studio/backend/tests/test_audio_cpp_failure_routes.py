@@ -147,8 +147,6 @@ def test_placement_refusal_lists_variants_that_fit(monkeypatch):
 
 
 def test_with_nothing_to_unload_the_refusal_reads_the_cards_free_memory(monkeypatch):
-    # No resident model: no post-handoff availability. The live reading still names the free
-    # memory and keeps variants that do not fit out of the suggestions.
     monkeypatch.setattr(af, "offload_options", lambda model: [])
     monkeypatch.setattr(ri, "_visible_gpu_memory_gb", lambda: {0: (7.0, 8.0), 1: (5.0, 8.0)})
     with pytest.raises(HTTPException) as raised:
@@ -198,11 +196,10 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
 @pytest.mark.parametrize(
     "capabilities, driver, free_gb, fits",
     [
-        # #16627: YuE2 Q8_0 needs 9.51 GiB; it peaks at 8.6 GiB at worst on an Ampere card.
+        # #16627: YuE2 Q8_0 needs 9.51 GiB from Ampere on, else the generic 12.05 GiB.
         ({0: (8, 6)}, True, 9.6, True),
         ({}, False, 9.6, True),
         ({0: (8, 6)}, True, 9.4, False),
-        # A pre-Ampere card, or an NVIDIA card whose capability is unknown, keeps the generic 12.05 GiB.
         ({0: (7, 5)}, True, 9.6, False),
         ({}, True, 9.6, False),
     ],
