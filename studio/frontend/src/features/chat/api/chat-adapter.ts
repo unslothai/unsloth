@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { prepareCharacterRun } from "@/features/characters/chat-runtime";
+import { isKnownCharacterChat, prepareCharacterRun } from "@/features/characters/chat-runtime";
 import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access";
 
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
@@ -2316,6 +2316,7 @@ export async function buildLocalTokenCountExtras(
       isMlx: state.loadedIsMlx === true,
       isManagedEngine: state.loadedEngine !== "auto",
       autoCompactEnabled: state.autoCompactEnabled,
+      rolling: isKnownCharacterChat(threadId),
     }),
   };
   if (!supportsTools) {
@@ -6909,6 +6910,7 @@ export function createOpenAIStreamAdapter(
               isMlx: isMlxForCompaction,
               isManagedEngine: isManagedEngineForCompaction,
               autoCompactEnabled: runtime.autoCompactEnabled,
+              rolling: characterRun != null,
               compactNow,
             }),
             temperature: params.temperature,

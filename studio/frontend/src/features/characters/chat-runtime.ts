@@ -93,6 +93,13 @@ async function ensureLoaded(): Promise<void> {
   ]);
 }
 
+/** Whether this thread is known to be a character chat, from what the store has already loaded. */
+export function isKnownCharacterChat(threadId: string | null | undefined): boolean {
+  if (!threadId) return false;
+  const store = useCharactersStore.getState();
+  return Boolean(store.scenes[threadId]) || threadId in store.chatIndex;
+}
+
 /** A character chat's run: the transformed history, its system prompt and stop strings; null for ordinary chats. */
 export async function prepareCharacterRun(args: {
   threadId: string | undefined;
@@ -104,7 +111,7 @@ export async function prepareCharacterRun(args: {
   const store = useCharactersStore.getState();
   // Sending a character chat as an ordinary one would put its hidden turns in front of the model
   // and save an unattributed reply, so a chat known to have characters refuses instead.
-  const knownCharacterChat = Boolean(store.scenes[threadId]) || threadId in store.chatIndex;
+  const knownCharacterChat = isKnownCharacterChat(threadId);
   let scene: ChatScene | null;
   try {
     scene = await store.loadScene(threadId);

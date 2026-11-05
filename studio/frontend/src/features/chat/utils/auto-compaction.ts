@@ -17,8 +17,12 @@ export function ggufCompactionRequestFields(options: {
   autoCompactEnabled: boolean;
   // /compact: asked for by the user, so it applies with auto-compaction off too
   compactNow?: boolean;
+  // Character chats only drop their oldest turns: a checkpoint's recall tool and its
+  // instructions would break the scene, and the cards stay in the system message anyway.
+  rolling?: boolean;
 }): {
   context_overflow?: "error" | "truncate_oldest";
+  context_policy?: "rolling";
   compact_context?: true;
 } {
   if (!options.isGguf && !options.isMlx && !options.isManagedEngine) return {};
@@ -29,6 +33,7 @@ export function ggufCompactionRequestFields(options: {
     // explicit error avoids the UNSLOTH_CONTEXT_OVERFLOW fallback, which may compact
     return { context_overflow: "error" };
   }
+  if (options.rolling) return { context_overflow: "truncate_oldest", context_policy: "rolling" };
   // omit context_policy so the server applies UNSLOTH_CONTEXT_POLICY
   return { context_overflow: "truncate_oldest" };
 }
