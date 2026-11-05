@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.inference import skills
+from core.inference import skills, tools
 from routes.skills import router
 
 
@@ -244,7 +244,9 @@ def test_read_resource_is_contained_utf8_and_paginated(isolated_skills):
         skills.read_skill_resource("reader", home = home)
 
 
-@pytest.mark.parametrize("resource", ["data.jsonl", ".unsloth_attachments/85563b7dcbb0/data.jsonl"])
+@pytest.mark.parametrize(
+    "resource", ["data.jsonl", f"{tools._ATTACHMENTS_DIR}/85563b7dcbb0/data.jsonl"]
+)
 def test_missing_resource_says_attachments_are_not_skill_resources(isolated_skills, resource):
     home, _ = isolated_skills
     _write_skill(home, "agents", "reader")
