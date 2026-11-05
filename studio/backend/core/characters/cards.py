@@ -125,32 +125,39 @@ def _iter_png_chunks(data: bytes):
             return
 
 
-def _inflate(data: bytes) -> bytes:
-    # Bounded: a few KB of zlib can expand to gigabytes before any card check runs.
+def _inflate(data: bytes, budget: list[int]) -> bytes:
+    # Bounded across the whole file: a few KB of zlib can expand to gigabytes, and a PNG can repeat chunks.
     inflater = zlib.decompressobj()
-    out = inflater.decompress(data, MAX_CARD_BYTES)
-    if inflater.unconsumed_tail or not inflater.eof:
+    out = inflater.decompress(data, max(budget[0], 1))
+    budget[0] -= len(out)
+    if inflater.unconsumed_tail or not inflater.eof or budget[0] < 0:
         raise ValueError("compressed text chunk too large or truncated")
     return out
 
 
-def _png_text_chunk(kind: bytes, body: bytes) -> Optional[tuple[str, str]]:
-    """A text chunk's key and text; text is decoded only for card keys, so other chunks cost nothing."""
+def _png_text_chunk(
+    kind: bytes,
+    body: bytes,
+    keys: tuple[str, ...] = _CARD_CHUNK_KEYS,
+    budget: Optional[list[int]] = None,
+) -> Optional[tuple[str, str]]:
+    """A text chunk's key and text; text is decoded only for the wanted keys, so other chunks cost nothing."""
     try:
         key, _, rest = body.partition(b"\x00")
         key = key.decode("latin-1")
-        if key.lower() not in _CARD_CHUNK_KEYS:
+        if key.lower() not in keys:
             return key, ""
+        budget = [MAX_CARD_BYTES] if budget is None else budget
         if kind == b"tEXt":
             return key, rest.decode("latin-1")
         if kind == b"zTXt":
-            return key, _inflate(rest[1:]).decode("latin-1")
+            return key, _inflate(rest[1:], budget).decode("latin-1")
         if kind == b"iTXt":
             compressed, rest = rest[0], rest[2:]
             _language, _, rest = rest.partition(b"\x00")
             _translated, _, text = rest.partition(b"\x00")
             if compressed:
-                text = _inflate(text)
+                text = _inflate(text, budget)
             return key, text.decode("utf-8")
     except (zlib.error, UnicodeDecodeError, IndexError, ValueError):
         return None
@@ -179,10 +186,14 @@ def _decode_card_text(text: str) -> Optional[dict]:
 def read_png_card(data: bytes) -> tuple[Optional[dict], list[str]]:
     """The card JSON in a PNG (ccv3 over chara) and which card chunks it held."""
     found: dict[str, dict] = {}
+    budget = [MAX_CARD_BYTES]
     for kind, body, _start, _end in _iter_png_chunks(data):
         if kind not in (b"tEXt", b"zTXt", b"iTXt"):
             continue
-        parsed = _png_text_chunk(kind, body)
+        wanted = tuple(key for key in _CARD_CHUNK_KEYS if key not in found)
+        if not wanted:
+            break
+        parsed = _png_text_chunk(kind, body, wanted, budget)
         if parsed is None:
             continue
         key, text = parsed
@@ -223,7 +234,7 @@ def embed_card_in_png(png: bytes, chunks: dict[str, dict]) -> bytes:
             out.extend(png[start:end])
             return bytes(out)
         if kind in (b"tEXt", b"zTXt", b"iTXt"):
-            parsed = _png_text_chunk(kind, body)
+            parsed = _png_text_chunk(kind, body, ())
             if parsed is not None and parsed[0].lower() in _CARD_CHUNK_KEYS:
                 continue
         out.extend(png[start:end])

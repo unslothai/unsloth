@@ -653,3 +653,22 @@ def test_charx_icon_candidates_are_read_once_each(monkeypatch):
     )
     cards.read_charx(buffer.getvalue())
     assert reads.count("assets/x.bin") == 1
+
+
+def test_repeated_compressed_card_chunks_are_not_all_inflated(monkeypatch):
+    calls = []
+    real = zlib.decompressobj
+    monkeypatch.setattr(cards.zlib, "decompressobj", lambda *a: calls.append(1) or real(*a))
+    png = _png()
+    for _ in range(64):
+        png = _with_text(png, "chara", V2, b"zTXt")
+    card, chunks = cards.read_png_card(png)
+    assert card["data"]["name"] == "Mira" and chunks == ["chara"]
+    assert len(calls) == 1
+    monkeypatch.setattr(cards, "MAX_CARD_BYTES", 4096)
+    bomb = _png()
+    for _ in range(8):
+        # Not a card, so each one is inflated and spends the budget.
+        bomb = _with_text(bomb, "ccv3", "x" * 3000, b"zTXt")
+    calls.clear()
+    assert cards.read_png_card(_with_text(bomb, "chara", V2, b"zTXt"))[0] is None
