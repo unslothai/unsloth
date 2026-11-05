@@ -16,7 +16,7 @@ from starlette.datastructures import UploadFile
 from auth.authentication import get_current_subject
 from core.inference import video_restyle
 from core.inference.video_restyle import RestyleBusy, RestyleError
-from utils.account_context import account_thread
+from utils.account_context import account_thread, current_account_id
 
 router = APIRouter()
 
@@ -69,7 +69,9 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
         else:
             raise RestyleError("Send one video file or a folder of frames.")
         job = await asyncio.to_thread(
-            video_restyle.runner.start, prompt = fields.get("prompt") or "", frames = frames, seed = seed
+            video_restyle.runner.start, prompt = fields.get("prompt") or "", frames = frames,
+            seed = seed,
+            owner = current_account_id(),
         )
     except RestyleBusy as exc:
         raise HTTPException(status_code = 409, detail = str(exc))
@@ -81,17 +83,17 @@ async def start_restyle(request: Request, current_subject: str = Depends(get_cur
         daemon = True,
         name = "video-restyle",
     ).start()
-    return video_restyle.runner.progress()
+    return video_restyle.runner.progress(current_account_id())
 
 
 @router.get("/video/restyle/progress")
 async def restyle_progress(current_subject: str = Depends(get_current_subject)):
-    return video_restyle.runner.progress()
+    return video_restyle.runner.progress(current_account_id())
 
 
 @router.post("/video/restyle/cancel")
 async def cancel_restyle(current_subject: str = Depends(get_current_subject)):
-    return {"cancelled": video_restyle.runner.cancel()}
+    return {"cancelled": video_restyle.runner.cancel(current_account_id())}
 
 
 @router.post("/video/restyle/unload")
@@ -108,7 +110,7 @@ async def restyle_media(
     kind: str,
     current_subject: str = Depends(get_current_subject),
 ):
-    path = video_restyle.runner.media_path(job_id, kind)
+    path = video_restyle.runner.media_path(job_id, kind, current_account_id())
     if path is None:
         raise HTTPException(status_code = 404, detail = "Not found.")
     return FileResponse(path, media_type = "video/mp4")

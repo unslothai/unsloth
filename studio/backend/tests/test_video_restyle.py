@@ -278,3 +278,39 @@ def test_route_rejects_mixed_upload(weights, monkeypatch):
     )
     assert res.status_code == 400
     assert client.get("/api/inference/video/restyle/nope/output.mp4").status_code == 404
+
+
+def test_runner_hides_another_accounts_job(weights):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    job = runner.start(prompt = "x", frames = _frames(5), owner = "alice")
+    assert runner.progress("bob") == {"active": True, "phase": None}
+    assert not runner.cancel("bob")
+    assert runner.progress("alice")["id"] == job["id"]
+    assert runner.cancel("alice")
+
+
+def test_cancel_aborts_a_loading_server(weights):
+    started = threading.Event()
+    released = threading.Event()
+
+    class _SlowServer(_FakeServer):
+        def start(self, files):
+            started.set()
+            assert released.wait(5)
+            raise vr_cancelled("startup cancelled")
+
+        def stop(self):
+            released.set()
+
+    from core.inference.sd_cpp_engine import SdCppCancelled as vr_cancelled
+
+    runner = vr.RestyleRunner(server_factory = lambda _model: _SlowServer(b""))
+    job = runner.start(prompt = "x", frames = _frames(5))
+    worker = threading.Thread(target = runner.run, args = (job,))
+    worker.start()
+    assert started.wait(5)
+    assert runner.progress()["phase"] == "loading"
+    assert runner.cancel()
+    assert released.is_set()  # the cancel stopped the load itself
+    worker.join(5)
+    assert runner.progress()["phase"] == "cancelled"

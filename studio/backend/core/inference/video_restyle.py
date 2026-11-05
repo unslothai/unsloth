@@ -296,9 +296,18 @@ class RestyleRunner:
         self._server_factory = server_factory
         self._cancel = threading.Event()
         self._state: dict[str, Any] = {"active": False, "phase": None}
+        self._owner: Optional[str] = None
         self._workdir: Optional[Path] = None
+        # A server still loading weights, so a cancel can abort the load.
+        self._loading: Any = None
 
-    def progress(self) -> dict[str, Any]:
+    def owned_by(self, owner: Optional[str]) -> bool:
+        return self._owner is not None and self._owner == owner
+
+    def progress(self, owner: Optional[str] = None) -> dict[str, Any]:
+        """Another account sees only whether the runner is busy, never the prompt's outputs."""
+        if owner is not None and not self.owned_by(owner):
+            return {"active": bool(self._state.get("active")), "phase": None}
         return dict(self._state)
 
     def _update(self, **fields: Any) -> None:
@@ -310,6 +319,7 @@ class RestyleRunner:
         prompt: str,
         frames: list[Any],
         seed: Optional[int] = None,
+        owner: Optional[str] = None,
     ) -> dict[str, Any]:
         """Validate and claim the runner; the caller runs ``run`` on a worker thread."""
         if not (prompt or "").strip():
@@ -322,6 +332,7 @@ class RestyleRunner:
             if self._state.get("active"):
                 raise RestyleBusy("A restyle is already running.")
             self._cancel.clear()
+            self._owner = owner
             if self._workdir is not None:
                 shutil.rmtree(self._workdir, ignore_errors = True)
             self._workdir = Path(tempfile.mkdtemp(prefix = "unsloth-restyle-"))
@@ -347,16 +358,22 @@ class RestyleRunner:
             "files": files,
         }
 
-    def media_path(self, job_id: str, kind: str) -> Optional[Path]:
-        if kind not in ("input", "control", "output") or self._state.get("id") != job_id:
+    def media_path(self, job_id: str, kind: str, owner: Optional[str] = None) -> Optional[Path]:
+        if kind not in ("input", "output") or self._state.get("id") != job_id:
+            return None
+        if owner is not None and not self.owned_by(owner):
             return None
         path = self._workdir / f"{kind}.mp4" if self._workdir is not None else None
         return path if path is not None and path.is_file() else None
 
-    def cancel(self) -> bool:
-        if not self._state.get("active"):
+    def cancel(self, owner: Optional[str] = None) -> bool:
+        if not self._state.get("active") or (owner is not None and not self.owned_by(owner)):
             return False
         self._cancel.set()
+        loading = self._loading
+        if loading is not None:
+            # SdCppServer.start() blocks until the weights load; stop() makes it bail.
+            loading.stop()
         return True
 
     def unload(self) -> None:
@@ -383,7 +400,13 @@ class RestyleRunner:
                 )
             server = SdCppServer(binary)
         self._update(phase = "loading")
-        server.start(files)
+        self._loading = server
+        try:
+            if self._cancel.is_set():
+                server.stop()
+            server.start(files)
+        finally:
+            self._loading = None
         self._server, self._server_files = server, files
         return server
 

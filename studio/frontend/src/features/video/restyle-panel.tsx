@@ -220,7 +220,11 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
         {running && phase && (
           <div className="grid gap-1.5" data-testid="restyle-progress">
             <div className="flex justify-between text-xs text-muted-foreground">
-              <span>{PHASE_LABEL[phase] ?? phase}</span>
+              <span>
+                {phase === "generate" && step === 0
+                  ? "Encoding the edge video"
+                  : (PHASE_LABEL[phase] ?? phase)}
+              </span>
               {phase === "generate" && total > 0 && (
                 <span>
                   Latent frame {step} / {total}
