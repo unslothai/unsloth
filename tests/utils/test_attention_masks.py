@@ -873,3 +873,28 @@ def test_real_xformers_without_mask_is_causal():
         attn_mask = keep,
     ).transpose(1, 2)
     torch.testing.assert_close(got.float().reshape(want.shape), want, atol = 2e-2, rtol = 2e-2)
+
+
+@pytest.mark.parametrize("length", [1, 5, 16])
+@pytest.mark.parametrize("sliding_window", [None, 0, 1, 3, 16])
+@pytest.mark.parametrize("is_causal", [True, False])
+def test_packed_block_mask_matches_reference(length, sliding_window, is_causal):
+    device = torch.device("cpu")
+    got = packing_utils.packed_block_mask(
+        length,
+        dtype = torch.float32,
+        device = device,
+        sliding_window = sliding_window,
+        is_causal = is_causal,
+    )
+    idx = torch.arange(length, device = device)
+    diff = idx.unsqueeze(1) - idx.unsqueeze(0)
+    keep = torch.ones((length, length), dtype = torch.bool, device = device)
+    if is_causal:
+        keep &= diff >= 0
+    if sliding_window is not None and sliding_window > 0 and length > sliding_window:
+        keep &= diff < sliding_window
+    want = torch.zeros((length, length), dtype = torch.float32, device = device).masked_fill(
+        ~keep, float("-inf")
+    )
+    assert torch.equal(got, want)
