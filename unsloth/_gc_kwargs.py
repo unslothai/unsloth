@@ -84,74 +84,108 @@ def _gc_kwargs_note(key, message):
 
 
 def patch_gradient_checkpointing_enable_kwargs():
-    """Pop every_n_layers / offload from gradient_checkpointing_kwargs; offload under Unsloth's offloading shim would double-offload."""
+    """Route Unsloth checkpointing kwargs for both legacy and activation APIs"""
     try:
         from transformers import PreTrainedModel
         import transformers.modeling_utils as hf_modeling_utils
     except Exception:
         return
-    original = PreTrainedModel.gradient_checkpointing_enable
-    if getattr(original, "_unsloth_gc_kwargs", False):
-        return
-    try:
-        params = list(inspect.signature(original).parameters)
-    except Exception:
-        return
-    positional = [p for p in params if p not in ("self", "gradient_checkpointing_kwargs")]
-    native_every = "every_n_layers" in params
-    native_offload = "offload" in params
+    def _patch_method(method_name, kwargs_name):
+        original = getattr(PreTrainedModel, method_name, None)
+        if original is None or getattr(original, "_unsloth_gc_kwargs", False):
+            return
 
-    @functools.wraps(original)
-    def gradient_checkpointing_enable(
-        self,
-        gradient_checkpointing_kwargs = None,
-        *args,
-        **kwargs,
-    ):
-        kwargs.update(zip(positional, args))
-        every = kwargs.pop("every_n_layers", None)
-        offload = kwargs.pop("offload", None)
-        if gradient_checkpointing_kwargs is not None:
-            gc_kwargs = dict(gradient_checkpointing_kwargs)
-            dict_every = gc_kwargs.pop("every_n_layers", None)
-            dict_offload = gc_kwargs.pop("offload", None)
-            every = dict_every if every is None else every
-            offload = dict_offload if offload is None else offload
-            if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
-                gradient_checkpointing_kwargs = gc_kwargs or None
-        every = 1 if every is None else int(every)
-        if every < 1:
-            raise ValueError(f"Unsloth: every_n_layers must be >= 1, got {every}.")
-        if offload:
-            shim = getattr(hf_modeling_utils, "checkpoint", None)
-            if _checkpoint_offloads(shim):
-                _gc_kwargs_note(
-                    "offload",
-                    "Unsloth: gradient checkpointing already offloads activations to host memory, "
-                    "so transformers' offload=True is ignored.",
-                )
-                offload = False
-            elif not native_offload:
-                _gc_kwargs_note(
-                    "offload_native",
-                    "Unsloth: gradient checkpointing offload=True needs transformers >= 5.17; ignored. "
-                    'use_gradient_checkpointing = "unsloth" offloads activations on any version.',
-                )
-                offload = False
-        if native_offload and offload:
-            kwargs["offload"] = True
-        if native_every:
-            kwargs["every_n_layers"] = 1
-        out = original(self, gradient_checkpointing_kwargs, **kwargs)
-        if every > 1 or any("_unsloth_every_n_skip" in m.__dict__ for m in self.modules()):
-            skipped = _apply_every_n_layers(self, every)
-            if every > 1 and not skipped:
-                _gc_kwargs_note(
-                    "every_n_layers",
-                    f"Unsloth: every_n_layers = {every} found no GradientCheckpointingLayer to skip; "
-                    "every layer stays checkpointed.",
-                )
-        return out
+        try:
+            params = list(inspect.signature(original).parameters)
+        except Exception:
+            return
 
-    gradient_checkpointing_enable._unsloth_gc_kwargs = True
-    PreTrainedModel.gradient_checkpointing_enable = gradient_checkpointing_enable
+        positional = [p for p in params if p not in ("self", kwargs_name)]
+        native_every = "every_n_layers" in params
+        native_offload = "offload" in params
+
+        @functools.wraps(original)
+        def enable(self, *args, **kwargs):
+            if args:
+                checkpointing_kwargs, *args = args
+            else:
+                checkpointing_kwargs = kwargs.pop(kwargs_name, None)
+
+            kwargs.update(zip(positional, args))
+
+            every = kwargs.pop("every_n_layers", None)
+            offload = kwargs.pop("offload", None)
+
+            if checkpointing_kwargs is not None:
+                gc_kwargs = dict(checkpointing_kwargs)
+                dict_every = gc_kwargs.pop("every_n_layers", None)
+                dict_offload = gc_kwargs.pop("offload", None)
+
+                every = dict_every if every is None else every
+                offload = dict_offload if offload is None else offload
+
+                if len(gc_kwargs) != len(checkpointing_kwargs):
+                    checkpointing_kwargs = gc_kwargs or None
+
+            every = 1 if every is None else int(every)
+
+            if every < 1:
+                raise ValueError(
+                    f"Unsloth: every_n_layers must be >= 1, got {every}."
+                )
+
+            if offload:
+                shim = getattr(hf_modeling_utils, "checkpoint", None)
+
+                if _checkpoint_offloads(shim):
+                    _gc_kwargs_note(
+                        "offload",
+                        "Unsloth: gradient checkpointing already offloads activations to host memory, "
+                        "so transformers' offload=True is ignored.",
+                    )
+                    offload = False
+
+                elif not native_offload:
+                    _gc_kwargs_note(
+                        "offload_native",
+                        "Unsloth: gradient checkpointing offload=True needs transformers >= 5.17; ignored. "
+                        'use_gradient_checkpointing = "unsloth" offloads activations on any version.',
+                    )
+                    offload = False
+
+            if native_offload and offload:
+                kwargs["offload"] = True
+
+            if native_every:
+                kwargs["every_n_layers"] = 1
+
+            out = original(self, checkpointing_kwargs, **kwargs)
+
+            if every > 1 or any(
+                "_unsloth_every_n_skip" in m.__dict__
+                for m in self.modules()
+            ):
+                skipped = _apply_every_n_layers(self, every)
+
+                if every > 1 and not skipped:
+                    _gc_kwargs_note(
+                        "every_n_layers",
+                        f"Unsloth: every_n_layers = {every} found no GradientCheckpointingLayer to skip; "
+                        "every layer stays checkpointed.",
+                    )
+
+            return out
+
+        enable._unsloth_gc_kwargs = True
+        setattr(PreTrainedModel, method_name, enable)
+
+    if getattr(PreTrainedModel, "activation_checkpointing_enable", None) is not None:
+        _patch_method(
+            "activation_checkpointing_enable",
+            "activation_checkpointing_kwargs",
+        )
+    else:
+        _patch_method(
+            "gradient_checkpointing_enable",
+            "gradient_checkpointing_kwargs",
+        )

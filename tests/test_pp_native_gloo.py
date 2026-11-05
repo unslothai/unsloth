@@ -771,6 +771,30 @@ def test_layer_call_format_reads_tuple_loops():
 
     assert ppn._layer_call_format(Decoder(), "layers") == "tuple"
 
+def test_layer_call_format_recognizes_activation_checkpointing_layer():
+    class ActivationCheckpointingLayer(torch.nn.Module):
+        def forward(self, hidden_states):
+            return hidden_states
+
+    def checkpoint(function, hidden_states):
+        return function(hidden_states)
+
+    class Decoder(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.layers = torch.nn.ModuleList([ActivationCheckpointingLayer()])
+            self.gradient_checkpointing = True
+
+        def forward(self, hidden_states):
+            for decoder_layer in self.layers:
+                if isinstance(decoder_layer, ActivationCheckpointingLayer):
+                    hidden_states = checkpoint(decoder_layer, hidden_states)
+                else:
+                    hidden_states = decoder_layer(hidden_states)
+            return hidden_states
+
+    assert ppn._layer_call_format(Decoder(), "layers") == "tensor"
+
 
 def test_non_last_stage_compiles_as_one_graph():
     from torch._dynamo.utils import counters

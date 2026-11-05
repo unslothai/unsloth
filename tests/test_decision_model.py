@@ -767,6 +767,41 @@ def test_trainer_leaves_the_callers_arguments_alone(checkpoint, tmp_path, monkey
     batch = next(iter(trainer.get_train_dataloader()))
     assert {"marker_pos", "marker_mask", "target"} <= set(batch)
 
+def test_trainer_handles_activation_checkpointing_without_mutating_caller(
+    checkpoint, tmp_path
+):
+    if "activation_checkpointing" not in TrainingArguments.__dataclass_fields__:
+        pytest.skip("requires activation_checkpointing TrainingArguments API")
+
+    model, tokenizer = FastDecisionModel.from_pretrained(
+        str(checkpoint), use_gradient_checkpointing = False
+    )
+    items, _ = FastDecisionModel.build_dataset(
+        [_row(i) for i in range(4)], tokenizer, model
+    )
+
+    args = _args(
+        tmp_path,
+        max_steps = 1,
+        activation_checkpointing = True,
+    )
+
+    trainer = DecisionTrainer(
+        model = model,
+        args = args,
+        train_dataset = items,
+    )
+
+    # Caller-owned arguments must remain unchanged.
+    assert args.activation_checkpointing is True
+
+    # Trainer must not activate Hugging Face checkpointing independently.
+    assert trainer.args.activation_checkpointing is False
+    assert trainer.args.gradient_checkpointing is False
+
+    # Unsloth's encoder checkpointing must remain enabled.
+    assert model.encoder.is_gradient_checkpointing
+
 
 def test_for_training_turns_gradient_checkpointing_back_on(checkpoint):
     model, _ = FastDecisionModel.from_pretrained(str(checkpoint), use_gradient_checkpointing = False)

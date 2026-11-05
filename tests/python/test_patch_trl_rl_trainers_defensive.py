@@ -78,3 +78,15 @@ def test_grpo_config_sibling_module_import_is_patched(tmp_path):
     args = config_module_config(output_dir = str(tmp_path))
     assert hasattr(args, "unsloth_grpo_mini_batch")
     assert args.unsloth_grpo_mini_batch is None
+
+    if hasattr(args, "activation_checkpointing"):
+        gc_args = config_module_config(
+            output_dir = str(tmp_path / "checkpointing"),
+            activation_checkpointing = True,
+            activation_checkpointing_kwargs = {"use_reentrant": False},
+        )
+
+        assert gc_args.activation_checkpointing is True
+        assert gc_args.gradient_checkpointing is True
+        assert gc_args.activation_checkpointing_kwargs == {"use_reentrant": True}
+        assert gc_args.gradient_checkpointing_kwargs == {"use_reentrant": True}
