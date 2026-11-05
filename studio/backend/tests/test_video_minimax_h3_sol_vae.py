@@ -362,6 +362,35 @@ def test_an_oom_falls_back_for_that_decode_only(weights, caplog, monkeypatch):
     assert vae.stock_calls == 1 and vae.__dict__["_unsloth_h3_sol_vae_stats"]["calls"] == 1
 
 
+@pytest.mark.parametrize("error", ["kernel exploded", "CUDA out of memory. Tried to allocate 2.00 GiB"])
+def test_a_resident_decoder_leaves_the_card_before_the_stock_fallback(weights, caplog, monkeypatch, error):
+    monkeypatch.setenv(S.SOL_VAE_ENV, "1")
+    real_load = S.load_sol_decoder
+    monkeypatch.setattr(S, "_free_device_gb", lambda device: None)
+    monkeypatch.setattr(S, "load_sol_decoder", lambda path, **k: real_load(path, **{**k, "device": "cpu"}))
+    vae = AutoencoderKLMiniMaxH3()
+    log = logging.getLogger("sol_test")
+    assert S.install_h3_sol_vae(vae, device = "cuda:0", dtype = torch.float32, logger = log, weights_path = weights)
+    model = vae.__dict__["_unsloth_h3_sol_vae"]
+    where = {"on_host": False}
+    moves = []
+
+    def fake_to(target):
+        moves.append(str(target))
+        where["on_host"] = str(target) == "cpu"
+        return model
+
+    monkeypatch.setattr(S, "_on_host", lambda m: where["on_host"])
+    model.to = fake_to
+
+    def boom(z):
+        raise RuntimeError(error)
+
+    model.decode_raw = boom
+    vae._decode(torch.randn(1, 24, 7, 4, 5))
+    assert vae.stock_calls == 1 and moves == ["cpu"]
+
+
 def test_the_h3_load_installs_sol_after_the_stock_levers_and_under_the_oom_scope():
     source = (pathlib.Path(S.__file__).parent / "video.py").read_text(encoding = "utf-8")
     tree = ast.parse(source)

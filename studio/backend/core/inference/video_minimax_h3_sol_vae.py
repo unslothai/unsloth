@@ -693,6 +693,10 @@ def _free_device_gb(device: Any) -> Optional[float]:
         return None
 
 
+def _on_host(model: Any) -> bool:
+    return model.x_embedder.weight.device.type == "cpu"
+
+
 def _sol_dtype(dtype: Any) -> Any:
     import torch
     return dtype if dtype in (torch.bfloat16, torch.float16) else torch.float32
@@ -749,7 +753,7 @@ def install_h3_sol_vae(
             if vae.__dict__.get("_unsloth_h3_sol_vae_failed") or args or kwargs:
                 return inner(z, *args, **kwargs)
             reason = None
-            parked = model.x_embedder.weight.device.type == "cpu" and exec_device.type != "cpu"
+            parked = _on_host(model) and exec_device.type != "cpu"
             try:
                 t = time.perf_counter()
                 if parked:
@@ -777,6 +781,13 @@ def install_h3_sol_vae(
                 if parked:
                     model.to("cpu")
             # outside the handler: the failed decode's frames (and its activations) are gone before the retry
+            if exec_device.type != "cpu" and not _on_host(model):
+                # a resident decoder leaves the card before the stock fallback; after an OOM it stays parked on the
+                # host, so later decodes move it on and back off
+                try:
+                    model.to("cpu")
+                except Exception:  # noqa: BLE001
+                    pass
             stats["fallbacks"] += 1
             stats["last_reason"] = reason
             try:
