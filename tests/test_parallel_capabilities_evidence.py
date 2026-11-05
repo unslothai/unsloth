@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The registry follows the measured composition evidence: packed rows under generic Ulysses (eager proven,
-block compile not), Unsloth's own checkpoint and sequence tiling reported as what they are, block swap refused
-under native FSDP2 and unverified under tp / pp, and the refusals the evidence keeps. CPU only."""
+"""The registry follows the measured composition evidence. CPU only."""
 
 import types
 
@@ -172,7 +170,6 @@ def test_memory_reports_the_zoo_unsloth_checkpoint(monkeypatch):
 
 
 def test_unsloth_checkpoint_is_seen_and_covered_by_the_cells_that_measured_it(monkeypatch):
-    # Reported as gc before; the *_with_unsloth_checkpointing_* gloo tests measured these cells with it.
     zoo = pytest.importorskip("unsloth_zoo.gradient_checkpointing")
     import torch.utils.checkpoint as checkpoint
 
@@ -205,7 +202,6 @@ def test_unsloth_checkpoint_is_seen_and_covered_by_the_cells_that_measured_it(mo
 def test_unsloth_checkpoint_keeps_an_unverified_moe_row_refused_under_strict(
     clean_env, monkeypatch
 ):
-    # The row without evidence still covers it, so it does not fall through to a single-axis layout.
     zoo = pytest.importorskip("unsloth_zoo.gradient_checkpointing")
     import torch.utils.checkpoint as checkpoint
 

@@ -104,12 +104,8 @@ def _block_compile_on_cpu(model):
 
 
 def _install_unsloth_checkpoint(model, gc, stats):
-    """Unsloth's own gradient checkpointing on CPU. "unsloth": path A, unsloth_checkpoint through
-    UnslothCheckpointFunction (use_gradient_checkpointing = "unsloth"; on CPU it recomputes but never offloads,
-    the 2 MB floor and device streams are CUDA only). "unsloth_nonre": path B, FastBaseModel's non-reentrant
-    offload under DDP (models/vision.py _nonre_checkpoint), with the zoo offloader behind CPU device seams: the
-    device tensors are CPU tensors, host copies are clones, streams and events do nothing. Its bookkeeping
-    (pack, restore, prefetch, keep-last) is real; the copies and their overlap are not."""
+    """Unsloth's checkpoint on CPU: "unsloth" = path A (UnslothCheckpointFunction, never offloads on CPU),
+    "unsloth_nonre" = path B (vision.py _nonre_checkpoint) with CPU device seams: bookkeeping real, copies not."""
     import contextlib
 
     import torch.utils.checkpoint as torch_checkpoint
@@ -1035,9 +1031,7 @@ def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
         )
 
 
-# Unsloth's own gradient checkpointing (path A unsloth_checkpoint, path B the non-reentrant offload) inside the
-# gated cells above: the registry reports it as unsloth_offload, so each cell it covers carries this evidence. The
-# reference is the same one process without checkpointing.
+# Unsloth's checkpoint (paths A and B) in the gated cells above, against one process without checkpointing.
 _UNSLOTH_GC = pytest.mark.parametrize("gc", ["unsloth", "unsloth_nonre"])
 
 
@@ -1085,9 +1079,8 @@ def test_block_compile_with_unsloth_checkpointing_composes_like_one_process(
     from unsloth.utils.compile_counters import not_above
 
     eager = _ref(ref_bs)
-    # The one-process baseline runs under a 1-rank DDP (LOCAL_RANK is set), and DDP refuses reentrant
-    # checkpointing ("marked ready twice", the reason FastBaseModel takes path B under DDP); cp x tp itself has no
-    # DDP over tp. So path A is held to the compiled run without checkpointing (the stricter baseline).
+    # The baseline runs under 1-rank DDP, which refuses reentrant checkpointing ("marked ready twice"), so
+    # path A is compared to the compiled run without checkpointing.
     single = _ref(ref_bs, compile = True, gc = "none" if gc == "unsloth" else gc)
     assert single["compile"]["unique_graphs"] > 0
     if gc != "unsloth":

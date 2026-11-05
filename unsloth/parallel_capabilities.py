@@ -81,9 +81,7 @@ class Query:
     pp_schedule: Optional[str] = None  # gpipe, 1f1b, interleaved
     attention: str = "sdpa"  # sdpa, eager, flash, flash_varlen, fa3, fa4, flex, flex_sparse
     compile: str = "eager"  # eager, block (Unsloth's per decoder layer torch.compile)
-    # none, gc (torch checkpoint), unsloth_gc, unsloth_offload (Unsloth's checkpoint: unsloth_checkpoint, or one
-    # flagged _unsloth_offloads), unsloth_offload_legacy (the old zoo offload shim), tiled_mlp (also the `tiled`
-    # flag: memory names the checkpoint only)
+    # none, gc, unsloth_gc, unsloth_offload (Unsloth's checkpoint), unsloth_offload_legacy (old zoo shim), tiled_mlp
     memory: str = "none"
     kernels: bool = False  # Unsloth's fused RoPE / RMSNorm / SwiGLU / LoRA kernels
     loss: str = "standard"  # standard, fused_ce, chunked_ce, fused_rl
@@ -96,9 +94,8 @@ class Query:
         ""  # UNSLOTH_MOE_BACKEND: grouped_mm, unsloth_triton, native_torch ("" = default)
     )
     optim: str = ""  # the optimizer (args.optim or the class of a prebuilt one), lower case
-    # Sequence tiling (tile_mlp / unsloth_tiled_mlp) wraps a module of the model.
     tiled: bool = False
-    # offload_layers = N or "auto": decoder layers swapped in from host RAM (block swap).
+    # offload_layers = N or "auto" (block swap).
     block_swap: bool = False
 
 
@@ -160,9 +157,7 @@ RULES = (
         "full finetuning under cp x tp has no parity evidence yet (tensor parallel alone trains it)",
         "use LoRA, or UNSLOTH_FSDP2=1 with cp for full finetuning",
     ),
-    # Ring keeps refusing packed rows and windowed / softcapped attention: its buffers carry no
-    # packed_seq_lengths and it drops the window / softcap (context_parallel.py). The 2-rank CPU packing matrix
-    # refuses every ring cell at the trainer init with weights unmoved; ring itself needs sm >= 80 to run at all.
+    # Ring carries no packed_seq_lengths and drops window / softcap (context_parallel.py).
     Rule(
         "cp backend",
         "ring context parallel with packed rows",
@@ -233,8 +228,7 @@ RULES = (
         "one stage per rank in v1",
         "pp_schedule=gpipe or 1f1b",
     ),
-    # Kept: with the refusal lifted, flex backward does not run on CPU at all, so there is no parity evidence;
-    # the generic path would hand flex the dense whole-sequence mask as a score_mod and lose block sparsity.
+    # Kept: flex backward cannot run on CPU (no parity evidence) and generic would lose block sparsity.
     Rule(
         "cp x attention",
         "context parallel with flex attention block masks",
@@ -635,7 +629,6 @@ _GLOO = "tests/test_parallel_cp_compose_gloo.py::"
 # Block compile cells: their compile tests pass on torch 2.13 and 2.15; torch 2.10 recompiles more than one
 # process (6 > 1 under cp x tp, 1 > 0 for MoE under cp), so older versions run them eager.
 BLOCK_COMPILE_TORCH = (2, 13)
-# Unsloth's own checkpoint (path A unsloth_checkpoint, path B the non-reentrant offload) reports unsloth_offload.
 _UNSLOTH_GC = "Unsloth's checkpoint (path A and path B): " + _GLOO
 _WITH_UNSLOTH_GC = ("none", "gc", "unsloth_offload")
 _CP_TP = {
@@ -649,7 +642,6 @@ _CP_TP = {
     "cp_backend": ("ulysses",),
     "pp": (1,),
     "attention": ("sdpa", "eager"),
-    # unsloth_offload measured in every cell below by the *_with_unsloth_checkpointing_* tests.
     "memory": _WITH_UNSLOTH_GC,
     "kernels": (False,),
     "loss": ("standard",),
@@ -662,7 +654,7 @@ _CP_DP = {k: v for k, v in _CP_TP.items() if k != "block_swap"}
 _CP_DP.update(tp = (1,), moe = (False,))
 _FSDP2_CP = _GLOO + "test_cp_with_native_fsdp2_matches_one_process"
 _MOE_CP = _GLOO + "test_moe_without_aux_loss_under_cp_matches_one_process"
-# Packed / padding-free rows under generic Ulysses (the model's own Hugging Face attention, DDP over the cp group).
+# Packed rows under generic Ulysses (HF attention, DDP over cp).
 _PACKED_CP = {
     "trainer": ("sft",),
     "family": ("qwen3", "mistral", "gemma2", "gemma3"),
@@ -820,8 +812,7 @@ _MOE_COMMON = {
     "packing": (False,),
     "vllm": (False,),
 }
-# A row without evidence also covers Unsloth's checkpoint (reported as gc before `_memory` told them apart), so a
-# run with it stays unverified instead of falling through to a single-axis layout.
+# Covers Unsloth's checkpoint too, so such a run stays unverified instead of falling to a single-axis layout.
 _MOE_UNVERIFIED_MEMORY = _WITH_UNSLOTH_GC
 _MOE_TEST = _GLOO + "test_moe_under_data_and_context_parallel_matches_one_process"
 _MOE_AUX_TEST = _GLOO + "test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch"
@@ -885,8 +876,7 @@ def _moe_note(family, precision, aux, mode):
         if precision == "full":
             return "refused by the pp x mode rule (pipeline parallel trains LoRA adapters)"
     if precision == "qlora" and mode == "pp" and family == "qwen3_moe" and aux:
-        # Not opened: the micro-batch count is resolved per batch at the first step (models/pp_env.py
-        # resolve_microbatches: UNSLOTH_PP_MICROBATCHES, the batch size, the schedule's floor), not in the layout.
+        # Not opened: micro-batches resolve at the first step (pp_env.resolve_microbatches), not in the layout.
         return (
             "with UNSLOTH_PP_MICROBATCHES=1 and gpipe it matched one process on 2 T4 (tiny and 128-wide Qwen3-MoE, "
             "4-bit experts); more micro-batches are refused at the first step (the router loss would be summed "
@@ -960,8 +950,6 @@ CELLS = (
     CELLS
     + _moe_cells()
     + (
-        # Block swap: tensor / pipeline parallel have no check for swapped layers (FSDP2 is refused by a rule); the
-        # cells above ran without it.
         Cell(
             "block swap x tp",
             {"block_swap": (True,), "tp": (2, 4, 8)},
@@ -1279,12 +1267,9 @@ def _memory(model, args):
     if not gc:
         return "none"
     if name == "unsloth_offloaded_gradient_checkpoint":
-        # The legacy zoo shim (patch_unsloth_gradient_checkpointing): no Unsloth path installs it and no cell
-        # measured it, so it keeps a name of its own.
+        # Legacy zoo shim: unmeasured, so it keeps its own name.
         return "unsloth_offload_legacy"
     try:
-        # unsloth_checkpoint (UnslothCheckpointFunction) and a checkpoint flagged _unsloth_offloads (the
-        # non-reentrant offload path) are Unsloth's offloading checkpoint.
         from ._gc_kwargs import _checkpoint_offloads
         offloads = _checkpoint_offloads(fn)
     except Exception:
@@ -1297,7 +1282,6 @@ def _memory(model, args):
 
 
 def _tiled(model) -> bool:
-    """Sequence tiling wraps a module of `model` (unsloth_zoo tiling_registry, what tile_mlp installs)."""
     if (
         model is None
         or isinstance(model, str)
@@ -1315,8 +1299,7 @@ def _tiled(model) -> bool:
 
 
 def _block_swap(model) -> bool:
-    """Block swap on `model` as models/fsdp2_native._refuse_block_swap reads it: a swapper holding layers, or
-    offload_layers = "auto" (also on a rank that swapped none, so every rank answers alike)."""
+    """As fsdp2_native._refuse_block_swap: "auto" counts even on a rank that swapped none."""
     if model is None or isinstance(model, str) or not callable(getattr(model, "modules", None)):
         return False
     try:
