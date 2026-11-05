@@ -362,3 +362,27 @@ def test_route_refuses_an_oversized_upload_before_reading(weights, monkeypatch):
         files = [("video", ("a.mp4", b"x" * 200, "video/mp4"))],
     )
     assert res.status_code == 413
+
+
+def test_cancel_is_refused_once_publishing_starts(weights, monkeypatch):
+    runner = vr.RestyleRunner(server_factory = lambda _model: _FakeServer(b"AVI"))
+    monkeypatch.setattr(
+        "core.inference.video_minimax_h3.transcode_video_to_mp4", lambda path, fps: b"MP4"
+    )
+    answers = []
+
+    def save(mp4, meta):
+        answers.append(runner.cancel())
+        return {"id": "v"}
+
+    runner.run(runner.start(prompt = "x", frames = _frames(5)), save = save)
+    assert answers == [False]
+    assert runner.progress()["phase"] == "done"
+
+
+def test_frames_are_fitted_as_they_are_read():
+    big = io.BytesIO()
+    Image.new("RGB", (1920, 1080), "red").save(big, format = "PNG")
+    (frame,) = vr.frames_from_images([("001.png", big.getvalue())])
+    assert frame.size == (vr.WIDTH, vr.HEIGHT)
+    assert {f.size for f in vr.frames_from_video(_clip(30, 6))} == {(vr.WIDTH, vr.HEIGHT)}

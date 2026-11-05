@@ -88,6 +88,8 @@ def fit_frame(
     from PIL import Image
 
     image = image.convert("RGB")
+    if image.size == (width, height):
+        return image
     scale = max(width / image.width, height / image.height)
     resized = image.resize(
         (max(width, round(image.width * scale)), max(height, round(image.height * scale))),
@@ -124,7 +126,8 @@ def frames_from_video(
                     out.append(prev)
                 if len(out) >= limit:
                     break
-                prev = frame.to_image()
+                # Fit as decoded: 121 full-size 4K frames would hold about 3 GB.
+                prev = fit_frame(frame.to_image())
             if prev is not None and len(out) < limit:
                 out.append(prev)
     except RestyleError:
@@ -146,7 +149,7 @@ def frames_from_images(items: list[tuple[str, bytes]], limit: int = MAX_FRAMES) 
     for name, data in named[:limit]:
         try:
             with Image.open(io.BytesIO(data)) as image:
-                out.append(image.convert("RGB"))
+                out.append(fit_frame(image))
         except Exception as exc:  # noqa: BLE001
             raise RestyleError(f"Could not read frame {Path(name).name}: {exc}") from exc
     return out
@@ -299,6 +302,8 @@ class RestyleRunner:
         self._workdir: Optional[Path] = None
         # A server still loading weights, so a cancel can abort the load.
         self._loading: Any = None
+        # Set once the clip is being published; a cancel after that point is refused, not half-honoured.
+        self._publishing = False
 
     def owned_by(self, owner: Optional[str]) -> bool:
         return self._owner is not None and self._owner == owner
@@ -331,6 +336,7 @@ class RestyleRunner:
             if self._state.get("active"):
                 raise RestyleBusy("A restyle is already running.")
             self._cancel.clear()
+            self._publishing = False
             self._owner = owner
             if self._workdir is not None:
                 shutil.rmtree(self._workdir, ignore_errors = True)
@@ -371,10 +377,15 @@ class RestyleRunner:
         return path if path is not None and path.is_file() else None
 
     def cancel(self, owner: Optional[str] = None) -> bool:
-        if not self._state.get("active") or (owner is not None and not self.owned_by(owner)):
-            return False
-        self._cancel.set()
-        loading = self._loading
+        with self._lock:
+            if (
+                not self._state.get("active")
+                or self._publishing
+                or (owner is not None and not self.owned_by(owner))
+            ):
+                return False
+            self._cancel.set()
+            loading = self._loading
         if loading is not None:
             # SdCppServer.start() blocks until the weights load; stop() makes it bail.
             loading.stop()
@@ -457,9 +468,11 @@ class RestyleRunner:
             raw.write_bytes(avi)
             mp4 = transcode_video_to_mp4(raw, fps = FPS)
             raw.unlink(missing_ok = True)
-            # A cancel accepted during export still wins: nothing is published.
-            if self._cancel.is_set():
-                raise SdCppCancelled("cancelled")
+            # A cancel accepted during export still wins; from here on cancel() refuses instead.
+            with self._lock:
+                if self._cancel.is_set():
+                    raise SdCppCancelled("cancelled")
+                self._publishing = True
             (workdir / "output.mp4").write_bytes(mp4)
             record = None
             if save is not None:
