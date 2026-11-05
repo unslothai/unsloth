@@ -1542,6 +1542,7 @@ def _ingest_folder_document(
     content_hash: str,
     embedding_model: str,
     rebuild: bool,
+    stage_slots: threading.Semaphore | None = None,
 ) -> _IngestionResult:
     """Thread-local, so the coordinator lease and stop state are copied in for _check_running."""
     _worker_state.job_id = job_id
@@ -1565,6 +1566,7 @@ def _ingest_folder_document(
             linked_relative_path = relative_path,
             background = False,
             reuse_identical = not rebuild,
+            stage_slots = stage_slots,
         )
         result = ingestion.get_job_status(ingestion_job)
         if result is None:
@@ -1590,6 +1592,10 @@ def _cleanup_pending_ingestion(pending: _PendingIngestion, result: _IngestionRes
 
 def _folder_ingest_workers() -> int:
     return max(1, min(4, config.FOLDER_INGEST_WORKERS))
+
+
+def _folder_ingest_in_flight(workers: int) -> int:
+    return max(workers, min(64, config.FOLDER_INGEST_IN_FLIGHT))
 
 
 def _reconcile_folder(job_id: str) -> None:
@@ -1687,6 +1693,9 @@ def _reconcile_folder(job_id: str) -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     account = current_account()
     workers = _folder_ingest_workers()
+    # Documents beyond the parse workers only wait to embed, batched with the others (#16715).
+    in_flight_limit = _folder_ingest_in_flight(workers)
+    stage_slots = threading.Semaphore(workers)
     in_flight: dict[Future["_IngestionResult"], _PendingIngestion] = {}
 
     def update_progress() -> None:
@@ -1808,7 +1817,7 @@ def _reconcile_folder(job_id: str) -> None:
             prune_ingestion_job(result)
 
     with ThreadPoolExecutor(
-        max_workers = workers,
+        max_workers = in_flight_limit,
         thread_name_prefix = "rag-folder-ingest",
     ) as executor:
         try:
@@ -1826,7 +1835,14 @@ def _reconcile_folder(job_id: str) -> None:
                         cached_grace = True
                     processed += 1
                     continue
-                if len(in_flight) >= workers:
+                # Only small files queue past the parse workers: a shared embedding batch is what
+                # they gain, and their snapshots are what the wider window keeps on disk.
+                cap = (
+                    in_flight_limit
+                    if current[rel]["size_bytes"] <= config.FOLDER_INGEST_BATCH_FILE_BYTES
+                    else workers
+                )
+                while len(in_flight) >= cap:
                     drain_one()
                 snapshot = None
                 try:
@@ -1875,6 +1891,7 @@ def _reconcile_folder(job_id: str) -> None:
                             content_hash,
                             embedding_model,
                             rebuild,
+                            stage_slots,
                         )
                         in_flight[future] = _PendingIngestion(
                             relative_path = rel,

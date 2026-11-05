@@ -15,6 +15,7 @@ import queue
 import re
 import shutil
 import threading
+import time
 import uuid
 from collections.abc import Callable
 
@@ -30,6 +31,8 @@ _workers: dict[str, threading.Thread] = {}
 _jobs_lock = threading.Lock()
 
 _EMBED_BATCH = 64
+# How long a batch waits for documents still parsing to join it; only waits while some are.
+_EMBED_LINGER_SECONDS = 0.2
 _SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 # Poll with a timeout so the generator notices a gone client or a worker that died without the None sentinel.
@@ -140,6 +143,198 @@ def _abort_if_document_deleted(conn, job_id: str, document_id: str) -> bool:
     return True
 
 
+class _EmbedRequest:
+    """One document's texts waiting in the shared embed queue."""
+
+    def __init__(self, texts: list[str], model_name: str | None) -> None:
+        self.texts = texts
+        self.model_name = model_name
+        # Batches only mix requests of one account and model: the encode runs as the caller.
+        self.key = account_key(model_name or "")
+        self.vectors: list = [None] * len(texts)
+        self.scheduled = 0
+        self.filled = 0
+        self.identity: str | None = None
+        self.changed = False
+        self.error: BaseException | None = None
+
+    @property
+    def done(self) -> bool:
+        return self.error is not None or self.filled == len(self.texts)
+
+
+class _EmbedQueue:
+    """Encodes the chunks of documents ingesting at the same time together, in ``_EMBED_BATCH``
+    slices, so a folder of one-chunk files does not pay a whole encode call per file (#16715).
+
+    No thread of its own: a waiting caller encodes the next batch for everyone, so the encode runs
+    on an ingestion thread bound to the right account. Each caller reports its own progress, since
+    its sqlite connection belongs to its thread. Chunking counts tokens under the encoder's lock, so
+    documents still parsing cannot reach the queue during an encode; a batch therefore waits briefly
+    for them (``expect``/``unexpect``) instead of leaving with a single document.
+    """
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._pending: list[_EmbedRequest] = []
+        # Encoding is one batch at a time per account and model, as the backends already are, and
+        # still parallel across them.
+        self._encoding: set = set()
+        self._expected = 0
+
+    def expect(self) -> None:
+        """A document started ingesting and will reach the queue soon."""
+        with self._cond:
+            self._expected += 1
+
+    def unexpect(self) -> None:
+        """That document is about to embed, or stopped before it."""
+        with self._cond:
+            self._expected -= 1
+            self._cond.notify_all()
+
+    def _queued(self, key) -> int:
+        return sum(
+            len(request.texts) - request.scheduled
+            for request in self._pending
+            if request.key == key
+        )
+
+    def _linger(self, key) -> None:
+        """Holds the lock; waits for parsing documents while the batch has room."""
+        deadline = time.monotonic() + _EMBED_LINGER_SECONDS
+        while self._expected > 0 and self._queued(key) < _EMBED_BATCH:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return
+            self._cond.wait(left)
+
+    def _take(self, key) -> list[tuple[_EmbedRequest, int, int]]:
+        """Oldest first, up to one batch of texts from requests sharing ``key``; holds the lock."""
+        room = max(1, _EMBED_BATCH)
+        pieces = []
+        for request in list(self._pending):
+            if room == 0:
+                break
+            if request.key != key:
+                continue
+            start = request.scheduled
+            end = min(len(request.texts), start + room)
+            pieces.append((request, start, end))
+            request.scheduled = end
+            room -= end - start
+            if end == len(request.texts):
+                self._pending.remove(request)
+        return pieces
+
+    @staticmethod
+    def _encode(pieces, model_name):
+        texts = [text for request, start, end in pieces for text in request.texts[start:end]]
+        return embeddings.encode_with_identity(texts, model_name = model_name, normalize = True)
+
+    def _land(self, request: _EmbedRequest, start: int, end: int, vectors, identity) -> None:
+        request.vectors[start:end] = list(vectors)
+        request.filled += end - start
+        request.changed = request.changed or (
+            request.identity is not None and identity != request.identity
+        )
+        request.identity = identity
+
+    def _fail(self, request: _EmbedRequest, exc: BaseException) -> None:
+        request.error = exc
+        if request in self._pending:
+            self._pending.remove(request)
+
+    def _run_batch(self, pieces) -> None:
+        """Encode one batch outside the lock; a failed shared batch retries each document alone so
+        one bad document does not fail the others with it."""
+        model_name = pieces[0][0].model_name
+        try:
+            vectors, identity = self._encode(pieces, model_name)
+        except Exception as exc:  # noqa: BLE001 - delivered to the owning documents
+            if len({id(request) for request, _, _ in pieces}) == 1:
+                with self._cond:
+                    for request, _, _ in pieces:
+                        self._fail(request, exc)
+                return
+            for piece in pieces:
+                request, start, end = piece
+                try:
+                    vectors, identity = self._encode([piece], model_name)
+                except Exception as piece_exc:  # noqa: BLE001
+                    with self._cond:
+                        self._fail(request, piece_exc)
+                else:
+                    with self._cond:
+                        self._land(request, start, end, vectors, identity)
+            return
+        offset = 0
+        with self._cond:
+            for request, start, end in pieces:
+                width = end - start
+                self._land(request, start, end, vectors[offset : offset + width], identity)
+                offset += width
+
+    def embed(
+        self,
+        texts: list[str],
+        model_name: str | None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ):
+        """Returns ``(vectors, identity, changed)`` for ``texts``, in order.
+
+        Only a caller with less than a batch of its own lingers for documents still parsing: one
+        with a full batch keeps its parse slot (see ``_run``), so waiting would stall the very
+        documents it waits for."""
+        request = _EmbedRequest(texts, model_name)
+        may_wait = len(texts) < _EMBED_BATCH
+        reported = 0
+        with self._cond:
+            self._pending.append(request)
+            self._cond.notify_all()
+        try:
+            while True:
+                if on_progress is not None and request.filled > reported:
+                    reported = request.filled
+                    on_progress(reported, len(texts))
+                with self._cond:
+                    if request.done:
+                        break
+                    if request.key in self._encoding or request not in self._pending:
+                        # Another caller is encoding; a slice of ours may be in that batch.
+                        self._cond.wait()
+                        continue
+                    self._encoding.add(request.key)
+                    if may_wait:
+                        self._linger(request.key)
+                    pieces = self._take(request.key)
+                try:
+                    self._run_batch(pieces)
+                except BaseException as exc:
+                    # Never leave another document waiting on a slice that will not land.
+                    with self._cond:
+                        for owner, _, _ in pieces:
+                            if not owner.done:
+                                self._fail(owner, exc)
+                    raise
+                finally:
+                    with self._cond:
+                        self._encoding.discard(request.key)
+                        self._cond.notify_all()
+        finally:
+            with self._cond:
+                if request in self._pending:
+                    # Stopped early (cancel, lost lease): nobody waits for the rest of it.
+                    self._pending.remove(request)
+                    self._cond.notify_all()
+        if request.error is not None:
+            raise request.error
+        return request.vectors, request.identity, request.changed
+
+
+_embed_queue = _EmbedQueue()
+
+
 def _embed_pass(
     texts: list[str],
     model_name: str | None,
@@ -147,19 +342,9 @@ def _embed_pass(
 ):
     """One batched pass. Returns ``(vectors, identity, changed)``, ``changed`` when the
     embedder swapped part way and the vectors therefore span two spaces."""
-    vectors: list = []
-    identity: str | None = None
-    changed = False
-    for i in range(0, len(texts), _EMBED_BATCH):
-        batch = texts[i : i + _EMBED_BATCH]
-        out, batch_identity = embeddings.encode_with_identity(
-            batch, model_name = model_name, normalize = True
-        )
-        changed = changed or (identity is not None and batch_identity != identity)
-        identity = batch_identity
-        vectors.extend(out)
-        if on_progress is not None:
-            on_progress(min(i + _EMBED_BATCH, len(texts)), len(texts))
+    if not texts:
+        return [], embeddings.embedding_identity(model_name), False
+    vectors, identity, changed = _embed_queue.embed(texts, model_name, on_progress)
     return vectors, identity or embeddings.embedding_identity(model_name), changed
 
 
@@ -283,6 +468,38 @@ def _retire_orphan_after_failure(
         logger.warning("failed to retire orphaned document %s", old_id, exc_info = True)
 
 
+class _ExpectedEmbed:
+    """Counts this document as on its way to the embed queue until it gets there or stops."""
+
+    def __init__(self) -> None:
+        _embed_queue.expect()
+        self._pending = True
+
+    def arrive(self) -> None:
+        if self._pending:
+            self._pending = False
+            _embed_queue.unexpect()
+
+
+class _StageSlot:
+    """Holds one of a caller's ``stage_slots`` around the parse and store work, never across the
+    embed wait; releasing twice is a no-op."""
+
+    def __init__(self, slots: threading.Semaphore | None) -> None:
+        self._slots = slots
+        self._held = False
+
+    def acquire(self) -> None:
+        if self._slots is not None and not self._held:
+            self._slots.acquire()
+            self._held = True
+
+    def release(self) -> None:
+        if self._held:
+            self._held = False
+            self._slots.release()
+
+
 def _run(
     job_id: str,
     document_id: str,
@@ -292,9 +509,13 @@ def _run(
     ocr: bool | None = None,
     caption: bool | None = None,
     replaces: tuple[str, str | None] | None = None,
+    stage_slots: threading.Semaphore | None = None,
 ) -> None:
     conn = None
+    slot = _StageSlot(stage_slots)
+    expected = _ExpectedEmbed()
     try:
+        slot.acquire()
         conn = rag_db.get_connection()
         _progress(conn, job_id, "parsing", 0.1)
         pages = parsers.parse(stored_path)
@@ -394,7 +615,14 @@ def _run(
             embedded_progress = max(embedded_progress, 0.65 + 0.25 * done / total)
             _progress(conn, job_id, "embedding", embedded_progress)
 
+        # A document with a batch's worth of chunks gains nothing from waiting for others, and
+        # holding its texts in memory while it waits would be the whole file; it keeps its slot.
+        if len(chunks) < _EMBED_BATCH:
+            # Waiting for a shared batch holds no slot, so other documents can parse and join it.
+            slot.release()
+        expected.arrive()
         vectors, identity = _embed_all([c.text for c in chunks], model_name, report_embeddings)
+        slot.acquire()
         store.set_document_embedding_model(conn, document_id, identity)
 
         # Locate each chunk's highlight regions (non-PDFs/failures yield none).
@@ -432,6 +660,8 @@ def _run(
             logger.exception("failed to record ingestion failure for job %s", job_id)
         _emit(job_id, {"type": "error", "stage": "error", "error": str(exc)})
     finally:
+        expected.arrive()
+        slot.release()
         if conn is not None:
             # Every exit but completion retires the orphan; nothing relaunches, so a lost lease ends the work.
             _retire_orphan_after_failure(conn, replaces, stored_path, document_id)
@@ -459,8 +689,12 @@ def start_ingestion(
     background: bool = True,
     content_hash: str | None = None,
     reuse_identical: bool = False,
+    stage_slots: threading.Semaphore | None = None,
 ) -> tuple[str, str]:
-    """Duplicate hash reuses the existing document; a passed content_hash is trusted, never reverified."""
+    """Duplicate hash reuses the existing document; a passed content_hash is trusted, never reverified.
+
+    ``stage_slots`` bounds how many callers parse or store at once while any number wait to embed
+    together (a linked-folder sync passes one)."""
     account_path(stored_path)
     if account_is_retired():
         raise RuntimeError("Account is retired")
@@ -623,6 +857,7 @@ def start_ingestion(
             ocr,
             caption,
             replaces,
+            stage_slots,
         )
         if not background:
             _run(*args)
