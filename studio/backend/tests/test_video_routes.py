@@ -605,7 +605,7 @@ def test_generate_pipeline_error_reports_sanitized_failure(client, monkeypatch):
     assert "40.00 GiB" not in progress["error"]
 
 
-def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch):
+def test_generate_unclassified_error_names_the_cause_without_the_path(client, monkeypatch):
     backend = video_module.get_video_backend()
     backend.loaded = True
 
@@ -614,8 +614,51 @@ def test_generate_unclassified_error_keeps_the_bare_fallback(client, monkeypatch
 
     monkeypatch.setattr(backend, "generate", _odd)
     progress = _shared_setup_4(client)
-    assert progress["error"] == "Video generation failed."
+    assert progress["error"] == (
+        "Video generation failed. RuntimeError: something went sideways in <path>"
+    )
     assert "secret.safetensors" not in progress["error"]
+
+
+def test_generate_pipeline_exception_reaches_the_progress_error(client, monkeypatch):
+    # diffusers 0.40.0 on Cosmos3 Edge: the page showed only "Video generation failed."
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+    cause = (
+        "Input type (CPUBFloat16Type) and weight type (CUDABFloat16Type) should be the same "
+        "or input should be a MKLDNN tensor and weight is a dense tensor"
+    )
+
+    def _mismatch(**kwargs):
+        raise RuntimeError(cause)
+
+    monkeypatch.setattr(backend, "generate", _mismatch)
+    progress = _shared_setup_4(client)
+    assert progress["error"] == f"Video generation failed. RuntimeError: {cause}"
+
+
+def test_generate_failure_reason_is_redacted_and_bounded(client, monkeypatch):
+    import os
+
+    backend = video_module.get_video_backend()
+    backend.loaded = True
+    home = os.path.expanduser("~")
+    token = "hf_" + "A1b2C3d4E5" * 3
+
+    def _leaky(**kwargs):
+        raise OSError(
+            f"cannot read {home}/.cache/huggingface/token with hf_token={token} "
+            f"or {token} from ~/models and C:\\Users\\leo\\w.bin " + "x" * 400 + "\n"
+            '  File "/usr/lib/python3/site-packages/diffusers/pipe.py", line 9, in __call__'
+        )
+
+    monkeypatch.setattr(backend, "generate", _leaky)
+    error = _shared_setup_4(client)["error"]
+    assert error.startswith("Video generation failed. OSError: cannot read <path> with")
+    for leaked in (home, token, "~/models", "Users", "w.bin", "site-packages", "File "):
+        assert leaked not in error
+    assert len(error) <= len("Video generation failed. ") + 200
+    assert error.endswith("...")
 
 
 def test_generate_native_crash_points_at_the_log(client, monkeypatch):

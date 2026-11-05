@@ -225,6 +225,7 @@ import { loadGalleryUntil } from "@/lib/gallery-deep-link";
 import { subscribeModelEjected } from "@/lib/model-lifecycle-events";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 
+import { videoFailureToastText } from "./generation-failure";
 import { keyframeSupport, matchedCanvas } from "./keyframe-canvas";
 import { hasReferenceCapacity } from "./reference-budget";
 import {
@@ -2636,10 +2637,9 @@ function VideoGenerator({
               void ensureSrc(clip);
             }
           } else if (p.phase === "failed") {
-            const msg = p.error || "Video generation failed";
             // The user's own Cancel surfaces as the cancelled sentinel; not an error.
-            if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+            const msg = videoFailureToastText(p.error);
+            if (msg) toast.error(msg, { action: generationFailureLogsAction(msg) });
           }
           return;
         }
@@ -2698,9 +2698,8 @@ function VideoGenerator({
           }
         } else if (g.phase === "failed") {
           // Kept until the next job, so a reload still shows the failure.
-          const msg = g.error || "Video generation failed";
-          if (!msg.toLowerCase().includes("cancelled"))
-              toast.error(msg, { action: generationFailureLogsAction(msg) });
+          const msg = videoFailureToastText(g.error);
+          if (msg) toast.error(msg, { action: generationFailureLogsAction(msg) });
         }
       } catch {
         // Resume is best-effort; a failed probe just leaves the idle view.

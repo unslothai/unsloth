@@ -4849,8 +4849,31 @@ _NATIVE_CRASH_NEEDLES = (
 )
 
 
+_FAILURE_REASON_MAX_CHARS = 200
+# Absolute POSIX, ~, drive, UNC or file:// paths; a URL is kept for redact_log_text to scrub.
+_FAILURE_PATH_RE = re.compile(
+    r"(?P<url>\b(?:https?|wss?|ftp)://[^\s\"'`,;]+)"
+    r"|(?<![\w/~])(?:file://)?(?:~[\\/]|/|[A-Za-z]:[\\/]|\\\\)[^\s\"'`,;]+"
+)
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """Exception class and first message line, without credentials or filesystem paths."""
+    from utils.log_redaction import redact_log_text
+
+    lines = str(exc).strip().splitlines()
+    text = redact_log_text(lines[0] if lines else "")
+    text = _FAILURE_PATH_RE.sub(lambda m: m.group("url") or "<path>", text)
+    text = " ".join(text.split())
+    reason = f"{type(exc).__name__}: {text}" if text else type(exc).__name__
+    if len(reason) > _FAILURE_REASON_MAX_CHARS:
+        reason = reason[: _FAILURE_REASON_MAX_CHARS - 3].rstrip() + "..."
+    return reason
+
+
 def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, Any]] = None) -> str:
-    """A user-facing reason for a failed generation, built only from fixed text."""
+    """A user-facing reason for a failed generation: fixed text for known classes, else the
+    redacted exception class and first line."""
     try:
         from .video_minimax_h3 import H3NativeMemoryRefusal
 
@@ -4880,6 +4903,7 @@ def video_failure_detail(exc: BaseException, request_shape: Optional[dict[str, A
                 f"{VIDEO_GENERATION_FAILED_MSG} The renderer stopped unexpectedly. See the "
                 "server log in Settings > Logs for its output."
             )
+        return f"{VIDEO_GENERATION_FAILED_MSG} {_failure_reason(exc)}"
     except Exception:  # noqa: BLE001 -- diagnostics never mask the real failure
         pass
     return VIDEO_GENERATION_FAILED_MSG
