@@ -653,6 +653,11 @@ def test_a_reload_keeps_an_explicit_cache_off_and_the_built_family():
     knobs = _common.resident_build_knobs(status)
     assert knobs["transformer_cache"] == "off"
     assert knobs["family_override"] == "qwen-image-edit"
-    # Auto asked: left to the policy again.
-    status["resolved"]["transformer_cache"] = {"requested": None, "value": "fbcache"}
-    assert "transformer_cache" not in _common.resident_build_knobs(status)
+    # Auto asked: left to the policy again, which tunes what it engages (an explicit "static" takes the defaults).
+    status.update(transformer_cache = "static", attention_backend = "flash")
+    status["resolved"]["transformer_cache"] = {"requested": None, "value": "static"}
+    status["resolved"]["attention_backend"] = {"requested": None, "value": "flash"}
+    knobs = _common.resident_build_knobs(status)
+    assert "transformer_cache" not in knobs and "attention_backend" not in knobs
+    status["resolved"]["transformer_cache"] = {"requested": "static", "value": "static"}
+    assert _common.resident_build_knobs(status)["transformer_cache"] == "static"

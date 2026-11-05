@@ -83,6 +83,31 @@ def test_status_summary_names_the_supplied_basename_of_a_symlinked_cache_file(tm
         assert C.parse_component_file(spec, what = "vae_file").local_path == ref.local_path
 
 
+def test_a_reload_names_a_dotdot_component_through_a_symlinked_directory(tmp_path):
+    # links/diffusion_models -> actual/diffusion_models: `..` must stay, normalised away it names links/text_encoders.
+    from core.inference import diffusion
+
+    te = _save(tmp_path / "actual" / "text_encoders" / "clip_l.safetensors", {"x": torch.zeros(1)})
+    (tmp_path / "actual" / "diffusion_models").mkdir()
+    (tmp_path / "links").mkdir()
+    try:
+        (tmp_path / "links" / "diffusion_models").symlink_to(
+            tmp_path / "actual" / "diffusion_models"
+        )
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable")
+    ref = C.parse_component_file(
+        "../text_encoders/clip_l.safetensors",
+        model_path = str(tmp_path / "links" / "diffusion_models"),
+    )
+    token = C.set_active_component_overrides(C.ComponentOverrides(files = {"text_encoder": ref}))
+    try:
+        spec = diffusion._active_component_specs()["text_encoder"]
+    finally:
+        C.reset_active_component_overrides(token)
+    assert C.parse_component_file(spec).local_path == str(Path(te).resolve())
+
+
 def test_parse_existing_subpath_under_model_dir_is_local(tmp_path):
     dit_dir = tmp_path / "models" / "diffusion_models"
     two = _save(dit_dir / "components" / "clip_l.safetensors", {"x": torch.zeros(1)})

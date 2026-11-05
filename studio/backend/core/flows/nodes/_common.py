@@ -1049,6 +1049,9 @@ RESIDENT_BUILD_KEYS = (
 )
 # Reloaded as the precision that engaged, so an "auto" that engaged fp8 stays fp8.
 ENGAGED_BUILD_KEYS = ("transformer_quant", "text_encoder_quant")
+# Status reports what engaged, and an automatic pick is tuned (a static cache's schedule) where an explicit one takes
+# the defaults: only an explicit ask is sent back, so an automatic one is made again.
+ASKED_BUILD_KEYS = ("transformer_cache", "attention_backend")
 
 
 def resident_build_knobs(status: dict) -> dict:
@@ -1066,7 +1069,11 @@ def resident_build_knobs(status: dict) -> dict:
         candidates = [
             record.get("value") if key in ENGAGED_BUILD_KEYS else None,
             # The family the load built (detected or picked): the same file can fit a sibling family.
-            status.get("family") if key == "family_override" else status.get(key),
+            status.get("family")
+            if key == "family_override"
+            else None
+            if key in ASKED_BUILD_KEYS
+            else status.get(key),
             record.get("requested"),
         ]
         for value in candidates:
