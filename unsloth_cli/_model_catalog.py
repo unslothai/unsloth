@@ -710,6 +710,10 @@ def local_folder_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]
                     entries.append(entry)
                 continue
             target = _gguf_load_target(target)
+            if gguf_variant and _is_gguf_file(target):
+                from utils.models.model_config import _direct_gguf_for_variant
+                if _direct_gguf_for_variant(target, gguf_variant) is None:
+                    continue
         entries.append(
             ModelEntry(
                 "Downloaded",

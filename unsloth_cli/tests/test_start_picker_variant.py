@@ -327,3 +327,19 @@ def test_cached_picker_checks_only_the_selected_shard_family(cached_gguf_pick):
     assert REAL_CATALOG(gguf_variant = empty.name) == []
     second.write_bytes(b"")
     assert REAL_CATALOG(gguf_variant = first.name) == []
+
+
+def test_loose_gguf_files_follow_requested_quant(tmp_path, monkeypatch):
+    ensure_studio_backend_path(seed_cache_env = False)
+    from hub.services.models.local_inventory import _scan_models_dir
+
+    root = tmp_path / "models"
+    root.mkdir()
+    for name in ("tiny-Q4_K_M.gguf", "tiny-Q8_0.gguf"):
+        (root / name).write_bytes(b"GGUF" + bytes(4092))
+    rows = _scan_models_dir(root)
+    monkeypatch.setattr(catalog, "_local_catalog_rows", lambda: rows)
+    assert len(catalog.local_folder_entries()) == 2
+    assert [entry.model for entry in catalog.local_folder_entries(gguf_variant = "Q8_0")] == [
+        str(root / "tiny-Q8_0.gguf")
+    ]
