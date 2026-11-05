@@ -53,3 +53,10 @@ test("a native page zoomed out before floating stays at the native zoom floor in
   // Docked, the tab's own zoom goes through untouched.
   assert.equal(floatingNativeZoom(0.25, 1), 0.25);
 });
+
+test("only a page shown natively skips the floating window's scale; files and new tabs scale even with native browsing on", async () => {
+  const { readFileSync } = await import("node:fs");
+  const panel = readFileSync(new URL("../src/features/browser/browser-panel.tsx", import.meta.url), "utf8");
+  assert.match(panel, /const nativeShown = native && activeEntry\?\.kind === "web" && !activeTab\?\.nativeError;/);
+  assert.match(panel, /floating && !nativeShown\s*\?\s*FLOATING_PAGE_STYLE/);
+});

@@ -2524,6 +2524,9 @@ export const BrowserPanel = memo(function BrowserPanel({
   const htmlAnnotating = frameAvailable && activeEntry?.kind === "file" &&
     fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
+  // The tab native-view.ts shows as a native page (its pageRect): that one is zoomed, not transformed.
+  // Files, new tabs and error pages are DOM even where native browsing is on, so they scale here.
+  const nativeShown = native && activeEntry?.kind === "web" && !activeTab?.nativeError;
 
   return (
     <section
@@ -2632,7 +2635,7 @@ export const BrowserPanel = memo(function BrowserPanel({
                 "border-x border-border/70 bg-background shadow-sm",
             )}
             style={
-              floating && !native
+              floating && !nativeShown
                 ? FLOATING_PAGE_STYLE
                 : deviceWidth
                   ? { width: `min(100%, ${deviceWidth}px)` }
