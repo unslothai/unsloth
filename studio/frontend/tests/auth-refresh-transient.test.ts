@@ -438,3 +438,15 @@ test("without Web Locks a 401 after a peer stored the rotation replays instead o
   await f.settle();
   assert.equal(f.location.href, "");
 });
+
+test("without Web Locks a sign-in that replaced the session is not taken for a peer's rotation", async (t) => {
+  const f = fixture(t, [() => {
+    f.state.mark = "another-session";
+    f.tokens.access = "other-access";
+    f.tokens.refresh = "other-refresh";
+    return new Response(null, { status: 401 });
+  }]);
+  assert.equal(await f.api.refreshSessionOutcome(), "rejected");
+  assert.deepEqual(f.tokens, { access: "other-access", refresh: "other-refresh" });
+  assert.equal(f.clears(), 0);
+});

@@ -325,10 +325,16 @@ function refreshRetryDelay(response: Response): number {
 async function peerRotated(
   refreshToken: string,
   startGeneration: number,
+  sessionMark: string | null,
 ): Promise<boolean> {
   const deadline = Date.now() + REFRESH_PEER_WAIT_MS;
   for (;;) {
-    if (startGeneration !== logoutGeneration || accountTransitionPending()) return false;
+    if (
+      startGeneration !== logoutGeneration ||
+      accountTransitionPending() ||
+      getAuthSessionMark() !== sessionMark
+    )
+      return false;
     const current = getRefreshToken();
     if (current !== refreshToken) return current !== null;
     if (Date.now() >= deadline) return false;
@@ -339,8 +345,9 @@ async function peerRotated(
 async function runRefresh(
   refreshToken: string,
   preserveSessionMark = false,
-  // Without Web Locks (insecure origins) another tab may spend the same single-use token first.
-  awaitPeer = false,
+  // Without Web Locks (insecure origins) another tab may spend the same single-use token first;
+  // only a rotation inside this session mark counts as that peer's.
+  peerSessionMark?: string | null,
 ): Promise<RefreshOutcome> {
   const startGeneration = logoutGeneration;
   const startedAt = Date.now();
@@ -362,7 +369,10 @@ async function runRefresh(
     }
     // Only a 401 rejects the token; a 5xx, 429 or proxy error says nothing about the session.
     if (response.status === 401) {
-      if (awaitPeer && (await peerRotated(refreshToken, startGeneration)))
+      if (
+        peerSessionMark !== undefined &&
+        (await peerRotated(refreshToken, startGeneration, peerSessionMark))
+      )
         return "ok";
       clearAuthTokensIfCurrent(refreshToken);
       return "rejected";
@@ -405,7 +415,7 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
 
   const generation = logoutGeneration;
   const locks = typeof window !== "undefined" ? window.navigator?.locks : undefined;
-  const sessionMark = locks ? ensureAuthSessionMark() : null;
+  const sessionMark = ensureAuthSessionMark();
   if (getRefreshToken() !== refreshToken) return "unavailable";
   const promise = locks
     ? (async (): Promise<RefreshOutcome> => {
@@ -433,7 +443,7 @@ export async function refreshSessionOutcome(): Promise<RefreshOutcome> {
           clearTimeout(timer);
         }
       })()
-    : runRefresh(refreshToken, false, true);
+    : runRefresh(refreshToken, false, sessionMark);
   refreshInflight = promise;
   refreshInflightToken = refreshToken;
   try {
