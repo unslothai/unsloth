@@ -105,7 +105,8 @@ def test_the_fetch_landing_moves_a_waiting_scope_to_hnsw_without_a_write(
     _, scanned = _dense(rag_conn, rows[5])
     assert scanned and vec_cache.drain(60)
     _, scanned = _dense(rag_conn, rows[5])
-    assert scanned and not vec_cache._ann and len(no_pair) == 1
+    # Each search of a waiting scope asks again; hnsw_runtime dedupes and backs off on its own.
+    assert scanned and not vec_cache._ann and no_pair
     pytest.importorskip("usearch")
     # The fetch landed: the real import works again (undo also restores the default cache budget).
     monkeypatch.undo()
@@ -140,6 +141,32 @@ def test_an_hnsw_build_that_fails_after_the_fetch_is_not_retried(rag_conn, no_pa
         _, scanned = _dense(rag_conn, rows[0])
         assert scanned
     assert vec_cache.drain(60) and attempts == [1]
+
+
+def test_a_waiting_scope_retries_a_transient_fetch_failure_without_rebuilding(
+    rag_conn, monkeypatch
+):
+    monkeypatch.setenv("RAG_VEC_CACHE_MB", "0.001")
+    monkeypatch.setattr(vec_ann, "usearch", lambda: None)
+    runs = []
+    monkeypatch.setattr(
+        hnsw_runtime, "_run_installer", lambda: runs.append(1) or {"status": "failed"}
+    )
+    builds = []
+    real_build = vec_cache._build
+    monkeypatch.setattr(vec_cache, "_build", lambda key: (builds.append(key), real_build(key))[1])
+    rows = _vectors(300)
+    _add(rag_conn, "d", rows)
+    _dense(rag_conn, rows[2])
+    assert vec_cache.drain(60)
+    _settle()
+    _dense(rag_conn, rows[2])
+    _settle()
+    assert runs == [1] and len(builds) == 1
+    monkeypatch.setattr(hnsw_runtime, "_retry_after", 0.0)
+    _, scanned = _dense(rag_conn, rows[2])
+    _settle()
+    assert scanned and runs == [1, 1] and len(builds) == 1
 
 
 def _run(monkeypatch, result):

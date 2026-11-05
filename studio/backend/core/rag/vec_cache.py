@@ -198,6 +198,7 @@ def search(conn, db_file: str, scope: str, vector, fetch: int):
         if epoch is None:
             return None
         key = _key(db_file, scope, len(vector))
+        retry_fetch = False
         with _lock:
             entry = _entries.get(key)
             ann = _ann.get(key)
@@ -210,8 +211,13 @@ def search(conn, db_file: str, scope: str, vector, fetch: int):
                     ann = None
                     if _too_big.get(key) != epoch and _ann_failed.get(key) != epoch:
                         _schedule(key)
+                    elif key in _awaiting_ann:
+                        # _too_big stops rebuilds, not the fetch: request() backs off on its own.
+                        retry_fetch = True
                 else:
                     _ann.move_to_end(key)
+        if retry_fetch:
+            hnsw_runtime.request(_on_ann_available)
         if entry is not None:
             return _search_entry(np, entry, vector, fetch)
         if ann is not None:
