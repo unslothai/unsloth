@@ -1957,3 +1957,30 @@ def test_history_lists_by_creation_time_reading_only_what_a_page_needs(monkeypat
     assert [next(jobs)[0]["id"] for _ in range(3)] == ["run299", "run298", "run297"]
     assert len(pulled) <= 6
     assert [row["id"] for row, _ in jobs][-2:] == ["run0", "run_waited"]
+
+
+def test_a_queue_poll_reads_one_history_row_when_the_backlog_waited(monkeypatch):
+    history = [
+        {"id": f"run{i}", "started_at": f"2026-11-04T{i // 60:02d}:{i % 60:02d}:00+00:00"}
+        for i in range(300, 0, -1)
+    ]
+    t0 = openai_fine_tuning._unix("2026-11-04T00:00:00+00:00")
+    pulled = []
+
+    def iter_runs():
+        for run in history:
+            pulled.append(run["id"])
+            yield run
+
+    monkeypatch.setattr(openai_fine_tuning, "_iter_runs", iter_runs)
+    monkeypatch.setattr(
+        openai_fine_tuning, "_RUN_ALIAS", {r["id"]: f"ftjob_{r['id']}" for r in history}
+    )
+    monkeypatch.setattr(
+        openai_fine_tuning, "_ALIAS_CREATED", {f"ftjob_{r['id']}": t0 for r in history}
+    )
+    pending = [{"id": f"ftjob_q{i}", "created_at": t0 + 20_000 - i} for i in range(2)]
+
+    page = openai_fine_tuning._list_job_page(pending, {}, None, None, 1, False)
+    assert [job["id"] for job in page["data"]] == ["ftjob_q0"]
+    assert page["has_more"] and pulled == ["run300"]

@@ -12,11 +12,11 @@ import os
 import re
 import secrets
 import weakref
-from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from heapq import heapify, heappop, heappush
+from itertools import chain
 from math import inf
 from pathlib import Path
 from typing import Any, Literal, Optional
@@ -1129,13 +1129,15 @@ def _run_created(run: dict[str, Any]) -> int:
     return _ALIAS_CREATED.get(_RUN_ALIAS.get(run["id"])) or _unix(run.get("started_at")) or 0
 
 
-def _runs_by_creation(
-    live: dict[str, dict[str, Any]],
-) -> Iterator[tuple[int, dict[str, Any], bool]]:
+def _ordered_jobs(
+    pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
+) -> Iterator[tuple[dict[str, Any], bool]]:
+    # By creation time, queue entries first on ties: a started job keeps its place across pages.
     # History is newest start first and no job starts before it is created, so a buffered row
-    # created after this row's start is final. Live runs started after every history row.
+    # created after this row's start is final. Queued and live jobs sort as started last.
     buffered = [
-        (-job["created_at"], -inf, seq, job, False) for seq, job in enumerate(live.values())
+        (-job["created_at"], -inf, seq, job, False)
+        for seq, job in enumerate(chain(pending, live.values()))
     ]
     heapify(buffered)
     for seq, run in enumerate(_iter_runs(), len(buffered)):
@@ -1143,25 +1145,11 @@ def _runs_by_creation(
         if run["id"] in live:
             continue
         started = _unix(run.get("started_at")) or 0
-        while buffered and (buffered[0][0], buffered[0][1]) < (-started, -started):
-            neg_created, _, _, row, is_run = heappop(buffered)
-            yield -neg_created, row, is_run
+        while buffered and buffered[0][:2] < (-started, -started):
+            yield heappop(buffered)[3:]
         heappush(buffered, (-min(_run_created(run), started), -started, seq, run, True))
     while buffered:
-        neg_created, _, _, row, is_run = heappop(buffered)
-        yield -neg_created, row, is_run
-
-
-def _ordered_jobs(
-    pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
-) -> Iterator[tuple[dict[str, Any], bool]]:
-    # By creation time, queue entries first on ties: a started job keeps its place across pages.
-    remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
-    for created_at, row, is_run in _runs_by_creation(live):
-        while remaining and remaining[0]["created_at"] >= created_at:
-            yield remaining.popleft(), False
-        yield row, is_run
-    yield from ((job, False) for job in remaining)
+        yield heappop(buffered)[3:]
 
 
 def _list_job_page(
