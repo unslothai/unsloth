@@ -31,7 +31,19 @@ print(
 
 
 class FastLanguageModel(FastCPUModel):
-    pass
+    @staticmethod
+    def from_pretrained(
+        *args,
+        unsloth_tiled_mlp = False,
+        **kwargs,
+    ):
+        # Tiling is plain torch, so honour it like the GPU loaders instead of dropping it.
+        from .tiling import check_tiling_available, loader_tile_mlp
+
+        check_tiling_available(unsloth_tiled_mlp)
+        model, tokenizer = FastCPUModel.from_pretrained(*args, **kwargs)
+        loader_tile_mlp(model, unsloth_tiled_mlp)
+        return model, tokenizer
 
 
 FastModel = FastLanguageModel
