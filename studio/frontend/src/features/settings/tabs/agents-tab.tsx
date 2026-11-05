@@ -529,10 +529,11 @@ export function AgentsTab() {
     null,
   );
   const [statusSettled, setStatusSettled] = useState(false);
+  // State, not the ref: status can land after the variants listing and must re-pick then.
+  const [rootMlxResident, setRootMlxResident] = useState<string | null>(null);
   const activeModelRef = useRef<{
     model: string;
     variant: string | null;
-    mlx: boolean;
   } | null>(null);
   // Only the newest status request may apply.
   const statusSeq = useRef(0);
@@ -854,12 +855,13 @@ export function AgentsTab() {
     (status: InferenceStatusResponse) => {
       const active = activeAgentModelSelection(status);
       activeModelRef.current = active
-        ? {
-            model: active.model,
-            variant: active.variant,
-            mlx: Boolean(status.is_mlx),
-          }
+        ? { model: active.model, variant: active.variant }
         : null;
+      setRootMlxResident(
+        active && status.is_mlx && active.variant === null
+          ? modelKey(active.model)
+          : null,
+      );
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
@@ -937,14 +939,7 @@ export function AgentsTab() {
 
   useEffect(() => {
     let cancelled = false;
-    const residentIsRootMlx = () => {
-      const resident = activeModelRef.current;
-      return (
-        resident?.mlx === true &&
-        resident.variant === null &&
-        modelKey(resident.model) === modelKey(selectedModel)
-      );
-    };
+    const keepRoot = rootMlxResident === modelKey(selectedModel);
 
     // After discovery a scanned directory's path is its identity; only a loose .gguf is variantless.
     const localDir =
@@ -1005,7 +1000,7 @@ export function AgentsTab() {
           preferred: preferredVariant,
           defaultVariant: info.default_variant,
           first: uniqueVariants[0]?.quant ?? null,
-          keepRoot: residentIsRootMlx(),
+          keepRoot,
         });
         setSelectedVariant(nextVariant);
       })
@@ -1015,7 +1010,7 @@ export function AgentsTab() {
         }
         setVariantsFailed(true);
         setVariants([]);
-        const fallback = residentIsRootMlx() ? null : preferredVariant;
+        const fallback = keepRoot ? null : preferredVariant;
         setSelectedVariant(fallback);
         if (fallback) {
           setVariants([
@@ -1042,6 +1037,7 @@ export function AgentsTab() {
     hfToken,
     preferredVariant,
     rememberedVariant,
+    rootMlxResident,
     selectedModel,
   ]);
 
