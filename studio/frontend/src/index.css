@@ -6739,3 +6739,20 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 .novel-dialogue .roleplay-speaker-bar::before {
   background: linear-gradient(to top, color-mix(in oklab, var(--background) 80%, transparent) 72%, transparent);
 }
+
+/* Stage view: the docked picture takes the left of the chat area. Where the window has room, the
+   conversation stays centered on the whole area, as it was without the picture; on narrower windows
+   it gives way only as far as it must. 100cqw is the chat area, the picture is clamp(240px, 30%, 440px). */
+@media (min-width: 768px) {
+  .character-stage-layout .aui-thread-viewport,
+  .character-stage-layout .aui-thread-composer-dock {
+    --stage-picture: clamp(240px, 30cqw, 440px);
+    --stage-recenter: min(var(--stage-picture), max(0px, 100cqw - var(--stage-picture) - var(--thread-max-width, 48rem) - 2.5rem));
+  }
+  .character-stage-layout .aui-thread-viewport {
+    padding-right: calc(1.25rem + var(--stage-recenter));
+  }
+  .character-stage-layout .aui-thread-composer-dock {
+    right: calc(var(--thread-scrollbar-gutter, 10px) + var(--stage-recenter));
+  }
+}

@@ -30,7 +30,7 @@ export function CharacterStage({ threadId, children }: { threadId: string | null
     <div
       className={cn(
         "relative flex min-h-0 min-w-0 flex-1 basis-0",
-        stage ? "flex-col md:flex-row" : "flex-col",
+        stage ? "character-stage-layout flex-col [container-type:inline-size] md:flex-row" : "flex-col",
         novel && "character-novel isolate",
       )}
     >
