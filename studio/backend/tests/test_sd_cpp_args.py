@@ -1147,7 +1147,6 @@ def test_cpu_mmap_on_repack_aware_cpu_builds_only(monkeypatch, tmp_path, platfor
     # The pinned build maps repackable weights and runs them unrepacked: never sent there.
     old = _cpu_install(tmp_path, monkeypatch, _OLD_HELP)
     assert all("--mmap" not in cmd for cmd in _all_builders(old))
-    # GPU bundles are left alone even when their help carries the text.
     for accel in ("cuda", "vulkan", "rocm"):
         gpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP, accelerator = accel)
         assert all("--mmap" not in cmd for cmd in _all_builders(gpu))
@@ -1162,7 +1161,7 @@ def test_cpu_mmap_follows_an_explicit_backend(monkeypatch, tmp_path):
     assert mmap_flags(gpu, None, ["--backend", "cpu"]) == ["--mmap"]
     cpu = _cpu_install(tmp_path, monkeypatch, _REPACK_HELP)
     assert mmap_flags(cpu, None, ["--backend", "diffusion=vulkan0"]) == []
-    assert mmap_flags(cpu, ["--mmap"], None) == []  # the caller's own flag, not doubled
+    assert mmap_flags(cpu, ["--mmap"], None) == []
     assert mmap_flags(None, None, None) == []
     # an unreadable / unprobeable binary fails closed
     assert (

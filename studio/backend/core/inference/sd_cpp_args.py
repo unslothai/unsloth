@@ -412,8 +412,7 @@ def metal_placement_flags(offload: Sequence[str]) -> list[str]:
 
 # 1 / 0 forces sd.cpp's --mmap on / off; unset decides from the installed build (``mmap_flags``).
 SD_CPP_MMAP_ENV = "UNSLOTH_DIFFUSION_SD_CPP_MMAP"
-# `sd-cli --help` text of builds whose --mmap still loads and repacks the weights the CPU repacks (older builds map
-# them and run them unrepacked: slower, and different pixels).
+# Help text of builds whose --mmap still repacks CPU weights (older ones run them unrepacked: slower, other pixels).
 CPU_MMAP_REPACK_HELP = "weights the CPU repacks are still loaded"
 # leejet/stable-diffusion.cpp#2037 (master-907) maps mmapped weights through Metal device buffers. Older builds accept
 # --mmap but hand Metal a CPU buffer it cannot address, so the flag is only safe from this build on.
@@ -544,12 +543,8 @@ def mmap_flags(
     extra_args: Optional[Sequence[str]] = None,
     backend_args: Optional[Sequence[str]] = None,
 ) -> list[str]:
-    """``--mmap`` where it saves memory at no cost: macOS from the Metal mmap build (``mac_mmap_flags``), and a CPU
-    render elsewhere (Studio's CPU bundle or an explicit ``--backend cpu``) on builds whose --mmap still repacks CPU
-    weights. There it keeps every weight the CPU does not repack (BF16 text encoders, F16 VAE, Q5_K / Q6_K on x86)
-    as clean file-backed pages instead of a second anonymous copy, pixel-identical: Z-Image Turbo Q4_K_M with the
-    BF16 Qwen3-4B encoder peaks at about 4.6 GB anonymous memory instead of 13.3 GB. GPU renders are left alone.
-    ``UNSLOTH_DIFFUSION_SD_CPP_MMAP`` = 1 / 0 forces it either way."""
+    """``--mmap`` on macOS Metal-mmap builds and on CPU renders whose --mmap still repacks CPU weights (keeps
+    unrepacked weights file-backed: ~4.6 GB vs 13.3 GB anonymous, pixel-identical). GPU renders are left alone."""
     import sys
 
     if sys.platform == "darwin":
