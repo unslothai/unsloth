@@ -215,12 +215,12 @@ def _cpu_cp_requested(args, kwargs) -> bool:
     from .parallel_env import env_cp_size
 
     config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
-    for size in (
-        getattr(config, "context_parallel_size", None),
-        kwargs.get("context_parallel_size"),
-    ):
-        if isinstance(size, int) and not isinstance(size, bool) and size > 1:
-            return True
+    size = getattr(config, "context_parallel_size", None)
+    if "context_parallel_size" in kwargs:
+        # The keyword wins over the config, and None opts out like 1 (context_parallel.patch_sft_trainer).
+        size = kwargs["context_parallel_size"]
+    if isinstance(size, int) and not isinstance(size, bool) and size > 1:
+        return True
     return env_cp_size() > 1
 
 
@@ -245,8 +245,9 @@ def _install_cpu_context_parallel():
         # Stock TRL rejects CP kwargs (the GPU route's SFTConfig declares them), so move them onto the config.
         cp = {key: kwargs.pop(key) for key in cp_keys if key in kwargs}
         config = kwargs["args"] if "args" in kwargs else (args[1] if len(args) > 1 else None)
-        for key, value in cp.items():
-            setattr(config, key, value)
+        if config is not None:
+            for key, value in cp.items():
+                setattr(config, key, value)
         return original_init(self, *args, **kwargs)
 
     @functools.wraps(original_init)
@@ -269,7 +270,10 @@ def _install_cpu_context_parallel():
                 ) from error
             finally:
                 trainer_cls.__init__ = current
-        init = state.get("init", original_init)
+        init = state.get("init")
+        if init is None:
+            # context_parallel_size = 1 / None opts out, but stock TRL still rejects the keyword.
+            init = cp_fields_into_config if any(key in kwargs for key in cp_keys) else original_init
         init(self, *args, **kwargs)
         # A config TRL rebuilt from to_dict() loses CP attributes set on it.
         if (

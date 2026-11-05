@@ -104,6 +104,27 @@ def test_cpu_route_plain_trainer_skips_gpu_stack():
     assert _result(out) == {"models": False, "cp": False}
 
 
+@pytest.mark.parametrize("forwarded", [1, None])
+def test_cpu_route_forwarded_cp_size_of_one_opts_out(forwarded):
+    # SFTTrainer(args = config with cp 2, context_parallel_size = 1 / None): the keyword wins, so no CP and no error.
+    code = _ROUTE + (
+        "import sys, json, trl\n"
+        "from unsloth import FastLanguageModel\n"
+        f"model, tok = FastLanguageModel.from_pretrained({_REPO!r}, max_seq_length = 32, load_in_4bit = False)\n"
+        "from datasets import Dataset\n"
+        "ds = Dataset.from_dict({'text': ['hello world'] * 4})\n"
+        "cfg = trl.SFTConfig(output_dir = 'o_opt_out', max_steps = 1, report_to = 'none', dataset_num_proc = 1)\n"
+        "cfg.context_parallel_size = 2\n"
+        "trainer = trl.SFTTrainer(model = model, args = cfg, train_dataset = ds, processing_class = tok,\n"
+        f"    context_parallel_size = {forwarded!r})\n"
+        "print('RESULT ' + json.dumps({'cp': 'unsloth.context_parallel' in sys.modules,\n"
+        "    'manager': getattr(trainer, '_context_parallel_manager', None) is not None}))\n"
+    )
+    out = _run(code)
+    assert out.returncode == 0, out.stderr[-5000:]
+    assert _result(out) == {"cp": False, "manager": False}
+
+
 def test_cpu_route_cp_refused_before_init_when_unavailable():
     # The CP machinery cannot load (simulated): the trainer must raise before the TRL __init__ runs.
     code = _ROUTE + (
