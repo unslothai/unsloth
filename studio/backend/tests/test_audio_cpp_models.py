@@ -3246,7 +3246,6 @@ def _sized_host(
     device = "CUDA",
     cpu_runtime = False,
 ):
-    """The host the load check sizes on: its torch device and whether audio.cpp runs on the CPU."""
     import utils.hardware as hardware
     from core.inference import audio_cpp_server
 
@@ -3271,7 +3270,6 @@ def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
 
 @pytest.mark.parametrize("cpu_runtime", [False, True])
 def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu_runtime):
-    # The load check skips VRAM for a CPU-only quant, and for every quant on a CPU-only runtime.
     _sized_host(monkeypatch, cpu_runtime = cpu_runtime)
     names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-tq2_1.gguf"]
     _online(monkeypatch, *names, size = 189_000_000)
@@ -3283,7 +3281,6 @@ def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu
 
 
 def test_a_dictation_model_lists_no_gpu_estimate(hub, monkeypatch):
-    # Dictation loads on its sidecar, which never compares the estimate.
     _sized_host(monkeypatch)
     _online(monkeypatch, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf")
     row = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"

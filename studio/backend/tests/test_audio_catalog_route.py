@@ -86,7 +86,6 @@ def _sized_host(
     device = "CUDA",
     cpu_runtime = False,
 ):
-    """The host the load check sizes on: its torch device and whether audio.cpp runs on the CPU."""
     import utils.hardware as hardware
     from core.inference import audio_cpp_server
 
@@ -146,8 +145,6 @@ def test_the_estimates_read_the_gpus_off_the_event_loop(client, monkeypatch):
 def test_a_load_the_check_never_sizes_lists_no_gpu_estimate(
     client, monkeypatch, task, device, cpu_runtime
 ):
-    # A CPU-only runtime runs every Auto load on the CPU, dictation loads on its sidecar, and the
-    # check sizes only CUDA and XPU hosts.
     _sized_host(monkeypatch, device, cpu_runtime)
     sized = dict(KOKORO, task = task, family = "kokoro_tts", size_bytes = 189_000_000)
     catalog = AudioCatalogResponse(**{**CATALOG.model_dump(), "models": [sized]})

@@ -268,7 +268,6 @@ export function hfModelFitsDevice(
     !gpu.budgetKnown
   )
     return true;
-  // audio.cpp: listed when its smallest variant fits the card the load lands on.
   const resident = audioCppRowFit(
     model,
     opts.audioCppCardGb ?? gpu.memoryTotalGb,

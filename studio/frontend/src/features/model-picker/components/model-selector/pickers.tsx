@@ -2933,7 +2933,6 @@ function GgufVariantExpander({
   );
 
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
-  // audio.cpp variants: the backend estimate against the card the load lands on.
   const audioCardGb = useContext(AudioCppCard);
   const cardGb = anyBudgetGb ? audioCardGb : 0;
   const getVariantFit = useCallback(
@@ -3214,7 +3213,6 @@ function GgufVariantExpander({
           effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getVariantFit(v);
         const oom = fit === "oom";
-        // A CPU RAM load never needs it on a GPU.
         const residentGb = audioCardGb > 0 ? v.estimated_resident_gb : null;
         const expectedBytes = ggufVariantExpectedBytes(v);
         const variantContext = ggufVariantContextLength(v, nativeContext);
@@ -3874,7 +3872,6 @@ export function HubModelPicker({
       smallestResidentGb?: number | null;
     })[];
   };
-  /** Audio's "Load model into: CPU RAM": audio.cpp variants skip their GPU estimate. */
   cpuLoad?: boolean;
 }) {
   const gpu = useGpuInfo();

@@ -51,7 +51,6 @@ _AUDIO_TYPE_BY_TASK = {
 
 
 def audio_type_for_task(task: Optional[str]) -> Optional[str]:
-    """The native audio type a task loads as; None for dictation, which loads on its sidecar."""
     return _AUDIO_TYPE_BY_TASK.get(task or "")
 
 

@@ -196,7 +196,6 @@ def test_placement_uses_the_family_estimate(monkeypatch, family, size_gb, free_g
 @pytest.mark.parametrize(
     "capabilities, driver, free_gb, fits",
     [
-        # #16627: YuE2 Q8_0 needs 9.51 GiB from Ampere on, else the generic 12.05 GiB.
         ({0: (8, 6)}, True, 9.6, True),
         ({}, False, 9.6, True),
         ({0: (8, 6)}, True, 9.4, False),

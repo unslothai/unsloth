@@ -161,7 +161,6 @@ test("an audio.cpp row is judged on the largest card, where automatic placement 
 });
 
 test("a CPU RAM load leaves audio.cpp quants to the RAM-aware rule", () => {
-  // 6 GiB GPU, 64 GiB RAM, Load model into: CPU RAM. The GPU estimate would mark every YuE2 quant oom.
   const host = { available: true, maxDeviceMemoryGb: 6 };
   const card = audioCppCardGb(host, true);
   assert.equal(card, 0);
@@ -200,7 +199,6 @@ test("a CPU RAM load leaves audio.cpp quants to the RAM-aware rule", () => {
 
 test("the picker judges audio.cpp variants on the card its load lands on", () => {
   // The quant expander and row badges render only under React, so their wiring is read from source.
-  // Both use torch's inventory, as the placement check does (llama.cpp's adds Vulkan-only cards).
   const pickers = readSrc(
     "features/model-picker/components/model-selector/pickers.tsx",
   );
@@ -210,7 +208,6 @@ test("the picker judges audio.cpp variants on the card its load lands on", () =>
     /audioCppCardGb\(gpu, audioDevice === "cpu"\)/,
   );
   assert.match(pickers, /const audioCardGb = useContext\(AudioCppCard\);/);
-  // A CPU RAM load (card 0) shows no GPU figure to run.
   assert.match(
     pickers,
     /const residentGb = audioCardGb > 0 \? v\.estimated_resident_gb : null;/,

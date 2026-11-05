@@ -111,9 +111,8 @@ export interface GgufVariantSizes {
   estimated_resident_gb?: number | null;
 }
 
-/** The card an audio.cpp load lands on: the largest GPU torch sees, the inventory its placement
- *  check sizes against (llama.cpp's can add Vulkan-only cards), as that takes the one with the most
- *  free memory. 0 for a CPU RAM load, which leaves the llama.cpp rule to decide. */
+/** The card an audio.cpp load lands on: the largest GPU torch sees, the placement check's inventory
+ *  (llama.cpp's can add Vulkan-only cards). 0 for a CPU RAM load, left to the llama.cpp rule. */
 export function audioCppCardGb(
   gpu: { available: boolean; maxDeviceMemoryGb: number },
   cpuLoad = false,

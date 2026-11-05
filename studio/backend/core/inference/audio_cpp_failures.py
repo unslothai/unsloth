@@ -170,8 +170,7 @@ def _may_have_pre_ampere_nvidia_card() -> bool:
 
 
 def gpu_estimate_applies(audio_type: Optional[str]) -> bool:
-    """Whether the load check places an Auto load of ``audio_type`` on its estimate: native audio
-    on a GPU runtime, on a CUDA or XPU host, the only ones it sizes. Dictation never compares it."""
+    """Whether the placement check sizes an Auto load of ``audio_type`` with its estimate."""
     import utils.hardware as hardware
     from core.inference.audio_cpp_models import AUDIO_CPP_AUDIO_TYPES
     from core.inference.audio_device import audio_load_runs_on_cpu
