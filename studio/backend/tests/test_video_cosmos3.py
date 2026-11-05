@@ -1438,6 +1438,15 @@ def test_nano_passes_the_kept_frames_to_the_pipeline(cosmos3_runtime, keep, size
     assert not {"video", "condition_video_keep"} & set(pipe.passed)
 
 
+@pytest.mark.parametrize("axis, canvas", [({"width": 832}, (832, 720)), ({"height": 480}, (1280, 480))])
+def test_one_supplied_axis_is_kept_rather_than_matched_to_the_clip(cosmos3_runtime, axis, canvas):
+    backend, _status = _loaded(NANO)
+    clip = _clip_url(12, size = (120, 208))
+    backend.generate(prompt = "p", steps = 1, num_frames = 9, continuation_video = clip, **axis)
+    passed = backend._state.pipe.passed
+    assert (passed["width"], passed["height"]) == canvas
+
+
 def test_begin_generate_resolves_the_clip_before_reserving(cosmos3_runtime):
     backend, _status = _loaded(NANO)
     with pytest.raises(vf.VideoShapeError, match = "more than 5"):

@@ -13458,7 +13458,7 @@ class VideoBackend:
             count = COSMOS3_CONTINUATION_FRAMES,
         )
         width, height = canvas
-        if requested_size[0] is None or requested_size[1] is None:
+        if requested_size == (None, None):
             width, height = first_frame_canvas(fam, *clip[0].size)
         return (fit_continuation_frames(clip, width, height), keep), width, height
 
