@@ -898,6 +898,8 @@ def _baked_lora_names(pipe: Any) -> list:
     return names
 
 
+# Adapters baked into a quantized single file; ``_unsloth_loras_baked`` also stays set after a declined quantize.
+_QUANT_FILE_LORA_BAKE_ATTR = "_unsloth_quant_file_loras_baked"
 # ``(module, adapter, base)`` for every baked LoRA scale held as a device tensor; ``base`` is lora_alpha / r.
 _PINNED_LORA_SCALES_ATTR = "_unsloth_pinned_lora_scales"
 # ``(module, adapter)`` for the baked LoRA layers OUTSIDE the denoisers (a text encoder carrying the same file's
@@ -10423,6 +10425,7 @@ class DiffusionBackend:
                         )
                         pipe._unsloth_loras = baked
                         pipe._unsloth_loras_baked = True
+                        setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
                         logger.info(
                             "diffusion.lora_bake: %d adapter(s) attached to the ComfyUI-quantized transformer "
                             "before the compile",
@@ -13541,7 +13544,9 @@ class DiffusionBackend:
         quant_baked = bool(getattr(pipe, "_unsloth_loras_baked", False))
         quant = (state.transformer_quant or "").lower()
         # A quantized single file reports no transformer_quant but bakes its adapters the same way.
-        if quant in ("int8", "fp8", "nvfp4", "mxfp8") or quant_baked:
+        if quant in ("int8", "fp8", "nvfp4", "mxfp8") or getattr(
+            pipe, _QUANT_FILE_LORA_BAKE_ATTR, False
+        ):
             self._adjust_baked_loras(state, pipe, specs, current, quant_baked, cancel)
             return
 
@@ -15650,7 +15655,7 @@ class DiffusionBackend:
         )
         # Baked adapters ride inside the compiled build.
         compiled = "compiled" in (getattr(state, "speed_optims", ()) or ()) and not getattr(
-            state.pipe, "_unsloth_loras_baked", False
+            state.pipe, _QUANT_FILE_LORA_BAKE_ATTR, False
         )
         lora_block = _lora_load_block_reason(state.pipe)
         lora_load_ok = lora_block is None

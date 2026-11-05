@@ -510,6 +510,27 @@ def test_baked_quant_pipe_disables_any_subset_of_its_adapters(monkeypatch):
     assert pipe.active == (["style", "style_2"], [0.7, 1.0])
 
 
+def test_a_declined_quantize_keeps_the_dense_lora_path(monkeypatch):
+    # The bake marks the pipe before quantize_; a clean decline leaves it dense, so a new selection loads normally.
+    import threading
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    b = _backend()
+    pipe = _FakePipe()
+    pipe._unsloth_loras = b._resolve_lora_set([("styleA", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    b._apply_loras(_fake_state(pipe), [("styleB", 1.0)], threading.Event())
+    assert [n for _p, n in pipe.loaded] == ["styleB"]
+    assert pipe.active == (["styleB"], [1.0])
+
+
 @pytest.mark.parametrize("mode, refused", [("group", True), ("resident", False), ("model", False)])
 def test_baked_weights_stay_fixed_under_a_block_streamed_graph(monkeypatch, mode, refused):
     # Resetting a block-streamed graph for new LoRA scales left every later generate failing. Refuse the change.
