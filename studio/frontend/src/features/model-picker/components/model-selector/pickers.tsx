@@ -982,8 +982,10 @@ function residentGbLabel(gb: number): string {
   return `${gb.toFixed(1)} GB`;
 }
 
-// Wide enough for "99.9GB to run", so the fit marks to its left line up across quant rows.
-const RESIDENT_COLUMN = "min-w-[13ch] text-right";
+// Wide enough for "99.9GB to run" and a "99.9GB" size, so the estimate and the fit mark to its
+// left line up across quant rows whatever each file size's width.
+const RESIDENT_COLUMN = "mr-1.5 min-w-[13ch] text-right";
+const RESIDENT_SIZE_COLUMN = "min-w-[6ch] text-right";
 
 /** An audio.cpp load estimate set like the size beside it ("9.5GB to run"), explained on hover. */
 function ResidentText({
@@ -1002,7 +1004,8 @@ function ResidentText({
             className,
           )}
         >
-          <SizeText value={value} /> to run
+          <SizeText value={value} />
+          <span className="ml-1 font-sans">to run</span>
         </span>
       </TooltipTrigger>
       <TooltipContent side="top" className="tooltip-compact">
@@ -1612,7 +1615,9 @@ function ModelRow({
               {text}
             </span>
           ))}
-          {parsed.resident ? <ResidentText value={parsed.resident} /> : null}
+          {parsed.resident ? (
+            <ResidentText value={parsed.resident} className="mr-1.5" />
+          ) : null}
           {/* GGUF repos hold several quants, so their size shows only once expanded. */}
           {alignMeta === "device" || showSize ? (
             <span
@@ -3279,7 +3284,12 @@ function GgufVariantExpander({
                 />
               ) : null}
               {/* The size stays rightmost, so it lines up across rows as on every other picker. */}
-              <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
+              <span
+                className={cn(
+                  "font-mono text-ui-10 text-muted-foreground tabular-nums",
+                  v.estimated_resident_gb ? RESIDENT_SIZE_COLUMN : null,
+                )}
+              >
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />
                 ) : (
