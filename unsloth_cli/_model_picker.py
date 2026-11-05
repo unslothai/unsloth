@@ -90,8 +90,14 @@ def pick_local_model(
             raise typer.Exit(code = 1)
         if not raw:
             return entries[0].model
-        if raw.isdigit() and 1 <= int(raw) <= len(entries):
-            return entries[int(raw) - 1].model
+        if raw.isdecimal():
+            try:
+                index = int(raw)
+            except ValueError:
+                pass  # Python limits the length of integer strings.
+            else:
+                if 1 <= index <= len(entries):
+                    return entries[index - 1].model
         console.print(f"Pick a number between 1 and {len(entries)}.", style = "yellow")
 
 

@@ -5018,6 +5018,7 @@ def _check_picked_gguf_variant(model: Optional[str], variant: Optional[str]) -> 
 def _ask_for_local_model(
     gguf_only: bool,
     reason: str,
+    gguf_variant: Optional[str],
     account: Optional[dict] = None,
     base: Optional[str] = None,
     key: Optional[str] = None,
@@ -5036,25 +5037,19 @@ def _ask_for_local_model(
         f"No {kind} found on this device. Pass one with --model <hf-id-or-path>, or "
         "download one in Unsloth Studio."
     )
+    if gguf_variant:
+        hint = f"No {kind} found for --gguf-variant {gguf_variant}. Pass --model explicitly to select one."
     typer.echo(reason)
     picker = pick_gguf_model if gguf_only else pick_local_model
-    if account is None:
-        return picker(Console(), prompt = "Load", empty_hint = hint)
-    from utils.account_context import AccountContext, run_as
 
-    context = AccountContext(
-        account["account_id"],
-        account["username"],
-        account["role"],
-        via_api_key = account.get("via_api_key", True),
-    )
-    if context.is_owner:
-        return run_as(context, picker, Console(), prompt = "Load", empty_hint = hint)
-
-    def choose_allowed():
+    def choose(check_access: bool):
         from unsloth_cli._model_catalog import list_chat_models
 
-        entries = list_chat_models()
+        entries = (
+            list_chat_models(gguf_variant = gguf_variant) if gguf_variant else list_chat_models()
+        )
+        if not check_access:
+            return picker(Console(), prompt = "Load", empty_hint = hint, entries = entries)
         try:
             response = _http_json(
                 "POST",
@@ -5076,10 +5071,25 @@ def _ask_for_local_model(
             entries = [entry for entry in entries if entry.model in allowed],
         )
 
-    return run_as(context, choose_allowed)
+    if account is None:
+        return choose(False)
+    from utils.account_context import AccountContext, run_as
+
+    context = AccountContext(
+        account["account_id"],
+        account["username"],
+        account["role"],
+        via_api_key = account.get("via_api_key", True),
+    )
+    return run_as(context, choose, check_access = not context.is_owner)
 
 
-def _pick_model_to_auto_start(serve: bool, launch: bool, gguf_only: bool) -> Optional[str]:
+def _pick_model_to_auto_start(
+    serve: bool,
+    launch: bool,
+    gguf_only: bool,
+    gguf_variant: Optional[str] = None,
+) -> Optional[str]:
     """With no server running, the pick replaces --model so the auto-start path serves it."""
     if not (serve and launch and _can_ask_for_model()):
         return None
@@ -5090,11 +5100,18 @@ def _pick_model_to_auto_start(serve: bool, launch: bool, gguf_only: bool) -> Opt
     if find_studio_server() is not None:
         return None
     return _ask_for_local_model(
-        gguf_only, "No Unsloth server is running. Pick a model on this device to start one with:"
+        gguf_only,
+        "No Unsloth server is running. Pick a model on this device to start one with:",
+        gguf_variant,
     )
 
 
-def _pick_model_for_idle_server(base: str, key: str, gguf_only: bool) -> Optional[str]:
+def _pick_model_for_idle_server(
+    base: str,
+    key: str,
+    gguf_only: bool,
+    gguf_variant: Optional[str] = None,
+) -> Optional[str]:
     """With a local server serving no chat model, the pick replaces --model and is loaded into it."""
     if not _can_ask_for_model():
         return None
@@ -5121,6 +5138,7 @@ def _pick_model_for_idle_server(base: str, key: str, gguf_only: bool) -> Optiona
     return _ask_for_local_model(
         gguf_only,
         "No model is loaded in Unsloth. Pick one on this device to load:",
+        gguf_variant,
         account = account,
         base = base,
         key = key,
@@ -5142,7 +5160,7 @@ def _connect(
     _refuse_npu_model(model)
     local_model_picked = False
     if model is None:
-        model = _pick_model_to_auto_start(serve, launch, gguf_only)
+        model = _pick_model_to_auto_start(serve, launch, gguf_only, load.gguf_variant)
         _check_picked_gguf_variant(model, load.gguf_variant)
         local_model_picked = model is not None
     requested = model
@@ -5174,7 +5192,7 @@ def _connect(
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
         if model is None and server is None:
-            picked = _pick_model_for_idle_server(base, key, gguf_only)
+            picked = _pick_model_for_idle_server(base, key, gguf_only, load.gguf_variant)
             if picked is not None:
                 _check_picked_gguf_variant(picked, load.gguf_variant)
                 model = requested = picked

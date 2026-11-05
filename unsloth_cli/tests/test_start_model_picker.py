@@ -37,8 +37,11 @@ def picker(monkeypatch):
 
     monkeypatch.setattr(cat, "list_chat_models", list_chat_models)
 
+    real_setup = start.ensure_studio_backend_path
+
     def ensure_studio_backend_path(**kwargs):
         state.setdefault("ensure_calls", []).append(kwargs)
+        return real_setup(**kwargs)
 
     monkeypatch.setattr(start, "ensure_studio_backend_path", ensure_studio_backend_path)
     # structlog.configure is process-wide; the other tests must keep their own log level.
@@ -98,12 +101,12 @@ def test_idle_server_loads_the_picked_model(fake_studio, picker, monkeypatch):
 
 def test_enter_picks_the_first_model_and_bad_input_asks_again(fake_studio, picker, monkeypatch):
     _empty_server(fake_studio, monkeypatch)
-    picker["answers"] = ["9", "two", ""]
+    picker["answers"] = ["9", "two", "\u00b2", ""]
 
     result = CliRunner().invoke(start.start_app, ["opencode", "--no-launch"])
 
     assert result.exit_code == 0, result.output
-    assert result.output.count("Pick a number between 1 and 3.") == 2
+    assert result.output.count("Pick a number between 1 and 3.") == 3
     assert _loads(fake_studio) == [{"model_path": "/outputs/my-lora"}]
 
 

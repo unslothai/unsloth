@@ -2,6 +2,8 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 """A picked GGUF file must not silently override an explicit quantization choice."""
 
+from pathlib import Path
+
 import pytest
 import typer
 
@@ -10,6 +12,9 @@ from unsloth_cli import _model_catalog as catalog
 from unsloth_cli._inference import ensure_studio_backend_path
 from unsloth_cli.tests.test_start import fake_studio
 from unsloth_cli.tests.test_start_model_picker import picker, _empty_server, _loads
+
+
+REAL_CATALOG = catalog.list_chat_models
 
 
 @pytest.fixture()
@@ -24,11 +29,11 @@ def cached_gguf_pick(tmp_path, monkeypatch, picker):
         (snapshot / f"tiny-{quant}.gguf").write_bytes(b"GGUF" + b"\0" * 4092)
     target = catalog._cached_gguf_load_id({"repo_id": "Org/Tiny-GGUF", "cache_path": str(repo)})
     assert target == str(snapshot / "tiny-Q4_K_M.gguf")
-    monkeypatch.setattr(
-        catalog,
-        "list_chat_models",
-        lambda: [catalog.ModelEntry("Downloaded", "Tiny-GGUF", "Q4_K_M, Q8_0", target)],
-    )
+    row = {"repo_id": "Org/Tiny-GGUF", "cache_path": str(repo)}
+    monkeypatch.setattr(catalog, "_cached_catalog_rows", lambda: ([row], []))
+    monkeypatch.setattr(catalog, "list_chat_models", REAL_CATALOG)
+    for source in ("trained_entries", "exported_entries", "local_folder_entries"):
+        monkeypatch.setattr(catalog, source, lambda: [])
     return target
 
 
@@ -60,6 +65,12 @@ def test_picked_file_rejects_conflicting_quant_before_load(
 ):
     from utils.models.model_config import _direct_gguf_for_variant, detect_gguf_model
 
+    # A row for an individual file must never switch to a sibling.
+    monkeypatch.setattr(
+        catalog,
+        "list_chat_models",
+        lambda **kwargs: [catalog.ModelEntry("Downloaded", "tiny", "gguf", cached_gguf_pick)],
+    )
     assert detect_gguf_model(cached_gguf_pick) == cached_gguf_pick
     assert _direct_gguf_for_variant(cached_gguf_pick, "Q8_0") is None
     attempts = []
@@ -81,36 +92,39 @@ def test_picked_file_rejects_conflicting_quant_before_load(
 
 
 @pytest.mark.parametrize("mode", ["idle-server", "auto-start"])
-@pytest.mark.parametrize("variant", ["Q4_K_M", "q4_k_m", "tiny-Q4_K_M", "tiny-Q4_K_M.gguf"])
-def test_picked_file_accepts_matching_quant_aliases(
+@pytest.mark.parametrize("variant", ["Q4_K_M", "q4_k_m", "tiny-Q4_K_M", "tiny-Q4_K_M.gguf", "Q8_0"])
+def test_picked_repo_resolves_requested_quant(
     cached_gguf_pick, picker, fake_studio, monkeypatch, mode, variant
 ):
     from utils.models.model_config import _direct_gguf_for_variant
 
-    assert _direct_gguf_for_variant(cached_gguf_pick, variant) == cached_gguf_pick
+    expected = (
+        str(Path(cached_gguf_pick).with_name("tiny-Q8_0.gguf"))
+        if variant == "Q8_0"
+        else cached_gguf_pick
+    )
+    assert _direct_gguf_for_variant(expected, variant) == expected
     attempts = []
     load = start.LoadOptions(gguf_variant = variant)
     if mode == "auto-start":
         with pytest.raises(typer.Exit) as error:
             _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
         assert error.value.exit_code == 7
-        assert attempts == [(cached_gguf_pick, load)]
+        assert attempts == [(expected, load)]
     else:
         _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
-        assert _loads(fake_studio) == [{"model_path": cached_gguf_pick, "gguf_variant": variant}]
+        assert _loads(fake_studio) == [{"model_path": expected, "gguf_variant": variant}]
 
 
 @pytest.mark.parametrize("mode", ["idle-server", "auto-start"])
 def test_picked_directory_keeps_explicit_quant(
     cached_gguf_pick, picker, fake_studio, monkeypatch, mode
 ):
-    from pathlib import Path
-
     directory = str(Path(cached_gguf_pick).parent)
     monkeypatch.setattr(
         catalog,
         "list_chat_models",
-        lambda: [catalog.ModelEntry("Fine-tunes", "export", "gguf", directory)],
+        lambda **kwargs: [catalog.ModelEntry("Fine-tunes", "export", "gguf", directory)],
     )
     attempts = []
     load = start.LoadOptions(gguf_variant = "Q8_0")
@@ -122,3 +136,19 @@ def test_picked_directory_keeps_explicit_quant(
     else:
         _connect_picked(mode, load, picker, fake_studio, monkeypatch, attempts)
         assert _loads(fake_studio) == [{"model_path": directory, "gguf_variant": "Q8_0"}]
+
+
+def test_cached_picker_excludes_missing_and_incomplete_quants(cached_gguf_pick):
+    snapshot = Path(cached_gguf_pick).parent
+    (snapshot / "tiny-Q6_K-00001-of-00002.gguf").write_bytes(b"GGUF" + bytes(4092))
+    assert catalog.list_chat_models(gguf_variant = "Q6_K") == []
+    assert catalog.list_chat_models(gguf_variant = "Q5_K_M") == []
+
+
+def test_cached_picker_preserves_path_qualified_selector(cached_gguf_pick):
+    snapshot = Path(cached_gguf_pick).parent
+    build = snapshot / "other-build"
+    build.mkdir()
+    (build / "tiny-Q8_0.gguf").write_bytes(b"GGUF" + bytes(4092))
+    [entry] = catalog.list_chat_models(gguf_variant = "other-build/tiny-Q8_0.gguf")
+    assert entry.model == str(snapshot)

@@ -448,7 +448,27 @@ def _cached_catalog_rows() -> tuple[list[dict], list[dict]]:
     return newest_first(gguf_rows), newest_first(model_rows)
 
 
-def cached_entries() -> List[ModelEntry]:
+def _cached_variant_entry(row: dict, variant: str) -> Optional[ModelEntry]:
+    """Resolve a requested quant inside the same snapshots that supply the row's labels."""
+    from hub.utils.gguf import gguf_variant_key
+    from hub.utils.inventory_scan import complete_snapshot_variants
+    from utils.models.model_config import _direct_gguf_for_variant, _find_local_gguf_by_variant
+
+    for snapshot in _reachable_snapshots(Path(row["cache_path"]), row.get("load_id")):
+        target = _find_local_gguf_by_variant(str(snapshot), variant)
+        if target is None or not Path(target).is_relative_to(snapshot.absolute()):
+            continue
+        relative = Path(target).relative_to(snapshot.absolute()).as_posix()
+        if gguf_variant_key(relative) not in complete_snapshot_variants(str(snapshot)):
+            continue
+        # A path-qualified selector needs the snapshot as its resolution root.
+        if _direct_gguf_for_variant(target, variant) is None:
+            return ModelEntry("Downloaded", row["repo_id"], "gguf", str(snapshot))
+        return ModelEntry("Downloaded", row["repo_id"], variant, target)
+    return None
+
+
+def cached_entries(gguf_variant: Optional[str] = None) -> List[ModelEntry]:
     gguf_rows, model_rows = _cached_catalog_rows()
     entries = []
     for row in gguf_rows:
@@ -457,6 +477,11 @@ def cached_entries() -> List[ModelEntry]:
             or row.get("task") in NON_CHAT_TASKS
             or row.get("capabilities", {}).get("can_chat") is False
         ):
+            continue
+        if gguf_variant:
+            entry = _cached_variant_entry(row, gguf_variant)
+            if entry is not None:
+                entries.append(entry)
             continue
         entries.append(
             ModelEntry(
@@ -641,7 +666,7 @@ def local_folder_entries() -> List[ModelEntry]:
     return entries
 
 
-def _safe(fn) -> List[ModelEntry]:
+def _safe(fn, **kwargs) -> List[ModelEntry]:
     """Run one source, and never let it take the other three down with it.
 
     Fails open, since a picker missing one group beats a traceback where a model list should
@@ -649,7 +674,7 @@ def _safe(fn) -> List[ModelEntry]:
     the reason turns "my HF cache is unreadable" into an empty list. UNSLOTH_DEBUG re-raises.
     """
     try:
-        return fn()
+        return fn(**kwargs)
     except Exception as error:
         # Same truthy set the rest of the tree uses (utils.utils, utils.transformers_version).
         if os.environ.get("UNSLOTH_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -703,10 +728,17 @@ def _dedup_key(model: str):
         return os.path.normcase(model) if os.path.isabs(model) else model.lower()
 
 
-def list_chat_models() -> List[ModelEntry]:
-    entries = []
-    for fn in (trained_entries, exported_entries, cached_entries, local_folder_entries):
-        entries.extend(_safe(fn))
+def list_chat_models(*, gguf_variant: Optional[str] = None) -> List[ModelEntry]:
+    entries = [
+        *_safe(trained_entries),
+        *_safe(exported_entries),
+        *(
+            _safe(cached_entries, gguf_variant = gguf_variant)
+            if gguf_variant
+            else _safe(cached_entries)
+        ),
+        *_safe(local_folder_entries),
+    ]
     seen = set()
     unique = []
     for entry in entries:
