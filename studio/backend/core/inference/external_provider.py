@@ -34,7 +34,9 @@ from core.inference.openai_responses_shared import (
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from models.providers import (
+    normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
+    render_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 
@@ -1547,6 +1549,7 @@ class ExternalProviderClient:
         *,
         api_type: str = "chat_completions",
         reasoning_config: Optional[dict] = None,
+        extra_headers: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
@@ -1556,6 +1559,8 @@ class ExternalProviderClient:
             if provider_type == "custom"
             else None
         )
+        self.extra_headers = normalize_provider_extra_headers(extra_headers)
+        self._header_vars: dict[str, str] = {}
         validate_provider_reasoning_contract(provider_type, self.api_type, self.reasoning_config)
         from core.inference.providers import validate_provider_base_url
 
@@ -1580,6 +1585,26 @@ class ExternalProviderClient:
         # client lives for the whole Studio tool loop, so remember that capability result instead of paying for the
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
+
+    def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
+        """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
+        session = (thread_id or "").strip()
+        self._header_vars = {
+            "CHAT_SESSION_ID": session,
+            "THREAD_ID": session,
+            "MODEL": model or "",
+            "PROVIDER_TYPE": self.provider_type,
+        }
+
+    def _credential_digest(self) -> str:
+        """Served-metadata cache identity: the key, plus the headers this request really sends."""
+        material = self.api_key or ""
+        headers = render_provider_extra_headers(
+            getattr(self, "extra_headers", None), getattr(self, "_header_vars", None)
+        )
+        if headers:
+            material = _json.dumps([material, headers], sort_keys = True)
+        return hashlib.sha256(material.encode()).hexdigest()
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -1619,6 +1644,14 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
+        custom = render_provider_extra_headers(
+            getattr(self, "extra_headers", {}), getattr(self, "_header_vars", {})
+        )
+        if custom:
+            # Header names are case-insensitive: an override replaces, never duplicates.
+            overridden = {name.lower() for name in custom}
+            headers = {k: v for k, v in headers.items() if k.lower() not in overridden}
+            headers.update(custom)
         return headers
 
     def _chat_headers(self, thread_id: Optional[str]) -> dict[str, str]:
@@ -1680,6 +1713,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
@@ -7496,7 +7530,7 @@ class ExternalProviderClient:
         if self.provider_type != "vllm":
             return False
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest())
+        key = (self.base_url, self._credential_digest())
         cached = _served_versions.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7525,7 +7559,7 @@ class ExternalProviderClient:
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7551,7 +7585,7 @@ class ExternalProviderClient:
         if self.provider_type != "llama_cpp":
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_templates.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]

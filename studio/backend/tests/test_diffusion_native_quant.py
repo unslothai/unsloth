@@ -409,6 +409,12 @@ def _block_torchao(monkeypatch):
     # A None sys.modules entry makes any torchao import raise, proving the branch never reaches it.
     monkeypatch.setitem(sys.modules, "torchao", None)
     monkeypatch.setitem(sys.modules, "torchao.quantization", None)
+    # peft caches is_torchao_available() per process: an earlier True in this worker would send its
+    # LoRA dispatcher into the blocked import, so peft must see torchao as absent too.
+    for name in ("peft.import_utils", "peft.tuners.lora.torchao"):
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "is_torchao_available"):
+            monkeypatch.setattr(module, "is_torchao_available", lambda: False)
 
 
 @pytest.mark.parametrize("scheme", ["int8", "fp8"])

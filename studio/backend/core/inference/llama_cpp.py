@@ -2472,6 +2472,13 @@ _MAX_IDENTICAL_TOOL_RESULTS = 3
 _UNSET = object()
 
 
+def _with_template_extras(reasoning_kw: Optional[dict], extras: Optional[dict]) -> Optional[dict]:
+    """The caller's other template tags (e.g. verification) under Studio's resolved reasoning keys."""
+    if not extras:
+        return reasoning_kw
+    return {**extras, **(reasoning_kw or {})}
+
+
 # A result with this tail is the window's answer, not the tool's.
 _WINDOW_NOTICE_MARKER = "chars for the model;"
 # Zero-budget results use _zero_room_stub, which lacks the marker above; missing it lets a model re-read slices forever, so catch it too.
@@ -36972,6 +36979,7 @@ class LlamaCppBackend:
         thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
         compact_context: bool = False,
+        chat_template_kwargs: Optional[dict] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """Streams a chat completion via /v1/chat/completions (llama-server applies template and vision); yields cumulative text like InferenceBackend."""
         if not self.is_loaded:
@@ -37020,9 +37028,10 @@ class LlamaCppBackend:
             payload["timings_per_token"] = True
         if logit_bias:
             payload["logit_bias"] = logit_bias
-        # Per-request enable_thinking / reasoning_effort / preserve_thinking
-        _reasoning_kw = self._request_reasoning_kwargs(
-            enable_thinking, reasoning_effort, preserve_thinking
+        # Per-request enable_thinking / reasoning_effort / preserve_thinking, plus the caller's other tags
+        _reasoning_kw = _with_template_extras(
+            self._request_reasoning_kwargs(enable_thinking, reasoning_effort, preserve_thinking),
+            chat_template_kwargs,
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
@@ -37196,6 +37205,7 @@ class LlamaCppBackend:
                 tools_withheld = tools_withheld,
                 thinking_budget_tokens = thinking_budget_tokens,
                 compact_context = compact_context,
+                chat_template_kwargs = chat_template_kwargs,
                 _allow_respawn_retry = False,
             )
 
@@ -37416,6 +37426,7 @@ class LlamaCppBackend:
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
         live_permissions = None,
+        chat_template_kwargs: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -37990,8 +38001,11 @@ class LlamaCppBackend:
                 neutralize_control_markup_in_messages,
             )
 
-            _reasoning_kw = self._request_reasoning_kwargs(
-                _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+            _reasoning_kw = _with_template_extras(
+                self._request_reasoning_kwargs(
+                    _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+                ),
+                chat_template_kwargs,
             )
             # On a continuation only the remainder of the caller's cap; read before the payload.
             _iteration_max_tokens = (
@@ -39155,8 +39169,9 @@ class LlamaCppBackend:
                             )
                             _cap_left_l = _loop_budget_left(_spent_l)
                             # Recompute kwargs with thinking off so admission prices the real request.
-                            _off_kw_l = self._request_reasoning_kwargs(
-                                False, None, preserve_thinking
+                            _off_kw_l = _with_template_extras(
+                                self._request_reasoning_kwargs(False, None, preserve_thinking),
+                                chat_template_kwargs,
                             )
                             # Counted ONCE normally: eviction below runs only on a candidate already found too large.
                             _fits_l = _cap_left_l != 0 and _loop_continuation_fits(
@@ -40612,8 +40627,9 @@ class LlamaCppBackend:
         _final_tools = _last_sent_tools
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
-        _reasoning_kw = self._request_reasoning_kwargs(
-            enable_thinking, reasoning_effort, preserve_thinking
+        _reasoning_kw = _with_template_extras(
+            self._request_reasoning_kwargs(enable_thinking, reasoning_effort, preserve_thinking),
+            chat_template_kwargs,
         )
         _final_max_tokens = (
             max_tokens
@@ -41252,7 +41268,10 @@ class LlamaCppBackend:
                                 _candidate_r, None, self.markup_profile
                             )
                             # Admit with thinking-off kwargs, matching the request actually sent.
-                            _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
+                            _off_kw = _with_template_extras(
+                                self._request_reasoning_kwargs(False, None, preserve_thinking),
+                                chat_template_kwargs,
+                            )
                             _next_cap_r = _remaining_output_budget()
                             # Protect the current user turn and recovery tail.
                             _recovery_tail = _candidate_r[-2:]
