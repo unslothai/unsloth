@@ -1107,6 +1107,13 @@ _FLEX_MASKLESS_SDPA_ENABLED = os.environ.get("UNSLOTH_FLEX_MASKLESS_SDPA", "1") 
 FLEX_MASKLESS_SDPA_STATS = {"sdpa": 0, "flex": 0}
 
 
+def _is_4d(tensor):
+    # Dynamo < 2.10 reads hasattr / getattr on a traced tensor as missing (pytorch/pytorch#167651).
+    if isinstance(tensor, torch.Tensor):
+        return tensor.dim() == 4
+    return callable(getattr(tensor, "dim", None)) and tensor.dim() == 4
+
+
 def _dropped_causal_mask(module, query, key, args, kwargs):
     """A flex call whose causal mask unsloth_zoo dropped (stock flex reads None as bidirectional)."""
     attention_mask = args[0] if len(args) > 0 else kwargs.get("attention_mask", None)
@@ -1115,7 +1122,7 @@ def _dropped_causal_mask(module, query, key, args, kwargs):
     # Vision callers pass None meaning bidirectional, and is_causal=False is a per-call override.
     if getattr(module, "is_causal", None) is not True or kwargs.get("is_causal", None) is False:
         return False
-    if not (hasattr(query, "dim") and query.dim() == 4 and key.dim() == 4):
+    if not (_is_4d(query) and key.dim() == 4):
         return False
     return query.shape[2] >= 2 and query.shape[2] == key.shape[2]
 
@@ -1256,9 +1263,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         try:
             # Some vision callers reuse the interface with a non-4D query.
             kernel_options = (
-                _flex_kernel_options_for_head_dim(query.shape[-1])
-                if hasattr(query, "dim") and query.dim() == 4
-                else None
+                _flex_kernel_options_for_head_dim(query.shape[-1]) if _is_4d(query) else None
             )
         except Exception:
             kernel_options = None
@@ -1268,8 +1273,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         if (
             kernel_options is None
             and small_smem_device_ok
-            and hasattr(query, "dim")
-            and query.dim() == 4
+            and _is_4d(query)
             and (
                 getattr(query, "dtype", None) in (torch.float16, torch.bfloat16)
                 or (
@@ -1312,8 +1316,7 @@ def _wrap_flex_attention_forward(flex_attention_forward):
         if (
             kernel_options is None
             and tuned_bwd_device_ok
-            and hasattr(query, "dim")
-            and query.dim() == 4
+            and _is_4d(query)
             and _flex_call_needs_backward(query, key, value)
             and _flex_tuned_bwd_fits(args, kwargs)
         ):

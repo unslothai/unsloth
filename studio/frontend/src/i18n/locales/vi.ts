@@ -206,6 +206,9 @@ export const vi = {
         history: "Đang đọc lịch sử duyệt web của bạn",
         move: "Đang di chuyển chuột",
         drag: "Đang kéo",
+        tabs: "Đang xem các thẻ",
+        readFile: "Đang đọc tệp",
+        editFile: "Đang chỉnh sửa tệp",
       },
     },
     title: "Trình duyệt",
@@ -361,6 +364,8 @@ export const vi = {
     askBeforeDownloadingSetting: "Hỏi trước khi tải xuống",
     askBeforeDownloadingSettingDescription:
       "Xác nhận tệp từ trang web trước khi lưu.",
+    askBeforeProgramDownloadsSetting: "Hỏi trước khi tải xuống chương trình",
+    askBeforeProgramDownloadsSettingDescription: "Xác nhận các tệp có thể chạy chương trình, như .exe hoặc .dmg, ngay cả khi các lượt tải xuống khác không hỏi.",
     downloadSitesSetting: "Quyền tải xuống của trang web",
     downloadSitesSettingDescription:
       "Các trang web bạn đã chọn luôn cho phép hoặc luôn chặn tải xuống.",
@@ -369,6 +374,7 @@ export const vi = {
     downloadSitesFor: "Tải xuống từ {host}",
     downloadSitesRemove: "Quên {host}",
     downloadSiteAllow: "Luôn cho phép",
+    downloadSiteAllowAll: "Cho phép cả chương trình",
     downloadSiteBlock: "Luôn chặn",
     downloadPrompt: {
       title: "Tải xuống tệp này?",
@@ -376,6 +382,9 @@ export const vi = {
       dangerous:
         "Những tệp như thế này có thể chạy chương trình trên máy tính của bạn. Chỉ tải xuống nếu bạn tin tưởng {host}.",
       remember: "Ghi nhớ cho lần sau",
+      once: "Hỏi vào lần sau",
+      site: "Luôn cho {host}",
+      all: "Luôn tải xuống, từ mọi trang",
       cancel: "Hủy",
       download: "Tải xuống",
       blocked: "Đã chặn một lượt tải xuống từ {host}.",
@@ -4231,8 +4240,6 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
-          appleSilicon:
-            "Chưa hỗ trợ truyền trực tuyến trên Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",
