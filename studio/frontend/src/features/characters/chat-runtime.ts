@@ -105,7 +105,7 @@ export async function prepareCharacterRun(args: {
   const store = useCharactersStore.getState();
   // Sending a character chat as an ordinary one would put its hidden turns in front of the model
   // and save an unattributed reply, so a chat known to have characters refuses instead.
-  const knownCharacterChat = isKnownCharacterChat(threadId);
+  const knownCharacterChat = isKnownCharacterChat(threadId) || messages.some((m) => roleplayMetaOf(m) !== null);
   let scene: ChatScene | null;
   try {
     scene = await store.loadScene(threadId);

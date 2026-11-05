@@ -340,6 +340,14 @@ test("a replayed reply with tools between its texts keeps their order", () => {
   assert.deepEqual(shapeReplayMessage(plain, "Bo: Hi.", "Bo", true).content, [tool, { type: "text", text: "Bo: Hi." }]);
 });
 
+test("{{trim}} cleanup stays linear on a long whitespace run", () => {
+  const ctx = { char: "Bo", user: "Ann", now: new Date(0), group: [] };
+  assert.equal(applyMacros("a  \n{{trim}}\n  b {{ trim }}c", ctx), "abc");
+  const started = Date.now();
+  applyMacros(`x${" ".repeat(200_000)}y`, ctx);
+  assert.ok(Date.now() - started < 500);
+});
+
 test("a title is not a name: mentions and labels skip Captain, Professor and the like", () => {
   assert.equal(shortName("Captain Rhys Calloway"), "Rhys");
   assert.equal(shortName("Dr. Moon"), "Moon");

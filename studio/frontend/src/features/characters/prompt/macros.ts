@@ -89,10 +89,16 @@ export function applyMacros(text: string, context: MacroContext): string {
     }
     return whole;
   });
-  // {{trim}} removes the newlines around it; {{noop}} disappears.
-  return out
-    .replace(/\s*\{\{\s*trim\s*\}\}\s*/gi, "")
-    .replace(/\{\{\s*noop\s*\}\}/gi, "");
+  // {{trim}} removes the whitespace around it; {{noop}} disappears. Split rather than /\s*{{trim}}\s*/g,
+  // which is quadratic on a long whitespace run.
+  const pieces = out.split(/\{\{\s*trim\s*\}\}/i);
+  const trimmed = pieces
+    .map((piece, index) => {
+      const start = index > 0 ? piece.trimStart() : piece;
+      return index < pieces.length - 1 ? start.trimEnd() : start;
+    })
+    .join("");
+  return trimmed.replace(/\{\{\s*noop\s*\}\}/gi, "");
 }
 
 /** Only the name macros, for text that must read the same on every send. */
