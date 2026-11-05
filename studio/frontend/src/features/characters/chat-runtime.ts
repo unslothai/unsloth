@@ -14,7 +14,7 @@ import {
   type BuiltPrompt,
   type PromptCharacter,
 } from "./prompt/build";
-import { castOf, nextInRound, resolveSpeaker, textOf } from "./prompt/round";
+import { castOf, resolveSpeaker, textOf } from "./prompt/round";
 import { useCharactersStore } from "./store";
 import type { Character, ChatScene, Persona, ResolvedPersona } from "./types";
 
@@ -191,15 +191,6 @@ export async function prepareCharacterRun(args: {
     },
     built,
   };
-}
-
-/** A group round in this chat still has a planned speaker to come, so a queued prompt waits for it. */
-export function groupRoundPending(
-  threadId: string | null | undefined,
-  messages: Parameters<typeof nextInRound>[0],
-): boolean {
-  const scene = threadId ? useCharactersStore.getState().scenes[threadId] : null;
-  return Boolean(scene && nextInRound(messages, scene));
 }
 
 export { castOf, nextInRound, resolveSpeaker, textOf } from "./prompt/round";

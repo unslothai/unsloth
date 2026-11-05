@@ -9,7 +9,7 @@ import {
   useRoleplayUserParts,
 } from "@/features/characters/chat/message-parts";
 import { CharacterChatPicker } from "@/features/characters/chat/start-picker";
-import { groupRoundPending } from "@/features/characters/chat-runtime";
+import { roundAdvancing } from "@/features/characters/chat/roleplay-controller";
 import {
   RoleplaySpeakerBar,
   useRoleplayComposerPlaceholder,
@@ -561,7 +561,7 @@ type PromptQueueTarget = {
   /** Forget the captured local model so a held prompt resolves the one loaded when it is sent. */
   releaseModel: () => void;
   isIndexing: () => boolean;
-  /** A character chat's group round has speakers still to reply, which the queue waits out like a run. */
+  /** A character chat's group round is about to start its next speaker; the queue waits for it. */
   roundPending: () => boolean;
   usesThreadDocuments: boolean;
   usesLocalModel: boolean;
@@ -4634,10 +4634,8 @@ const Composer: FC<{
         isTargetCurrentThread() &&
         indexingActiveRef.current,
       roundPending: () => {
-        const thread = getThreadRuntime();
         const state = getThreadListItemState();
-        const threadId = state?.remoteId ?? referenceThreadId ?? initialDocumentThreadId;
-        return thread ? groupRoundPending(threadId, thread.getState().messages) : false;
+        return roundAdvancing(state?.remoteId ?? referenceThreadId ?? initialDocumentThreadId);
       },
       getQueueProjectId: () => projectIdAtQueueStart,
       usesThreadDocuments: usesThreadDocumentsAtQueueStart,
