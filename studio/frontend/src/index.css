@@ -6720,6 +6720,13 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 .novel-dialogue .aui-thread-viewport-footer {
   margin-top: calc(-28px * var(--ui-space-scale, 1));
 }
+/* A short window (a phone in landscape) has less room than the panel's minimum, which would push the
+   composer out of view: the panel then keeps its share of the height instead. */
+@media (max-height: 560px) {
+  .novel-dialogue {
+    min-height: 0;
+  }
+}
 /* A cut-out picture (transparent around the figure) stands in the scene: no rounded card, no side
    fades, so the figure's own outline casts the shadow; its lower half still fades behind the panel. */
 .novel-figure-picture[data-cutout] {
