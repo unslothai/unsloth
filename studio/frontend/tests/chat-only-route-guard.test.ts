@@ -42,8 +42,15 @@ const redirectsToChatWith = new Function(
   "chatOnly",
   "unmeasured",
   "trainUnavailable",
+  "detectionDeferred",
   `${declarations}\nreturn Boolean(${condition});`,
-) as (pathname: string, chatOnly: boolean, unmeasured: boolean, trainUnavailable: boolean) => boolean;
+) as (
+  pathname: string,
+  chatOnly: boolean,
+  unmeasured: boolean,
+  trainUnavailable: boolean,
+  detectionDeferred?: boolean,
+) => boolean;
 // A chat-only host that cannot train either, which is every chat-only reason but a CPU training host.
 const redirectsToChat = (pathname: string, chatOnly: boolean, unmeasured: boolean) =>
   redirectsToChatWith(pathname, chatOnly, unmeasured, chatOnly);
@@ -87,6 +94,12 @@ test("an unmeasured verdict still lets both pages wait it out", () => {
       false,
       `${path} is redirected on the pre-measurement guess, which is one-way`,
     );
+  }
+});
+
+test("a deferred verdict is provisional, so no page is redirected on it", () => {
+  for (const path of ["/settings", "/api", "/studio"]) {
+    assert.equal(redirectsToChatWith(path, true, true, true, true), false, path);
   }
 });
 

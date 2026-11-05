@@ -132,11 +132,12 @@ def _fusion_modules(model, modules):
 # Plain-function helpers zoo's generate.py imports; the neutral scope cannot stand in for them.
 PLAIN_HELPERS = {
     "_fusion_modules": _fusion_modules,
-    # Private names zoo's speculative.py imports (unsloth_zoo #2330); only their presence matters here.
+    # Private names zoo's speculative.py imports (unsloth_zoo #2330, #2365); only their presence matters here.
     "_SparseDrafter": type(
         "_SparseDrafter", (), {"__init__": lambda self, *_args, **_kwargs: None}
     ),
     "_VERIFY_GDN_MAX_ROWS": 16,
+    "_FIRST_USE_WORK": [0],
 }
 
 
@@ -413,6 +414,8 @@ def test_a_load_warms_zoo_scopes_under_its_int8_decision(monkeypatch, mlx_moe, o
             ("warm", True, active),
             "/int8",
             "/rng",
+            # The resident batch warms in its own block, unless the first warm-up lost the queue.
+            *["rng", "/rng"] * (outcome != "dead_queue"),
         ]
     )
     assert events == ["gate_up", *warmed]
@@ -8226,7 +8229,9 @@ def test_a_width_refusal_is_asked_once_per_checkpoint_and_width(monkeypatch, tmp
 
 def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path):
     from core.inference import mlx_inference
+    from core.inference.mlx_memory import MlxTurboQuant
 
+    turboquant = MlxTurboQuant(4)
     priced, rewound = [], []
     monkeypatch.setitem(
         sys.modules,
@@ -8285,6 +8290,8 @@ def test_what_the_fit_is_asked_and_when_it_is_asked_at_all(monkeypatch, tmp_path
     for answer in (("refused", "r", True), ("none", "n", True)):
         verdict["answer"] = answer
         assert fit(4) == (24_576, answer) and priced[0]["kv_bits"] is None
+    assert fit(turboquant) == (24_576, None) and asked == []
+    assert priced[0]["kv_bits"] == turboquant
 
     monkeypatch.setitem(
         sys.modules,
@@ -8428,8 +8435,21 @@ def test_only_a_load_that_asked_for_nothing_is_fitted_to_the_machine(monkeypatch
             requested_kv_bits = bits, kv_bits = bits, eligibility = "full", reason = "", note = ""
         ),
     )
+    from core.inference.mlx_memory import MlxTurboQuant
+
     load(max_seq_length = 0, kv_quant = "tq-4")
-    assert verdicts == [] and [kw["kv_bits"] for _, _, kw in asked] == [None]
+    assert verdicts == [] and [kw["kv_bits"] for _, _, kw in asked] == [MlxTurboQuant(4)]
+    assert asked[0][2]["vision"] is True
+    probed = []
+    monkeypatch.setattr(
+        mlx_inference,
+        "_turboquant_status",
+        lambda _m, bits, refusal = "": probed.append(bits)
+        or dict(requested_kv_bits = bits, kv_bits = None, eligibility = "refused", reason = "r", note = ""),
+    )
+    _, info = load(max_seq_length = 0, kv_quant = "tq-4")
+    assert [kw["kv_bits"] for _, _, kw in asked] == [None] and probed == [4]
+    assert info["mlx_kv_bits"] is None
 
     for available, reserved in ((True, True), (False, False)):
         monkeypatch.setattr(

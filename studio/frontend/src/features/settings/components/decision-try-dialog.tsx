@@ -29,6 +29,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { type TranslationKey, useLocale, useT } from "@/i18n";
+import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { cn } from "@/lib/utils";
 import {
   Alert02Icon,
@@ -80,6 +81,8 @@ import {
   isClefDecisionModel,
 } from "../lib/decision-model-labels";
 import { isModEnter, modEnterLabel } from "../lib/keyboard-shortcuts";
+import type { ExampleOs } from "./api-example-parts";
+import { buildDecisionCurl } from "./decision-api-snippets";
 import { type LucideIcon, PlayIcon } from "lucide-react";
 
 const SHORTCUT = modEnterLabel();
@@ -206,19 +209,47 @@ function ViewToggle<T extends string>({
   );
 }
 
+function CopyText({
+  label,
+  text,
+}: {
+  label: string;
+  text: string;
+}): ReactElement {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={async () => {
+        if (await copyToClipboard(text)) {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1800);
+        }
+      }}
+      className="shrink-0 rounded font-sans text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      {copied ? t("settings.apiKeys.copied") : label}
+    </button>
+  );
+}
+
 function CodeBlock({
   title,
   value,
   onChange,
+  actions,
 }: {
   title: string;
   value: string;
   onChange?: (value: string) => void;
+  actions?: ReactNode;
 }): ReactElement {
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-xl border border-border/70 bg-muted/40">
-      <div className="truncate border-b border-border/60 px-3.5 py-2 font-mono text-ui-11 text-muted-foreground">
-        {title}
+      <div className="flex items-center justify-between gap-3 border-b border-border/60 px-3.5 py-2 font-mono text-ui-11 text-muted-foreground">
+        <span className="truncate">{title}</span>
+        {actions}
       </div>
       {onChange ? (
         <textarea
@@ -814,6 +845,7 @@ export function DecisionTryDialog({
   initialModel,
   settings,
   connections,
+  curlTarget,
   onRun,
 }: {
   open: boolean;
@@ -821,6 +853,7 @@ export function DecisionTryDialog({
   initialModel?: string;
   settings: SystemOneSettings;
   connections: SystemOneConnection[];
+  curlTarget: { base: string; apiKey: string; os: ExampleOs };
   onRun: () => void;
 }): ReactElement {
   const t = useT();
@@ -1183,6 +1216,21 @@ export function DecisionTryDialog({
                     title="POST /v1/systemone"
                     value={jsonText}
                     onChange={setJsonText}
+                    actions={
+                      <span className="flex shrink-0 items-center gap-3">
+                        <CopyText
+                          label={t("decisions.copyBody")}
+                          text={jsonText}
+                        />
+                        <CopyText
+                          label={t("decisions.copyCurl")}
+                          text={buildDecisionCurl({
+                            ...curlTarget,
+                            body: jsonText,
+                          })}
+                        />
+                      </span>
+                    }
                   />
                 </>
               )}

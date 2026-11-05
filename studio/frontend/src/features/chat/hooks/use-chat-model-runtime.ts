@@ -50,6 +50,7 @@ import {
   offloadCountsFrom,
   offloadWarning,
 } from "../lib/partial-offload";
+import { loadFailureToastParts } from "../lib/load-failure-message";
 import { isSettingsRouteAbsent } from "@/features/settings/api/settings-route-absent";
 import {
   failureLogPath,
@@ -73,6 +74,11 @@ import {
 } from "@/features/hub/lib/model-identity";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { subscribeResidentStatusRefresh } from "@/features/hub/lib/resident-status-refresh";
+// eslint-disable-next-line no-restricted-imports -- Leaf module; the model-picker index pulls in chat.
+import {
+  pinnedReasoningEnabled,
+  resolveReasoningEnabledOnLoad,
+} from "@/features/model-picker/components/model-selector/reasoning-enabled-pin";
 import {
   beginServerModelWait,
   serverModelWaitOutstanding,
@@ -236,6 +242,7 @@ type ActiveModelLoadRun = {
   rollbackLoadedState: ReturnType<typeof useChatRuntimeStore.getState>;
   /** Set once the preliminary unload removed the prior resident; cancel must then reconcile. */
   residentModelUnloaded: boolean;
+  downloadKeepsResident: boolean;
   forceCancelActive: boolean;
   /** Resolves when the owning coroutine unwinds; cancellation holds the slot until then. */
   settledPromise: Promise<void>;
@@ -1076,7 +1083,11 @@ export function useChatModelRuntime() {
           if (ownsModelLoadRun(activeLoadRunRef.current, run)) {
             // Hold the slot until the aborted coroutine unwinds from its unabortable awaits.
             await run.settledPromise;
-            if (run.loadAttemptPath && run.forceCancelActive && !run.residentModelUnloaded) {
+            if (
+              run.loadAttemptPath &&
+              (run.forceCancelActive || run.downloadKeepsResident) &&
+              !run.residentModelUnloaded
+            ) {
               try {
                 const status = await getInferenceStatus(undefined, run.rollbackCheckpoint ?? undefined);
                 if ((status.loading?.length ?? 0) === 0) {
@@ -1092,7 +1103,9 @@ export function useChatModelRuntime() {
             }
             if (
               (!run.loadAttemptPath && run.residentModelUnloaded) ||
-              (run.loadAttemptPath && run.forceCancelActive && run.residentModelUnloaded)
+              (run.loadAttemptPath &&
+                (run.forceCancelActive || run.downloadKeepsResident) &&
+                run.residentModelUnloaded)
             ) {
               try {
                 // The store names the former resident but holds the cancelled target's settings.
@@ -1876,6 +1889,7 @@ export function useChatModelRuntime() {
           : currentRollbackState.activeNativePathExpiresAtMs ?? null,
         rollbackLoadedState: inheritedPendingRollback?.loadedState ?? currentRollbackState,
         residentModelUnloaded: inheritedPendingRollback?.residentUnloaded === true,
+        downloadKeepsResident: false,
         forceCancelActive,
         settledPromise: loadRunSettled,
         markSettled: markLoadRunSettled,
@@ -2542,8 +2556,10 @@ export function useChatModelRuntime() {
 
             stopQueuedRuns(stopDecision, keepsOthers || touchesOnlySelected);
             if (currentCheckpoint && !keepsOthers) {
+              // /load fetches a missing GGUF before stopping the resident, so a failed download keeps it.
+              loadRun.downloadKeepsResident = isGguf && !downloadComplete;
               // With chats generating, skip the preliminary unload so a rejected target truncates nothing.
-              if (!forceCancelActive && !touchesOnlySelected) {
+              if (!forceCancelActive && !touchesOnlySelected && !loadRun.downloadKeepsResident) {
                 await unloadModel({ model_path: currentCheckpoint });
                 // Only a real /unload removes the resident; the forced path leaves it to /load.
                 loadRun.residentModelUnloaded = true;
@@ -2729,11 +2745,21 @@ export function useChatModelRuntime() {
                     reasoningEffortLevels,
                   )
                 : clampLocalReasoningEffort(existingReasoningEffort);
-            const nextReasoningEnabled = reasoningAlwaysOn
-              ? true
-              : reloadingSameModel && supportsReasoning
-                ? stateBeforeUnload.reasoningEnabled
-                : reasoningDefault;
+            const nextReasoningEnabled = resolveReasoningEnabledOnLoad({
+              reasoningAlwaysOn,
+              supportsReasoning,
+              supportsReasoningOff: reasoningStyle !== "reasoning_effort",
+              pinned:
+                pinnedReasoningEnabled(loadPath) ??
+                pinnedReasoningEnabled(modelId),
+              // Status sync may have re-keyed the resident to the load path.
+              reloadingSameModel:
+                reloadingSameModel ||
+                (previousCheckpoint === loadPath &&
+                  (ggufVariant ?? null) === (previousVariant ?? null)),
+              previousEnabled: stateBeforeUnload.reasoningEnabled,
+              reasoningDefault,
+            });
             rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
             // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
@@ -3439,8 +3465,7 @@ export function useChatModelRuntime() {
           if (!abortCtrl.signal.aborted) {
             const message =
               err instanceof Error ? err.message : "Failed to load model";
-            const [summary, ...rest] = message.split("\n");
-            const detail = rest.join("\n").trim();
+            const { summary, detail } = loadFailureToastParts(message);
             const runnerLogPath = failureLogPath(message);
             const logsAction = runnerLogPath
               ? viewLogsAction(
@@ -3566,6 +3591,7 @@ export function useChatModelRuntime() {
           previous.activeNativePathExpiresAtMs ?? null,
         rollbackLoadedState: previous,
         residentModelUnloaded: false,
+        downloadKeepsResident: false,
         forceCancelActive: false,
         settledPromise,
         markSettled: markLoadRunSettled,

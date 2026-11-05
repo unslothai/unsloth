@@ -2375,6 +2375,50 @@ def _fp8_block_size_from_config(model):
     return [int(block[0]), int(block[1])]
 
 
+def backfill_fp8_modules_to_convert(
+    config,
+    model_name,
+    token = None,
+    revision = None,
+    local_files_only = False,
+    subfolder = None,
+    cache_dir = None,
+    variant = None,
+):
+    """List per-tensor fp8 tables (`.weight_scale`) a config leaves out of `modules_to_convert` (Qwen3.8-Flash-Next-FP8)."""
+    quant = getattr(config, "quantization_config", None)
+    if (
+        not isinstance(quant, dict)
+        or quant.get("quant_method") != "fp8"
+        or quant.get("modules_to_convert")
+    ):
+        return None
+    try:
+        weight_map = _load_fp8_weight_map(
+            model_name,
+            local_files_only,
+            token,
+            revision,
+            subfolder,
+            cache_dir,
+            variant = variant,
+            index_only = True,  # runs before the guarded weight download: never fetch the weights here
+        )
+    except Exception:
+        return None
+    skip = set(quant.get("modules_to_not_convert") or [])
+    modules = {k[: -len(".weight_scale")] for k in weight_map or {} if k.endswith(".weight_scale")}
+    # Linear blocks carry weight_scale_inv; only embeddings match, and the quantizer converts nn.Embedding only.
+    # Keep the layer index: the quantizer matches by suffix, so a bare name would also convert another layer's dense table.
+    found = sorted({re.sub(r"^.*\.(?=layers\.\d+\.)", "", m) for m in modules - skip})
+    if found:
+        quant["modules_to_convert"] = found
+        print(
+            f"Unsloth: {model_name} ships fp8 scales for {found} without listing them in modules_to_convert; added."
+        )
+    return found or None
+
+
 def _load_fp8_weight_map(
     model_name,
     local_files_only,
@@ -2383,8 +2427,10 @@ def _load_fp8_weight_map(
     subfolder = None,
     cache_dir = None,
     variant = None,
+    index_only = False,
 ):
-    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`."""
+    """Tensor->file map from the load's snapshot; sharded index, else single `model.safetensors`.
+    `index_only` never downloads a remote single file just to list its keys."""
 
     def _local_path(filename):
         return (
@@ -2429,7 +2475,7 @@ def _load_fp8_weight_map(
     try:
         if is_local and os.path.exists(_local_path(single_file)):
             single_path = _local_path(single_file)
-        elif not is_local:
+        elif not is_local and not index_only:
             single_path = _remote_path(single_file)
         else:
             return None
@@ -3429,25 +3475,107 @@ def enable_composite_gradient_checkpointing(model, verbose = True):
     return True
 
 
+def _move_compressed_tensors_inputs(value, device):
+    if isinstance(value, torch.Tensor):
+        return value.to(device = device)
+    if isinstance(value, list):
+        return [_move_compressed_tensors_inputs(item, device) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_move_compressed_tensors_inputs(item, device) for item in value)
+    from dataclasses import fields, is_dataclass
+
+    if is_dataclass(value):
+        return type(value)(
+            **{
+                field.name: _move_compressed_tensors_inputs(getattr(value, field.name), device)
+                for field in fields(value)
+            }
+        )
+    if isinstance(value, dict):
+        return {key: _move_compressed_tensors_inputs(item, device) for key, item in value.items()}
+    return value
+
+
+def _align_compressed_tensors_inputs(module, args, kwargs):
+    reference = next((p for p in module._parameters.values() if p is not None), None)
+    if reference is None:
+        reference = next((b for b in module._buffers.values() if b is not None), None)
+    if reference is None:
+        reference = next(module.parameters(), None)
+    if reference is None:
+        reference = next(module.buffers(), None)
+    if reference is None:
+        return args, kwargs
+    if len(args) == 1 and not kwargs and isinstance(args[0], torch.Tensor):
+        if args[0].device == reference.device:
+            return None
+        return (args[0].to(device = reference.device),), kwargs
+    return _move_compressed_tensors_inputs((args, kwargs), reference.device)
+
+
+def _compressed_tensors_input_forward(original_forward, module):
+    from functools import wraps
+
+    mapping_name, tensor_name = next(
+        (
+            (mapping, name)
+            for mapping in ("_parameters", "_buffers")
+            for name, value in getattr(module, mapping).items()
+            if value is not None
+        ),
+        (None, None),
+    )
+
+    @wraps(original_forward)
+    def forward(module, *args, **kwargs):
+        if (
+            mapping_name is not None
+            and len(args) == 1
+            and not kwargs
+            and isinstance(args[0], torch.Tensor)
+        ):
+            reference = getattr(module, mapping_name).get(tensor_name)
+            if reference is not None:
+                value = args[0]
+                if value.device != reference.device:
+                    value = value.to(device = reference.device)
+                return original_forward(module, value)
+        aligned = _align_compressed_tensors_inputs(module, args, kwargs)
+        if aligned is not None:
+            args, kwargs = aligned
+        return original_forward(module, *args, **kwargs)
+
+    return forward
+
+
 def _remove_same_device_compressed_tensors_offload(model):
-    """Unwrap compressed-tensors >= 0.19 non-offloading OffloadCaches, which torch.compile cannot trace."""
     try:
         from compressed_tensors.offload.cache import OffloadCache
         from compressed_tensors.offload.module import remove_module_offload
     except Exception:
         return 0
-    removed = 0
+    same_device = []
+    onload_devices = set()
     for module in model.modules():
         cache = module._parameters
         if not isinstance(cache, OffloadCache):
             continue
         onload = getattr(cache, "onload_device", None)
         offload = getattr(cache, "offload_device", None)
+        if onload is not None:
+            onload_devices.add(torch.device(onload))
         if onload is None or offload is None or torch.device(onload) != torch.device(offload):
             continue
+        same_device.append(module)
+    split = len(onload_devices) > 1
+    for module in same_device:
         remove_module_offload(module)
-        removed += 1
-    return removed
+        if split:
+            # The original mover disables autograd and compares data pointers.
+            module.forward = _compressed_tensors_input_forward(
+                module.forward.__func__, module
+            ).__get__(module)
+    return len(same_device)
 
 
 def _decompress_compressed_tensors_model(model):

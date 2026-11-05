@@ -112,6 +112,7 @@ import {
   useModelMemory,
 } from "@/hooks/use-model-memory";
 import type { GpuInfo } from "@/hooks/use-gpu-info";
+import { fetchSystemInfo } from "@/hooks/use-system";
 import { useVramBudgetFraction } from "@/hooks/use-vram-budget-fraction";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
@@ -2814,7 +2815,8 @@ function GgufVariantExpander({
   // The prefix test misses marker-less relative dirs, so ask the listing.
   const checkpointIsLocal = isLocalPath || resolvedLocally;
 
-  const handleVariantClick = useCallback(
+  // The gear hands the config page this same meta, so its Load downloads or loads as the row does.
+  const variantSelectMeta = useCallback(
     // `filename` is required: the diffusion pages gate their GGUF branch on meta.ggufFilename.
     (
       quant: string,
@@ -2823,9 +2825,9 @@ function GgufVariantExpander({
       sizeBytes?: number,
       downloadPresentation?: ModelSelectorChangeMeta["downloadPresentation"],
       contextLength: number | null = nativeContext,
-    ) => {
+    ): ModelSelectorChangeMeta => {
       const isAvailable = isLocalPath || downloaded === true;
-      onSelect(repoId, {
+      return {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         // Only for a quant already in the pinned snapshot: a new download lands elsewhere.
@@ -2839,13 +2841,11 @@ function GgufVariantExpander({
         isGguf: variantsAreGguf,
         isVision: variantVisionHint,
         pipelineTag,
-      });
+      };
     },
     [
-      repoId,
       loadId,
       isLocalPath,
-      onSelect,
       sourceOverride,
       nativeContext,
       pipelineTag,
@@ -2976,6 +2976,16 @@ function GgufVariantExpander({
     () => h3PickerHasOnlyPrunedBuilds(displayVariants ?? []),
     [displayVariants],
   );
+  const variantHasMenu = (v: GgufVariantDetail): boolean =>
+    (v.downloaded === true || v.partial === true) &&
+    Boolean(
+      allowPin ||
+        (v.update_available && onUpdateVariant) ||
+        onDeleteVariant ||
+        !isLocalPath,
+    );
+  // Rows without a menu hold its slot, so every gear and size lines up with the downloaded rows.
+  const reserveMenuSlot = (displayVariants ?? []).some(variantHasMenu);
 
   // A diffusion GGUF's companion set is per family, not repo-wide; group by dependency_key so totals are right.
   const footprintVariants = useMemo(() => {
@@ -3168,35 +3178,24 @@ function GgufVariantExpander({
         const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
-        const configMeta: ModelSelectorChangeMeta = {
-          source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
-          isLora: false,
-          loadId,
-          ggufVariant: v.quant,
-          isDownloaded: true,
+        const selectMeta = variantSelectMeta(
+          v.quant,
+          v.filename,
+          v.downloaded,
           expectedBytes,
-          contextLength: variantContext,
-          isGguf: variantsAreGguf,
-          isVision: variantVisionHint,
-        };
-        const configTarget = v.downloaded
-          ? modelConfigTarget(repoId, configMeta)
+          pendingDrafterPresentation(v),
+          variantContext,
+        );
+        // Settings can be saved before the download, so every quant shows its own.
+        const configTarget = onConfigure
+          ? modelConfigTarget(repoId, selectMeta)
           : undefined;
         const rowButton = (
           <button
             type="button"
             {...variantList.getOptionProps(variantOptionKey, false)}
             disabled={unusableLocal}
-            onClick={() =>
-              handleVariantClick(
-                v.quant,
-                v.filename,
-                v.downloaded,
-                expectedBytes,
-                pendingDrafterPresentation(v),
-                variantContext,
-              )
-            }
+            onClick={() => onSelect(repoId, selectMeta)}
             className={cn(
               "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               unusableLocal &&
@@ -3271,7 +3270,7 @@ function GgufVariantExpander({
               )}
             </div>
           ) : null,
-          <div key={v.filename} className="flex items-center">
+          <div key={v.filename} className="group/quant flex items-center">
             {/* Nested button triggers are not accessible. */}
             {companionBytes === null ? (
               rowButton
@@ -3286,98 +3285,103 @@ function GgufVariantExpander({
                 </TooltipContent>
               </Tooltip>
             )}
-            {v.downloaded && onConfigure && (
+            {/* Every quant, downloaded or not: settings are set before the download starts. */}
+            {!unusableLocal && onConfigure && (
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
-                className="relative left-0.5"
-                onConfigure={() => onConfigure(repoId, configMeta)}
+                className={cn(
+                  "relative left-0.5",
+                  // Always shown once on device; otherwise only on row hover or focus.
+                  v.downloaded !== true &&
+                    "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/quant:opacity-100 group-focus-within/quant:opacity-100 [@media(hover:none)]:opacity-100",
+                )}
+                onConfigure={() => onConfigure(repoId, selectMeta)}
                 savedFor={configTarget}
               />
             )}
-            {(v.downloaded || v.partial === true) &&
-              (allowPin ||
-                (v.update_available && onUpdateVariant) ||
-                onDeleteVariant ||
-                !isLocalPath) && (
-                <ModelRowMenu
-                  ariaLabel={`More options for ${repoId} ${v.quant}`}
-                  iconClassName="size-3"
-                  runSettings={onConfigure ? configTarget : undefined}
-                  cachePath={
-                    isLocalPath ? undefined : { repoId, variant: v.quant }
-                  }
-                  pin={
-                    allowPin && v.downloaded
-                      ? {
-                          pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
-                          pinLabel: "Pin",
-                          unpinLabel: "Unpin",
-                          onToggle: () => togglePinnedQuant(repoId, v.quant),
-                        }
-                      : undefined
-                  }
-                  update={
-                    v.update_available && onUpdateVariant
-                      ? {
-                          title: updateVariantTitle,
-                          description: renderUpdateVariantDescription?.(
-                            v.quant,
-                          ) ?? (
-                            <>
-                              This will update{" "}
-                              <span className="font-medium text-foreground">
-                                {repoId} ({v.quant})
-                              </span>
-                              {"."}
-                            </>
-                          ),
+            {!variantHasMenu(v) && reserveMenuSlot && (
+              <span className="size-5 shrink-0" aria-hidden={true} />
+            )}
+            {variantHasMenu(v) && (
+              <ModelRowMenu
+                ariaLabel={`More options for ${repoId} ${v.quant}`}
+                iconClassName="size-3"
+                runSettings={configTarget}
+                cachePath={
+                  isLocalPath ? undefined : { repoId, variant: v.quant }
+                }
+                pin={
+                  allowPin && v.downloaded
+                    ? {
+                        pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
+                        pinLabel: "Pin",
+                        unpinLabel: "Unpin",
+                        onToggle: () => togglePinnedQuant(repoId, v.quant),
+                      }
+                    : undefined
+                }
+                update={
+                  v.update_available && onUpdateVariant
+                    ? {
+                        title: updateVariantTitle,
+                        description: renderUpdateVariantDescription?.(
+                          v.quant,
+                        ) ?? (
+                          <>
+                            This will update{" "}
+                            <span className="font-medium text-foreground">
+                              {repoId} ({v.quant})
+                            </span>
+                            {"."}
+                          </>
+                        ),
+                        repoId,
+                        variant: v.quant,
+                        disabled: updateDisabled,
+                        onConfirm: () =>
+                          onUpdateVariant(v.quant, expectedBytes),
+                        onUpdated: () => setRefreshKey((key) => key + 1),
+                      }
+                    : undefined
+                }
+                del={
+                  onDeleteVariant
+                    ? {
+                        title: deleteVariantTitle,
+                        impact: {
                           repoId,
                           variant: v.quant,
-                          disabled: updateDisabled,
-                          onConfirm: () =>
-                            onUpdateVariant(v.quant, expectedBytes),
-                          onUpdated: () => setRefreshKey((key) => key + 1),
-                        }
-                      : undefined
-                  }
-                  del={
-                    onDeleteVariant
-                      ? {
-                          title: deleteVariantTitle,
-                          impact: {
-                            repoId,
-                            variant: v.quant,
-                            cachePath: v.cache_ref ?? v.cache_path,
-                          },
-                          description: renderDeleteVariantDescription?.(
-                            v.quant,
-                          ) ?? (
-                            <>
-                              This will remove{" "}
-                              <span className="font-medium text-foreground">
-                                {repoId} ({v.quant})
-                              </span>{" "}
-                              from disk. You can re-download it later.
-                            </>
-                          ),
-                          successMessage:
-                            getDeleteVariantSuccessMessage?.(v.quant) ??
-                            `Deleted ${repoId} ${v.quant}`,
-                          disabled: deleteDisabled,
-                          onConfirm: async () => {
-                            await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
-                            if (isChatGgufTask(pipelineTag)) {
-                              await reconcileGgufPinsAfterDelete(repoId, hfToken);
-                            } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
-                              togglePinnedQuant(repoId, v.quant);
-                            }
-                            setRefreshKey((key) => key + 1);
-                          },
-                        }
-                      : undefined
-                  }
-                />
-              )}
+                          cachePath: v.cache_ref ?? v.cache_path,
+                        },
+                        description: renderDeleteVariantDescription?.(
+                          v.quant,
+                        ) ?? (
+                          <>
+                            This will remove{" "}
+                            <span className="font-medium text-foreground">
+                              {repoId} ({v.quant})
+                            </span>{" "}
+                            from disk. You can re-download it later.
+                          </>
+                        ),
+                        successMessage:
+                          getDeleteVariantSuccessMessage?.(v.quant) ??
+                          `Deleted ${repoId} ${v.quant}`,
+                        disabled: deleteDisabled,
+                        onConfirm: async () => {
+                          await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
+                          if (isChatGgufTask(pipelineTag)) {
+                            await reconcileGgufPinsAfterDelete(repoId, hfToken);
+                          } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
+                            togglePinnedQuant(repoId, v.quant);
+                          }
+                          setRefreshKey((key) => key + 1);
+                        },
+                      }
+                    : undefined
+                }
+              />
+            )}
           </div>,
         ];
       })}
@@ -3742,6 +3746,7 @@ export type ModelPickerRowFilter = (row: {
 }) => boolean;
 
 export function HubModelPicker({
+  open,
   models,
   additionalOnDeviceModels = [],
   loadedModelIdOverride,
@@ -3771,6 +3776,7 @@ export function HubModelPicker({
   rowFilter,
   moreModels,
 }: {
+  open: boolean;
   models: ModelOption[];
   /** Task-runtime downloads whose cache layout the shared Hub inventory cannot represent. */
   additionalOnDeviceModels?: ModelOption[];
@@ -3836,6 +3842,10 @@ export function HubModelPicker({
     const tasks = task ? (typeof task === "string" ? [task] : task) : [];
     return tasks.some((entry) => DIFFUSION_TASKS.has(entry));
   }, [task]);
+  useEffect(() => {
+    // Capabilities import optional media libraries, so ask only when this picker is open.
+    if (open && diffusionLoad) void fetchSystemInfo({ probeMedia: true });
+  }, [open, diffusionLoad]);
   // Run settings is the chat load form, which the Images and Video pages never read.
   const onConfigure = diffusionLoad ? undefined : onConfigureProp;
   const audioTaskPicker = taskFilterHasAudio(task);
@@ -8912,6 +8922,7 @@ export function HubModelPicker({
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
             <button
               type="button"
+              data-glass-float=""
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
               className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
               title={ejectsAll ? "Eject all models" : "Eject model"}
