@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-"""The capability registry answers tensor parallel the way models/tp_native.py does: a model tp_native cannot
-shard (OLMoE's q / k norm over all heads, DeepSeek-V3's multi-head latent attention) is refused by the registry with
-tp_native's reason, before any weight loads; the zoo MoE matrix families are MoE families of the registry; and a
-multimodal model's text config names its family without "_text". CPU only, meta-device models."""
+"""Registry refuses tp for models tp_native cannot shard, with its reason, before weights load. CPU, meta models."""
 
 import types
 
@@ -56,7 +53,7 @@ def _meta(family):
         config = Qwen3MoeConfig(**_SMALL, num_experts = 4, moe_intermediate_size = 32, head_dim = 16)
     with torch.device("meta"):
         model = AutoModelForCausalLM.from_config(config)
-    return model.requires_grad_(False)  # a frozen base (LoRA)
+    return model.requires_grad_(False)
 
 
 def _check(model, tp = 2):

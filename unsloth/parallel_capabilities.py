@@ -65,8 +65,7 @@ class Query:
     multimodal: bool = False
     windowed: bool = False  # sliding window, chunked attention or logit softcapping
     direct_params: bool = False  # an attention / MLP block owns a parameter (attention sinks)
-    # Why models/tp_native.py cannot shard this model at q.tp ranks (multi-head latent attention, a q / k norm over
-    # all heads, ...), "" when it can or the model is already split. Read from tp_native itself (_tp_blocker).
+    # tp_native's refusal at q.tp ranks; "" when it shards or the model is already split (_tp_blocker).
     tp_blocker: str = ""
     mode: str = "lora"  # lora, qlora, full, fp8 (float8_training, LoRA or full)
     packing: bool = False
@@ -677,9 +676,7 @@ CELLS = (
 
 # MoE rows: family x precision x router aux loss x parallel mode. Evidence where a CPU gloo run proves it; every
 # other row is refused (under cp / pp / tp) or reported unverified (dp alone), with what it waits for.
-# The zoo MoE matrix families (tests/moe_matrix/families.py on unsloth-zoo) were added after their structure was
-# checked on transformers 5.17: a stacked experts module (gate_up_proj / down_proj, [E, ...]) and a router per MoE
-# layer; family = the text config's model_type without "_text" (_model_traits).
+# Zoo MoE matrix families (structure checked on transformers 5.17); family drops "_text" (_model_traits).
 MOE_FAMILIES = (
     "qwen3_moe",
     "qwen3_5_moe",
@@ -990,9 +987,8 @@ def _model_traits(model):
         return "", False, False, False
     text = getattr(config, "text_config", None) or config
     family = str(getattr(text, "model_type", "") or getattr(config, "model_type", "") or "")
-    if family.endswith(
-        "_text"
-    ):  # a multimodal model's text config: qwen3_5_moe_text is the qwen3_5_moe family
+    # A multimodal text config: qwen3_5_moe_text is the qwen3_5_moe family.
+    if family.endswith("_text"):
         family = family[: -len("_text")]
     layer_types = list(getattr(text, "layer_types", None) or [])
     hybrid = any(
@@ -1035,9 +1031,8 @@ def _direct_params(model) -> bool:
 
 
 def _tp_blocker(model, tp) -> str:
-    """models/tp_native.py's refusal for `model` at `tp` ranks (derive_tp_plan's ValueError), "" when it shards.
-    Asked only of a model not split yet (a split model was sharded, and its local shapes are not the model's);
-    meta-device safe, as the sharded load runs it on the meta model."""
+    """derive_tp_plan's ValueError for `model` at `tp` ranks, "" when it shards. Only for an unsplit model:
+    a sharded model's local shapes are not the model's. Meta-device safe."""
     if not isinstance(tp, int) or tp <= 1 or not callable(getattr(model, "named_modules", None)):
         return ""
     try:
@@ -1046,9 +1041,7 @@ def _tp_blocker(model, tp) -> str:
             type(p).__name__ == "DTensor" for p in model.parameters()
         ):
             return ""
-        tp_native._decoder_layers(
-            model
-        )  # not a decoder model tp_native reads: no answer (as _direct_params)
+        tp_native._decoder_layers(model)  # not a decoder model: no answer
     except Exception:
         return ""
     try:
