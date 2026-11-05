@@ -2544,6 +2544,14 @@ def _hf_offline() -> bool:
 
 
 def _hub_gguf_files(repo: str) -> Optional[list]:
+    names = _hub_repo_files(repo)
+    if names is None:
+        return None
+    ggufs = [n for n in names if n.lower().endswith(".gguf")]
+    return [n for n in ggufs if not _is_auxiliary_gguf(n)]
+
+
+def _hub_repo_files(repo: str) -> Optional[list]:
     if _hf_offline():
         return None
     endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
@@ -2559,9 +2567,9 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     siblings = info.get("siblings")
     if not isinstance(siblings, list) or not siblings:
         return None
-    names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
-    ggufs = [n for n in names if isinstance(n, str) and n.lower().endswith(".gguf")]
-    return [n for n in ggufs if not _is_auxiliary_gguf(n)]
+    return [
+        s["rfilename"] for s in siblings if isinstance(s, dict) and isinstance(s.get("rfilename"), str)
+    ]
 
 
 # Keep in sync with utils/gguf_names.py; the remote CLI cannot require backend imports.
@@ -2883,11 +2891,7 @@ def _refuse_non_gguf(
     agent: _GgufAgent, model_id: str, base: str, key: str, variant: Optional[str]
 ) -> None:
     # A requested quant or a .gguf file asks for GGUF, which an MLX load would silently drop.
-    if (
-        _asks_gguf_quant(variant)
-        or model_id.lower().endswith(".gguf")
-        or not _server_loads_mlx(base, key)
-    ):
+    if variant or model_id.lower().endswith(".gguf") or not _server_loads_mlx(base, key):
         _fail_agent_needs_gguf(agent, model_id)
 
 
@@ -2926,9 +2930,16 @@ def _preflight_agent_gguf(
         return
     files = _hub_gguf_files(repo)
     # A requested quant asks for GGUF, which an MLX load would silently drop.
-    asks_gguf = _asks_gguf_quant(gguf_variant or inline_variant) or repo.lower().endswith(".gguf")
+    variant = gguf_variant or inline_variant
+    asks_gguf = _asks_gguf_quant(variant) or repo.lower().endswith(".gguf")
     if files is not None and not files and (asks_gguf or not _this_host_loads_mlx()):
         _fail_agent_needs_gguf(agent, repo)
+    # A missing precision folder would load the root checkpoint instead.
+    if files is not None and not files and variant:
+        names = _hub_repo_files(repo)
+        wanted = f"{variant.strip()}/config.json".lower()
+        if names is not None and wanted not in {n.lower() for n in names}:
+            _fail(f"{repo} has no precision folder {variant}.")
 
 
 def _attach_gguf_check(
@@ -3040,16 +3051,14 @@ def _attach_gguf_check(
         ):
             if variant and not _answer_offers_variant(variants, variant, strict = True):
                 _fail_gguf_variant_missing(candidate, variant, variants)
-            _refuse_non_gguf(agent, candidate, base, key, variant)
+            _refuse_non_gguf(agent, candidate, base, key, None)
             return
         if isinstance(variants, list) and isinstance(info, dict):
             offered = info.get("loadable_variants")
             # No allow-list means a direct file, which loads as itself whatever the quant, so the variantless verdict decides.
             if variant and offered is None and isinstance(info.get("loadable"), bool):
                 if not info["loadable"]:
-                    if variants:
-                        _fail_agent_needs_gguf(agent, candidate)
-                    _refuse_non_gguf(agent, candidate, base, key, variant)
+                    _fail_agent_needs_gguf(agent, candidate)
                 return
             if variant and isinstance(offered, list):
                 wanted_variant = str(variant).strip().lower()

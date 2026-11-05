@@ -11328,17 +11328,21 @@ def test_claude_preflight_accepts_non_gguf_repo_on_an_mlx_host(monkeypatch, caps
 def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     repo = "mlx-community/Qwen3-4B"
     _fake_hub_listing(monkeypatch, {repo: []})
+    monkeypatch.setattr(
+        start,
+        "_hub_repo_files",
+        lambda repo: ["config.json", "6-bit/config.json", "8bit/Config.json"],
+    )
     monkeypatch.setattr(start, "_this_host_loads_mlx", lambda: True)
     start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:6-bit")
     start._preflight_agent_gguf(start._CODEX_GGUF_AGENT, repo, gguf_variant = "8bit")
+    assert "needs a GGUF model" not in capsys.readouterr().err
+    # A missing folder would load the root checkpoint instead.
+    with pytest.raises(typer.Exit):
+        start._preflight_agent_gguf(start._CLAUDE_GGUF_AGENT, f"{repo}:4bit")
+    assert "has no precision folder 4bit" in capsys.readouterr().err
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: True)
-    for answer in (
-        {"variants": [], "loadable": False},
-        {"variants": [], "loadable": None, "loadable_variants": None},
-    ):
-        _fake_variants(monkeypatch, answer)
-        start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
     # The real answer for a precision-folder repo: its folders, with only downloaded ones loadable.
     mlx_answer = {
         "variants": [
@@ -11355,6 +11359,15 @@ def test_mlx_precision_folder_variant_runs_on_an_mlx_host(monkeypatch, capsys):
     for wanted in ("Q8_0", "4bit"):
         with pytest.raises(typer.Exit):
             start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, wanted)
+    # A root-only repo lists no folders, so any suffix names one it does not have.
+    for answer in (
+        {"variants": [], "loadable": False},
+        {"variants": [], "loadable": None, "loadable_variants": None},
+    ):
+        _fake_variants(monkeypatch, answer)
+        with pytest.raises(typer.Exit):
+            start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
+    _fake_variants(monkeypatch, mlx_answer)
     monkeypatch.setattr(start, "_server_loads_mlx", lambda base, key: False)
     with pytest.raises(typer.Exit):
         start._attach_gguf_check(start._CODEX_GGUF_AGENT, BASE, "sk-test", repo, "6-bit")
