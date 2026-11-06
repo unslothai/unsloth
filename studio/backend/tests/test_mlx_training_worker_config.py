@@ -3,7 +3,6 @@
 import ast
 import importlib.util
 import inspect
-import math
 import os
 import sys
 import textwrap
@@ -592,11 +591,12 @@ def test_mlx_epoch_steps_divide_by_world_size_only_when_derived():
     assert steps(7, 16, 2, 2, 3, 2) == 7
 
 
+# Expected = transformers 4.57.6 get_warmup_steps / TrainerState.compute_steps.
 @pytest.mark.parametrize(
-    "ratio, max_steps",
-    [(0.05, 10), (0.03, 15), (0.1, 25), (0.1, 45), (0.15, 30), (0.29, 100)],
+    "ratio, max_steps, expected",
+    [(0.05, 10, 1), (0.03, 15, 1), (0.1, 25, 3), (0.1, 45, 5), (0.15, 30, 5), (0.29, 100, 29)],
 )
-def test_mlx_ratio_schedule_rounds_up_like_transformers(ratio, max_steps):
+def test_mlx_ratio_schedule_rounds_up_like_transformers(ratio, max_steps, expected):
     trainer = types.SimpleNamespace(
         distributed_world_size = 1,
         args = types.SimpleNamespace(max_steps = 0, warmup_steps = 0, eval_steps = 0),
@@ -604,9 +604,8 @@ def test_mlx_ratio_schedule_rounds_up_like_transformers(ratio, max_steps):
     _worker._configure_mlx_training_schedule(
         trainer, max_steps, None, 1, 1, 1, warmup_ratio = ratio, eval_steps_ratio = ratio
     )
-    # transformers rounds a warmup or eval ratio up: ceil(max_steps * ratio).
-    assert trainer.args.warmup_steps == math.ceil(max_steps * ratio)
-    assert trainer.args.eval_steps == max(1, math.ceil(max_steps * ratio))
+    assert trainer.args.warmup_steps == expected
+    assert trainer.args.eval_steps == expected
 
 
 @pytest.mark.parametrize("rank", [0, 1])
