@@ -148,8 +148,10 @@ def test_default_system_message_leaves_the_stock_modelfile():
 
     assert tokenizer._ollama_modelfile == OLLAMA_TEMPLATES["alpaca"]
     assert tokenizer._ollama_system_message is None
-    assert modelfile.endswith('SYSTEM """Below are some instructions that describe some tasks. '
-                              'Write responses that appropriately complete each request."""')
+    assert modelfile.endswith(
+        'SYSTEM """Below are some instructions that describe some tasks. '
+        'Write responses that appropriately complete each request."""'
+    )
 
 
 def test_system_message_without_a_template_default_leaves_the_modelfile():
