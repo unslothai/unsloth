@@ -507,8 +507,7 @@ function ReasoningBody({
 
 const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown"] as const;
 
-// A fixed box (#11703) that scrolls on its own: it follows the newest lines while streaming until the
-// reader scrolls up, and fades an edge only while more is past it. Not clipped behind an Expand button.
+// A fixed box (#11703) that scrolls on its own and follows a stream until the reader scrolls up.
 function ReasoningTail({
   capped,
   expanded,
@@ -520,7 +519,6 @@ function ReasoningTail({
   /** Lifted by the header's expand button: uncapped, but keeps the capped spacing so nothing shifts. */
   expanded: boolean;
   streaming: boolean;
-  /** Whether the capped box holds more than it shows, for the header's expand button. */
   onOverflowChange: (overflowing: boolean) => void;
   children: ReactNode;
 }) {
@@ -590,11 +588,8 @@ function ReasoningTail({
       data-slot="reasoning-tail"
       data-capped={capped ? "" : undefined}
       className={cn(
-        // A mask paints only inside its box: bleed into the side padding so list markers survive, less on the
-        // right so the scrollbar stays near the text. The stable gutter keeps the text width the same with or
-        // without a scrollbar, and expanded keeps the same box (only the height cap lifts), so expanding moves
-        // and rewraps nothing. Most of the text's top padding sits outside the scroller, so scrolled lines stop
-        // short of the header.
+        // A mask paints only inside its box, so it bleeds into the side padding (keeps list markers). Expanded
+        // keeps this exact box so nothing moves or rewraps; the top padding sits outside the scroller.
         (capped || expanded) &&
           "-ml-[calc(1.25rem*var(--ui-space-scale,1))] -mr-[calc(0.5rem*var(--ui-space-scale,1))] mt-2 min-w-0 overflow-x-hidden overflow-y-auto pl-[calc(1.25rem*var(--ui-space-scale,1))] pr-[calc(0.5rem*var(--ui-space-scale,1))] pb-3 [scrollbar-gutter:stable] [&>[data-slot=reasoning-text]]:pt-1",
         capped && "max-h-[min(22rem,48vh)]",
@@ -630,8 +625,7 @@ function ReasoningEndRule({ capped }: { capped: boolean }) {
     <div
       data-slot="reasoning-end-rule"
       aria-hidden={true}
-      // Closer under a capped box, whose own bottom padding spaces its last line from the rule only once
-      // scrolled to the end.
+      // A capped box's own bottom padding spaces its last line, so the gap shows only at the end.
       className={cn(capped ? "mt-2" : "mt-6", "mb-2 border-border border-t")}
     />
   );

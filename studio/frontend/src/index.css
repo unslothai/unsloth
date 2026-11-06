@@ -1727,8 +1727,7 @@ html[data-code-wrap]:not([data-code-line-numbers]) :is(.aui-thread-root, [data-c
 	padding-inline-start: 0;
 	text-indent: 0;
 }
-/* The capped Thinking box (reasoning.tsx) fades only an edge with more past it. The second layer keeps
-   the right strip, where the scrollbar sits in the box's side padding, out of the fade. */
+/* Capped Thinking box: fades only an edge with more past it; the second layer keeps the scrollbar unfaded. */
 [data-slot="reasoning-tail"][data-capped] {
 	--trace-fade-top: 0px;
 	--trace-fade-bottom: 0px;
