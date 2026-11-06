@@ -432,6 +432,34 @@ def test_sync_chat_messages_prunes_when_requested(tmp_path, monkeypatch):
     assert [message["id"] for message in messages] == ["msg-2"]
 
 
+def _turn(message_id: str, parent_id: str | None, created_at: int) -> dict:
+    return _stored_message(
+        id = message_id,
+        threadId = "thread-1",
+        parentId = parent_id,
+        role = "assistant" if message_id.startswith("a") else "user",
+        createdAt = created_at,
+    )
+
+
+def test_a_stale_window_delete_keeps_turns_it_never_saw(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    seen = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", seen)
+    studio_db.sync_chat_messages("thread-1", seen + [_turn("u3", "a2", 5), _turn("a3", "u3", 6)])
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        seen[:2],
+        prune_missing = True,
+        deleted_message_ids = ["u2", "a2"],
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1", "u3": "a1", "a3": "u3"}
+
+
 def test_upsert_chat_message_rejects_cross_thread_id_conflict(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("thread-1"))
