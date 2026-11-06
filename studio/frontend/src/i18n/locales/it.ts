@@ -2042,6 +2042,12 @@ export const it = {
           "Sceglie in base alla macchina e passa a HTTPS se Xet si blocca o fallisce qui.",
         autoCurrently: "Auto sta usando {transport} su questa macchina.",
         xetMissing: "Xet non è disponibile perché hf_xet non è installato.",
+        speedLimit: "Limite di velocità dei download",
+        speedLimitDescription:
+          "Nessun limite finché non viene impostato un valore. Un download limitato usa HTTPS.",
+        speedLimitNoLimit: "Nessun limite",
+        speedLimitInvalid: "Inserisci un numero in Mbit/s oppure lascia il campo vuoto.",
+        speedLimitUsesHttps: "I download usano HTTPS finché è impostato un limite di velocità. I file oltre 50 GB usano comunque Xet, senza il limite.",
       },
       uploads: {
         sectionTitle: "Caricamenti",

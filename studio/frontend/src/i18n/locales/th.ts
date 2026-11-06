@@ -2201,6 +2201,12 @@ export const th = {
         autoHint: "เลือกตามเครื่อง และเปลี่ยนเป็น HTTPS หาก Xet ค้างหรือล้มเหลวบนเครื่องนี้",
         autoCurrently: "อัตโนมัติกำลังใช้ {transport} บนเครื่องนี้",
         xetMissing: "Xet ใช้งานไม่ได้เนื่องจากไม่ได้ติดตั้ง hf_xet",
+        speedLimit: "จำกัดความเร็วดาวน์โหลด",
+        speedLimitDescription:
+          "ไม่จำกัดจนกว่าจะตั้งค่าตัวเลข การดาวน์โหลดที่ถูกจำกัดจะใช้ HTTPS",
+        speedLimitNoLimit: "ไม่จำกัด",
+        speedLimitInvalid: "กรอกตัวเลขเป็น Mbit/s หรือเว้นว่างไว้",
+        speedLimitUsesHttps: "การดาวน์โหลดจะใช้ HTTPS ขณะที่ตั้งค่าขีดจำกัดความเร็วไว้ ไฟล์ที่ใหญ่กว่า 50 GB ยังคงใช้ Xet โดยไม่จำกัดความเร็ว",
       },
       uploads: {
         sectionTitle: "การอัปโหลด",

@@ -2091,6 +2091,12 @@ export const ja = {
           "マシンごとに選び、ここで Xet が停滞または失敗した場合は HTTPS に切り替えます。",
         autoCurrently: "このマシンでは Auto は {transport} を使用しています。",
         xetMissing: "hf_xet がインストールされていないため Xet は利用できません。",
+        speedLimit: "ダウンロード速度制限",
+        speedLimitDescription:
+          "値を設定しない限り制限はありません。制限中のダウンロードは HTTPS を使用します。",
+        speedLimitNoLimit: "制限なし",
+        speedLimitInvalid: "Mbit/s の数値を入力するか、空欄のままにしてください。",
+        speedLimitUsesHttps: "速度制限が設定されている間、ダウンロードは HTTPS を使用します。50 GB を超えるファイルは引き続き Xet を使用し、制限は適用されません。",
       },
       uploads: {
         sectionTitle: "アップロード",

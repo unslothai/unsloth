@@ -2188,6 +2188,12 @@ export const zhTW = {
         autoHint: "依每台電腦自動選擇，若 Xet 在此停滯或失敗則改用 HTTPS。",
         autoCurrently: "「自動」在這台電腦上使用 {transport}。",
         xetMissing: "由於未安裝 hf_xet，無法使用 Xet。",
+        speedLimit: "下載速度限制",
+        speedLimitDescription:
+          "未設定數值時不限速。限速下載使用 HTTPS。",
+        speedLimitNoLimit: "不限速",
+        speedLimitInvalid: "請輸入 Mbit/s 數值，或留空。",
+        speedLimitUsesHttps: "設定速度限制時，下載會使用 HTTPS。超過 50 GB 的檔案仍使用 Xet，不受限制。",
       },
       uploads: {
         sectionTitle: "上傳",

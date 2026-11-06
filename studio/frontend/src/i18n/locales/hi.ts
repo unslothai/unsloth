@@ -2104,6 +2104,12 @@ export const hi = {
           "मशीन के अनुसार चुनता है और यहाँ Xet अटकने या विफल होने पर HTTPS पर चला जाता है।",
         autoCurrently: "इस मशीन पर Auto {transport} उपयोग कर रहा है।",
         xetMissing: "hf_xet इंस्टॉल नहीं है, इसलिए Xet उपलब्ध नहीं है।",
+        speedLimit: "डाउनलोड गति सीमा",
+        speedLimitDescription:
+          "कोई सीमा नहीं जब तक कोई मान सेट न हो। सीमित डाउनलोड HTTPS का उपयोग करता है।",
+        speedLimitNoLimit: "कोई सीमा नहीं",
+        speedLimitInvalid: "Mbit/s में कोई संख्या दर्ज करें या फ़ील्ड खाली छोड़ दें।",
+        speedLimitUsesHttps: "जब तक गति सीमा सेट है, डाउनलोड HTTPS का उपयोग करते हैं। 50 GB से बड़ी फ़ाइलें अब भी बिना सीमा के Xet का उपयोग करती हैं।",
       },
       uploads: {
         sectionTitle: "अपलोड",

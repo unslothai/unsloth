@@ -2100,6 +2100,12 @@ export const ar = {
           "يختار حسب الجهاز وينتقل إلى HTTPS إذا تعطل Xet أو فشل هنا.",
         autoCurrently: "يستخدم Auto على هذا الجهاز {transport}.",
         xetMissing: "Xet غير متاح لأن hf_xet غير مثبت.",
+        speedLimit: "حد سرعة التنزيل",
+        speedLimitDescription:
+          "لا حد ما لم يُحدَّد رقم. يستخدم التنزيل المحدود HTTPS.",
+        speedLimitNoLimit: "بلا حد",
+        speedLimitInvalid: "أدخل عددًا بوحدة Mbit/s أو اترك الحقل فارغًا.",
+        speedLimitUsesHttps: "تستخدم التنزيلات HTTPS ما دام حد السرعة مضبوطًا. لا تزال الملفات التي يتجاوز حجمها 50 غيغابايت تستخدم Xet من دون الحد.",
       },
       uploads: {
         sectionTitle: "عمليات الرفع",
