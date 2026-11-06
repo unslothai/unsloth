@@ -334,6 +334,14 @@ def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
     return module_args, module_kwargs
 
 
+def _decoder_layer_pre_forward_hook(_module, module_args, module_kwargs):
+    # HF's shard-local mask is None on shards with no document start, a tensor elsewhere; CP attention never
+    # reads it, so always pass None: a compiled layer guards on the argument type and keeps one graph.
+    if get_cp_manager() is not None and module_kwargs.get("attention_mask") is not None:
+        module_kwargs["attention_mask"] = None
+    return module_args, module_kwargs
+
+
 class ContextParallelManager:
     backend = "ring"
     rotate_method = "allgather"
@@ -396,12 +404,25 @@ class ContextParallelManager:
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
                     )
-        for name, module in model.named_modules():
-            if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
+        for name, module in list(model.named_modules()):
+            if not name.endswith("self_attn"):
+                continue
+            if not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
                     _self_attn_pre_forward_hook, with_kwargs = True, prepend = True
                 )
                 module._unsloth_cp_hooked = True
+            # Skip layers with linear_attn: its scan reads the padding mask.
+            layer = model.get_submodule(name.rpartition(".")[0]) if "." in name else None
+            if (
+                layer is not None
+                and not hasattr(layer, "linear_attn")
+                and not getattr(layer, "_unsloth_cp_mask_hooked", False)
+            ):
+                layer.register_forward_pre_hook(
+                    _decoder_layer_pre_forward_hook, with_kwargs = True, prepend = True
+                )
+                layer._unsloth_cp_mask_hooked = True
 
     def _prepare_inputs(self, inputs: dict) -> None:
         input_ids = inputs.get("input_ids")

@@ -19,8 +19,10 @@ if os.environ.get("UNSLOTH_TEST_RANKS_ON_GPU") != "1" and (
 ):
     os.environ["CUDA_VISIBLE_DEVICES"] = ""  # spawned gloo ranks: CPU only, also on GPU hosts
 
+import dataclasses  # noqa: E402
 import sys  # noqa: E402
 import tempfile  # noqa: E402
+import types  # noqa: E402
 
 import pytest  # noqa: E402
 import torch  # noqa: E402
@@ -73,6 +75,55 @@ def _checkpoint(tmp, arch = "llama"):
     path = _save_checkpoint("llama", os.path.join(tmp, "ckpt"), {"num_hidden_layers": N_LAYERS})
     AutoTokenizer.from_pretrained(LLAMA).save_pretrained(path)
     return path
+
+
+# Packed rows, one per micro-batch, each with other documents (compiled layers must follow every row): "padfree"
+# fills the row, "pack" leaves a one-token tail that context parallel pads to the cp multiple.
+_PACKED_DOCS = {
+    "padfree": ([5, 7, 4], [3, 9, 4], [8, 2, 6], [4, 4, 8]),
+    "pack": ([5, 7, 3], [3, 9, 3], [8, 2, 5], [6, 6, 3]),
+}
+
+
+def _packed_row(batch, kind, row):
+    """One packed row as Unsloth's packing / padding-free collators hand it on: the global document lengths,
+    positions restarting per document, and no target across a document start."""
+    lengths = _PACKED_DOCS[kind][row % len(_PACKED_DOCS[kind])]
+    n = sum(lengths)
+    input_ids, labels = batch["input_ids"][:, :n], batch["labels"][:, :n].clone()
+    starts = torch.tensor([0, *lengths[:-1]]).cumsum(0)
+    labels[:, starts] = -100
+    position_ids = torch.cat([torch.arange(k) for k in lengths])[None]
+    return {
+        "input_ids": input_ids,
+        "labels": labels,
+        "position_ids": position_ids,
+        "packed_seq_lengths": torch.tensor(lengths, dtype = torch.int32),
+    }
+
+
+def _packed_oracle(model, batch):
+    """The one-process reference itself keeps documents apart: each document's logits in the packed row equal
+    the same document alone (eager, so no compiled graph is added to the reference's counters)."""
+    ids, lengths = batch["input_ids"], batch["packed_seq_lengths"].tolist()
+    was = model.training
+    model.eval()
+    with torch.no_grad(), torch.compiler.set_stance("force_eager"):
+        full = model(
+            input_ids = ids,
+            position_ids = batch["position_ids"],
+            packed_seq_lengths = batch["packed_seq_lengths"],
+            use_cache = False,
+        ).logits[0]
+        worst, start = 0.0, 0
+        for n in lengths:
+            alone = model(input_ids = ids[:, start : start + n], use_cache = False).logits[0]
+            worst = max(
+                worst, float((full[start : start + n] - alone).abs().max() / alone.abs().max())
+            )
+            start += n
+    model.train(was)
+    return worst
 
 
 def _full(t):
@@ -290,6 +341,7 @@ def _case_train(
     bypass_pre = False,
     bypass_post = False,
     gc = "none",
+    packed = None,
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -421,13 +473,15 @@ def _case_train(
         batch["labels"][
             batch["labels"] % 5 == 0
         ] = -100  # uneven token counts per row and per shard
+        if packed:
+            batch.update(_packed_row(batch, packed, int(rows[0]["row"])))
         return batch
 
     class SequentialSFT(trl.SFTTrainer):
         def _get_train_sampler(self, *args, **kwargs):
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
-    grads = {}
+    grads, query = {}, None
 
     class Grabber(transformers.TrainerCallback):
         def on_pre_optimizer_step(
@@ -468,6 +522,10 @@ def _case_train(
         dataset_kwargs = {"skip_prepare_dataset": True},
         gradient_checkpointing = False,
     )
+    if packed:
+        # What the registry reads for a packed run (query_from): SFTConfig.padding_free; the rows come from the
+        # collator above, so TRL's own padding-free collator is not involved.
+        args.padding_free = True
     if device != "cpu" and torch.cuda.device_count() < world:
         args.ddp_backend = os.environ.get("UNSLOTH_TEST_SHARED_GPU_BACKEND", "gloo")
     if hasattr(args, "router_aux_loss_coef"):
@@ -483,6 +541,17 @@ def _case_train(
         # enough: the stamp below is the per-model "train this one in float32" switch the trainer honours.
         args.bf16 = args.fp16 = False
         model._unsloth_forced_float32 = True
+    if packed:
+        from unsloth import parallel_capabilities as caps
+
+        # The registry's view of the run as configured, before the CPU route's normalize_cpu_training_arguments
+        # (unsloth_zoo/cpu/trainer.py) turns padding_free off on CPU ranks inside the trainer's __init__.
+        layout_now = types.SimpleNamespace(
+            dp = 1, tp = 1, pp = 1, cp = cp, fsdp2 = False, cp_backend = "ulysses"
+        )
+        query = dataclasses.asdict(
+            caps.query_from(layout_now, SequentialSFT, model, args, cp = cp, cp_backend = "ulysses")
+        )
     tokenizer = AutoTokenizer.from_pretrained(ckpt)
     trainer = SequentialSFT(
         model = model,
@@ -518,10 +587,37 @@ def _case_train(
         ulysses_hybrid._ulysses_hf_attention = counted
     from unsloth.utils import compile_counters
 
+    packed_seen, oracle, exchanges = [], None, None
+    if packed:
+        # Eager, outside the compiled layers: the global document lengths of every micro-batch at its shard.
+        original_shard = cpm.ContextParallelManager._ulysses_shard
+
+        def recorded_shard(self, inputs):
+            packed_seen.append(
+                [int(x) for x in torch.as_tensor(inputs["packed_seq_lengths"]).tolist()]
+            )
+            return original_shard(self, inputs)
+
+        cpm.ContextParallelManager._ulysses_shard = recorded_shard
+        if world == 1:
+            oracle = _packed_oracle(trainer.model, collate([data[0]]))
+            rows_read.clear()  # the oracle's row is not a training micro-batch
     torch._dynamo.reset()
     before = compile_counters.snapshot()
-    trainer.train()
+    if packed:
+        # Inside the compiled layers no Python counter runs: the profiler sees each collective they issue.
+        from torch.profiler import ProfilerActivity, profile
+        with profile(activities = [ProfilerActivity.CPU]) as prof:
+            trainer.train()
+        exchanges = sum(1 for e in prof.events() if e.name == "gloo:all_to_all")
+    else:
+        trainer.train()
     compile_used = compile_counters.since(before)
+    if packed:
+        # torch >= 2.13 counts data-dependent breaks (the old cu_seqlens tail check) under "unimplemented".
+        compile_used["unimplemented"] = int(
+            sum(torch._dynamo.utils.counters.get("unimplemented", {}).values())
+        )
     if device != "cpu":
         assert autocast_seen == {False}, ("a GPU cell ran under autocast", autocast_seen)
     logs = [h for h in trainer.state.log_history if "loss" in h]
@@ -573,6 +669,11 @@ def _case_train(
         "memory": __import__("unsloth.parallel_capabilities", fromlist = ["x"])._memory(
             trainer.model, args
         ),
+        "packed_seen": packed_seen,
+        "oracle": oracle,
+        "query": query,
+        "exchanges": exchanges,
+        "n_layers": int(trainer.model.config.num_hidden_layers),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -882,6 +983,78 @@ def test_block_compile_composes_like_one_process(world, flag, ref_bs):
             single["compile"],
         )
         _close(res, eager, what = (flag, "compiled", rank))
+
+
+@needs_block_compile_torch
+@pytest.mark.parametrize("ga", [1, 2])
+@pytest.mark.parametrize("packed", ["pack", "padfree"])
+@pytest.mark.parametrize("arch", ["qwen3", "llama"])
+def test_block_compile_packed_rows_under_cp_match_one_process(arch, packed, ga):
+    """Unsloth's block compile x packed / padding-free rows x cp 2 Ulysses (the registry's packed compiled
+    cell): the same numbers as one eager process; the registry sees block compile, packing and cp Ulysses;
+    every micro-batch's documents reach the exchange; the compiled layers issue the all-to-alls; no more graph
+    breaks (also data-dependent ones) / recompiles / graphs than the same compiled script in one process."""
+    from unsloth.utils.compile_counters import not_above
+
+    kw = dict(arch = arch, packed = packed, ga = ga)
+    eager = _ref(1, **kw)
+    single = _ref(1, compile = True, **kw)
+    assert single["compiled_classes"] and single["compile"]["unique_graphs"] > 0, single["compile"]
+    assert single["oracle"] < 1e-4, (
+        "the one-process reference attends across documents",
+        single["oracle"],
+    )
+    _close(single, eager, what = "one process compiled")
+    micro = len(single["rows_read"])
+    want_docs = [list(_PACKED_DOCS[packed][r[0] % 4]) for r in single["rows_read"]]
+    results = _spawn("train", 2, bs = 1, cp = 2, compile = True, **kw)
+    _same_rows(results, single, what = kw)
+    for rank, res in enumerate(results):
+        what = (kw, rank)
+        assert res["compiled_classes"] == single["compiled_classes"], what
+        query = res["query"]
+        assert (
+            query["compile"],
+            query["packing"],
+            query["cp"],
+            query["cp_backend"],
+            query["family"],
+        ) == (
+            "block",
+            True,
+            2,
+            "ulysses",
+            arch,
+        ), (what, query)
+        # The run as configured reaches the registry's packed compiled cell, whose evidence is this test.
+        from unsloth import parallel_capabilities as caps
+
+        status, cell = caps.cell_status(caps.Query(**query))
+        assert (
+            status == "supported" and "test_block_compile_packed_rows_under_cp" in cell.compile
+        ), (what, cell)
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], (
+            what,
+            res["seen_lengths"],
+        )
+        assert res["packed_seen"] == want_docs, (what, res["packed_seen"], want_docs)
+        # At least one exchange per layer per micro-batch forward and backward (Ulysses swaps q / k / v and back).
+        assert res["exchanges"] >= 2 * res["n_layers"] * micro, (what, res["exchanges"])
+        assert not not_above(res["compile"], single["compile"]), (
+            what,
+            res["compile"],
+            single["compile"],
+        )
+        for key in ("unimplemented", "unique_graphs"):
+            assert res["compile"][key] <= single["compile"][key], (
+                what,
+                key,
+                res["compile"],
+                single["compile"],
+            )
+        # Adam (eps 1e-4) amplifies cp's fp32 reduction order on near-zero adapter grads: the eager cp arm moves
+        # the adapters by the same 1.8e-5 (qwen3 padding-free), so the band is the eager composition's.
+        _close(res, eager, what = what, state_atol = 5e-5)
 
 
 @pytest.mark.parametrize(
