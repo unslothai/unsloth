@@ -87,6 +87,7 @@ def test_idle_picker_scopes_model_scan_to_authenticated_account(
 def test_picked_file_validation_uses_the_authenticated_scan_root(
     account_catalog, fake_studio, monkeypatch, root_name
 ):
+    from storage import studio_db
     from storage.studio_db import add_scan_folder
     from utils.account_context import AccountContext, current_account, run_as
     from utils.models.model_config import _direct_gguf_for_variant
@@ -95,6 +96,8 @@ def test_picked_file_validation_uses_the_authenticated_scan_root(
     account = AccountContext(ALICE["account_id"], ALICE["username"], ALICE["role"])
     root = run_as(account, workspace_root) / root_name
     root.mkdir(parents = True)
+    # macOS tmp_path lives under /private/var, which the deny list refuses.
+    monkeypatch.setattr(studio_db, "_denied_path_prefixes", lambda: [])
     file = root / "model-Q8_0.gguf"
     file.write_bytes(b"GGUF" + bytes(4092))
     run_as(account, add_scan_folder, str(root))
