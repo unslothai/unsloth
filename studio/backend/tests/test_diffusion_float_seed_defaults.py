@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Built-in float seeds (CPU, ``aot_eager``): a first-ever compile of a known denoiser starts from the names a
-returning load would read from its saved file, so it traces once; saved names win, and an unknown key seeds nothing.
-The shipped table itself is recorded on CUDA through the load patches (which need a GPU), so it is checked for shape
-here and by key on the GPU."""
+"""Built-in float seeds (CPU, ``aot_eager``): a known denoiser's first compile traces once; saved names win."""
 
 from __future__ import annotations
 
@@ -96,7 +93,6 @@ def _render(net, seed_dir, x):
 
 
 def _learned_names(tmp_path, x) -> tuple:
-    """What a first-ever compile learns (main's restart), then a clean slate."""
     _, out = _render(_net(), tmp_path / "learn", x)
     names = json.loads((tmp_path / "learn" / bg.FLOAT_SEEDS_FILE).read_text(encoding = "utf-8"))[
         "names"
@@ -118,7 +114,6 @@ def test_builtin_names_trace_a_fresh_compile_once(tmp_path, restarts, monkeypatc
     assert seeds.float_seeds == len(names) and seeds.float_seeds_builtin
     assert seeds.float_seeds_learned == 0
     assert torch.equal(out, out_main)
-    # Kept like a learned list: the next load reads them from the file, as a returning one does.
     saved = json.loads((tmp_path / "fresh" / bg.FLOAT_SEEDS_FILE).read_text(encoding = "utf-8"))
     assert sorted(saved["names"]) == sorted(names)
     torch._dynamo.reset()
@@ -199,7 +194,6 @@ def _fused_layer_norm(self, x):
 
 
 def test_key_moves_with_a_class_patch_inside_the_block(monkeypatch):
-    """A load patch swapping a submodule's class forward (the eager fusions) or a helper the block calls by name."""
     base = bg._default_float_seed_key(_net())
     monkeypatch.setattr(torch.nn.LayerNorm, "forward", _fused_layer_norm)
     assert bg._default_float_seed_key(_net()) != base

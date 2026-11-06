@@ -691,14 +691,11 @@ def _write_float_seeds(path: Path, signature: str, names: set) -> bool:
 
 
 FLOAT_SEED_DEFAULTS_ENV = "UNSLOTH_DIFFUSION_FLOAT_SEED_DEFAULTS"
-# Config keys that only repeat blocks: they never change one block's trace (the defaults are recorded on 1 layer).
+# Only repeat blocks: never change one block's trace.
 _LAYER_COUNT_KEYS = frozenset({"num_layers", "num_single_layers", "n_layers", "n_refiner_layers"})
-# The names a fresh compile learns, per denoiser, so a first-ever load traces once like a returning one. Recorded by
-# loading one layer of each listed model (real config, random weights) through this backend's load patches and
-# ``_compile_repeated_blocks``; keyed by ``_default_float_seed_key``, so any other torch minor, diffusers version,
-# config, patch state, block code or layout (LoRA, int8 swaps) matches nothing and compiles as before. Dynamo numbers a
-# SymFloat from its source name (``ShapeEnv._generate_unique_id``), so the names do not depend on sizes.
-# Recorded on torch 2.13 + diffusers 0.42.1 (the Studio install) on CUDA; space-separated names per key.
+# Names a first compile learns, recorded on CUDA (torch 2.13, diffusers 0.42.1) from one random-weight layer through
+# the load patches and _compile_repeated_blocks. SymFloat ids hash the source name (ShapeEnv._generate_unique_id), not
+# sizes. Any key not listed compiles as before.
 _FLOAT_SEED_DEFAULTS: dict[str, str] = {
     # FLUX.2-klein-4B, FLUX.2-klein-base-4B
     "5dd2ab806177446849627b4464e399c23085a03960a47640163a005ead876c76": (
@@ -747,7 +744,7 @@ def float_seed_defaults_enabled() -> bool:
 
 
 def _source_digest(fn: Any) -> str:
-    """A function by its source (stable across Python versions and builds), else by its bytecode."""
+    """Source digest (stable across Python builds), else bytecode."""
     import inspect
 
     fn = getattr(fn, "__func__", fn)
@@ -764,7 +761,7 @@ def _callable_id(fn: Any) -> str:
 
 
 def _traced_code(fn: Any) -> list:
-    """``fn`` plus the module-level functions it calls by name, by identity: a patch swapping either moves the key."""
+    """``fn`` plus the module-level functions it calls by name, so swapping either moves the key."""
     fn = getattr(fn, "__func__", fn)
     out = [f"{_callable_id(fn)}:{_source_digest(fn)}"]
     code = getattr(fn, "__code__", None)
@@ -777,7 +774,6 @@ def _traced_code(fn: Any) -> list:
 
 
 def _block_layout(block: Any) -> list:
-    """What one block traces through: every submodule's class and forward, attention processor, instance forward."""
     out = []
     for name, sub in block.named_modules():
         proc = getattr(sub, "processor", None)
@@ -796,8 +792,7 @@ def _block_layout(block: Any) -> list:
 
 
 def _default_float_seed_key(module: Any) -> Optional[str]:
-    """Portable key of one denoiser's block trace (no bytecode or build suffix, unlike ``_code_signature``): torch
-    minor, diffusers version, config less layer counts, and per block class its layout and the code it runs."""
+    """Portable key of the block trace: torch minor, diffusers version, config, and the code each block runs."""
     try:
         import diffusers
         import torch
@@ -831,7 +826,6 @@ def _default_float_seed_key(module: Any) -> Optional[str]:
 
 
 def _default_float_seeds(modules: Any) -> set:
-    """Built-in names for denoisers whose key was recorded; an unknown denoiser gets none (main's restart)."""
     if not float_seed_defaults_enabled() or not _FLOAT_SEED_DEFAULTS:
         return set()
     names: set = set()
@@ -841,8 +835,7 @@ def _default_float_seeds(modules: Any) -> set:
 
 
 def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple], int]:
-    """Pre-seed the SymFloat names the last compile of this key learned, else the built-in names for a known denoiser;
-    returns (keep state, names added)."""
+    """Pre-seed the names this key learned, else the built-in ones; returns (keep state, names added)."""
     if seed_dir is None or not float_seeds_enabled():
         return None, 0
     try:
@@ -865,8 +858,7 @@ def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple
 
 
 def _keep_floats(seeded: Optional[tuple]) -> int:
-    """Save this compile's specialised names if changed (or first taken from the built-in table, so the next load
-    reads them like any returning one); returns how many are new."""
+    """Save the specialised names if changed or built-in; returns how many are new."""
     if seeded is None:
         return 0
     state, path, signature, before, seeds, builtin = seeded
