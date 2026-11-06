@@ -135,7 +135,6 @@ function PlainFenceText({ source }: { source: string }) {
   ))}</>;
 }
 
-/** The header's language, as a code icon and the language's own name ("Python", "HTML"). */
 function CodeBlockLanguage({ language }: { language: string | null }) {
   if (!language) return null;
   return (
@@ -1171,7 +1170,7 @@ const innerLineWindow = (
   };
 };
 
-// Capped fences paused at their view sit outside the highlight queue; printing must still colour all of them.
+// Paused capped fences are not in the highlight queue; printing still has to finish them.
 const pausedFences = new Set<() => void>();
 
 const lineWindowColoured = (
@@ -1228,7 +1227,7 @@ function useFenceHighlightLimit(
     const capped = innerLineWindow(code.current, body);
     if (capped !== null && body !== null && lineWindowColoured(tokens, progress, capped)) {
       let frameId = 0;
-      // Resumes on a scroll to uncoloured lines, or once the body stops scrolling (Expand code lifts the cap).
+      // Expand code lifts the cap without a scroll: a resize rechecks too.
       const recheck = (): void => {
         if (frameId !== 0) return;
         frameId = requestAnimationFrame(() => {
@@ -1658,10 +1657,8 @@ const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } 
 
 const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
 type BodyScroll = { top: number; atBottom: boolean; at: number };
-// A finished stream swaps its body for a new one, which would start back at the first line. Only a body
-// that streamed leaves its place, and only a finished body mounting right after takes it (once), so
-// blocks that merely open with the same text never share one. Keyed by the opening text, which a stream
-// stops changing once it is past it.
+// A finished stream remounts its body at the first line: the streamed body's place goes to that remount
+// only (once, soon after), so blocks that merely open with the same text never share one.
 const bodyScrolls = new Map<string, BodyScroll>();
 const BODY_SCROLLS_KEPT = 16;
 
@@ -1682,7 +1679,6 @@ const takeBodyScroll = (key: string): BodyScroll | undefined => {
   return saved !== undefined && performance.now() - saved.at < JUST_STREAMED_MS ? saved : undefined;
 };
 
-/** A streaming block follows its last line until the reader scrolls up, and a remounted one keeps its place. */
 function usePinnedWhileStreaming(
   surface: RefObject<HTMLElement | null>,
   isIncomplete: boolean | undefined,
@@ -1695,7 +1691,6 @@ function usePinnedWhileStreaming(
   const key = `${language ?? ""}\n${source.slice(0, 200)}`;
   const keyRef = useRef(key);
   keyRef.current = key;
-  // Read once the body mounts: whether it is the finished swap, or a stream that hands its place on.
   const streamedRef = useRef(isIncomplete === true);
   if (isIncomplete) streamedRef.current = true;
   useLayoutEffect(() => {

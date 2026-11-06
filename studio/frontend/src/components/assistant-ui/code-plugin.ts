@@ -92,7 +92,6 @@ const DISPLAY_NAMES = new Map(
   ),
 );
 
-/** A fence tag as a code block header shows it: `python` reads "Python", `html` "HTML". */
 export const languageDisplayName = (language: string): string => {
   const key = language.trim().toLowerCase();
   return DISPLAY_NAME_OVERRIDES[key] ?? DISPLAY_NAMES.get(key) ?? key.charAt(0).toUpperCase() + key.slice(1);
