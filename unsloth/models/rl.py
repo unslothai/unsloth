@@ -47,6 +47,7 @@ except ImportError:  # unsloth_zoo predates the scope
 from ..device_type import DEVICE_COUNT, DEVICE_TYPE, clean_gpu_cache
 from . import _decode_graphs
 from .rl_replacements import (
+    _class_source,
     _unsloth_get_model_config,
     _unsloth_text_configs,
     RL_EXTRA_ARGS,
@@ -2590,7 +2591,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     _trainer_src_of = RLTrainer
     _config_src_of = RLConfig
     try:
-        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_src = _class_source(RLTrainer)
         _trainer_module = inspect.getmodule(RLTrainer)
         _trainer_module_src = inspect.getsource(_trainer_module) if _trainer_module else ""
         if not RLTrainer.__module__.startswith("trl.experimental.") and (
@@ -2610,7 +2611,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         pass
 
     try:
-        _config_src = inspect.getsource(RLConfig)
+        _config_src = _class_source(RLConfig)
         _config_module = inspect.getmodule(RLConfig)
         _config_module_src = inspect.getsource(_config_module) if _config_module else ""
         if not RLConfig.__module__.startswith("trl.experimental.") and (
@@ -2630,10 +2631,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
 
     # Reuse the probe reads above unless they failed or the class was swapped for its parent.
     if _trainer_src is None or RLTrainer is not _trainer_src_of:
-        _trainer_src = inspect.getsource(RLTrainer)
+        _trainer_src = _class_source(RLTrainer)
     old_RLTrainer_source = _trainer_src
     if _config_src is None or RLConfig is not _config_src_of:
-        _config_src = inspect.getsource(RLConfig)
+        _config_src = _class_source(RLConfig)
     old_RLConfig_source = _config_src
 
     if _trainer_resolved_module is not None:
@@ -4374,7 +4375,7 @@ def patch_functions(
 
     functions = dir(RLTrainer)
     if RLTrainer_source is None:
-        RLTrainer_source = inspect.getsource(RLTrainer)
+        RLTrainer_source = _class_source(RLTrainer)
     functions = [x for x in functions if f"def {x}" in RLTrainer_source]
 
     changed = {

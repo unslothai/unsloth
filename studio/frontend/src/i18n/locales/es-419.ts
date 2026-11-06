@@ -5979,8 +5979,7 @@ export const es419 = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster:
-      "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5989,8 +5988,8 @@ export const es419 = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate:
       "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates:

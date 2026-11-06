@@ -6109,24 +6109,25 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 .chat-wallpaper[data-reduced] .chat-wallpaper-frame { animation: none; }
 .chat-wallpaper[data-reduced] .chat-wallpaper-frame[data-departing] { display: none; }
 /* Light New chat: sqrt(v) lifts the image but keeps the whole slider range live. */
-html:not(.dark)[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(.aui-thread-welcome-center) .chat-wallpaper-frame:not([data-entering], [data-departing]) {
+html:not(.dark)[data-glass][data-chat-welcome] :is([data-wallpaper-workspace], [data-chat-content-root]) .chat-wallpaper-frame:not([data-entering], [data-departing]) {
   opacity: min(1, calc(var(--wallpaper-visibility) * 2));
 }
 /* var() makes a bare sqrt() parse everywhere (opacity 1 where unsupported), hence @supports. */
 @supports (opacity: sqrt(0.5)) {
-  html:not(.dark)[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(.aui-thread-welcome-center) .chat-wallpaper-frame:not([data-entering], [data-departing]) {
+  html:not(.dark)[data-glass][data-chat-welcome] :is([data-wallpaper-workspace], [data-chat-content-root]) .chat-wallpaper-frame:not([data-entering], [data-departing]) {
     opacity: sqrt(var(--wallpaper-visibility));
   }
 }
-/* Conversations dim the crop; compare dims even an empty pane so both match. */
-:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
-:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):has([data-tour="chat-compare-view"]) > .chat-wallpaper,
+/* Conversations dim the crop; compare dims even an empty pane so both match.
+   Welcome/compare come from root flags (welcome.ts): a descendant :has() here re-walks the thread per keystroke. */
+html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) > .chat-wallpaper,
+html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) > .chat-wallpaper,
 .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper { opacity: calc(.4 + .6 * var(--wallpaper-conversation, 0)); }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.aui-thread-viewport, [data-wallpaper-reading-surface]) {
   background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
 }
 /* No second wash on the welcome view: it crushes mid-tones into a dark horizon. */
-:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:has(.aui-thread-welcome-center) {
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
   background: transparent;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .unsloth-welcome-greeting {
@@ -6207,7 +6208,9 @@ html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-back
   .wallpaper-preview-composer { background: var(--background); }
 }
 
-:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {
+/* Keep both wallpaper paths child-only so typing in the chat does not invalidate the whole workspace. */
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade,
+:is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready] > .chat-wallpaper-frame > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {
   display: none;
 }
 
@@ -6329,7 +6332,7 @@ html[data-glass="macos"] .unsloth-composer-surface {
   backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-saturate));
   --composer-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 14%, transparent), inset 0 1px 0 rgb(255 255 255 / .08);
 }
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper,
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) > .chat-wallpaper,
 html[data-glass] [data-wallpaper-workspace][data-wallpaper-route="page"] > .chat-wallpaper[data-ready],
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper {
   opacity: calc(.7 * (.4 + .6 * var(--wallpaper-conversation, 0)));
@@ -6347,7 +6350,7 @@ html:not(.dark)[data-glass] [data-wallpaper-workspace][data-wallpaper-route="pag
 html:not(.dark)[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] {
   --glass-page-wash: color-mix(in srgb, var(--glass-page-bg) min(96%, calc((max(var(--glass-tint), var(--glass-pane-floor)) - 12%) * var(--glass-opacity, 1))), transparent);
 }
-html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]):not(:has(.aui-thread-welcome-center)) .unsloth-composer-surface,
+html[data-glass]:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) .unsloth-composer-surface,
 html[data-glass] .wallpaper-preview[data-wallpaper-conversation] .wallpaper-preview-composer {
   --glass-composer-boost: 9%;
   --glass-blur: calc(var(--glass-blur-base) * var(--glass-strength, 1) + 5px + var(--glass-repaint, 0) * .01px);
@@ -6961,7 +6964,9 @@ html[data-glass] [data-windows-wallpaper-page]:has(> .chat-wallpaper[data-ready]
   pointer-events: none;
   backdrop-filter: blur(max(22px, var(--glass-blur)));
 }
-[data-windows-wallpaper-page]:has([data-windows-glass-frame]) > [data-slot="page-wallpaper-blur"] {
+/* Child path to the pinned sidebar's container (Sidebar spreads props there): this page also
+   holds the hidden chat, and a descendant :has() would walk it on every mutation. */
+[data-windows-wallpaper-page]:has(> [data-windows-glass-frame], > [data-slot="sidebar"] > [data-windows-glass-frame]) > [data-slot="page-wallpaper-blur"] {
   border-top-left-radius: 4px;
 }
 /* A full-height page may extend under the Windows caption. Start its reading

@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
 from pathlib import Path, PureWindowsPath
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 from urllib.parse import unquote, urlsplit
 
 from hub.utils.paths import is_valid_repo_id
@@ -380,7 +381,9 @@ def exact_dataset_snapshot_for_commit(repo_id: Any, commit: Any) -> Optional[str
     return None
 
 
-def _local_dataset_source_snapshot(path_value: str, repo_id: str) -> Optional[tuple[str, str]]:
+def _local_dataset_source_snapshot(
+    path_value: str, repo_id: str, snapshot_for_path: Callable[[str, str], Optional[str]]
+) -> Optional[tuple[str, str]]:
     if len(path_value) > 4096 or "\x00" in path_value:
         return None
     path = Path(path_value).expanduser()
@@ -391,7 +394,7 @@ def _local_dataset_source_snapshot(path_value: str, repo_id: str) -> Optional[tu
     for parent in path.parents:
         if parent.parent.name != "snapshots":
             continue
-        snapshot = exact_dataset_snapshot_path(str(parent), repo_id)
+        snapshot = snapshot_for_path(str(parent), repo_id)
         try:
             source_path = path.relative_to(parent).as_posix()
         except ValueError:
@@ -479,6 +482,9 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
 
     snapshots: set[str] = set()
     found_dataset = False
+    # Per call only: whole-snapshot validation once per snapshot, not per data file (K^2 file checks).
+    snapshot_for_path = functools.lru_cache(maxsize = None)(exact_dataset_snapshot_path)
+    snapshot_for_commit = functools.lru_cache(maxsize = None)(exact_dataset_snapshot_for_commit)
     for value in datasets:
         for dataset in _loaded_dataset_objects(value):
             found_dataset = True
@@ -496,17 +502,14 @@ def attest_loaded_dataset(repo_id: Any, *datasets: Any) -> tuple[Optional[str], 
                     or expected_size < 0
                 ):
                     return None, "dataset_revision_unattested"
-                local_source = _local_dataset_source_snapshot(source, repo_id)
+                local_source = _local_dataset_source_snapshot(source, repo_id, snapshot_for_path)
                 if local_source is not None:
                     snapshot, source_path = local_source
                 else:
                     source_ref = _hf_dataset_source_ref(source)
                     if source_ref is None or source_ref[0].casefold() != repo_id.casefold():
                         return None, "dataset_source_unattested"
-                    snapshot = exact_dataset_snapshot_for_commit(
-                        repo_id,
-                        source_ref[1],
-                    )
+                    snapshot = snapshot_for_commit(repo_id, source_ref[1])
                     source_path = source_ref[2]
                 resolved_source = (
                     _dataset_snapshot_file(snapshot, source_path) if snapshot is not None else None

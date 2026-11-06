@@ -1530,7 +1530,7 @@ def token_counter(model_name: str | None = None) -> Callable[[str], int]:
         texts = list(texts)
         return _served(lambda count: _many(count, texts))
 
-    # Only a batching backend (sentence-transformers) changes how chunking asks for counts.
+    # Only a batching backend (sentence-transformers, llama-server) changes how chunking asks for counts.
     if getattr(state[1], "many", None) is not None:
         _count.many = _count_many
     return _count

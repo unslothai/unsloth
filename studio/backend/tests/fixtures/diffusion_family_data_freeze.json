@@ -4531,8 +4531,6 @@
   },
   "family_scheme_deny": {
    "chroma": [
-    "fp8",
-    "int8",
     "mxfp8",
     "nvfp4"
    ],

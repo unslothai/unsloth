@@ -83,6 +83,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { useMarkChatCompare } from "@/features/chat-background";
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
@@ -1320,6 +1321,7 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
+  useMarkChatCompare();
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
