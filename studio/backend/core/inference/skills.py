@@ -38,6 +38,7 @@ MAX_SKILLS_PER_ROOT = 1_000
 MAX_SKILL_INSTRUCTIONS_BYTES = 256 * 1024
 MAX_SKILL_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_SKILL_ARCHIVE_FILES = 200
+SKILL_FILES_HINT = " Files in this skill: "
 MAX_SKILL_FRONTMATTER_PAIRS = 10_000
 
 logger = logging.getLogger(__name__)
@@ -1161,6 +1162,7 @@ def _list_skill_files(
     skill_dir: Path,
     identity,
     limit: int = 20,
+    max_chars: int = 1000,
 ) -> list[str]:
     """Best-effort names for a not-found hint; never reads content or follows links."""
 
@@ -1188,7 +1190,7 @@ def _list_skill_files(
                     relative.encode("utf-8")
                 except UnicodeEncodeError:
                     continue
-                if len(found) == limit:
+                if len(found) == limit or sum(map(len, found)) + len(relative) > max_chars:
                     return found + ["..."] if pinned() else []
                 found.append(relative)
         return found if pinned() else []
@@ -1227,7 +1229,7 @@ def _read_enabled_skill_text(
         except (FileNotFoundError, NotADirectoryError) as exc:
             # Small models retry attachment names or guessed names until shown the real files.
             files = _list_skill_files(skill_dir, identity)
-            listing = f" Files in this skill: {', '.join(files)}." if files else ""
+            listing = f"{SKILL_FILES_HINT}{', '.join(files)}." if files else ""
             raise SkillError(
                 f"Skill resource '{path.as_posix()}' was not found in the skill's folder. "
                 f"Chat attachments are not skill resources.{listing}"

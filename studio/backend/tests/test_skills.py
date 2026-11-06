@@ -897,6 +897,24 @@ def test_read_skill_page_floor_reports_no_room_instead_of_slivers(isolated_skill
     assert result.startswith("Error: Not enough context room")
 
 
+def test_read_skill_not_found_hint_fits_the_priced_room(isolated_skills, monkeypatch):
+    from core.inference import tools as tools_module
+
+    home, _ = isolated_skills
+    monkeypatch.setattr(skills, "_owner_home", lambda: home)
+    root = _write_skill(home, "agents", "wide")
+    for index in range(20):
+        (root / f"{index:02d}-{'n' * 200}.txt").write_text("", encoding = "utf-8")
+    unpriced = tools_module.execute_tool("read_skill", {"name": "wide", "resource": "x.py"})
+    priced = tools_module.execute_tool(
+        "read_skill", {"name": "wide", "resource": "x.py"}, result_budget_tokens = 150
+    )
+
+    assert "Files in this skill: " in unpriced and len(unpriced) < 1400
+    assert priced == unpriced.split(" Files in this skill: ", 1)[0]
+    assert priced.endswith("Chat attachments are not skill resources.")
+
+
 def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills, monkeypatch):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "reader")

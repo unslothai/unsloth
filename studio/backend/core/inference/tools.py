@@ -13337,6 +13337,7 @@ def execute_tool(
         from .skills import (
             MAX_SKILL_PAGE_CHARS,
             MIN_SKILL_PAGE_CHARS,
+            SKILL_FILES_HINT,
             SkillError,
             read_skill_resource,
         )
@@ -13363,7 +13364,12 @@ def execute_tool(
                     )
                 page_chars //= 2
         except SkillError as exc:
-            return f"Error: {exc}"
+            error = f"Error: {exc}"
+            fitted = _fit_result_to_room(error, name)
+            if fitted == error:
+                return error
+            # The file listing is optional; the not-found reason is what the model needs.
+            return _fit_result_to_room(error.split(SKILL_FILES_HINT, 1)[0], name)
 
     if name == "search_knowledge_base":
         return _fit_result_to_room(
