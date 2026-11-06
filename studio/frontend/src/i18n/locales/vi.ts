@@ -2697,6 +2697,10 @@ export const vi = {
         contrast: {
           label: "Độ tương phản",
         },
+        elementOutline: {
+          label: "Viền phần tử",
+          description: "Độ đậm của viền nút, ô nhập, thẻ và menu.",
+        },
         reduceMotion: {
           label: "Giảm chuyển động",
           description: "Giảm hiệu ứng động hoặc theo hệ thống.",

@@ -2731,6 +2731,10 @@ export const nl = {
         contrast: {
           label: "Contrast",
         },
+        elementOutline: {
+          label: "Omlijning van elementen",
+          description: "Sterkte van de randen van knoppen, velden, kaarten en menu's.",
+        },
         reduceMotion: {
           label: "Beweging beperken",
           description: "Animaties beperken of je systeem volgen.",

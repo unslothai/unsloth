@@ -2512,6 +2512,10 @@ export const en = {
         contrast: {
           label: "Contrast",
         },
+        elementOutline: {
+          label: "Element outline",
+          description: "Border strength for buttons, fields, cards and menus.",
+        },
         reduceMotion: {
           label: "Reduce motion",
           description: "Reduce animations or match your system.",

@@ -987,6 +987,45 @@ export function ContrastSliderRow() {
   );
 }
 
+// Unset shows the glass ring strength (index.css --element-outline fallbacks).
+const ELEMENT_OUTLINE_DEFAULT: Record<ResolvedTheme, number> = {
+  light: 12,
+  dark: 14,
+};
+
+export function ElementOutlineSliderRow() {
+  const t = useT();
+  const { resolved } = useTheme();
+  const outline = useAppearanceCustomStore((s) => s.customization.elementOutline);
+  const patch = useAppearanceCustomStore((s) => s.patch);
+  const value = outline ?? ELEMENT_OUTLINE_DEFAULT[resolved];
+  const set = (next: number) => patch({ elementOutline: next });
+  const label = t("settings.appearance.custom.elementOutline.label");
+  return (
+    <div className="flex w-64 items-center gap-3">
+      <Slider
+        value={[value]}
+        min={0}
+        max={100}
+        step={1}
+        onValueChange={(values: number[]) => set(values[0])}
+        aria-label={label}
+      />
+      <NumericValueInput
+        value={value}
+        min={0}
+        max={100}
+        step={1}
+        onChange={set}
+        ariaLabel={label}
+        className="panel-field h-8 w-[calc(84px*var(--ui-space-scale,1))] shrink-0"
+        fixedWidth={true}
+        size={4}
+      />
+    </div>
+  );
+}
+
 export function ComposerOutlineSliderRow() {
   const t = useT();
   const outline = useAppearanceCustomStore((s) => s.customization.composerOutline);

@@ -2687,6 +2687,10 @@ export const tr = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Öğe çerçevesi",
+          description: "Düğme, alan, kart ve menü kenarlıklarının yoğunluğu.",
+        },
         reduceMotion: {
           label: "Hareketi azalt",
           description: "Animasyonları azaltın veya sisteminize uyun.",

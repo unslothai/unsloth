@@ -282,31 +282,32 @@ test("light glass New chat lifts the wallpaper along a curve that still tracks t
 	assert.ok(lift(0.9) - lift(0.75) > 0.07 && lift(1) === 1 && lift(0) === 0);
 });
 
-test("light glass pages use the white control glass and a lighter card sheet, edged with inner light", () => {
+test("light glass pages use the white control glass and a lighter card sheet, edged with an outline and inner light", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const light = String.raw`html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\]`;
-	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: var\\(--glass-control\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / \\.45\\);\\n  --page-glass-edge: var\\(--glass-light-inner\\);`));
+	assert.match(css, new RegExp(`${light} \\{\\n  --page-glass-fill: var\\(--glass-control\\);\\n  --page-glass-card-fill: rgb\\(255 255 255 / \\.45\\);\\n  --page-glass-edge: var\\(--glass-light-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.elevated-card > \\[class~="bg-card"\\] \\{\\n  background-color: transparent;\\n  box-shadow: inset -1px 0 0 var\\(--page-glass-divider\\), inset 0 -1px 0 var\\(--page-glass-divider\\);`));
 	assert.match(css, new RegExp(`${light} :is\\(\\.elevated-card, \\.library-card\\) \\{\\n  box-shadow: var\\(--page-glass-card-edge\\);`));
 	assert.match(css, new RegExp(`${light} \\.glass-divider \\{\\n  border-color: var\\(--page-glass-divider\\);`));
-	assert.match(css, new RegExp(`${light} \\.unsloth-model-selector-trigger \\{\\n  background-color: var\\(--glass-control\\) !important;\\n  box-shadow: var\\(--glass-light-inner\\);`));
+	assert.match(css, new RegExp(`${light} \\.unsloth-model-selector-trigger \\{\\n  background-color: var\\(--glass-control\\) !important;\\n  box-shadow: var\\(--glass-light-edge\\);`));
 	const api = readFileSync(new URL("../src/features/api-monitor/api-monitor-page.tsx", import.meta.url), "utf8");
 	assert.match(api, /const DIVIDER = "glass-divider /);
 	assert.match(api, /const INSET =\n  "glass-inset /);
 });
 
-test("light glass API cards trade the outline for a thinner fill and inner glass light", () => {
+test("light glass API cards use a thinner fill with the outlined glass edge", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ \.3\);\n  --page-glass-card-edge: var\(--glass-light-inner\);/);
+	assert.match(css, /html\[data-glass\]:not\(\.dark\)\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-route="page"\] > \[data-slot="sidebar-inset"\] \.api-monitor-page \{\n  --page-glass-card-fill: rgb\(255 255 255 \/ \.3\);\n  --page-glass-card-edge: var\(--glass-light-edge\);/);
 	assert.match(css, /\.api-monitor-page \.elevated-card:has\(> \[class~="bg-card"\]\) \{\n  clip-path: inset\(0 1px 1px 0 round var\(--radius-2xl\)\);/);
 });
 
-test("light glass trades grey outlines for inner light on the sidebar, model buttons and status chip", () => {
+test("light glass outlines model buttons and the status chip, but not the sidebar", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /  --glass-light-inner: inset 0 1px 1px rgb\(255 255 255 \/ \.7\), inset 0 16px 30px -20px rgb\(255 255 255 \/ \.55\), inset 0 -18px 34px -20px rgb\(255 255 255 \/ \.4\);/);
 	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-slot="sidebar-inner"\] \{\n  border-color: transparent;\n  box-shadow: none;/);
-	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\) \{\n  box-shadow: var\(--glass-light-inner\);/);
-	assert.match(css, /\.glass-inset \{\n  box-shadow: var\(--glass-light-inner\);/);
+	assert.match(css, /html:not\(\.dark\)\[data-glass\]\[data-chat-wallpaper-ready\] \[data-chat-model-controls\] > :is\(\.unsloth-model-selector-trigger, \[data-chat-model-notice\]\) \{\n  box-shadow: var\(--glass-light-edge\);/);
+	assert.match(css, /\.glass-inset \{\n  box-shadow: var\(--glass-light-edge\);/);
+	assert.match(css, /  --glass-light-edge: inset 0 0 0 1px color-mix\(in srgb, var\(--foreground\) var\(--element-outline, 12%\), transparent\), var\(--glass-light-inner\);/);
 });
 
 test("light glass draws no grey outlines outside the composer", () => {
@@ -324,15 +325,15 @@ test("light glass draws no grey outlines outside the composer", () => {
 	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
 });
 
-test("light glass pages drop outlines from boxed panels but keep checkboxes", () => {
+test("light glass pages keep the borders of boxed panels and select triggers", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\):not\(\[data-slot="checkbox"\], \[role="checkbox"\], \[role="radio"\], \[role="switch"\], :focus-visible, \[aria-invalid="true"\]\) \{\n  border-color: transparent;/);
+	assert.doesNotMatch(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\):not\(\[data-slot="checkbox"\], \[role="checkbox"\], \[role="radio"\], \[role="switch"\], :focus-visible, \[aria-invalid="true"\]\) \{\n  border-color: transparent;/);
 });
 
 test("light glass border clearing leaves focused and invalid fields their ring border", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const cleared = [...css.matchAll(/([^{}]*)\{\n  border-color: transparent;\n\}/g)].map(([, sel]) => sel).filter((sel) => sel.includes('[data-wallpaper-route="page"]') && sel.includes(":not(.dark)"));
-	assert.ok(cleared.length >= 2);
+	assert.ok(cleared.length >= 1);
 	for (const sel of cleared) assert.match(sel, /:focus-visible, \[aria-invalid="true"\]\)/, sel);
 });
 

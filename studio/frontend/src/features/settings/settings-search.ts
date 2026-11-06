@@ -99,6 +99,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.code.wordWrap.label",
     "settings.appearance.code.ligatures.label",
     "settings.appearance.custom.contrast.label",
+    "settings.appearance.custom.elementOutline.label",
     "settings.appearance.custom.pointerCursors.label",
     "settings.appearance.custom.reduceMotion.label",
     "settings.appearance.custom.uiFontSize.label",

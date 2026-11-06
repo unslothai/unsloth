@@ -2508,6 +2508,10 @@ export const ptBR = {
         contrast: {
           label: "Contraste",
         },
+        elementOutline: {
+          label: "Contorno dos elementos",
+          description: "Intensidade da borda de botões, campos, cartões e menus.",
+        },
         reduceMotion: {
           label: "Reduzir movimento",
           description: "Reduza as animações ou siga o sistema.",

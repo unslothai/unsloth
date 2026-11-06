@@ -22,6 +22,7 @@ import {
   CodeFontRow,
   CodeFontSizeRow,
   ComposerOutlineSliderRow,
+  ElementOutlineSliderRow,
   ComposerPositionSliderRow,
   ContrastSliderRow,
   FontSmoothingSwitch,
@@ -217,6 +218,12 @@ export function AppearanceTab() {
         </SettingsRow>
         <SettingsRow label={t("settings.appearance.custom.contrast.label")}>
           <ContrastSliderRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.elementOutline.label")}
+          description={t("settings.appearance.custom.elementOutline.description")}
+        >
+          <ElementOutlineSliderRow />
         </SettingsRow>
       </SettingsSection>
 
