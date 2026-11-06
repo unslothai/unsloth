@@ -3254,6 +3254,13 @@ export const vi = {
         "Hiển thị trực tiếp tốc độ xử lý lời nhắc và tốc độ trả lời kèm số token, cùng vị trí nạp các lớp của mô hình.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts chi tiết nhà phát triển thống kê tốc độ lớp",
+      generationStatsUpdates: "Thống kê tốc độ và ngữ cảnh",
+      generationStatsUpdatesDescription:
+        "Thời gian thực đếm token mỗi giây và mức dùng ngữ cảnh trong khi phản hồi đang truyền. Khi xong cập nhật chúng khi mỗi phản hồi kết thúc.",
+      generationStatsUpdatesSettled: "Khi xong",
+      generationStatsUpdatesRealtime: "Thời gian thực",
+      generationStatsUpdatesKeywords:
+        "thời gian thực trực tiếp cập nhật tốc độ ngữ cảnh thống kê realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Nút Sửa câu trả lời trên câu trả lời",
       inlineEditResponseDescription:
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",

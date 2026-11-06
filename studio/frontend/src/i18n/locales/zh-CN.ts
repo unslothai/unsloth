@@ -2963,6 +2963,13 @@ export const zhCN = {
         "实时显示提示词和回复速度及 token 数，并显示模型各层的加载位置。",
       showGenerationDetailsKeywords:
         "详情 速度 统计 层 卸载 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度与上下文统计",
+      generationStatsUpdatesDescription:
+        "实时模式在回复流式输出时统计每秒 token 数和上下文用量。完成后模式在每条回复结束时更新。",
+      generationStatsUpdatesSettled: "完成后",
+      generationStatsUpdatesRealtime: "实时",
+      generationStatsUpdatesKeywords:
+        "实时 动态 更新 速度 上下文 统计 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "在回复上显示编辑回复",
       inlineEditResponseDescription: "在每条回复上显示编辑回复，而不是放在“更多”菜单中。",
       turnNavigation: "轮次导航",

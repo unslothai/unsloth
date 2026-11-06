@@ -3255,6 +3255,13 @@ export const id = {
         "Tampilkan kecepatan prompt dan balasan secara langsung beserta jumlah token, serta tempat lapisan model dimuat.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts statistik kecepatan lapisan",
+      generationStatsUpdates: "Statistik kecepatan dan konteks",
+      generationStatsUpdatesDescription:
+        "Waktu nyata menghitung token per detik dan penggunaan konteks saat balasan sedang dialirkan. Setelah selesai memperbaruinya saat setiap balasan selesai.",
+      generationStatsUpdatesSettled: "Setelah selesai",
+      generationStatsUpdatesRealtime: "Waktu nyata",
+      generationStatsUpdatesKeywords:
+        "waktu nyata langsung perbarui kecepatan konteks statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit respons pada respons",
       inlineEditResponseDescription:
         "Tampilkan Edit respons di setiap respons, alih-alih di menu Lainnya.",

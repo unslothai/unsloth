@@ -3047,6 +3047,13 @@ export const de = {
         "Prompt- und Antwortgeschwindigkeit live mit Tokenzahlen anzeigen, und wo die Schichten eines Modells geladen wurden.",
       showGenerationDetailsKeywords:
         "Details Geschwindigkeit Token Statistik Schichten Auslagerung verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Geschwindigkeits- und Kontextstatistik",
+      generationStatsUpdatesDescription:
+        "Echtzeit zählt Token pro Sekunde und Kontextnutzung, während eine Antwort gestreamt wird. Nach Abschluss aktualisiert sie, sobald jede Antwort fertig ist.",
+      generationStatsUpdatesSettled: "Nach Abschluss",
+      generationStatsUpdatesRealtime: "Echtzeit",
+      generationStatsUpdatesKeywords:
+        "Echtzeit live aktualisieren Geschwindigkeit Kontext Statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Antwort bearbeiten bei Antworten",
       inlineEditResponseDescription: "Antwort bearbeiten bei jeder Antwort anzeigen statt im Menü „Mehr“.",
       turnNavigation: "Rundennavigation",

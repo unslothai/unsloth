@@ -2941,6 +2941,13 @@ export const it = {
         "Mostra in tempo reale la velocità del prompt e della risposta con il numero di token, e dove sono stati caricati i livelli di un modello.",
       showGenerationDetailsKeywords:
         "dettagli velocità token statistiche livelli scaricamento verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Statistiche di velocità e contesto",
+      generationStatsUpdatesDescription:
+        "In tempo reale conta i token al secondo e l'uso del contesto mentre una risposta è in streaming. Al termine li aggiorna quando ogni risposta finisce.",
+      generationStatsUpdatesSettled: "Al termine",
+      generationStatsUpdatesRealtime: "In tempo reale",
+      generationStatsUpdatesKeywords:
+        "tempo reale dal vivo aggiorna velocità contesto statistiche realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Modifica risposta nelle risposte",
       inlineEditResponseDescription: "Mostra Modifica risposta su ogni risposta, invece che nel menu Altro.",
       turnNavigation: "Navigazione dei turni",

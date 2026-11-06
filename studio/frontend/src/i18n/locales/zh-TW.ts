@@ -3101,6 +3101,13 @@ export const zhTW = {
         "即時顯示提示詞和回覆的速度及 token 數，以及模型各層的載入位置。",
       showGenerationDetailsKeywords:
         "詳細 開發人員 統計 速度 預填 解碼 層 卸載 專家 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度與上下文統計",
+      generationStatsUpdatesDescription:
+        "即時模式在回覆串流輸出時統計每秒 token 數和上下文用量。完成後模式在每則回覆結束時更新。",
+      generationStatsUpdatesSettled: "完成後",
+      generationStatsUpdatesRealtime: "即時",
+      generationStatsUpdatesKeywords:
+        "即時 動態 更新 速度 上下文 統計 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "在回應上顯示「編輯回應」",
       inlineEditResponseDescription:
         "在每則回應上保留「編輯回應」，而不是放在「更多」選單中。",

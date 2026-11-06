@@ -2992,6 +2992,13 @@ export const ja = {
         "プロンプトと応答の速度をトークン数とともにリアルタイムで表示し、モデルのレイヤーの読み込み先も表示します。",
       showGenerationDetailsKeywords:
         "詳細 速度 トークン 統計 レイヤー オフロード verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "速度とコンテキストの統計",
+      generationStatsUpdatesDescription:
+        "リアルタイムでは、応答のストリーミング中に毎秒トークン数とコンテキスト使用量を数えます。完了時は各応答の終了時に更新します。",
+      generationStatsUpdatesSettled: "完了時",
+      generationStatsUpdatesRealtime: "リアルタイム",
+      generationStatsUpdatesKeywords:
+        "リアルタイム ライブ 更新 速度 コンテキスト 統計 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "応答に応答の編集を表示",
       inlineEditResponseDescription: "応答の編集を「その他」メニューではなく、各応答に表示します。",
       turnNavigation: "ターンナビゲーション",

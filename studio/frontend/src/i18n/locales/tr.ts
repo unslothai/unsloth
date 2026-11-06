@@ -3253,6 +3253,13 @@ export const tr = {
         "Canlı istem ve yanıt hızlarını token sayılarıyla birlikte ve bir modelin katmanlarının nereye yüklendiğini gösterin.",
       showGenerationDetailsKeywords:
         "ayrıntılı geliştirici istatistik hız tok/s prefill decode katmanlar aktarım offload vram uzmanlar experts",
+      generationStatsUpdates: "Hız ve bağlam istatistikleri",
+      generationStatsUpdatesDescription:
+        "Gerçek zamanlı, bir yanıt akarken saniye başına token ve bağlam kullanımını sayar. Bitince, her yanıt tamamlandığında bunları günceller.",
+      generationStatsUpdatesSettled: "Bitince",
+      generationStatsUpdatesRealtime: "Gerçek zamanlı",
+      generationStatsUpdatesKeywords:
+        "gerçek zamanlı canlı güncelle hız bağlam istatistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Yanıtlarda Yanıtı düzenle",
       inlineEditResponseDescription:
         "Yanıtı düzenle seçeneğini Diğer menüsü yerine her yanıtta tutun.",

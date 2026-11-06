@@ -3022,6 +3022,13 @@ export const en = {
         "Show live prompt and reply speeds with token counts, and where a model's layers loaded.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Speed and context stats",
+      generationStatsUpdatesDescription:
+        "Realtime counts tokens per second and context usage while a reply streams. When done updates them as each reply finishes.",
+      generationStatsUpdatesSettled: "When done",
+      generationStatsUpdatesRealtime: "Realtime",
+      generationStatsUpdatesKeywords:
+        "realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edit response on responses",
       inlineEditResponseDescription:
         "Keep Edit response on every response, instead of in the More menu.",

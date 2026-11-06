@@ -3119,6 +3119,13 @@ export const th = {
         "แสดงความเร็วของพรอมต์และการตอบกลับแบบเรียลไทม์พร้อมจำนวนโทเค็น และตำแหน่งที่โหลดเลเยอร์ของโมเดล",
       showGenerationDetailsKeywords:
         "ละเอียด นักพัฒนา สถิติ ความเร็ว เลเยอร์ verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "สถิติความเร็วและบริบท",
+      generationStatsUpdatesDescription:
+        "แบบเรียลไทม์จะนับโทเค็นต่อวินาทีและการใช้บริบทระหว่างที่คำตอบกำลังสตรีม แบบเมื่อเสร็จจะอัปเดตเมื่อแต่ละคำตอบจบ",
+      generationStatsUpdatesSettled: "เมื่อเสร็จ",
+      generationStatsUpdatesRealtime: "เรียลไทม์",
+      generationStatsUpdatesKeywords:
+        "เรียลไทม์ สด อัปเดต ความเร็ว บริบท สถิติ realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "แก้ไขคำตอบบนคำตอบ",
       inlineEditResponseDescription:
         "แสดง “แก้ไขคำตอบ” บนทุกคำตอบ แทนที่จะอยู่ในเมนูเพิ่มเติม",

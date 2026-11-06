@@ -3281,6 +3281,13 @@ export const uk = {
         "Показувати поточну швидкість обробки запиту й відповіді з кількістю токенів, а також де завантажено шари моделі.",
       showGenerationDetailsKeywords:
         "докладно розробник статистика швидкість tok/s prefill decode шари вивантаження offload vram експерти",
+      generationStatsUpdates: "Статистика швидкості й контексту",
+      generationStatsUpdatesDescription:
+        "У реальному часі рахує токени за секунду й використання контексту, поки відповідь передається. Після завершення оновлює їх, коли кожна відповідь закінчена.",
+      generationStatsUpdatesSettled: "Після завершення",
+      generationStatsUpdatesRealtime: "У реальному часі",
+      generationStatsUpdatesKeywords:
+        "реальний час наживо оновлення швидкість контекст статистика realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Редагування відповіді на відповідях",
       inlineEditResponseDescription:
         "Показувати «Редагувати відповідь» на кожній відповіді, а не в меню «Більше».",

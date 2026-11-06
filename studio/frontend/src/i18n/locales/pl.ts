@@ -3291,6 +3291,13 @@ export const pl = {
         "Pokazuj na żywo szybkość przetwarzania promptu i odpowiedzi z liczbą tokenów oraz miejsce wczytania warstw modelu.",
       showGenerationDetailsKeywords:
         "verbose developer stats speed tok/s prefill decode layers offload vram experts szczegóły statystyki szybkość warstwy eksperci",
+      generationStatsUpdates: "Statystyki szybkości i kontekstu",
+      generationStatsUpdatesDescription:
+        "Tryb Na bieżąco liczy tokeny na sekundę i użycie kontekstu podczas strumieniowania odpowiedzi. Po zakończeniu aktualizuje je, gdy każda odpowiedź się skończy.",
+      generationStatsUpdatesSettled: "Po zakończeniu",
+      generationStatsUpdatesRealtime: "Na bieżąco",
+      generationStatsUpdatesKeywords:
+        "na bieżąco na żywo aktualizacja szybkość kontekst statystyki realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Edycja odpowiedzi przy odpowiedziach",
       inlineEditResponseDescription:
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",

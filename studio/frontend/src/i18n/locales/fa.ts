@@ -3241,6 +3241,13 @@ export const fa = {
         "سرعت زندهٔ پرامپت و پاسخ همراه با تعداد توکن‌ها، و محل بارگذاری لایه‌های مدل نمایش داده شود.",
       showGenerationDetailsKeywords:
         "مفصل توسعه‌دهنده آمار سرعت tok/s prefill decode لایه‌ها offload vram experts",
+      generationStatsUpdates: "آمار سرعت و زمینه",
+      generationStatsUpdatesDescription:
+        "حالت بی‌درنگ توکن در ثانیه و مصرف زمینه را هنگام پخش پاسخ می‌شمارد. حالت پس از پایان آن‌ها را با تمام شدن هر پاسخ به‌روز می‌کند.",
+      generationStatsUpdatesSettled: "پس از پایان",
+      generationStatsUpdatesRealtime: "بی‌درنگ",
+      generationStatsUpdatesKeywords:
+        "بی‌درنگ زنده به‌روزرسانی سرعت زمینه آمار realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "«ویرایش پاسخ» روی پاسخ‌ها",
       inlineEditResponseDescription:
         "«ویرایش پاسخ» روی هر پاسخ باقی بماند، به‌جای منوی «بیشتر».",

@@ -3015,6 +3015,13 @@ export const hi = {
         "टोकन गिनती के साथ प्रॉम्प्ट और जवाब की लाइव गति दिखाएँ, और यह भी कि मॉडल की परतें कहाँ लोड हुईं।",
       showGenerationDetailsKeywords:
         "विवरण गति टोकन आँकड़े परतें verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "गति और संदर्भ आँकड़े",
+      generationStatsUpdatesDescription:
+        "रीयल-टाइम उत्तर स्ट्रीम होते समय प्रति सेकंड टोकन और संदर्भ उपयोग गिनता है। पूरा होने पर हर उत्तर खत्म होने पर इन्हें अपडेट करता है।",
+      generationStatsUpdatesSettled: "पूरा होने पर",
+      generationStatsUpdatesRealtime: "रीयल-टाइम",
+      generationStatsUpdatesKeywords:
+        "रीयल-टाइम लाइव अपडेट गति संदर्भ आँकड़े realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "जवाबों पर जवाब संपादित करें",
       inlineEditResponseDescription: "जवाब संपादित करें को “और” मेन्यू के बजाय हर जवाब पर दिखाएँ।",
       turnNavigation: "टर्न नेविगेशन",

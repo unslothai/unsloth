@@ -3006,6 +3006,13 @@ export const ar = {
         "عرض سرعتَي معالجة الطلب والرد مباشرةً مع عدد الرموز، ومكان تحميل طبقات النموذج.",
       showGenerationDetailsKeywords:
         "تفاصيل سرعة رموز إحصاءات طبقات ذاكرة verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "إحصاءات السرعة والسياق",
+      generationStatsUpdatesDescription:
+        "يحسب الوضع الفوري الرموز في الثانية واستخدام السياق أثناء بث الرد. أما عند الانتهاء فيحدّثها عند اكتمال كل رد.",
+      generationStatsUpdatesSettled: "عند الانتهاء",
+      generationStatsUpdatesRealtime: "فوري",
+      generationStatsUpdatesKeywords:
+        "فوري مباشر تحديث سرعة سياق إحصاءات realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "تعديل الرد في الردود",
       inlineEditResponseDescription: "إبقاء تعديل الرد على كل رد بدلًا من قائمة المزيد.",
       turnNavigation: "التنقل بين الجولات",

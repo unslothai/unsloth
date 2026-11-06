@@ -3020,6 +3020,13 @@ export const ptBR = {
         "Mostrar ao vivo a velocidade do prompt e da resposta com a contagem de tokens, e onde as camadas de um modelo foram carregadas.",
       showGenerationDetailsKeywords:
         "detalhes geração velocidade tokens estatísticas camadas especialistas desenvolvedor verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Estatísticas de velocidade e contexto",
+      generationStatsUpdatesDescription:
+        "Em tempo real conta tokens por segundo e uso do contexto enquanto uma resposta é transmitida. Ao terminar atualiza quando cada resposta termina.",
+      generationStatsUpdatesSettled: "Ao terminar",
+      generationStatsUpdatesRealtime: "Em tempo real",
+      generationStatsUpdatesKeywords:
+        "tempo real ao vivo atualizar velocidade contexto estatísticas realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Editar resposta nas respostas",
       inlineEditResponseDescription: "Mostrar Editar resposta em cada resposta, em vez de no menu Mais.",
       turnNavigation: "Navegação por turnos",

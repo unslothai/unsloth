@@ -2999,6 +2999,13 @@ export const ko = {
         "프롬프트 및 응답 속도와 토큰 수를 실시간으로 표시하고, 모델의 레이어가 어디에 로드되었는지 보여줍니다.",
       showGenerationDetailsKeywords:
         "세부 속도 토큰 통계 레이어 오프로드 verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "속도 및 컨텍스트 통계",
+      generationStatsUpdatesDescription:
+        "실시간은 응답이 스트리밍되는 동안 초당 토큰과 컨텍스트 사용량을 셉니다. 완료 시는 각 응답이 끝날 때 업데이트합니다.",
+      generationStatsUpdatesSettled: "완료 시",
+      generationStatsUpdatesRealtime: "실시간",
+      generationStatsUpdatesKeywords:
+        "실시간 라이브 업데이트 속도 컨텍스트 통계 realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "응답에 응답 편집 표시",
       inlineEditResponseDescription: "응답 편집을 더보기 메뉴 대신 모든 응답에 표시합니다.",
       turnNavigation: "턴 탐색",

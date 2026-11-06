@@ -3019,6 +3019,13 @@ export const ru = {
         "Показывать в реальном времени скорость обработки промпта и ответа с числом токенов, а также где загружены слои модели.",
       showGenerationDetailsKeywords:
         "подробности скорость токены статистика слои выгрузка verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Статистика скорости и контекста",
+      generationStatsUpdatesDescription:
+        "В реальном времени считает токены в секунду и использование контекста, пока ответ передаётся. По завершении обновляет их, когда каждый ответ закончен.",
+      generationStatsUpdatesSettled: "По завершении",
+      generationStatsUpdatesRealtime: "В реальном времени",
+      generationStatsUpdatesKeywords:
+        "реальное время вживую обновление скорость контекст статистика realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Изменение ответа в ответах",
       inlineEditResponseDescription: "Показывать «Изменить ответ» у каждого ответа, а не в меню «Ещё».",
       turnNavigation: "Навигация по ходам",

@@ -3168,6 +3168,13 @@ export const sv = {
         "Visa live hastighet för prompt och svar med antal token, och var en modells lager lästes in.",
       showGenerationDetailsKeywords:
         "detaljer hastighet token statistik lager avlastning verbose developer stats speed tok/s prefill decode layers offload vram experts",
+      generationStatsUpdates: "Hastighets- och kontextstatistik",
+      generationStatsUpdatesDescription:
+        "Realtid räknar token per sekund och kontextanvändning medan ett svar strömmas. När klart uppdaterar dem när varje svar är färdigt.",
+      generationStatsUpdatesSettled: "När klart",
+      generationStatsUpdatesRealtime: "Realtid",
+      generationStatsUpdatesKeywords:
+        "realtid live uppdatera hastighet kontext statistik realtime live delayed settled update refresh streaming tok/s tokens per second speed context usage meter stats",
       inlineEditResponse: "Redigera svar på svaren",
       inlineEditResponseDescription:
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
