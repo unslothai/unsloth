@@ -4,6 +4,7 @@
 
 """Launch the cached Blender MCP runtime over stdio without downloading."""
 
+import functools
 import sys
 import types
 from pathlib import Path
@@ -15,9 +16,28 @@ def _alias_fastmcp() -> None:
         import mcp.server.fastmcp  # noqa: F401
     except ModuleNotFoundError:
         from mcp.server import mcpserver
+        from mcp.server.mcpserver.exceptions import ToolError
+
+        class FastMCP(mcpserver.MCPServer):
+            # mcp 2 hides a tool's exception text from the model; v1 sent it (e.g. Blender tracebacks).
+            def tool(self, *args, **kwargs):
+                register = super().tool(*args, **kwargs)
+
+                def decorator(fn):
+                    @functools.wraps(fn)
+                    def call(*call_args, **call_kwargs):
+                        try:
+                            return fn(*call_args, **call_kwargs)
+                        except Exception as exc:
+                            raise ToolError(str(exc)) from exc
+
+                    register(call)
+                    return fn
+
+                return decorator
 
         shim = types.ModuleType("mcp.server.fastmcp")
-        shim.FastMCP = mcpserver.MCPServer
+        shim.FastMCP = FastMCP
         shim.__getattr__ = lambda name: getattr(mcpserver, name)
         sys.modules["mcp.server.fastmcp"] = shim
 

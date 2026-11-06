@@ -67,13 +67,18 @@ def test_launcher_runs_v1_fastmcp_runtime_on_installed_mcp(tmp_path):
     package.mkdir()
     (tmp_path / ".ready").write_text("x")
     (package / "__init__.py").write_text(
+        "import asyncio\n"
         "from mcp.server.fastmcp import FastMCP, Image\n"
         "def main():\n"
         "    server = FastMCP('blender-mcp', instructions='x')\n"
         "    @server.tool()\n"
-        "    def ping() -> int:\n"
-        "        return 1\n"
-        "    print(type(server).__name__, Image(data=b'x', format='png').data)\n"
+        "    def fail() -> int:\n"
+        "        raise RuntimeError('Blender error: NameError')\n"
+        "    try:\n"
+        "        asyncio.run(server.call_tool('fail', {}))\n"
+        "    except Exception as exc:\n"
+        "        print(exc)\n"
+        "    print(Image(data=b'x', format='png').data)\n"
         "    return 0\n"
     )
     launcher = Path(runtime.__file__).with_name("launcher.py")
@@ -81,4 +86,7 @@ def test_launcher_runs_v1_fastmcp_runtime_on_installed_mcp(tmp_path):
         [sys.executable, str(launcher), str(tmp_path)], capture_output = True, text = True
     )
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split()[1] == "b'x'"
+    assert result.stdout.splitlines() == [
+        "Error executing tool fail: Blender error: NameError",
+        "b'x'",
+    ]
