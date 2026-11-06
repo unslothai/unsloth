@@ -1095,7 +1095,7 @@ def fast_layernorm_compiled(layernorm, X):
 
 
 # Ported from transformers models/llama/modeling_llama.py#L320
-@context_parallel_attention
+@context_parallel_attention(rl = True)
 def LlamaAttention_fast_forward(
     self,
     hidden_states: torch.Tensor,

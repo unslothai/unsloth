@@ -270,3 +270,71 @@ def _compiled_parity_worker(rank, world, packed, out_dir):
 def test_compiled_fastmodel_attention_matches_one_process(packed):
     generic._config("qwen3")
     generic._spawn(_compiled_parity_worker, 2, packed, "")
+
+
+_RL_REFUSAL = "DPO / GRPO context parallelism supports Unsloth's Llama-style attention only"
+
+
+def test_rl_keeps_context_parallel_llama_only():
+    """The Qwen3 declaration opens SFTTrainer only: DPO / GRPO under cp keep the Llama-style rule until an RL
+    parity run on the fast Qwen3 attention exists."""
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
+    from unsloth.models.llama import LlamaAttention_fast_forward
+
+    qwen3 = _wrap(_fast_qwen3_attention(2))
+    cp._check_cp_model(qwen3, 2, "ulysses")  # SFTTrainer
+    with pytest.raises(NotImplementedError, match = _RL_REFUSAL):
+        cp._check_cp_model(qwen3, 2, "ulysses", allow_hybrids = False)
+    llama = _fast_qwen3_attention(2)
+    llama.__class__ = _fast_class(Qwen3Attention, LlamaAttention_fast_forward)
+    cp._check_cp_model(_wrap(llama), 2, "ulysses", allow_hybrids = False)
+
+
+_REAL_COMPILED = r"""
+import os, sys
+os.environ["UNSLOTH_COMPILE_LOCATION"] = sys.argv[1]
+import unsloth
+from unsloth_zoo.compiler import unsloth_compile_transformers
+unsloth_compile_transformers(model_type = "qwen3", import_from_cache = False)
+import transformers.models.qwen3.modeling_qwen3 as modeling
+from unsloth.utils import ulysses_hybrid as uh
+forward = modeling.Qwen3Attention.forward
+caller = uh._registry_caller(forward)
+# The shape the one-step delegation follow relies on: the class forward only calls the module-level copy.
+assert forward.__module__ == "unsloth_compiled_module_qwen3", forward.__module__
+assert forward.__code__.co_names == ("Qwen3Attention_forward",), forward.__code__.co_names
+assert caller is not None and caller.__name__ == "Qwen3Attention_forward", caller
+assert caller.__module__ == "unsloth_compiled_module_qwen3", caller.__module__
+from tests import test_cp_ulysses_generic_gloo as g
+for implementation, packed in (("sdpa", False), ("sdpa", True), ("eager", False)):
+    g._spawn(g._parity_worker, 2, "qwen3", implementation, packed, "")
+print("REAL_COMPILED_OK")
+"""
+
+
+def test_real_zoo_compiled_qwen3_attention_matches_one_process(tmp_path):
+    """unsloth_zoo's compiler output for the tiny Qwen3 (CPU), not a copy: pins the compiled class forward shape
+    and runs the generic Ulysses parity on it (sdpa rows / packed, eager)."""
+    import os
+    import subprocess
+
+    pytest.importorskip("unsloth_zoo.compiler")
+    generic._config("qwen3")
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # A fresh interpreter without this session's test-only CPU fallback switches (tests/conftest.py).
+    env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_DISABLE_CPU_FALLBACK"}
+    env.update(
+        CUDA_VISIBLE_DEVICES = "",
+        PYTHONPATH = os.pathsep.join(filter(None, [root, os.environ.get("PYTHONPATH")])),
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", _REAL_COMPILED, str(tmp_path / "compiled")],
+        cwd = root,
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 1200,
+    )
+    assert result.returncode == 0 and "REAL_COMPILED_OK" in result.stdout, (
+        result.stdout[-3000:] + result.stderr[-3000:]
+    )

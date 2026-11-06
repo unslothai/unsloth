@@ -1333,16 +1333,20 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     return mask
 
 
-def context_parallel_attention(forward):
+def context_parallel_attention(forward = None, *, rl = False):
     """Declare an Unsloth attention forward context parallel ready: it attends through run_attention (which owns
     the Ulysses exchange; ring replaces SDPA) and sizes RoPE by the global sequence while a manager is active.
-    context_parallel accepts exactly the forwards carrying this mark."""
-    forward._unsloth_context_parallel = True
+    context_parallel accepts exactly the forwards carrying this mark; `rl = True` also opens DPO / GRPO, whose
+    decoder hooks need their own parity run per forward."""
+    if forward is None:
+        return lambda f: context_parallel_attention(f, rl = rl)
+    forward._unsloth_context_parallel = {"rl": bool(rl)}
     return forward
 
 
-def is_context_parallel_attention(forward) -> bool:
-    return bool(getattr(forward, "_unsloth_context_parallel", False))
+def is_context_parallel_attention(forward, rl = False) -> bool:
+    mark = getattr(forward, "_unsloth_context_parallel", None)
+    return isinstance(mark, dict) and (not rl or mark["rl"])
 
 
 def run_attention(
