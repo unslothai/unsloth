@@ -1157,6 +1157,26 @@ def _normalize_resource_path(resource: str) -> PurePosixPath:
     return path
 
 
+def _list_skill_files(skill_dir: Path, limit: int = 20) -> list[str]:
+    """Best-effort names for a not-found hint; never reads content or follows links."""
+    found: list[str] = []
+    try:
+        for directory, folders, files in os.walk(skill_dir):
+            current = Path(directory)
+            folders[:] = sorted(
+                f for f in folders if not f.startswith(".") and not _is_linked_path(current / f)
+            )
+            for file in sorted(files):
+                if file.startswith(".") or _is_linked_path(current / file):
+                    continue
+                if len(found) == limit:
+                    return found + ["..."]
+                found.append((current / file).relative_to(skill_dir).as_posix())
+    except (OSError, ValueError):
+        return []
+    return found
+
+
 def _read_enabled_skill_text(
     name: str,
     resource: str,
@@ -1186,10 +1206,12 @@ def _read_enabled_skill_text(
         except SkillError:
             raise
         except (FileNotFoundError, NotADirectoryError) as exc:
-            # Small models retry with a chat attachment's name or sandbox path until told otherwise.
+            # Small models retry attachment names or guessed names until shown the real files.
+            files = _list_skill_files(skill_dir)
+            listing = f" Files in this skill: {', '.join(files)}." if files else ""
             raise SkillError(
                 f"Skill resource '{path.as_posix()}' was not found in the skill's folder. "
-                "Chat attachments are not skill resources."
+                f"Chat attachments are not skill resources.{listing}"
             ) from exc
         except (OSError, ValueError) as exc:
             raise SkillError("Skill resource path must stay inside the skill directory.") from exc

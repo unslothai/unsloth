@@ -255,6 +255,34 @@ def test_missing_resource_says_attachments_are_not_skill_resources(isolated_skil
         skills.read_skill_resource("reader", resource, home = home)
 
 
+def test_missing_resource_lists_the_skill_files(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "lint")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").write_text("print(1)", encoding = "utf-8")
+    (root / ".cache").mkdir()
+    (root / ".cache" / "x.json").write_text("{}", encoding = "utf-8")
+    (root / ".hidden").write_text("", encoding = "utf-8")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("lint", "dataset-lint.py", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
+
+
+def test_missing_resource_listing_is_capped(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "many")
+    for index in range(30):
+        (root / f"f{index:02d}.txt").write_text("", encoding = "utf-8")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("many", "missing.txt", home = home)
+
+    listed = str(error.value).split("Files in this skill: ", 1)[1].removesuffix(".").split(", ")
+    assert len(listed) == 21 and listed[-1] == "..."
+
+
 @pytest.mark.skipif(
     not hasattr(os, "mkfifo"), reason = "POSIX FIFOs are unavailable on this platform"
 )
