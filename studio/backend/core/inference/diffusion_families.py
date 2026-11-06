@@ -328,8 +328,7 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
-# Anima stayed bf16 under auto while its transformer could not compile; INT8 on it is unmeasured. Not the small-DiT
-# reason: that one also compiles from render 1, where Anima compiles in the background from render 3.
+# Not SMALL_DIT_BF16_WHEN_RESIDENT: that reason also compiles from render 1; Anima's compile stays deferred.
 ANIMA_BF16_WHEN_RESIDENT = (
     "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled"
 )
