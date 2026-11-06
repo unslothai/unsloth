@@ -2602,7 +2602,7 @@ export const en = {
         unavailable: "unavailable",
         detecting: "Checking for GPUs...",
         unreadable: "Could not read this server's hardware.",
-        noGpu: "No visible GPU detected. CPU-only resources are shown above.",
+        noGpu: "No dedicated GPU detected. Models use the CPU and system memory shown above, which a built-in GPU may share.",
         noUsableGpu: "No GPU on this machine is usable by PyTorch.",
         mismatchCpuBuild:
           "PyTorch is a CPU-only build ({version}), so the GPUs below cannot be used. Repair the installation to restore GPU support.",

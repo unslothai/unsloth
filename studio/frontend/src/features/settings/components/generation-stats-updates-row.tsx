@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { useId } from "react";
 import { SettingsRow } from "./settings-row";
 
-/** Speed and context stats, shown in Chat > Chat defaults and System > Floating window; both edit one preference. */
+/** Speed and context stats, in Settings > Chat > Chat defaults. */
 export function GenerationStatsUpdatesRow() {
   const t = useT();
   const pillId = useId();

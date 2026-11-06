@@ -2579,7 +2579,7 @@ export const ko = {
         unavailable: "사용할 수 없음",
         detecting: "GPU를 확인하는 중...",
         unreadable: "이 서버의 하드웨어를 읽을 수 없습니다.",
-        noGpu: "인식되는 GPU가 없습니다. 위에는 CPU 관련 리소스만 표시됩니다.",
+        noGpu: "전용 GPU가 감지되지 않았습니다. 모델은 위에 표시된 CPU와 시스템 메모리를 사용하며, 내장 GPU가 이 메모리를 공유할 수 있습니다.",
         noUsableGpu: "이 컴퓨터의 GPU 중 PyTorch에서 사용할 수 있는 것이 없습니다.",
         mismatchCpuBuild:
           "PyTorch가 CPU 전용 빌드({version})이므로 아래 GPU를 사용할 수 없습니다. 설치를 복구하면 GPU 지원이 복원됩니다.",

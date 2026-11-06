@@ -57,7 +57,6 @@ import {
 } from "../components/cache-storage-rows";
 import { DeveloperModeSection } from "../components/developer-mode-section";
 import { EngineVersionsSection } from "../components/engine-versions-section";
-import { GenerationStatsUpdatesRow } from "../components/generation-stats-updates-row";
 import { LlamaBackendSection } from "../components/llama-backend-section";
 import { ModelMemorySection } from "../components/model-memory-section";
 import { SettingsRow } from "../components/settings-row";
@@ -1147,7 +1146,6 @@ export function ResourcesTab() {
             })}
           </div>
         )}
-        <GenerationStatsUpdatesRow />
       </SettingsSection>
 
       <ModelMemorySection ref={modelMemoryRef} />

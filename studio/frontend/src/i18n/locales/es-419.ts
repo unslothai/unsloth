@@ -2830,7 +2830,7 @@ export const es419 = {
         detecting: "Buscando GPU...",
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
-          "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+          "No se detectó una GPU dedicada. Los modelos usan la CPU y la memoria del sistema que se muestran arriba, que una GPU integrada puede compartir.",
         noUsableGpu: "PyTorch no puede usar ninguna GPU de esta computadora.",
         mismatchCpuBuild:
           "PyTorch es una compilación solo para CPU ({version}), así que las GPU de abajo no se pueden usar. Repara la instalación para restaurar la compatibilidad con GPU.",

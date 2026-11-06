@@ -2783,7 +2783,7 @@ export const tr = {
         detecting: "GPU'lar denetleniyor...",
         unreadable: "Bu sunucunun donanımı okunamadı.",
         noGpu:
-          "Görünür GPU algılanmadı. Yukarıda yalnızca CPU kaynakları gösteriliyor.",
+          "Ayrı bir GPU algılanmadı. Modeller yukarıda gösterilen CPU'yu ve sistem belleğini kullanır; bu belleği yerleşik bir GPU paylaşabilir.",
         noUsableGpu: "Bu makinede PyTorch'un kullanabileceği bir GPU yok.",
         mismatchCpuBuild:
           "PyTorch yalnızca CPU derlemesi ({version}), bu nedenle aşağıdaki GPU'lar kullanılamaz. GPU desteğini geri getirmek için kurulumu onarın.",

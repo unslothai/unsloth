@@ -2662,7 +2662,7 @@ export const zhTW = {
         unavailable: "無法使用",
         detecting: "正在檢查 GPU...",
         unreadable: "無法讀取此伺服器的硬體資訊。",
-        noGpu: "未偵測到可見的 GPU。上方顯示的是僅 CPU 的資源。",
+        noGpu: "未偵測到獨立 GPU。模型使用上方顯示的 CPU 和系統記憶體，內建 GPU 可能會共用這部分記憶體。",
         noUsableGpu: "這台電腦上沒有 PyTorch 可使用的 GPU。",
         mismatchCpuBuild:
           "PyTorch 是僅支援 CPU 的版本（{version}），因此無法使用下列 GPU。請修復安裝以恢復 GPU 支援。",

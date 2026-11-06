@@ -2599,7 +2599,7 @@ export const ptBR = {
         unavailable: "indisponível",
         detecting: "Procurando GPUs...",
         unreadable: "Não foi possível ler o hardware deste servidor.",
-        noGpu: "Nenhuma GPU visível detectada. Os recursos somente CPU aparecem acima.",
+        noGpu: "Nenhuma GPU dedicada detectada. Os modelos usam a CPU e a memória do sistema mostradas acima, que uma GPU integrada pode compartilhar.",
         noUsableGpu: "Nenhuma GPU desta máquina pode ser usada pelo PyTorch.",
         mismatchCpuBuild:
           "O PyTorch é uma compilação somente CPU ({version}), então as GPUs abaixo não podem ser usadas. Repare a instalação para restaurar o suporte a GPU.",

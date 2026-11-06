@@ -2826,7 +2826,7 @@ export const nl = {
         detecting: "Zoeken naar GPU's...",
         unreadable: "Kan de hardware van deze server niet uitlezen.",
         noGpu:
-          "Geen zichtbare GPU gedetecteerd. Hierboven worden alleen CPU-bronnen getoond.",
+          "Geen aparte GPU gedetecteerd. Modellen gebruiken de CPU en het systeemgeheugen hierboven, dat een ingebouwde GPU kan delen.",
         noUsableGpu:
           "Geen enkele GPU op deze machine is bruikbaar voor PyTorch.",
         mismatchCpuBuild:

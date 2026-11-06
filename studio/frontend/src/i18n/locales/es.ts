@@ -2612,7 +2612,7 @@ export const es = {
         detecting: "Buscando GPU...",
         unreadable: "No se pudo leer el hardware de este servidor.",
         noGpu:
-          "No se detectó ninguna GPU visible. Arriba se muestran los recursos solo de CPU.",
+          "No se ha detectado una GPU dedicada. Los modelos usan la CPU y la memoria del sistema mostradas arriba, que una GPU integrada puede compartir.",
         noUsableGpu: "Ninguna GPU de esta máquina se puede usar con PyTorch.",
         mismatchCpuBuild:
           "PyTorch es una compilación solo para CPU ({version}), por lo que las GPU de abajo no se pueden usar. Repare la instalación para restaurar la compatibilidad con GPU.",

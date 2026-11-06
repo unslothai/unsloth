@@ -298,7 +298,7 @@ test("settled mode keeps today's paths: no live subscription in the meter, the l
   assert.match(hook, /throttle\.cancel\(\)/);
 });
 
-test("one toggle row sits in Chat defaults and System > Floating window, is searchable, and is translated in every locale", async () => {
+test("the toggle row sits in Chat defaults only, is searchable, and is translated in every locale", async () => {
   const row = readSrc(
     "features/settings/components/generation-stats-updates-row.tsx",
   );
@@ -325,18 +325,7 @@ test("one toggle row sits in Chat defaults and System > Floating window, is sear
     "the Chat tab renders the shared row, not its own copy",
   );
   const system = readSrc("features/settings/tabs/resources-tab.tsx");
-  const floating = system.slice(
-    system.indexOf(
-      '<SettingsSection title={t("settings.resources.floatingWindow")}>',
-    ),
-    system.indexOf("<ModelMemorySection ref={modelMemoryRef} />"),
-  );
-  assert.match(floating, /<GenerationStatsUpdatesRow \/>/);
-  assert.equal(
-    system.match(/<GenerationStatsUpdatesRow \/>/g)?.length,
-    1,
-    "only once on System",
-  );
+  assert.doesNotMatch(system, /GenerationStatsUpdatesRow/, "not on System");
   const search = readSrc("features/settings/settings-search.ts");
   assert.match(
     search,
@@ -348,7 +337,10 @@ test("one toggle row sits in Chat defaults and System > Floating window, is sear
       search.indexOf("],", search.indexOf(`  ${tab}: [`)),
     );
   assert.match(index("chat"), /"settings\.chat\.generationStatsUpdates"/);
-  assert.match(index("resources"), /"settings\.chat\.generationStatsUpdates"/);
+  assert.doesNotMatch(
+    index("resources"),
+    /"settings\.chat\.generationStatsUpdates"/,
+  );
 
   const keys = [
     "generationStatsUpdates",

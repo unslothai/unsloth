@@ -116,7 +116,6 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.resources.liveMonitor.ram",
     "settings.resources.liveMonitor.vram",
     "settings.resources.liveMonitor.disk",
-    "settings.chat.generationStatsUpdates",
     "settings.resources.gpu.title",
     "settings.resources.modelMemory.title",
     "settings.resources.modelMemory.keepResident",

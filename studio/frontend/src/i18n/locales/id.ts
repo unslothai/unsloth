@@ -2790,7 +2790,7 @@ export const id = {
         detecting: "Memeriksa GPU...",
         unreadable: "Tidak dapat membaca perangkat keras server ini.",
         noGpu:
-          "Tidak ada GPU yang terdeteksi. Sumber daya khusus CPU ditampilkan di atas.",
+          "Tidak ada GPU khusus yang terdeteksi. Model memakai CPU dan memori sistem yang ditampilkan di atas, yang dapat dipakai bersama GPU bawaan.",
         noUsableGpu:
           "Tidak ada GPU di mesin ini yang dapat digunakan oleh PyTorch.",
         mismatchCpuBuild:

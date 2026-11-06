@@ -2567,7 +2567,7 @@ export const ja = {
         detecting: "GPU を確認しています...",
         unreadable: "このサーバーのハードウェアを読み取れませんでした。",
         noGpu:
-          "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
+          "専用 GPU は検出されませんでした。モデルは上に表示されている CPU とシステムメモリを使います。このメモリは内蔵 GPU と共有される場合があります。",
         noUsableGpu: "このマシンの GPU はいずれも PyTorch から利用できません。",
         mismatchCpuBuild:
           "PyTorch は CPU 専用ビルド ({version}) のため、下の GPU は利用できません。インストールを修復すると GPU サポートが復元されます。",
