@@ -214,6 +214,15 @@ export class PcmRecorder implements SegmentRecorder {
     for (const entry of listeners) entry.listener(stopEvent);
   }
 
+  /** Ends the recording without encoding it or firing any event. */
+  discard(): void {
+    if (this.recordingState === "inactive") return;
+    this.recordingState = "inactive";
+    this.chunks.length = 0;
+    this.frames = 0;
+    this.teardown();
+  }
+
   private teardown(): void {
     this.source.disconnect();
     this.processor.disconnect();

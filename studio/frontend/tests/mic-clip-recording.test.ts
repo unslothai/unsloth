@@ -28,7 +28,14 @@ class FakeRecorder {
   start() {
     this.state = "recording";
   }
+  stopCalls = 0;
+  discarded = false;
+  discard() {
+    this.state = "inactive";
+    this.discarded = true;
+  }
   stop() {
+    this.stopCalls += 1;
     this.state = "inactive";
     const data = new Blob([new Uint8Array(64)], { type: "audio/wav" });
     for (const listener of this.data) listener({ data });
@@ -112,5 +119,7 @@ test("cancel discards the recording", async () => {
   session.cancel();
   await flush();
   assert.equal(clips.length, 0);
+  assert.equal(lastRecorder?.stopCalls, 0);
+  assert.equal(lastRecorder?.discarded, true);
   assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
 });
