@@ -2349,6 +2349,72 @@ def test_client_sends_the_budget_and_the_servers_share():
     assert v25._server_reserved_mib("cpu") is None
 
 
+@pytest.mark.parametrize("resident", [False, True])
+def test_client_frees_the_servers_cached_blocks_before_a_non_resident_encode(monkeypatch, resident):
+    """Only a non-resident cache miss releases the server's cached blocks, before its reservation is sent."""
+    import torch
+
+    events = []
+    state = {"reserved": 9000 << 20}
+
+    def empty_cache():
+        events.append("empty_cache")
+        state["reserved"] = 6000 << 20
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "empty_cache", empty_cache)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: state["reserved"])
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cuda:0",
+        dtype = "bfloat16",
+        resident = resident,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    sent = []
+
+    def fake_put(msg):
+        events.append("put")
+        sent.append(msg)
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
+
+    client._cmd.put = fake_put
+    client.encode(["p"], 2)
+    client.encode(["p"], 2)
+    if resident:
+        assert events == ["put"] and sent[0]["server_reserved_mib"] == 9000
+    else:
+        assert events == ["empty_cache", "put"] and sent[0]["server_reserved_mib"] == 6000
+
+
+def test_release_cached_device_memory_skips_hosts_without_a_card(monkeypatch):
+    import torch
+
+    calls = []
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: calls.append("cuda"))
+    for device in ("cpu", "mps", None, ""):
+        v25._release_cached_device_memory(device)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    v25._release_cached_device_memory("cuda:0")
+    assert calls == []
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    v25._release_cached_device_memory("cuda:0")
+    assert calls == ["cuda"]
+
+
 # ── the encoder worker spawn consults the shutdown latch ─────────────────────
 class _FakeEncoderProc:
     def __init__(self, *args, **kwargs):
