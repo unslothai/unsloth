@@ -266,6 +266,83 @@ def test_batch_split_skips_are_recorded_and_stay_exact():
     assert "unknown inputs" in router.stats["batch_split_skip"]
 
 
+class Lumina2Transformer2DModel(torch.nn.Module):
+    """Named like diffusers' Lumina 2 class: per-sample caption masks ride along dim 0."""
+
+    def __init__(self):
+        super().__init__()
+        self.x = torch.nn.Linear(8, 8)
+        self.t = torch.nn.Linear(6, 8)
+        self.calls = []
+
+    def forward(
+        self,
+        hidden_states,
+        timestep,
+        encoder_hidden_states,
+        encoder_attention_mask,
+        attention_kwargs = None,
+        return_dict = True,
+    ):
+        self.calls.append(int(hidden_states.shape[0]))
+        mask = encoder_attention_mask[:, :, None].to(encoder_hidden_states.dtype)
+        cap = (self.t(encoder_hidden_states) * mask).sum(1, keepdim = True) / mask.sum(
+            1, keepdim = True
+        )
+        h = self.x(hidden_states) * timestep[:, None, None] + cap
+        if attention_kwargs:
+            h = h * float(attention_kwargs.get("scale", 1.0))
+        return (h,) if not return_dict else type("Out", (), {"sample": h})()
+
+
+def _lumina_loop(model, batch, steps, **extra):
+    g = torch.Generator().manual_seed(9)
+    latents = torch.randn(batch, 16, 8, generator = g)
+    emb = torch.randn(batch, 7, 6, generator = g)
+    mask = torch.zeros(batch, 7, dtype = torch.bool)
+    for i in range(batch):
+        mask[i, : 3 + i % 4] = True  # a different caption length per sample
+    for i in range(steps):
+        t = torch.full((batch,), 1.0 - i / steps)
+        out = model(
+            hidden_states = latents,
+            timestep = t,
+            encoder_hidden_states = emb,
+            encoder_attention_mask = mask,
+            return_dict = False,
+            **extra,
+        )[0]
+        latents = latents - 0.1 * out
+    return latents
+
+
+def test_lumina2_batch_splits_with_per_sample_masks_and_matches_one_card():
+    torch.manual_seed(0)
+    ref = _lumina_loop(Lumina2Transformer2DModel(), 4, 4)
+    torch.manual_seed(0)
+    model = Lumina2Transformer2DModel()
+    router, built = _router(model)
+    out = _lumina_loop(model, 4, 4)
+    torch.testing.assert_close(out, ref, rtol = 1e-5, atol = 1e-6)
+    assert router.stats["batch_splits"] == 3 and len(built) == 1
+    assert sorted(set(model.calls[1:])) == [2]
+
+
+def test_lumina2_attention_kwargs_and_kill_switch_stay_whole(monkeypatch):
+    torch.manual_seed(0)
+    model = Lumina2Transformer2DModel()
+    router, built = _router(model)
+    _lumina_loop(model, 2, 3, attention_kwargs = {"scale": 0.5})
+    assert router.stats["batch_splits"] == 0 and not built
+    assert "unknown inputs" in router.stats["batch_split_skip"]
+    monkeypatch.setenv(mg.BATCH_SPLIT_ENV, "0")
+    torch.manual_seed(0)
+    model = Lumina2Transformer2DModel()
+    router, built = _router(model)
+    _lumina_loop(model, 2, 3)
+    assert router.stats["batch_splits"] == 0 and not built
+
+
 # --- LoRA weight-only change: mirror the scales onto the replica instead of dropping it ---------------------------
 
 

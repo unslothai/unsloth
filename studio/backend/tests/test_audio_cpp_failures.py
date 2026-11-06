@@ -138,9 +138,83 @@ def test_estimate_uses_the_measured_family_profile():
     assert af.estimate_resident_gb(int(0.1765 * gb), "kokoro_tts") == 3.68 > 2.7
     assert af.estimate_resident_gb(int(2.7521 * gb), "voxcpm2") == 10.75 > 9.7
     assert af.estimate_resident_gb(int(4.4445 * gb), "voxcpm2") == 14.48 > 13.3
-    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): 240 s cover peaks at 11.2 GB / 14.7 GB.
-    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.16 > 11.2
-    assert af.estimate_resident_gb(10090406336, "ace_step") == 15.8 > 14.7
+    # ACE-Step1.5 turbo Q8_0 / BF16 (Hub bytes): a 240 s cover peaks at 11.22 / 15.31 GiB.
+    assert af.estimate_resident_gb(6185468096, "ace_step") == 12.17 > 11.22 + 0.9
+    assert af.estimate_resident_gb(10090406336, "ace_step") == 16.36 > 15.31 + 0.9
+
+
+@pytest.mark.parametrize(
+    "family, size_bytes, peak_gib, expected",
+    [
+        ("stable_audio", 1683576608, 2.24, 3.47),
+        ("stable_audio", 2358473088, 2.80, 4.60),
+        ("stable_audio", 3582601408, 5.34, 6.66),
+        ("stable_audio", 5834365856, 9.48, 10.43),
+        ("midashenglm_gen", 3381370752, 4.42, 5.40),
+        ("heartmula", 7659762592, 19.58, 20.53),
+    ],
+)
+def test_music_profiles_cover_their_measured_peak(family, size_bytes, peak_gib, expected):
+    estimate = af.estimate_resident_gb(size_bytes, family)
+    assert estimate == expected and estimate >= peak_gib + 0.9
+
+
+# YuE2 package bytes on the Hub (model + VAE + sidecars): Q4_0, Q8_0, BF16.
+YUE2_BYTES = (2933424181, 4531978293, 7529267253)
+MEASURED = (7.73, 9.51, 12.86)
+GENERIC = (8.33, 12.05, 19.03)
+
+
+def _cards(
+    monkeypatch,
+    *answers,
+    driver = True,
+):
+    from utils.hardware import nvidia
+
+    queue = [answer for answer in answers for _ in YUE2_BYTES]
+    monkeypatch.setattr(nvidia, "get_compute_capabilities", lambda: dict(queue.pop(0)))
+    monkeypatch.setattr(nvidia, "has_nvidia_driver", lambda: driver)
+
+
+def _yue2():
+    return tuple(af.estimate_resident_gb(size, "yue2") for size in YUE2_BYTES)
+
+
+@pytest.mark.parametrize(
+    "capabilities, driver, expected",
+    [
+        ({0: (8, 6)}, True, MEASURED),
+        ({0: (8, 9)}, True, MEASURED),
+        ({0: (12, 0)}, True, MEASURED),
+        ({}, False, MEASURED),
+        ({0: (7, 5)}, True, GENERIC),
+        ({0: (8, 9), 1: (7, 5)}, True, GENERIC),
+        ({}, True, GENERIC),
+    ],
+)
+def test_yue2_uses_its_profile_unless_a_pre_ampere_nvidia_card_may_be_present(
+    monkeypatch, capabilities, driver, expected
+):
+    _cards(monkeypatch, capabilities, driver = driver)
+    assert _yue2() == expected
+
+
+@pytest.mark.parametrize(
+    "smi, procfs_gpus, expected",
+    [(None, 0, False), ("/usr/bin/nvidia-smi", 0, True), (None, 1, True)],
+)
+def test_an_nvidia_host_is_told_from_one_without_nvidia(monkeypatch, smi, procfs_gpus, expected):
+    from utils.hardware import nvidia
+
+    monkeypatch.setattr(nvidia.shutil, "which", lambda name: smi)
+    monkeypatch.setattr(nvidia, "_linux_nvidia_procfs_gpu_count", lambda: procfs_gpus)
+    assert nvidia.has_nvidia_driver() is expected
+
+
+def test_the_yue2_estimate_follows_the_current_inventory(monkeypatch):
+    _cards(monkeypatch, {0: (8, 6)}, {0: (8, 6), 1: (7, 5)}, {0: (8, 6)})
+    assert (_yue2(), _yue2(), _yue2()) == (MEASURED, GENERIC, MEASURED)
 
 
 def test_past_the_measured_sizes_the_estimate_never_drops_below_either_profile():
@@ -201,6 +275,11 @@ def test_placement_refusal_states_the_estimate_and_the_free_memory(monkeypatch):
     assert "It needs about 11.5 GB of GPU memory while running. Free GPU memory," in unknown.message
     bare = af.classify_audio_cpp_failure(text, model = model)
     assert bare.message.startswith("No single GPU has enough free memory for Model M. Free GPU")
+    close = af.classify_audio_cpp_failure(text, model = model, free_gb = 9.5, required_gb = 9.51)
+    assert (
+        "It needs about 9.51 GB of GPU memory while running, and the most free on one GPU is 9.50 GB."
+        in close.message
+    )
 
 
 def test_oom_lists_smaller_variants_and_offload_options(monkeypatch):

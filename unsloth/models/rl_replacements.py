@@ -1664,6 +1664,28 @@ def _unsloth_grpo_autocast_forced_float32(self):
     return forced
 
 
+def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
+    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
+    recurrences mix packed rows (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed
+    self-verify. Zoo's grad PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    try:
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
+            return
+        unwrapped._unsloth_packing_boundary_checked = True
+        from unsloth.utils.packing import packing_boundary_blocker
+
+        config = getattr(unwrapped, "config", None)
+        blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+    except Exception:
+        return
+    if blocker is None:
+        return
+    unwrapped._unsloth_seq_packing_nograd_ok = False
+    unwrapped._unsloth_seq_packing_grad_ok = False
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True
+
+
 def _unsloth_grpo_autocast(self):
     """Decide the GRPO autocast once and latch it on the trainer. ACCELERATE_MIXED_PRECISION is process wide, so a trainer built later but run first would hand this trainer its precision; args belongs to this trainer."""
     if not hasattr(self, "_autocast_enabled"):
@@ -3698,6 +3720,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 vision_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            _unsloth_grpo_refuse_boundary_blind_packing(self, model)
 
             from unsloth_zoo.rl_replacements import (
                 chunked_hidden_states_selective_log_softmax,
@@ -4956,6 +4979,7 @@ UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
@@ -5075,6 +5099,8 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
+        # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
+        _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
             # verl's dual-clip default (clip_ratio_c = 3.0).
