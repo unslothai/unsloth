@@ -154,6 +154,10 @@ test("an initialism before a lowercase word stays in its sentence", () => {
     "See e.g. the docs.",
     "Then run it.",
   ]);
+  assert.deepEqual(speechText.splitIntoSentences("See e.g., the docs. In the U.S., prices rose."), [
+    "See e.g., the docs.",
+    "In the U.S., prices rose.",
+  ]);
   // A capital after one is a real boundary.
   assert.deepEqual(speechText.splitIntoSentences("Born in the U.S. He moved later."), [
     "Born in the U.S.",
