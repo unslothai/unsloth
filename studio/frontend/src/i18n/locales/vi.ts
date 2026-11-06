@@ -206,12 +206,16 @@ export const vi = {
         history: "Đang đọc lịch sử duyệt web của bạn",
         move: "Đang di chuyển chuột",
         drag: "Đang kéo",
+        tabs: "Đang xem các thẻ",
+        readFile: "Đang đọc tệp",
+        editFile: "Đang chỉnh sửa tệp",
       },
     },
     title: "Trình duyệt",
     tabs: "Thẻ trình duyệt",
     newTab: "Thẻ mới",
     newTabFullView: "Thẻ mới ở chế độ toàn màn hình",
+    newTabFloating: "Tab mới trong cửa sổ nổi",
     closeTab: "Đóng thẻ",
     close: "Đóng trình duyệt",
     show: "Hiển thị trình duyệt",
@@ -361,6 +365,8 @@ export const vi = {
     askBeforeDownloadingSetting: "Hỏi trước khi tải xuống",
     askBeforeDownloadingSettingDescription:
       "Xác nhận tệp từ trang web trước khi lưu.",
+    askBeforeProgramDownloadsSetting: "Hỏi trước khi tải xuống chương trình",
+    askBeforeProgramDownloadsSettingDescription: "Xác nhận các tệp có thể chạy chương trình, như .exe hoặc .dmg, ngay cả khi các lượt tải xuống khác không hỏi.",
     downloadSitesSetting: "Quyền tải xuống của trang web",
     downloadSitesSettingDescription:
       "Các trang web bạn đã chọn luôn cho phép hoặc luôn chặn tải xuống.",
@@ -369,6 +375,7 @@ export const vi = {
     downloadSitesFor: "Tải xuống từ {host}",
     downloadSitesRemove: "Quên {host}",
     downloadSiteAllow: "Luôn cho phép",
+    downloadSiteAllowAll: "Cho phép cả chương trình",
     downloadSiteBlock: "Luôn chặn",
     downloadPrompt: {
       title: "Tải xuống tệp này?",
@@ -376,6 +383,9 @@ export const vi = {
       dangerous:
         "Những tệp như thế này có thể chạy chương trình trên máy tính của bạn. Chỉ tải xuống nếu bạn tin tưởng {host}.",
       remember: "Ghi nhớ cho lần sau",
+      once: "Hỏi vào lần sau",
+      site: "Luôn cho {host}",
+      all: "Luôn tải xuống, từ mọi trang",
       cancel: "Hủy",
       download: "Tải xuống",
       blocked: "Đã chặn một lượt tải xuống từ {host}.",
@@ -424,6 +434,12 @@ export const vi = {
       openChat: "Mở ở chế độ toàn màn hình",
       moveLeft: "Chuyển sang ngăn trái",
       moveRight: "Chuyển sang ngăn phải",
+    },
+    floating: {
+      enter: "Cửa sổ nổi",
+      dock: "Ghim sang bên",
+      close: "Đóng cửa sổ nổi",
+      handle: "Di chuyển cửa sổ. Phím mũi tên di chuyển; Shift và phím mũi tên đổi kích thước.",
     },
     annotate: {
       countOne: "1 chú thích",
@@ -877,6 +893,8 @@ export const vi = {
     unifiedTightFit: "Sát giới hạn",
     unifiedTightFitHint:
       "Có thể được nạp với ngữ cảnh ngắn hơn hoặc chạy chậm hơn trên máy Mac này.",
+    residentToRun: "để chạy",
+    residentToRunHint: "Bộ nhớ GPU mà bước kiểm tra tải yêu cầu khi chạy",
     onDevice: "Trên thiết bị",
     huggingFace: "Hugging Face",
     retry: "Thử lại",
@@ -1197,6 +1215,9 @@ export const vi = {
         "Mỗi dòng một mô hình, ví dụ unsloth/Qwen3-4B-GGUF, hoặc unsloth/* cho cả một tổ chức. Để trống để cho phép mọi mô hình.",
       modelAccessSave: "Lưu",
       modelAccessLimited: "Quyền truy cập mô hình bị giới hạn",
+      rename: "Đổi tên",
+      renameTitle: "Đổi tên {username}",
+      renameDescription: "Chọn tên mà tài khoản này dùng để đăng nhập. Các cuộc trò chuyện, tệp và khóa API vẫn ở trong tài khoản. Người dùng sẽ bị đăng xuất và đăng nhập lại bằng tên mới cùng mật khẩu hiện tại.",
       empty: "Chưa có tài khoản nào khác",
       setupCode: "Mã thiết lập",
       setupFor: "Mã thiết lập cho {username}",
@@ -3238,9 +3259,8 @@ export const vi = {
         "Giữ nút Sửa câu trả lời trên mọi câu trả lời, thay vì trong menu Thêm.",
       turnNavigation: "Điều hướng lượt",
       turnNavigationDescription: "Hiển thị tin nhắn của bạn thành một thanh ở mép trái các cuộc trò chuyện dài. Di chuột để xem trước, nhấp để chuyển đến lượt đó và đánh dấu để tìm lại.",
-      composerAtBottom: "Khung soạn thảo ở dưới cùng",
-      composerAtBottomDescription:
-        "Bắt đầu cuộc trò chuyện mới với khung soạn thảo ở cuối trang thay vì ở giữa.",
+      composerPosition: "Vị trí khung soạn thảo",
+      composerPositionDescription: "Vị trí của khung soạn thảo khi bắt đầu cuộc trò chuyện mới, từ đầu trang xuống tận cuối trang.",
       projectAttachments: "Chia sẻ tệp trong cả dự án",
       projectAttachmentsDescription:
         "Cho phép mọi cuộc trò chuyện trong dự án dùng các tệp đính kèm mới.",
@@ -4232,8 +4252,6 @@ export const vi = {
             "Tập dữ liệu này có vẻ là hình ảnh, loại không thể truyền trực tuyến.",
           audioDataset:
             "Tập dữ liệu này có vẻ là âm thanh, loại không thể truyền trực tuyến.",
-          appleSilicon:
-            "Chưa hỗ trợ truyền trực tuyến trên Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "chỉ phần trả lời của trợ lý",
@@ -5875,7 +5893,7 @@ export const vi = {
     skippedVersion: "Tạm thời bỏ qua {component} {version}",
     skippedUpdate: "Tạm thời bỏ qua bản cập nhật {component}",
     skippedUpdates: "Tạm thời bỏ qua các bản cập nhật {components}",
-    vulkanFaster: "Vulkan nhanh hơn ROCM trên 10%. Không cần khởi động lại",
+    vulkanFaster: "Nhanh hơn trên 10%",
     noRestart: "Không cần khởi động lại",
     downloadSize: "Dung lượng tải xuống {size}",
     backendChange: "Backend {change}",
@@ -5884,8 +5902,8 @@ export const vi = {
     installingPhase: "Đang cài đặt {component} ({current} trên {total})...",
     installingCount: "Đang cài đặt {count} bản cập nhật...",
     bundleTitle: "{count} bản cập nhật runtime",
-    newBackend: "Backend {component} mới",
-    newUpdate: "Bản cập nhật {component} mới",
+    newBackend: "Backend runtime mới",
+    newUpdate: "Bản cập nhật runtime mới",
     hideUpdate: "Ẩn bản cập nhật {component} cho đến khi mở lại Unsloth",
     hideUpdates: "Ẩn các bản cập nhật {components} cho đến khi mở lại Unsloth",
     whatsNew: "Có gì mới",

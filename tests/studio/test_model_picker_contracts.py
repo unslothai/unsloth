@@ -63,6 +63,19 @@ def _call_arguments(text: str, callee: str) -> list[str]:
     return calls
 
 
+def _variant_select_meta(picker: str) -> str:
+    """The meta a GGUF quant row builds; its click and its gear both pass it on."""
+    meta = re.search(r"const variantSelectMeta = useCallback\(.*?\n  \);", picker, re.S)
+    assert meta, "variantSelectMeta not found"
+    assert (
+        "onClick={() => onSelect(repoId, selectMeta)}" in picker
+    ), "the quant row no longer loads from the shared meta"
+    assert (
+        "onConfigure={() => onConfigure(repoId, selectMeta)}" in picker
+    ), "the quant gear no longer opens with the shared meta"
+    return meta.group(0)
+
+
 def _read_backend(rel: str) -> str:
     path = WORKDIR / "studio" / "backend" / rel
     assert path.exists(), f"missing backend source file: {path}"
@@ -606,7 +619,7 @@ def test_gguf_vision_capability_is_threaded_through_deferred_chat_load():
     picker = _read("features/model-picker/components/model-selector/pickers.tsx")
     assert "const variantVisionHint = hasVision === false ? false : undefined;" in picker
     assert "hasVision: normalizeGgufVisionCapability(res?.has_vision)," in picker
-    assert picker.count("isVision: variantVisionHint") >= 2
+    assert "isVision: variantVisionHint," in _variant_select_meta(picker)
     assert "variantVisionHint," in picker
     assert "visionByRepo: ReadonlyMap<string, boolean>" in picker
     assert "pinnedQuantValidation.visionByRepo.get(entry.repoId) === false" in picker
@@ -665,11 +678,10 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     assert downloaded_pins == [
         "isDownloaded"
     ], "the sole-quant row must carry the pin only after that quant is known complete"
-    block = re.search(r"onConfigure\(repoId, \{.*?\n\s*\}", picker, re.S)
-    assert block and "loadId," in block.group(0), "the GGUF gear drops the pin"
-    # A quant outside the pinned snapshot lands in a different one.
-    block = re.search(r"onSelect\(repoId, \{.*?\n\s*\}", picker, re.S)
-    assert block and "loadId: downloaded === true ? loadId : undefined," in block.group(0)
+    # The row and its gear share one meta. A quant outside the pinned snapshot lands in a different one.
+    assert "loadId: downloaded === true ? loadId : undefined," in _variant_select_meta(
+        picker
+    ), "the GGUF row drops the pin"
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
     assert "...(localSource ? { localPath: localSource } : {})" in call.group(
@@ -1480,12 +1492,10 @@ def test_variant_expander_forwards_the_gguf_filename():
     """A quant pick must carry the exact .gguf filename, since diffusion pages load by filename and
     cannot map a quant label back; without it hub GGUF picks silently did nothing."""
     src = _read("features/model-picker/components/model-selector/pickers.tsx")
-    handler = re.search(r"const handleVariantClick = useCallback\(.*?\n  \);", src, re.S)
-    assert handler, "handleVariantClick not found"
-    assert "ggufFilename: filename," in handler.group(0)
+    assert "ggufFilename: filename," in _variant_select_meta(src)
     # Matched structurally, since prettier wraps the call once it grows.
-    call = re.search(r"handleVariantClick\(([^)]*)\)", src)
-    assert call, "handleVariantClick call site not found"
+    call = re.search(r"variantSelectMeta\(([^)]*)\)", src)
+    assert call, "variantSelectMeta call site not found"
     args = [a.strip() for a in call.group(1).split(",") if a.strip()]
     assert args[:2] == ["v.quant", "v.filename"], args
 

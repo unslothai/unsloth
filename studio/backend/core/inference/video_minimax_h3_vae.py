@@ -3,7 +3,8 @@
 
 """Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
 and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
-int8_decoder is opt-in via UNSLOTH_H3_VAE_INT8=1; CUDA+Triton only, else stock."""
+int8_decoder runs on the default / max tiers (UNSLOTH_H3_VAE_INT8=0 keeps it float, =1 adds it to eager);
+CUDA+Triton only, else stock."""
 
 from __future__ import annotations
 
@@ -67,7 +68,8 @@ def plan_h3_vae_levers(
         if mode != _SPEED_EAGER:
             levers.append(LEVER_FP16_ENCODER)
     levers += [LEVER_FUSED_DECODER, LEVER_TILE_BATCH]
-    if _env(H3_VAE_INT8_ENV) in _TRUE:
+    int8 = _env(H3_VAE_INT8_ENV)
+    if int8 in _TRUE or (int8 not in _FALSE and mode != _SPEED_EAGER):
         levers.append(LEVER_INT8_DECODER)
     if mode == _SPEED_MAX and consumer_gpu and _env(FP16_ACCUM_DISABLE_ENV) not in _TRUE:
         levers.append(LEVER_FP16_ACCUM)
@@ -1479,6 +1481,8 @@ def settle_h3_vae_fallback(state: Any, pipe: Any) -> None:
             for lever, part in ((LEVER_FUSED_ENCODER, "encoder"), (LEVER_FUSED_DECODER, "decoder"))
             if getattr(getattr(vae, part, None), "_unsloth_fast_failed", False)
         ]
+        if getattr(vae, "__dict__", {}).get("_unsloth_h3_sol_vae_failed"):
+            failed.append("h3_sol_vae")
         optims = tuple(getattr(state, "speed_optims", None) or ())
         updated = tuple(o for o in optims if o not in failed)
         if updated != optims:

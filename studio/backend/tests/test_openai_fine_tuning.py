@@ -1275,6 +1275,103 @@ def test_listing_pages_through_a_batch_that_is_still_loading(batch_queue):
     assert sorted(seen) == sorted(j.id for j in jobs) and len(seen) == 3
 
 
+def test_a_job_that_waited_for_a_batch_keeps_its_place_once_it_starts(batch_queue, monkeypatch):
+    client, _calls, _live, gpu, _backend = batch_queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+
+    def history_row(run_id, started_at):
+        studio_db.create_run(
+            id = run_id,
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_name = "chats.jsonl",
+            config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+            started_at = started_at,
+            total_steps = 4,
+        )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = []
+        for suffix in "abc":
+            clock["t"] += 10
+            extra = {"use_dora": True} if suffix == "b" else {}
+            jobs.append(await _create(client, uploaded.id, suffix = suffix, extra_body = extra))
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        for run_id in openai_fine_tuning._BATCHES["job_20261021_101500_batch000"]:
+            history_row(run_id, "2026-11-04T00:00:00+00:00")
+        await openai_fine_tuning._drain_once()
+        history_row("job_20261021_101500_ab12cd34", "2026-11-04T00:10:00+00:00")
+        seen, after = [j.id for j in first.data], first.data[-1].id
+        for _ in range(5):
+            page = await client.fine_tuning.jobs.list(limit = 1, after = after)
+            seen += [j.id for j in page.data]
+            if not page.has_more:
+                break
+            after = page.data[-1].id
+        return jobs, seen
+
+    jobs, seen = _run(flow())
+    assert seen[0] == jobs[2].id
+    assert sorted(seen) == sorted(j.id for j in jobs)
+
+
+def test_paging_stays_complete_when_a_loading_batch_gets_its_history_rows(batch_queue, monkeypatch):
+    client, _calls, live, gpu, backend = batch_queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+    starts = []
+
+    async def start_training_batch(requests, current_subject, via_api_key):
+        backend.current_job_id = f"job_20261021_10150{len(starts)}_batch"
+        run_ids = [f"{backend.current_job_id}_member{i}" for i in range(len(requests))]
+        starts.append(run_ids)
+        backend.running = list(run_ids)
+        live["status"] = _Status(backend.current_job_id, "loading_model")
+        return [
+            TrainingJobResponse(job_id = run_id, status = "queued", message = "queued")
+            for run_id in run_ids
+        ]
+
+    monkeypatch.setattr(training_routes, "start_training_batch", start_training_batch)
+
+    def history_rows(run_ids, started_at):
+        for run_id in run_ids:
+            studio_db.create_run(
+                id = run_id,
+                model_name = "unsloth/Qwen3-0.6B",
+                dataset_name = "chats.jsonl",
+                config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+                started_at = started_at,
+                total_steps = 4,
+            )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = []
+        for suffix in "abcd":
+            clock["t"] += 10
+            model = "unsloth/Qwen3-1.7B" if suffix in "bd" else "unsloth/Qwen3-0.6B"
+            jobs.append(
+                await client.fine_tuning.jobs.create(
+                    model = model, training_file = uploaded.id, suffix = suffix
+                )
+            )
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        history_rows(starts[0], "2026-11-04T00:00:00+00:00")
+        await openai_fine_tuning._drain_once()
+        first = await client.fine_tuning.jobs.list(limit = 2)
+        history_rows(starts[1], "2026-11-04T00:10:00+00:00")
+        rest = await client.fine_tuning.jobs.list(limit = 10, after = first.data[-1].id)
+        return jobs, [j.id for j in first.data] + [j.id for j in rest.data]
+
+    jobs, seen = _run(flow())
+    assert seen == [jobs[i].id for i in (3, 2, 1, 0)]
+
+
 @pytest.mark.parametrize(
     "model_kind",
     [
@@ -1758,3 +1855,233 @@ def test_a_job_cancelled_during_the_batch_model_probe_never_starts(
     assert "ab"[cancelled] not in started
     assert statuses[cancelled] == "cancelled"
     assert calls["stop"] == []
+
+
+@pytest.mark.parametrize("persisted", [False, True])
+def test_a_cancelled_queued_job_is_still_listed_after_a_newer_job_starts(
+    queue, monkeypatch, tmp_path, persisted
+):
+    client, _calls, _live, gpu = queue
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        monkeypatch.setattr(openai_fine_tuning, "_now", lambda: 1_700_000_000)
+        old = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.cancel(old.id)
+        before = await client.fine_tuning.jobs.list()
+        gpu["busy"] = False
+        newer = await _create(client, uploaded.id)
+        if persisted:
+            _finished_run(tmp_path, tmp_path / "chats.jsonl")
+        after = [job.id async for job in client.fine_tuning.jobs.list(limit = 1)]
+        retrieved = await client.fine_tuning.jobs.retrieve(old.id)
+        return old, newer, before, after, retrieved
+
+    old, newer, before, after, retrieved = _run(flow())
+    assert [(job.id, job.status) for job in before.data] == [(old.id, "cancelled")]
+    assert retrieved.status == "cancelled"
+    assert after == [newer.id, old.id]
+
+
+def test_a_job_that_starts_during_a_list_request_is_listed_once(queue, monkeypatch):
+    client, _calls, live, gpu = queue
+    status_read = training_routes.get_training_status
+
+    async def start_mid_request(current_subject, via_api_key):
+        if openai_fine_tuning._QUEUE:
+            gpu["busy"] = False
+            await openai_fine_tuning._drain_once()
+        return await status_read(current_subject = current_subject, via_api_key = via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        job = await _create(client, uploaded.id)
+        monkeypatch.setattr(training_routes, "get_training_status", start_mid_request)
+        page = await client.fine_tuning.jobs.list(limit = 1)
+        return job, page
+
+    job, page = _run(flow())
+    assert [(j.id, j.status) for j in page.data] == [(job.id, "validating_files")]
+    assert page.has_more is False
+
+
+def test_a_cursor_on_a_job_that_starts_during_the_request_still_pages(queue, monkeypatch):
+    client, _calls, _live, gpu = queue
+    status_read = training_routes.get_training_status
+
+    def history_row(run_id, started_at):
+        studio_db.create_run(
+            id = run_id,
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_name = "chats.jsonl",
+            config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+            started_at = started_at,
+            total_steps = 4,
+        )
+
+    async def start_mid_request(current_subject, via_api_key):
+        if openai_fine_tuning._QUEUE:
+            gpu["busy"] = False
+            await openai_fine_tuning._drain_once()
+            history_row("job_20261021_101500_ab12cd34", "2026-11-04T00:00:00+00:00")
+        return await status_read(current_subject = current_subject, via_api_key = via_api_key)
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        history_row("job_20261001_000000_old", "2026-10-01T00:00:00+00:00")
+        job = await _create(client, uploaded.id)
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        monkeypatch.setattr(training_routes, "get_training_status", start_mid_request)
+        second = await client.fine_tuning.jobs.list(after = job.id, limit = 1)
+        return job, first, second
+
+    job, first, second = _run(flow())
+    assert [j.id for j in first.data] == [job.id]
+    assert [j.id for j in second.data] == ["ftjob_20261001_000000_old"]
+
+
+def test_a_newer_cancelled_job_is_not_skipped_when_an_older_one_starts_between_pages(
+    queue, monkeypatch
+):
+    client, _calls, _live, gpu = queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        older = await _create(client, uploaded.id)
+        clock["t"] += 10
+        newer = await _create(client, uploaded.id)
+        await client.fine_tuning.jobs.cancel(newer.id)
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        rest = [j.id async for j in client.fine_tuning.jobs.list(after = first.data[0].id, limit = 1)]
+        return older, newer, [j.id for j in first.data] + rest
+
+    older, newer, walked = _run(flow())
+    assert sorted(walked) == sorted([older.id, newer.id])
+
+
+def test_a_batch_lists_in_the_same_order_before_and_after_its_history_rows_exist(monkeypatch):
+    started = "2026-11-04T00:00:00+00:00"
+    monkeypatch.setattr(
+        openai_fine_tuning, "_RUN_ALIAS", {"run_a": "ftjob_qa", "run_c": "ftjob_qc"}
+    )
+    monkeypatch.setattr(openai_fine_tuning, "_ALIAS_CREATED", {"ftjob_qa": 100, "ftjob_qc": 300})
+    waiting = [{"id": "ftjob_qb", "created_at": 200}]
+    live = {
+        "run_c": {"id": "ftjob_qc", "created_at": 300},
+        "run_a": {"id": "ftjob_qa", "created_at": 100},
+    }
+
+    def order(rows, live_rows):
+        monkeypatch.setattr(openai_fine_tuning, "_iter_runs", lambda: iter(rows))
+        return [
+            openai_fine_tuning._RUN_ALIAS.get(row["id"], row["id"]) if is_run else row["id"]
+            for row, is_run in openai_fine_tuning._ordered_jobs(waiting, live_rows)
+        ]
+
+    persisted = [{"id": "run_a", "started_at": started}, {"id": "run_c", "started_at": started}]
+    assert order([], live) == order(persisted, {}) == ["ftjob_qc", "ftjob_qb", "ftjob_qa"]
+
+
+@pytest.mark.parametrize("step", [10, 0])
+@pytest.mark.parametrize("persisted", [False, True])
+def test_a_job_batched_past_keeps_its_place_when_it_starts_between_pages(
+    batch_queue, monkeypatch, persisted, step
+):
+    client, calls, live, gpu, _backend = batch_queue
+    clock = {"t": 1_700_000_000}
+    monkeypatch.setattr(openai_fine_tuning, "_now", lambda: clock["t"])
+
+    def history_row(run_id, started_at):
+        studio_db.create_run(
+            id = run_id,
+            model_name = "unsloth/Qwen3-0.6B",
+            dataset_name = "chats.jsonl",
+            config_json = json.dumps({"model_name": "unsloth/Qwen3-0.6B"}),
+            started_at = started_at,
+            total_steps = 4,
+        )
+
+    async def flow():
+        uploaded = await client.files.create(file = ("chats.jsonl", CHATS), purpose = "fine-tune")
+        jobs = []
+        for suffix, extra in (("a", {}), ("b", {"use_dora": True}), ("c", {})):
+            jobs.append(await _create(client, uploaded.id, suffix = suffix, extra_body = extra))
+            clock["t"] += step
+        gpu["busy"] = False
+        await openai_fine_tuning._drain_once()
+        for i in range(2):
+            history_row(f"job_20261021_101500_member0{i}", "2026-11-04T00:00:00+00:00")
+        first = await client.fine_tuning.jobs.list(limit = 1)
+        listed = [j.id async for j in client.fine_tuning.jobs.list(limit = 1)]
+        await openai_fine_tuning._drain_once()
+        if persisted:
+            history_row("job_20261021_101500_ab12cd34", "2026-11-04T01:00:00+00:00")
+            live["status"] = _Status()
+        after = first.data[0].id
+        rest = [j.id async for j in client.fine_tuning.jobs.list(after = after, limit = 1)]
+        return jobs, listed, [j.id for j in first.data] + rest
+
+    (a, b, c), listed, walked = _run(flow())
+    assert [r.project_name for r in calls["batch"][0][0]] == ["a", "c"]
+    assert [r.project_name for r in calls["start"]] == ["b"]
+    assert walked == listed and sorted(walked) == sorted([a.id, b.id, c.id])
+    if step:
+        assert walked == [c.id, b.id, a.id]
+
+
+def test_history_lists_by_creation_time_reading_only_what_a_page_needs(monkeypatch):
+    runs = [
+        {"id": f"run{i}", "started_at": f"2026-11-04T00:{i // 60:02d}:{i % 60:02d}+00:00"}
+        for i in range(300)
+    ]
+    created = {run["id"]: openai_fine_tuning._unix(run["started_at"]) for run in runs}
+    created["run_waited"] = created["run0"] - 1
+    history = [{"id": "run_waited", "started_at": "2026-11-04T01:00:00+00:00"}] + runs[::-1]
+    pulled = []
+
+    def iter_runs():
+        for run in history:
+            pulled.append(run["id"])
+            yield run
+
+    monkeypatch.setattr(openai_fine_tuning, "_iter_runs", iter_runs)
+    monkeypatch.setattr(openai_fine_tuning, "_RUN_ALIAS", {i: f"ftjob_q{i}" for i in created})
+    monkeypatch.setattr(
+        openai_fine_tuning, "_ALIAS_CREATED", {f"ftjob_q{i}": t for i, t in created.items()}
+    )
+
+    jobs = openai_fine_tuning._ordered_jobs([], {})
+    assert [next(jobs)[0]["id"] for _ in range(3)] == ["run299", "run298", "run297"]
+    assert len(pulled) <= 6
+    assert [row["id"] for row, _ in jobs][-2:] == ["run0", "run_waited"]
+
+
+def test_a_queue_poll_reads_one_history_row_when_the_backlog_waited(monkeypatch):
+    history = [
+        {"id": f"run{i}", "started_at": f"2026-11-04T{i // 60:02d}:{i % 60:02d}:00+00:00"}
+        for i in range(300, 0, -1)
+    ]
+    t0 = openai_fine_tuning._unix("2026-11-04T00:00:00+00:00")
+    pulled = []
+
+    def iter_runs():
+        for run in history:
+            pulled.append(run["id"])
+            yield run
+
+    monkeypatch.setattr(openai_fine_tuning, "_iter_runs", iter_runs)
+    monkeypatch.setattr(
+        openai_fine_tuning, "_RUN_ALIAS", {r["id"]: f"ftjob_{r['id']}" for r in history}
+    )
+    monkeypatch.setattr(
+        openai_fine_tuning, "_ALIAS_CREATED", {f"ftjob_{r['id']}": t0 for r in history}
+    )
+    pending = [{"id": f"ftjob_q{i}", "created_at": t0 + 20_000 - i} for i in range(2)]
+
+    page = openai_fine_tuning._list_job_page(pending, {}, None, None, 1, False)
+    assert [job["id"] for job in page["data"]] == ["ftjob_q0"]
+    assert page["has_more"] and pulled == ["run300"]

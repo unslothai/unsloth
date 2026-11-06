@@ -76,7 +76,7 @@ function load(
           options?: { beforeRetry?: () => void },
         ) => {
           // The Unsloth Studio engine first lists the loaded models; it is not a speech request.
-          if (input === "/v1/models") {
+          if (input === "/api/inference/loaded-models") {
             return { ok: true, json: async () => ({ data: [] }) };
           }
           if (beforeAuthenticatedRetry) {

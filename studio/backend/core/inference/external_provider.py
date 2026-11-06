@@ -34,7 +34,9 @@ from core.inference.openai_responses_shared import (
 )
 from core.inference.sse_control_frames import sanitize_provider_sse_line
 from models.providers import (
+    normalize_provider_extra_headers,
     normalize_provider_reasoning_config,
+    render_provider_extra_headers,
     validate_provider_reasoning_contract,
 )
 
@@ -1547,6 +1549,7 @@ class ExternalProviderClient:
         *,
         api_type: str = "chat_completions",
         reasoning_config: Optional[dict] = None,
+        extra_headers: Optional[dict] = None,
         managed_loopback: bool = False,
     ):
         self.provider_type = provider_type
@@ -1556,6 +1559,8 @@ class ExternalProviderClient:
             if provider_type == "custom"
             else None
         )
+        self.extra_headers = normalize_provider_extra_headers(extra_headers)
+        self._header_vars: dict[str, str] = {}
         validate_provider_reasoning_contract(provider_type, self.api_type, self.reasoning_config)
         from core.inference.providers import validate_provider_base_url
 
@@ -1580,6 +1585,26 @@ class ExternalProviderClient:
         # client lives for the whole Studio tool loop, so remember that capability result instead of paying for the
         # same guaranteed 400 on every provider turn.
         self._responses_compaction_rejected = False
+
+    def set_header_context(self, thread_id: Optional[str], model: Optional[str]) -> None:
+        """Values for ``{{VAR}}`` in extra headers; set before any request of a chat turn."""
+        session = (thread_id or "").strip()
+        self._header_vars = {
+            "CHAT_SESSION_ID": session,
+            "THREAD_ID": session,
+            "MODEL": model or "",
+            "PROVIDER_TYPE": self.provider_type,
+        }
+
+    def _credential_digest(self) -> str:
+        """Served-metadata cache identity: the key, plus the headers this request really sends."""
+        material = self.api_key or ""
+        headers = render_provider_extra_headers(
+            getattr(self, "extra_headers", None), getattr(self, "_header_vars", None)
+        )
+        if headers:
+            material = _json.dumps([material, headers], sort_keys = True)
+        return hashlib.sha256(material.encode()).hexdigest()
 
     def _auth_headers(self) -> dict[str, str]:
         """Build authentication headers using the provider's registry config."""
@@ -1619,6 +1644,14 @@ class ExternalProviderClient:
             headers[auth_header] = f"{auth_prefix}{self.api_key}"
         # Merge provider-specific extra headers (anthropic-version, OpenRouter attribution).
         headers.update(provider_info.get("extra_headers", {}))
+        custom = render_provider_extra_headers(
+            getattr(self, "extra_headers", {}), getattr(self, "_header_vars", {})
+        )
+        if custom:
+            # Header names are case-insensitive: an override replaces, never duplicates.
+            overridden = {name.lower() for name in custom}
+            headers = {k: v for k, v in headers.items() if k.lower() not in overridden}
+            headers.update(custom)
         return headers
 
     def _chat_headers(self, thread_id: Optional[str]) -> dict[str, str]:
@@ -1680,6 +1713,7 @@ class ExternalProviderClient:
         compaction_fallback: Optional[CompactionFallback] = None,
     ) -> AsyncGenerator[str, None]:
         """tool_choice none disables all tools so they cannot bill or leak; top_k and penalties are opt-in."""
+        self.set_header_context(thread_id, model)
         tool_choice_disabled = (
             isinstance(tool_choice, str) and tool_choice.strip().lower() == "none"
         )
@@ -6267,6 +6301,9 @@ class ExternalProviderClient:
                     done_emitted = False
                     reasoning_open = False
                     reasoning_emitted = False
+                    # .done / part.done repeat the deltas' text: show each part once, from whichever arrives first.
+                    reasoning_shown_parts: set = set()
+                    last_reasoning_part = None
                     # Give each function call its own delta.tool_calls[].index so parallel calls do not collide.
                     saw_function_call = False
                     function_call_index = 0
@@ -6660,7 +6697,16 @@ class ExternalProviderClient:
                                     last_openai_reasoning_replay_item = (
                                         _record_openai_reasoning_replay_item(item)
                                     )
-                                    summary_text = _extract_reasoning_text(item.get("summary"))
+                                    summary = item.get("summary")
+                                    summary_text = "\n\n".join(
+                                        filter(
+                                            None,
+                                            map(
+                                                _extract_reasoning_text,
+                                                summary if isinstance(summary, list) else [summary],
+                                            ),
+                                        )
+                                    )
                                     if summary_text and not reasoning_emitted:
                                         if not reasoning_open:
                                             summary_text = f"<think>{summary_text}"
@@ -6853,8 +6899,21 @@ class ExternalProviderClient:
                                 recorded_reasoning = _record_openai_reasoning_replay_item(event)
                                 if recorded_reasoning:
                                     last_openai_reasoning_replay_item = recorded_reasoning
-                                reasoning_delta = _extract_reasoning_text(event)
+                                reasoning_part = (
+                                    event.get("item_id"),
+                                    event.get("summary_index", event.get("content_index")),
+                                )
+                                is_delta = event_type.endswith(".delta")
+                                if not is_delta and reasoning_part in reasoning_shown_parts:
+                                    continue
+                                reasoning_delta = _extract_reasoning_text(
+                                    event if is_delta else (event.get("part") or event)
+                                )
                                 if reasoning_delta:
+                                    reasoning_shown_parts.add(reasoning_part)
+                                    if reasoning_open and reasoning_part != last_reasoning_part:
+                                        reasoning_delta = f"\n\n{reasoning_delta}"
+                                    last_reasoning_part = reasoning_part
                                     if not reasoning_open:
                                         reasoning_delta = f"<think>{reasoning_delta}"
                                         reasoning_open = True
@@ -7496,7 +7555,7 @@ class ExternalProviderClient:
         if self.provider_type != "vllm":
             return False
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest())
+        key = (self.base_url, self._credential_digest())
         cached = _served_versions.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7525,7 +7584,7 @@ class ExternalProviderClient:
         if self.provider_type not in _SERVED_WINDOW_PROVIDERS:
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_windows.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]
@@ -7551,7 +7610,7 @@ class ExternalProviderClient:
         if self.provider_type != "llama_cpp":
             return None
         now = time.monotonic()
-        key = (self.base_url, hashlib.sha256((self.api_key or "").encode()).hexdigest(), model)
+        key = (self.base_url, self._credential_digest(), model)
         cached = _served_templates.get(key)
         if cached is not None and cached[0] > now:
             return cached[1]

@@ -118,7 +118,9 @@ import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { diffusionRouteSearch } from "@/lib/diffusion-route-search";
 import {
   type GgufFitClass,
-  classifyGgufFitWithLookupTables,
+  audioCppCardGb,
+  audioCppRowFit,
+  classifyVariantFitOnCard,
   ggufVariantLookupTableBytes,
   requiredGgufMemoryGb,
 } from "@/lib/gguf-fit";
@@ -671,6 +673,9 @@ const CapabilityScope = createContext<readonly (keyof ModelCapabilities)[] | nul
  *  MLX host, where `marginal` means past the loader's unified budget rather than the VRAM Budget. */
 const UnifiedLoadBudget = createContext<number | null>(null);
 
+/** `audioCppCardGb` of the picker's load, which audio.cpp variants are judged on; 0 judges none. */
+const AudioCppCard = createContext(0);
+
 /** audio.cpp GGUFs load through the audio runtime, not under llama.cpp's Metal budget; Mac TTS
  *  GGUFs (Orpheus and the like) do load through llama.cpp, so the Audio task alone decides nothing. */
 function loadsOnAudioCpp(repoId: string): boolean {
@@ -680,16 +685,20 @@ function loadsOnAudioCpp(repoId: string): boolean {
 function PickerScopes({
   capabilityScope,
   unifiedLoadBudgetGb,
+  audioCppCardGb,
   children,
 }: {
   capabilityScope: readonly (keyof ModelCapabilities)[] | null;
   unifiedLoadBudgetGb: number | null;
+  audioCppCardGb: number;
   children: ReactNode;
 }) {
   return (
     <CapabilityScope.Provider value={capabilityScope}>
       <UnifiedLoadBudget.Provider value={unifiedLoadBudgetGb}>
-        {children}
+        <AudioCppCard.Provider value={audioCppCardGb}>
+          {children}
+        </AudioCppCard.Provider>
       </UnifiedLoadBudget.Provider>
     </CapabilityScope.Provider>
   );
@@ -975,6 +984,42 @@ function VramBadge({
 }
 
 const SIZE_PARTS_RE = /^(~?)([\d.]+)\s*([A-Za-z]+)$/;
+
+function residentGbLabel(gb: number): string {
+  return `${gb.toFixed(1)} GB`;
+}
+
+// Fixed widths ("99.9GB to run", "99.9GB") keep the estimate and fit mark aligned across rows.
+const RESIDENT_COLUMN = "mr-1.5 min-w-[13ch] text-right";
+const RESIDENT_SIZE_COLUMN = "min-w-[6ch] text-right";
+
+function ResidentText({
+  value,
+  className,
+}: {
+  value: string;
+  className?: string;
+}) {
+  const t = useT();
+  return (
+    <Tooltip delayDuration={0}>
+      <TooltipTrigger asChild={true}>
+        <span
+          className={cn(
+            "shrink-0 whitespace-nowrap font-mono text-ui-10 text-muted-foreground tabular-nums",
+            className,
+          )}
+        >
+          <SizeText value={value} />
+          <span className="ml-1 font-sans">{t("picker.residentToRun")}</span>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top" className="tooltip-compact">
+        {t("picker.residentToRunHint")}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function SizeText({ value }: { value: string }) {
   const parts = SIZE_PARTS_RE.exec(value);
@@ -1576,6 +1621,9 @@ function ModelRow({
               {text}
             </span>
           ))}
+          {parsed.resident ? (
+            <ResidentText value={parsed.resident} className="mr-1.5" />
+          ) : null}
           {/* GGUF repos hold several quants, so their size shows only once expanded. */}
           {alignMeta === "device" || showSize ? (
             <span
@@ -1972,6 +2020,7 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
   expander: DeviceRowExpanderProps;
 }) {
   const callbacks = useDeviceExpanderCallbacks(actions, optionKey);
+  const audioCardGb = useContext(AudioCppCard);
   const variant = sole.variant;
   const expectedBytes = ggufVariantExpectedBytes(variant);
   // Should never be partial, but if it is, state what is on disk rather than load a torn file.
@@ -2002,7 +2051,15 @@ const SoleQuantGgufDeviceRow = memo(function SoleQuantGgufDeviceRow({
               c.cache_path,
               ggufQuantDetailLabel(variant.quant),
             )}
-            meta={`GGUF · ${formatBytes(variant.size_bytes)}`}
+            meta={[
+              "GGUF",
+              formatBytes(variant.size_bytes),
+              variant.estimated_resident_gb && audioCardGb > 0
+                ? `${residentGbLabel(variant.estimated_resident_gb)} to run`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
             quantChip={ggufQuantChipLabel(variant.quant)}
             partial={isPartial}
             // Only for llama.cpp loads: diffusion GGUFs run on a different planner and the estimate would be wrong.
@@ -2800,7 +2857,8 @@ function GgufVariantExpander({
   // The prefix test misses marker-less relative dirs, so ask the listing.
   const checkpointIsLocal = isLocalPath || resolvedLocally;
 
-  const handleVariantClick = useCallback(
+  // The gear hands the config page this same meta, so its Load downloads or loads as the row does.
+  const variantSelectMeta = useCallback(
     // `filename` is required: the diffusion pages gate their GGUF branch on meta.ggufFilename.
     (
       quant: string,
@@ -2809,9 +2867,9 @@ function GgufVariantExpander({
       sizeBytes?: number,
       downloadPresentation?: ModelSelectorChangeMeta["downloadPresentation"],
       contextLength: number | null = nativeContext,
-    ) => {
+    ): ModelSelectorChangeMeta => {
       const isAvailable = isLocalPath || downloaded === true;
-      onSelect(repoId, {
+      return {
         source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
         isLora: false,
         // Only for a quant already in the pinned snapshot: a new download lands elsewhere.
@@ -2825,13 +2883,11 @@ function GgufVariantExpander({
         isGguf: variantsAreGguf,
         isVision: variantVisionHint,
         pipelineTag,
-      });
+      };
     },
     [
-      repoId,
       loadId,
       isLocalPath,
-      onSelect,
       sourceOverride,
       nativeContext,
       pipelineTag,
@@ -2877,10 +2933,12 @@ function GgufVariantExpander({
   );
 
   // One verdict per variant from the download footprint (incl. companions), so badge, order and star agree.
+  const audioCardGb = useContext(AudioCppCard);
+  const cardGb = anyBudgetGb ? audioCardGb : 0;
   const getVariantFit = useCallback(
     (variant: GgufVariantDetail): GgufFitClass =>
-      classifyGgufFitWithLookupTables(getGgufFit, variant),
-    [getGgufFit],
+      classifyVariantFitOnCard(getGgufFit, variant, cardGb),
+    [getGgufFit, cardGb],
   );
 
   const variantGroups = useMemo(
@@ -2901,12 +2959,12 @@ function GgufVariantExpander({
         continue;
       }
       const pick =
-        recommendedQuantForDevice(group.variants, getGgufFit, preferred) ??
+        recommendedQuantForDevice(group.variants, getGgufFit, preferred, cardGb) ??
         preferred;
       if (pick) recommended.set(group.key, pick.quant);
     }
     return recommended;
-  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit]);
+  }, [variantGroups, preferredByGroup, anyBudgetGb, budgetKnown, getGgufFit, cardGb]);
   // Keyed by presentation group while footprints bucket by dependency_key, so ask via the variant.
   const recommendedQuantForVariant = useMemo(() => {
     const byVariant = new Map<GgufVariantDetail, string>();
@@ -2962,6 +3020,16 @@ function GgufVariantExpander({
     () => h3PickerHasOnlyPrunedBuilds(displayVariants ?? []),
     [displayVariants],
   );
+  const variantHasMenu = (v: GgufVariantDetail): boolean =>
+    (v.downloaded === true || v.partial === true) &&
+    Boolean(
+      allowPin ||
+        (v.update_available && onUpdateVariant) ||
+        onDeleteVariant ||
+        !isLocalPath,
+    );
+  // Rows without a menu hold its slot, so every gear and size lines up with the downloaded rows.
+  const reserveMenuSlot = (displayVariants ?? []).some(variantHasMenu);
 
   // A diffusion GGUF's companion set is per family, not repo-wide; group by dependency_key so totals are right.
   const footprintVariants = useMemo(() => {
@@ -3145,6 +3213,7 @@ function GgufVariantExpander({
           effectiveRecommendedByGroup.get(group.key) === v.quant;
         const fit = getVariantFit(v);
         const oom = fit === "oom";
+        const residentGb = audioCardGb > 0 ? v.estimated_resident_gb : null;
         const expectedBytes = ggufVariantExpectedBytes(v);
         const variantContext = ggufVariantContextLength(v, nativeContext);
         // This row's own dependency group, never the listing's.
@@ -3154,21 +3223,20 @@ function GgufVariantExpander({
         const unusableLocal = isLocalPath && v.partial === true;
         const keyBase = `${repoId}:${v.filename}`;
         const variantOptionKey = makeModelOptionKey("gguf-variant", keyBase);
+        const selectMeta = variantSelectMeta(
+          v.quant,
+          v.filename,
+          v.downloaded,
+          expectedBytes,
+          pendingDrafterPresentation(v),
+          variantContext,
+        );
         const rowButton = (
           <button
             type="button"
             {...variantList.getOptionProps(variantOptionKey, false)}
             disabled={unusableLocal}
-            onClick={() =>
-              handleVariantClick(
-                v.quant,
-                v.filename,
-                v.downloaded,
-                expectedBytes,
-                pendingDrafterPresentation(v),
-                variantContext,
-              )
-            }
+            onClick={() => onSelect(repoId, selectMeta)}
             className={cn(
               "flex min-w-0 flex-1 items-center justify-between gap-2 rounded-full py-1 pl-2 pr-1.5 text-left text-sm transition-colors hover:bg-sidebar-accent focus-visible:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
               unusableLocal &&
@@ -3217,7 +3285,18 @@ function GgufVariantExpander({
                   diffusionLoad ? mediaGgufPickerStatus(fit) : fit
                 }
               />
-              <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
+              {residentGb ? (
+                <ResidentText
+                  value={residentGbLabel(residentGb)}
+                  className={RESIDENT_COLUMN}
+                />
+              ) : null}
+              <span
+                className={cn(
+                  "font-mono text-ui-10 text-muted-foreground tabular-nums",
+                  residentGb ? RESIDENT_SIZE_COLUMN : null,
+                )}
+              >
                 {companionBytes === null ? (
                   <SizeText value={formatBytes(v.size_bytes)} />
                 ) : (
@@ -3243,7 +3322,7 @@ function GgufVariantExpander({
               )}
             </div>
           ) : null,
-          <div key={v.filename} className="flex items-center">
+          <div key={v.filename} className="group/quant flex items-center">
             {/* Nested button triggers are not accessible. */}
             {companionBytes === null ? (
               rowButton
@@ -3258,108 +3337,101 @@ function GgufVariantExpander({
                 </TooltipContent>
               </Tooltip>
             )}
-            {v.downloaded && onConfigure && (
+            {/* Every quant, downloaded or not: settings are set before the download starts. */}
+            {!unusableLocal && onConfigure && (
               <ModelLoadSettingsAction
                 ariaLabel={`Inference settings for ${repoId} ${v.quant}`}
-                className="relative left-0.5"
-                onConfigure={() =>
-                  onConfigure(repoId, {
-                    source: sourceOverride ?? (isLocalPath ? "local" : "hub"),
-                    isLora: false,
-                    loadId,
-                    ggufVariant: v.quant,
-                    isDownloaded: true,
-                    expectedBytes,
-                    contextLength: variantContext,
-                    isGguf: variantsAreGguf,
-                    isVision: variantVisionHint,
-                  })
+                className={cn(
+                  "relative left-0.5",
+                  // Always shown once on device; otherwise only on row hover or focus.
+                  v.downloaded !== true &&
+                    "opacity-0 transition-opacity focus-visible:opacity-100 group-hover/quant:opacity-100 group-focus-within/quant:opacity-100 [@media(hover:none)]:opacity-100",
+                )}
+                onConfigure={() => onConfigure(repoId, selectMeta)}
+              />
+            )}
+            {!variantHasMenu(v) && reserveMenuSlot && (
+              <span className="size-5 shrink-0" aria-hidden={true} />
+            )}
+            {variantHasMenu(v) && (
+              <ModelRowMenu
+                ariaLabel={`More options for ${repoId} ${v.quant}`}
+                iconClassName="size-3"
+                cachePath={
+                  isLocalPath ? undefined : { repoId, variant: v.quant }
+                }
+                pin={
+                  allowPin && v.downloaded
+                    ? {
+                        pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
+                        pinLabel: "Pin",
+                        unpinLabel: "Unpin",
+                        onToggle: () => togglePinnedQuant(repoId, v.quant),
+                      }
+                    : undefined
+                }
+                update={
+                  v.update_available && onUpdateVariant
+                    ? {
+                        title: updateVariantTitle,
+                        description: renderUpdateVariantDescription?.(
+                          v.quant,
+                        ) ?? (
+                          <>
+                            This will update{" "}
+                            <span className="font-medium text-foreground">
+                              {repoId} ({v.quant})
+                            </span>
+                            {"."}
+                          </>
+                        ),
+                        repoId,
+                        variant: v.quant,
+                        disabled: updateDisabled,
+                        onConfirm: () =>
+                          onUpdateVariant(v.quant, expectedBytes),
+                        onUpdated: () => setRefreshKey((key) => key + 1),
+                      }
+                    : undefined
+                }
+                del={
+                  onDeleteVariant
+                    ? {
+                        title: deleteVariantTitle,
+                        impact: {
+                          repoId,
+                          variant: v.quant,
+                          cachePath: v.cache_ref ?? v.cache_path,
+                        },
+                        description: renderDeleteVariantDescription?.(
+                          v.quant,
+                        ) ?? (
+                          <>
+                            This will remove{" "}
+                            <span className="font-medium text-foreground">
+                              {repoId} ({v.quant})
+                            </span>{" "}
+                            from disk. You can re-download it later.
+                          </>
+                        ),
+                        successMessage:
+                          getDeleteVariantSuccessMessage?.(v.quant) ??
+                          `Deleted ${repoId} ${v.quant}`,
+                        disabled: deleteDisabled,
+                        onConfirm: async () => {
+                          await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
+                          if (isChatGgufTask(pipelineTag)) {
+                            await reconcileGgufPinsAfterDelete(repoId, hfToken);
+                          } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
+                            togglePinnedQuant(repoId, v.quant);
+                          }
+                          setRefreshKey((key) => key + 1);
+                        },
+                      }
+                    : undefined
                 }
               />
             )}
-            {(v.downloaded || v.partial === true) &&
-              (allowPin ||
-                (v.update_available && onUpdateVariant) ||
-                onDeleteVariant ||
-                !isLocalPath) && (
-                <ModelRowMenu
-                  ariaLabel={`More options for ${repoId} ${v.quant}`}
-                  iconClassName="size-3"
-                  cachePath={
-                    isLocalPath ? undefined : { repoId, variant: v.quant }
-                  }
-                  pin={
-                    allowPin && v.downloaded
-                      ? {
-                          pinned: pinnedKeys.includes(pinKey(repoId, v.quant)),
-                          pinLabel: "Pin",
-                          unpinLabel: "Unpin",
-                          onToggle: () => togglePinnedQuant(repoId, v.quant),
-                        }
-                      : undefined
-                  }
-                  update={
-                    v.update_available && onUpdateVariant
-                      ? {
-                          title: updateVariantTitle,
-                          description: renderUpdateVariantDescription?.(
-                            v.quant,
-                          ) ?? (
-                            <>
-                              This will update{" "}
-                              <span className="font-medium text-foreground">
-                                {repoId} ({v.quant})
-                              </span>
-                              {"."}
-                            </>
-                          ),
-                          repoId,
-                          variant: v.quant,
-                          disabled: updateDisabled,
-                          onConfirm: () =>
-                            onUpdateVariant(v.quant, expectedBytes),
-                          onUpdated: () => setRefreshKey((key) => key + 1),
-                        }
-                      : undefined
-                  }
-                  del={
-                    onDeleteVariant
-                      ? {
-                          title: deleteVariantTitle,
-                          impact: {
-                            repoId,
-                            variant: v.quant,
-                            cachePath: v.cache_ref ?? v.cache_path,
-                          },
-                          description: renderDeleteVariantDescription?.(
-                            v.quant,
-                          ) ?? (
-                            <>
-                              This will remove{" "}
-                              <span className="font-medium text-foreground">
-                                {repoId} ({v.quant})
-                              </span>{" "}
-                              from disk. You can re-download it later.
-                            </>
-                          ),
-                          successMessage:
-                            getDeleteVariantSuccessMessage?.(v.quant) ??
-                            `Deleted ${repoId} ${v.quant}`,
-                          disabled: deleteDisabled,
-                          onConfirm: async () => {
-                            await onDeleteVariant(v.quant, v.cache_ref ?? v.cache_path);
-                            if (isChatGgufTask(pipelineTag)) {
-                              await reconcileGgufPinsAfterDelete(repoId, hfToken);
-                            } else if (pinnedKeys.includes(pinKey(repoId, v.quant))) {
-                              togglePinnedQuant(repoId, v.quant);
-                            }
-                            setRefreshKey((key) => key + 1);
-                          },
-                        }
-                      : undefined
-                  }
-                />
-              )}
           </div>,
         ];
       })}
@@ -3753,6 +3825,7 @@ export function HubModelPicker({
   npu,
   rowFilter,
   moreModels,
+  cpuLoad = false,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -3793,11 +3866,17 @@ export function HubModelPicker({
   /** A second Recommended group under its own ListLabel; rows reuse the recommended renderer. */
   moreModels?: {
     label: string;
-    models: (ModelOption & { sizeBytes?: number | null })[];
+    models: (ModelOption & {
+      sizeBytes?: number | null;
+      estimatedResidentGb?: number | null;
+      smallestResidentGb?: number | null;
+    })[];
   };
+  cpuLoad?: boolean;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
+  const audioCardGb = audioCppCardGb(gpu, cpuLoad);
   // Threaded into every fit call, not only the quant rows.
   const budgetFraction = useVramBudgetFraction() ?? undefined;
   // FP8 / NVFP4 checkpoints every GPU here runs natively: chat lists them past the GGUF-only rule and
@@ -4700,6 +4779,7 @@ export function HubModelPicker({
         (catalogFit(r.id, pipelineBudget)?.fits ??
           hfModelFitsDevice(r, source, {
             budgetFraction,
+            audioCppCardGb: audioCardGb,
             // Not `&& r.isGguf`: on a task page a safetensors row is placed by the same backend, and this
             // rule IS the budget those rows had before the classifiers were merged.
             mediaLoad: diffusionLoad,
@@ -4754,6 +4834,7 @@ export function HubModelPicker({
     isTaskRuntimeSupported,
     gpu,
     inferenceGpu,
+    audioCardGb,
     isChatSupported,
     task,
     catalog,
@@ -4791,6 +4872,8 @@ export function HubModelPicker({
         likes: 0,
         isGguf: model.isGguf ?? true,
         estimatedSizeBytes: model.sizeBytes ?? undefined,
+        estimatedResidentGb: model.estimatedResidentGb ?? undefined,
+        smallestResidentGb: model.smallestResidentGb ?? undefined,
       }))
       .filter(
         (row) =>
@@ -4798,6 +4881,7 @@ export function HubModelPicker({
           cachedIdFor(row.id) !== null ||
           hfModelFitsDevice(row, source, {
             budgetFraction,
+            audioCppCardGb: audioCardGb,
             mediaLoad: diffusionLoad,
             hostPooledMemory: gpu.loadDeviceSharesHostMemory,
             gpuCount: source.deviceCount,
@@ -4811,6 +4895,7 @@ export function HubModelPicker({
     fitOnDeviceOnly,
     cachedIdFor,
     inferenceGpu,
+    audioCardGb,
     gpu,
     task,
     budgetFraction,
@@ -4887,6 +4972,9 @@ export function HubModelPicker({
             ggufParams ? formatCompact(ggufParams) : null,
             "GGUF",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
+            r.estimatedResidentGb && audioCardGb > 0
+              ? `${residentGbLabel(r.estimatedResidentGb)} to run`
+              : null,
           ]
             .filter(Boolean)
             .join(" · ")
@@ -4905,6 +4993,16 @@ export function HubModelPicker({
         const sizeBytes =
           r.estimatedSizeBytes ??
           (params ? estimateQuantBytes(params) : undefined);
+        const resident = r.estimatedResidentGb;
+        const residentFit = audioCppRowFit(r, audioCardGb);
+        if (resident && residentFit) {
+          map.set(r.id, {
+            meta,
+            status: residentFit === "fits" ? null : "oom",
+            est: resident,
+          });
+          continue;
+        }
         map.set(r.id, {
           meta,
           // The classifier's own verdict, so a GGUF row never borrows the torch-only "exceeds", scoped
@@ -4953,6 +5051,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+    audioCardGb,
     loadFreesResident,
   ]);
 
@@ -7685,6 +7784,7 @@ export function HubModelPicker({
   return (
     <PickerScopes
       capabilityScope={capabilityScope}
+      audioCppCardGb={audioCardGb}
       unifiedLoadBudgetGb={
         (loadFreesResident
           ? inferenceGpu.unifiedLoadCeilingGb
@@ -8894,6 +8994,7 @@ export function HubModelPicker({
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-end pr-3.5 pb-[calc(19px*var(--ui-space-scale,1))]">
             <button
               type="button"
+              data-glass-float=""
               onClick={() => (ejectsAll ? onEjectAll?.() : onEject())}
               className="pointer-events-auto inline-flex items-center justify-center gap-2 rounded-full bg-popover px-3 py-2 text-ui-13 font-medium text-destructive shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] transition-colors hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--popover))] dark:bg-sidebar-accent dark:shadow-none dark:hover:bg-[color-mix(in_srgb,var(--foreground)_8%,var(--sidebar-accent))]"
               title={ejectsAll ? "Eject all models" : "Eject model"}
