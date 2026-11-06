@@ -91,6 +91,20 @@ def _group(module: Any) -> int:
     return int(module.convrot_groupsize) if is_rotated_linear(module) else 0
 
 
+def _mergeable_module(module: Any) -> bool:
+    """A plain or ConvRot Linear whose weight is a registered Parameter: a wrapper or native twin can expose ``weight``
+    as a computed view, where a write would not reach the forward."""
+    import torch
+
+    from .diffusion_convrot import is_rotated_linear
+
+    return (
+        isinstance(module, torch.nn.Linear)
+        and (type(module) is torch.nn.Linear or is_rotated_linear(module))
+        and isinstance(module._parameters.get("weight"), torch.nn.Parameter)
+    )
+
+
 def _dequant(module: Any, kind: str, group: int, device: Any) -> Any:
     """The layer's float32 weight (ConvRot rotation undone)."""
     import torch
@@ -230,23 +244,24 @@ def plan(pipe: Any, denoisers: list) -> Optional[list]:
     if not layers:
         return None
     for entry in layers.values():
-        weight = getattr(entry.module, "weight", None)
-        if weight is None or _weight_kind(weight) is None:
+        if not _mergeable_module(entry.module) or _weight_kind(entry.module.weight) is None:
             return None
     return list(layers.values())
 
 
 def _host_room(layers: list) -> bool:
+    """Room for the backups in usable host RAM (capped by an enforcing cgroup), with a reserve left free."""
     nbytes = sum(
         t.numel() * t.element_size()
         for e in layers
         for t in _tensors(e.module.weight, _weight_kind(e.module.weight)).values()
     )
-    try:
-        import psutil
-        return int(psutil.virtual_memory().available) - nbytes >= _HOST_RESERVE
-    except Exception:  # noqa: BLE001 - unreadable: assume it fits, as the load itself did
-        return True
+    from .diffusion_memory import _available_system_memory_mib
+
+    available = _available_system_memory_mib()
+    if available is None:
+        return False
+    return (int(available) << 20) - nbytes >= _HOST_RESERVE
 
 
 def _apply(layers: list, weights: dict, device: Any) -> None:

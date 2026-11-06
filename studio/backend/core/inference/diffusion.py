@@ -584,6 +584,31 @@ def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any)
     return not any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles)
 
 
+def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
+    """New weights for adapters merged into a quantized file's weights (diffusion_lora_quant_merge): the originals are
+    copied back in place and merged again, so compiled code and captured graphs keep reading the same tensors. False
+    when nothing was merged."""
+    if not lora_quant_merge.merged(pipe):
+        return False
+    if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
+        raise ValueError(
+            "This load's LoRA adapters are merged into weights that are now offloaded, so their weights are fixed "
+            "until the model is reloaded. Reload the model with the new adapter weights."
+        )
+    try:
+        lora_quant_merge.set_weights(pipe, {n: w for (n, _p, w) in updated})
+    except Exception as exc:
+        # set_weights left the base weights: record that, so the next request merges again.
+        pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in updated)
+        invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+        raise ValueError(
+            f"Could not apply the new LoRA weights ({exc}); the adapters are off until the next change."
+        ) from exc
+    pipe._unsloth_loras = updated
+    invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+    return True
+
+
 def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
     """Recapturing a block-streamed graph after a LoRA weight change fails, and the eager fallback then fails every
     later generate, so such a load keeps its baked weights until a reload."""
@@ -13716,10 +13741,7 @@ class DiffusionBackend:
             if any(w != 0 for (_n, _p, w) in current):
                 _refuse_weight_change_on_streamed_graph(state)
                 disabled = tuple((n, p, 0.0) for (n, p, _w) in current)
-                # Merged adapters: the original weights are copied back in place, so graphs keep reading them.
-                if lora_quant_merge.set_weights(pipe, {}):
-                    pipe._unsloth_loras = disabled
-                    invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+                if _remerge_quant_loras(state, pipe, disabled):
                     return
                 # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
                 if _set_pinned_lora_scales(pipe, {}):
@@ -13754,9 +13776,7 @@ class DiffusionBackend:
         if updated == current:
             return
         _refuse_weight_change_on_streamed_graph(state)
-        if lora_quant_merge.set_weights(pipe, {n: w for (n, _p, w) in updated}):
-            pipe._unsloth_loras = updated
-            invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+        if _remerge_quant_loras(state, pipe, updated):
             return
         if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
             pipe._unsloth_loras = updated

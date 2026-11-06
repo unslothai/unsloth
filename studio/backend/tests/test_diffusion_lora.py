@@ -1200,3 +1200,77 @@ def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(mon
     assert counter.frame_count == 1
     assert resets == []
     torch._dynamo.reset()
+
+
+def _merged_lokr_pipe(monkeypatch):
+    from core.inference import diffusion_lora_files as lf
+    from core.inference import diffusion_lora_quant_merge as qm
+
+    monkeypatch.setattr(
+        dl,
+        "resolve_specs",
+        lambda specs, **_: [
+            dl.ResolvedLora(i, dl.sanitize_alias(i), f"/{i}.safetensors", "safetensors", w)
+            for i, w in specs
+        ],
+    )
+    torch = pytest.importorskip("torch")
+    torch.manual_seed(0)
+    net = torch.nn.Sequential(torch.nn.Linear(16, 8, bias = False)).requires_grad_(False)
+
+    class _Pipe:
+        transformer = net
+        components = {"transformer": net}
+
+        def unload_lora_weights(self):
+            pass
+
+    pipe = _Pipe()
+    pipe.__dict__[lf.KRON_ATTR] = {
+        "a": [lf.KronAdapter(net, net[0], torch.randn(2, 2), torch.randn(4, 8), 1.0)]
+    }
+    pipe.__dict__[lf.KRON_ONLY_ATTR] = {"a"}
+    b = _backend()
+    state = _fake_state(pipe, quant = "int8")
+    state.cuda_graphs = ()
+    pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
+    pipe._unsloth_loras_baked = True
+    assert qm.merge(pipe, [net], {"a": 1.0}, "cpu")
+    return b, state, pipe, net
+
+
+def test_a_failed_remerge_records_the_adapters_as_off(monkeypatch):
+    """A re-merge that fails (an OOM) leaves the base weights: the recorded weights say so, the CFG replica is dropped,
+    and asking for the old weight again merges again instead of matching a stale record."""
+    import threading
+
+    from core.inference import diffusion as diff
+    from core.inference import diffusion_lora_quant_merge as qm
+
+    b, state, pipe, net = _merged_lokr_pipe(monkeypatch)
+    base = qm.set_weights(pipe, {}) and net[0].weight.detach().clone()
+    qm.set_weights(pipe, {"a": 1.0})
+    invalidated = []
+    monkeypatch.setattr(diff, "invalidate_cfg_replica", lambda *a, **k: invalidated.append(a[1]))
+    real = qm._requant_
+    monkeypatch.setattr(
+        qm, "_requant_", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("CUDA out of memory"))
+    )
+    with pytest.raises(ValueError, match = "Could not apply the new LoRA weights"):
+        b._apply_loras(state, [("a", 0.5)], threading.Event())
+    assert [w for (_n, _p, w) in pipe._unsloth_loras] == [0.0]
+    assert invalidated and __import__("torch").equal(net[0].weight, base)
+    monkeypatch.setattr(qm, "_requant_", real)
+    b._apply_loras(state, [("a", 1.0)], threading.Event())
+    assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]
+    assert not __import__("torch").equal(net[0].weight, base)
+
+
+def test_merged_adapters_on_an_offloaded_load_need_a_reload(monkeypatch):
+    import threading
+
+    b, state, pipe, _net = _merged_lokr_pipe(monkeypatch)
+    state.offload_policy = "group"
+    with pytest.raises(ValueError, match = "Reload the model with the new adapter weights"):
+        b._apply_loras(state, [("a", 0.5)], threading.Event())
+    assert [w for (_n, _p, w) in pipe._unsloth_loras] == [1.0]

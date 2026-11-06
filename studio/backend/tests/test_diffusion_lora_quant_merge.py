@@ -204,3 +204,38 @@ def test_a_peft_lora_merges_at_its_alpha_scale():
     assert not hasattr(net.proj["q"], "lora_A")
     want = base + 0.5 * 2.0 * (b @ a)
     assert (_weight(net) - want).norm() / want.norm() < 0.02
+
+
+def test_a_wrapped_linear_keeps_its_adapter_layers():
+    """A wrapper exposing ``weight`` as a computed view: a write there would never reach the forward."""
+    net = _Net("dense")
+    pipe = _Pipe(net)
+    inner = net.proj["q"]
+
+    class _Wrapper(torch.nn.Module):
+        def __init__(self, layer):
+            super().__init__()
+            self.layer = layer
+
+        @property
+        def weight(self):
+            return self.layer.weight.detach().clone()
+
+        def forward(self, x):
+            return self.layer(x)
+
+    net.proj["q"] = _Wrapper(inner)
+    adapter = lf.KronAdapter(net, net.proj["q"], torch.randn(4, 4), torch.randn(8, 16), 1.0)
+    pipe.__dict__[lf.KRON_ATTR] = {"k": [adapter]}
+    assert qm.plan(pipe, [net]) is None
+
+
+def test_no_room_for_the_backups_keeps_the_adapter_layers(monkeypatch):
+    from core.inference import diffusion_memory
+
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1024)
+    net = _Net("int8")
+    pipe = _Pipe(net)
+    _lokr(net, pipe)
+    assert not qm.merge(pipe, [net], {"k": 1.0}, "cpu")
+    assert isinstance(net.proj["q"], lf.kron_linear_class())
