@@ -391,8 +391,10 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	const block = css.slice(css.indexOf("/* Transparent glass: the plain theme"));
 	// On #root from the html copies: a token cannot mix itself, and portalled overlays stay solid.
 	for (const [token, copy] of [["background", "bg"], ["card", "card"], ["popover", "popover"], ["muted", "muted"], ["secondary", "secondary"], ["sidebar", "sidebar"]]) {
-		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
+		assert.match(block, new RegExp(`html\\[data-glass-clear\\] #root,\\nhtml\\[data-glass-clear\\] #root \\[data-sonner-toaster\\] \\{[^}]*--${token}: color-mix\\(in srgb, var\\(--glass-page-${copy}\\) var\\(--clear-alpha\\), transparent\\);`), token);
 	}
+	// Sonner renders inside #root (no portal), so toasts re-resolve the tokens at full opacity.
+	assert.match(block, /html\[data-glass-clear\] #root \[data-sonner-toaster\] \{\n  --clear-alpha: 100%;\n\}/);
 	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
 	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n\s*background-color: transparent;/);
 	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);

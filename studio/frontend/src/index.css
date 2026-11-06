@@ -7118,8 +7118,10 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 
 /* Transparent glass: the plain theme, every surface in its own colour at the glass strength's
    opacity, with no shadow or blur. Tokens are redefined on #root from the copies taken on html
-   (a token cannot mix itself), so portalled menus, dialogs and toasts stay solid. */
-html[data-glass-clear] #root {
+   (a token cannot mix itself), so portalled menus and dialogs stay solid. Sonner renders its
+   toaster inside #root, so it re-resolves the same tokens at full opacity. */
+html[data-glass-clear] #root,
+html[data-glass-clear] #root [data-sonner-toaster] {
   --clear-alpha: var(--glass-fill-alpha, 50%);
   --background: color-mix(in srgb, var(--glass-page-bg) var(--clear-alpha), transparent);
   --card: color-mix(in srgb, var(--glass-page-card) var(--clear-alpha), transparent);
@@ -7135,6 +7137,9 @@ html[data-glass-clear] #root {
   --color-muted: var(--muted);
   --color-secondary: var(--secondary);
   --color-sidebar: var(--sidebar);
+}
+html[data-glass-clear] #root [data-sonner-toaster] {
+  --clear-alpha: 100%;
 }
 /* At rest nothing scrolls under these headers, so their fill only doubled the page wash into a strip. */
 html[data-glass-clear] #root :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header]) {
