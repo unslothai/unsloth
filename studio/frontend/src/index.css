@@ -7242,10 +7242,11 @@ html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sideb
    each composite, on the CPU, so a caret blink, a scrolled line or a menu frame re-blurred every glass
    surface on screen and glass typing, scrolling and menus cost far more than solid. There only the
    sidebar keeps its live blur (one static surface over the wallpaper costs little); the rest carry a
-   denser fill, and dialogs and menus an opaque one, so nothing behind them ghosts through. */
-html[data-glass][data-glass-cpu] *:not([data-slot="sidebar-inner"]),
-html[data-glass][data-glass-cpu] *:not([data-windows-glass-frame])::before,
-html[data-glass][data-glass-cpu] *::after {
+   denser fill, and dialogs and menus an opaque one, so nothing behind them ghosts through. Blurs a
+   component sets itself (Tailwind backdrop-* classes) are not Glass's and stay as they are with Glass off. */
+html[data-glass][data-glass-cpu] *:not([data-slot="sidebar-inner"], [class*="backdrop-"]),
+html[data-glass][data-glass-cpu] *:not([data-windows-glass-frame], [class*="backdrop-"])::before,
+html[data-glass][data-glass-cpu] *:not([class*="backdrop-"])::after {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }
@@ -7267,6 +7268,40 @@ html[data-glass][data-glass-menus][data-glass-cpu] [data-sonner-toast][data-styl
   background-color: var(--popover) !important;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+/* Every surface that loses its blur above takes an opaque fill, or one dense enough that nothing behind it
+   reads through: text scrolling under a header or a menu over a page would otherwise overlap sharply. */
+/* Plain light glass (no image) gives menus their own thin fill; on this path they keep the opaque one. */
+html[data-glass][data-glass-menus][data-glass-plain][data-glass-cpu]:not(.dark) :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
+  --glass-menu-fill: var(--glass-page-popover);
+}
+html[data-glass][data-glass-menus][data-glass-cpu] :is(.tooltip-compact, .tooltip-rich) {
+  background-color: var(--tooltip-bg);
+}
+/* Stuck page headers (the Library tab row): content scrolls under them. At rest they stay clear. */
+html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky:not(.library-header-row:not([data-stuck]), [data-page-model-header]) {
+  background-color: var(--glass-page-bg);
+}
+/* Sticky bars inside panels, dialogs, sheets and menus. */
+html[data-glass][data-glass-cpu] :is([data-slot="chat-settings-panel"], [data-slot="dialog-content"], [data-slot="sheet-content"]) .sticky {
+  background-color: var(--glass-page-bg);
+}
+html[data-glass][data-glass-cpu] :is([data-slot$="popover-content"], [data-slot$="menu-content"]) .sticky {
+  background-color: var(--glass-page-popover);
+}
+/* Side panes over the wallpaper: the chat settings panel and the browser panel. */
+html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],
+html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"] > .browser-chrome,
+html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready]:not([data-browser-overlay-open]) [data-slot="browser-panel"]:not([data-browser-document]) > .browser-panel-body {
+  background-color: var(--glass-panel-fill);
+}
+/* Light page controls and cards are thin white washes over the image. */
+html[data-glass][data-glass-cpu]:not(.dark) {
+  --glass-control: rgb(255 255 255 / .8);
+}
+html[data-glass][data-glass-cpu]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"],
+html[data-glass][data-glass-cpu]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .api-monitor-page {
+  --page-glass-card-fill: rgb(255 255 255 / .85);
 }
 /* Liquid 3D's wide inner glows and lifts are blurred box-shadows, which WebKitGTK re-rasterises on the
    CPU whenever the surface repaints; there the glows are drawn as gradients and the lifts get a smaller blur. */

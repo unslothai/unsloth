@@ -33,9 +33,12 @@ test("the CPU glass flag is WebKitGTK only and follows the layer flag's material
 });
 
 test("WebKitGTK glass drops every live blur except the sidebar's", () => {
-  const rule = ruleAt(`${GATE} *:not([data-slot="sidebar-inner"]),`);
-  assert.ok(rule.includes(`${GATE} *:not([data-windows-glass-frame])::before,`), "the framed sidebar's glass keeps its blur");
-  assert.ok(rule.includes(`${GATE} *::after {`));
+  const rule = ruleAt(`${GATE} *:not([data-slot="sidebar-inner"], [class*="backdrop-"]),`);
+  assert.ok(
+    rule.includes(`${GATE} *:not([data-windows-glass-frame], [class*="backdrop-"])::before,`),
+    "the framed sidebar's glass keeps its blur",
+  );
+  assert.ok(rule.includes(`${GATE} *:not([class*="backdrop-"])::after {`), "a component's own backdrop-* blur is not Glass's");
   assert.match(rule, /-webkit-backdrop-filter: none !important;/);
   assert.match(rule, /\n\s*backdrop-filter: none !important;/);
   assert.doesNotMatch(rule, /:has\(/, "a :has() here would re-match on every DOM change");
@@ -87,4 +90,50 @@ test("the WebKitGTK rules are unlayered top-level rules", () => {
     assert.equal(rule.parent?.type, "root", `${rule.selector} must not sit inside @layer or another block`);
   });
   assert.ok(found.length >= 9, "blur, fill, dialog, toast and glow rules all present");
+});
+
+// Every surface the CPU path strips of its blur, and what keeps text behind it from reading through.
+test("no surface that loses its blur is left with a see-through fill", () => {
+  const plainMenus = ruleAt('html[data-glass][data-glass-menus][data-glass-plain][data-glass-cpu]:not(.dark) :is(');
+  assert.match(plainMenus, /--glass-menu-fill: var\(--glass-page-popover\);/, "plain light menus set their own thin fill on the element");
+  assert.match(
+    ruleAt("html[data-glass][data-glass-menus][data-glass-cpu] :is(.tooltip-compact, .tooltip-rich) {"),
+    /background-color: var\(--tooltip-bg\);/,
+  );
+  const pageSticky = ruleAt(
+    'html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky:not(',
+  );
+  assert.match(pageSticky, /:not\(\.library-header-row:not\(\[data-stuck\]\), \[data-page-model-header\]\)/, "headers at rest stay clear");
+  assert.match(pageSticky, /background-color: var\(--glass-page-bg\);/);
+  assert.match(
+    ruleAt('html[data-glass][data-glass-cpu] :is([data-slot="chat-settings-panel"], [data-slot="dialog-content"], [data-slot="sheet-content"]) .sticky {'),
+    /background-color: var\(--glass-page-bg\);/,
+  );
+  assert.match(
+    ruleAt('html[data-glass][data-glass-cpu] :is([data-slot$="popover-content"], [data-slot$="menu-content"]) .sticky {'),
+    /background-color: var\(--glass-page-popover\);/,
+  );
+  const panes = ruleAt('html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready] [data-slot="chat-settings-panel"],');
+  assert.ok(panes.includes("> .browser-chrome,") && panes.includes("> .browser-panel-body {"));
+  assert.match(panes, /background-color: var\(--glass-panel-fill\);/);
+  assert.match(ruleAt("html[data-glass][data-glass-cpu]:not(.dark) {"), /--glass-control: rgb\(255 255 255 \/ \.8\);/);
+  assert.match(
+    ruleAt('html[data-glass][data-glass-cpu]:not(.dark)[data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] > [data-slot="sidebar-inset"],'),
+    /--page-glass-card-fill: rgb\(255 255 255 \/ \.85\);/,
+  );
+});
+
+test("each CPU-path fill outranks the glass rule it replaces", () => {
+  // Same selector plus [data-glass-cpu]: one more attribute always wins, whatever the order.
+  const pairs: [string, string][] = [
+    ['html[data-glass][data-glass-menus][data-glass-plain]:not(.dark) :is(', 'html[data-glass][data-glass-menus][data-glass-plain][data-glass-cpu]:not(.dark) :is('],
+    ["html[data-glass][data-glass-menus] :is(.tooltip-compact, .tooltip-rich) {", "html[data-glass][data-glass-menus][data-glass-cpu] :is(.tooltip-compact, .tooltip-rich) {"],
+    ['html[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky {',
+     'html[data-glass][data-glass-cpu][data-chat-wallpaper-workspace-ready] [data-wallpaper-workspace][data-wallpaper-route="page"] > [data-slot="sidebar-inset"] .sticky:not('],
+    ["html[data-glass]:not(.dark) {", "html[data-glass][data-glass-cpu]:not(.dark) {"],
+  ];
+  for (const [base, cpu] of pairs) {
+    assert.ok(CSS.includes(base), `base rule still exists: ${base}`);
+    assert.ok(CSS.includes(cpu), `cpu override exists: ${cpu}`);
+  }
 });
