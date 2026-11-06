@@ -6743,6 +6743,9 @@ def unsloth_generic_save(
     dtype = None,
 ):
     _refuse_mtp_variant(model, variant)
+    # merge_and_overwrite_lora compares save_method exactly, so respellings must be canonical here.
+    if isinstance(save_method, str):
+        save_method = save_method.lower().strip().replace("-", "_").replace(" ", "_")
     if save_method == "merged_4bit":
         raise RuntimeError(
             "Unsloth: Merging into 4bit will cause your model to lose accuracy if you plan\n"
