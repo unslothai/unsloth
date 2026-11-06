@@ -38336,7 +38336,7 @@ class LlamaCppBackend:
             _respawn_truncations: list[dict] = []
 
             def _refit_iteration_after_respawn() -> None:
-                nonlocal conversation
+                nonlocal conversation, _loop_cut
                 _before_respawn_fit = conversation
                 if (
                     _preflight_context_length is None
@@ -38373,7 +38373,7 @@ class LlamaCppBackend:
                         ),
                         estimate_message = self._estimate_countable_message,
                         anchor_ids = _rolling_anchor_ids,
-                        keeps_boundary = _keeps_compaction_boundary(thread_id),
+                        keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                         can_reset = _can_reset_epoch(
                             thread_id,
                             _backend_supports_tools(self),
@@ -38382,6 +38382,7 @@ class LlamaCppBackend:
                         recall_offered = "search_conversation" in (_enabled_tool_names or ()),
                         **_compaction_fit_kwargs(context_policy, compaction_headroom_ratio),
                     )
+                    _loop_cut = _loop_cut or bool(truncation and truncation.get("dropped_messages"))
                     # Record here: the reopened stream raises before forwarding sees the refusal.
                     from core.inference import context_refusal  # noqa: PLC0415
 
@@ -40961,7 +40962,7 @@ class LlamaCppBackend:
                     ),
                     estimate_message = self._estimate_countable_message,
                     anchor_ids = _rolling_anchor_ids,
-                    keeps_boundary = _keeps_compaction_boundary(thread_id),
+                    keeps_boundary = _loop_cut or _keeps_compaction_boundary(thread_id),
                     can_reset = _can_reset_epoch(
                         thread_id,
                         _backend_supports_tools(self),

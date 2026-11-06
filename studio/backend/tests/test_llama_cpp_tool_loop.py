@@ -3463,11 +3463,19 @@ def test_tool_loop_refits_each_preflight_path_after_context_shrinking_respawn(mo
         assert len(payloads[1]["messages"]) == 1
 
 
-def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(monkeypatch):
-    from core.inference import checkpoint, prefix_boundary
+@pytest.fixture
+def fresh_cut_memory():
+    from core.inference import prefix_boundary
+
+    prefix_boundary.clear()
+    yield
+    prefix_boundary.clear()
+
+
+def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(monkeypatch, fresh_cut_memory):
+    from core.inference import checkpoint
 
     monkeypatch.setattr(checkpoint, "CONTEXT_POLICY", "rolling")
-    prefix_boundary.clear()
     rounds = 16
     streams = [
         _structured_tool_call("python", {"code": f"print(open('f{i}').read())"}, f"call_{i}")
@@ -3493,7 +3501,6 @@ def test_a_threadless_tool_loop_keeps_its_cut_between_rounds(monkeypatch):
         permission_mode = "off",
         context_overflow = "truncate_oldest",
     )
-    prefix_boundary.clear()
 
     heads = [json.dumps(payload["messages"][:3]) for payload in payloads]
     moves = sum(before != after for before, after in zip(heads, heads[1:]))
