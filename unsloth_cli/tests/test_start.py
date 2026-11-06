@@ -7437,6 +7437,58 @@ def test_connect_hermes_no_launch(fake_studio, tmp_path):
     assert not any(c[1].split("?")[0].endswith("/api/inference/status") for c in fake_studio)
 
 
+def test_hermes_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    user_config = source_home / "config.yaml"
+    user_config.write_text(
+        "model:\n  default: cloud-model\n"
+        "mcp_servers:\n"
+        "  github:\n    command: npx\n    args: [-y, '@modelcontextprotocol/server-github']\n"
+        "  docs:\n    url: http://127.0.0.1:9000/mcp\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {
+        "github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert config["model"]["default"] == MODEL["id"]
+
+    config["mcp_servers"]["local"] = {"command": "local-server"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+    user_config.write_text("mcp_servers:\n  docs:\n    url: http://127.0.0.1:9000/mcp\n")
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {
+        "local": {"command": "local-server"},
+        "docs": {"url": "http://127.0.0.1:9000/mcp"},
+    }
+    assert user_config.read_text() == "mcp_servers:\n  docs:\n    url: http://127.0.0.1:9000/mcp\n"
+
+
+def test_hermes_mcp_servers_follow_the_active_profile(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    root = tmp_path / "user-hermes"
+    profile = root / "profiles" / "work"
+    profile.mkdir(parents = True)
+    (root / "config.yaml").write_text("mcp_servers:\n  personal:\n    command: p\n")
+    (root / "active_profile").write_text("work\n")
+    (profile / "config.yaml").write_text("mcp_servers:\n  work:\n    command: w\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((tmp_path / "agents" / "hermes" / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"work": {"command": "w"}}
+
+
 @pytest.mark.parametrize(("found", "warned"), [("v20.19.5", True), ("v22.19.0", False)])
 def test_pi_warns_when_node_is_older_than_it_needs(monkeypatch, capsys, found, warned):
     monkeypatch.setattr(start, "_which_with_install_dirs", lambda name: "/usr/bin/node")
