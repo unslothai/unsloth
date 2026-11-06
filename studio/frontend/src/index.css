@@ -7096,3 +7096,15 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 	   from its empty padding box, moving the reader as every batch is parked. */
 	transition-property: none;
 }
+
+/* Keep WebKitGTK thumb jumps synchronized with paints of newly mounted bodies.
+   Fixed backgrounds synchronize overflow scrolling with main-thread paints. */
+.aui-thread-viewport[data-windowed-messages]::before {
+	content: "";
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	pointer-events: none;
+	background-image: linear-gradient(transparent, transparent);
+	background-attachment: fixed;
+}

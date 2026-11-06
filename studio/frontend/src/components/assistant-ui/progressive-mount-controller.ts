@@ -33,6 +33,10 @@ export function watchProgressiveScroll(
     pause();
   };
   const listeners = { wheel: pause, touchmove: pause, keydown: onKey, scroll: onScroll };
+  const inputTarget = (viewport as HTMLElement).ownerDocument ?? viewport;
+  inputTarget.addEventListener("pointerdown", pause, { capture: true, passive: true });
+  inputTarget.addEventListener("beforeinput", pause, { capture: true, passive: true });
+  inputTarget.addEventListener("compositionupdate", pause, { capture: true, passive: true });
   for (const [type, listener] of Object.entries(listeners)) {
     viewport.addEventListener(type, listener, { capture: true, passive: true });
   }
@@ -42,6 +46,9 @@ export function watchProgressiveScroll(
       return now() < resumeAt;
     },
     dispose() {
+      inputTarget.removeEventListener("pointerdown", pause, { capture: true });
+      inputTarget.removeEventListener("beforeinput", pause, { capture: true });
+      inputTarget.removeEventListener("compositionupdate", pause, { capture: true });
       for (const [type, listener] of Object.entries(listeners)) {
         viewport.removeEventListener(type, listener, { capture: true });
       }

@@ -52,8 +52,9 @@ test("mounting waits for wheel momentum and thumb release, without pausing on it
   assert.equal(activity.blocked(false), false);
 });
 
-test("scroll keys and touch momentum pause mounting; ordinary typing does not", () => {
-  const viewport = new EventTarget();
+test("scroll keys, touch momentum, and composer input outside the viewport pause mounting", () => {
+  const document = new EventTarget();
+  const viewport = Object.assign(new EventTarget(), { ownerDocument: document });
   let time = 1000;
   const activity = watchProgressiveScroll(viewport, () => time);
   time += 301;
@@ -64,7 +65,19 @@ test("scroll keys and touch momentum pause mounting; ordinary typing does not", 
   time += 301;
   viewport.dispatchEvent(new Event("touchmove"));
   assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("beforeinput"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("compositionupdate"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("pointerdown"));
+  assert.equal(activity.blocked(false), true);
   activity.dispose();
+  time += 301;
+  document.dispatchEvent(new Event("beforeinput"));
+  assert.equal(activity.blocked(false), false);
 });
 
 test("a thread under the floor is never windowed", () => {
@@ -122,9 +135,9 @@ test("smaller renderer batches still converge without skipping messages", () => 
   let current = initialWindow(600, false);
   let previous = current!.start;
   while (current !== null) {
-    current = widen(current, 600, 8);
+    current = widen(current, 600, 2);
     const start = current?.start ?? 0;
-    assert.ok(start < previous && previous - start <= 8);
+    assert.ok(start < previous && previous - start <= 2);
     previous = start;
   }
 });

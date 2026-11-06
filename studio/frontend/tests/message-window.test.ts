@@ -145,8 +145,10 @@ test("wide replies and embedded media stay connected; shared observers and liste
   w.near(a.root, false); w.near(b.root, false);
   assert.equal(a.parked() || b.parked(), false);
   assert.equal(w.observers(), 1);
+  assert.equal(w.viewport.hasAttribute("data-windowed-messages"), true);
   a.cleanup(); assert.equal(w.disconnected(), 0);
   b.cleanup(); assert.equal(w.disconnected(), 2);
+  assert.equal(w.viewport.hasAttribute("data-windowed-messages"), false);
   assert.equal(w.doc.count() + w.win.count() + w.viewport.count() + w.media.count(), 0);
 });
 

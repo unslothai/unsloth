@@ -30,6 +30,7 @@ class MessageWindowController {
 
   constructor(viewport: HTMLElement) {
     this.viewport = viewport;
+    viewport.setAttribute("data-windowed-messages", "");
     // IO records may predate a scroll or prepend; read current geometry instead.
     this.observer = new IntersectionObserver(this.update,
       { root: viewport, rootMargin: `${REACH}px 0px` });
@@ -216,6 +217,7 @@ class MessageWindowController {
     window.removeEventListener("beforeprint", this.beforePrint);
     window.removeEventListener("afterprint", this.afterPrint);
     this.media.removeEventListener("change", this.printChanged);
+    this.viewport.removeAttribute("data-windowed-messages");
     controllers.delete(this.viewport);
   }
 }

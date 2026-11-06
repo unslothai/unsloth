@@ -18,6 +18,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 
 import { createRowNotificationGate } from "@/components/assistant-ui/row-notification-gate";
 import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-scopes";
@@ -38,8 +39,9 @@ import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 
-const MOUNT_CHUNK = typeof navigator !== "undefined"
-  && isWebKitGTK(navigator.platform, navigator.userAgent) ? 8 : CHUNK_MESSAGES;
+const WEBKIT_GTK = typeof navigator !== "undefined"
+  && isWebKitGTK(navigator.platform, navigator.userAgent);
+const MOUNT_CHUNK = WEBKIT_GTK ? 2 : CHUNK_MESSAGES;
 
 /** Module-level: consumers are imperative DOM readers, and a thread can mount twice (Compare). */
 interface ActiveCompleter {
@@ -300,9 +302,12 @@ function useProgressiveMountWindow(
         return;
       }
       captureAnchor();
-      startTransition(() => {
+      const commit = () => {
         setMountWindow((current) => widen(current, count, MOUNT_CHUNK));
-      });
+      };
+      // Keep the prepend and its scroll correction inside the same WebKit rendering frame.
+      if (WEBKIT_GTK) flushSync(commit);
+      else startTransition(commit);
     };
     frame = requestAnimationFrame(advance);
     return () => cancelAnimationFrame(frame);

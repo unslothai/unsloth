@@ -105,10 +105,10 @@ test("a run drops the window", () => {
   assert.match(GLUE, /if \(isRunningNow\(\)\) \{\s*setMountWindow\(null\);/);
 });
 
-test("the widening step is deferred and transition-wrapped", () => {
-  // Without rAF chunks collapse into one commit; without startTransition widening blocks input.
+test("the widening step is deferred and WebKit commits inside the animation frame", () => {
   assert.match(GLUE, /requestAnimationFrame\(/);
   assert.match(GLUE, /startTransition\(/);
+  assert.match(GLUE, /if \(WEBKIT_GTK\) flushSync\(commit\);/);
   assert.match(GLUE, /cancelAnimationFrame\(frame\)/);
   // Scoped to the widening effect: a timer fires before paint and its handle cannot be
   // cancelled as a frame.
