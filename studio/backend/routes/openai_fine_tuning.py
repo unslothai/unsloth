@@ -1180,8 +1180,17 @@ async def list_fine_tuning_jobs(
 ):
     await asyncio.to_thread(_load_aliases)
     after_run = await _resolve(after) if after else None
+
     status = await _current_status(current_subject, via_api_key)
     live_id = _status_field(status, "job_id") if status is not None else None
+
+    # Snapshot queued jobs before awaiting individual run lookups.
+    pending = [
+        _for_caller(_queued_job(entry), via_api_key)
+        for entry in reversed(_ALIASES.values())
+        if _own_alias(entry.alias) is not None
+    ]
+
     live = {}
     if live_id and _status_field(status, "phase") != "idle":
         for run_id in reversed(_BATCHES.get(live_id, [live_id])):
@@ -1191,12 +1200,6 @@ async def list_fine_tuning_jobs(
                 if run_id == after_run:
                     after = job["id"]
 
-    # After the awaits, so a job that started meanwhile is listed as its run.
-    pending = [
-        _for_caller(_queued_job(entry), via_api_key)
-        for entry in reversed(_ALIASES.values())
-        if _own_alias(entry.alias) is not None
-    ]
     return await asyncio.to_thread(
         _list_job_page, pending, live, after, after_run, limit, via_api_key
     )
