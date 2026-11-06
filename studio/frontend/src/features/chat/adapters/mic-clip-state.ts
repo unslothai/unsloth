@@ -2,12 +2,17 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 // A mic clip is sized to the audio room left when it starts; other audio added meanwhile would take that room.
-let recording = false;
+// Owned per session, so a stale session's late cleanup cannot clear a newer recording's hold.
+let owner: object | null = null;
 
-export function setMicClipRecording(value: boolean): void {
-  recording = value;
+export function holdMicClipRoom(session: object): void {
+  owner = session;
+}
+
+export function releaseMicClipRoom(session: object): void {
+  if (owner === session) owner = null;
 }
 
 export function micClipRecording(): boolean {
-  return recording;
+  return owner !== null;
 }

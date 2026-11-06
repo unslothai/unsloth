@@ -187,3 +187,27 @@ test("cancel and a refused start leave other audio free to attach", async () => 
   assert.equal(micClipState.micClipRecording(), false);
   await flush();
 });
+
+test("a stale session's late cleanup keeps a newer recording's hold", async () => {
+  let resolveFirst: (value: unknown) => void = () => {};
+  const nav = globalThis.navigator as unknown as {
+    mediaDevices: { getUserMedia: () => Promise<unknown> };
+  };
+  const original = nav.mediaDevices.getUserMedia;
+  nav.mediaDevices.getUserMedia = () =>
+    new Promise((resolve) => {
+      resolveFirst = resolve;
+    });
+  const first = listenForAudioClip(() => {});
+  first.cancel();
+  nav.mediaDevices.getUserMedia = original;
+  const second = listenForAudioClip(() => {});
+  await flush();
+  assert.equal(micClipState.micClipRecording(), true);
+  // The first mic request resolves after the user already started again.
+  resolveFirst(stream);
+  await flush();
+  assert.equal(micClipState.micClipRecording(), true);
+  second.cancel();
+  assert.equal(micClipState.micClipRecording(), false);
+});

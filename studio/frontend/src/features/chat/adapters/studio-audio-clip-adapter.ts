@@ -12,7 +12,7 @@ import {
   markDictationClip,
   markDictationFailed,
 } from "./dictation-outcome";
-import { setMicClipRecording } from "./mic-clip-state";
+import { holdMicClipRoom, releaseMicClipRoom } from "./mic-clip-state";
 import { PcmRecorder } from "./pcm-recorder";
 import {
   type StudioDictationSession,
@@ -42,7 +42,7 @@ export function listenForAudioClip(
   });
 
   const release = () => {
-    setMicClipRecording(false);
+    releaseMicClipRoom(session);
     clearTimeout(limitTimer);
     stopLevelMeter();
     for (const track of stream?.getTracks() ?? []) track.stop();
@@ -73,7 +73,7 @@ export function listenForAudioClip(
       active.addEventListener(
         "dataavailable",
         (event) => {
-          setMicClipRecording(false);
+          releaseMicClipRoom(session);
           if (event.data.size === 0) return;
           delivering = true;
           const file = new File([event.data], micClipFilename(), {
@@ -128,7 +128,7 @@ export function listenForAudioClip(
     return session;
   }
   const maxBytes = room.maxBytes;
-  setMicClipRecording(true);
+  holdMicClipRoom(session);
 
   void (async () => {
     const { micDeviceId } = useVoiceSettingsStore.getState();
