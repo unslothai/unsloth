@@ -2825,6 +2825,60 @@ def test_remote_encode_prompt_pins_lent_blocks_back_after_the_encode_and_skips_c
     events.clear()
     client.hit = False
     client.encode = boom
+    client.stop_if_busy = lambda: events.append("stop_if_busy")
     with pytest.raises(RuntimeError):
         pipe.encode_prompt(prompt = "a fox", do_classifier_free_guidance = False, max_sequence_length = 4)
-    assert events == ["lend", "encode", "restore"]
+    assert events == ["lend", "encode", "stop_if_busy", "restore"]
+
+
+def test_a_cancelled_encode_stops_the_busy_worker_and_a_finished_one_does_not(monkeypatch):
+    """A cancel leaves the worker computing on memory lent from the denoiser: stop_if_busy stops it before the blocks
+    are pinned back. A worker that answered (embeds or an error) is idle and is kept."""
+    import threading
+
+    import torch
+
+    client = v25.Ltx25TextEncoderClient(
+        repo = "r",
+        hf_token = None,
+        cache_dir = None,
+        local_files_only = True,
+        device = "cpu",
+        dtype = "bfloat16",
+        resident = False,
+        venv_dir = "/x",
+    )
+    client._cmd, client._resp = queue.Queue(), queue.Queue()
+    client._proc = SimpleNamespace(is_alive = lambda: True, exitcode = None)
+    client._ready = True
+    closed = []
+    monkeypatch.setattr(
+        client, "close", lambda: closed.append(True) or setattr(client, "_inflight", None)
+    )
+    cancel = threading.Event()
+    cancel.set()
+    client._cmd.put = lambda msg: None  # the worker is still encoding when the cancel lands
+    with pytest.raises(RuntimeError):
+        client.encode(["p"], 2, cancel = cancel)
+    assert client.stop_if_busy() is True and closed == [True]
+    assert client.stop_if_busy() is False
+
+    def reply(msg):
+        client._resp.put(
+            {
+                "type": "embeds",
+                "id": msg["id"],
+                "embeds": torch.zeros(1, 2, 3),
+                "mask": torch.ones(1, 2),
+            }
+        )
+
+    client._cmd.put = reply
+    client.encode(["q"], 2)
+    assert client.stop_if_busy() is False
+    client._cmd.put = lambda msg: client._resp.put(
+        {"type": "error", "id": msg["id"], "error": "boom"}
+    )
+    with pytest.raises(v25.TextEncoderWorkerError):
+        client.encode(["r"], 2)
+    assert client.stop_if_busy() is False and closed == [True]

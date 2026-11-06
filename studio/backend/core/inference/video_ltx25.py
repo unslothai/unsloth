@@ -925,6 +925,8 @@ class Ltx25TextEncoderClient:
         self._resp: Any = None
         self._ready = False
         self._seq = 0
+        # The request the worker is computing and no caller has collected yet (a cancel abandons it mid-encode).
+        self._inflight: Optional[int] = None
         self._lock = threading.Lock()
         self._cache: list[tuple[tuple, Any]] = []
         self.info: dict[str, Any] = {}
@@ -1050,6 +1052,7 @@ class Ltx25TextEncoderClient:
     def close(self) -> None:
         proc, self._proc = self._proc, None
         self._ready = False
+        self._inflight = None
         self._cache.clear()
         if proc is None:
             return
@@ -1066,6 +1069,15 @@ class Ltx25TextEncoderClient:
         logger.info("video.ltx25_te: encoder worker stopped")
 
     # encoding
+    def stop_if_busy(self) -> bool:
+        """Stop a worker still computing an encode its caller abandoned (a cancel), so the card memory it uses is free
+        now; the next encode restarts it. True when it was stopped."""
+        if self._inflight is None or not self.alive():
+            return False
+        logger.info("video.ltx25_te: stopping the encoder worker mid-encode (request cancelled)")
+        self.close()
+        return True
+
     def cached(self, prompts: list[str], max_sequence_length: int) -> bool:
         key = (tuple(prompts), int(max_sequence_length))
         with self._lock:
@@ -1102,11 +1114,17 @@ class Ltx25TextEncoderClient:
                     "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
                 }
             )
+            self._inflight = seq
             while True:
-                msg = self._get(cancel, "encoding the prompt", request_id = seq)
+                try:
+                    msg = self._get(cancel, "encoding the prompt", request_id = seq)
+                except TextEncoderWorkerError:
+                    self._inflight = None  # the worker answered (or died): nothing left running
+                    raise
                 # A reply to a request a cancel abandoned arrives first; skip it.
                 if msg.get("type") == "embeds" and msg.get("id") == seq:
                     break
+            self._inflight = None
             embeds, mask = msg["embeds"], msg["mask"]
             self.last_encode = {
                 k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")
@@ -1152,6 +1170,12 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
             try:
                 # The client's own cached tensors (read only): every op below returns a new tensor.
                 cached, mask = client.encode(texts, max_sequence_length, copy = False)
+            except BaseException:
+                # A cancelled encode may still run in the worker on the lent memory: stop it before pinning back.
+                stop = getattr(client, "stop_if_busy", None)
+                if restore is not None and callable(stop):
+                    stop()
+                raise
             finally:
                 if restore is not None:
                     restore()
