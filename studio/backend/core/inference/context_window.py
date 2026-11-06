@@ -1017,33 +1017,46 @@ _MAX_CHARS_PER_TOKEN = 16
 
 
 def _attachment_spans(text: str):
-    """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment."""
+    """(note, open tag, inner text, close tag, trailing text) per sandbox-backed attachment.
+
+    A note only starts an attachment when its wrapper follows it. An attached file can contain a
+    line shaped like the note -- a transcript, a log, a bug report quoting one -- and reading that
+    as a boundary would cut the body at text the file itself wrote, then hand the model a path the
+    conversation never had.
+    """
     notes = list(_SANDBOX_ATTACHMENT_NOTE_RE.finditer(text))
+    starts = []
     for index, note in enumerate(notes):
-        end = notes[index + 1].start() if index + 1 < len(notes) else len(text)
+        limit = notes[index + 1].start() if index + 1 < len(notes) else len(text)
+        if _ATTACHMENT_OPEN_RE.match(text[note.end() : limit]) is None:
+            continue
+        starts.append(note)
+    for index, note in enumerate(starts):
+        # To the next real attachment, so text between a note-shaped line and the next note is
+        # carried in this span's tail instead of being dropped.
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
         body = text[note.end() : end]
         opened = _ATTACHMENT_OPEN_RE.match(body)
-        closing = f"\n</{opened.group('tag')}>" if opened else ""
-        close = body.rfind(closing) if opened else -1
-        if opened and close >= opened.end():
-            yield (
-                note,
-                opened.group(0),
-                body[opened.end() : close],
-                closing,
-                body[close + len(closing) :],
-            )
-        else:
-            yield note, "", body, "", ""
+        closing = f"\n</{opened.group('tag')}>"
+        close = body.rfind(closing)
+        if close < opened.end():
+            continue
+        yield (
+            note,
+            opened.group(0),
+            body[opened.end() : close],
+            closing,
+            body[close + len(closing) :],
+        )
 
 
 def _cut_attachment_bodies(text: str, keep_chars: int, *, excerpt: bool) -> str:
     """Attachments longer than ``keep_chars`` keep their first whole lines (``excerpt``) or only their path."""
-    first = _SANDBOX_ATTACHMENT_NOTE_RE.search(text)
-    if not first:
+    spans = list(_attachment_spans(text))
+    if not spans:
         return text
-    out = [text[: first.start()]]
-    for note, opened, inner, close, tail in _attachment_spans(text):
+    out = [text[: spans[0][0].start()]]
+    for note, opened, inner, close, tail in spans:
         name, path = note.group("name"), note.group("path")
         if len(inner) <= keep_chars:
             out.append(note.group(0) + opened + inner + close + tail)
