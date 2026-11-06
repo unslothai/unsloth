@@ -481,24 +481,27 @@ def test_structured_download_keeps_existing_local_files(monkeypatch, tmp_path, e
 
 
 @pytest.mark.parametrize("names", [("clip.wav", "/clip.wav"), ("A.wav", "a.wav")])
-def test_parquet_audio_aliases_fail_before_downloading(monkeypatch, tmp_path, names):
-    client = _install(
+def test_parquet_audio_aliases_download_every_object(monkeypatch, tmp_path, names):
+    keys = [f"datasets/audio/{name}" for name in names]
+    _install(
         monkeypatch,
-        ["datasets/train.parquet", *[f"datasets/audio/{name}" for name in names]],
+        ["datasets/train.parquet", *keys],
+        contents = {keys[0]: "FIRST", keys[1]: "SECOND"},
     )
-    with pytest.raises(ValueError, match = "cannot be rewritten"):
-        s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
-    assert client.downloaded == []
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
+    audio = sorted(path.read_text() for path in (tmp_path / "audio").iterdir())
+    assert audio == ["FIRST", "SECOND"]
 
 
-def test_parquet_does_not_replace_existing_audio_or_bind_to_the_old_file(monkeypatch, tmp_path):
+def test_parquet_download_keeps_existing_audio(monkeypatch, tmp_path):
     existing = tmp_path / "clip.wav"
     existing.write_text("KEEP")
-    client = _install(monkeypatch, ["datasets/train.parquet", "datasets/clip.wav"])
-    with pytest.raises(ValueError, match = "cannot be rewritten"):
-        s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    _install(monkeypatch, ["datasets/train.parquet", "datasets/clip.wav"])
+    files = s3_dataset.download_s3_dataset(_cfg(), dest_dir = str(tmp_path))
+    assert files == [str(tmp_path / "train.parquet")]
     assert existing.read_text() == "KEEP"
-    assert client.downloaded == []
+    assert (tmp_path / "clip_1.wav").read_text() == "content-of:datasets/clip.wav"
 
 
 @pytest.mark.parametrize("second_key", ["./train.parquet", "TRAIN.parquet"])

@@ -380,18 +380,6 @@ def prepare_s3_dataset_download(
             local_by_key = _structured_local_paths(prefix, keys + audio_keys, target_dir)
             manifest_local_by_key = {key: local_by_key[key] for key in keys}
             audio_local_by_key = {key: local_by_key[key] for key in audio_keys}
-            if any(
-                not key.lower().endswith(_REWRITABLE_MANIFEST_EXTENSIONS) for key in keys
-            ) and any(
-                os.path.basename(path) != os.path.basename(key)
-                for key, path in audio_local_by_key.items()
-            ):
-                raise ValueError(
-                    "S3 audio filenames collide with other objects or existing local files, "
-                    "but audio paths in Parquet manifests cannot be rewritten. "
-                    "Use a JSON, JSONL or CSV manifest, or distinct audio filenames "
-                    "in an empty download directory."
-                )
             _download_structured(client, bucket, manifest_local_by_key, cancel_callback)
             # Rewrite before the audio download so a bad manifest fails without fetching it.
             _rewrite_audio_references(manifest_local_by_key, audio_local_by_key, bucket, prefix)
