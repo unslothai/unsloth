@@ -710,3 +710,40 @@ def test_lumina_2_measured_activation_never_picks_a_slower_tier():
             assert rank <= _rank(flat, sizes), (gib, plan.reasons)
             assert best is None or rank <= best, gib
             best = rank
+
+
+def _whole_module(
+    monkeypatch,
+    plan,
+    *,
+    family = "lumina-2",
+    dense_bf16 = True,
+    h2d = 11.0,
+    tflops = 76.0,
+):
+    """``prefer_whole_module_offload`` on ``plan`` with the probe the L4 load logged (11 GiB/s, 76 bf16 TFLOPS)."""
+    monkeypatch.delenv(dm.WHOLE_MODULE_OFFLOAD_ENV, raising = False)
+    monkeypatch.setattr(dm, "_offload_cost_measurements", lambda: (h2d, tflops))
+    monkeypatch.setattr(dm, "_denoiser_is_dense_bf16", lambda pipe: dense_bf16)
+    monkeypatch.setattr(dm, "_loaded_component_mib", lambda pipe: {})
+    pipe = types.SimpleNamespace(transformer = object())
+    return pipe, dm.prefer_whole_module_offload(pipe, plan, steps = 50, family = family)
+
+
+def test_lumina_2_bf16_keeps_the_whole_module_offload_the_flat_plan_took(monkeypatch):
+    """16 GiB, plain bf16: the flat streamed plan became whole-module offload; the measured resident-transformer plan
+    (encoder streamed per prompt) was 1% slower per render on an L4, so the same whole-module plan is kept."""
+    act = calibrated_image_activation("lumina-2", max_speed = False)
+    flat, plan = _plan(16, LUMINA2_BF16, None), _plan(16, LUMINA2_BF16, act)
+    assert flat.stream_transformer and not plan.stream_transformer
+    _, flat_whole = _whole_module(monkeypatch, flat)
+    _, kept = _whole_module(monkeypatch, plan)
+    assert flat_whole.offload_policy == kept.offload_policy == OFFLOAD_MODEL
+    for field in ("stream_transformer", "stream_text_encoders", "vae_tiling", "vae_slicing"):
+        assert getattr(kept, field) == getattr(flat_whole, field), field
+    assert "calibrated_headroom_mib" not in kept.estimates
+    # int8 (not plain bf16), another family, or a card that streams cheaper: the measured plan stands
+    for kw in (dict(dense_bf16 = False), dict(family = "z-image"), dict(h2d = 200.0)):
+        pipe, other = _whole_module(monkeypatch, plan, **kw)
+        assert other is plan, kw
+        assert getattr(pipe, dm.WHOLE_TIER_ATTR, None) is None
