@@ -278,6 +278,7 @@ def test_repeated_successful_duplicate_becomes_terminal_after_one_recovery_nudge
 
     assert duplicate_two.action == "duplicate"
     assert "already completed successfully" in completion_two.model_message()["content"]
+    assert "different enabled tool" not in completion_two.model_message()["content"]
     assert controller.force_final_answer
     assert controller.active_tools() == []
 
