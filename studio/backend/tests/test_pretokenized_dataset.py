@@ -895,3 +895,23 @@ def test_mlx_trims_assistant_masks_beside_labels_whatever_the_trl(streaming, mon
     assert out[0]["assistant_masks"] == [1, 1]
     # completion_mask applies on MLX only for an explicit completion_only_loss=True: left as is.
     assert out[0]["completion_mask"] == [0, 0, 1]
+
+
+@pytest.mark.parametrize("bad", [-1, 100, 101])
+@pytest.mark.parametrize("max_seq_length", [1, 8])
+def test_streaming_preparation_rejects_input_ids_outside_the_vocabulary(bad, max_seq_length):
+    ds = Dataset.from_dict(
+        {"input_ids": [[1, 2], [3, bad]], "labels": [[1, -100], [3, -100]]}
+    ).to_iterable_dataset()
+    prepared = prepare_pretokenized_dataset(ds, max_seq_length = max_seq_length, vocab_size = 100)
+    with pytest.raises(ValueError, match = rf"token id {bad} is outside this model's vocabulary"):
+        list(prepared)
+
+
+@pytest.mark.parametrize("vocab_size", [None, 100])
+def test_streaming_preparation_keeps_valid_input_ids_and_ignored_labels(vocab_size):
+    ds = Dataset.from_dict(
+        {"input_ids": [[0, 99, 5]], "labels": [[-100, 99, -100]]}
+    ).to_iterable_dataset()
+    out = list(prepare_pretokenized_dataset(ds, max_seq_length = 2, vocab_size = vocab_size))
+    assert out == [{"input_ids": [0, 99], "labels": [-100, 99]}]
