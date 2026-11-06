@@ -2351,9 +2351,7 @@ def test_client_sends_the_budget_and_the_servers_share():
 
 @pytest.mark.parametrize("resident", [False, True])
 def test_client_frees_the_servers_cached_blocks_before_a_non_resident_encode(monkeypatch, resident):
-    """The worker's room check subtracts what the server reserves; cached blocks from the last render must not count,
-    or every prompt after the first one encodes on the CPU. A resident encoder needs no room and a cache hit no
-    worker, so neither releases anything."""
+    """Only a non-resident cache miss releases the server's cached blocks, before its reservation is sent."""
     import torch
 
     events = []

@@ -1047,8 +1047,7 @@ class Ltx25TextEncoderClient:
             self._seq += 1
             seq = self._seq
             if not self.config.get("resident"):
-                # Encodes run before the denoise: hand the worker the blocks this process only caches, so a
-                # non-resident encoder can onload (or stream) on the card instead of encoding on the CPU.
+                # Cached-only blocks must not count against the worker's room (it subtracts what we reserve).
                 _release_cached_device_memory(self.config.get("device"))
             self._cmd.put(
                 {
