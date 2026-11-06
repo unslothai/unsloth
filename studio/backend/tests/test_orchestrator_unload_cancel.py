@@ -3497,6 +3497,7 @@ def test_every_long_lived_spawner_consults_the_shutdown_latch():
         "core/systemone/laya_worker.py",
         "core/training/token_preview.py",
         "core/training/training.py",
+        "routes/llama_bench.py",
     }
     # Deliberately ungated adopters, listed so the completeness check cannot pass by omission.
     not_gated_here = {

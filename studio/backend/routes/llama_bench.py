@@ -223,6 +223,7 @@ def _spawn(cmd: list[str], env) -> subprocess.Popen:
     from utils.process_lifetime import (
         adopt_pid,
         child_popen_kwargs,
+        forget_pid,
         is_process_shutting_down,
         spawn_on_lifetime_thread,
     )
@@ -245,6 +246,13 @@ def _spawn(cmd: list[str], env) -> subprocess.Popen:
         )
     )
     adopt_pid(proc.pid)
+    # Recheck after adopt_pid: shutdown may have started between the gate and the record.
+    if is_process_shutting_down():
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout = 10)
+        forget_pid(proc.pid)
+        raise RuntimeError("Unsloth Studio is shutting down")
     return proc
 
 

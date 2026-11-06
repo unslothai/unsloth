@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Runs a sweep against this Unsloth Studio: per variant, reload the loaded GGUF with the
+// Runs a sweep against this Unsloth server: per variant, reload the loaded GGUF with the
 // variant's overrides, then stream timed completions and keep llama-server's own
 // timings. Everything goes through the public load / status / chat routes.
 
