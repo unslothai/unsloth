@@ -4316,7 +4316,7 @@ def test_codex_too_old_for_profile_files_stops_before_launch(
     else:
         assert result.exit_code == 1
         assert "Codex 0.134.0 or newer is needed, but /bin/codex is 0.133.0" in result.output
-        assert f"`{start._npm_install_hint('@openai/codex@latest')}`" in result.output
+        assert "Update it the way it was installed, or remove it" in result.output
         assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
 
 
@@ -4328,6 +4328,8 @@ def test_codex_too_old_offers_the_update_with_the_managed_npm(
     monkeypatch.setattr(start, "_require_agent_for_launch", lambda *a: "/bin/codex")
     versions = iter([(0, 133, 0), after])
     monkeypatch.setattr(start, "_codex_executable_version", lambda _: next(versions, after))
+    hint = start._npm_install_hint("@openai/codex@latest")
+    monkeypatch.setattr(start, "_codex_update_hint", lambda _: hint)
     install_agent = start._install_agent
 
     def install_from_a_tty(*args, **kwargs):
@@ -4349,7 +4351,6 @@ def test_codex_too_old_offers_the_update_with_the_managed_npm(
     launched = []
     monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
     result = CliRunner().invoke(start.start_app, ["codex"])
-    hint = start._npm_install_hint("@openai/codex@latest")
     assert prompts == [f"Update `codex` now with `{hint}`?"]
     assert ran[0][0] == ["/studio/node/bin/npm", *shlex.split(hint)[1:]]
     assert ran[0][1]["PATH"].startswith(os.path.dirname("/studio/node/bin/npm"))
@@ -4367,9 +4368,7 @@ def test_codex_update_hint_targets_the_resolved_install(tmp_path):
     assert start._codex_update_hint(str(bin_dir / "codex")) == start._npm_install_hint(
         "@openai/codex@latest", prefix = prefix
     )
-    assert start._codex_update_hint(str(tmp_path / "elsewhere" / "codex")) == (
-        start._npm_install_hint("@openai/codex@latest")
-    )
+    assert start._codex_update_hint(str(tmp_path / "elsewhere" / "codex")) is None
 
 
 @pytest.mark.skipif(os.name == "nt", reason = "Homebrew links codex with a symlink")

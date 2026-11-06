@@ -3315,8 +3315,8 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
     return tuple(int(part) for part in match.groups()) if match else None
 
 
-def _codex_update_hint(executable: str) -> str:
-    # Update the copy that resolves: a new one in ~/.local/bin sits behind an older one earlier on PATH.
+def _codex_update_hint(executable: str) -> Optional[str]:
+    # Update the copy that resolves: a new one in ~/.local/bin sits behind an older one earlier on PATH, so an unknown install gets None.
     if any(part in ("Cellar", "Caskroom") for part in Path(os.path.realpath(executable)).parts):
         return "brew upgrade codex"
     directory = Path(executable).parent
@@ -3324,7 +3324,7 @@ def _codex_update_hint(executable: str) -> str:
     package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules") / "@openai/codex"
     if package.is_dir():
         return _npm_install_hint("@openai/codex@latest", prefix = prefix)
-    return _npm_install_hint("@openai/codex@latest")
+    return None
 
 
 def _codex_supports_model_catalog() -> bool:
@@ -7574,10 +7574,15 @@ def codex(
             f"but {executable} is {'.'.join(map(str, version))}."
         )
         update_hint = _codex_update_hint(executable)
-        updated = _install_agent("codex", update_hint, update = True)
+        updated = update_hint and _install_agent("codex", update_hint, update = True)
         version = updated and _codex_executable_version(updated)
-        if updated is None or (version and version < _CODEX_PROFILE_FILE_MIN_VERSION):
-            _fail(f"{needed} Update it with `{update_hint}`.")
+        if not updated or (version and version < _CODEX_PROFILE_FILE_MIN_VERSION):
+            if update_hint:
+                _fail(f"{needed} Update it with `{update_hint}`.")
+            _fail(
+                f"{needed} Update it the way it was installed, or remove it so "
+                "`unsloth start codex` can install a current one."
+            )
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
         codex_effort = None
