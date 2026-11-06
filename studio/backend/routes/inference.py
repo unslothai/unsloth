@@ -8137,6 +8137,38 @@ def _owner_chosen_launch(
     return pairs
 
 
+_INTENT_LOAD_FIELDS = (
+    "max_seq_length_auto_derived",
+    "chat_template_override",
+    "cache_type_kv",
+    "speculative_type",
+    "spec_draft_n_max",
+    "tensor_parallel",
+    "disable_vision",
+    "gpu_memory_mode",
+    "gpu_layers",
+    "n_cpu_moe",
+    "n_batch",
+    "n_ubatch",
+    "load_mode",
+    "spec_draft_cache_type",
+    "ctx_checkpoints",
+    "cache_ram",
+    "reasoning_budget",
+    "reasoning_budget_message",
+)
+
+
+def _intent_load_kwargs(intent: GgufLoadIntent) -> dict[str, Any]:
+    kwargs = {name: getattr(intent, name) for name in _INTENT_LOAD_FIELDS}
+    kwargs["max_seq_length"] = intent.n_ctx
+    if intent.extra_args:
+        kwargs["llama_extra_args"] = list(intent.extra_args)
+    if not intent.n_parallel_from_default:
+        kwargs["n_parallel"] = intent.n_parallel
+    return kwargs
+
+
 def _snapshot_repo_or_self(model_id, require_cache = False):
     from core.inference.model_ids import hf_cache_repo_id
 
@@ -11177,6 +11209,7 @@ async def _maybe_auto_switch_model(
     )
     from utils.security.remote_code_approvals import approved_local_fingerprint
     from core.inference.llama_keepwarm import (
+        get_last_unloaded_intent,
         get_last_unloaded_model,
         inference_lifecycle_gate,
         model_load_gate,
@@ -11319,6 +11352,7 @@ async def _maybe_auto_switch_model(
         repo_level_companion_resolution = False
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         stashed_mlx = False
+        stashed_intent = None
         if auto_switch_on and not reload_only:
             # audio.cpp GGUFs load via the audio worker, not llama-server; the HF cache resolves them.
             resolved = await asyncio.to_thread(_audio_cpp_switch_target, requested_model)
@@ -11376,6 +11410,7 @@ async def _maybe_auto_switch_model(
                 target_id, variant = last
                 override_id = target_id
             stashed_mlx = stash_is_mlx(last)
+            stashed_intent = get_last_unloaded_intent(last)
             # Held-back keyless callers may restore only the model they named; check before loading.
             if keyless_held_back and not reload_only:
                 requested_base, requested_variant = split_model_ref(requested_model)
@@ -11773,6 +11808,8 @@ async def _maybe_auto_switch_model(
                                     ),
                                 )
                         load_kwargs = {"model_path": target_id, "gguf_variant": variant}
+                        if stashed_intent is not None and target_is_gguf:
+                            load_kwargs.update(_intent_load_kwargs(stashed_intent))
                         load_kwargs.update(
                             model_override_load_kwargs(override, is_gguf = target_is_gguf)
                         )

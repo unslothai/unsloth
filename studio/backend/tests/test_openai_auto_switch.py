@@ -3079,6 +3079,70 @@ def test_idle_alias_reload_preserves_override_via_advertised_id(monkeypatch):
     assert rec.calls[0].max_seq_length == 8192
 
 
+def _idle_unload_a_custom_launch(monkeypatch):
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 0.005)
+    monkeypatch.setattr(settings, "idle_unload_is_configured", lambda: True)
+    _reset_keepwarm()
+    backend = _FakeBackend("/cache/snap/A", hf_variant = "Q4_K_M", advertised_id = "org/A-GGUF")
+    backend.last_load_intent = llama_cpp_mod.GgufLoadIntent(
+        model_identifier = "/cache/snap/A",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = "q8_0",
+        cache_ram = 1024,
+        speculative_type = "off",
+        gpu_memory_mode = "manual",
+        gpu_layers = 0,
+        extra_args = ("--no-warmup",),
+        n_parallel = 2,
+    )
+
+    def _unload():
+        backend.is_loaded = False
+        backend.last_load_intent = None
+
+    backend.unload_model = _unload
+    rec = _LoadRecorder(backend)
+    _wire(monkeypatch, enabled = False, resolves_to = None, backend = backend, recorder = rec)
+    _drive_idle_loop(kw, run_for = 0.05, until = lambda: kw.get_last_unloaded_model() is not None)
+    assert not backend.is_loaded
+    monkeypatch.setattr(settings, "get_auto_unload_idle_seconds", lambda: 600)
+    return rec
+
+
+def test_idle_reload_keeps_the_launch_settings_it_was_loaded_with(monkeypatch):
+    rec = _idle_unload_a_custom_launch(monkeypatch)
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: {})
+    asyncio.run(
+        inference_route._auto_switch_from_request_body(
+            _json_body_request({"prompt": "hi"}), "tester"
+        )
+    )
+    (reload,) = rec.calls
+    assert (reload.model_path, reload.gguf_variant) == ("/cache/snap/A", "Q4_K_M")
+    assert reload.max_seq_length == 8192
+    assert reload.cache_type_kv == "q8_0"
+    assert reload.cache_ram == 1024
+    assert reload.speculative_type == "off"
+    assert (reload.gpu_memory_mode, reload.gpu_layers) == ("manual", 0)
+    assert reload.llama_extra_args == ["--no-warmup"]
+    assert reload.n_parallel == 2
+
+
+def test_idle_reload_lets_a_saved_override_win_over_the_freed_launch(monkeypatch):
+    rec = _idle_unload_a_custom_launch(monkeypatch)
+    overrides = {"org/A-GGUF": {"max_seq_length": 4096}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: overrides.get(mid, {}))
+    asyncio.run(
+        inference_route._auto_switch_from_request_body(
+            _json_body_request({"prompt": "hi"}), "tester"
+        )
+    )
+    (reload,) = rec.calls
+    assert reload.max_seq_length == 4096
+    assert reload.cache_type_kv == "q8_0"
+
+
 def test_load_route_holds_lifecycle_gate(monkeypatch):
     # The /load route must hold inference_lifecycle_gate so idle-unload cannot fire mid-load.
 

@@ -49,6 +49,7 @@ _unattended: contextvars.ContextVar[bool] = contextvars.ContextVar(
 # can reload it (set on unload, cleared on reload). The quant lets the reload restore the exact freed variant.
 _last_unloaded_model = None
 _last_unloaded_mlx = False
+_last_unloaded_intent = None
 # Slot KV manifest saved by the idle unload; whoever pops it owns deleting its files.
 _kv_resume = None
 # Slot saves of manually unloaded GGUFs, oldest first, until that GGUF loads again.
@@ -557,12 +558,18 @@ def stash_is_mlx(identity) -> bool:
         return _last_unloaded_mlx and _last_unloaded_model is identity
 
 
-def _set_last_unloaded(value, mlx: bool = False) -> None:
-    global _last_unloaded_model, _last_unloaded_mlx, _kv_resume
+def get_last_unloaded_intent(identity):
+    with _lock:
+        return _last_unloaded_intent if _last_unloaded_model is identity else None
+
+
+def _set_last_unloaded(value, mlx: bool = False, intent = None) -> None:
+    global _last_unloaded_model, _last_unloaded_mlx, _last_unloaded_intent, _kv_resume
     stale = None
     with _lock:
         _last_unloaded_model = value
         _last_unloaded_mlx = mlx and value is not None
+        _last_unloaded_intent = intent if value is not None else None
         if value is None and _kv_resume is not None:
             stale, _kv_resume = _kv_resume, None
     if stale:
@@ -997,6 +1004,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
+                    intent = getattr(backend, "last_load_intent", None) if mlx is None else None
                     try:
                         if mlx is None:
                             await asyncio.to_thread(backend.unload_model)
@@ -1006,7 +1014,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         raise
-                    _set_last_unloaded(freed, mlx = mlx is not None)  # let an alias request reload it
+                    _set_last_unloaded(freed, mlx = mlx is not None, intent = intent)  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
                         logger.info("Idle auto-unload: saved chat KV for restore on reload")
