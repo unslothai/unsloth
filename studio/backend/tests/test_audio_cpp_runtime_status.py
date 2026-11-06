@@ -384,7 +384,6 @@ def test_stt_status_probes_transformers_off_the_event_loop(monkeypatch):
 
     from core.inference import stt_sidecar
 
-    # The first probe imports torch, Transformers and PyAV (seconds); every other request would stall.
     seen = []
 
     def available():
