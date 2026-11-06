@@ -690,8 +690,147 @@ def _write_float_seeds(path: Path, signature: str, names: set) -> bool:
         return False
 
 
+FLOAT_SEED_DEFAULTS_ENV = "UNSLOTH_DIFFUSION_FLOAT_SEED_DEFAULTS"
+# Config keys that only repeat blocks: they never change one block's trace (the defaults are recorded on 1 layer).
+_LAYER_COUNT_KEYS = frozenset({"num_layers", "num_single_layers", "n_layers", "n_refiner_layers"})
+# The names a fresh compile learns, per denoiser, so a first-ever load traces once like a returning one. Recorded by
+# compiling one layer of each listed model through ``_compile_repeated_blocks`` (random weights, real config); keyed by
+# ``_default_float_seed_key``, so any other torch minor, diffusers version, config, block code or block layout (LoRA,
+# int8 swaps) matches nothing. Dynamo numbers a SymFloat from its source name (``ShapeEnv._generate_unique_id``), so the
+# names do not depend on sizes; test_diffusion_float_seed_defaults relearns the FLUX.2 list on a tiny model.
+_FLUX2_SEEDS = (
+    "zf0",
+    "zf10",
+    "zf12",
+    "zf21",
+    "zf40",
+    "zf70",
+    "zf71",
+    "zf88",
+    "zf89",
+    "zf90",
+    "zf91",
+)
+_FLUX1_SEEDS = (
+    "zf9",
+    "zf10",
+    "zf12",
+    "zf21",
+    "zf22",
+    "zf40",
+    "zf65",
+    "zf70",
+    "zf71",
+    "zf79",
+    "zf88",
+    "zf90",
+    "zf92",
+)
+_WAN_SEEDS = ("zf12", "zf13", "zf14", "zf30", "zf34", "zf50", "zf54", "zf63", "zf75")
+_FLOAT_SEED_DEFAULTS: dict[str, tuple[str, ...]] = {
+    # torch 2.13, diffusers 0.42.1
+    "26fc8c5debb82d2d3cccaf8080c552dcd1768ab2edfa09edb051936a47e10f89": _FLUX2_SEEDS,  # FLUX.2-klein(-base)-4B
+    "d60d0d16e1911fb62378ceef4dbdf46e7f0e01f0c7e56ef1d1513ac60808851d": _FLUX2_SEEDS,  # FLUX.2-klein(-base)-9B
+    "941e4f61e20f630d6b5d0f7e2f1b7adce9d411807160b58a070a9a723a8a1771": _FLUX2_SEEDS,  # FLUX.2-dev
+    "9362235d3d2df5cebcb391ac3605ff93c07b53993427634762e04ba5e583a46a": _FLUX1_SEEDS,  # FLUX.1-dev/Krea/Kontext
+    "0e47148427f8335dee84b1ef5af22d756d9ce505d66b700aa60f50a04ec98955": _FLUX1_SEEDS,  # FLUX.1-schnell
+    "8ec06d9215a37602a413451c36a4d31281afe313a12def5ba61e4e3c52a0f786": (
+        "zf14",
+        "zf17",
+        "zf28",
+        "zf35",
+        "zf51",
+        "zf63",
+        "zf72",
+    ),  # Qwen-Image, Qwen-Image-2512
+    "da246ba89e5597df8ecf6154bb4194315cdd58875a844ff1ef60a67d1ddd85c2": (
+        "zf61",
+    ),  # Z-Image(-Turbo)
+    "3666d0b8efb92def7c29fd28ee3cb8aa4ca7e58ec87010d1b64bc706ba17771e": _WAN_SEEDS
+    + ("zf88",),  # Wan2.1-T2V-1.3B
+    "79b8de8a4e3986ac0039f7b89c973f1dcbb8fc0d848ae5e280a4f242a268d580": _WAN_SEEDS
+    + ("zf88",),  # Wan2.2-T2V-A14B
+    # Wan2.2-TI2V-5B runs with per-token timesteps (expand_timesteps), which renames one float.
+    "cfdb6158424e55521fdf5131a00c1a7d69c5427cabd3e0b0a87f1e6ad73eaea8": _WAN_SEEDS + ("zf87",),
+}
+
+
+def float_seed_defaults_enabled() -> bool:
+    raw = (os.environ.get(FLOAT_SEED_DEFAULTS_ENV) or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _block_layout(block: Any) -> list:
+    """What one block traces through: every submodule's class, attention processor and per-instance forward."""
+    out = []
+    for name, sub in block.named_modules():
+        proc = getattr(sub, "processor", None)
+        out.append(
+            [
+                name,
+                f"{type(sub).__module__}.{type(sub).__qualname__}",
+                "" if proc is None else f"{type(proc).__module__}.{type(proc).__qualname__}",
+                "forward" in vars(sub),
+            ]
+        )
+    return out
+
+
+def _default_float_seed_key(module: Any) -> Optional[str]:
+    """Portable key of one denoiser's block trace: no bytecode or build suffix, unlike ``_code_signature``."""
+    try:
+        import inspect
+
+        import diffusers
+        import torch
+
+        from .diffusion_block_graph import repeated_blocks
+
+        config = getattr(module, "config", None)
+        if not isinstance(config, dict):
+            return None
+        config = {
+            k: v
+            for k, v in config.items()
+            if not str(k).startswith("_") and k not in _LAYER_COUNT_KEYS
+        }
+        if getattr(module, "peft_config", None):
+            return None
+        first: dict = {}
+        for block in repeated_blocks(module):
+            first.setdefault(type(block), block)
+        if not first:
+            return None
+        parts = [
+            ".".join(str(torch.__version__).split("+", 1)[0].split(".")[:2]),
+            str(diffusers.__version__),
+            f"{type(module).__module__}.{type(module).__qualname__}",
+            json.dumps(config, sort_keys = True, default = str),
+        ]
+        for cls in sorted(first, key = lambda c: f"{c.__module__}.{c.__qualname__}"):
+            source = inspect.getsource(cls.forward)
+            parts.append(
+                f"{cls.__module__}.{cls.__qualname__}:{hashlib.sha256(source.encode('utf-8')).hexdigest()}"
+            )
+            parts.append(json.dumps(_block_layout(first[cls])))
+        return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    except Exception:  # noqa: BLE001 - no key, no defaults
+        return None
+
+
+def _default_float_seeds(modules: Any) -> set:
+    """Built-in names for denoisers whose key was recorded; an unknown denoiser gets none (main's restart)."""
+    if not float_seed_defaults_enabled() or not _FLOAT_SEED_DEFAULTS:
+        return set()
+    names: set = set()
+    for module in list(modules) if isinstance(modules, (list, tuple)) else [modules]:
+        names.update(_FLOAT_SEED_DEFAULTS.get(_default_float_seed_key(module) or "", ()))
+    return {n for n in names if _SYMFLOAT_NAME.match(n)}
+
+
 def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple], int]:
-    """Pre-seed the SymFloat names the last compile of this key learned; returns (keep state, names added)."""
+    """Pre-seed the SymFloat names the last compile of this key learned, else the built-in names for a known denoiser;
+    returns (keep state, names added)."""
     if seed_dir is None or not float_seeds_enabled():
         return None, 0
     try:
@@ -702,9 +841,13 @@ def _seed_floats(modules: Any, seed_dir: Optional[Path]) -> tuple[Optional[tuple
         path = Path(seed_dir) / FLOAT_SEEDS_FILE
         before = set(state.force_specializations)
         seeds = _read_float_seeds(path, signature)
+        builtin = False
+        if not seeds:
+            seeds = _default_float_seeds(modules)
+            builtin = bool(seeds)
         for name in sorted(seeds - before):
             state.specialize(name)
-        return (state, path, signature, before, seeds), len(seeds - before)
+        return (state, path, signature, before, seeds, builtin), len(seeds - before)
     except Exception:  # noqa: BLE001 - no seeds: the compile restarts as before
         return None, 0
 
@@ -713,7 +856,7 @@ def _keep_floats(seeded: Optional[tuple]) -> int:
     """Save this compile's specialised names if changed; returns how many are new."""
     if seeded is None:
         return 0
-    state, path, signature, before, seeds = seeded
+    state, path, signature, before, seeds, _builtin = seeded
     try:
         names = {
             n for n in set(state.force_specializations) - before if _SYMFLOAT_NAME.match(str(n))
@@ -742,6 +885,7 @@ class InlineFloatSeeds:
         self.logger = logger
         self.float_seeds = 0
         self.float_seeds_learned = 0
+        self.float_seeds_builtin = False
         self.seeded = False
         self.kept = False
         self._seeds: Optional[tuple] = None
@@ -751,11 +895,13 @@ class InlineFloatSeeds:
             return 0
         self.seeded = True
         self._seeds, self.float_seeds = _seed_floats(self.modules, self.seed_dir)
+        self.float_seeds_builtin = bool(self._seeds and self._seeds[5])
         if self.float_seeds and self.logger is not None:
             with contextlib.suppress(Exception):
                 self.logger.info(
-                    "diffusion.float_seeds: %d float specialisation(s) pre-seeded for the %s compile",
+                    "diffusion.float_seeds: %d %sfloat specialisation(s) pre-seeded for the %s compile",
                     self.float_seeds,
+                    "built-in " if self.float_seeds_builtin else "",
                     "/".join(type(m).__name__ for m in self.modules),
                 )
         return self.float_seeds
