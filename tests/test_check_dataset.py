@@ -258,3 +258,61 @@ def test_median_of_an_even_number_of_rows(capsys):
     check_dataset([{"text": "hi"}, {"text": "hi hello"}], _tokenizer(), max_seq_length = 8)
 
     assert "Token lengths: min 1 | median 1.5 | p95 1 | max 2" in capsys.readouterr().out
+
+
+class TokenizerWrapper:
+    # Same forwarding as mlx_lm.tokenizer_utils.TokenizerWrapper, which defines no __call__.
+    def __init__(self, tok):
+        self._tokenizer = tok
+
+    def __getattr__(self, attr):
+        if attr.startswith("_"):
+            return self.__getattribute__(attr)
+        return getattr(self._tokenizer, attr)
+
+
+def test_mlx_tokenizer_wrapper_is_unwrapped():
+    tok = get_chat_template(
+        _tokenizer(), chat_template = "chatml", map_eos_token = False, patch_saving = False
+    )
+    report = check_dataset(ROWS[:3], TokenizerWrapper(tok), max_seq_length = 8)
+    assert report["lengths"] == _lengths(ROWS[:3], tok)
+    assert report["template"] == "chatml"
+
+
+def test_replaced_template_is_not_reported_by_old_name():
+    tok = get_chat_template(
+        _tokenizer(), chat_template = "chatml", map_eos_token = False, patch_saving = False
+    )
+    tok.chat_template = TEMPLATE
+    assert check_dataset(ROWS[:1], tok, max_seq_length = 8)["template"] != "chatml"
+
+
+def test_preformatted_text_gets_no_second_bos():
+    from tokenizers import processors
+
+    tok = _tokenizer(template = None)
+    tok.add_special_tokens({"bos_token": "<s>"})
+    tok._tokenizer.post_processor = processors.TemplateProcessing(
+        single = "<s> $A", special_tokens = [("<s>", tok.convert_tokens_to_ids("<s>"))]
+    )
+    assert _lengths([{"text": "<s> hi hello"}, {"text": "hi hello"}], tok) == [3, 3]
+
+
+def test_media_rows_are_counted_but_not_measured(capsys):
+    template = (
+        "{% for m in messages %}{% if m['content'] is string %}{{ m['content'] }}"
+        "{% else %}{% for c in m['content'] %}{{ c.get('text', '<image>') }} {% endfor %}"
+        "{% endif %}{% endfor %}"
+    )
+    image_row = {
+        "messages": [
+            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+        ]
+    }
+    tok = _tokenizer(template)
+    report = check_dataset([image_row, _chat("hi", "hello")], tok, max_seq_length = 8)
+    assert report["media"] == 1
+    assert report["lengths"] == _lengths([_chat("hi", "hello")], tok)
+    assert "Not measured: 1 rows with images, video or audio" in capsys.readouterr().out

@@ -87,12 +87,25 @@ else:
         return _zoo_train_on_responses_only(trainer, **arguments)
 
 _DATASET_CHECK_COLUMNS = ("messages", "conversations", "text")
+_MEDIA_TYPES = ("image", "video", "audio")
 
 
 class _MalformedRow(Exception):
     pass
 
 
+def _has_media(row, messages):
+    if any(row.get(k) for k in ("images", "image", "videos", "video", "audios", "audio")):
+        return True
+    return any(
+        isinstance(part, dict) and part.get("type") in _MEDIA_TYPES
+        for m in messages
+        if isinstance(m.get("content"), list)
+        for part in m["content"]
+    )
+
+
+# Returns (text, is_empty, is_plain_text, has_media).
 def _render_dataset_row(row, tokenizer):
     if not isinstance(row, dict):
         raise _MalformedRow("row is not a dict")
@@ -103,7 +116,7 @@ def _render_dataset_row(row, tokenizer):
         prompt, completion = row["prompt"], row["completion"]
         if isinstance(prompt, str) and isinstance(completion, str):
             text = prompt + completion
-            return text, text.strip() == "", True
+            return text, text.strip() == "", True, False
         if not isinstance(prompt, list) or not isinstance(completion, list):
             raise _MalformedRow("prompt and completion are not both strings or both message lists")
         column, value = "prompt/completion", prompt + completion
@@ -122,10 +135,11 @@ def _render_dataset_row(row, tokenizer):
     if column == "text":
         if not isinstance(value, str):
             raise _MalformedRow("text is not a string")
-        return value, value.strip() == "", True
+        return value, value.strip() == "", True, False
     if not isinstance(value, list) or not value or not all(isinstance(m, dict) for m in value):
         raise _MalformedRow(f"{column} is not a list of role/content messages")
     if all("from" in m and "value" in m for m in value):
+        # get_chat_template(mapping = ...) templates read ShareGPT keys themselves.
         if "'role' not in messages[0]" not in (getattr(tokenizer, "chat_template", None) or ""):
             roles = {"human": "user", "gpt": "assistant"}
             value = [{"role": roles.get(m["from"], m["from"]), "content": m["value"]} for m in value]
@@ -141,13 +155,17 @@ def _render_dataset_row(row, tokenizer):
         raise _MalformedRow(f"chat template failed: {e}") from e
     contents = (m["content"] if "content" in m else m["value"] for m in value)
     empty = all(isinstance(c, str) and c.strip() == "" for c in contents)
-    return text, empty, False
+    return text, empty, False, _has_media(row, value)
 
 
 def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
+    # mlx-lm's TokenizerWrapper is not callable; Unsloth's attributes live on the HF tokenizer.
+    if tokenizer.__class__.__name__ == "TokenizerWrapper" and hasattr(tokenizer, "_tokenizer"):
+        tokenizer = tokenizer._tokenizer
+    chat_template = getattr(tokenizer, "chat_template", None)
     if response_part is None:
         response_part = getattr(tokenizer, "_unsloth_output_part", None)
-    if response_part is None and getattr(tokenizer, "chat_template", None) is not None:
+    if response_part is None and chat_template is not None:
         try:
             from unsloth_zoo.dataset_utils import get_chat_template_parts
             response_part = get_chat_template_parts(tokenizer)[1]
@@ -155,12 +173,15 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
             pass
 
     text_tokenizer = tokenizer.tokenizer if isinstance(tokenizer, ProcessorMixin) else tokenizer
-    rows = malformed = empty = found = 0
-    problems, lengths = [], []
+    bos = getattr(text_tokenizer, "bos_token", None)
+    bos_in_template = bos is not None and bos in (chat_template or "")
+    rows = malformed = empty = found = media = 0
+    problems = []
+    pending = {True: [], False: []}
     for i, row in enumerate(dataset):
         rows += 1
         try:
-            text, is_empty, add_special_tokens = _render_dataset_row(row, tokenizer)
+            text, is_empty, is_plain_text, has_media = _render_dataset_row(row, tokenizer)
         except _MalformedRow as e:
             malformed += 1
             if len(problems) < 5:
@@ -170,12 +191,31 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
             empty += 1
         if response_part is not None and response_part in text:
             found += 1
-        lengths.append(len(text_tokenizer(text, add_special_tokens = add_special_tokens).input_ids))
+        if has_media:
+            # Placeholders expand to many media tokens at training time, so a text-only count lies.
+            media += 1
+            continue
+        # Same rule as the SFT dataset prep in models/rl_replacements.py: no second BOS.
+        add_special_tokens = is_plain_text and not (
+            bos is not None and (bos_in_template or text.startswith(bos))
+        )
+        pending[add_special_tokens].append((i, text))
+
+    measured = []
+    for add_special_tokens, items in pending.items():
+        for start in range(0, len(items), 1024):
+            chunk = items[start : start + 1024]
+            ids = text_tokenizer(
+                [text for _, text in chunk], add_special_tokens = add_special_tokens
+            ).input_ids
+            measured += [(order, len(x)) for (order, _), x in zip(chunk, ids)]
+    lengths = [length for _, length in sorted(measured)]
 
     over = sum(length > max_seq_length for length in lengths)
     template = getattr(tokenizer, "_unsloth_chat_template_name", None)
+    template = template[0] if template and template[1] == chat_template else None
     if template is None:
-        if getattr(tokenizer, "chat_template", None) is None:
+        if chat_template is None:
             template = "none"
         else:
             template = f"{getattr(tokenizer, 'name_or_path', 'tokenizer')} (tokenizer's own)"
@@ -192,12 +232,15 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
             f"Token lengths: min {s[0]:,} | median {median} | "
             f"p95 {s[int(0.95 * (len(s) - 1))]:,} | max {s[-1]:,}"
         )
+    if media:
+        print(f"Not measured: {media:,} rows with images, video or audio (expanded at training time)")
     print(f"Over max_seq_length ({max_seq_length:,}): {over:,} ({100 * over / max(rows, 1):.1f}%)")
     print(f"Template: {template} | Response marker found in: {marker}")
     return {
         "rows": rows,
         "malformed": malformed,
         "empty": empty,
+        "media": media,
         "lengths": lengths,
         "max_seq_length": max_seq_length,
         "over_max_seq_length": over,
@@ -2866,7 +2909,9 @@ def get_chat_template(
 
     tokenizer._ollama_modelfile = ollama_modelfile
     tokenizer._system_message   = system_message
-    tokenizer._unsloth_chat_template_name = template_name
+    tokenizer._unsloth_chat_template_name = (
+        (template_name, chat_template) if template_name is not None else None
+    )
 
     # Re-wrap so the trainer gets the same TokenizerWrapper type back.
     if _mlx_tokenizer_wrapper is not None:
