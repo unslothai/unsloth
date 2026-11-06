@@ -898,6 +898,16 @@ def _refuse_base(
         raise ValueError(
             f"Unsloth: tensor parallelism v1 does not support packed MXFP4 weights ({path})."
         )
+    # Every projection runs through the region's own local-shard GEMM, never the module's forward: fp8
+    # training layers would silently train in 16 bit, and per-shard scales would differ from one process.
+    if "_unsloth_fp8_lora" in base.__dict__ or (
+        cls == "Float8Linear" and type(base).__module__.startswith("torchao.")
+    ):
+        raise ValueError(
+            f"Unsloth: tensor parallelism v1 does not support fp8 training layers ({path}: "
+            f"{'fp8 LoRA base' if cls != 'Float8Linear' else 'torchao Float8Linear'}); its local-shard GEMMs "
+            "would bypass the fp8 path. Use UNSLOTH_FSDP2=1 (data parallel) for float8_training, or drop it."
+        )
     for module in proj_module.modules():
         forward_qat = any("FakeQuantized" in c.__name__ for c in type(module).__mro__)
         if (
