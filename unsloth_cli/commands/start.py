@@ -3317,13 +3317,13 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
 
 def _codex_update_hint(executable: str) -> str:
     # Update the copy that resolves: a new one in ~/.local/bin sits behind an older one earlier on PATH.
+    if any(part in ("Cellar", "Caskroom") for part in Path(os.path.realpath(executable)).parts):
+        return "brew upgrade codex"
     directory = Path(executable).parent
     prefix = directory if os.name == "nt" else directory.parent
     package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules") / "@openai/codex"
     if package.is_dir():
         return _npm_install_hint("@openai/codex@latest", prefix = prefix)
-    if any(part in ("Cellar", "Caskroom") for part in Path(os.path.realpath(executable)).parts):
-        return "brew upgrade codex"
     return _npm_install_hint("@openai/codex@latest")
 
 

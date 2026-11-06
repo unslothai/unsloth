@@ -4380,6 +4380,8 @@ def test_codex_update_hint_uses_brew_for_a_homebrew_codex(tmp_path):
     link = tmp_path / "bin" / "codex"
     link.parent.mkdir()
     link.symlink_to(target)
+    # A leftover npm package under the same prefix must not win over the brew-owned link.
+    (tmp_path / "lib" / "node_modules" / "@openai" / "codex").mkdir(parents = True)
     assert start._codex_update_hint(str(link)) == "brew upgrade codex"
 
 
