@@ -23,6 +23,8 @@ def _roomy_host(monkeypatch):
     # The host's own free RAM can sit below the backup reserve (7 GB CI runners).
     from core.inference import diffusion_memory
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
+    # Resident merges have no group offloading to re-apply; the refresh imports diffusers, absent on CPU CI.
+    monkeypatch.setattr(lf, "_refresh_group_offload", lambda roots: None)
 
 
 class _Net(torch.nn.Module):

@@ -1139,8 +1139,10 @@ def test_a_lokr_only_weight_change_keeps_the_cuda_graphs(monkeypatch, tmp_path, 
 
 
 def _roomy_host(monkeypatch):
-    from core.inference import diffusion_memory
+    from core.inference import diffusion_lora_files, diffusion_memory
     monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
+    # No group offloading on a resident merge; the refresh imports diffusers, absent on CPU CI.
+    monkeypatch.setattr(diffusion_lora_files, "_refresh_group_offload", lambda roots: None)
 
 
 def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(monkeypatch):
