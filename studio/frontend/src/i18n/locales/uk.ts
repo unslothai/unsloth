@@ -2326,6 +2326,12 @@ export const uk = {
         autoCurrently:
           "На цьому комп’ютері автоматичний режим використовує {transport}.",
         xetMissing: "Xet недоступний, бо hf_xet не інстальовано.",
+        speedLimit: "Обмеження швидкості завантаження",
+        speedLimitDescription:
+          "Без обмеження, доки не задано значення. Обмежене завантаження йде через HTTPS.",
+        speedLimitNoLimit: "Без обмеження",
+        speedLimitInvalid: "Введіть число в Мбіт/с або залиште поле порожнім.",
+        speedLimitUsesHttps: "Поки встановлено обмеження швидкості, завантаження використовують HTTPS. Файли понад 50 ГБ і далі завантажуються через Xet без обмеження.",
       },
       uploads: {
         sectionTitle: "Вивантаження",
@@ -5936,7 +5942,7 @@ export const uk = {
     skippedVersion: "Наразі пропущено: {component} {version}",
     skippedUpdate: "Оновлення {component} наразі пропущено",
     skippedUpdates: "Оновлення {components} наразі пропущено",
-    vulkanFaster: "Vulkan на >10% швидший за ROCM. Перезапуск не потрібен",
+    vulkanFaster: "Швидше більш ніж на 10%",
     noRestart: "Перезапуск не потрібен",
     downloadSize: "Обсяг завантаження: {size}",
     backendChange: "Бекенд: {change}",
@@ -5945,8 +5951,8 @@ export const uk = {
     installingPhase: "Інсталяція {component} ({current} із {total})...",
     installingCount: "Інсталяція оновлень: {count}...",
     bundleTitle: "Оновлень середовища виконання: {count}",
-    newBackend: "Новий бекенд {component}",
-    newUpdate: "Нове оновлення {component}",
+    newBackend: "Новий бекенд середовища виконання",
+    newUpdate: "Нове оновлення середовища виконання",
     hideUpdate:
       "Приховати оновлення {component} до повторного відкриття Unsloth",
     hideUpdates:

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
 	MATERIALS,
 	LENS_SCALE,
+	lensDrawn,
 	sanitizeLens,
 	sanitizeMaterial,
 	sanitizeStrength,
@@ -62,8 +63,8 @@ test("glass strength repairs malformed persisted data", () => {
 
 test("composer outline off also drops the glass ring and bevel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	assert.match(css, /html\[data-glass\] [^{]*\[data-outline="false"\]\) \.unsloth-composer-surface,[^{]*\{\n  --composer-shadow: none;/);
-	assert.match(css, /\[data-outline="false"\]\) \.unsloth-composer-surface::before,[^{]*\{\n  content: none;/);
+	assert.match(css, /html\[data-glass\] [^{]*\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\),[^{]*\{\n  --composer-shadow: none;/);
+	assert.match(css, /\[data-outline="false"\]\) :is\(\.unsloth-composer-surface, \.unsloth-files-panel\)::before,[^{]*\{\n  content: none;/);
 });
 
 test("glass adds no outer shadows, only inset light", () => {
@@ -111,6 +112,15 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
+});
+
+test("a glass lens set to off draws no wallpaper copies", () => {
+	for (const material of MATERIALS) assert.equal(lensDrawn(material, "off"), false);
+	for (const lens of ["magnify", "shrink"] as const) {
+		assert.equal(lensDrawn("solid", lens), false);
+		for (const material of MATERIALS.filter((m) => m !== "solid"))
+			assert.equal(lensDrawn(material, lens), true);
+	}
 });
 
 test("glass panes thicken over images that would wash out their text", async () => {
@@ -163,11 +173,12 @@ test("the glass preference survives an account switch, and sign-in waits for the
 	assert.match(client, /getConfirmedLoginMode = \(\): LoginMode \| null =>\n\s*statusKnown \? loginMode : null;/);
 });
 
-test("glass over an open conversation dims the image and thickens only that composer", () => {
+test("glass over an open conversation dims the image and thickens the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
-	const conversation = String.raw`html\[data-glass\] :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\):not\(:has\(\.aui-thread-welcome-center\)\)`;
+	// Welcome comes from a root flag (welcome.ts), not a :has() walk over the whole thread.
+	const conversation = String.raw`html\[data-glass\]:not\(\[data-chat-welcome\]\) :is\(\[data-wallpaper-workspace\], \[data-chat-content-root\]\):has\(> \.chat-wallpaper\[data-ready\]\):not\(\[data-wallpaper-route="page"\]\)`;
 	assert.match(css, new RegExp(`${conversation} > \\.chat-wallpaper,[^{]*\\{\\n  opacity: calc\\(\\.7 \\* `));
-	assert.match(css, new RegExp(`${conversation} \\.unsloth-composer-surface,[^{]*\\{\\n  --glass-composer-boost: 9%;`));
+	assert.match(css, new RegExp(`${conversation} :is\\(\\.unsloth-composer-surface, \\.unsloth-files-panel\\),[^{]*\\{\\n  --glass-composer-boost: 9%;`));
 	assert.match(css, /calc\(\(max\(calc\(var\(--glass-tint\) \+ 14%\), var\(--glass-read-floor, 0%\), var\(--glass-composer-floor\)\) \+ var\(--glass-composer-boost, 0%\)\)/);
 });
 
@@ -247,11 +258,11 @@ test("menus, popovers and dialogs point every hover token at the glass hover", (
 	}
 });
 
-test("glass sheen runs at 90% except on the composer", () => {
+test("glass sheen runs at 90% except on the composer and files panel", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\^="liquid"\] \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.059\)/);
-	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
-	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
+	assert.match(css, /html\[data-glass\^="liquid"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-sheen: radial-gradient\(130% 90% at 18% 0%, rgb\(255 255 255 \/ \.066\)/);
+	assert.match(css, /html\.dark\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n  --glass-edge:/);
 });
 
 test("grouped glass cards get more blur and a lighter fill than single controls", () => {
@@ -321,7 +332,7 @@ test("light glass draws no grey outlines outside the composer", () => {
 	}
 	assert.match(css, /html\[data-glass\] \{\n  --glass-hover: [^;]*;\n  --glass-hover-rim: inset 0 0 0 0 transparent;/);
 	assert.match(css, /html\.dark\[data-glass\] \{\n[^}]*--glass-hover-rim: inset 0 0 0 1px rgb\(255 255 255 \/ \.06\);/);
-	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
+	assert.match(css, /html\[data-glass="liquid-3d"\] :is\(\.unsloth-composer-surface, \.unsloth-files-panel, \.wallpaper-preview-composer\) \{\n[^}]*--glass-rim: [^;]*inset 0 0 0 1px/);
 });
 
 test("light glass pages drop outlines from boxed panels but keep checkboxes", () => {

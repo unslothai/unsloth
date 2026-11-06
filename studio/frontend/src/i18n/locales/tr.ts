@@ -2297,6 +2297,12 @@ export const tr = {
         autoCurrently:
           "Otomatik, bu makinede şu aktarımı kullanıyor: {transport}",
         xetMissing: "hf_xet yüklü olmadığı için Xet kullanılamıyor.",
+        speedLimit: "İndirme hızı sınırı",
+        speedLimitDescription:
+          "Bir değer girilmedikçe sınır yoktur. Sınırlı indirme HTTPS kullanır.",
+        speedLimitNoLimit: "Sınır yok",
+        speedLimitInvalid: "Mbit/s cinsinden bir sayı girin veya alanı boş bırakın.",
+        speedLimitUsesHttps: "Hız sınırı ayarlıyken indirmeler HTTPS kullanır. 50 GB'tan büyük dosyalar sınırsız olarak Xet kullanmaya devam eder.",
       },
       uploads: {
         sectionTitle: "Karşıya yüklemeler",
@@ -5888,8 +5894,7 @@ export const tr = {
     skippedVersion: "{component} {version} şimdilik atlandı",
     skippedUpdate: "{component} güncellemesi şimdilik atlandı",
     skippedUpdates: "{components} güncellemeleri şimdilik atlandı",
-    vulkanFaster:
-      "Vulkan, ROCM ile karşılaştırıldığında >%10 daha hızlı. Yeniden başlatma gerekmez",
+    vulkanFaster: "%10'dan fazla daha hızlı",
     noRestart: "Yeniden başlatma gerekmez",
     downloadSize: "{size} indirme",
     backendChange: "Arka uç: {change}",
@@ -5898,8 +5903,8 @@ export const tr = {
     installingPhase: "{component} kuruluyor ({current} / {total})...",
     installingCount: "{count} güncelleme kuruluyor...",
     bundleTitle: "{count} çalışma zamanı güncellemesi",
-    newBackend: "Yeni {component} arka ucu",
-    newUpdate: "Yeni {component} güncellemesi",
+    newBackend: "Yeni çalışma zamanı arka ucu",
+    newUpdate: "Yeni çalışma zamanı güncellemesi",
     hideUpdate:
       "Unsloth yeniden açılana kadar {component} güncellemesini gizle",
     hideUpdates:

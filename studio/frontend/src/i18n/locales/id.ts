@@ -2302,6 +2302,12 @@ export const id = {
           "Memilih per mesin dan beralih ke HTTPS jika Xet macet atau gagal di sini.",
         autoCurrently: "Otomatis menggunakan {transport} di mesin ini.",
         xetMissing: "Xet tidak tersedia karena hf_xet tidak terinstal.",
+        speedLimit: "Batas kecepatan unduhan",
+        speedLimitDescription:
+          "Tanpa batas kecuali ada angka yang diatur. Unduhan yang dibatasi memakai HTTPS.",
+        speedLimitNoLimit: "Tanpa batas",
+        speedLimitInvalid: "Masukkan angka dalam Mbit/s, atau biarkan kolom kosong.",
+        speedLimitUsesHttps: "Unduhan menggunakan HTTPS selama batas kecepatan diatur. File di atas 50 GB tetap menggunakan Xet, tanpa batas.",
       },
       uploads: {
         sectionTitle: "Unggahan",
@@ -5893,8 +5899,7 @@ export const id = {
     skippedVersion: "{component} {version} dilewati untuk saat ini",
     skippedUpdate: "Pembaruan {component} dilewati untuk saat ini",
     skippedUpdates: "Pembaruan {components} dilewati untuk saat ini",
-    vulkanFaster:
-      "Vulkan >10% lebih cepat daripada ROCM. Tidak perlu memulai ulang",
+    vulkanFaster: "Lebih dari 10% lebih cepat",
     noRestart: "Tidak perlu memulai ulang",
     downloadSize: "Unduhan {size}",
     backendChange: "Backend {change}",
@@ -5903,8 +5908,8 @@ export const id = {
     installingPhase: "Menginstal {component} ({current} dari {total})...",
     installingCount: "Menginstal {count} pembaruan...",
     bundleTitle: "{count} pembaruan runtime",
-    newBackend: "Backend {component} baru",
-    newUpdate: "Pembaruan {component} baru",
+    newBackend: "Backend runtime baru",
+    newUpdate: "Pembaruan runtime baru",
     hideUpdate:
       "Sembunyikan pembaruan {component} hingga Unsloth dibuka kembali",
     hideUpdates:

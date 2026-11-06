@@ -58,3 +58,15 @@ test("only a page shown natively skips the floating window's scale; files and ne
   assert.match(panel, /const nativeShown = native && activeEntry\?\.kind === "web" && !activeTab\?\.nativeError;/);
   assert.match(panel, /floating && !nativeShown\s*\?\s*FLOATING_PAGE_STYLE/);
 });
+
+test("floating is the chat's own: another chat opens its browser beside it, and the first floats again on return", () => {
+  const store = () => useBrowserStore.getState();
+  store().showChat("single:float-a");
+  store().openUrl("https://example.com/a");
+  store().setFloating(true);
+  store().showChat("single:float-b");
+  store().openUrl("https://example.com/b");
+  assert.equal(store().floating, false);
+  store().showChat("single:float-a");
+  assert.deepEqual([store().open, store().floating], [true, true]);
+});

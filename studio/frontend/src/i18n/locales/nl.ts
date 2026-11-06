@@ -2341,6 +2341,12 @@ export const nl = {
         autoCurrently: "Automatisch gebruikt {transport} op deze machine.",
         xetMissing:
           "Xet is niet beschikbaar omdat hf_xet niet is geïnstalleerd.",
+        speedLimit: "Downloadsnelheidslimiet",
+        speedLimitDescription:
+          "Geen limiet zolang er geen waarde is ingesteld. Een beperkte download gebruikt HTTPS.",
+        speedLimitNoLimit: "Geen limiet",
+        speedLimitInvalid: "Voer een getal in Mbit/s in of laat het veld leeg.",
+        speedLimitUsesHttps: "Zolang er een snelheidslimiet is ingesteld, gebruiken downloads HTTPS. Bestanden groter dan 50 GB gebruiken nog steeds Xet, zonder de limiet.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -5950,7 +5956,7 @@ export const nl = {
     skippedVersion: "{component} {version} voorlopig overgeslagen",
     skippedUpdate: "De update van {component} voorlopig overgeslagen",
     skippedUpdates: "De updates van {components} voorlopig overgeslagen",
-    vulkanFaster: "Vulkan is >10% sneller dan ROCM. Opnieuw starten niet nodig",
+    vulkanFaster: "Meer dan 10% sneller",
     noRestart: "Opnieuw starten niet nodig",
     downloadSize: "{size} downloaden",
     backendChange: "Backend {change}",
@@ -5959,8 +5965,8 @@ export const nl = {
     installingPhase: "{component} installeren ({current} van {total})...",
     installingCount: "{count} updates installeren...",
     bundleTitle: "{count} runtime-updates",
-    newBackend: "Nieuwe backend voor {component}",
-    newUpdate: "Nieuwe update voor {component}",
+    newBackend: "Nieuwe runtime-backend",
+    newUpdate: "Nieuwe runtime-update",
     hideUpdate:
       "De update van {component} verbergen totdat Unsloth opnieuw wordt geopend",
     hideUpdates:

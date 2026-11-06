@@ -6,17 +6,17 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import importlib.util
 import json
 import os
 import re
 import secrets
 import weakref
-from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from itertools import chain, groupby
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1131,19 +1131,28 @@ def _run_created(run: dict[str, Any]) -> int:
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # By creation time, queue entries first on ties: a started job keeps its place across pages.
-    remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
-    # Batch members share started_at: order them by creation time, as the live batch lists them.
-    runs = groupby(_iter_runs(), key = lambda run: run.get("started_at"))
-    runs = chain.from_iterable(sorted(g, key = _run_created, reverse = True) for _, g in runs)
-    # A live run can acquire its history row between the status and history reads.
-    history = ((run, True) for run in runs if run["id"] not in live)
-    for row, is_run in chain(((job, False) for job in live.values()), history):
-        created_at = _run_created(row) if is_run else row["created_at"]
-        while remaining and remaining[0]["created_at"] >= created_at:
-            yield remaining.popleft(), False
-        yield row, is_run
-    yield from ((job, False) for job in remaining)
+    # Newest created first, same-second ties by public id: a job keeps its place from queue to
+    # history and across restarts. History is newest start first and no job starts before it is
+    # created, so a buffered row created after the current row's start is final.
+    def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
+        return (-created_at, public_id, seq), row, is_run
+
+    heap = [
+        item(job["created_at"] or 0, job["id"], seq, job, False)
+        for seq, job in enumerate(chain(pending, live.values()))
+    ]
+    heapq.heapify(heap)
+    for seq, run in enumerate(_iter_runs(), len(heap)):
+        # A live run can acquire its history row between the status and history reads.
+        if run["id"] in live:
+            continue
+        started = _unix(run.get("started_at")) or 0
+        while heap and -heap[0][0][0] > started:
+            yield heapq.heappop(heap)[1:]
+        public_id = _RUN_ALIAS.get(run["id"]) or _job_id(run["id"])
+        heapq.heappush(heap, item(min(_run_created(run), started), public_id, seq, run, True))
+    while heap:
+        yield heapq.heappop(heap)[1:]
 
 
 def _list_job_page(

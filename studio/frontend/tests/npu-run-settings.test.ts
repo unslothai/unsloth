@@ -17,7 +17,7 @@ const npuLoad = runtime.slice(
 const pickers = source("features/model-picker/components/model-selector/pickers.tsx");
 const npuRow = pickers.slice(
   pickers.indexOf("const renderNpuRow = "),
-  pickers.indexOf("const npuBrowseForcedOpen = "),
+  pickers.indexOf("const showNpuBrowse ="),
 );
 const configPage = source("features/model-picker/components/model-config-page.tsx");
 
@@ -41,4 +41,10 @@ test("NPU run settings pin customContextLength and offer nothing FastFlowLM igno
   assert.equal(npuAware.length, writers.length);
   assert.match(configPage, /!target\.isGguf && !targetIsMlx && !targetIsNpu && /);
   assert.match(configPage, /target\.isGguf \|\| pinsContextLength\s+\? effectiveRuntimeConfig/);
+});
+
+test("the NPU footer's setup path keeps the setup notice while a search is active", () => {
+  const browse = pickers.slice(pickers.indexOf("const showNpuBrowse ="));
+  assert.match(browse, /\(!showHfSection \|\| !npuCatalog\.ready \|\| npuBrowseRows\.length > 0\)/);
+  assert.match(browse, /\{showHfSection && npuCatalog\.ready \? null : \(\s*<NpuSetupNotice/);
 });

@@ -659,6 +659,19 @@ def _encode_plan(
     return configured, parts
 
 
+def _stream_need_mib_or_none(config: dict, model: Any) -> Optional[int]:
+    """``_encode_plan``'s streamed need, or None when this encoder never streams."""
+    if config.get("resident") or (os.environ.get(STREAM_ENCODE_ENV) or "").strip() == "0":
+        return None
+    if str(config.get("device") or "").split(":", 1)[0] not in ("cuda", "xpu"):
+        return None
+    try:
+        parts = _stream_parts(model)
+        return None if parts is None else _stream_need_mib(parts)
+    except Exception:  # noqa: BLE001 -- reporting only
+        return None
+
+
 # "0" turns the layer-streamed encode off (a card too small for the whole encoder then encodes on the CPU again).
 STREAM_ENCODE_ENV = "UNSLOTH_LTX25_TE_STREAM"
 
@@ -888,6 +901,8 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                 # "hosted" (the unsloth file), "quantized_at_load" (built from the dense encoder) or None (bf16).
                 "te_source": config.get("_te_source"),
                 "weights_mib": _weights_mib_or_none(model),
+                # video_ltx25.lend_resident_dit_for_encode lends resident denoiser blocks up to this.
+                "stream_need_mib": _stream_need_mib_or_none(config, model),
                 **_memory_stats(config.get("device") or ""),
             }
         )

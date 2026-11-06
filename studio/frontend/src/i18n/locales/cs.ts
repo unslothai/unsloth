@@ -2320,6 +2320,12 @@ export const cs = {
         autoCurrently:
           "Automatický režim na tomto počítači používá: {transport}.",
         xetMissing: "Xet není k dispozici, protože není nainstalován hf_xet.",
+        speedLimit: "Limit rychlosti stahování",
+        speedLimitDescription:
+          "Bez limitu, dokud nezadáte hodnotu. Omezené stahování používá HTTPS.",
+        speedLimitNoLimit: "Bez limitu",
+        speedLimitInvalid: "Zadejte počet Mbit/s nebo nechte pole prázdné.",
+        speedLimitUsesHttps: "Když je nastaven limit rychlosti, stahování používá HTTPS. Soubory nad 50 GB stále používají Xet, bez limitu.",
       },
       uploads: {
         sectionTitle: "Nahrávání",
@@ -5909,8 +5915,7 @@ export const cs = {
     skippedVersion: "{component} {version} je zatím přeskočeno",
     skippedUpdate: "Aktualizace {component} je zatím přeskočena",
     skippedUpdates: "Aktualizace {components} jsou zatím přeskočeny",
-    vulkanFaster:
-      "Vulkan je o více než 10 % rychlejší než ROCm. Restart není potřeba",
+    vulkanFaster: "O více než 10 % rychlejší",
     noRestart: "Restart není potřeba",
     downloadSize: "Stažení {size}",
     backendChange: "Backend {change}",
@@ -5919,8 +5924,8 @@ export const cs = {
     installingPhase: "Instalace {component} ({current} z {total})...",
     installingCount: "Instalace aktualizací ({count})...",
     bundleTitle: "Aktualizace běhových prostředí: {count}",
-    newBackend: "Nový backend {component}",
-    newUpdate: "Nová aktualizace {component}",
+    newBackend: "Nový backend běhového prostředí",
+    newUpdate: "Nová aktualizace běhového prostředí",
     hideUpdate: "Skrýt aktualizaci {component} do dalšího spuštění Unsloth",
     hideUpdates: "Skrýt aktualizace {components} do dalšího spuštění Unsloth",
     whatsNew: "Co je nového",

@@ -2292,6 +2292,12 @@ export const fa = {
         autoCurrently:
           "حالت خودکار روی این دستگاه از {transport} استفاده می‌کند.",
         xetMissing: "Xet در دسترس نیست، زیرا hf_xet نصب نشده است.",
+        speedLimit: "محدودیت سرعت دانلود",
+        speedLimitDescription:
+          "بدون محدودیت مگر اینکه عددی تعیین شود. دانلود محدودشده از HTTPS استفاده می‌کند.",
+        speedLimitNoLimit: "بدون محدودیت",
+        speedLimitInvalid: "عددی بر حسب Mbit/s وارد کنید یا فیلد را خالی بگذارید.",
+        speedLimitUsesHttps: "تا زمانی که محدودیت سرعت تنظیم شده باشد، دانلودها از HTTPS استفاده می‌کنند. فایل‌های بزرگ‌تر از ۵۰ گیگابایت همچنان بدون محدودیت از Xet استفاده می‌کنند.",
       },
       uploads: {
         sectionTitle: "آپلودها",
@@ -5860,8 +5866,7 @@ export const fa = {
     skippedVersion: "{component} {version} فعلاً رد شد",
     skippedUpdate: "به‌روزرسانی {component} فعلاً رد شد",
     skippedUpdates: "به‌روزرسانی‌های {components} فعلاً رد شدند",
-    vulkanFaster:
-      "Vulkan بیش از 10% سریع‌تر از ROCM است. نیازی به راه‌اندازی دوباره نیست",
+    vulkanFaster: "بیش از ۱۰٪ سریع‌تر",
     noRestart: "نیازی به راه‌اندازی دوباره نیست",
     downloadSize: "دانلود {size}",
     backendChange: "بک‌اند {change}",
@@ -5870,8 +5875,8 @@ export const fa = {
     installingPhase: "در حال نصب {component} ({current} از {total})...",
     installingCount: "در حال نصب {count} به‌روزرسانی...",
     bundleTitle: "{count} به‌روزرسانی محیط اجرا",
-    newBackend: "بک‌اند جدید {component}",
-    newUpdate: "به‌روزرسانی جدید {component}",
+    newBackend: "بک‌اند جدید محیط اجرا",
+    newUpdate: "به‌روزرسانی جدید محیط اجرا",
     hideUpdate: "پنهان کردن به‌روزرسانی {component} تا باز شدن دوبارهٔ Unsloth",
     hideUpdates:
       "پنهان کردن به‌روزرسانی‌های {components} تا باز شدن دوبارهٔ Unsloth",

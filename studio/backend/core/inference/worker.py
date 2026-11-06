@@ -594,15 +594,23 @@ def _load_download_repos(
             mapped = mlx_bnb_base_repo(str(base))
         else:
             try:
-                from unsloth.models import loader
-                from unsloth.models.loader_utils import get_model_name
+                from unsloth.models import loader, loader_utils
 
                 quantized = (
                     load_in_4bit
                     and not getattr(mc, "is_audio", False)
                     and getattr(loader, "ALLOW_BITSANDBYTES", True)
                 )
-                mapped = get_model_name(str(base), load_in_4bit = quantized)
+                # Unknown names resolve to themselves; get_model_name would fetch the remote mapper for nothing.
+                mapped = str(base)
+                name = mapped.lower()
+                tables = (
+                    loader_utils.FLOAT_TO_INT_MAPPER,
+                    loader_utils.INT_TO_FLOAT_MAPPER,
+                    loader_utils.MAP_TO_UNSLOTH_16bit,
+                )
+                if name in loader_utils.BAD_MAPPINGS or any(name in t for t in tables):
+                    mapped = loader_utils.get_model_name(str(base), load_in_4bit = quantized)
                 if mapped and not getattr(loader, "ALLOW_PREQUANTIZED_MODELS", True):
                     mapped = loader._strip_unsloth_bnb_4bit_suffix(mapped)
             except Exception:
