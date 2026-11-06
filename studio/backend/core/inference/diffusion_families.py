@@ -328,6 +328,11 @@ _LUMINA2_BF16_WHEN_RESIDENT = (
 _HIDREAM_BF16_WHEN_RESIDENT = (
     "INT8 is barely faster than compiled bf16 on a card that holds bf16 and changes image detail"
 )
+# Anima stayed bf16 under auto while its transformer could not compile; INT8 on it is unmeasured. Not the small-DiT
+# reason: that one also compiles from render 1, where Anima compiles in the background from render 3.
+ANIMA_BF16_WHEN_RESIDENT = (
+    "INT8 is unmeasured on Anima; it stays bf16 while it fits, as it did before its blocks compiled"
+)
 # Small DiTs (<= ~6B) stay bf16 while it fits: quantising moves detail (L4 vs bf16 LPIPS: FP8 FLUX.2-klein-4B 0.065,
 # Z-Image-Turbo 0.103; FLUX.3-klein INT8 0.027). INT8 still when bf16 would offload; such loads compile from render 1.
 SMALL_DIT_BF16_WHEN_RESIDENT = (
@@ -1222,8 +1227,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "CosmosTransformer3DModel",
         base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
         aliases = ("anima-base", "anima-2.9b"),
-        # A 2B / 2.9B DiT: compiled, it keeps the small-DiT bf16 default it had while it could not compile.
-        profile = FamilyProfile(auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT),
+        profile = FamilyProfile(auto_bf16_when_resident = ANIMA_BF16_WHEN_RESIDENT),
         gguf_loadable = False,
         fp16_incompatible = True,
     ),

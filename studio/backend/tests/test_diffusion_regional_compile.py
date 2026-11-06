@@ -276,11 +276,16 @@ def test_studio_compile_path_engages_on_lumina(monkeypatch):
 
 
 def test_anima_keeps_its_bf16_auto_default_once_it_compiles():
-    """Declaring the blocks lifted the "cannot be regionally compiled" bf16 reason; the small-DiT rule takes its place,
-    so a resident Anima load stays bf16 in auto as before."""
+    """Declaring the blocks lifted the "cannot be regionally compiled" bf16 reason; Anima's own reason takes its place,
+    so a resident Anima load stays bf16 in auto as before (and not the small-DiT one, which compiles from render 1)."""
     from core.inference.diffusion import _auto_keeps_bf16_reason
-    from core.inference.diffusion_families import SMALL_DIT_BF16_WHEN_RESIDENT, detect_family
+    from core.inference.diffusion_families import (
+        ANIMA_BF16_WHEN_RESIDENT,
+        SMALL_DIT_BF16_WHEN_RESIDENT,
+        detect_family,
+    )
 
     anima = detect_family("", override = "anima")
     reason = _auto_keeps_bf16_reason(anima, "pipeline", anima.base_repo)
-    assert reason and SMALL_DIT_BF16_WHEN_RESIDENT in reason
+    assert reason and ANIMA_BF16_WHEN_RESIDENT in reason
+    assert SMALL_DIT_BF16_WHEN_RESIDENT not in reason
