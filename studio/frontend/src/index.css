@@ -4920,8 +4920,11 @@ html.force-reduced-motion .sidebar-section-drop-line {
 	font-size: calc(1rem * var(--ui-space-scale, 1));
 }
 
-.browser-panel-body > * {
-	font-size: 1rem;
+/* Layered, or it outranks a child's own text-* utility (the agent bar rendered at 16px). */
+@layer base {
+	.browser-panel-body > * {
+		font-size: 1rem;
+	}
 }
 
 /* Keep a usable address field when the fixed navigation and action buttons no longer fit. */
