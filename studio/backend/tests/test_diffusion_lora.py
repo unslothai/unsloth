@@ -1138,6 +1138,11 @@ def test_a_lokr_only_weight_change_keeps_the_cuda_graphs(monkeypatch, tmp_path, 
     assert invalidated
 
 
+def _roomy_host(monkeypatch):
+    from core.inference import diffusion_memory
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
+
+
 def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(monkeypatch):
     """A quantized single file's adapters merged into its weights at load: a weight change or switching the adapter off
     re-merges into the same tensors, so a compiled model reads the new weights with no recompile and no dropped graph,
@@ -1181,6 +1186,7 @@ def test_merged_quant_file_adapters_change_weight_in_place_with_no_recompile(mon
     state.cuda_graphs = ()
     pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
     pipe._unsloth_loras_baked = True
+    _roomy_host(monkeypatch)
     assert qm.merge(pipe, [net], {"a": 1.0}, "cpu")
     assert type(net[0]) is torch.nn.Linear
 
@@ -1235,6 +1241,7 @@ def _merged_lokr_pipe(monkeypatch):
     state.cuda_graphs = ()
     pipe._unsloth_loras = b._resolve_lora_set([("a", 1.0)], family = "flux.1", hf_token = None)
     pipe._unsloth_loras_baked = True
+    _roomy_host(monkeypatch)
     assert qm.merge(pipe, [net], {"a": 1.0}, "cpu")
     return b, state, pipe, net
 

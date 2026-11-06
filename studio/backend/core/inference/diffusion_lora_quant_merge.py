@@ -306,16 +306,19 @@ def merge(
         lora_files.set_adapter_weights(pipe, names, [weights[n] for n in names])
     if layers is None or not _host_room(layers):
         return False
-    for entry in layers:
-        kind = _weight_kind(entry.module.weight)
-        entry.backup = {
-            k: t.detach().to("cpu", copy = True)
-            for k, t in _tensors(entry.module.weight, kind).items()
-        }
     try:
+        for entry in layers:
+            kind = _weight_kind(entry.module.weight)
+            entry.backup = {
+                k: t.detach().to("cpu", copy = True)
+                for k, t in _tensors(entry.module.weight, kind).items()
+            }
         _apply(layers, weights, device)
     except Exception as exc:  # noqa: BLE001 - put the weights back, keep the adapters
-        _restore(layers)
+        # A failed backup allocation leaves later layers without one, and their weights untouched.
+        _restore([e for e in layers if e.backup])
+        for entry in layers:
+            entry.backup = {}
         if logger is not None:
             logger.warning(
                 "diffusion.lora_merge: merge failed, keeping the adapter layers: %s", exc

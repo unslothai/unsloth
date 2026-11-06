@@ -18,6 +18,13 @@ from core.inference.diffusion_convrot import _install_rotation, quantize_convrot
 GROUP = 16
 
 
+@pytest.fixture(autouse = True)
+def _roomy_host(monkeypatch):
+    # The host's own free RAM can sit below the backup reserve (7 GB CI runners).
+    from core.inference import diffusion_memory
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: 1 << 20)
+
+
 class _Net(torch.nn.Module):
     def __init__(
         self,
@@ -258,3 +265,23 @@ def test_max_speed_never_fuses_qkv_over_merged_weights():
     _lokr(net, pipe)
     assert qm.merge(pipe, [net], {"k": 1.0}, "cpu")
     assert ds._fuse_qkv(pipe, None) is False and calls == []
+
+
+def test_a_failed_backup_allocation_keeps_the_adapter_layers(monkeypatch):
+    net = _Net("int8")
+    pipe = _Pipe(net)
+    original = _codes(net)
+    _lokr(net, pipe)
+    real_to = torch.Tensor.to
+
+    def to(self, *args, **kwargs):
+        if args and args[0] == "cpu" and kwargs.get("copy"):
+            raise RuntimeError("DefaultCPUAllocator: not enough memory")
+        return real_to(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", to)
+    assert not qm.merge(pipe, [net], {"k": 1.0}, "cpu")
+    monkeypatch.undo()
+    assert isinstance(net.proj["q"], lf.kron_linear_class()) and pipe.unloaded == 0
+    assert all(torch.equal(_codes(net)[k], original[k]) for k in original)
+    assert not qm.merged(pipe)
