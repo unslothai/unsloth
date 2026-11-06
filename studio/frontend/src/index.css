@@ -6870,22 +6870,22 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
 }
 /* Settings blurs on its own layer underneath it. On the dialog itself, Chromium re-ran the blur for every frame
    its panes scrolled; a pseudo-element's backdrop is left alone while only the content above it moves, which
-   takes about 40% off the CPU of scrolling Settings. The look is unchanged to the eye. Only Settings: its
+   takes about 36% off the CPU of scrolling Settings. The look is unchanged to the eye. Only Settings: its
    shell never scrolls (overflow-hidden), while a dialog that scrolls its own box would carry an absolute
-   layer away with its content and lose the blur. */
-html[data-glass][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog] {
+   layer away with its content and lose the blur. Not on WebKit (data-glass-layers), where the layer costs
+   about 9% more; no will-change, which made the Style dropdown inside Settings slower to open. */
+html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog] {
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
   isolation: isolate;
 }
-html[data-glass][data-glass-menus] [data-slot="dialog-content"][data-settings-dialog]::before {
+html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog]::before {
   content: "";
   position: absolute;
   inset: 0;
   z-index: -1;
   border-radius: inherit;
   pointer-events: none;
-  will-change: transform;
   -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
   backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
 }
