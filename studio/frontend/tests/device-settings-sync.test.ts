@@ -1,0 +1,123 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+import assert from "node:assert/strict";
+import { register } from "node:module";
+import test from "node:test";
+
+import { installLocalStorageFake } from "./helpers/kit.ts";
+
+register("./helpers/tauri-webview-resolver.mjs", import.meta.url);
+register("./helpers/settings-api-resolver.mjs", import.meta.url);
+const { store } = installLocalStorageFake();
+const attrs = new Map<string, string>();
+Object.assign(globalThis.document, {
+  documentElement: {
+    style: {},
+    getAttribute: (name: string) => attrs.get(name) ?? null,
+    setAttribute: (name: string, value: string) => attrs.set(name, value),
+    removeAttribute: (name: string) => attrs.delete(name),
+  },
+});
+
+const empty = {
+  saved: false,
+  updatedAt: null,
+  interfaceScale: null,
+  browser: null,
+  chat: null,
+  plusMenu: null,
+  timeFormat: null,
+  spellcheck: null,
+};
+let account: Record<string, unknown> = empty;
+const puts: Record<string, unknown>[] = [];
+globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+  if (init?.method === "PUT") puts.push(JSON.parse(String(init.body)));
+  return new Response(JSON.stringify(account), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
+}) as typeof fetch;
+
+const { startClientPreferencesSync } = await import(
+  "../src/features/settings/hooks/use-device-settings-sync.ts"
+);
+const { useChatPreferencesStore } = await import(
+  "../src/features/chat/stores/chat-preferences-store.ts"
+);
+const { PLUS_MENU_ORDER, usePlusMenuPrefsStore } = await import(
+  "../src/features/chat/stores/plus-menu-prefs-store.ts"
+);
+const { getTimeFormat, setTimeFormat } = await import("../src/lib/time-format.ts");
+const { getSpellCheck } = await import("../src/lib/spellcheck.ts");
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 1000));
+
+function freshBrowser() {
+  store.clear();
+  puts.length = 0;
+  useChatPreferencesStore.setState(useChatPreferencesStore.getInitialState());
+  usePlusMenuPrefsStore.setState(usePlusMenuPrefsStore.getInitialState());
+  setTimeFormat("system");
+  store.clear();
+}
+
+test("a fresh browser takes the account's preferences and sends no defaults back", async () => {
+  freshBrowser();
+  account = {
+    ...empty,
+    saved: true,
+    chat: { sendShortcut: "mod-enter", showReplyTimes: true, toolVisibility: "expanded" },
+    plusMenu: {
+      pins: { mcp: true },
+      order: [...PLUS_MENU_ORDER].reverse(),
+      pinnedPromptIds: ["p1"],
+    },
+    timeFormat: "24h",
+    spellcheck: false,
+  };
+  const stop = startClientPreferencesSync();
+  await settle();
+  stop();
+  const chat = useChatPreferencesStore.getState();
+  assert.equal(chat.sendShortcut, "mod-enter");
+  assert.equal(chat.showReplyTimes, true);
+  assert.equal(chat.toolVisibility, "expanded");
+  assert.equal(chat.confirmDeleteChats, true);
+  const menu = usePlusMenuPrefsStore.getState();
+  assert.equal(menu.pins.mcp, true);
+  assert.equal(menu.pins.deepResearch, true);
+  assert.deepEqual(menu.order, [...PLUS_MENU_ORDER].reverse());
+  assert.deepEqual(menu.pinnedPromptIds, ["p1"]);
+  assert.equal(getTimeFormat(), "24h");
+  assert.equal(getSpellCheck(), false);
+  assert.deepEqual(puts, []);
+});
+
+test("an edit sends only its own section, without this browser's local-only fields", async () => {
+  freshBrowser();
+  account = { ...empty, saved: true, timeFormat: "24h" };
+  const stop = startClientPreferencesSync();
+  await settle();
+  useChatPreferencesStore.getState().setShowReplyTimes(true);
+  useChatPreferencesStore.getState().setNotifyWhenReplyFinishes(true);
+  await settle();
+  stop();
+  assert.equal(puts.length, 1);
+  assert.deepEqual(Object.keys(puts[0]), ["chat"]);
+  const chat = puts[0].chat as Record<string, unknown>;
+  assert.equal(chat.showReplyTimes, true);
+  assert.equal("notifyWhenReplyFinishes" in chat, false);
+  assert.equal("filesPanelCollapsed" in chat, false);
+});
+
+test("choices made here before the account had any are uploaded once", async () => {
+  freshBrowser();
+  setTimeFormat("12h");
+  account = empty;
+  const stop = startClientPreferencesSync();
+  await settle();
+  stop();
+  assert.deepEqual(puts, [{ timeFormat: "12h" }]);
+});
