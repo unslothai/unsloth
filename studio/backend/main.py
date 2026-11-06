@@ -1721,6 +1721,28 @@ async def _send_413(send, total_bytes: int, max_bytes: int) -> None:
     await send({"type": "http.response.body", "body": payload, "more_body": False})
 
 
+_ZSTD_BODY_PATH = "/v1/systemone"
+_ZSTD_MIN_DECODED_BYTES = 8 * 1024 * 1024
+_ZSTD_MAX_RATIO = 64
+
+
+def _zstd_decode(zstd, data: bytes, limit: int) -> Optional[bytes]:
+    frames = []
+    total = 0
+    while True:
+        decompressor = zstd.ZstdDecompressor()
+        frame = decompressor.decompress(data, max_length = limit + 1 - total)
+        total += len(frame)
+        if total > limit:
+            return None
+        if not decompressor.eof:
+            raise zstd.ZstdError("truncated zstd frame")
+        frames.append(frame)
+        data = decompressor.unused_data
+        if not data:
+            return b"".join(frames)
+
+
 class MaxBodyMiddleware:
     """Reject oversized bodies on protected POST/PUT/PATCH; raw ASGI so chunked uploads cannot bypass the cap."""
 
@@ -1847,7 +1869,10 @@ class MaxBodyMiddleware:
 
         body = b"".join(chunks)
         headers = scope.get("headers", [])
-        if dict(headers).get(b"content-encoding", b"").strip().lower() == b"zstd":
+        if (
+            path.rstrip("/") == _ZSTD_BODY_PATH
+            and dict(headers).get(b"content-encoding", b"").strip().lower() == b"zstd"
+        ):
             try:
                 from compression import zstd  # novermin
             except ImportError:
@@ -1861,18 +1886,20 @@ class MaxBodyMiddleware:
                         status_code = 415,
                     )(scope, receive, send)
                     return
-            decompressor = zstd.ZstdDecompressor()
+            # Cap the expansion separately: a few KB of zstd can decode to gigabytes.
+            limit = min(max_bytes, max(_ZSTD_MIN_DECODED_BYTES, len(body) * _ZSTD_MAX_RATIO))
             try:
-                body = decompressor.decompress(body, max_length = max_bytes + 1)
+                body = await asyncio.to_thread(_zstd_decode, zstd, body, limit)
             except zstd.ZstdError:
-                body = b""
-            if len(body) > max_bytes:
-                await _send_413(send, len(body), max_bytes)
-                return
-            if not decompressor.eof or decompressor.unused_data:
                 await JSONResponse({"detail": "Request body is not valid zstd."}, status_code = 400)(
                     scope, receive, send
                 )
+                return
+            if body is None:
+                await JSONResponse(
+                    {"detail": f"Decoded zstd request body is larger than {limit:,} bytes."},
+                    status_code = 413,
+                )(scope, receive, send)
                 return
             scope = dict(
                 scope,

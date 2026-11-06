@@ -29,6 +29,15 @@ def main_module():
     return _main
 
 
+@pytest.fixture(scope = "module")
+def zstd():
+    if sys.version_info >= (3, 14):
+        from compression import zstd  # novermin
+    else:
+        from backports import zstd
+    return zstd
+
+
 def _make_protected_app(
     max_bytes: int,
     main_module,
@@ -44,6 +53,8 @@ def _make_protected_app(
         max_bytes_getter = lambda: max_bytes,
         protected_prefixes = (
             "/v1/chat/completions",
+            "/v1/systemone",
+            "/api/auth",
             "/api/inference",
             "/api/settings",
             "/api/train",
@@ -58,6 +69,14 @@ def _make_protected_app(
     @app.post("/v1/chat/completions")
     async def chat(payload: dict):
         return {"ok": True, "n": len(payload.get("text", ""))}
+
+    @app.post("/v1/systemone")
+    async def systemone(payload: dict):
+        return {"ok": True, "n": len(payload.get("text", ""))}
+
+    @app.post("/api/auth/login")
+    async def login(request: Request):
+        return {"ok": True, "total": len(await request.body())}
 
     @app.post("/api/other")
     async def other(payload: dict):
@@ -103,31 +122,56 @@ class TestMaxBodyMiddleware:
         assert r.status_code == 413
         assert "too large" in r.json()["detail"].lower()
 
-    def test_zstd_body_is_decoded_and_capped_after_decoding(self, main_module):
-        if sys.version_info >= (3, 14):
-            from compression import zstd
-        else:
-            from backports import zstd
+    def test_zstd_body_is_decoded_on_systemone(self, main_module, zstd):
         c = TestClient(_make_protected_app(4096, main_module))
-        zstd_headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"}
+        headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"}
+        payload = json.dumps({"text": "x" * 3000}).encode()
 
-        decoded = c.post(
-            "/v1/chat/completions",
-            content = zstd.compress(json.dumps({"text": "x" * 3000}).encode()),
-            headers = zstd_headers,
+        decoded = c.post("/v1/systemone", content = zstd.compress(payload), headers = headers)
+        frames = c.post(
+            "/v1/systemone",
+            content = zstd.compress(payload[:1500]) + zstd.compress(payload[1500:]),
+            headers = headers,
         )
-        bomb = c.post(
-            "/v1/chat/completions",
+        oversized = c.post(
+            "/v1/systemone",
             content = zstd.compress(json.dumps({"text": "x" * 100_000}).encode()),
-            headers = zstd_headers,
+            headers = headers,
         )
-        garbage = c.post("/v1/chat/completions", content = b"not zstd", headers = zstd_headers)
+        garbage = c.post("/v1/systemone", content = b"not zstd", headers = headers)
+        truncated = c.post("/v1/systemone", content = zstd.compress(payload)[:-4], headers = headers)
 
         assert decoded.status_code == 200
         assert decoded.json()["n"] == 3000
-        assert bomb.status_code == 413
+        assert frames.status_code == 200
+        assert frames.json()["n"] == 3000
+        assert oversized.status_code == 413
         assert garbage.status_code == 400
         assert "zstd" in garbage.json()["detail"]
+        assert truncated.status_code == 400
+
+    def test_zstd_bomb_is_not_decoded_off_systemone(self, main_module, zstd):
+        c = TestClient(_make_protected_app(1 << 30, main_module))
+        bomb = zstd.compress(b"\0" * (64 * 1024 * 1024))
+        r = c.post(
+            "/api/auth/login",
+            content = bomb,
+            headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"},
+        )
+        assert r.status_code == 200
+        assert r.json()["total"] == len(bomb)
+
+    def test_zstd_bomb_on_systemone_hits_decoded_cap(self, main_module, zstd):
+        c = TestClient(_make_protected_app(1 << 30, main_module))
+        bomb = zstd.compress(json.dumps({"text": "x" * (9 * 1024 * 1024)}).encode())
+        r = c.post(
+            "/v1/systemone",
+            content = bomb,
+            headers = {"Content-Type": "application/json", "Content-Encoding": "zstd"},
+        )
+        assert len(bomb) < 64 * 1024
+        assert r.status_code == 413
+        assert "zstd" in r.json()["detail"]
 
     def test_unprotected_prefix_passes_large_body(self, main_module):
         app = _make_protected_app(1024, main_module)
