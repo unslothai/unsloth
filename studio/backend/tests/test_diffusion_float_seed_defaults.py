@@ -21,7 +21,10 @@ from core.inference import diffusion_bg_compile as bg  # noqa: E402
 if (
     bg._tensorify_state() is None
 ):  # pragma: no cover - a torch without TensorifyState has nothing to seed
-    pytest.skip("this torch has no TensorifyState", allow_module_level = True)
+    pytest.skip(
+        reason = "torch without TensorifyState: Dynamo has no float specialisations to seed",
+        allow_module_level = True,
+    )
 
 
 class Block(torch.nn.Module):
