@@ -141,7 +141,12 @@ def split_profile(tokenizer):
     if inner is None:
         return None
     try:
-        size = len(inner)
+        # Not len(inner): tokenizers < 0.23 rebuilds the whole vocab for it.
+        backend = inner.backend_tokenizer
+        size = (
+            backend.get_vocab_size(with_added_tokens = False),
+            len(backend.get_added_tokens_decoder()),
+        )
     except Exception:  # noqa: BLE001
         return None
     with _PROFILES_LOCK:

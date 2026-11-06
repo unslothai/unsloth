@@ -65,7 +65,7 @@ def _plan(policy = dm.OFFLOAD_MODEL):
 
 @pytest.mark.parametrize("budget_mib, free_mib", [(4096, 3684), (6144, 5700)])
 def test_sdxl_streams_where_whole_module_offload_cannot_fit(budget_mib, free_mib):
-    room = dm.unet_stream_room_mib(free_mib, SDXL_UNET_MIB, SDXL_VAE_MIB)
+    room = dm.unet_stream_room_mib(free_mib, SDXL_UNET_MIB, SDXL_VAE_MIB, lend = False)
     assert (
         room is not None
     ), f"{budget_mib} MiB budget: whole-module offload of the 4.8 GiB UNet OOMs"
@@ -90,8 +90,8 @@ def test_more_free_vram_keeps_more_leaves_resident():
 
 def test_fp32_decode_of_an_fp16_vae_keeps_fewer_leaves_resident():
     for free_mib in (5700, 8000 - 1):
-        r16 = dm.unet_stream_room_mib(free_mib, 7000, SDXL_VAE_MIB)
-        r32 = dm.unet_stream_room_mib(free_mib, 7000, SDXL_VAE_MIB, fp32_decode = True)
+        r16 = dm.unet_stream_room_mib(free_mib, 7000, SDXL_VAE_MIB, lend = False)
+        r32 = dm.unet_stream_room_mib(free_mib, 7000, SDXL_VAE_MIB, fp32_decode = True, lend = False)
         assert r16 is not None and r32 is not None and r32 < r16
     assert dm._MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB > dm._MEASURED_UNET_STREAMED_PEAK_MIB
 
@@ -215,3 +215,78 @@ def test_deferred_speed_profile_skipped_only_for_a_streamed_unet(monkeypatch):
         dmod.DiffusionBackend._engage_deferred_speed(backend, states[streamed])
         assert states[streamed].speed_deferred is False
     assert ran == [states[False]]
+
+
+# ---- the decode borrows the resident leaves (UNSLOTH_DIFFUSION_UNET_STREAM_LEND)
+
+
+@pytest.mark.parametrize("free_mib", [3684, 5732])
+def test_lending_sizes_the_leaves_from_the_denoise_peak(free_mib, monkeypatch):
+    monkeypatch.delenv(dm.UNET_STREAM_LEND_ENV, raising = False)
+    lent = dm.unet_stream_room_mib(free_mib, SDXL_UNET_MIB, SDXL_VAE_MIB)
+    kept = dm.unet_stream_room_mib(free_mib, SDXL_UNET_MIB, SDXL_VAE_MIB, lend = False)
+    reserve = (
+        dm._measured_reserve_mib(dm._MEASURED_UNET_STREAMED_DENOISE_MIB) + dm._UNET_STREAM_SLACK_MIB
+    )
+    assert lent == free_mib - SDXL_VAE_MIB - reserve
+    assert lent > kept
+    # the decode's own peak no longer has to fit beside every leaf; the 2048^2 denoise still does
+    assert dm._MEASURED_UNET_STREAMED_DENOISE_MIB < dm._MEASURED_UNET_STREAMED_PEAK_MIB
+
+
+def test_lend_kill_switch_restores_the_decode_sized_reserve(monkeypatch):
+    monkeypatch.setenv(dm.UNET_STREAM_LEND_ENV, "0")
+    assert dm.unet_stream_room_mib(3684, SDXL_UNET_MIB, SDXL_VAE_MIB) == dm.unet_stream_room_mib(
+        3684, SDXL_UNET_MIB, SDXL_VAE_MIB, lend = False
+    )
+
+
+@pytest.mark.parametrize("env, lent", [(None, True), ("0", False)])
+def test_streamed_unet_lends_its_leaves_to_the_decode(cuda_free, monkeypatch, env, lent):
+    if env is None:
+        monkeypatch.delenv(dm.UNET_STREAM_LEND_ENV, raising = False)
+    else:
+        monkeypatch.setenv(dm.UNET_STREAM_LEND_ENV, env)
+    pipe = _pipe(unet_mib = 4)
+    pipe.unet = pipe.components["unet"] = torch.nn.Linear(
+        512, 512 * 8000, bias = False, device = "meta"
+    )
+    cuda_free["free"] = 8000
+    policy, _ = dm.apply_memory_plan(pipe, _plan(), device = "cuda")
+    assert policy == dm.OFFLOAD_GROUP
+    lend = getattr(pipe, dm.DECODE_LEND_ATTR, None)
+    if not lent:
+        assert lend is None
+        return
+    assert lend == dm.unet_decode_lend(False)
+    # a 1024^2 decode needs the measured decode peak x margin; 4x the pixels needs 4x (tiled: an over-release)
+    need = dm.decode_need_mib(lend, width = 1024, height = 1024)
+    assert need >= dm._MEASURED_UNET_STREAMED_PEAK_MIB * dm._MEASURED_PEAK_MARGIN
+    assert dm.decode_need_mib(lend, width = 2048, height = 2048) >= 4 * need - 4
+
+
+def test_fp32_decode_lends_the_fp32_peak():
+    assert dm.unet_decode_lend(True)[1] == dm._MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+    assert dm.unet_decode_lend(False)[1] == dm._MEASURED_UNET_STREAMED_PEAK_MIB
+
+
+def test_release_for_decode_streams_the_unet_shortfall(monkeypatch):
+    """At decode start with 1500 MiB free, the 1024^2 decode (2435 x 1.15 + slack) borrows the shortfall."""
+    pipe = types.SimpleNamespace(components = {})
+    setattr(pipe, dm.DECODE_LEND_ATTR, dm.unet_decode_lend(False))
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda device = None: (1500 << 20, 24 << 30))
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device = None: 0)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+    monkeypatch.setattr(dm, "_graph_held_cache_bytes", lambda index: 0)
+    monkeypatch.setattr(dm, "user_budget_reserve_bytes", lambda dev, total: 0)
+    asked = []
+    monkeypatch.setattr(
+        dm,
+        "release_resident_groups",
+        lambda p, need, logger = None, **kw: asked.append(need) or (lambda: None),
+    )
+    restore = dm.release_for_decode(pipe, width = 1024, height = 1024, device = "cuda")
+    assert callable(restore)
+    need = dm.decode_need_mib(dm.unet_decode_lend(False), width = 1024, height = 1024)
+    assert asked == [need + dm._DECODE_SLACK_MIB - 1500]

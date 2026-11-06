@@ -52,6 +52,8 @@ import {
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
+import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
+import { WindowedMessageBody } from "@/components/assistant-ui/windowed-message-body";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
@@ -150,7 +152,6 @@ import {
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
-  BookmarkTurnButton,
   BookmarkTurnMenuItem,
   TurnNavigator,
 } from "@/components/assistant-ui/turn-navigation";
@@ -196,7 +197,12 @@ import {
   type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
-import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
+import { insertSavedPrompt } from "@/features/chat/prompt-storage/insert-prompt";
+import {
+  COMPOSER_POSITION_BOTTOM,
+  COMPOSER_POSITION_MIDDLE,
+  useChatPreferencesStore,
+} from "@/features/chat/stores/chat-preferences-store";
 import {
   sortProjectsByActivity,
   useChatProjects,
@@ -231,7 +237,12 @@ import {
   providerModelSupportsStudioTools,
 } from "@/features/chat/external-providers";
 import { toolStatusKind } from "@/features/chat/utils/tool-status";
-import { formatPrefillDetails, formatPrefillTimeLeft, prefillPercent } from "@/features/chat";
+import {
+  betweenToolRounds,
+  formatPrefillDetails,
+  formatPrefillTimeLeft,
+  prefillPercent,
+} from "@/features/chat";
 import { replySourceMarkdown } from "@/features/chat/utils/reply-source-markdown";
 import { toolResultModelText } from "@/features/chat/api/chat-adapter";
 import {
@@ -419,7 +430,7 @@ import {
   ReadAloudIcon,
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
-import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { markComposerScrollable, markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -2072,7 +2083,7 @@ export const Thread: FC<{
     startGrammarPrewarm();
   }, []);
   const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
+    (s) => s.newChatComposerPosition >= COMPOSER_POSITION_BOTTOM,
   );
   // Intent-aware autoscroll replaces assistant-ui's built-in autoscroll to
   // prevent the streaming-mutation race that snaps the viewport back to the
@@ -2774,9 +2785,15 @@ const ThreadWelcome: FC<{
   });
   const customText = greeting.kind === "text" ? greeting.text : null;
   // At the bottom, Thread docks the composer and the greeting centres in the space above it.
-  const composerAtBottom = useChatPreferencesStore(
-    (s) => s.newChatComposerAtBottom,
+  const composerPosition = useChatPreferencesStore(
+    (s) => s.newChatComposerPosition,
   );
+  const composerAtBottom = composerPosition >= COMPOSER_POSITION_BOTTOM;
+  // Below 50 the top padding shrinks; above it, spacers split the leftover height.
+  const lift =
+    Math.min(composerPosition, COMPOSER_POSITION_MIDDLE) /
+    COMPOSER_POSITION_MIDDLE;
+  const sink = Math.max(0, composerPosition - COMPOSER_POSITION_MIDDLE);
   useMarkChatWelcome();
   const [welcome, setWelcome] = useState<Welcome>(DEFAULT_WELCOME);
   const t = useT();
@@ -2799,12 +2816,23 @@ const ThreadWelcome: FC<{
             ? "justify-center pb-[calc(160px*var(--ui-space-scale,1))]"
             : "justify-start has-[.unsloth-files-panel]:justify-center has-[.unsloth-files-panel]:pt-0 has-[.unsloth-files-panel]:pb-[6dvh]",
           // Without the greeting, its row and gap become padding, so the composer stays where it was.
+          // The image row's -76px margin needs at least that much padding.
           !composerAtBottom &&
-            (greeting.kind !== "off" || incognito
-              ? "pt-[27.5dvh]"
-              : "pt-[calc(27.5dvh_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
+            (greeting.kind === "image" && !incognito
+              ? "pt-[max(calc(76px*var(--ui-space-scale,1)),calc(27.5dvh*var(--welcome-lift,1)))]"
+              : greeting.kind !== "off" || incognito
+                ? "pt-[calc(27.5dvh*var(--welcome-lift,1))]"
+                : "pt-[calc(27.5dvh*var(--welcome-lift,1)_+_44px*var(--ui-space-scale,1)_+_2.25rem)]"),
         )}
+        style={{ "--welcome-lift": lift } as CSSProperties}
       >
+        {!composerAtBottom && (
+          <div
+            aria-hidden="true"
+            className="[:has(.unsloth-files-panel)>&]:hidden"
+            style={{ flexGrow: sink }}
+          />
+        )}
         {/* No padding, so the composer here is as wide as once it docks. */}
         <div className="aui-thread-welcome-message flex w-full flex-col justify-center gap-9">
           {/* The setting hides the whole greeting; the incognito title is a status, so it stays. */}
@@ -2872,6 +2900,13 @@ const ThreadWelcome: FC<{
             <ComposerAnimated threadId={threadId} />
           )}
         </div>
+        {!composerAtBottom && (
+          <div
+            aria-hidden="true"
+            className="[:has(.unsloth-files-panel)>&]:hidden"
+            style={{ flexGrow: COMPOSER_POSITION_MIDDLE - sink }}
+          />
+        )}
       </div>
     </div>
   );
@@ -3269,8 +3304,13 @@ const Composer: FC<{
   const handleEditorHeightChange = useCallback(
     (height: number, meta: { rowHeight: number }) => {
       setEditorHeight(height);
-      if (meta.rowHeight <= 0) return;
       const el = inputRef.current;
+      // Drafts set without typing change only the height.
+      if (el) {
+        markComposerScrollable(el);
+        markComposerScrollEdges(el);
+      }
+      if (meta.rowHeight <= 0) return;
       if (el && !lineMetricsRef.current) {
         const cs = getComputedStyle(el);
         const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
@@ -5729,6 +5769,7 @@ const Composer: FC<{
           data-pill-compact={pillCompact}
         >
           <ComposerToolsMenu
+            inputRef={inputRef}
             side={effectiveMenuSide}
             researchAvailable={!researchUsed}
             audioUploadBusy={audioUpload.busy}
@@ -5792,6 +5833,9 @@ const Composer: FC<{
                   markComposerScrollEdges(event.currentTarget)
                 }
                 onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onFocusCapture={(event) =>
                   markComposerScrollEdges(event.currentTarget)
                 }
                 // Capture, so inputProps keeps the handlers it already owns.
@@ -6777,11 +6821,18 @@ function usePickComposerAttachment(): () => void {
   }, [aui, audioAttachmentsEnabled]);
 }
 
+const LazyLibraryAttachmentPicker = lazy(() =>
+  import("@/components/assistant-ui/library-attachment-picker").then((module) => ({
+    default: module.LibraryAttachmentPicker,
+  })),
+);
+
 const ComposerToolsMenu: FC<{
+  inputRef: RefObject<HTMLTextAreaElement | null>;
   side?: "top" | "bottom";
   researchAvailable: boolean;
   audioUploadBusy: boolean;
-}> = ({ side = "bottom", researchAvailable, audioUploadBusy }) => {
+}> = ({ inputRef, side = "bottom", researchAvailable, audioUploadBusy }) => {
   const t = useT();
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
@@ -6872,6 +6923,8 @@ const ComposerToolsMenu: FC<{
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [skillsOn, setSkillsOn] = useSkillsSwitch();
   const [promptStorageOpen, setPromptStorageOpen] = useState(false);
+  const [libraryPickerOpen, setLibraryPickerOpen] = useState(false);
+  const libraryPickerRequested = useRef(false);
   const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const aui = useAui();
   const composerCanAddAttachments = useAuiState(
@@ -7070,7 +7123,7 @@ const ComposerToolsMenu: FC<{
           {recentPrompts.map((p) => (
             <DropdownMenuItem
               key={`prompt:${p.id}`}
-              onSelect={() => aui.composer().setText(p.text)}
+              onSelect={() => insertSavedPrompt(inputRef.current, p.text, (next) => aui.composer().setText(next))}
             >
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
@@ -7196,12 +7249,15 @@ const ComposerToolsMenu: FC<{
 
   return (
     <>
+    {libraryPickerOpen ? (
+      <Suspense fallback={null}>
+        <LazyLibraryAttachmentPicker onClose={() => setLibraryPickerOpen(false)} />
+      </Suspense>
+    ) : null}
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
-      onUse={(text) => {
-        aui.composer().setText(text);
-      }}
+      onUse={(text) => insertSavedPrompt(inputRef.current, text, (next) => aui.composer().setText(next))}
       onRunList={(items) => runPromptList(items, true)}
     />
     <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
@@ -7223,7 +7279,13 @@ const ComposerToolsMenu: FC<{
         avoidCollisions={true}
         className="unsloth-plus-menu w-[calc(244px*var(--ui-space-scale,1))]"
         // Don't refocus the + on close; restored focus showed a stray ring.
-        onCloseAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (libraryPickerRequested.current) {
+            libraryPickerRequested.current = false;
+            if (chatActive) setLibraryPickerOpen(true);
+          }
+        }}
       >
         <DropdownMenuItem
           disabled={!composerCanAddAttachments}
@@ -7318,6 +7380,14 @@ const ComposerToolsMenu: FC<{
             More
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="unsloth-plus-menu w-[calc(248px*var(--ui-space-scale,1))]">
+            <DropdownMenuItem
+              disabled={!composerCanAddAttachments}
+              onSelect={() => { libraryPickerRequested.current = true; }}
+            >
+              <HugeiconsIcon icon={Attachment01Icon} strokeWidth={2} />
+              Attach from Library
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
             {overflowPlusItems.map((id) => (
               <Fragment key={id}>{plusMenuNodes[id]}</Fragment>
             ))}
@@ -7705,7 +7775,22 @@ const GeneratingIndicator: FC = () => {
   return <GeneratingStatus />;
 };
 
-// Mounted only under the empty running reply, so the thread's other messages subscribe to nothing new.
+// GeneratingIndicator's status for the gap after a tool result, until the next pass streams its first part.
+const NextRoundIndicator: FC = () => {
+  const show = useAuiState(({ message }) =>
+    betweenToolRounds(message.status?.type === "running", message.content),
+  );
+  if (!show) {
+    return null;
+  }
+  return (
+    <div data-slot="next-round-indicator" className="mt-2">
+      <GeneratingStatus />
+    </div>
+  );
+};
+
+// Mounted only under a running reply waiting on the model, so the thread's other messages subscribe to nothing new.
 const GeneratingStatus: FC = () => {
   // Keyed like DiffusionCanvas: a first turn reads "__default" until the thread persists.
   const threadKey =
@@ -7720,9 +7805,22 @@ const GeneratingStatus: FC = () => {
   const decoding = useChatRuntimeStore(
     (s) => s.liveGenerationByThreadId[threadKey]?.decode != null,
   );
+  const compacting = useChatRuntimeStore(
+    (s) => s.liveGenerationByThreadId[threadKey]?.compacting === true,
+  );
   const showDetails = useChatPreferencesStore((s) => s.showGenerationDetails);
   const locale = useLocale();
   const t = useT();
+  if (compacting) {
+    return (
+      <span
+        data-slot="compacting-progress"
+        className="generating-glint text-sm text-muted-foreground"
+      >
+        {t("generationStats.compactingContext")}
+      </span>
+    );
+  }
   const percent = prefill ? prefillPercent(prefill) : null;
   // Held at 100% until the first token: going back to Working... for that moment would flash too.
   if (prefill === null || !labelShown || percent === null || decoding) {
@@ -8174,6 +8272,10 @@ const ResearchMessageRunIdContext = createContext<string | null>(null);
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
+  const replyRef = focusReveal.ref;
+  useEffect(() => {
+    if (replyRef.current) return observeReplyPaint(replyRef.current);
+  }, [replyRef]);
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) =>
     "status" in message && message.status?.type === "running"
@@ -8256,6 +8358,7 @@ const AssistantMessage: FC = () => {
       onFocus={focusReveal.onFocus}
       onBlur={focusReveal.onBlur}
     >
+      <WindowedMessageBody enabled={!isEditing && messageContent !== null && !researchRunId}>
       <div className="aui-assistant-message-content wrap-break-word min-w-0 text-[#0f1114] dark:text-foreground leading-relaxed">
         {isEditing ? (
           // Same surface as a prompt's EditComposer, at the reply's full width. Bottom gap is padding:
@@ -8296,6 +8399,7 @@ const AssistantMessage: FC = () => {
                 <DiffusionCanvas />
 
                 <MessagePrimitive.Parts components={ASSISTANT_PART_COMPONENTS} />
+                <NextRoundIndicator />
                 <SourcesGroup />
                 <MessageHtmlArtifacts />
                 <ContinueMessageBar />
@@ -8314,6 +8418,7 @@ const AssistantMessage: FC = () => {
         <LiveGenerationLine />
         <AssistantActionBar />
       </div>
+      </WindowedMessageBody>
       {/* Renders nothing. `If last` keeps the hook off the other N-1. */}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
@@ -8579,8 +8684,12 @@ const DeleteMessageButton: FC = () => {
   );
 };
 
+// A thin diagonal reads small at the shared size.
+const EDIT_GLYPH = "size-[calc(var(--icon-size)*1.049)]";
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(8px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+const MORE_MENU_ITEM_CLASS =
+  "aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50";
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -8677,7 +8786,7 @@ const EditAssistantMessageButton: FC = () => {
       <HugeiconsIcon
         icon={Edit03Icon}
         strokeWidth={1.75}
-        className="size-icon"
+        className={EDIT_GLYPH}
       />
     </TooltipIconButton>
   );
@@ -8980,6 +9089,7 @@ const UserMessage: FC = () => {
       tabIndex={0}
       {...focusReveal}
     >
+      <WindowedMessageBody>
       <ScheduledTaskSource />
       <UserMessageAttachments />
       <UserMessageAudio />
@@ -8988,7 +9098,7 @@ const UserMessage: FC = () => {
         {hasContent ? (
           <div
             dir="auto"
-            className="aui-user-message-content wrap-break-word w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+            className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
             <MessagePrimitive.Parts />
           </div>
         ) : null}
@@ -8997,6 +9107,7 @@ const UserMessage: FC = () => {
           <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
         </UserMessageFooter>
       </div>
+      </WindowedMessageBody>
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
@@ -9024,17 +9135,56 @@ const UserActionBar: FC = () => {
             <HugeiconsIcon
               icon={Edit03Icon}
               strokeWidth={1.75}
-              className="size-icon"
+              className={EDIT_GLYPH}
             />
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
-      <BookmarkTurnButton />
       <RewindMessageButton />
       <ForkCountBadge />
-      <ForkMessageButton />
       <DeleteMessageButton />
+      <UserMoreMenu />
     </UserMessageActionBar>
+  );
+};
+
+const UserMoreMenu: FC = () => {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const collisionPadding = useWindowChromeCollisionPadding(undefined);
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+  return (
+    // Non-modal: see AssistantActionBar.
+    <ActionBarMorePrimitive.Root modal={false}>
+      <ActionBarMorePrimitive.Trigger asChild={true}>
+        <TooltipIconButton
+          ref={triggerRef}
+          tooltip="More"
+          className="data-[state=open]:bg-accent"
+        >
+          <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+        </TooltipIconButton>
+      </ActionBarMorePrimitive.Trigger>
+      <ActionBarMorePrimitive.Content
+        side="bottom"
+        align="end"
+        collisionPadding={collisionPadding}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        className={MORE_MENU_CONTENT_CLASS}
+      >
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <MenuDismissGuard triggerRef={triggerRef} />
+          <ActionBarMorePrimitive.Item
+            disabled={forkDisabled}
+            onSelect={() => void forkMessage()}
+            className={MORE_MENU_ITEM_CLASS}
+          >
+            <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-[calc(var(--icon-size)*0.97)]" />
+            Fork from here
+          </ActionBarMorePrimitive.Item>
+          <BookmarkTurnMenuItem ownTurn={true} className={MORE_MENU_ITEM_CLASS} />
+        </div>
+      </ActionBarMorePrimitive.Content>
+    </ActionBarMorePrimitive.Root>
   );
 };
 

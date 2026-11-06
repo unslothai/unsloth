@@ -9,7 +9,7 @@ const stub = (source) => ({ url: `data:text/javascript,${encodeURIComponent(sour
 
 const STUBS = {
   "../page-frame":
-    "export const requestFrameAgent = (tabId, op, code) => globalThis.__frameAgent(tabId, op, code);" +
+    "export const requestFrameAgent = (tabId, op, code, timeoutMs = 5000) => globalThis.__frameAgent(tabId, op, code, timeoutMs);" +
     " export const sendFrameCommand = (tabId, command) => globalThis.__frameCommand?.(tabId, command) ?? false;",
   "../capture": "export const screenshotPage = async () => null; export const captureHiddenPage = async () => null;",
   // Native pages only when a test sets globalThis.__native; it answers their calls via __callNative.
@@ -24,6 +24,10 @@ const STUBS = {
     " export const localOriginGranted = (tabId, url) => globalThis.__granted?.get(tabId) === new URL(url).origin;",
   "../panel-availability": "export const browserPanelAvailable = () => globalThis.__panel !== false;",
   "../history-store": "export const useBrowserHistoryStore = { getState: () => ({ recordVisit() {} }) };",
+  "./file-reader":
+    "export const fileTabKind = ({ name }) => /\\.html?$/.test(name) ? 'preview' : /\\.pdf$/.test(name) ? 'document' : /\\.png$/.test(name) ? 'image' : 'text';" +
+    " export const editable = (entry, kind) => kind === 'preview' || kind === 'text';" +
+    " export const fileText = async (entry, blob) => ({ text: await blob.text(), cut: false });",
 };
 
 export function resolve(specifier, context, next) {

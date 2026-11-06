@@ -572,7 +572,7 @@ test("a torn quant inside the expander keeps its own menu", () => {
   // A partial still occupies disk, so its quant row needs reveal and delete.
   assert.match(
     PICKERS,
-    /\{\(v\.downloaded \|\| v\.partial === true\) &&\n\s*\(allowPin \|\|/,
+    /const variantHasMenu = \(v: GgufVariantDetail\): boolean =>\n\s*\(v\.downloaded === true \|\| v\.partial === true\) &&\n\s*Boolean\(\n\s*allowPin \|\|/,
     "the menu follows disk, not completeness",
   );
   // Pinning an unloadable quant would put a dead row at the top of the list.
@@ -581,7 +581,8 @@ test("a torn quant inside the expander keeps its own menu", () => {
     /pin=\{\n\s*allowPin && v\.downloaded\n\s*\? \{/,
     "pin stays for complete quants only",
   );
-  assert.ok(PICKERS.includes("{v.downloaded && onConfigure && ("));
+  // Settings follow loadability: only a local folder short a shard has nothing to configure.
+  assert.ok(PICKERS.includes("{!unusableLocal && onConfigure && ("));
 });
 
 test("a torn quant is labelled, not left looking undownloaded", () => {

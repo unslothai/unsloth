@@ -52,6 +52,71 @@ from ..device_type import (
 )
 import textwrap
 from ._utils import _get_inference_mode_context_manager, UNSLOTH_ENABLE_LOGGING
+import ast
+import sys
+
+
+def _class_source(cls):
+    """inspect.getsource(cls) without the per-call whole-module ast.parse of Python < 3.13;
+    anything ambiguous falls back to inspect.getsource."""
+    if sys.version_info >= (3, 13):
+        return inspect.getsource(cls)
+    try:
+        name = cls.__name__
+        if not isinstance(cls, type) or cls.__qualname__ != name or hasattr(cls, "__wrapped__"):
+            return inspect.getsource(cls)
+        module = sys.modules.get(cls.__module__)
+        if module is None or not getattr(module, "__file__", None):
+            return inspect.getsource(cls)
+        lines, _ = inspect.findsource(module)
+        # Indented hits count too: inspect returns the first one (e.g. a TYPE_CHECKING stub).
+        pattern = re.compile(r"[ \t]*class\s+" + re.escape(name) + r"\b")
+        hits = [i for i, line in enumerate(lines) if pattern.match(line)]
+        if len(hits) != 1 or lines[hits[0]][:1] in (" ", "\t"):
+            return inspect.getsource(cls)
+        start = hits[0]
+        decorator = re.compile(r"@[A-Za-z_][\w.]*(\([^()\[\]{}#'\"\\]*\))?[ \t]*\r?\n?$")
+        while start > 0 and decorator.match(lines[start - 1]):
+            start -= 1
+        # The code above must compile as complete statements, else a multi-line or separated
+        # decorator may still belong to the class.
+        prev = start
+        for attempt in range(8):
+            prev -= 1
+            while prev >= 0 and lines[prev][:1] in ("", " ", "\t", "\n", "\r", "#", "\f"):
+                prev -= 1
+            if prev < 0:
+                if attempt:
+                    return inspect.getsource(cls)
+                break
+            if lines[prev].startswith("@"):
+                return inspect.getsource(cls)
+            try:
+                ast.parse("".join(lines[prev:start]), "<unsloth_class_source>", "exec")
+                break
+            except SyntaxError:
+                continue
+        else:
+            return inspect.getsource(cls)
+        block = inspect.getblock(lines[start:])
+        end = start + len(block)
+        # At least one own method, all inside the block: rules out a match inside a string.
+        filename = inspect.getsourcefile(cls)
+        verified = False
+        for value in vars(cls).values():
+            func = getattr(value, "__func__", value)
+            code = getattr(func, "__code__", None)
+            if code is None or code.co_filename != filename:
+                continue
+            if not (start < code.co_firstlineno <= end):
+                return inspect.getsource(cls)
+            verified = True
+        if not verified:
+            return inspect.getsource(cls)
+        return "".join(block)
+    except Exception:
+        return inspect.getsource(cls)
+
 
 # One-time GRPO sequence-packing gates; mirrored into the generated trainer cache via RL_PRE_ITEMS.
 UNSLOTH_GRPO_SEQ_PACKING_ON = os.environ.get("UNSLOTH_GRPO_SEQ_PACKING", "1").lower() not in (
@@ -1662,6 +1727,28 @@ def _unsloth_grpo_autocast_forced_float32(self):
     if forced is None:
         forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
     return forced
+
+
+def _unsloth_grpo_refuse_boundary_blind_packing(self, model):
+    """Packed GRPO forwards off, once per model (policy and a separate ref_model), for models whose compressors /
+    recurrences mix packed rows (packing_boundary_blocker). Their leak (~0.1 nats) passes the 0.7 packed
+    self-verify. Zoo's grad PrefixGrouper verifies only against the grad packed forward, so turning that off covers it."""
+    try:
+        unwrapped = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+        if getattr(unwrapped, "_unsloth_packing_boundary_checked", False):
+            return
+        unwrapped._unsloth_packing_boundary_checked = True
+        from unsloth.utils.packing import packing_boundary_blocker
+
+        config = getattr(unwrapped, "config", None)
+        blocker = packing_boundary_blocker(unwrapped, (getattr(config, "model_type", None),))
+    except Exception:
+        return
+    if blocker is None:
+        return
+    unwrapped._unsloth_seq_packing_nograd_ok = False
+    unwrapped._unsloth_seq_packing_grad_ok = False
+    unwrapped._unsloth_prefix_grouper_nograd_disabled = True
 
 
 def _unsloth_grpo_autocast(self):
@@ -3319,11 +3406,16 @@ def _unsloth_vllm_merged_weight(module, weight):
                 delta = module.get_delta_weight(adapter).float()
             else:
                 continue
-            delta = delta.to(weight.device).reshape(weight.shape)
-            merged = delta if merged is None else merged + delta
+            device = weight.device if weight.device.type != "cpu" else delta.device
+            delta = delta.to(device).reshape(weight.shape)
+            merged = delta if merged is None else merged + delta.to(merged.device)
     if merged is None:
+        base = getattr(module, "base_layer", None)
+        state = base.__dict__.get("_unsloth_fp8_lora") if base is not None else None
+        if state is not None and weight.device != state.device:
+            return weight.data.to(state.device)
         return weight.data
-    return (weight.float() + merged).to(weight.dtype)
+    return (weight.to(merged.device).float() + merged).to(weight.dtype)
 
 
 def _unsloth_vllm_tuner_groups(model):
@@ -3347,6 +3439,8 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
     the base tensors and return {id(param): merged tensor}; the live parameters keep their exact bytes."""
     params = list(base.parameters(recurse = False))
     originals = [param.data for param in params]
+    fp8 = base.__dict__.get("_unsloth_fp8_lora")
+    fp8_saved = dict(fp8.__dict__) if fp8 is not None else None
     states = [
         (layer, list(getattr(layer, "merged_adapters", [])), dict(getattr(layer, "_caches", {})))
         for layer in layers
@@ -3369,6 +3463,9 @@ def _unsloth_vllm_peft_merge_out_of_place(base, layers):
             module.training = training
         for param, data in zip(params, originals):
             param.data = data
+        if fp8 is not None:
+            fp8.__dict__.clear()
+            fp8.__dict__.update(fp8_saved)
         for layer, merged_adapters, caches in states:
             if hasattr(layer, "merged_adapters"):
                 layer.merged_adapters[:] = merged_adapters
@@ -3688,6 +3785,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                 vision_inputs["mm_token_type_ids"] = mm_token_type_ids
 
             unwrapped_model = self.accelerator.unwrap_model(model, keep_fp32_wrapper = False)
+            _unsloth_grpo_refuse_boundary_blind_packing(self, model)
 
             from unsloth_zoo.rl_replacements import (
                 chunked_hidden_states_selective_log_softmax,
@@ -4946,6 +5044,7 @@ UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_forced_float32))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_refuse_boundary_blind_packing))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_unscored))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_support_mismatch))
@@ -4983,7 +5082,7 @@ RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_image_cell))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_reject_grpo_image_list))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_clear_stateful_mrope))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(grpo_compute_loss))
-RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(UnslothEfficientGRPO))
+RL_PRE_ITEMS["grpo_trainer"].append(_class_source(UnslothEfficientGRPO))
 RL_PRE_ITEMS["grpo_trainer"].append(
     _patch_grpo_accumulated_loss_hidden_states_dispatch(grpo_accumulated_loss)
 )
@@ -5065,6 +5164,8 @@ def grpo_trainer_compute_loss(function_name, function):
         sampling_per_token_logps = inputs.get("sampling_per_token_logps", None)
         tool_mask = inputs.get("tool_mask", None)
         _rollout_logps_as_old = inputs.get("unsloth_rollout_logps_as_old", None) is not None
+        # The logps pass is skipped under vLLM / beta = 0, but the zoo loss still packs.
+        _unsloth_grpo_refuse_boundary_blind_packing(self, model)
         _loss_delta = getattr(self.args, "delta", None)
         if _rollout_logps_as_old and _loss_delta is None:
             # verl's dual-clip default (clip_ratio_c = 3.0).

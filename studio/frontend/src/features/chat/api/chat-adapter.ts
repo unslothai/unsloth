@@ -50,7 +50,7 @@ import { isMlxId } from "@/features/model-picker/components/model-selector/recom
 import { loadManagedLlamaFlags } from "@/features/model-picker/api/llama-flags";
 import { fetchLoadExtraArgs } from "@/features/model-picker/api/model-overrides";
 import { sanitizeStoredExtraArgs } from "@/features/model-picker/model-config/llama-extra-args";
-import { usePlatformStore } from "@/config/env";
+import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { resolveSpeculativeType } from "@/lib/speculative-modes";
 
 import { getSkillsSnapshot, settleSkillsForText } from "./skills-api";
@@ -143,6 +143,7 @@ import {
 } from "../utils/auto-compaction";
 import { tabCloseRunFields } from "../utils/keep-running-when-tab-closed";
 import { resolveModelCatalogEntry } from "../model-catalog";
+import { prepareComparePaneRun } from "../compare-run-ownership";
 import {
   lengthIncompleteReason,
   lengthStopCause,
@@ -2936,8 +2937,8 @@ function isGgufLocalRow(row: LocalModelInfo): boolean {
 /** Chat-only installs run GGUF anywhere and MLX on a Mac; the picker hides every other local format there. */
 function runsOnThisPlatform(row: LocalModelInfo): boolean {
   const platform = usePlatformStore.getState();
-  // chatOnly is a BROWSER guess until the backend reports it; fail open, since validation refuses an ineligible pick.
-  if (!platform.fetched || !platform.isChatOnly()) return true;
+  // chatOnly is a guess until the backend measures it (deferred detection included); fail open, since validation refuses an ineligible pick.
+  if (platform.capabilitiesUnknown() || !platform.isChatOnly()) return true;
   if (isGgufLocalRow(row)) {
     return true;
   }
@@ -2952,7 +2953,7 @@ function runsOnThisPlatform(row: LocalModelInfo): boolean {
 /** The picker hides cached non-GGUF rows outright on a chat-only install; same wait-for-the-server rule as above. */
 function cachedModelsRunOnThisPlatform(): boolean {
   const platform = usePlatformStore.getState();
-  return !platform.fetched || !platform.isChatOnly();
+  return platform.capabilitiesUnknown() || !platform.isChatOnly();
 }
 
 /** One loadable thing on this device; `listVariants` is lazy, so only the repos the cascade reaches are scanned. */
@@ -3370,6 +3371,46 @@ async function adoptInFlightServerLoad(
   }))
     ? "adopted"
     : "server-idle";
+}
+
+// Busy-host detection outlasts readHealth's one 5 s wait; past this bound autoload stays fail-open.
+const AUTO_LOAD_VERDICT_WAIT_MS = 60_000;
+const AUTO_LOAD_VERDICT_POLL_MS = 500;
+
+async function awaitMeasuredVerdict(signal?: AbortSignal): Promise<void> {
+  const deadline = Date.now() + AUTO_LOAD_VERDICT_WAIT_MS;
+  // readHealth has no timeout or signal: a stalled read must not outlive the deadline or a stopped send.
+  const bounded = (read: () => Promise<unknown>) =>
+    new Promise<"ok" | "failed" | "timeout">((resolve, reject) => {
+      const timer = setTimeout(() => settle("timeout"), Math.max(0, deadline - Date.now()));
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      function cleanup() {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+      function settle(outcome: "ok" | "failed" | "timeout") {
+        cleanup();
+        resolve(outcome);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      read().then(
+        () => settle("ok"),
+        () => settle("failed"),
+      );
+    });
+  signal?.throwIfAborted();
+  if ((await bounded(() => fetchDeviceType({ detectHardware: true }))) !== "ok") return;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    const platform = usePlatformStore.getState();
+    if (!platform.capabilitiesUnknown() || platform.detectionDeferred) return;
+    await new Promise((resolve) => setTimeout(resolve, AUTO_LOAD_VERDICT_POLL_MS));
+    signal?.throwIfAborted();
+    if ((await bounded(() => fetchDeviceType({ force: true }))) !== "ok") return;
+  }
 }
 
 async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
@@ -4006,6 +4047,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufSettled.status === "rejected" || modelsSettled.status === "rejected";
     if (inventoryIncomplete) hadNonTrustFailure = true;
 
+    // A deferred verdict admits non-GGUF caches a chat-only host refuses; GGUF-only caches skip the probe.
+    if (
+      usePlatformStore.getState().detectionDeferred &&
+      (allModelRepos.some(isChattableCachedRepo) ||
+        localRows.some(
+          (row) =>
+            !isGgufLocalRow(row) &&
+            isAutoLoadableLocalRow(row, cachedInventoryFailed),
+        ))
+    ) {
+      await awaitMeasuredVerdict(options?.abortSignal);
+      options?.abortSignal?.throwIfAborted();
+    }
+
     // Include on-disk models the picker indexes, not just the managed cache.
     const sources = orderAutoLoadSources(
       buildAutoLoadSources(
@@ -4464,6 +4519,13 @@ export function createOpenAIStreamAdapter(
           "This chat's settings could not be loaded, so the message was not sent. Reopen the chat and try again.",
         );
       }
+      await prepareComparePaneRun(
+        options.pairId,
+        options.modelType,
+        abortSignal,
+        () => waitForModelReady(abortSignal),
+      );
+      abortSignal.throwIfAborted();
       let runtime = useChatRuntimeStore.getState();
       // Capture the thread ID once so it stays stable across chat switches during model load.
       const resolvedThreadId =
@@ -7199,6 +7261,7 @@ export function createOpenAIStreamAdapter(
               }
 
               if (chunk.context_truncated) {
+                runtime.setLiveCompacting(liveThreadKey(serverCancel), false);
                 contextTruncation = mergeContextTruncation(
                   contextTruncation,
                   chunk.context_truncated,
@@ -7289,6 +7352,8 @@ export function createOpenAIStreamAdapter(
                   runtime.setLivePrefill(liveThreadKey(serverCancel), update.prefill);
                 } else if (update?.phase === "decode") {
                   runtime.setLiveDecode(liveThreadKey(serverCancel), update.decode);
+                } else if (update?.phase === "compacting") {
+                  runtime.setLiveCompacting(liveThreadKey(serverCancel), true);
                 }
                 continue;
               }
@@ -7666,6 +7731,8 @@ export function createOpenAIStreamAdapter(
                       );
                   }
                 } else if (toolEvent.type === "tool_end") {
+                  // The round boundary: the last pass's prompt and decode figures must not stand in for the next one's.
+                  runtime.clearLiveGenerationForThread(liveThreadKey(serverCancel));
                   const backendToolCallId =
                     (toolEvent.tool_call_id as string) || "";
                   const id = resolveToolPartId(backendToolCallId);
