@@ -35,7 +35,7 @@ import {
   fetchSttStatus,
   generateCustomTtsAudio,
   generateStudioTtsAudio,
-  isDecisionConnection,
+  servesMediaRequests,
   loadSttModel,
   syncKeepModelsLoaded,
   releaseTtsAudioUrl,
@@ -534,7 +534,7 @@ export function VoiceTab() {
   const connections = useExternalProvidersStore((s) => s.providers);
   const ttsConnections = useMemo(
     () =>
-      connections.filter((connection) => !isDecisionConnection(connection)),
+      connections.filter((connection) => servesMediaRequests(connection)),
     [connections],
   );
   const hasSelectedTtsConnection = ttsConnections.some(

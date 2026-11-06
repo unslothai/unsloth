@@ -197,6 +197,11 @@ export function mergeLocalProviderOptions(
 
 
 
+/** The registry drops Claude Agent while it is off; its saved connections stay, unlisted. */
+export function connectionTypeListed(providerType: string, registryTypes: ReadonlySet<string>): boolean {
+  return providerType !== "claude_agent" || registryTypes.has(providerType);
+}
+
 export async function syncExternalProvidersFromBackend(
   existingProviders: ExternalProviderConfig[],
   isCurrent?: () => boolean,
@@ -234,8 +239,9 @@ export async function syncExternalProvidersFromBackend(
   }
 
   const backfillTasks: Array<() => Promise<unknown>> = [];
+  const registryTypes = new Set(registryRows.map((entry) => entry.provider_type));
   const syncedProviders = configRows
-    .filter((config) => config.is_enabled)
+    .filter((config) => config.is_enabled && connectionTypeListed(config.provider_type, registryTypes))
     .map((config) => {
       const existing = existingById.get(config.id);
       const uiProviderType = resolveUiProviderTypeFromConfig(

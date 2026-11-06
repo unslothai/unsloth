@@ -23,6 +23,7 @@ const HUB_LOGO_PATHS = new Map(
 const CONNECTION_LOGO_PATHS = new Map([
   ["gemini", "/provider-logos/gemini.svg"],
   ["anthropic", "/provider-logos/anthropic.svg"],
+  ["claude_agent", "/provider-logos/anthropic.svg"],
   ["openrouter", "/provider-logos/openrouter-mark.svg"],
   ["vllm", "/provider-logos/vllm.svg"],
   ["ollama", "/provider-logos/ollama.svg"],

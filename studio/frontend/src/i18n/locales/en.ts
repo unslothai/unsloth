@@ -1955,6 +1955,13 @@ export const en = {
         performanceEstimate:
           "Expect minutes per denoising step: a 5-frame 832x480 clip from Wan2.1 1.3B at 3 steps took about 4 minutes on 16 CPU threads, and a full-length clip at default settings can take hours.",
         confirmAction: "Enable anyway",
+        claudeAgent: "Claude Agent (experimental)",
+        claudeAgentDescription:
+          "Adds a Claude Agent connection that uses the Claude Code login on this machine. Experimental; Anthropic's terms for third-party apps apply.",
+        claudeAgentForcedOnByEnv:
+          "Turned on by UNSLOTH_CLAUDE_AGENT in the backend environment.",
+        claudeAgentForcedOffByEnv:
+          "Turned off by UNSLOTH_CLAUDE_AGENT in the backend environment.",
         loadError: "Failed to load Developer mode settings.",
         saveError: "Failed to save Developer mode settings.",
       },

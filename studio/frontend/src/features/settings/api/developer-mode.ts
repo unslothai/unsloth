@@ -15,7 +15,12 @@ export type DeveloperModeSettings = {
   videoCpuApplicable: boolean;
   hostRamBytes: number | null;
   minRamBytes: number;
+  claudeAgent: boolean;
+  /** true / false when UNSLOTH_CLAUDE_AGENT decides, null when the setting does. */
+  claudeAgentEnvOverride: boolean | null;
 };
+
+export type DeveloperModePatch = { videoCpu?: boolean; claudeAgent?: boolean };
 
 type ApiDeveloperModeSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
@@ -32,6 +37,10 @@ type ApiDeveloperModeSettings = {
   host_ram_bytes: number | null;
   // biome-ignore lint/style/useNamingConvention: API schema
   min_ram_bytes: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  claude_agent?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  claude_agent_env_override?: boolean | null;
 };
 
 export function developerModeFromApi(
@@ -45,6 +54,8 @@ export function developerModeFromApi(
     videoCpuApplicable: settings.video_cpu_applicable,
     hostRamBytes: settings.host_ram_bytes ?? null,
     minRamBytes: settings.min_ram_bytes,
+    claudeAgent: settings.claude_agent === true,
+    claudeAgentEnvOverride: settings.claude_agent_env_override ?? null,
   };
 }
 
@@ -59,13 +70,19 @@ export async function loadDeveloperModeSettings(): Promise<DeveloperModeSettings
 }
 
 export async function updateDeveloperModeSettings(
-  videoCpu: boolean,
+  patch: DeveloperModePatch,
 ): Promise<DeveloperModeSettings> {
   const res = await authFetch("/api/settings/developer-mode", {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
-    // biome-ignore lint/style/useNamingConvention: API schema
-    body: JSON.stringify({ video_cpu: videoCpu }),
+    body: JSON.stringify({
+      // biome-ignore lint/style/useNamingConvention: API schema
+      ...(patch.videoCpu === undefined ? {} : { video_cpu: patch.videoCpu }),
+      // biome-ignore lint/style/useNamingConvention: API schema
+      ...(patch.claudeAgent === undefined
+        ? {}
+        : { claude_agent: patch.claudeAgent }),
+    }),
   });
   if (!res.ok) {
     throw new Error(

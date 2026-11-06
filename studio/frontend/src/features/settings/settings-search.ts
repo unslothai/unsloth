@@ -137,6 +137,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.about.engines.title",
     "settings.general.developerMode.sectionTitle",
     "settings.general.developerMode.videoCpu",
+    "settings.general.developerMode.claudeAgent",
   ],
   chat: [
     "settings.general.chatDefaults",

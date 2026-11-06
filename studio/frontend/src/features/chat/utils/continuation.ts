@@ -318,7 +318,7 @@ export function readTextThoughtSignature(
 }
 
 /** Anthropic, Gemini and Mistral reject a trailing assistant turn; send an instruction instead. */
-const PREFILL_REJECTING_PROVIDERS = new Set(["anthropic", "gemini", "mistral"]);
+const PREFILL_REJECTING_PROVIDERS = new Set(["anthropic", "gemini", "mistral", "claude_agent"]);
 
 export function rejectsAssistantPrefill(
   providerType: string | undefined,

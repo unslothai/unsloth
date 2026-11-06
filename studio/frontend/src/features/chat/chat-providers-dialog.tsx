@@ -55,6 +55,7 @@ import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
 
+import { ClaudeAgentStatusCard } from "./claude-agent-status";
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
@@ -79,6 +80,7 @@ import { resolveProviderCredentialEdit } from "./provider-credential-edit";
 import { getExternalMinOutputTokens } from "./provider-capabilities";
 import type { ExternalProviderConfig } from "./external-providers";
 import {
+  CLAUDE_AGENT_PROVIDER_TYPE,
   CUSTOM_PROVIDER_PRESETS,
   allowsManualModelIdsWithCatalog,
   customProviderBaseUrlPlaceholder,
@@ -410,10 +412,11 @@ export function ChatProvidersSettings({
   const usesOAuth = selectedProviderContract?.auth_kind === "chatgpt_oauth";
 
   const isCodexSubscription = usesOAuth;
+  const isClaudeAgent = providerType === CLAUDE_AGENT_PROVIDER_TYPE;
   const modelIdsEditable =
     selectedProviderContract?.model_ids_editable !== false;
   const showApiKeyField =
-    !usesOAuth && !customPresetSkipsApiKeyField(providerType);
+    !usesOAuth && !isClaudeAgent && !customPresetSkipsApiKeyField(providerType);
   const isCuratedModelList = useMemo(() => {
     return registryByType.get(providerType)?.model_list_mode === "curated";
   }, [registryByType, providerType]);
@@ -954,6 +957,7 @@ export function ChatProvidersSettings({
     if (
       !isCustomProvider &&
       selectedRegistryEntry?.auth_kind !== "chatgpt_oauth" &&
+      !isClaudeAgent &&
       !apiKey.trim()
     ) {
       toast.error("API key is required.");
@@ -1512,6 +1516,7 @@ export function ChatProvidersSettings({
     if (
       !savedKey &&
       !provider.hasApiKey &&
+      provider.providerType !== CLAUDE_AGENT_PROVIDER_TYPE &&
       !supportsRemoteModelCatalog(provider.providerType)
     ) {
       if (isCustomProviderType(provider.providerType)) {
@@ -1886,7 +1891,7 @@ export function ChatProvidersSettings({
                 </div>
               ) : null}
 
-              {providerType !== "openai_codex" ? (
+              {providerType !== "openai_codex" && !isClaudeAgent ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
                     <Label
@@ -2073,6 +2078,8 @@ export function ChatProvidersSettings({
             </div>
           </section>
 
+
+          {isClaudeAgent ? <ClaudeAgentStatusCard /> : null}
 
           {isCodexSubscription ? (
             <OpenAICodexConnect

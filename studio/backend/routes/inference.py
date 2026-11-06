@@ -3703,8 +3703,10 @@ from core.inference.passthrough_healing import (
     response_has_promotable_calls,
 )
 from core.inference.providers import (
+    CLAUDE_AGENT_OFF,
     HOSTED_TOOL_NAMES,
     answers_decisions_only,
+    claude_agent_enabled,
     get_base_url,
     get_provider_info,
     hosted_only_tools,
@@ -24418,6 +24420,15 @@ def _refuse_decision_connection(provider_type: Optional[str], api_type: Optional
         )
 
 
+def _refuse_media_connection(provider_type: Optional[str], api_type: Optional[str]) -> None:
+    _refuse_decision_connection(provider_type, api_type)
+    if provider_type == "claude_agent":
+        raise HTTPException(
+            status_code = 400,
+            detail = "A Claude Agent connection answers chat only. Choose another connection here.",
+        )
+
+
 async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Response:
     """Proxy CreateSpeech to a saved connection, so read-aloud skips the local model slot."""
     provider_id = (body.provider_id or "").strip()
@@ -24438,7 +24449,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
     account_access.require_connection_model_allowed(config, external_model)
-    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
+    _refuse_media_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
             status_code = 400, detail = f"Provider '{config['display_name']}' is disabled."
@@ -24736,7 +24747,7 @@ async def _external_stt_transcription(
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
     account_access.require_connection_model_allowed(config, external_model)
-    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
+    _refuse_media_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
             status_code = 400,
@@ -28668,16 +28679,27 @@ async def _proxy_to_external_provider(
             status_code = 400,
             detail = f"Unknown provider type: {provider_type}",
         )
+    if provider_type == "claude_agent":
+        if not claude_agent_enabled():
+            raise HTTPException(status_code = 403, detail = CLAUDE_AGENT_OFF)
+        # Runs on the owner's own Claude login, so only the owner's Studio UI may use it.
+        if account_access.managed_account() or _request_has_api_key(request):
+            raise HTTPException(
+                status_code = 403,
+                detail = "Claude Agent is available only to the installation owner in the Studio UI.",
+            )
+        if payload.stream is not True:
+            raise HTTPException(status_code = 400, detail = "Claude Agent chat requires stream=true.")
     if not base_url:
         base_url = get_base_url(provider_type)
-    if not base_url:
+    if not base_url and provider_type != "claude_agent":
         raise HTTPException(
             status_code = 400,
             detail = f"Base URL is required for provider type: {provider_type}",
         )
     # Validate the proxy destination before the API key is decrypted, so a
     # refused target never sees a credential. A managed upstream is Unsloth's own loopback.
-    if managed is None:
+    if managed is None and provider_type != "claude_agent":
         try:
             base_url = await asyncio.to_thread(validate_provider_base_url, base_url)
         except ValueError as exc:
@@ -29395,8 +29417,19 @@ async def _proxy_to_external_provider(
                 if not _ui_events:
                     _tool_call_stripper.end_turn()
 
-            gen = stream_with_studio_tools(
-                OAICompatTransport(
+            if provider_type == "claude_agent":
+                from core.inference.claude_agent_transport import ClaudeAgentTransport
+
+                # One live Claude Code session for the whole loop; close_after below ends it.
+                _loop_transport = ClaudeAgentTransport(
+                    model = model,
+                    max_tokens = _external_max_tokens,
+                    reasoning_effort = payload.reasoning_effort,
+                    enable_thinking = payload.enable_thinking,
+                    message_fitter = _external_context_fitter,
+                )
+            else:
+                _loop_transport = OAICompatTransport(
                     client,
                     model = model,
                     continue_final_message = _continue_final_message(payload),
@@ -29404,7 +29437,9 @@ async def _proxy_to_external_provider(
                     enabled_tools = loop_hosted_tools or None,
                     stream = True,
                     **_provider_kwargs,
-                ),
+                )
+            gen = stream_with_studio_tools(
+                _loop_transport,
                 run = ToolLoopRun(
                     messages = chat_messages,
                     session_id = payload.session_id,
@@ -29443,6 +29478,9 @@ async def _proxy_to_external_provider(
                 cancel_event = cancel_event,
                 mcp_image = _mcp_image,
             )
+            if provider_type == "claude_agent":
+                from core.inference.claude_agent_transport import close_after
+                gen = close_after(gen, _loop_transport)
         else:
             gen = client.stream_chat_completion(
                 messages = chat_messages,
@@ -49149,7 +49187,7 @@ async def _external_image_generation(
     if config is None:
         raise HTTPException(status_code = 404, detail = f"Provider config not found: {provider_id}")
     account_access.require_connection_model_allowed(config, external_model)
-    _refuse_decision_connection(config["provider_type"], config.get("api_type"))
+    _refuse_media_connection(config["provider_type"], config.get("api_type"))
     if not config["is_enabled"]:
         raise HTTPException(
             status_code = 400,

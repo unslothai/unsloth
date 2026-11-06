@@ -181,6 +181,9 @@ studio = [
 # Optional AWS S3 dataset loading; kept out of the default Studio installation.
 s3 = ["boto3>=1.34.0"]
 
+# Experimental Claude Agent connection (UNSLOTH_CLAUDE_AGENT=1); its wheel bundles a copy of Claude Code.
+claude-agent = ["claude-agent-sdk>=0.2.178"]
+
 triton = [
     # Not raised past 3.0.0: torch 2.6.0 pins triton==3.2.0, so a higher floor makes it unresolvable.
     # Known triton defects are gated in unsloth_zoo/loss_utils.py and unsloth/import_fixes.py.

@@ -387,6 +387,39 @@ export async function testProviderConnection(payload: {
   });
 }
 
+export interface ClaudeAgentModel {
+  id: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  display_name?: string | null;
+  efforts?: string[];
+  // biome-ignore lint/style/useNamingConvention: API schema
+  thinking_off?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  context_window?: number | null;
+}
+
+export interface ClaudeAgentStatus {
+  ready: boolean;
+  version: string | null;
+  account: string | null;
+  models: Array<ClaudeAgentModel | string>;
+  message: string | null;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  sdk_missing?: boolean;
+}
+
+export async function getClaudeAgentStatus(): Promise<ClaudeAgentStatus> {
+  const response = await authFetch("/api/providers/claude-agent/status");
+  return parseJsonOrThrow<ClaudeAgentStatus>(response);
+}
+
+export async function installClaudeAgentSdk(): Promise<ClaudeAgentStatus> {
+  const response = await authFetch("/api/providers/claude-agent/install-sdk", {
+    method: "POST",
+  });
+  return parseJsonOrThrow<ClaudeAgentStatus>(response);
+}
+
 export async function listProviderModels(payload: {
   providerType: string;
 
