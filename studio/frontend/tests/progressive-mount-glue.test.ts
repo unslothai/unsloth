@@ -139,7 +139,7 @@ test("the anchor is measured against its scroll container, not against the windo
   );
   assert.match(GLUE, /function sampleAnchor\(/);
   assert.match(GLUE, /sampleAnchor\(viewport, anchor\)/);
-  assert.match(GLUE, /anchorCorrection\(baseline, sampleAnchor\(viewport, element\)\)/);
+  assert.match(GLUE, /anchorCorrection\(baseline, sampleAnchor\(viewport, element\), ANCHOR_PRECISION\)/);
   // The anchor is often a <pre> Streamdown replaces after Shiki, so fall back to the row.
   assert.match(GLUE, /const row = anchor\?\.closest\("\[data-role\]"\) \?\? null;/);
   assert.match(GLUE, /captured\.row\?\.isConnected && captured\.rowSample/);

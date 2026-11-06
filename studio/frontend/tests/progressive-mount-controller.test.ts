@@ -15,6 +15,7 @@ import {
   type MountWindow,
   admits,
   anchorCorrection,
+  alignAnchorCorrection,
   initialWindow,
   isCovered,
   stepsToCover,
@@ -401,4 +402,29 @@ test("a capped window still only widens, and still converges", () => {
     steps += 1;
     assert.ok(steps <= count + 2, "widen made no progress");
   }
+});
+
+test("fractional prepends and reflows keep the visible anchor stationary with integer scrolling", () => {
+  let inset = 0;
+  let contentTop = 0;
+  let scrollTop = 0;
+  for (let index = 0; index < 600; index++) {
+    const delta = [4408.625, 4210.4375, -0.375, 0.1875, -12.5625][index % 5];
+    contentTop += delta;
+    const aligned = alignAnchorCorrection(delta, inset);
+    assert.equal(Number.isInteger(aligned.scroll), true);
+    assert.ok(aligned.inset >= 0 && aligned.inset < 1);
+    inset = aligned.inset;
+    scrollTop += aligned.scroll;
+    assert.equal(contentTop + inset - scrollTop, 0);
+  }
+});
+
+test("subpixel reflows can be absorbed without issuing fractional scroll writes", () => {
+  const before = sample(30, 12000);
+  const after = sample(30.375, 12000);
+  assert.equal(anchorCorrection(before, after), null);
+  assert.equal(anchorCorrection(before, after, 1 / 64), 0.375);
+  assert.equal(anchorCorrection(before, before, 1 / 64), null);
+  assert.deepEqual(alignAnchorCorrection(-0.375, 0), { scroll: 0, inset: 0.375 });
 });

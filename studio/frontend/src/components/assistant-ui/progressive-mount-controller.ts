@@ -115,6 +115,7 @@ export type AnchorSample = {
 export function anchorCorrection(
   captured: AnchorSample,
   now: AnchorSample,
+  minShift = 1,
 ): number | null {
   // Subtract what the browser already absorbed via the clamp when content above shrank. Exact only
   // for a reader who did not scroll this frame.
@@ -124,8 +125,13 @@ export function anchorCorrection(
     now.scrollTop -
     (captured.viewportOffset + captured.scrollTop) +
     clamped;
-  // Whole pixels only, so a subpixel reflow does not issue a scroll write every frame.
-  return Math.abs(shift) >= 1 ? shift : null;
+  return Math.abs(shift) >= minShift ? shift : null;
+}
+
+/** Keep the scroll correction integral; a subpixel leading inset absorbs the remainder. */
+export function alignAnchorCorrection(shift: number, inset: number) {
+  const scroll = Math.ceil(shift - inset) || 0;
+  return { scroll, inset: inset + scroll - shift };
 }
 
 /** Tests assert on this so the constants cannot drift into a thread that never converges. */
