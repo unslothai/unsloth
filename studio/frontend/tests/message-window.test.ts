@@ -251,3 +251,26 @@ test("small thumb reversals retain already restored overscan content", () => {
   assert.equal(row.parked(), true);
   row.cleanup();
 });
+
+test("restoring a reflowed body above the reader keeps the first visible row in place", () => {
+  const w = world(), above = w.add(), visible = w.add();
+  Object.assign(w.viewport, { scrollTop: 1000 });
+  w.near(above.root, false);
+  assert.equal(above.parked(), true);
+  // The chat narrowed while `above` was parked: reconnected, its body is 60px taller than the
+  // placeholder height it kept, so everything below it moves down by that much.
+  visible.root.top = 50;
+  Object.defineProperty(visible.root, "isConnected", { value: true });
+  visible.root.getBoundingClientRect = () => {
+    const top = visible.root.top + (above.content.parent ? 60 : 0);
+    return { top, bottom: top + visible.root.height, height: visible.root.height };
+  };
+  w.viewport.fire("scroll");
+  assert.equal((w.viewport as unknown as { scrollTop: number }).scrollTop, 1000, "nothing reconnected, nothing corrected");
+  above.root.top = -1500;
+  w.viewport.fire("scroll");
+  assert.equal(above.parked(), false);
+  assert.equal((w.viewport as unknown as { scrollTop: number }).scrollTop, 1060, "the reflow above the reader is scrolled away");
+  above.cleanup();
+  visible.cleanup();
+});

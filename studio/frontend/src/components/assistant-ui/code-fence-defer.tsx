@@ -1571,7 +1571,11 @@ function useOffscreenFenceText(
       // Never replace selection boundary nodes, or the browser loses the selection.
       const selected = selection !== null && (node.contains(selection.anchorNode)
         || node.contains(selection.focusNode));
-      if (selected || inputPointerHeld()) return;
+      if (selected || inputPointerHeld()) {
+        // Retry on pointer release or selection change, which remeasure only after a held frame.
+        heldLastFrame = true;
+        return;
+      }
       setPlain(!near && !printing && !findBarOpen()
         && !document.documentElement.hasAttribute("data-code-wrap")
         && !document.documentElement.hasAttribute("data-code-line-numbers"));

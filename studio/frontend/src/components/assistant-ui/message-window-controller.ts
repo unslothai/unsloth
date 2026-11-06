@@ -72,14 +72,15 @@ class MessageWindowController {
     }
   }
 
-  private releaseHeight(row: Row) {
-    if (!row.frozen) return;
+  private releaseHeight(row: Row): boolean {
+    if (!row.frozen) return false;
     this.restoreHeight(row, row.frozen);
     row.frozen = null;
+    return true;
   }
 
-  private restore(row: Row, freeze = this.scrollbarHeld) {
-    if (!row.saved) return;
+  private restore(row: Row, freeze = this.scrollbarHeld): boolean {
+    if (!row.saved) return false;
     row.text.remove();
     row.holder.append(row.content);
     // Hold the scroll range steady until the native thumb is released.
@@ -87,13 +88,39 @@ class MessageWindowController {
     else this.restoreHeight(row, row.saved);
     row.saved = null;
     row.root.removeAttribute("data-message-parked");
+    return true;
+  }
+
+  // Restored rows reflow at the current width; keep the first visible row where the reader left it.
+  private keepAnchor(change: () => boolean, known?: { anchor: HTMLElement | null; before: number }) {
+    let anchor: HTMLElement | null = known?.anchor ?? null;
+    let before = known?.before ?? 0;
+    if (!known) {
+      const top = this.viewport.getBoundingClientRect().top;
+      for (const row of this.rows.values()) {
+        const rect = row.root.getBoundingClientRect();
+        if (rect.bottom > top && (anchor === null || rect.top < before)) {
+          anchor = row.root;
+          before = rect.top;
+        }
+      }
+    }
+    // Nothing reconnected or released: skip the layout read on this scroll.
+    if (!change() || anchor === null || !anchor.isConnected) return;
+    // Zero when the engine anchored natively, so this never corrects twice.
+    const delta = anchor.getBoundingClientRect().top - before;
+    if (Math.abs(delta) >= 0.5) this.viewport.scrollTop += delta;
   }
 
   private restoreAll = () => {
-    for (const row of this.rows.values()) {
-      this.restore(row, false);
-      this.releaseHeight(row);
-    }
+    this.keepAnchor(() => {
+      let changed = false;
+      for (const row of this.rows.values()) {
+        changed = this.restore(row, false) || changed;
+        changed = this.releaseHeight(row) || changed;
+      }
+      return changed;
+    });
   };
 
   private held() {
@@ -113,8 +140,13 @@ class MessageWindowController {
     const reach = this.scrollbarHeld ? Math.min(REACH, bounds.height) : REACH;
     // Batch layout reads before reconnecting or detaching any subtree.
     const candidates: Array<[Row, number]> = [];
+    const first: { anchor: HTMLElement | null; before: number } = { anchor: null, before: 0 };
     for (const row of this.rows.values()) {
       const rect = row.root.getBoundingClientRect();
+      if (rect.bottom > bounds.top && (first.anchor === null || rect.top < first.before)) {
+        first.anchor = row.root;
+        first.before = rect.top;
+      }
       const margin = row.saved ? reach : REACH;
       // Hysteresis avoids repeated swaps on small drag reversals.
       if (rect.bottom >= bounds.top - margin && rect.top <= bounds.bottom + margin
@@ -128,8 +160,13 @@ class MessageWindowController {
       const height = rect.height;
       if (height > 0 && row.root.scrollWidth <= row.root.clientWidth + 1) candidates.push([row, height]);
     }
+    this.keepAnchor(() => this.apply(wanted, candidates), first);
+  };
+
+  private apply(wanted: Set<Row>, candidates: Array<[Row, number]>): boolean {
+    let changed = candidates.length > 0;
     for (const row of this.rows.values()) {
-      if (wanted.has(row) || row.root.contains(document.activeElement)) this.restore(row);
+      if (wanted.has(row) || row.root.contains(document.activeElement)) changed = this.restore(row) || changed;
     }
     for (const [row, height] of candidates) {
       row.saved = row.frozen ?? ["height"].map((name) =>
@@ -142,7 +179,8 @@ class MessageWindowController {
       row.holder.append(row.text);
       row.root.setAttribute("data-message-parked", "");
     }
-  };
+    return changed;
+  }
 
   private refresh = () => {
     if (this.held()) this.restoreAll();
@@ -185,7 +223,11 @@ class MessageWindowController {
   private onPointerUp = () => {
     this.pointerHeld = false;
     this.scrollbarHeld = false;
-    for (const row of this.rows.values()) this.releaseHeight(row);
+    this.keepAnchor(() => {
+      let changed = false;
+      for (const row of this.rows.values()) changed = this.releaseHeight(row) || changed;
+      return changed;
+    });
     this.refresh();
   };
   private onPointerMove = (event: PointerEvent) => {

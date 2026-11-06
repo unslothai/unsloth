@@ -88,3 +88,14 @@ test("find in page defers rebuilds during scrolling with a maximum wait", () => 
   assert.match(find, /window\.removeEventListener\("wheel", noteScroll, \{ capture: true \}\);/);
   assert.equal(/addEventListener\("scroll", noteScroll/.test(find), false, "autoscroll's own scrolling must not starve a followed stream of rebuilds");
 });
+
+test("an offscreen fence update skipped under a held pointer or selection is retried on release", () => {
+  const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
+  const hook = defer.slice(defer.indexOf("function useOffscreenFenceText("), defer.indexOf("export const FenceBody = memo("));
+  assert.match(
+    hook,
+    /if \(selected \|\| inputPointerHeld\(\)\) \{[^}]*heldLastFrame = true;\s*return;\s*\}/,
+    "releasePointer and selectionchange remeasure only after a held frame, so a skip must mark one or a fence that entered view mid-drag stays plain",
+  );
+  assert.match(defer, /const releasePointer = \(\): void => \{\s*if \(pointerHeld === null\) return;\s*pointerHeld = null;\s*if \(heldLastFrame\) scheduleRemeasure\(\);/);
+});
