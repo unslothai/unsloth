@@ -270,6 +270,39 @@ def test_missing_resource_lists_the_skill_files(isolated_skills):
     assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "POSIX byte filenames")
+def test_missing_resource_listing_skips_undecodable_names(isolated_skills):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "bytes")
+    try:
+        open(os.fsencode(root) + b"/bad-\xff.txt", "w").close()
+    except OSError:
+        pytest.skip("filesystem refuses non-UTF-8 names")
+
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("bytes", "missing.txt", home = home)
+
+    str(error.value).encode("utf-8")
+    assert str(error.value).endswith("Files in this skill: SKILL.md.")
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason = "symlinks unavailable")
+def test_missing_resource_listing_refuses_a_swapped_directory(isolated_skills, tmp_path):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "swap")
+    identity = os.stat(root, follow_symlinks = False)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("", encoding = "utf-8")
+    root.rename(root.with_name("swap-old"))
+    try:
+        os.symlink(outside, root, target_is_directory = True)
+    except OSError:
+        pytest.skip("cannot create symlinks here")
+
+    assert skills._list_skill_files(root, identity) == []
+
+
 def test_missing_resource_listing_is_capped(isolated_skills):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "many")

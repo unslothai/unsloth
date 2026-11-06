@@ -1157,10 +1157,24 @@ def _normalize_resource_path(resource: str) -> PurePosixPath:
     return path
 
 
-def _list_skill_files(skill_dir: Path, limit: int = 20) -> list[str]:
+def _list_skill_files(
+    skill_dir: Path,
+    identity,
+    limit: int = 20,
+) -> list[str]:
     """Best-effort names for a not-found hint; never reads content or follows links."""
+
+    def pinned() -> bool:
+        return not _is_linked_path(skill_dir) and (
+            identity is None
+            or os.path.samestat(os.stat(skill_dir, follow_symlinks = False), identity)
+        )
+
     found: list[str] = []
     try:
+        # os.walk follows a symlinked top directory, so check it before and after.
+        if not pinned():
+            return []
         for directory, folders, files in os.walk(skill_dir):
             current = Path(directory)
             folders[:] = sorted(
@@ -1169,12 +1183,17 @@ def _list_skill_files(skill_dir: Path, limit: int = 20) -> list[str]:
             for file in sorted(files):
                 if file.startswith(".") or _is_linked_path(current / file):
                     continue
+                relative = (current / file).relative_to(skill_dir).as_posix()
+                try:
+                    relative.encode("utf-8")
+                except UnicodeEncodeError:
+                    continue
                 if len(found) == limit:
-                    return found + ["..."]
-                found.append((current / file).relative_to(skill_dir).as_posix())
+                    return found + ["..."] if pinned() else []
+                found.append(relative)
+        return found if pinned() else []
     except (OSError, ValueError):
         return []
-    return found
 
 
 def _read_enabled_skill_text(
@@ -1207,7 +1226,7 @@ def _read_enabled_skill_text(
             raise
         except (FileNotFoundError, NotADirectoryError) as exc:
             # Small models retry attachment names or guessed names until shown the real files.
-            files = _list_skill_files(skill_dir)
+            files = _list_skill_files(skill_dir, identity)
             listing = f" Files in this skill: {', '.join(files)}." if files else ""
             raise SkillError(
                 f"Skill resource '{path.as_posix()}' was not found in the skill's folder. "
