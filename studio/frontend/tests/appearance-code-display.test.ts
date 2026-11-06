@@ -43,7 +43,7 @@ test("each code setting drives one root attribute the stylesheet keys on", () =>
   const css = readSrc("index.css");
   assert.match(css, /html\[data-code-wrap\] \[data-streamdown="code-block"\] :is\(pre, code\)/);
   assert.match(css, /html\[data-code-no-ligatures\] :is\(pre, code, kbd, samp\)/);
-  assert.match(css, /html\[data-code-wrap\] \.aui-thread-root \[data-unsloth-fence-paint\] pre \{\s*width: auto;/);
+  assert.match(css, /html\[data-code-wrap\] \.aui-thread-root \[data-unsloth-fence-paint\] pre,\s*\.aui-thread-root \[data-wrap="on"\] \[data-unsloth-fence-paint\] pre \{\s*width: auto;/);
   assert.match(css, /html:not\(\[data-code-line-numbers\]\) :is\(\.aui-thread-root, \[data-code-preview\]\)/);
 });
 
@@ -54,4 +54,26 @@ test("API examples drop their no-wrap overrides while Word wrap is on", () => {
     assert.ok(uses.length > 0, utility);
     for (const use of uses) assert.ok(use.startsWith("[html:not([data-code-wrap])_&"), use);
   }
+});
+
+test("a block's own wrap button overrides the setting in both directions", () => {
+  const css = readSrc("index.css");
+  assert.match(css, /\[data-wrap="on"\] \[data-streamdown="code-block"\] :is\(pre, code\) \{\s*white-space: pre-wrap !important;/);
+  assert.match(css, /html\[data-code-wrap\] \[data-wrap="off"\] \[data-streamdown="code-block"\] :is\(pre, code\) \{\s*white-space: pre !important;/);
+  const actions = readSrc("components/assistant-ui/markdown-text.tsx");
+  assert.match(actions, /parentElement\?\.setAttribute\("data-wrap", next \? "on" : "off"\)/);
+  assert.match(actions, /wrapped \? "Disable word wrap" : "Enable word wrap"/);
+  assert.match(readSrc("components/assistant-ui/reasoning-transcript.tsx"), /wrappable=\{false\}/);
+});
+
+test("Expand code lifts one block's cap and is offered only while the block overflows", () => {
+  const actions = readSrc("components/assistant-ui/markdown-text.tsx");
+  assert.match(actions, /\{wrappable && \(overflowing \|\| expanded\) && <button/);
+  assert.match(actions, /parentElement\?\.toggleAttribute\("data-code-expanded", next\)/);
+  assert.match(actions, /expanded \? "Collapse code" : "Expand code"/);
+  const css = readSrc("index.css");
+  assert.match(css, /\[data-code-expanded\] \[data-streamdown="code-block-body"\] \{\s*max-height: none;\s*mask-image: none;/);
+  // The scrollbar never changes the code's width, and never fades with the code.
+  assert.match(css, /scrollbar-gutter: stable;/);
+  assert.match(css, /linear-gradient\(#000, #000\);\s*mask-size: 100% 100%, calc\(1rem \* var\(--ui-space-scale, 1\)\) 100%;/);
 });

@@ -1727,6 +1727,26 @@ html[data-code-wrap]:not([data-code-line-numbers]) :is(.aui-thread-root, [data-c
 	padding-inline-start: 0;
 	text-indent: 0;
 }
+/* A block's own word wrap button (CodeBlockActions) overrides the setting above either way. */
+[data-wrap="on"] [data-streamdown="code-block"] :is(pre, code) {
+	white-space: pre-wrap !important;
+	overflow-wrap: anywhere;
+}
+html[data-code-line-numbers] [data-wrap="on"] [data-streamdown="code-block"] code > span {
+	padding-inline-start: 2.5rem;
+	text-indent: -2.5rem;
+}
+html[data-code-line-numbers] [data-wrap="on"] [data-streamdown="code-block"] code > span::before {
+	text-indent: 0;
+}
+html[data-code-wrap] [data-wrap="off"] [data-streamdown="code-block"] :is(pre, code) {
+	white-space: pre !important;
+	overflow-wrap: normal;
+}
+html[data-code-wrap] [data-wrap="off"] [data-streamdown="code-block"] code > span {
+	padding-inline-start: 0;
+	text-indent: 0;
+}
 html[data-code-no-ligatures] :is(pre, code, kbd, samp),
 html[data-code-no-ligatures] .aui-reasoning-code-lines {
 	font-variant-ligatures: none;
@@ -4071,7 +4091,56 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
-		padding-bottom: calc(0.625rem * var(--ui-space-scale, 1)) !important;
+		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		max-height: var(--unsloth-code-block-max-height, min(30rem, 55vh));
+		overflow-y: auto;
+		/* Lines up with the language label's ml-1. */
+		padding-left: var(--spacing) !important;
+		/* Bleeds into the block's padding so the scrollbar hugs its edge. */
+		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
+		padding-inline-end: calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		scrollbar-gutter: stable;
+	}
+
+	/* Fades scrolled code under the header; the second layer keeps the scrollbar's strip unfaded. */
+	.aui-thread-root [data-streamdown="code-block-body"][data-scrolled] {
+		mask-image:
+			linear-gradient(to bottom, transparent, #000 calc(1.25rem * var(--ui-space-scale, 1))),
+			linear-gradient(#000, #000);
+		mask-size: 100% 100%, calc(1rem * var(--ui-space-scale, 1)) 100%;
+		mask-position: 0 0, right;
+		mask-repeat: no-repeat;
+	}
+
+	.aui-thread-root [data-code-expanded] [data-streamdown="code-block-body"] {
+		max-height: none;
+		mask-image: none;
+	}
+
+	/* The body's own bottom padding spaces short code. */
+	.aui-thread-root [data-streamdown="code-block"] {
+		padding-top: calc(0.25rem * var(--ui-space-scale, 1));
+		padding-bottom: 0;
+	}
+
+	/* Follows the header up by the 0.5rem the padding above lost; the half pixel centres the icons on the label. */
+	.aui-thread-root [data-code-block-actions] {
+		top: calc(0.25rem * var(--ui-space-scale, 1) + 0.5px);
+	}
+
+	/* The scrollbar sits in the bottom padding over the code's last gap, so a wide block is no taller. */
+	@supports selector(::-webkit-scrollbar) {
+		.aui-thread-root [data-scrolls-x] [data-streamdown="code-block-body"] {
+			padding-bottom: calc(0.75rem * var(--ui-space-scale, 1) - 6px) !important;
+		}
+	}
+
+	@media print {
+		.aui-thread-root [data-streamdown="code-block-body"] {
+			max-height: none;
+			overflow-y: visible;
+			mask-image: none;
+		}
 	}
 
 	[data-streamdown="code-block"] {
@@ -4396,12 +4465,26 @@ html[data-chat-font] .aui-root {
 		contain: paint;
 	}
 
+	/* Paint containment clips at this box, so it takes the body's bleed and the scrollbar stays inside it. */
+	.aui-thread-root [data-unsloth-fence-paint] {
+		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
+	}
+
+	.aui-thread-root [data-unsloth-fence-paint] > [data-streamdown="code-block-body"] {
+		margin-inline-end: 0;
+	}
+
 	.aui-thread-root [data-unsloth-fence-paint] pre {
 		width: max-content;
 	}
 
-	html[data-code-wrap] .aui-thread-root [data-unsloth-fence-paint] pre {
+	html[data-code-wrap] .aui-thread-root [data-unsloth-fence-paint] pre,
+	.aui-thread-root [data-wrap="on"] [data-unsloth-fence-paint] pre {
 		width: auto;
+	}
+
+	html[data-code-wrap] .aui-thread-root [data-wrap="off"] [data-unsloth-fence-paint] pre {
+		width: max-content;
 	}
 
 	html[data-code-block-containment="on"] .aui-thread-root [data-streamdown="code-block"]:not([data-incomplete]) > [data-unsloth-fence-windowed] {
@@ -4771,6 +4854,30 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 .dark *::-webkit-scrollbar-thumb {
 	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* Sideways scrollbar only on hover. Chromium ignores ::-webkit-scrollbar while scrollbar-width/color are set. */
+@supports selector(::-webkit-scrollbar) {
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar {
+	height: 6px;
+}
+
+.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: transparent;
+}
+
+.aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: oklch(0.5 0 0 / 0.4);
+}
+
+.dark .aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: oklch(0.72 0 0 / 0.4);
 }
 
 /* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
@@ -5551,6 +5658,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 :is(.aui-root.aui-thread-root, .aui-md-table.aui-md-table) :is(.aui-chat-icon-btn, .aui-md-table-actions button) svg {
 	width: round(var(--icon-size), 2px);
 	height: round(var(--icon-size), 2px);
+}
+
+/* One even step smaller (14px by default). */
+.aui-root.aui-thread-root [data-code-block-actions] .aui-chat-icon-btn svg {
+	width: round(var(--icon-size) - 2px, 2px);
+	height: round(var(--icon-size) - 2px, 2px);
 }
 
 /* Sonner injects fixed 13px toast text and 12px action labels at runtime;

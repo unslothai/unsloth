@@ -3,6 +3,8 @@
 
 "use client";
 
+import { CodeXmlIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type { HighlightResult } from "@streamdown/code";
 import {
   memo,
@@ -41,6 +43,7 @@ import {
   advanceHighlightProgress,
   EMPTY_HIGHLIGHT_PROGRESS,
   EMPTY_HIGHLIGHT_COUNTS,
+  highlightLineCount,
   HIGHLIGHT_BATCH_TOKENS,
   type HighlightProgress,
   needsHighlightBatches,
@@ -66,6 +69,7 @@ import { highlightWorkerState, streamActive } from "./use-reasoning-highlight";
 import { inputQuietIn, scheduleQuietIdleTask } from "@/lib/schedule-idle-task";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import {
+  languageDisplayName,
   MAX_CACHED_CHARACTERS,
   MAX_FENCES,
   normalizeLanguage,
@@ -126,6 +130,16 @@ function PlainFenceText({ source }: { source: string }) {
   ))}</>;
 }
 
+function CodeBlockLanguage({ language }: { language: string | null }) {
+  if (!language) return null;
+  return (
+    <span className="ml-1 flex items-center gap-1.5" data-code-block-language="">
+      <HugeiconsIcon icon={CodeXmlIcon} strokeWidth={1.75} className="size-3.5 shrink-0" />
+      {languageDisplayName(language)}
+    </span>
+  );
+}
+
 function FenceShell({
   language,
   source,
@@ -147,7 +161,7 @@ function FenceShell({
         data-language={language ?? undefined}
         data-streamdown="code-block-header"
       >
-        <span className="ml-1 font-mono lowercase">{language}</span>
+        <CodeBlockLanguage language={language} />
       </div>
       <div
         className="overflow-x-auto rounded-md border border-border bg-background p-4 text-sm"
@@ -393,6 +407,18 @@ const fenceSpeculator = createFenceSpeculator<FenceGate>({
   budgetFences: MAX_FENCES / 2,
   maxInFlight: SPECULATION_IN_FLIGHT,
 });
+
+// One capturing listener flags a code body scrolled off its first line, for the fade under its header.
+const flagScrolledBody = (event: Event): void => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || target.dataset.streamdown !== "code-block-body") return;
+  const scrolled = target.scrollTop > 0;
+  if (scrolled !== target.hasAttribute("data-scrolled")) target.toggleAttribute("data-scrolled", scrolled);
+};
+
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("scroll", flagScrolledBody, { capture: true, passive: true });
+}
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener("beforeprint", () => {
@@ -1108,6 +1134,46 @@ const visibleHighlightLine = (code: HTMLElement | null, frame: HTMLElement | nul
   return Math.max(0, Math.floor((top - line.top) / line.height));
 };
 
+/** Lines in and one view either side of a block that scrolls on its own, or null when it does not. */
+const innerLineWindow = (
+  code: HTMLElement | null,
+  body: HTMLElement | null,
+): { first: number; last: number } | null => {
+  if (!code || !body || body.scrollHeight <= body.clientHeight + 1) return null;
+  const lines = code.children;
+  if (lines.length === 0) return null;
+  const view = body.getBoundingClientRect();
+  const top = view.top + body.clientTop;
+  const lineAt = (y: number): number => {
+    let low = 0;
+    let high = lines.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (lines[middle].getBoundingClientRect().bottom <= y) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return {
+    first: lineAt(top - body.clientHeight),
+    last: lineAt(top + 2 * body.clientHeight),
+  };
+};
+
+// Paused capped fences are not in the highlight queue; printing still has to finish them.
+const pausedFences = new Set<() => void>();
+
+const lineWindowColoured = (
+  tokens: FenceTokens["tokens"],
+  progress: HighlightProgress,
+  range: { first: number; last: number },
+): boolean => {
+  for (let line = range.first; line <= range.last && line < tokens.length; line += 1) {
+    if (highlightLineCount(progress, line) < tokens[line].length) return false;
+  }
+  return true;
+};
+
 function useFenceHighlightLimit(
   tokens: FenceTokens["tokens"] | null,
   isIncomplete: boolean | undefined,
@@ -1116,6 +1182,7 @@ function useFenceHighlightLimit(
   source: string,
   code: RefObject<HTMLElement | null>,
   frame: RefObject<HTMLElement | null>,
+  surface: RefObject<HTMLElement | null>,
 ): { progress: HighlightProgress | null; staged: boolean } {
   const eligible = !(typeof window === "undefined" || windowing || isIncomplete
     || fenceMode() !== "defer"
@@ -1142,19 +1209,53 @@ function useFenceHighlightLimit(
   }
   if (current !== previous) setPrevious(current);
   const progress = immediate ? null : current.progress;
+  const [scrolled, setScrolled] = useState(0);
   useLayoutEffect(() => {
     if (progress === null || tokens === null) return;
+    const body = surface.current;
+    // A capped block colours what is in view and stops; scrolling inside it asks for the rest.
+    const capped = innerLineWindow(code.current, body);
+    if (capped !== null && body !== null && lineWindowColoured(tokens, progress, capped)) {
+      let frameId = 0;
+      // Expand code lifts the cap without a scroll: a resize rechecks too.
+      const recheck = (): void => {
+        if (frameId !== 0) return;
+        frameId = requestAnimationFrame(() => {
+          frameId = 0;
+          const next = innerLineWindow(code.current, body);
+          if (next === null || !lineWindowColoured(tokens, progress, next)) setScrolled((n) => n + 1);
+        });
+      };
+      const resized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(recheck);
+      resized?.observe(body);
+      body.addEventListener("scroll", recheck, { passive: true });
+      const finish = (): void => setPrevious({ tokens, progress: null });
+      pausedFences.add(finish);
+      return () => {
+        pausedFences.delete(finish);
+        resized?.disconnect();
+        body.removeEventListener("scroll", recheck);
+        cancelAnimationFrame(frameId);
+      };
+    }
     watchHighlighting();
     const cancel = highlightQueue.add(() => {
-      const visible = progress.located ? 0 : visibleHighlightLine(code.current, frame.current);
-      setPrevious({ tokens, progress: advanceHighlightProgress(tokens, progress, visible) });
+      const inView = innerLineWindow(code.current, surface.current);
+      const next = inView !== null
+        ? advanceHighlightProgress(tokens, { ...progress, located: false }, inView.first)
+        : advanceHighlightProgress(
+          tokens,
+          progress,
+          progress.located ? 0 : visibleHighlightLine(code.current, frame.current),
+        );
+      setPrevious({ tokens, progress: next });
       return true;
     }, () => setPrevious({ tokens, progress: null }));
     return () => {
       cancel();
       unwatchHighlighting();
     };
-  }, [tokens, progress, code, frame]);
+  }, [tokens, progress, code, frame, surface, scrolled]);
   return { progress, staged };
 }
 
@@ -1170,6 +1271,9 @@ const setPrinting = (value: boolean): void => {
     cancelAnimationFrame(windowFrame);
     windowFrame = 0;
   }
+  if (value && pausedFences.size > 0) flushSync(() => {
+    for (const finish of [...pausedFences]) finish();
+  });
   if (value) highlightQueue.flush();
   if (value) tokenizeForPrint();
   if (value) highlightQueue.flush();
@@ -1541,6 +1645,76 @@ function useLineWindow(
 const NO_WINDOW = { window: null, pins: null, measured: false } as const;
 const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } as const;
 
+const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
+type BodyScroll = { top: number; atBottom: boolean; at: number };
+// A finished stream remounts its body at the first line: the streamed body's place goes to that remount
+// only (once, soon after), so blocks that merely open with the same text never share one.
+const bodyScrolls = new Map<string, BodyScroll>();
+const BODY_SCROLLS_KEPT = 16;
+
+const rememberBodyScroll = (key: string, body: HTMLElement): void => {
+  if (body.scrollHeight <= body.clientHeight) return;
+  bodyScrolls.delete(key);
+  bodyScrolls.set(key, {
+    top: body.scrollTop,
+    atBottom: body.scrollHeight - body.scrollTop - body.clientHeight < 24,
+    at: performance.now(),
+  });
+  if (bodyScrolls.size > BODY_SCROLLS_KEPT) bodyScrolls.delete(bodyScrolls.keys().next().value as string);
+};
+
+const takeBodyScroll = (key: string): BodyScroll | undefined => {
+  const saved = bodyScrolls.get(key);
+  bodyScrolls.delete(key);
+  return saved !== undefined && performance.now() - saved.at < JUST_STREAMED_MS ? saved : undefined;
+};
+
+function usePinnedWhileStreaming(
+  surface: RefObject<HTMLElement | null>,
+  isIncomplete: boolean | undefined,
+  tokens: FenceTokens["tokens"] | null,
+  language: string | null,
+  source: string,
+): void {
+  const following = useRef(true);
+  const mounted = tokens !== null && tokens.length > 0;
+  const key = `${language ?? ""}\n${source.slice(0, 200)}`;
+  const keyRef = useRef(key);
+  keyRef.current = key;
+  const streamedRef = useRef(isIncomplete === true);
+  if (isIncomplete) streamedRef.current = true;
+  useLayoutEffect(() => {
+    const body = surface.current;
+    if (!(mounted && body)) return;
+    const saved = streamedRef.current ? undefined : takeBodyScroll(keyRef.current);
+    if (saved) {
+      following.current = saved.atBottom;
+      body.scrollTop = saved.atBottom ? body.scrollHeight : saved.top;
+    }
+    // Only the reader's own scroll stops the follow: lines settling above shift scrollTop too.
+    let readerAt = Number.NEGATIVE_INFINITY;
+    const onReader = (): void => {
+      readerAt = performance.now();
+    };
+    const onScroll = (): void => {
+      const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+      if (atBottom || performance.now() - readerAt < 250) following.current = atBottom;
+    };
+    body.addEventListener("scroll", onScroll, { passive: true });
+    for (const type of READER_SCROLL_EVENTS) body.addEventListener(type, onReader, { passive: true });
+    return () => {
+      if (streamedRef.current) rememberBodyScroll(keyRef.current, body);
+      body.removeEventListener("scroll", onScroll);
+      for (const type of READER_SCROLL_EVENTS) body.removeEventListener(type, onReader);
+    };
+  }, [surface, mounted]);
+  useLayoutEffect(() => {
+    const body = surface.current;
+    if (!(isIncomplete && following.current && body)) return;
+    if (body.scrollHeight > body.clientHeight) body.scrollTop = body.scrollHeight;
+  }, [surface, isIncomplete, tokens]);
+}
+
 /**
  * A fence's body, highlighted, with the spans bounded to what is on screen.
  *
@@ -1567,7 +1741,10 @@ export const FenceBody = memo(function FenceBody({
   const wrapper = useRef<HTMLDivElement | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
   const tokens = result?.tokens ?? null;
-  const highlight = useFenceHighlightLimit(tokens, isIncomplete, windowing, language, source, code, frame);
+  const highlight = useFenceHighlightLimit(
+    tokens, isIncomplete, windowing, language, source, code, frame, surface,
+  );
+  usePinnedWhileStreaming(surface, isIncomplete, tokens, language, source);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,
     surface,
@@ -1608,7 +1785,7 @@ export const FenceBody = memo(function FenceBody({
         data-language={language ?? undefined}
         data-streamdown="code-block-header"
       >
-        <span className="ml-1 font-mono lowercase">{language}</span>
+        <CodeBlockLanguage language={language} />
       </div>
       <div
         data-unsloth-fence-paint={

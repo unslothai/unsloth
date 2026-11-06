@@ -348,6 +348,8 @@ test("paint containment is limited to large completed full-token bodies", () => 
     sameFenceBodyProps,
     updateFenceChunks,
     useLineWindow: () => ({ window: null, pins: null, measured: false }),
+    usePinnedWhileStreaming: () => {},
+    CodeBlockLanguage: () => null,
     lineRendered,
     WINDOW_CAP_LINES,
     joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
@@ -388,4 +390,48 @@ test("paint containment is limited to large completed full-token bodies", () => 
       assert.match(html, /<pre>fallback<\/pre>/);
     }
   }
+});
+
+test("chat code blocks cap their height and scroll inside, except on paper", () => {
+  const css = readSrc("index.css");
+  const at = css.indexOf('.aui-thread-root [data-streamdown="code-block-body"] {');
+  const rule = css.slice(at, css.indexOf("}", at));
+  assert.match(rule, /max-height: var\(--unsloth-code-block-max-height, min\(30rem, 55vh\)\);/);
+  assert.match(rule, /overflow-y: auto;/);
+  assert.match(css, /@media print \{\s+\.aui-thread-root \[data-streamdown="code-block-body"\] \{\s+max-height: none;/);
+});
+
+test("a capped block colours only what is in view and a streaming one follows its last line", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /const capped = innerLineWindow\(code\.current, body\);/);
+  assert.match(hook, /lineWindowColoured\(tokens, progress, capped\)/);
+  const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
+  assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
+  // A finished stream remounts the body; it comes back where the reader left it.
+  assert.match(pin, /body\.scrollTop = saved\.atBottom \? body\.scrollHeight : saved\.top;/);
+  assert.match(DEFER, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown", "pointerdown"\] as const;/);
+});
+
+test("Expand code resumes colouring a capped block that had stopped at its view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /if \(next === null \|\| !lineWindowColoured\(tokens, progress, next\)\) setScrolled/);
+  assert.match(hook, /new ResizeObserver\(recheck\)/);
+  assert.match(hook, /resized\?\.observe\(body\);/);
+});
+
+test("printing colours capped blocks that paused at their view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /const finish = \(\): void => setPrevious\(\{ tokens, progress: null \}\);\s*pausedFences\.add\(finish\);/);
+  assert.match(hook, /pausedFences\.delete\(finish\);/);
+  const print = DEFER.slice(DEFER.indexOf("const setPrinting = "), DEFER.indexOf("const scheduleRemeasure"));
+  assert.match(print, /if \(value && pausedFences\.size > 0\) flushSync\(\(\) => \{\s*for \(const finish of \[\.\.\.pausedFences\]\) finish\(\);/);
+});
+
+test("only a finished body mounting right after a stream takes its scroll place, once", () => {
+  const pin = DEFER.slice(DEFER.indexOf("type BodyScroll"), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /if \(streamedRef\.current\) rememberBodyScroll\(keyRef\.current, body\);/);
+  assert.match(pin, /const saved = streamedRef\.current \? undefined : takeBodyScroll\(keyRef\.current\);/);
+  assert.match(pin, /bodyScrolls\.delete\(key\);\s*return saved !== undefined && performance\.now\(\) - saved\.at < JUST_STREAMED_MS/);
+  assert.equal(pin.match(/rememberBodyScroll\(/g)?.length, 1);
 });

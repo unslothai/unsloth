@@ -60,13 +60,20 @@ import { isTauri } from "@/lib/api-base";
 import { ChevronDownStandardIcon, ChevronRightStandardIcon } from "@/lib/chevron-icons";
 import { asPng, copyToClipboard, copyToClipboardFrom } from "@/lib/copy-to-clipboard";
 import { openExternalLink } from "@/lib/open-link";
-import { Settings01Icon, SiteInfoIcon, TrashIcon } from "@/lib/hugeicons-derived";
+import {
+  LineWrapDisableIcon,
+  LineWrapIcon,
+  Settings01Icon,
+  SiteInfoIcon,
+  TrashIcon,
+} from "@/lib/hugeicons-derived";
 import { ShieldAlertGlyph } from "@/lib/shield-alert-icon";
 import { SquareDashedMousePointerIcon } from "@/lib/annotate-icon";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
+  CodeXmlIcon,
   Refresh01Icon,
   Search01Icon,
   ArrowUpRight01Icon,
@@ -84,10 +91,8 @@ import {
   PictureInPictureOnIcon,
   PlusSignIcon,
   SmartPhone01Icon,
-  SourceCodeIcon,
   StarIcon,
   Tablet01Icon,
-  TextWrapIcon,
   UndoIcon,
   ViewIcon,
   VolumeMute02Icon,
@@ -1759,7 +1764,7 @@ function BrowserFileToolbar({
                         )}
                       >
                         <HugeiconsIcon
-                          icon={mode === "preview" ? ViewIcon : SourceCodeIcon}
+                          icon={mode === "preview" ? ViewIcon : CodeXmlIcon}
                           strokeWidth={1.75}
                           className="size-4"
                         />
@@ -1883,7 +1888,7 @@ function BrowserFileToolbar({
               onCheckedChange={(wrap) => setView({ wrap })}
               onSelect={(event) => event.preventDefault()}
             >
-              <HugeiconsIcon icon={TextWrapIcon} strokeWidth={1.75} className="size-4" />
+              <HugeiconsIcon icon={view.wrap || kind === "text" ? LineWrapDisableIcon : LineWrapIcon} strokeWidth={1.75} className="size-4" />
               {t("browser.file.wrap")}
             </DropdownMenuCheckboxItem>
           ) : null}
@@ -1990,7 +1995,7 @@ function FloatingFileToolbar({
                 onSelect={(event) => event.preventDefault()}
               >
                 <HugeiconsIcon
-                  icon={TextWrapIcon}
+                  icon={view.wrap || kind === "text" ? LineWrapDisableIcon : LineWrapIcon}
                   strokeWidth={1.75}
                   className="size-4"
                 />
@@ -2063,7 +2068,7 @@ function FloatingFileToolbar({
                   )}
                 >
                   <HugeiconsIcon
-                    icon={mode === "preview" ? ViewIcon : SourceCodeIcon}
+                    icon={mode === "preview" ? ViewIcon : CodeXmlIcon}
                     strokeWidth={1.75}
                     className="size-4"
                   />
