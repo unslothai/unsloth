@@ -423,6 +423,7 @@ export type ModelInspectorRuntime = {
   } | null;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
   unifiedLoadBudgetGb?: number | null;
 };
@@ -464,6 +465,7 @@ export const ModelInspector = memo(function ModelInspector({
     vramInfo,
     gpuGb,
     gpuCount,
+    audioCppCardGb,
     systemRamGb,
     unifiedLoadBudgetGb,
   } = runtime;
@@ -741,6 +743,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
@@ -771,6 +774,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
               unifiedLoadBudgetGb={
                 runsOnMediaRuntime ? null : unifiedLoadBudgetGb

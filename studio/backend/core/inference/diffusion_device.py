@@ -973,6 +973,27 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
     return _cpu_target(torch)
 
 
+def apply_cpu_render_threads(device: Any) -> Optional[int]:
+    """Match torch CPU threads to sd.cpp's ``_default_threads``; per thread, so call from the render thread. An explicit
+    OMP_NUM_THREADS / MKL_NUM_THREADS (torch sizes its intra-op pool from them) is kept, as configure_cpu_threads does."""
+    if str(device).split(":")[0] != "cpu":
+        return None
+    if any(os.environ.get(name, "").strip() for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")):
+        return None
+    try:
+        import torch
+
+        from .sd_cpp_backend import _default_threads
+
+        threads = int(_default_threads())
+        if threads > 0 and torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+            return threads
+    except Exception:  # noqa: BLE001 -- a thread count is an optimisation only
+        return None
+    return None
+
+
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:
     # torch is None on the no-torch CPU fallback; leave dtype=None rather than crash.
     if dtype is None and torch is not None:
