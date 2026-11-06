@@ -4288,6 +4288,14 @@ html[data-chat-font] .aui-root {
 		font-family: var(--font-sans);
 	}
 
+	/* Distant, horizontally fitting replies can paint independently while keeping
+	   their natural layout and searchable text. Print uses normal page overflow. */
+	@media screen {
+		.aui-assistant-message-root[data-reply-paint] {
+			contain: paint;
+		}
+	}
+
 	/* Zero the trailing margin along the deepest :last-child path (streamdown nests 4-5 levels) so the
 	   gap above the action bar is only the footer's mt-*; a generic descendant rule would hit lists. */
 	.aui-assistant-message-content > *:last-child,

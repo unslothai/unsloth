@@ -52,6 +52,7 @@ import {
 import { ComposerDraftPreview } from "@/components/assistant-ui/composer-draft-preview";
 import { PromptQueueList } from "@/components/assistant-ui/lazy-prompt-queue-list";
 import { QueueResumeIcon } from "@/components/assistant-ui/queue-resume-icon";
+import { observeReplyPaint } from "@/components/assistant-ui/reply-paint";
 import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messages";
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
@@ -8270,6 +8271,10 @@ const ResearchMessageRunIdContext = createContext<string | null>(null);
 const AssistantMessage: FC = () => {
   const aui = useAui();
   const focusReveal = useActionBarFocusReveal();
+  const replyRef = focusReveal.ref;
+  useEffect(() => {
+    if (replyRef.current) return observeReplyPaint(replyRef.current);
+  }, [replyRef]);
   const messageId = useAuiState(({ message }) => message.id);
   const messageContent = useAuiState(({ message }) =>
     "status" in message && message.status?.type === "running"
