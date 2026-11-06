@@ -1267,6 +1267,8 @@ class DecisionTrainer(Trainer):
             # Trainer would call model.gradient_checkpointing_enable, which only the encoder has.
             # Clef's backbone already got Unsloth's checkpointing when it loaded.
             args.gradient_checkpointing = False
+            if hasattr(args, "activation_checkpointing"):
+                args.activation_checkpointing = False
             if not clef and not model.encoder.is_gradient_checkpointing:
                 _gradient_checkpointing(model, True)
         if kwargs.get("processing_class") is None:

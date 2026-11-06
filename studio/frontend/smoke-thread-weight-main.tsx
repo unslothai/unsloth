@@ -5,6 +5,7 @@
 // seeded via thread.import on a local runtime (only it backs export/import used by delete).
 
 import { Thread } from "@/components/assistant-ui/thread";
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   AssistantRuntimeProvider,
@@ -99,7 +100,7 @@ type SeedOptions = {
    * `rounds` x reasoning, tool call, answer per reply; truncation every `compactionEvery`th.
    * `sources` adds six URL source parts after every web_search call.
    */
-  agent?: { rounds: number; compactionEvery?: number; sources?: boolean };
+  agent?: { rounds: number; compactionEvery?: number; sources?: boolean; rich?: boolean };
 };
 
 const AGENT_TOOLS = ["web_search", "terminal", "python"] as const;
@@ -114,7 +115,11 @@ function urlSources(tag: string) {
   }));
 }
 
-function agentContent(index: number, rounds: number, sources = false) {
+function table(tag: string): string {
+  return ["| step | loss | lr |", "|---|---|---|", ...[0, 1, 2, 3].map((row) => `| ${tag}.${row} | 0.${row}4 | 2e-4 |`)].join("\n");
+}
+
+function agentContent(index: number, rounds: number, sources = false, rich = false) {
   const parts: Exclude<ThreadMessageLike["content"], string>[number][] = [];
   for (let round = 0; round < rounds; round++) {
     const tag = `${index}_${round}`;
@@ -138,7 +143,9 @@ function agentContent(index: number, rounds: number, sources = false) {
     if (sources && toolName === "web_search") parts.push(...urlSources(tag));
     parts.push({
       type: "text" as const,
-      text: `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
+      text: rich
+        ? [assistantMarkdown(index * 10 + round), table(tag), `- first item ${tag}\n- second item ${tag}`].join("\n\n")
+        : `Answer ${tag}. ${PROSE}\n\n- first item ${tag}\n- second item ${tag}`,
     });
   }
   return parts;
@@ -169,7 +176,7 @@ function buildMessages(
       const compacted = every > 0 && ordinal > 0 && ordinal % every === 0;
       return {
         role: "assistant" as const,
-        content: agentContent(index, agent.rounds, agent.sources),
+        content: agentContent(index, agent.rounds, agent.sources, agent.rich),
         ...(compacted
           ? {
               metadata: {
@@ -369,6 +376,29 @@ function ThreadWeightApi({
   return null;
 }
 
+// `?shell=1`: the ancestors the app puts around the thread (root layout + chat page), so CSS
+// anchored on them (e.g. a `:has()` on the wallpaper workspace) runs here as it does in Studio.
+const SHELL = new URLSearchParams(window.location.search).get("shell") === "1";
+
+function AppShell({ children }: { children: ReactElement }): ReactElement {
+  if (!SHELL) return children;
+  return (
+    <SidebarProvider
+      data-wallpaper-workspace=""
+      data-wallpaper-route="chat"
+      className="relative !min-h-0 h-[100dvh] overflow-hidden"
+    >
+      <SidebarInset className="overflow-hidden">
+        <div className="relative flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden">
+          <div data-chat-content-root="" className="relative flex min-h-0 flex-1 flex-col">
+            {children}
+          </div>
+        </div>
+      </SidebarInset>
+    </SidebarProvider>
+  );
+}
+
 // `?remote=1`: the remote thread list + attachments adapter the app uses, for the same scopes.
 const REMOTE = new URLSearchParams(window.location.search).get("remote") === "1";
 
@@ -423,12 +453,14 @@ function HarnessBody({
       <AssistantRuntimeProvider runtime={runtime}>
         <ThreadWeightApi setThreadMounted={setThreadMounted} />
         {/* Thread is flex-1 basis-0 min-h-0, so it needs a bounded flex parent to scroll. */}
-        <div
-          data-smoke="thread"
-          style={{ display: "flex", flexDirection: "column", height: "100vh" }}
-        >
-          {threadMounted ? <Thread hideWelcome={true} /> : null}
-        </div>
+        <AppShell>
+          <div
+            data-smoke="thread"
+            style={{ display: "flex", flexDirection: "column", height: SHELL ? "100%" : "100vh" }}
+          >
+            {threadMounted ? <Thread hideWelcome={true} /> : null}
+          </div>
+        </AppShell>
       </AssistantRuntimeProvider>
     </TooltipProvider>
   );

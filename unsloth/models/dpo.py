@@ -82,11 +82,13 @@ def _uses_fsdp1(trainer, model):
     return cache[model]
 
 
-def _global_module_backward_hooks():
-    # torch.nn.modules.module.register_module_full_backward_(pre_)hook applies to every module.
+def _global_module_hooks():
+    # torch's register_module_{forward,full_backward}(_pre)_hook tables apply to the head too.
     from torch.nn.modules import module as _module
     return bool(
-        getattr(_module, "_global_backward_hooks", None)
+        getattr(_module, "_global_forward_hooks", None)
+        or getattr(_module, "_global_forward_pre_hooks", None)
+        or getattr(_module, "_global_backward_hooks", None)
         or getattr(_module, "_global_backward_pre_hooks", None)
     )
 
@@ -120,7 +122,7 @@ def _output_head(trainer, model):
         or head._forward_pre_hooks
         or head._backward_hooks
         or getattr(head, "_backward_pre_hooks", None)
-        or _global_module_backward_hooks()
+        or _global_module_hooks()
     ):
         return None, None
     weight = getattr(head, "weight", None)

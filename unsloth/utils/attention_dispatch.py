@@ -1333,6 +1333,20 @@ def _windowed_causal_mask(q_len: int, k_len: int, sliding_window: int, device) -
     return mask
 
 
+def context_parallel_attention(forward = None, *, rl = False):
+    """Mark a forward that attends via run_attention and sizes RoPE by the global sequence under CP.
+    `rl = True` also opens DPO / GRPO: their decoder hooks need their own parity run per forward."""
+    if forward is None:
+        return lambda f: context_parallel_attention(f, rl = rl)
+    forward._unsloth_context_parallel = {"rl": bool(rl)}
+    return forward
+
+
+def is_context_parallel_attention(forward, rl = False) -> bool:
+    mark = getattr(forward, "_unsloth_context_parallel", None)
+    return isinstance(mark, dict) and (not rl or mark["rl"])
+
+
 def run_attention(
     *, config: AttentionConfig, context: AttentionContext, Q: Tensor, K: Tensor, V: Tensor
 ) -> Tensor:
@@ -1797,4 +1811,6 @@ __all__ = [
     "select_attention_backend",
     "resolve_prefix_seg_info",
     "run_attention",
+    "context_parallel_attention",
+    "is_context_parallel_attention",
 ]

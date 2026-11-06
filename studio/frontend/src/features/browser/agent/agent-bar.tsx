@@ -35,29 +35,30 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
     >
       {!question && running ? <Spinner className="size-3.5 text-muted-foreground" /> : null}
       <div className="min-w-0 flex-[1_1_12rem]">
-        <p className="truncate font-medium text-foreground">
+        <p className="truncate font-medium leading-tight text-foreground">
           {question ? t(`browser.agent.ask.${question.ask}`, { host: question.host, name: question.name }) : running ? doing : sharedLabel}
         </p>
         {shared && target && (running || question) ? <p className="truncate text-muted-foreground">{sharedLabel}</p> : null}
         {question && script ? (
           <ScriptPreview key={question.id} code={question.detail} onRead={() => setReadId(question.id)} />
         ) : question?.detail ? (
-          <p className="truncate text-muted-foreground" title={question.detail}>
+          <p className="truncate text-ui-11 leading-tight text-muted-foreground" title={question.detail}>
             {question.detail}
           </p>
         ) : null}
       </div>
       <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+        {running || question ? (
+          <Button type="button" size="xs" variant="outline" onClick={() => stopBrowserAgent(chat)}>
+            {t("browser.agent.stop")}
+          </Button>
+        ) : null}
         {question ? (
           <>
+            <span aria-hidden={true} className="h-4 w-px bg-border" />
             <Button type="button" size="xs" variant="ghost" onClick={() => answerQuestion(question.id, false)}>
               {t("browser.agent.deny")}
             </Button>
-            {question.always ? (
-              <Button type="button" size="xs" variant="outline" onClick={() => answerQuestion(question.id, true, true)}>
-                {t("browser.agentSettings.alwaysAllow")}
-              </Button>
-            ) : null}
             <Button
               type="button"
               size="xs"
@@ -66,16 +67,16 @@ export function AgentBar({ activeTabId }: { activeTabId: string | null }) {
             >
               {t("browser.agent.allow")}
             </Button>
+            {question.always ? (
+              <Button type="button" size="xs" variant="outline" onClick={() => answerQuestion(question.id, true, true)}>
+                {t("browser.agentSettings.alwaysAllow")}
+              </Button>
+            ) : null}
           </>
         ) : null}
         {shared && target ? (
           <Button type="button" size="xs" variant="outline" onClick={() => shareAgentTab(chat, null)}>
             {t("browser.tabMenu.stopSharing")}
-          </Button>
-        ) : null}
-        {running || question ? (
-          <Button type="button" size="xs" variant="outline" onClick={() => stopBrowserAgent(chat)}>
-            {t("browser.agent.stop")}
           </Button>
         ) : null}
       </div>

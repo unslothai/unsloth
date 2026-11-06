@@ -215,12 +215,16 @@ export const id = {
         history: "Membaca riwayat penjelajahan Anda",
         move: "Menggerakkan mouse",
         drag: "Menyeret",
+        tabs: "Melihat tab",
+        readFile: "Membaca file",
+        editFile: "Mengedit file",
       },
     },
     title: "Browser",
     tabs: "Tab browser",
     newTab: "Tab baru",
     newTabFullView: "Tab baru dalam tampilan penuh",
+    newTabFloating: "Tab baru di jendela mengambang",
     closeTab: "Tutup tab",
     close: "Tutup browser",
     show: "Tampilkan browser",
@@ -372,6 +376,8 @@ export const id = {
     askBeforeDownloadingSetting: "Tanya sebelum mengunduh",
     askBeforeDownloadingSettingDescription:
       "Konfirmasi file dari situs web sebelum disimpan.",
+    askBeforeProgramDownloadsSetting: "Tanya sebelum mengunduh program",
+    askBeforeProgramDownloadsSettingDescription: "Konfirmasi file yang dapat menjalankan program, seperti .exe atau .dmg, meskipun unduhan lain tidak bertanya.",
     downloadSitesSetting: "Izin unduhan situs",
     downloadSitesSettingDescription:
       "Situs yang Anda pilih untuk selalu diizinkan atau diblokir unduhannya.",
@@ -380,6 +386,7 @@ export const id = {
     downloadSitesFor: "Unduhan dari {host}",
     downloadSitesRemove: "Lupakan {host}",
     downloadSiteAllow: "Selalu izinkan",
+    downloadSiteAllowAll: "Izinkan program juga",
     downloadSiteBlock: "Selalu blokir",
     downloadPrompt: {
       title: "Unduh file ini?",
@@ -387,6 +394,9 @@ export const id = {
       dangerous:
         "File seperti ini dapat menjalankan program di komputer Anda. Unduh hanya jika Anda memercayai {host}.",
       remember: "Ingat untuk lain kali",
+      once: "Tanya lain kali",
+      site: "Selalu untuk {host}",
+      all: "Selalu unduh, dari semua situs",
       cancel: "Batal",
       download: "Unduh",
       blocked: "Unduhan dari {host} diblokir.",
@@ -435,6 +445,12 @@ export const id = {
       openChat: "Buka dalam tampilan penuh",
       moveLeft: "Pindahkan ke panel kiri",
       moveRight: "Pindahkan ke panel kanan",
+    },
+    floating: {
+      enter: "Jendela mengambang",
+      dock: "Sematkan ke samping",
+      close: "Tutup jendela mengambang",
+      handle: "Pindahkan jendela. Tombol panah memindahkannya; Shift dan tombol panah mengubah ukurannya.",
     },
     annotate: {
       countOne: "1 anotasi",
@@ -886,6 +902,9 @@ export const id = {
     unifiedTightFit: "Pas-pasan",
     unifiedTightFitHint:
       "Mungkin dimuat dengan konteks lebih pendek atau berjalan lebih lambat di Mac ini.",
+    residentToRun: "untuk menjalankan",
+    residentToRunHint:
+      "Memori GPU yang dibutuhkan pemeriksaan pemuatan saat berjalan",
     onDevice: "Di Perangkat",
     huggingFace: "Hugging Face",
     retry: "Coba lagi",
@@ -1207,6 +1226,9 @@ export const id = {
         "Satu model per baris, misalnya unsloth/Qwen3-4B-GGUF, atau unsloth/* untuk seluruh organisasi. Biarkan kosong untuk mengizinkan semua model.",
       modelAccessSave: "Simpan",
       modelAccessLimited: "Akses model terbatas",
+      rename: "Ganti nama",
+      renameTitle: "Ganti nama {username}",
+      renameDescription: "Pilih nama yang digunakan akun ini untuk masuk. Chat, file, dan kunci API tetap berada di akun ini. Pengguna akan dikeluarkan dan masuk lagi dengan nama baru serta kata sandi yang sekarang.",
       empty: "Belum ada akun lain",
       setupCode: "Kode penyiapan",
       setupFor: "Kode penyiapan untuk {username}",
@@ -2291,6 +2313,12 @@ export const id = {
           "Memilih per mesin dan beralih ke HTTPS jika Xet macet atau gagal di sini.",
         autoCurrently: "Otomatis menggunakan {transport} di mesin ini.",
         xetMissing: "Xet tidak tersedia karena hf_xet tidak terinstal.",
+        speedLimit: "Batas kecepatan unduhan",
+        speedLimitDescription:
+          "Tanpa batas kecuali ada angka yang diatur. Unduhan yang dibatasi memakai HTTPS.",
+        speedLimitNoLimit: "Tanpa batas",
+        speedLimitInvalid: "Masukkan angka dalam Mbit/s, atau biarkan kolom kosong.",
+        speedLimitUsesHttps: "Unduhan menggunakan HTTPS selama batas kecepatan diatur. File di atas 50 GB tetap menggunakan Xet, tanpa batas.",
       },
       uploads: {
         sectionTitle: "Unggahan",
@@ -4240,7 +4268,6 @@ export const id = {
             "Dataset ini tampaknya berupa gambar, yang tidak dapat di-streaming.",
           audioDataset:
             "Dataset ini tampaknya berupa audio, yang tidak dapat di-streaming.",
-          appleSilicon: "Streaming belum didukung di Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "hanya completion asisten",
@@ -5883,8 +5910,7 @@ export const id = {
     skippedVersion: "{component} {version} dilewati untuk saat ini",
     skippedUpdate: "Pembaruan {component} dilewati untuk saat ini",
     skippedUpdates: "Pembaruan {components} dilewati untuk saat ini",
-    vulkanFaster:
-      "Vulkan >10% lebih cepat daripada ROCM. Tidak perlu memulai ulang",
+    vulkanFaster: "Lebih dari 10% lebih cepat",
     noRestart: "Tidak perlu memulai ulang",
     downloadSize: "Unduhan {size}",
     backendChange: "Backend {change}",
@@ -5893,8 +5919,8 @@ export const id = {
     installingPhase: "Menginstal {component} ({current} dari {total})...",
     installingCount: "Menginstal {count} pembaruan...",
     bundleTitle: "{count} pembaruan runtime",
-    newBackend: "Backend {component} baru",
-    newUpdate: "Pembaruan {component} baru",
+    newBackend: "Backend runtime baru",
+    newUpdate: "Pembaruan runtime baru",
     hideUpdate:
       "Sembunyikan pembaruan {component} hingga Unsloth dibuka kembali",
     hideUpdates:

@@ -63,6 +63,7 @@ from core.inference.generation_timing import (
     build_generation_timings,
     with_prefill_boundary_processor,
 )
+from core.inference.incremental_streamer import IncrementalTextIteratorStreamer
 from core.inference.native_tool_tokens import (
     NativeToolTokenDecoder,
     closes_an_open_envelope,
@@ -473,7 +474,7 @@ class HarmonyTextStreamer:
                 self._final_emitted = end - start
 
 
-class ReasoningTextIteratorStreamer(TextIteratorStreamer):
+class ReasoningTextIteratorStreamer(IncrementalTextIteratorStreamer):
     """TextIteratorStreamer that preserves native channel tokens until parsed."""
 
     def __init__(
@@ -2649,11 +2650,10 @@ class InferenceBackend:
         ).to(model.device)
 
         try:
-            from transformers import TextIteratorStreamer
             from queue import Empty
 
             # As the text path: a rendered catalogue keeps native tool-call tokens for the healer.
-            streamer = TextIteratorStreamer(
+            streamer = IncrementalTextIteratorStreamer(
                 NativeToolTokenDecoder(raw_tokenizer) if tools else raw_tokenizer,
                 skip_prompt = True,
                 skip_special_tokens = not tools,
@@ -2830,7 +2830,7 @@ class InferenceBackend:
                 )
             except Exception as e:
                 logger.warning(f"HarmonyTextStreamer init failed, falling back: {e}")
-                return TextIteratorStreamer(
+                return IncrementalTextIteratorStreamer(
                     tokenizer,
                     skip_prompt = skip_prompt,
                     skip_special_tokens = True,
@@ -2853,7 +2853,7 @@ class InferenceBackend:
                 in_reasoning = prompt_opens_reasoning_channel(prompt, markers, continued),
             )
         stream_tokenizer = NativeToolTokenDecoder(tokenizer) if preserve_tool_tokens else tokenizer
-        return TextIteratorStreamer(
+        return IncrementalTextIteratorStreamer(
             stream_tokenizer,
             skip_prompt = skip_prompt,
             skip_special_tokens = not preserve_tool_tokens,

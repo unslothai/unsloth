@@ -1596,3 +1596,37 @@ def test_only_an_installed_stub_counts_as_stubbing():
     ):
         assert not _stubs_before(_parse(source), 1), source
         assert _is_offender(source, heavy), source
+
+
+def _bare_unsloth_importorskips(tree: ast.Module) -> int:
+    return sum(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "importorskip"
+        and bool(node.args)
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "unsloth"
+        for node in ast.walk(tree)
+    )
+
+
+def test_no_test_importorskips_bare_unsloth():
+    """Files stub unsloth as a plain module, so importorskip("unsloth") returns the stub and a later
+    `from unsloth.models import ...` fails instead of skipping. importorskip the submodule."""
+    offenders = sorted(
+        path.name
+        for path in _TESTS_DIR.glob("test_*.py")
+        if _bare_unsloth_importorskips(_parse(path.read_text(encoding = "utf-8")))
+    )
+    assert (
+        not offenders
+    ), f"importorskip a submodule (e.g. 'unsloth.models.loader'), not the bare package: {offenders}"
+    assert (
+        _bare_unsloth_importorskips(_parse('import pytest\npytest.importorskip("unsloth")\n')) == 1
+    )
+    assert (
+        _bare_unsloth_importorskips(
+            _parse('import pytest\npytest.importorskip("unsloth.models")\n')
+        )
+        == 0
+    )
