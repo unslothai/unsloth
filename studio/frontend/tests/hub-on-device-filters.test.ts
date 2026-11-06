@@ -156,7 +156,8 @@ test("the MLX format finds MLX folders, which the scan reports as safetensors", 
   const mlxByRepo = {
     kind: "cache",
     modelFormat: "safetensors",
-    repo: "unsloth/gemma-4-E2B-it-UD-MLX-4bit",
+    repoId: "mlx-community/Qwen3-8B-4bit",
+    repo: "Qwen3-8B-4bit",
   } as never;
   const plain = row({});
   for (const mlx of [mlxByLibrary, mlxByTag, omlx, mlxByPath, mlxByRepo]) {

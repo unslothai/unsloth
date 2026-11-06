@@ -32,7 +32,7 @@ export function inventoryRowFormat(
   const names =
     row.kind === "local"
       ? [row.path, row.title, row.modelId ?? ""]
-      : [row.repo];
+      : [row.repoId];
   const mlx = tagged || names.some((name) => isMlxId(name));
   return mlx ? "mlx" : row.modelFormat;
 }
