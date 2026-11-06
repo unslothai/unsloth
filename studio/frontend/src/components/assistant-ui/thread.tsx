@@ -9085,7 +9085,12 @@ const UserMessage: FC = () => {
   const roleplayParts = useRoleplayUserParts();
   return (
     <MessagePrimitive.Root
-      className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150"
+      className={cn(
+        "aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150",
+        // A character chat sets the persona's picture beside the message, as a reply sets the character's.
+        roleplayParts &&
+          "roleplay-user relative min-h-[calc(2.5rem+4rem*var(--ui-space-scale,1))] shrink-0 pr-[calc(3.75rem*var(--ui-space-scale,1))] max-sm:pr-[calc(3.25rem*var(--ui-space-scale,1))]",
+      )}
       data-role="user"
       tabIndex={0}
       {...focusReveal}

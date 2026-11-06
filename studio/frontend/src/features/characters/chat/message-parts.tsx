@@ -5,6 +5,7 @@ import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useLocale, useT } from "@/i18n";
 import { withTimeFormat } from "@/lib/time-format";
 import { cn } from "@/lib/utils";
+import { useUserProfileStore } from "@/features/profile";
 import { useAui, useAuiState } from "@assistant-ui/react";
 import { createContext, useContext, type ReactNode } from "react";
 import { MessageResponseModelBadge } from "@/components/assistant-ui/message-response-details-sheet";
@@ -133,16 +134,33 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   );
 }
 
-/** The persona's name over the user's own messages in a character chat. */
+/** The persona's picture, name and time over the user's own messages, mirroring a reply's frame. */
 export function RoleplayPersonaTag() {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const thread = useThreadScene(threadId);
+  // Speaking as the account itself shows the account's own picture.
+  const profileAvatar = useUserProfileStore((s) => s.avatarDataUrl);
   if (!thread) return null;
+  const { persona } = thread;
   return (
-    <span className="-mb-1 mr-1 flex items-baseline gap-2 text-ui-12 font-medium text-muted-foreground">
-      <span data-testid="persona-tag">{thread.persona.name}</span>
-      <MessageTime />
-    </span>
+    <>
+      <Portrait
+        kind="persona"
+        id={persona.id}
+        name={persona.name}
+        hasImage={persona.hasAvatar}
+        rev={persona.avatarRev}
+        imageUrl={persona.id ? undefined : profileAvatar}
+        label={persona.name}
+        className="absolute right-0 top-6 aspect-[3/4] w-[calc(3rem*var(--ui-space-scale,1))] rounded-[12px] text-[1.05rem] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:w-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[10px]"
+      />
+      <span className="-mb-1 flex h-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-w-full items-center gap-2 text-ui-14 font-semibold text-foreground">
+        <MessageTime />
+        <span className="truncate" data-testid="persona-tag">
+          {persona.name}
+        </span>
+      </span>
+    </>
   );
 }
 
