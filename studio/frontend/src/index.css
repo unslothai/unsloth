@@ -7136,6 +7136,10 @@ html[data-glass-clear] #root {
   --color-secondary: var(--secondary);
   --color-sidebar: var(--sidebar);
 }
+/* At rest nothing scrolls under these headers, so their fill only doubled the page wash into a strip. */
+html[data-glass-clear] #root :is(.library-header-row.sticky:not([data-stuck]), [data-page-model-header]) {
+  background-color: transparent;
+}
 /* Sticky labels repaint the sidebar colour, which would double it up. */
 html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sidebar-sticky-label) {
   background-color: transparent;
