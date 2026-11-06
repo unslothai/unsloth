@@ -189,9 +189,27 @@ def test_the_worker_paces_the_transfer_to_the_limit(tmp_path):
     hub.commits[_OLD]["model.safetensors"] = _BIG
     try:
         unlimited = _timed_run(hub, tmp_path / "unlimited", None)
-        # 24 MB at 64 Mbit/s (8 MB/s) is three seconds of pacing on top of the same startup.
-        limited = _timed_run(hub, tmp_path / "limited", "64")
+        # 24 MB at 32 Mbit/s is six seconds of pacing, less the 0.25 s burst credit.
+        limited = _timed_run(hub, tmp_path / "limited", "32")
     finally:
         hub.close()
-    assert limited - unlimited >= 2.0, (unlimited, limited)
-    assert limited - unlimited < 15.0, (unlimited, limited)
+    assert limited >= 5.7, (unlimited, limited)
+    assert limited - unlimited >= 3.0, (unlimited, limited)
+
+
+@pytest.mark.parametrize(
+    "limit, chunk", [("8", 500_000), ("0.1", 64 * 1024), (None, 10 * 1024 * 1024)]
+)
+def test_a_limit_shrinks_the_write_chunk_so_progress_keeps_moving(monkeypatch, limit, chunk):
+    monkeypatch.delenv(speed_limit.DOWNLOAD_SPEED_LIMIT_ENV, raising = False)
+    if limit is not None:
+        monkeypatch.setenv(speed_limit.DOWNLOAD_SPEED_LIMIT_ENV, limit)
+    code = (
+        f"import runpy; runpy.run_path({str(_WORKER)!r}, run_name = 'w')['_install_speed_limit']()\n"
+        "from huggingface_hub import constants; print(constants.DOWNLOAD_CHUNK_SIZE)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code], cwd = _BACKEND_DIR, capture_output = True, text = True, timeout = 120
+    )
+    assert result.returncode == 0, result.stderr
+    assert int(result.stdout.split()[-1]) == chunk

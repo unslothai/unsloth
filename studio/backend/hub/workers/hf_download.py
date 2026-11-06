@@ -124,7 +124,7 @@ def _install_speed_limit() -> None:
     if not bytes_per_second:
         return
     try:
-        from huggingface_hub import set_client_factory
+        from huggingface_hub import constants, set_client_factory
         from huggingface_hub.utils._http import default_client_factory
     except ImportError:
         print(
@@ -134,6 +134,10 @@ def _install_speed_limit() -> None:
         return
 
     pacer = _Pacer(bytes_per_second)
+    # http_get writes (and progress reads) per DOWNLOAD_CHUNK_SIZE: 10 MB stalls the bar for minutes at a low limit.
+    constants.DOWNLOAD_CHUNK_SIZE = max(
+        64 * 1024, min(constants.DOWNLOAD_CHUNK_SIZE, int(bytes_per_second // 2))
+    )
 
     def pace(response) -> None:
         response.stream = _PacedStream(response.stream, pacer)
