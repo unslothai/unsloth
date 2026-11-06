@@ -119,6 +119,8 @@ def _clean(monkeypatch):
         "FSDP_VERSION",
     ):
         monkeypatch.delenv(name, raising = False)
+    # The tiny models here are bf16, which folds only when opted in; the default is checked on its own.
+    monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE", "1")
     # Tiny generates: test the mechanism at 16 tokens; the default (128) is checked on its own.
     monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE_MIN_TOKENS", "16")
     api = _RefApi()
@@ -264,7 +266,7 @@ def test_folded_logits_match_unfolded(model_id, monkeypatch):
     monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE", "0")
     _, plain = _generate(model, new, output_logits = True, return_dict_in_generate = True)
     assert fold.stats()["engaged"] == 1 and fold.stats()["refused"] == {"kill_switch": 1}
-    monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE")
+    monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE", "1")
     # Teacher-force the unfolded tokens through every arm; fp32 LoRA (same seed) is the oracle.
     seq = plain.sequences
     with torch.inference_mode():
@@ -607,7 +609,7 @@ def test_environment_refusals(monkeypatch, _clean):
     monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE", "0")
     with torch.inference_mode(), fold.lora_fold_generate(model, (), kw) as engaged:
         assert engaged is False
-    monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE")
+    monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE", "1")
     # Mixed-adapter batches: PEFT refuses adapter_names on merged layers.
     with (
         torch.inference_mode(),
@@ -734,3 +736,17 @@ def test_restore_uploads_fix_up_stores_in_bounded_chunks(_clean, monkeypatch):
     assert targets > 1 and _clean.folds == 1 and _clean.unfolds == targets
     assert _same_bits(before, _bits(model))
     assert fold.stats()["restored"] == 1
+
+
+
+def test_bf16_folds_only_when_opted_in(_clean, monkeypatch):
+    """bf16 rounding of W + B @ A is less accurate than the unfolded path, so the default refuses it."""
+    monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE", raising = False)
+    model = _make(MODELS[0])
+    before = _bits(model)
+    engaged, _ = _generate(model)
+    assert engaged is False and fold.stats()["refused"] == {"bf16": 1}
+    assert _same_bits(before, _bits(model)) and _clean.folds == 0
+    monkeypatch.setenv("UNSLOTH_LORA_FOLD_GENERATE", "1")
+    engaged, _ = _generate(model)
+    assert engaged is True and _same_bits(before, _bits(model))

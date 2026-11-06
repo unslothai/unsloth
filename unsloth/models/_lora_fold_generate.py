@@ -242,6 +242,10 @@ def fold_refusal(model):
                 "quantized" if not W.is_floating_point() or W.element_size() < 2 else "not_16bit",
                 None,
             )
+        # bf16 keeps 8 mantissa bits: rounding W + B @ A drifts further from fp32 than the unfolded
+        # path (measured on L4 / A100); fp16 does not. UNSLOTH_LORA_FOLD_GENERATE=1 opts bf16 in.
+        if W.dtype == torch.bfloat16 and os.environ.get("UNSLOTH_LORA_FOLD_GENERATE") != "1":
+            return "bf16", None
         if any(type(t) is not torch.nn.Parameter for t in (A.weight, B.weight)):
             return "quantized", None
         if any(t.device.type == "meta" for t in (W, A.weight, B.weight)):
