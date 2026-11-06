@@ -939,8 +939,7 @@ async def video_status(
 
     from core.inference import media_load_ids
 
-    # The chat page polls this on mount; the first call imports the video stack (~0.1 s warm, ~1 s
-    # before bytecode is compiled), so keep it off the event loop.
+    # Polled on page mount, so usually the first import of the video stack: keep it off the loop.
     backend = await asyncio.to_thread(_video_backend)
     # With the load id of the same state, so an unload can name exactly what this answer shows.
     status_dict, load_id, resident_load_id = await asyncio.to_thread(

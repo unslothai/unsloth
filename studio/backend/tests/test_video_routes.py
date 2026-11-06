@@ -1977,7 +1977,6 @@ def test_the_unload_answers_are_declared_in_the_schema(token_client):
 def test_status_builds_the_backend_off_the_event_loop(client, monkeypatch):
     import asyncio
 
-    # The chat page polls status on mount; the first call imports the video stack.
     on_loop = []
     real = video_module.get_video_backend
 
