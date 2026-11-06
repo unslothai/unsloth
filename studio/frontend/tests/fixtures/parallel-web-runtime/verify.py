@@ -21,7 +21,7 @@ annotator = next(
     if isinstance(node, ast.Assign)
     and any(isinstance(target, ast.Name) and target.id == "_ANNOTATE_JS" for target in node.targets)
 )
-html = "<!doctype html><html><head><link rel='stylesheet' href='https://assets.example/site.css'></head><body><div style='height:600px'></div><input id='value'><p id='mark'>Text to annotate here</p><img id='asset' src='https://assets.example/site.svg'><div style='height:1000px'></div><script>window.marker = Math.random()</script></body></html>"
+html = "<!doctype html><html><head><link rel='stylesheet' href='https://assets.example/site.css'><style>#desktop-control{display:none}@media(min-width:500px){#desktop-control{display:block}}</style></head><body><button id='desktop-control' onclick='window.desktopClicks=(window.desktopClicks||0)+1'>Desktop action</button><div style='height:600px'></div><input id='value'><p id='mark'>Text to annotate here</p><img id='asset' src='https://assets.example/site.svg'><div style='height:1000px'></div><script>window.marker = Math.random()</script></body></html>"
 with sync_playwright() as p:
     engine = os.environ.get("RUNTIME_BROWSER", "chromium")
     browser = getattr(p, "chromium" if engine == "edge" else engine).launch(
@@ -71,7 +71,10 @@ with sync_playwright() as p:
         "**/api/browser/annotate.js",
         lambda r: r.fulfill(content_type = "application/javascript", body = annotator),
     )
-    page.goto("http://127.0.0.1:15429/tests/fixtures/parallel-web-runtime/")
+    page.goto(
+        os.environ.get("RUNTIME_BASE_URL", "http://127.0.0.1:15429")
+        + "/tests/fixtures/parallel-web-runtime/"
+    )
     page.wait_for_function("window.store != null")
     a = page.evaluate(
         """() => { const s=window.store.getState(); s.showChat('single:a'); s.openUrl('https://a.example/'); return window.store.getState().activeTabId; }"""
@@ -134,6 +137,34 @@ with sync_playwright() as p:
     assert b_frame.evaluate("document.activeElement.id") == "value"
     assert b_frame.evaluate("window.blurs || 0") == 0
     b_frame.locator("#value").fill("second")
+    before_float = b_frame.evaluate("({width:innerWidth,marker:window.marker})")
+    page.evaluate("window.setPreviewScale(true)")
+    page.wait_for_function("document.querySelector('#slot').getBoundingClientRect().width === 300")
+    page.wait_for_function(
+        "frame => Math.abs(frame.getBoundingClientRect().width - 300) < 1",
+        arg = b_shell.frame_element(),
+    )
+    print(
+        "FLOATING_VIEWPORT",
+        b_frame.evaluate(
+            "({width:innerWidth,desktopActionVisible:getComputedStyle(document.querySelector('#desktop-control')).display !== 'none'})"
+        ),
+        flush = True,
+    )
+    assert b_frame.locator(
+        "#desktop-control"
+    ).is_visible(), "Floating hid the desktop action by shrinking the page viewport"
+    assert b_frame.evaluate("innerWidth") == before_float["width"]
+    b_frame.locator("#desktop-control").click()
+    assert b_frame.evaluate("window.desktopClicks") == 1
+    assert b_frame.evaluate("window.marker") == before_float["marker"]
+    page.evaluate("window.setPreviewScale(false)")
+    page.wait_for_function(
+        "frame => Math.abs(frame.getBoundingClientRect().width - 600) < 1",
+        arg = b_shell.frame_element(),
+    )
+    assert b_frame.evaluate("innerWidth") == before_float["width"]
+    assert b_frame.locator("#value").input_value() == "second"
     asset_count = len(assets)
     viewport = f.evaluate("[innerWidth,innerHeight,scrollY]")
     page.evaluate("(id) => window.watchTab(id)", a)

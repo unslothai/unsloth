@@ -84,10 +84,12 @@ async function probe() {
   assert(first.token && second.token && first.token !== second.token, "Missing independent native document tokens");
   await checkpoint("targets", { a: first.id, b: second.id });
   const foreground = document.getElementById("foreground") as HTMLInputElement;
+  await window.setFocus();
   await focusPanel(second.id);
   foreground.value = "B unsaved draft";
   foreground.focus();
-  assert(document.hasFocus(), "Main webview could not acquire keyboard focus");
+  await until(() => document.hasFocus() && document.activeElement === foreground, "Main webview could not acquire keyboard focus");
+  await checkpoint("foreground_before_a", { value: foreground.value, focused: document.activeElement === foreground, documentFocused: document.hasFocus() });
   await action(a, "type", { ref: ref(first.text, "textbox", "Draft note"), text: "A background value" });
   await action(a, "click", { ref: ref(first.text, "button", "Apply note") });
   await checkpoint("foreground_after_a", { value: foreground.value, focused: document.activeElement === foreground, documentFocused: document.hasFocus() });

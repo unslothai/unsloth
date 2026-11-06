@@ -21,8 +21,14 @@ function Fixture() {
   const [observing, setObserving] = useState(false);
   const [watched, setWatched] = useState<string | null>(null);
   const [menu, setMenu] = useState(false);
-  Object.assign(window, { showAnnotation: setAnnotating, observe: setObserving, watchTab: setWatched, showMenu: setMenu });
-  return <><div id="slot" ref={setPage} style={{ position: "relative", width: 600, height: 400, overflow: "hidden" }}>{state.open && tab && <div data-web-page={tab.id} style={{ width: 600, height: "100%", display: watched ? "none" : undefined }} />}{watched && <div data-web-observe={watched} style={{ width: "100%", height: "100%" }} />}</div><input id="foreground" /><BrowserRuntimeRoot />{annotating && page && tab && <AnnotationPortal page={page} tabId={tab.id} hidden={observing || !!watched}><WebAnnotateLayer tabId={tab.id} title="Test page" page={page} suspended={observing || !!watched} /></AnnotationPortal>}<Dialog open={menu} onOpenChange={setMenu}><DialogContent><DialogTitle>Test dialog</DialogTitle></DialogContent></Dialog></>;
+  const [scaled, setScaled] = useState(false);
+  Object.assign(window, { showAnnotation: setAnnotating, observe: setObserving, watchTab: setWatched, showMenu: setMenu, setPreviewScale: setScaled });
+  return <><div id="slot" ref={setPage} style={{ position: "relative", width: scaled ? 300 : 600, height: scaled ? 200 : 400, overflow: "hidden" }}>
+    <div data-browser-page="" style={{ width: 600, height: 400, transform: scaled ? "scale(0.5)" : undefined, transformOrigin: "top left", ...{ "--browser-floating-scale": scaled ? 0.5 : 1 } }}>
+      {state.open && tab && <div data-web-page={tab.id} style={{ width: 600, height: "100%", display: watched ? "none" : undefined }} />}
+    </div>
+    {watched && <div data-web-observe={watched} style={{ width: "100%", height: "100%" }} />}
+  </div><input id="foreground" /><BrowserRuntimeRoot />{annotating && page && tab && <AnnotationPortal page={page} tabId={tab.id} hidden={observing || !!watched}><WebAnnotateLayer tabId={tab.id} title="Test page" page={page} suspended={observing || !!watched} /></AnnotationPortal>}<Dialog open={menu} onOpenChange={setMenu}><DialogContent><DialogTitle>Test dialog</DialogTitle></DialogContent></Dialog></>;
 }
 Object.assign(window, { store: useBrowserStore, agents: useBrowserAgentStore, requestFrameAgent, whenWebPageReady, browserScopeContains });
 createRoot(document.getElementById("root")!).render(<Fixture />);
