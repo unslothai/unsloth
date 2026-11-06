@@ -55,7 +55,6 @@ _GGUF_SCALAR_WIDTHS = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11
 # Matches llama.cpp's -ub default; a longer embedding prompt is refused with a 500.
 _UBATCH_SIZE = 512
 _TOKEN_COUNT_CACHE_SIZE = 4096
-# Texts and characters per batched /tokenize POST.
 _TOKENIZE_BATCH = 256
 _TOKENIZE_BATCH_CHARS = 262144
 
@@ -1253,10 +1252,8 @@ class LlamaServerBackend:
             self.dim(model_name = model_name)
 
     def token_counter(self, *, model_name = None):
-        """Count tokens via the GGUF's /tokenize so chunk sizing matches the
-        embedder. Cached per text. ``many`` counts a list in a few POSTs: /tokenize
-        tokenizes each string of a content array on its own, exactly as a lone string,
-        so a -1 marker between them splits the reply into per-text counts."""
+        """Count tokens via the GGUF's /tokenize, cached per text. ``many`` sends a content array:
+        tokenize_mixed tokenizes each string alone, so -1 markers split the reply per text."""
         memo: OrderedDict[str, int] = OrderedDict()
         memo_lock = threading.Lock()
         batching = True

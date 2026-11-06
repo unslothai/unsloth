@@ -129,7 +129,6 @@ def test_a_server_that_cannot_batch_falls_back_to_single_posts(monkeypatch, serv
     texts = ["a b", "c d e", "f"]
     assert count.many(texts) == [2, 3, 1]
     assert server.posts[1:] == texts
-    # Later batches go straight to single posts.
     assert count.many(["g h", "i"]) == [2, 1]
     assert server.posts[-2:] == ["g h", "i"]
 
