@@ -635,6 +635,59 @@ def _moe_aux_plan(parts):
     return _MoEAux(inner, router_class, index, num_experts, routers)
 
 
+def _scaler_called_by(fn, depth = 1):
+    """`unsloth_ga_scale_aux_loss` if `fn`, a function it wraps, or (depth) a module-level *_forward it calls
+    (Unsloth Zoo's compiled `<Class>_forward`) calls it, else None."""
+    seen = 0
+    while fn is not None and seen < 8:
+        seen += 1
+        fn = getattr(fn, "__func__", fn)
+        code = getattr(fn, "__code__", None)
+        names = getattr(code, "co_names", ())
+        scope = getattr(fn, "__globals__", None) or {}
+        if "unsloth_ga_scale_aux_loss" in names:
+            scaler = scope.get("unsloth_ga_scale_aux_loss")
+            if callable(scaler):
+                return scaler
+        elif depth > 0:
+            for name in names:
+                if name.endswith("_forward") and callable(scope.get(name)):
+                    scaler = _scaler_called_by(scope[name], depth - 1)
+                    if scaler is not None:
+                        return scaler
+        fn = getattr(fn, "__wrapped__", None)
+    return None
+
+
+def _forward_aux_scaler(owner):
+    """The scaler the installed forward calls, or None; read from the forward, not a version check."""
+    scaler = _scaler_called_by(owner.__dict__.get("forward"))
+    return (
+        scaler if scaler is not None else _scaler_called_by(getattr(type(owner), "forward", None))
+    )
+
+
+def _forward_aux_weighting(owner, term, kwargs, num_items_in_batch):
+    """Weight `term` by this micro-batch's token share of the window, as the rewritten forward does on one GPU."""
+    scaler = _forward_aux_scaler(owner)
+    labels = kwargs.get("labels")
+    if scaler is None or labels is None:
+        return term
+    loss_kwargs = {
+        k: kwargs[k] for k in ("shift_labels", "packed_seq_lengths") if kwargs.get(k) is not None
+    }
+    if num_items_in_batch is not None:
+        loss_kwargs["num_items_in_batch"] = num_items_in_batch
+    return scaler(
+        term,
+        labels,
+        kwargs.get("attention_mask"),
+        loss_kwargs,
+        num_items_in_batch = num_items_in_batch,
+        model = owner,
+    )
+
+
 def _record_router(ctx, module, args, output):
     if ctx.router_logits is not None:  # inside this stage's forward (not a checkpoint recompute)
         index = ctx.moe.index
@@ -1167,7 +1220,10 @@ class _PPStageModule(nn.Module):
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
-                loss = loss + moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                loss = loss + _forward_aux_weighting(
+                    moe.owner, term, kwargs, ctx.num_items_in_batch
+                )
             elif carry:
                 # Auxiliary loss off: a zero term keeps the received carry in the graph (see the stage return).
                 loss = loss + 0 * carry[0].sum().to(loss.device)

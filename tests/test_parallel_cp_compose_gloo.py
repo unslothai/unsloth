@@ -103,6 +103,110 @@ def _block_compile_on_cpu(model):
         bc.torch.compile = real_compile
 
 
+def _install_unsloth_checkpoint(model, gc, stats):
+    """Unsloth's checkpoint on CPU: "unsloth" = path A (UnslothCheckpointFunction, never offloads on CPU),
+    "unsloth_nonre" = path B (vision.py _nonre_checkpoint) with CPU device seams: bookkeeping real, copies not."""
+    import contextlib
+
+    import torch.utils.checkpoint as torch_checkpoint
+    import transformers.modeling_utils as hf_modeling_utils
+    import unsloth_zoo.gradient_checkpointing as G
+
+    original_forward = G.UnslothCheckpointFunction.forward
+
+    def counted_forward(ctx, run_function, preserve_rng_state, *args):
+        stats["checkpoint_calls"] += 1
+        return original_forward(ctx, run_function, preserve_rng_state, *args)
+
+    G.UnslothCheckpointFunction.forward = staticmethod(counted_forward)
+    if gc == "unsloth":
+        # No CUDA: no pinned host buffers and no double buffer (this worker process only).
+        os.environ["UNSLOTH_DISABLE_PINNED_MEMORY"] = "1"
+        os.environ["UNSLOTH_DISABLE_DOUBLE_BUFFER"] = "1"
+        G.patch_unsloth_smart_gradient_checkpointing(dtype = torch.float32)
+        reentrant = True
+    else:
+        from unsloth.models import vision
+
+        G.unpatch_unsloth_smart_gradient_checkpointing()
+
+        class _Stream:
+            def wait_event(self, event):
+                pass
+
+            def wait_stream(self, other):
+                pass
+
+        class _Event:
+            def record(self, stream = None):
+                pass
+
+            def query(self):
+                return True
+
+        compute = _Stream()
+
+        class CpuSeamOffloader(G.NonReentrantActivationOffloader):
+            def _on_host(self, x):
+                return x.numel() == 0  # torch's checkpoint sentinel
+
+            def _streamable(self, x):
+                return not G._is_compiling()
+
+            def _new_stream(self, device_index):
+                return _Stream()
+
+            def _current_stream(self, device_index):
+                return compute
+
+            def _stream_ctx(self, stream):
+                return contextlib.nullcontext()
+
+            def _new_event(self):
+                return _Event()
+
+            def _record_stream(self, x, stream):
+                pass
+
+            def _host_copy(
+                self,
+                x,
+                non_blocking = True,
+            ):
+                stats["offloaded"] += 1
+                return x.detach().clone()
+
+            def _device_copy(self, host, device):
+                stats["restored"] += 1
+                return host.clone()
+
+            def _empty_on_device(self, host, device):
+                return torch.empty_like(host)
+
+        G._reserve_pinned = lambda nbytes: True
+        G._release_pinned = lambda nbytes: None
+        G.PINNED_MEMORY_AVAILABLE = True
+        G._new_activation_offloader = lambda: CpuSeamOffloader()
+        original = getattr(
+            torch_checkpoint.checkpoint, "_unsloth_original", torch_checkpoint.checkpoint
+        )
+        vision._register_gc_offload_root(model, True)
+
+        def _nonre_checkpoint(function, *args, **kwargs):
+            stats["checkpoint_calls"] += 1
+            kwargs["use_reentrant"] = False
+            with vision._offload_activation_hooks(vision._gc_checkpoint_owner(function)):
+                return original(function, *args, **kwargs)
+
+        _nonre_checkpoint._unsloth_original = original
+        _nonre_checkpoint._unsloth_offloads = True
+        torch_checkpoint.checkpoint = _nonre_checkpoint
+        hf_modeling_utils.checkpoint = _nonre_checkpoint
+        reentrant = False
+    model.gradient_checkpointing_enable(gradient_checkpointing_kwargs = {"use_reentrant": reentrant})
+    model.enable_input_require_grads()
+
+
 def _selected_moe_backend():
     try:
         from unsloth_zoo.temporary_patches import moe_utils
@@ -180,9 +284,12 @@ def _case_train(
     ungate = False,
     mode = "lora",
     trl_aux = False,
+    aux_coef = None,
+    zoo_compile = False,
     device = "cpu",
     bypass_pre = False,
     bypass_post = False,
+    gc = "none",
 ):
     error = _import_checkout_unsloth()
     if error is not None:
@@ -269,9 +376,16 @@ def _case_train(
         )
         return get_peft_model(model, config)
 
+    if zoo_compile:
+        # FastModel's path: Zoo's compiled CausalLM forward delegates to a module-level rewrite.
+        from unsloth_zoo.compiler import unsloth_compile_transformers
+        unsloth_compile_transformers(model_type = arch)
     load = tp_env.tensor_parallel_env_load(load)
     peft = tp_env.tensor_parallel_env_peft(peft)
     model = load(ckpt, load_in_4bit = False)
+    gc_stats = {"checkpoint_calls": 0, "offloaded": 0, "restored": 0}
+    if gc != "none":
+        _install_unsloth_checkpoint(model, gc, gc_stats)
     if mode in ("lora", "qlora"):
         model = peft(model)
     else:
@@ -280,6 +394,14 @@ def _case_train(
     moe_calls = _count_moe_backend_calls() if count else None
     if router_aux:
         model.config.output_router_logits = True
+    if aux_coef is not None:
+        # TRL < 1.6 has no SFTConfig.router_aux_loss_coef: set the model's own
+        for m in [model, *model.modules()]:
+            config = getattr(m, "config", None)
+            if config is not None and hasattr(config, "router_aux_loss_coef"):
+                config.router_aux_loss_coef = aux_coef
+            if "router_aux_loss_coef" in vars(m):
+                m.router_aux_loss_coef = aux_coef
     compiled = _block_compile_on_cpu(model) if compile else []
 
     # Data parallel replicas read different rows; cp / tp / pp peers share theirs.
@@ -351,7 +473,7 @@ def _case_train(
     if hasattr(args, "router_aux_loss_coef"):
         # TRL turns the MoE load balancing loss on from the architecture's coefficient unless this is 0.0
         # (it then sets output_router_logits on the config itself): aux off unless the case asks for it.
-        args.router_aux_loss_coef = None if (router_aux or trl_aux) else 0.0
+        args.router_aux_loss_coef = aux_coef if (router_aux or trl_aux) else 0.0
     if sft_cp:
         args.context_parallel_size = cp
         args.context_parallel_backend = "ulysses"
@@ -447,6 +569,10 @@ def _case_train(
         "moe_backend": _selected_moe_backend(),
         "device_name": torch.cuda.get_device_name() if device != "cpu" else "cpu",
         "dist_backend": dist.get_backend() if dist.is_initialized() else None,
+        "gc": dict(gc_stats),
+        "memory": __import__("unsloth.parallel_capabilities", fromlist = ["x"])._memory(
+            trainer.model, args
+        ),
     }
     if dist.is_initialized():
         dist.barrier()
@@ -538,11 +664,27 @@ def _ref(
 
 def _rows_per_step(res):
     """The dataset rows each optimizer step trained on (one rank's view)."""
+    assert "error" not in res, ("a worker failed", res.get("error"), res.get("trace"))
     ga, read = res["ga"], res["rows_read"]
     return [
         sorted(r for mb in read[i : i + ga] for r in mb)
         for i in range(0, len(read) - len(read) % ga, ga)
     ]
+
+
+# torch < 2.13 refuses fewer micro-batches than stages in every single-stage schedule (PipelineScheduleSingle);
+# 2.13 keeps the check in Schedule1F1B only.
+_ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 stages"
+
+
+def _skip_if_one_microbatch_refused(results):
+    errors = [res.get("error") or "" for res in results]
+    if errors and all(_ONE_MICROBATCH_REFUSED in e for e in errors):
+        import torch as _torch
+        pytest.skip(
+            f"torch {_torch.__version__}'s GPipe schedule refuses 1 micro-batch over 2 stages (torch < 2.13), and "
+            "the pipeline takes the router aux loss over one micro-batch only: " + errors[0][:200]
+        )
 
 
 def _same_rows(
@@ -552,6 +694,13 @@ def _same_rows(
 ):
     """Every step of the composed run trains on exactly the rows one process trains on (data parallel replicas
     split them, cp / tp / pp peers share theirs), and no side read a row twice (no second epoch)."""
+    for rank, res in enumerate([want, *results]):
+        assert "error" not in res, (
+            what,
+            "reference" if rank == 0 else f"rank {rank - 1}",
+            res.get("error"),
+            res.get("trace"),
+        )
     expected = _rows_per_step(want)
     flat = [r for step in expected for r in step]
     assert len(flat) == len(set(flat)), (what, "one process read a row twice", want["rows_read"])
@@ -813,6 +962,39 @@ def test_moe_with_router_aux_loss_under_ddp_matches_per_micro_batch(env):
         _close(res, ref, what = (env, rank))
 
 
+@pytest.mark.parametrize("zoo_compile", [False, True], ids = ["forward_install", "zoo_compiled"])
+@pytest.mark.parametrize("aux", [True, False], ids = ["aux_on", "aux_off"])
+@pytest.mark.parametrize("ga", [1, 2, 4])
+def test_pp_moe_router_aux_loss_with_accumulation_matches_one_process(
+    ga, aux, zoo_compile, tmp_path
+):
+    """PP=2 Qwen3-MoE GA 1/2/4 matches one process: the aux term is token-share weighted (full = ~ga x larger)."""
+    kw = dict(bs = 2, ga = ga, steps = 3, arch = "qwen3_moe", router_aux = aux, aux_coef = 0.5 if aux else None)
+    base = {}
+    if zoo_compile:
+        kw["zoo_compile"] = True
+        base = {
+            "UNSLOTH_FUSED_FORWARD": "0",
+            "UNSLOTH_COMPILE_DISABLE": "1",
+            "UNSLOTH_COMPILE_LOCATION": str(tmp_path / "unsloth_compiled_cache"),
+        }
+    (ref,) = _spawn("train", 1, base, **kw)
+    assert ref["output_router_logits"] is aux, ref
+    env = {
+        "UNSLOTH_PP_SIZE": "2",
+        "UNSLOTH_PP_MICROBATCHES": "1",
+        "UNSLOTH_PP_SCHEDULE": "gpipe",
+        **base,
+    }
+    results = _spawn("train", 2, env, **kw)
+    _skip_if_one_microbatch_refused(results)
+    _same_rows(results, ref, what = (ga, aux))
+    assert sorted(res.get("stage") for res in results) == [0, 1], results
+    for rank, res in enumerate(results):
+        # transformers 4.x drifts ~1.4e-4 / ~5e-6 at GA 4 even aux off; the guarded error is 13-42% of the loss
+        _close(res, ref, rel = 5e-4, state_atol = 1e-5, what = (ga, aux, rank))
+
+
 # LoRA on the experts is eager only under cp (the registry's qwen3_moe x lora+experts x cp row): its per instance
 # ParametrizedQwen3MoeTopKRouter type guards recompile more than one process once the router capture hooks are
 # installed before the first block compiles.
@@ -847,3 +1029,135 @@ def test_moe_with_router_aux_loss_under_cp_is_refused(config_flag):
         assert "MoE x pp / cp" in error and "router_aux_loss_coef = 0.0" in error, (
             error or res["losses"]
         )
+
+
+# Unsloth's checkpoint (paths A and B) in the gated cells above, against one process without checkpointing.
+_UNSLOTH_GC = pytest.mark.parametrize("gc", ["unsloth", "unsloth_nonre"])
+
+
+def _checkpoint_engaged(res, gc):
+    assert res["memory"] == "unsloth_offload", res["memory"]
+    assert res["gc"]["checkpoint_calls"] > 0, res["gc"]
+    if gc == "unsloth_nonre":
+        assert res["gc"]["offloaded"] > 0 and res["gc"]["restored"] == res["gc"]["offloaded"], res[
+            "gc"
+        ]
+
+
+@_UNSLOTH_GC
+@pytest.mark.parametrize(
+    "world, flag, ref_bs, layout",
+    [
+        (4, "tp=2,cp=2", 2, "cp 2 x tp 2"),
+        (8, "tp=2,cp=2", 4, "dp 2 (DDP) x cp 2 x tp 2"),
+        (8, "dp=2,tp=2,cp=2,fsdp=1", 4, "dp 2 (native FSDP2) x cp 2 x tp 2"),
+    ],
+    ids = ["cp2_tp2", "dp2_cp2_tp2", "fsdp2_cp2_tp2"],
+)
+def test_cp_x_tp_with_unsloth_checkpointing_matches_one_process(world, flag, ref_bs, layout, gc):
+    ref = _ref(ref_bs)
+    results = _spawn("train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False, gc = gc)
+    for rank, res in enumerate(results):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["layout"] == layout and res["is_tp"], res["layout"]
+        assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2]
+        assert res["ulysses_calls"] >= N_LAYERS, res["ulysses_calls"]
+        _checkpoint_engaged(res, gc)
+        _close(res, ref, what = (flag, gc, rank))
+
+
+@needs_block_compile_torch
+@_UNSLOTH_GC
+@pytest.mark.parametrize(
+    "world, flag, ref_bs",
+    [(4, "tp=2,cp=2", 2), (8, "dp=2,tp=2,cp=2,fsdp=1", 4)],
+    ids = ["cp2_tp2", "fsdp2_cp2_tp2"],
+)
+def test_block_compile_with_unsloth_checkpointing_composes_like_one_process(
+    world, flag, ref_bs, gc
+):
+    from unsloth.utils.compile_counters import not_above
+
+    eager = _ref(ref_bs)
+    # The baseline runs under 1-rank DDP, which refuses reentrant checkpointing ("marked ready twice"), so
+    # path A is compared to the compiled run without checkpointing.
+    single = _ref(ref_bs, compile = True, gc = "none" if gc == "unsloth" else gc)
+    assert single["compile"]["unique_graphs"] > 0
+    if gc != "unsloth":
+        _checkpoint_engaged(single, gc)
+    _close(single, eager, what = ("one process compiled", gc))
+    results = _spawn(
+        "train", world, {"UNSLOTH_PARALLEL": flag}, bs = 2, cp = 2, sft_cp = False, compile = True, gc = gc
+    )
+    for rank, res in enumerate(results):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["compiled_classes"] == ["LlamaDecoderLayer"] and res["seen_lengths"] == [
+            SEQ // 2
+        ]
+        _checkpoint_engaged(res, gc)
+        assert not not_above(res["compile"], single["compile"]), (
+            rank,
+            res["compile"],
+            single["compile"],
+        )
+        _close(res, eager, what = (flag, "compiled", gc, rank))
+
+
+@_UNSLOTH_GC
+@pytest.mark.parametrize(
+    "env, sft_cp",
+    [({"UNSLOTH_FSDP2": "1"}, True), ({"UNSLOTH_PARALLEL": "cp=2,fsdp=1"}, False)],
+    ids = ["fsdp2_env_cp_config", "unsloth_parallel"],
+)
+def test_cp_with_native_fsdp2_and_unsloth_checkpointing_matches_one_process(env, sft_cp, gc):
+    ref = _ref(4)
+    for rank, res in enumerate(_spawn("train", 4, env, bs = 2, cp = 2, sft_cp = sft_cp, gc = gc)):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert (
+            res["native_fsdp2"]
+            and res["seen_lengths"] == [SEQ // 2]
+            and res["ulysses_calls"] >= N_LAYERS
+        )
+        _checkpoint_engaged(res, gc)
+        _close(res, ref, what = (env, gc, rank))
+
+
+@_UNSLOTH_GC
+@pytest.mark.parametrize(
+    "mode, world, env",
+    [("lora", 2, {}), ("lora", 4, {"UNSLOTH_FSDP2": "1"}), ("full", 2, {})],
+    ids = ["lora-cp2", "lora-fsdp2_cp2", "full-cp2"],
+)
+def test_moe_under_cp_with_unsloth_checkpointing_matches_one_process(mode, world, env, gc):
+    ref = _ref(2 * world // 2, arch = "qwen3_moe", mode = mode)
+    results = _spawn("train", world, env, bs = 2, cp = 2, arch = "qwen3_moe", mode = mode, gc = gc)
+    _same_rows(results, ref, what = (mode, world, env, gc))
+    for rank, res in enumerate(results):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert not res["output_router_logits"]
+        experts = [k for k in res["grads"] if ".experts." in k]
+        assert experts and all(res["grads"][k].abs().sum() > 0 for k in experts), experts
+        assert res["seen_lengths"] == [SEQ // 2] and res["ulysses_calls"] >= 2
+        _checkpoint_engaged(res, gc)
+        _close(
+            res, ref, what = (mode, world, env, gc, rank), state_atol = 1e-5 if mode == "full" else 1e-6
+        )
+
+
+@needs_block_compile_torch
+@_UNSLOTH_GC
+def test_moe_block_compile_under_cp_with_unsloth_checkpointing_is_compile_clean(gc):
+    from unsloth.utils.compile_counters import not_above
+
+    ref = _ref(2, arch = "qwen3_moe", mode = "full")
+    single = _ref(2, compile = True, arch = "qwen3_moe", mode = "full", gc = gc)
+    _checkpoint_engaged(single, gc)
+    _close(single, ref, what = ("qwen3_moe one process compiled", gc), state_atol = 1e-5)
+    results = _spawn("train", 2, bs = 2, cp = 2, arch = "qwen3_moe", mode = "full", compile = True, gc = gc)
+    _same_rows(results, ref, what = ("compiled", gc))
+    for rank, res in enumerate(results):
+        assert "error" not in res, (rank, res.get("error"), res.get("trace"))
+        assert res["compiled_classes"] and res["seen_lengths"] == [SEQ // 2]
+        _checkpoint_engaged(res, gc)
+        assert not not_above(res["compile"], single["compile"]), (res["compile"], single["compile"])
+        _close(res, ref, what = ("qwen3_moe cp2 compiled", gc, rank), state_atol = 1e-5)

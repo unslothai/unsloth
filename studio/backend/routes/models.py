@@ -2767,7 +2767,7 @@ async def scan_model_remote_code(
             _subdirs = tuple(dict.fromkeys((*consent_load_subdirs[_target], *_subdirs)))
             consent_load_subdirs[_target] = _subdirs
         # Record repos our scan first pulls in, computed before preflight, so decline purges only those.
-        from utils.security.remote_code_scan import external_auto_map_repos
+        from utils.security.remote_code_scan import external_auto_map_repos, shared_config_reads
 
         scan_created_repos: list = []
         _seen_created: set = set()
@@ -2788,33 +2788,35 @@ async def scan_model_remote_code(
                 pass
 
         external_refs: list = []
-        for _target in security_targets:
-            # Use the pre-base-resolution snapshot for the primary (see above).
-            _mark_scan_created(
-                _target,
-                preexisting = _primary_preexisting if _target == primary_cache_target else None,
-            )
-            for _ext in external_auto_map_repos(
-                _target,
-                hf_token,
-                load_subdirs = consent_load_subdirs[_target],
-            ):
-                # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
-                if not is_local_path(_ext) and cached_read_refused(
-                    hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+        # One advisory scan: its passes share each config read; the load-time gates re-read fresh.
+        with shared_config_reads():
+            for _target in security_targets:
+                # Use the pre-base-resolution snapshot for the primary (see above).
+                _mark_scan_created(
+                    _target,
+                    preexisting = _primary_preexisting if _target == primary_cache_target else None,
+                )
+                for _ext in external_auto_map_repos(
+                    _target,
+                    hf_token,
+                    load_subdirs = consent_load_subdirs[_target],
                 ):
-                    raise HTTPException(
-                        status_code = 404,
-                        detail = _UNAUTHORIZED_CACHED_MODEL,
-                    )
-                external_refs.append(_ext)
-                _mark_scan_created(_ext)
-        decision = preflight_remote_code_consent_for_targets(
-            security_targets,
-            hf_token = hf_token,
-            subject = current_subject,
-            load_subdirs_by_target = consent_load_subdirs,
-        )
+                    # Found after authorization: refuse like the base, else its cached Python leaks as source snippets
+                    if not is_local_path(_ext) and cached_read_refused(
+                        hf_token, repo_id = _ext, is_cached = lambda e = _ext: _repo_maybe_cached(e)
+                    ):
+                        raise HTTPException(
+                            status_code = 404,
+                            detail = _UNAUTHORIZED_CACHED_MODEL,
+                        )
+                    external_refs.append(_ext)
+                    _mark_scan_created(_ext)
+            decision = preflight_remote_code_consent_for_targets(
+                security_targets,
+                hf_token = hf_token,
+                subject = current_subject,
+                load_subdirs_by_target = consent_load_subdirs,
+            )
         payload = decision.response_payload()
         blocks = (
             [(payload.get("block_cause"), payload.get("model_name"))]
@@ -4668,6 +4670,7 @@ async def get_gguf_variants(
                         download_size_bytes = int(
                             getattr(v, "download_size_bytes", v.size_bytes) or v.size_bytes
                         ),
+                        estimated_resident_gb = getattr(v, "estimated_resident_gb", None),
                         lookup_table_bytes = int(getattr(v, "lookup_table_bytes", 0) or 0),
                         pending_drafter_filename = getattr(v, "pending_drafter_filename", None),
                         pending_drafter_size_bytes = int(

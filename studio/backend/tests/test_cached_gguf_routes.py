@@ -2620,6 +2620,42 @@ def test_legacy_delete_delegates_to_shared_service(monkeypatch):
     assert calls == [("org/repo", None, "token", "/data/hf/hub")]
 
 
+def _hardware_detected(monkeypatch) -> None:
+    """These pin the post-detection contract: listing and loader share one buildability answer."""
+    from utils.hardware import hardware as hw
+
+    event = threading.Event()
+    event.set()
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", event)
+
+
+def test_listing_before_detection_keeps_device_free_refusals(monkeypatch):
+    """Before detection only the device-dependent engine prediction is provisional."""
+    from core.inference import diffusion_engine_router as router
+    from core.inference.diffusion_families import detect_family
+    from utils.hardware import hardware as hw
+
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", threading.Event())
+    monkeypatch.setattr(
+        router, "predict_engine", lambda *a, **k: pytest.fail("listing predicted an engine")
+    )
+    krea = detect_family("", override = "krea-2")
+    moss = detect_family("", override = "moss-image")
+    buildable = _classification._family_buildable_for_listing
+
+    assert buildable(None, model_kind = "gguf") is False
+    assert buildable(moss, model_kind = "gguf") is True
+    monkeypatch.setattr(router, "family_pipeline_available", lambda fam: True)
+    assert buildable(krea, model_kind = "pipeline") is True
+    monkeypatch.setattr(router, "family_pipeline_available", lambda fam: False)
+    monkeypatch.setattr(router, "family_sd_cpp_supported", lambda fam: False)
+    assert buildable(krea, model_kind = "pipeline") is False
+    assert buildable(krea, model_kind = "gguf") is False
+    monkeypatch.setattr(router, "family_sd_cpp_supported", lambda fam: True)
+    assert buildable(krea, model_kind = "pipeline") is False
+    assert buildable(krea, model_kind = "gguf") is True
+
+
 def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
     """krea2-arch GGUFs (molbal/krea2-gguf) are images, not chat RUN (#14474)."""
     for hints in (
@@ -2633,6 +2669,7 @@ def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
     # The arch alone names the family, so an unbuildable host hides even an uninformative name.
     import core.inference.diffusion_engine_router as router
 
+    _hardware_detected(monkeypatch)
     seen = []
 
     def buildable(fam, *, model_kind):
@@ -2657,6 +2694,7 @@ def test_krea2_gguf_is_an_image_model_not_chat(monkeypatch):
 def test_moss_image_gguf_inventory_uses_native_family_support(monkeypatch, arch, hints, buildable):
     from core.inference import diffusion_engine_router as router
 
+    _hardware_detected(monkeypatch)
     seen = []
 
     def can_build(fam, *, model_kind):
@@ -3644,6 +3682,8 @@ def _pretend_old_diffusers(monkeypatch, *, engine):
 
     monkeypatch.setitem(sys.modules, "diffusers", types.SimpleNamespace(__version__ = "0.36.0"))
     monkeypatch.setattr(router, "predict_engine", lambda fam, **kwargs: engine)
+    # A pinned engine is a post-detection answer.
+    _hardware_detected(monkeypatch)
 
 
 def test_gguf_picker_hides_a_family_no_engine_here_can_build(monkeypatch):
