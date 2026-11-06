@@ -1347,8 +1347,7 @@ def _vulkan_cpu_rung_applies() -> bool:
 
 
 def _cuda_cpu_rung_applies() -> bool:
-    """Whether a CUDA build may step down to the CPU one: only where torch drives no GPU, the host
-    image_install_accelerator routes to CUDA beside llama.cpp's. Unknown: no, as before."""
+    """Only a CPU torch (routed to CUDA beside llama.cpp's) may step a CUDA build down to CPU."""
     try:
         from utils.hardware.hardware import DeviceType, get_device
         return get_device() == DeviceType.CPU
@@ -1504,8 +1503,7 @@ def accelerator_probe_failure_is_decisive(accelerator: Optional[str]) -> bool:
     """A CPU-only probe is decisive only if the ROCm runtime is proven absent; else two strikes apply."""
     klass = _accelerator_class_of(accelerator)
     if klass == "cuda":
-        # Only reached on a CPU torch (the rung's gate): llama.cpp already proved the driver, so a
-        # CUDA build that will not start is the build, and retrying it renders nothing (#16803).
+        # llama.cpp's CUDA build already proved the driver, so the sd.cpp build is at fault.
         return fallback_accelerator_for(klass) == "cpu"
     if klass != "rocm" or not fallback_accelerator_for(klass):
         return False
@@ -3759,8 +3757,8 @@ class SdCppDiffusionBackend:
                 if run_accelerator is None and binary:
                     run_accelerator = sd_cpp_listed_device(binary)[0]
                 klass = _accelerator_class_of(run_accelerator) if run_accelerator else None
-                # A CPU torch running the Vulkan or CUDA build renders on a card torch never
-                # measured, so auto offloads.
+                # A CPU torch running a GPU build renders on a card torch never measured, so
+                # auto offloads.
                 unmeasured = (
                     torch_device == "cpu" and off_torch is None and klass in ("vulkan", "cuda")
                 )

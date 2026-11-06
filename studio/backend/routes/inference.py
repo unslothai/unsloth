@@ -48535,10 +48535,8 @@ async def load_diffusion_model_gated(
         # MLX drives the Apple GPU itself even where torch resolved "cpu": take the arbiter.
         if pending_name == ENGINE_MLX:
             needs_gpu = True
-        # So does the Vulkan sd.cpp build a CPU torch is routed to beside an AMD or Arc card (or
-        # the CUDA one beside an NVIDIA card llama.cpp renders on), unless that build has failed
-        # here and the ladder runs the CPU one instead. A retained managed GPU build also renders
-        # on the card, whatever this load requested.
+        # So does a GPU sd.cpp build a CPU torch is routed to (Vulkan beside AMD / Arc, CUDA beside
+        # NVIDIA) or retains, unless the ladder has moved it to the CPU build.
         gpu_build_on_cpu_torch = (
             device == "cpu"
             and off_torch is None

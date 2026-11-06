@@ -356,18 +356,15 @@ _CUDA_SD_CPP_PLATFORMS = frozenset({("linux", "x86_64"), ("win32", "amd64")})
 
 
 def _cuda_gpu_for_cpu_torch() -> bool:
-    """True when torch cannot drive a GPU (a chat-only install without torch, or a CPU wheel) but
-    llama.cpp already runs its CUDA build on an NVIDIA card here: that build proves the driver
-    runs the CUDA line the sd.cpp bundle is picked for. Without this, image generation renders on
-    the CPU while chat uses the card (#16803)."""
+    """A torch with no GPU (chat-only install, CPU wheel) beside an NVIDIA card llama.cpp runs its
+    CUDA build on: that build proves the driver serves the CUDA line sd.cpp is picked for (#16803)."""
+    # Gated with the Vulkan route: the CPU rung below a failed CUDA build is the same ladder.
     if not sd_cpp_vulkan_fallback_enabled():
-        # The CPU rung below a failed CUDA build is part of the same ladder.
         return False
     if (sys.platform, platform.machine().lower()) not in _CUDA_SD_CPP_PLATFORMS:
         return False
     mask = os.environ.get("CUDA_VISIBLE_DEVICES")
     if mask is not None and mask.strip() in ("", "-1"):
-        # Hides every card from the CUDA build too.
         return False
     from core.inference.sd_cpp_engine import llama_cpp_cuda_major
 
@@ -934,8 +931,7 @@ def select_and_activate_engine(
                 return None
             return usable_or_recorded_failure(candidate, install_accelerator, selected_card)
 
-        # Twice at most: a CUDA build that cannot start on a CPU torch is proven unrunnable on the
-        # spot and steps down to the CPU build within this load, since nothing else renders there.
+        # A CPU torch has nothing else on the card: a GPU build that cannot start steps down now.
         for _rung in range(2):
             server_binary = _accept(
                 ensure_sd_server_binary(
@@ -973,7 +969,12 @@ def select_and_activate_engine(
                     unlaunchable_cli or unlaunchable_server, card = selected_card
                 )
                 stepped = preferred_accelerator(image_install_accelerator(backend), selected_card)
-                if off_torch is None and _rung == 0 and stepped != install_accelerator:
+                if (
+                    backend == "cpu"
+                    and off_torch is None
+                    and _rung == 0
+                    and stepped != install_accelerator
+                ):
                     logger.warning(
                         "the %s sd.cpp build cannot start here; using the %s build",
                         install_accelerator,

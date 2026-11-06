@@ -34,9 +34,6 @@ _ENVS = (
     "CUDA_VISIBLE_DEVICES",
 )
 
-# The autouse fixture stubs it; the marker test reads the real one.
-_REAL_LLAMA_CPP_CUDA_MAJOR = sd_cpp_engine.llama_cpp_cuda_major
-
 _RTX = {"vendor": "nvidia", "index": 0, "name": "NVIDIA GeForce RTX 3060"}
 _VEGA = {"vendor": "amd", "index": 0, "name": None, "source": "sysfs-drm"}
 
@@ -62,7 +59,13 @@ def _nvidia_host_with_cuda_llama(monkeypatch):
     monkeypatch.setattr(r, "_physical_inventory", lambda: _host(_RTX))
     # The Vulkan route is never taken beside NVIDIA; keep its own probes off the real host.
     monkeypatch.setattr(r, "_nvidia_adapter_present", lambda: True)
-    monkeypatch.setattr(sd_cpp_engine, "llama_cpp_cuda_major", lambda: "13")
+    _llama_marker(monkeypatch, "cuda13")
+
+
+def _llama_marker(monkeypatch, runtime_line):
+    import utils.llama_cpp_freshness as freshness
+    monkeypatch.setattr(sd_cpp_engine, "_llama_server_binary", lambda: "/opt/llama/llama-server")
+    monkeypatch.setattr(freshness, "read_install_marker", lambda _b: {"runtime_line": runtime_line})
 
 
 def _empty_failure_records(monkeypatch, stored = None):
@@ -82,7 +85,7 @@ def test_a_cpu_torch_beside_cuda_llama_installs_the_cuda_build(monkeypatch, syst
 
 def test_llama_cpp_without_cuda_keeps_cpu(monkeypatch):
     # A CPU or Vulkan llama.cpp proves nothing about the CUDA driver.
-    monkeypatch.setattr(sd_cpp_engine, "llama_cpp_cuda_major", lambda: None)
+    _llama_marker(monkeypatch, "vulkan")
     assert r.image_install_accelerator("cpu") == "auto"
 
 
@@ -205,19 +208,13 @@ def test_host_cuda_runtime_major_prefers_llama_then_torch(monkeypatch):
     assert sd_cpp_engine.host_cuda_runtime_major() == "13"
 
 
-def test_llama_cpp_cuda_major_reads_the_install_marker(monkeypatch, tmp_path):
-    import utils.llama_cpp_freshness as freshness
-
-    binary = str(tmp_path / "llama-server.exe")
-    monkeypatch.setattr(sd_cpp_engine, "_llama_server_binary", lambda: binary)
+def test_llama_cpp_cuda_major_reads_the_install_marker(monkeypatch):
     markers = {"cuda13": "13", "cuda12": "12", "vulkan": None, "cpu": None}
     for line, expected in markers.items():
-        monkeypatch.setattr(
-            freshness, "read_install_marker", lambda _b, _l = line: {"runtime_line": _l}
-        )
-        assert _REAL_LLAMA_CPP_CUDA_MAJOR() == expected
+        _llama_marker(monkeypatch, line)
+        assert sd_cpp_engine.llama_cpp_cuda_major() == expected
     monkeypatch.setattr(sd_cpp_engine, "_llama_server_binary", lambda: None)
-    assert _REAL_LLAMA_CPP_CUDA_MAJOR() is None
+    assert sd_cpp_engine.llama_cpp_cuda_major() is None
 
 
 def test_selection_installs_the_cuda_build(monkeypatch):
