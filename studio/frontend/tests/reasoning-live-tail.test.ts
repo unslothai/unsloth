@@ -65,13 +65,14 @@ const tail = reasoning.slice(
   reasoning.indexOf("// With the fold preference on"),
 );
 
-test("the box scrolls on its own with no border, its scrollbar showing only on hover", () => {
+test("the box scrolls on its own with no border, its scrollbar always showing, close to the text", () => {
   assert.match(
     tail,
-    /\(capped \|\| expanded\) &&\s*"-mx-\[[^\]]+\] mt-2 min-w-0 overflow-x-hidden overflow-y-auto px-\[[^\]]+\] \[scrollbar-gutter:stable\] \[&>\[data-slot=reasoning-text\]\]:pt-1"/,
+    /\(capped \|\| expanded\) &&\s*"-ml-\[[^\]]+\] -mr-\[[^\]]+\] mt-2 min-w-0 overflow-x-hidden overflow-y-auto pl-\[[^\]]+\] pr-\[[^\]]+\] pb-3 \[scrollbar-gutter:stable\] \[&>\[data-slot=reasoning-text\]\]:pt-1"/,
   );
-  // Only the cap and the hover scrollbar drop on expand: the box keeps its gutter, so the width holds.
-  assert.match(tail, /capped && "hover-scrollbar max-h-\[min\(22rem,48vh\)\]"/);
+  // Only the cap drops on expand: the box keeps its gutter, so the width holds.
+  assert.match(tail, /capped && "max-h-\[min\(22rem,48vh\)\]"/);
+  assert.doesNotMatch(tail, /hover-scrollbar/);
   assert.doesNotMatch(tail, /\bborder\b|Expand thinking|overflow-y-clip/);
   assert.doesNotMatch(reasoning, /reasoning-show-full/);
   assert.match(reasoning, /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/);
@@ -105,6 +106,6 @@ test("each edge fades only while more is past it, set without a re-render", () =
   assert.match(css, /\[data-slot="reasoning-tail"\]\[data-capped\]\[data-more-below\] \{\s*--trace-fade-bottom: 1\.5rem;/);
   // The scrollbar's strip is a second, unfaded mask layer.
   assert.match(css, /linear-gradient\(#000, #000\);\s*mask-size: 100% 100%, calc\(1rem \* var\(--ui-space-scale, 1\)\) 100%;\s*mask-position: 0 0, right;/);
-  assert.match(reasoning, /capped \? "mt-2" : "mt-4"/);
+  assert.match(reasoning, /capped \? "mt-2" : "mt-6", "mb-2 border-border border-t"/);
   assert.doesNotMatch(tail, /setState|useState/);
 });
