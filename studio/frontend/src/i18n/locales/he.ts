@@ -2639,7 +2639,7 @@ export const he = {
         unavailable: "לא זמין",
         detecting: "בודק קיום מעבדים גרפיים (GPUs)...",
         unreadable: "לא ניתן לקרוא את חומרת השרת.",
-        noGpu: "לא זוהה GPU ייעודי. המודלים משתמשים במעבד ובזיכרון המערכת שמוצגים למעלה, שאותו GPU מובנה עשוי לחלוק.",
+        noGpu: "לא זוהה GPU ייעודי.",
         noUsableGpu: "אף GPU במחשב זה אינו שמיש על ידי PyTorch.",
         mismatchCpuBuild:
           "גרסת PyTorch מותאמת ל-CPU בלבד ({version}), ולכן לא ניתן להשתמש ב-GPUs שלמטה. תקן את ההתקנה כדי לשחזר תמיכה ב-GPU.",

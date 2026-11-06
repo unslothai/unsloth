@@ -2804,7 +2804,7 @@ export const cs = {
         detecting: "Hledání GPU...",
         unreadable: "Hardware tohoto serveru se nepodařilo načíst.",
         noGpu:
-          "Nebyla zjištěna samostatná GPU. Modely používají CPU a systémovou paměť uvedenou výše, kterou může sdílet vestavěná GPU.",
+          "Nebyla zjištěna samostatná GPU.",
         noUsableGpu:
           "Na tomto počítači není žádné GPU, které by PyTorch mohl použít.",
         mismatchCpuBuild:

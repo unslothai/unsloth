@@ -2615,7 +2615,7 @@ export const fr = {
         detecting: "Recherche de GPU...",
         unreadable: "Impossible de lire le matériel de ce serveur.",
         noGpu:
-          "Aucun GPU dédié détecté. Les modèles utilisent le processeur et la mémoire système affichés ci-dessus, qu'un GPU intégré peut partager.",
+          "Aucun GPU dédié détecté.",
         noUsableGpu: "Aucun GPU de cette machine n'est utilisable par PyTorch.",
         mismatchCpuBuild:
           "PyTorch est une version CPU uniquement ({version}), les GPU ci-dessous ne peuvent donc pas être utilisés. Réparez l'installation pour rétablir la prise en charge du GPU.",

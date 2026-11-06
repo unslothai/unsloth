@@ -2712,7 +2712,7 @@ export const sv = {
         detecting: "Kontrollerar GPU:er ...",
         unreadable: "Det gick inte att läsa serverns maskinvara.",
         noGpu:
-          "Ingen separat GPU hittades. Modeller använder processorn och systemminnet ovan, som en inbyggd GPU kan dela.",
+          "Ingen separat GPU hittades.",
         noUsableGpu: "Ingen GPU på den här datorn kan användas av PyTorch.",
         mismatchCpuBuild:
           "PyTorch är en version endast för CPU ({version}), så GPU:erna nedan kan inte användas. Reparera installationen för att återställa GPU-stödet.",

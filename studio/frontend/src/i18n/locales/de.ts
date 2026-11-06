@@ -2617,7 +2617,7 @@ export const de = {
         detecting: "Suche nach GPUs...",
         unreadable: "Die Hardware dieses Servers konnte nicht gelesen werden.",
         noGpu:
-          "Keine dedizierte GPU erkannt. Modelle nutzen die oben gezeigte CPU und den Systemspeicher, den sich eine integrierte GPU teilen kann.",
+          "Keine dedizierte GPU erkannt.",
         noUsableGpu: "Auf diesem Rechner ist keine GPU für PyTorch nutzbar.",
         mismatchCpuBuild:
           "PyTorch ist ein reiner CPU-Build ({version}), daher können die GPUs unten nicht genutzt werden. Reparieren Sie die Installation, um die GPU-Unterstützung wiederherzustellen.",

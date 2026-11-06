@@ -2557,7 +2557,7 @@ export const zhCN = {
         unavailable: "不可用",
         detecting: "正在检查 GPU...",
         unreadable: "无法读取此服务器的硬件信息。",
-        noGpu: "未检测到独立 GPU。模型使用上方显示的 CPU 和系统内存，集成 GPU 可能会共享这部分内存。",
+        noGpu: "未检测到独立 GPU。",
         noUsableGpu: "本机没有 PyTorch 可用的 GPU。",
         mismatchCpuBuild: "PyTorch 是仅 CPU 版本（{version}），因此无法使用下方的 GPU。修复安装即可恢复 GPU 支持。",
         mismatchUnavailable: "PyTorch（{version}）无法初始化下方的 GPU，因此无法使用。请检查显卡驱动，或修复安装。",

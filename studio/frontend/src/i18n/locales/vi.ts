@@ -2791,7 +2791,7 @@ export const vi = {
         detecting: "Đang kiểm tra GPU...",
         unreadable: "Không thể đọc thông tin phần cứng của máy chủ này.",
         noGpu:
-          "Không phát hiện GPU rời. Mô hình dùng CPU và bộ nhớ hệ thống hiển thị ở trên, bộ nhớ này có thể dùng chung với GPU tích hợp.",
+          "Không phát hiện GPU rời.",
         noUsableGpu: "Không có GPU nào trên máy này mà PyTorch có thể sử dụng.",
         mismatchCpuBuild:
           "PyTorch là bản dựng chỉ dành cho CPU ({version}), nên không thể dùng các GPU bên dưới. Hãy sửa chữa bản cài đặt để khôi phục hỗ trợ GPU.",

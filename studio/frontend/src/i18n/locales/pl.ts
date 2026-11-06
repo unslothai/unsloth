@@ -2821,7 +2821,7 @@ export const pl = {
         detecting: "Wyszukiwanie procesorów GPU...",
         unreadable: "Nie udało się odczytać sprzętu tego serwera.",
         noGpu:
-          "Nie wykryto osobnej karty GPU. Modele używają procesora i pamięci systemowej pokazanych powyżej, które może współdzielić wbudowane GPU.",
+          "Nie wykryto osobnej karty GPU.",
         noUsableGpu:
           "Żaden GPU na tym komputerze nie może być używany przez PyTorch.",
         mismatchCpuBuild:
