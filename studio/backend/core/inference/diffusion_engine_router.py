@@ -351,13 +351,11 @@ def _nvidia_adapter_present() -> bool:
     return False
 
 
-# Hosts the pinned release ships a CUDA sd.cpp bundle for.
 _CUDA_SD_CPP_PLATFORMS = frozenset({("linux", "x86_64"), ("win32", "amd64")})
 
 
 def _cuda_gpu_for_cpu_torch() -> bool:
-    """A torch with no GPU (chat-only install, CPU wheel) beside an NVIDIA card llama.cpp runs its
-    CUDA build on: that build proves the driver serves the CUDA line sd.cpp is picked for (#16803)."""
+    """No GPU torch beside an NVIDIA card llama.cpp's CUDA build runs on (proves the driver, #16803)."""
     # Gated with the Vulkan route: the CPU rung below a failed CUDA build is the same ladder.
     if not sd_cpp_vulkan_fallback_enabled():
         return False

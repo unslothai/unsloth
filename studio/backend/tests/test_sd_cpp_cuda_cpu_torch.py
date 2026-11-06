@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A torch that drives no GPU beside an NVIDIA card llama.cpp renders on installs the CUDA sd.cpp
-build (#16803).
-
-A chat-only desktop install has no torch, and a CPU wheel sees no card, so image generation used
-to run the CPU sd.cpp build while chat ran on the GPU through llama.cpp's CUDA build. Every
-hardware answer is stubbed."""
+"""No GPU torch beside an NVIDIA card running llama.cpp's CUDA build gets the CUDA sd.cpp build (#16803)."""
 
 from __future__ import annotations
 
