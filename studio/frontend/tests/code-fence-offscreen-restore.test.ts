@@ -214,7 +214,9 @@ for (const [pointerType, pressedEarlier] of [["touch", false], ["mouse", false],
       getSelection: () => null,
     });
     const frames: (() => void)[] = [];
-    let observed: ((entries: { isIntersecting: boolean }[]) => void) | null = null;
+    type Observed = (entries: { isIntersecting: boolean }[]) => void;
+    // Assigned inside the fake observer, so annotate rather than let TS narrow the initial null.
+    let observed = null as Observed | null;
     let held = false;
     const plain: boolean[] = [];
     const node = { isConnected: true, contains: () => false, closest: () => null };
@@ -251,14 +253,15 @@ for (const [pointerType, pressedEarlier] of [["touch", false], ["mouse", false],
     const hook = (context.exports as { hook: (frame: { current: unknown }, enabled: boolean) => boolean }).hook;
     hook({ current: node }, true);
     assert.ok(observed);
+    const intersect = observed as Observed;
 
-    observed!([{ isIntersecting: false }]);
+    intersect([{ isIntersecting: false }]);
     assert.deepEqual(plain, [true], "parked as plain text while far off screen");
 
     // The finger (or button) goes down, the fence scrolls into view, and the pointer pauses.
     held = true;
     if (!pressedEarlier) document.fire("pointerdown", { pointerType, button: 0, target: {} });
-    observed!([{ isIntersecting: true }]);
+    intersect([{ isIntersecting: true }]);
     assert.deepEqual(plain, [true], "a held pointer defers the restore");
 
     // Lift without any further scroll, resize or selection change.
