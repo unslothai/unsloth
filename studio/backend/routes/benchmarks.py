@@ -271,7 +271,10 @@ def refuse_if_sweep_holds(request) -> Callable[[], None]:
     holder = headers.get(LEASE_HEADER.decode()) if headers is not None else None
     with _lease_lock:
         own = bool(
-            _lease and holder and _lease["holder"] == holder and _lease["expires"] > time.monotonic()
+            _lease
+            and holder
+            and _lease["holder"] == holder
+            and _lease["expires"] > time.monotonic()
         )
         if _eval_running() and not own:
             refused = EVAL_BUSY_DETAIL
