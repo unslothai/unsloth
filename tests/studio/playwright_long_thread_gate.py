@@ -36,6 +36,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _css_culprit import explain  # noqa: E402
 from _playwright_robust import chromium_launch_args  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
@@ -189,10 +190,23 @@ def short(selector: str, width: int = 170) -> str:
 def top_selectors(result: dict, only_has: bool = False) -> list[str]:
     rows = [(s, r) for s, r in result["selectors"].items() if not only_has or ":has(" in s]
     rows.sort(key = lambda x: x[1]["ms"], reverse = True)
-    return [
+    out = [
         f"    {r['ms']:8.2f} ms/key  {r['attempts']:>10,.0f} match attempts/key  {short(s)}"
         for s, r in rows[:TOP]
     ]
+    return out + suspects([s for s, r in rows[:2] if r["ms"] > 1.0])
+
+
+def suspects(selectors: list[str]) -> list[str]:
+    """Where the slowest selectors probably come from: a text match, so a hint, never a verdict."""
+    out = []
+    for s in selectors:
+        out.append(f"  where `{short(s, 120)}` may come from:")
+        try:
+            out += explain(s, indent = "    ")
+        except Exception as exc:  # noqa: BLE001 - diagnosis must never hide the failure itself
+            out.append(f"    (source lookup failed: {exc!r})")
+    return out
 
 
 def growth(small: dict, large: dict) -> list[str]:
@@ -203,12 +217,13 @@ def growth(small: dict, large: dict) -> list[str]:
         b = large["selectors"].get(s, {"ms": 0.0, "attempts": 0})
         rows.append((b["ms"] - a["ms"], s, a, b))
     rows.sort(reverse = True)
-    return [
+    out = [
         f"    +{d:7.2f} ms/key  {a['ms']:.2f} -> {b['ms']:.2f} ms/key, "
         f"{a['attempts']:,.0f} -> {b['attempts']:,.0f} attempts/key  {short(s)}"
         for d, s, a, b in rows[:TOP]
         if d > 0
     ]
+    return out + suspects([s for d, s, a, b in rows[:2] if d > 1.0])
 
 
 def report(
