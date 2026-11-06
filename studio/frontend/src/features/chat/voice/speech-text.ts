@@ -151,7 +151,9 @@ export function splitIntoSentences(text: string): string[] {
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
       const abbrev =
         lastWord !== undefined && SPEECH_ABBREVIATIONS.has(lastWord.toLowerCase());
-      if (decimal || initial || abbrev || closer) {
+      // "The U.S. is large", "e.g. the docs": a lowercase word after an initialism continues it.
+      const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
+      if (decimal || initial || abbrev || closer || initialism) {
         // "3.50" and "D.C." close up; "Dr. Smith" keeps the space it was written with.
         out[out.length - 1] = prev + (decimal || initial || closer ? "" : " ") + part;
         continue;

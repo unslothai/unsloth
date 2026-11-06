@@ -144,3 +144,19 @@ test("cancel stops playback and requests nothing further", async () => {
   assert.equal(spoken.length, 2);
   assert.equal(utterance.status.type, "ended");
 });
+
+test("an initialism before a lowercase word stays in its sentence", () => {
+  assert.deepEqual(speechText.splitIntoSentences("The U.S. is large. It has fifty states."), [
+    "The U.S. is large.",
+    "It has fifty states.",
+  ]);
+  assert.deepEqual(speechText.splitIntoSentences("See e.g. the docs. Then run it."), [
+    "See e.g. the docs.",
+    "Then run it.",
+  ]);
+  // A capital after one is a real boundary.
+  assert.deepEqual(speechText.splitIntoSentences("Born in the U.S. He moved later."), [
+    "Born in the U.S.",
+    "He moved later.",
+  ]);
+});
