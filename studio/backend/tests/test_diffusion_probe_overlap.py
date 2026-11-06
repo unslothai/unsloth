@@ -64,7 +64,9 @@ def probe_env(monkeypatch):
     monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device, ordinal = None: "cuda:0")
     monkeypatch.setattr(tq, "_persisted_probe_table", lambda card: ev["persisted"])
     monkeypatch.setattr(tq, "_child_probe_table", child)
-    monkeypatch.setattr(tq, "_smoke_probe", lambda *a, **k: pytest.fail("in-process probe reached"))
+    monkeypatch.setattr(
+        tq, "_run_smoke_probe", lambda *a, **k: pytest.fail("in-process probe reached")
+    )
     monkeypatch.setattr(tq, "_SMOKE_CACHE", {})
     if hasattr(tq, "_PREWARMED_TABLES"):
         monkeypatch.setattr(tq, "_PREWARMED_TABLES", {})
@@ -157,3 +159,61 @@ def test_a_held_probe_lock_skips_the_early_child_and_join_returns(probe_env):
     finally:
         tq._CHILD_PROBE_LOCK.release()
     assert probe_env["child"] == []
+
+
+def test_an_early_child_with_no_table_is_not_spawned_twice(probe_env, monkeypatch):
+    # A child with no table (timeout / failure): probe in-process once, never a second child.
+    ev = probe_env
+    tq = ev["tq"]
+
+    def no_table(card):
+        ev["child"].append(("start", time.monotonic(), threading.current_thread().name, card))
+        time.sleep(0.3)
+        return None
+
+    monkeypatch.setattr(tq, "_child_probe_table", no_table)
+    inproc = []
+    monkeypatch.setattr(
+        ev["tq"], "_run_smoke_probe", lambda scheme, *a, **k: inproc.append(scheme) or False
+    )
+    ev["plan"]()
+    assert len([e for e in ev["child"] if e[0] == "start"]) == 1
+    assert inproc == ["int8"]
+    assert ev["tq"]._PREWARMED_TABLES == {}
+
+
+def test_the_boot_warm_reuses_the_early_table(probe_env, monkeypatch):
+    from core.inference import diffusion_probe_cache
+
+    ev, tq = probe_env, probe_env["tq"]
+    monkeypatch.setattr(diffusion_probe_cache, "enabled", lambda: True)
+    handle = tq.start_probe_table_prewarm("cuda")
+    assert handle is not None
+    time.sleep(0.05)
+    warm = threading.Thread(target = tq.prewarm_probe_table, args = ("cuda",))
+    warm.start()
+    warm.join(timeout = 10)
+    tq.join_probe_table_prewarm(handle, discard = True)
+    assert len([e for e in ev["child"] if e[0] == "start"]) == 1
+    assert tq._SMOKE_CACHE == {("int8", "cuda:0"): True, ("fp8", "cuda:0"): False}
+
+
+def test_a_load_that_never_reaches_the_probe_keeps_the_verdicts(probe_env, monkeypatch):
+    # The bf16 seed path never reaches the probe; its early verdicts must still be cached (persistence may be off).
+    from core.inference import diffusion as D
+
+    ev = probe_env
+    ev["keeps"] = "small DiT keeps bf16"
+    monkeypatch.setattr(
+        D, "snapshot_device_memory", lambda _t: types.SimpleNamespace(total_mib = 1, free_mib = 1)
+    )
+    monkeypatch.setattr(D, "replace", lambda m, **k: m)
+    monkeypatch.setattr(
+        D.DiffusionBackend, "_bf16_table_plan", lambda *a, **k: object(), raising = False
+    )
+    monkeypatch.setattr(D, "_auto_quant_eager_reason", lambda *a, **k: "eager")
+    for _ in range(3):
+        assert ev["plan"]() is None
+    assert len([e for e in ev["child"] if e[0] == "start"]) == 1
+    assert "verdict" not in ev, "the plan returned before the scheme probe"
+    assert ev["tq"]._SMOKE_CACHE == {("int8", "cuda:0"): True, ("fp8", "cuda:0"): False}

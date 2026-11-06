@@ -18,6 +18,8 @@ import {
   alignAnchorCorrection,
   initialWindow,
   isCovered,
+  FAR_MOUNT_CHUNK,
+  nextMountChunk,
   stepsToCover,
   watchProgressiveScroll,
   widen,
@@ -427,4 +429,42 @@ test("subpixel reflows can be absorbed without issuing fractional scroll writes"
   assert.equal(anchorCorrection(before, after, 1 / 64), 0.375);
   assert.equal(anchorCorrection(before, before, 1 / 64), null);
   assert.deepEqual(alignAnchorCorrection(-0.375, 0), { scroll: 0, inset: 0.375 });
+});
+
+test("WebKitGTK steps stay small near the reader and ramp to FAR_MOUNT_CHUNK past the window reach", () => {
+  const near = 2;
+  const reach = 2000;
+  // Unknown geometry or a frontier within reach (or below the viewport top) keeps the small step.
+  assert.equal(nextMountChunk(near, null, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, 0, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, -500, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, reach, near, reach), near);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, Number.NaN, near, reach), near);
+  // Past it the first step of a window (previous 0) stays small, so the tail paints first; then it
+  // grows to the cap and holds.
+  const steps: number[] = [];
+  let chunk = 0;
+  for (let i = 0; i < 6; i += 1) {
+    chunk = nextMountChunk(chunk, reach + 1, near, reach);
+    steps.push(chunk);
+  }
+  assert.deepEqual(steps, [near, 8, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK, FAR_MOUNT_CHUNK]);
+  assert.ok(FAR_MOUNT_CHUNK <= 16, "larger far steps made ~1.4 s frames on CPU-painted WebKit");
+  // A step after near ones ramps from the near size.
+  assert.equal(nextMountChunk(near, reach + 1, near, reach), 8);
+  // Coming back within reach (the reader scrolled up to the frontier) drops straight to the small step.
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, 100, near, reach), near);
+  // The near step already being the cap (other engines) never changes it.
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, 10_000, CHUNK_MESSAGES, reach), CHUNK_MESSAGES);
+  assert.equal(nextMountChunk(CHUNK_MESSAGES, null, CHUNK_MESSAGES, reach), CHUNK_MESSAGES);
+  // A 300-message thread past the reach covers in about 20 commits instead of about 142.
+  let current: MountWindow = initialWindow(300, false);
+  let commits = 0;
+  chunk = 0;
+  while (current != null) {
+    chunk = nextMountChunk(chunk, reach + 1, near, reach);
+    current = widen(current, 300, chunk);
+    commits += 1;
+  }
+  assert.ok(commits <= 24, `took ${commits} commits`);
 });

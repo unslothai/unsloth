@@ -395,6 +395,7 @@ from .diffusion_precision import (
 )
 from .diffusion_te_prequant import supplied_component_pipe_kwargs, te_prequant_pipe_kwargs
 from . import diffusion_lora_files as lora_files
+from . import diffusion_lora_quant_merge as lora_quant_merge
 from .diffusion_fast_load import _snapshot_dir as _load_snapshot_dir
 from .diffusion_fast_load import start_load_prefetch, stop_prefetch, te_precast_components
 from .diffusion_hosted_vae import hosted_vae_pipe_kwargs, hosted_vae_plan_files
@@ -583,6 +584,30 @@ def _lora_weights_only_change(state: Any, pipe: Any, current: Any, desired: Any)
         return False
     handles = getattr(state, "cuda_graphs", ()) or ()
     return not any(getattr(getattr(h, "placement", None), "mode", None) == "group" for h in handles)
+
+
+def _remerge_quant_loras(state: Any, pipe: Any, updated: tuple) -> bool:
+    """Re-merges adapters merged into a quantized file's weights in place (no recompile, no recapture). False when
+    nothing was merged."""
+    if not lora_quant_merge.merged(pipe):
+        return False
+    if getattr(state, "offload_policy", OFFLOAD_NONE) != OFFLOAD_NONE:
+        raise ValueError(
+            "This load's LoRA adapters are merged into weights that are now offloaded, so their weights are fixed "
+            "until the model is reloaded. Reload the model with the new adapter weights."
+        )
+    try:
+        lora_quant_merge.set_weights(pipe, {n: w for (n, _p, w) in updated})
+    except Exception as exc:
+        # set_weights left the base weights: record that, so the next request merges again.
+        pipe._unsloth_loras = tuple((n, p, 0.0) for (n, p, _w) in updated)
+        invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+        raise ValueError(
+            f"Could not apply the new LoRA weights ({exc}); the adapters are off until the next change."
+        ) from exc
+    pipe._unsloth_loras = updated
+    invalidate_cfg_replica(pipe, "the LoRA adapters changed", logger)
+    return True
 
 
 def _refuse_weight_change_on_streamed_graph(state: Any) -> None:
@@ -1660,6 +1685,8 @@ class _LoadState:
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
     compile_cache_ctx: Any = None
     bg_compile: Any = None
+    # The first inline compile's float seeds (diffusion_bg_compile.InlineFloatSeeds); holds the DiTs until it kept.
+    inline_float_seeds: Any = None
     # GraphedForward handles installed on the denoiser modules.
     cuda_graphs: tuple = ()
     # Token kept so LoRA adapters selected at generate time can be fetched.
@@ -10451,11 +10478,23 @@ class DiffusionBackend:
                         pipe._unsloth_loras = baked
                         pipe._unsloth_loras_baked = True
                         setattr(pipe, _QUANT_FILE_LORA_BAKE_ATTR, True)
-                        logger.info(
-                            "diffusion.lora_bake: %d adapter(s) attached to the ComfyUI-quantized transformer "
-                            "before the compile",
-                            len(baked),
+                        # Resident loads merge them into the quantized weights; offloaded ones keep the adapter layers.
+                        quant_merged = (
+                            plan.offload_policy == OFFLOAD_NONE
+                            and lora_quant_merge.merge(
+                                pipe,
+                                _lora_fuse_dits(pipe),
+                                {n: w for (n, _p, w) in baked},
+                                getattr(target, "device", "cuda"),
+                                logger,
+                            )
                         )
+                        if not quant_merged:
+                            logger.info(
+                                "diffusion.lora_bake: %d adapter(s) attached to the ComfyUI-quantized transformer "
+                                "before the compile",
+                                len(baked),
+                            )
                     quant_forces_compile = (
                         transformer_quant_engaged is not None or comfy_compile
                     ) and (
@@ -10736,6 +10775,9 @@ class DiffusionBackend:
                             logger = logger,
                             reduction_filter = family_filters_reductions(fam),
                         )
+                        if compile_ctx is not None and getattr(target, "device", None) == "cuda":
+                            # The first render compiles inline: warm the workers and keys while the load finishes.
+                            bg_compile.start_deferred_prewarm(logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # A shipped grid was tuned on the shipped scheduler: no ComfyUI shift.
@@ -13713,6 +13755,8 @@ class DiffusionBackend:
             if any(w != 0 for (_n, _p, w) in current):
                 _refuse_weight_change_on_streamed_graph(state)
                 disabled = tuple((n, p, 0.0) for (n, p, _w) in current)
+                if _remerge_quant_loras(state, pipe, disabled):
+                    return
                 # Pinned scales are tensors the compiled code and the graphs read at run time: no recompile, no recapture.
                 if _set_pinned_lora_scales(pipe, {}):
                     pipe._unsloth_loras = disabled
@@ -13746,6 +13790,8 @@ class DiffusionBackend:
         if updated == current:
             return
         _refuse_weight_change_on_streamed_graph(state)
+        if _remerge_quant_loras(state, pipe, updated):
+            return
         if _set_pinned_lora_scales(pipe, {n: w for (n, _p, w) in updated}):
             pipe._unsloth_loras = updated
             return
@@ -14041,6 +14087,29 @@ class DiffusionBackend:
             else "",
         )
 
+    def _inline_float_seeds(self, state: Any) -> Any:
+        """This load's seeder for a compile inside a render until it kept its names, else None. A load with a
+        background compile seeds there; a load not compiled yet (deferred tier) is asked again on the next render."""
+        held = getattr(state, "inline_float_seeds", None)
+        if held is not None:
+            return None if held.done() else held
+        try:
+            if getattr(state, "bg_compile", None) is not None:
+                return None
+            if "compiled" not in tuple(getattr(state, "speed_optims", None) or ()):
+                return None
+            seed_dir = getattr(getattr(state, "compile_cache_ctx", None), "dir", None)
+            if seed_dir is None or not bg_compile.float_seeds_enabled():
+                return None
+            dits = bg_compile.float_seed_dits(state.pipe)
+            if not dits:
+                return None
+            seeds = bg_compile.InlineFloatSeeds(dits, seed_dir, logger = logger)
+            object.__setattr__(state, "inline_float_seeds", seeds)
+            return seeds
+        except Exception:  # noqa: BLE001 - no seeds, main's compile
+            return None
+
     @_release_render_on_unload
     @holds_inference
     @with_hires
@@ -14141,6 +14210,7 @@ class DiffusionBackend:
             kick_bg = False
             bg_eager = False
             bg_token = None
+            float_seeds = None
             # A Detailer crop inpaint (diffusion_bg_compile.auxiliary_pass): eager, uncounted, nothing recorded.
             aux_pass = bg_compile.auxiliary()
             restore_eager_gate: Optional[Callable[[], None]] = None
@@ -14200,6 +14270,8 @@ class DiffusionBackend:
                 bg_eager = bg is not None and bg.pending()
                 if bg_eager:
                     bg_token = bg_compile._FORCE_EAGER.set(True)
+                # An inline compile (no background compile) skips the float restart a returning load already learned.
+                float_seeds = None if bg_eager or aux_pass else self._inline_float_seeds(state)
                 if aux_pass:
                     # The force-eager signal never reaches a whole-module compiled U-Net on its own.
                     restore_eager_gate = bg_compile.gate_compiled_eager(
@@ -15073,6 +15145,9 @@ class DiffusionBackend:
                         chunk_placement: list = []
 
                         def _enter_denoise_phase(gen = gen) -> None:
+                            if float_seeds is not None:
+                                # Before the first (compiling) denoiser forward.
+                                float_seeds.seed()
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
@@ -15102,6 +15177,9 @@ class DiffusionBackend:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU) there is no queue to be ahead of, so flip now."""
+                            if float_seeds is not None:
+                                # Before the VAE decode's compile adds its own names.
+                                float_seeds.keep()
                             # every step ran (deferred returns settled), the pin still holds, no VAE OOM unpin yet
                             chunk_placement.append(
                                 denoiser_offload(state.pipe, state.offload_policy)
@@ -15143,6 +15221,11 @@ class DiffusionBackend:
                                 ),
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
+                                (
+                                    bg_compile.seed_before_first_forward(float_seeds)
+                                    if float_seeds is not None
+                                    else nullcontext()
+                                ),
                                 zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),

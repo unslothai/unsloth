@@ -87,7 +87,7 @@ test("the window is only ever advanced through widen", () => {
     const ok =
       call === "null" ||
       call.startsWith("initialWindow(") ||
-      call.includes("widen(current, count, MOUNT_CHUNK)");
+      call.includes("widen(current, count, chunk)");
     assert.ok(
       ok,
       `setMountWindow(${call}) is not one of null / initialWindow / widen`,
@@ -115,7 +115,7 @@ test("the widening step is deferred and WebKit commits inside the animation fram
   const widening = section(
     GLUE,
     "if (mountWindow == null) return;",
-    "}, [mountWindow, count, captureAnchor, isRunningNow]);",
+    "}, [mountWindow, count, captureAnchor, isRunningNow, viewportRef]);",
   );
   assert.match(
     widening,
@@ -128,6 +128,23 @@ test("the widening step is deferred and WebKit commits inside the animation fram
     "cancelAnimationFrame does not cancel a timer, so a closed window would still widen",
   );
   assert.match(widening, /if \(scrollActivity\.current\?\.blocked\(inputPointerHeld\(\)\)\) \{\s*frame = requestAnimationFrame\(advance\);\s*return;/);
+});
+
+test("only WebKitGTK sizes the step by the prepend frontier; other engines keep CHUNK_MESSAGES", () => {
+  assert.match(GLUE, /const MOUNT_CHUNK = WEBKIT_GTK \? 2 : CHUNK_MESSAGES;/);
+  const widening = section(
+    GLUE,
+    "if (mountWindow == null) return;",
+    "}, [mountWindow, count, captureAnchor, isRunningNow, viewportRef]);",
+  );
+  assert.match(
+    widening,
+    /const chunk = WEBKIT_GTK\s*\?\s*\(chunkRef\.current = nextMountChunk\(\s*chunkRef\.current, frontierAbove\(viewportRef\.current\), MOUNT_CHUNK, WINDOW_REACH\)\)\s*: MOUNT_CHUNK;/,
+  );
+  // Measured after the anchor capture, whose layout reads it reuses.
+  assert.ok(widening.indexOf("captureAnchor();") < widening.indexOf("const chunk = "));
+  // The near/far boundary is the window controller's own reach, not a copy of it.
+  assert.match(GLUE, /import \{ REACH as WINDOW_REACH \} from "@\/components\/assistant-ui\/message-window-controller";/);
 });
 
 test("the anchor is measured against its scroll container, not against the window", () => {
