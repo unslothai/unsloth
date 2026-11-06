@@ -65,3 +65,15 @@ test("a block's own wrap button overrides the setting in both directions", () =>
   assert.match(actions, /wrapped \? "Disable word wrap" : "Enable word wrap"/);
   assert.match(readSrc("components/assistant-ui/reasoning-transcript.tsx"), /wrappable=\{false\}/);
 });
+
+test("Expand code lifts one block's cap and is offered only while the block overflows", () => {
+  const actions = readSrc("components/assistant-ui/markdown-text.tsx");
+  assert.match(actions, /\{wrappable && \(overflowing \|\| expanded\) && <button/);
+  assert.match(actions, /parentElement\?\.toggleAttribute\("data-code-expanded", next\)/);
+  assert.match(actions, /expanded \? "Collapse code" : "Expand code"/);
+  const css = readSrc("index.css");
+  assert.match(css, /\[data-code-expanded\] \[data-streamdown="code-block-body"\] \{\s*max-height: none;\s*mask-image: none;/);
+  // The scrollbar never changes the code's width, and never fades with the code.
+  assert.match(css, /scrollbar-gutter: stable;/);
+  assert.match(css, /linear-gradient\(#000, #000\);\s*mask-size: 100% 100%, calc\(1rem \* var\(--ui-space-scale, 1\)\) 100%;/);
+});
