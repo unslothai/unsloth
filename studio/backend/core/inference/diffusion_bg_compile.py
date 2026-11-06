@@ -137,6 +137,21 @@ def warm_triton_key(logger: Any = None) -> bool:
     return True
 
 
+def warm_inductor_key(logger: Any = None) -> bool:
+    """Fill inductor's per-process ``torch_key()`` (a hash of torch's sources), paid by the first compile otherwise."""
+    try:
+        from torch._inductor.codecache import torch_key
+    except Exception:  # noqa: BLE001 - another torch layout: the first compile computes it as before
+        return False
+    try:
+        torch_key()
+    except Exception as exc:  # noqa: BLE001
+        if logger is not None:
+            logger.debug("diffusion.bg_compile: inductor key warm-up skipped: %s", exc)
+        return False
+    return True
+
+
 def warm_engage_imports(logger: Any = None) -> int:
     """Model-free first-use work of the engagement; returns how many steps ran."""
 
@@ -173,6 +188,7 @@ def start_deferred_prewarm(logger: Any = None) -> bool:
             t0 = time.perf_counter()
             warm_compile_pool(logger)
             warm_triton_key(logger)
+            warm_inductor_key(logger)
             n = warm_engage_imports(logger)
             if logger is not None:
                 logger.info(
