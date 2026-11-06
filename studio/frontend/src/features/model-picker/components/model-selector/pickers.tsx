@@ -7790,7 +7790,7 @@ export function HubModelPicker({
     npuCatalog !== null &&
     formatFilter === "npu" &&
     section === "recommended" &&
-    (!showHfSection || npuBrowseRows.length > 0);
+    (!showHfSection || !npuCatalog.ready || npuBrowseRows.length > 0);
   const showNpuFooter =
     npuCatalog !== null && formatFilter === "all" && section === "recommended";
   const ejectButton = onEject ? (
@@ -8564,7 +8564,7 @@ export function HubModelPicker({
                 {showNpuBrowse && npuCatalog ? (
                   <>
                     <ListLabel>NPU</ListLabel>
-                    {showHfSection ? null : (
+                    {showHfSection && npuCatalog.ready ? null : (
                       <NpuSetupNotice catalog={npuCatalog} />
                     )}
                     {npuBrowseRows.map((model) => renderNpuRow(model, false))}

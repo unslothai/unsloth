@@ -42,3 +42,9 @@ test("NPU run settings pin customContextLength and offer nothing FastFlowLM igno
   assert.match(configPage, /!target\.isGguf && !targetIsMlx && !targetIsNpu && /);
   assert.match(configPage, /target\.isGguf \|\| pinsContextLength\s+\? effectiveRuntimeConfig/);
 });
+
+test("the NPU footer's setup path keeps the setup notice while a search is active", () => {
+  const browse = pickers.slice(pickers.indexOf("const showNpuBrowse ="));
+  assert.match(browse, /\(!showHfSection \|\| !npuCatalog\.ready \|\| npuBrowseRows\.length > 0\)/);
+  assert.match(browse, /\{showHfSection && npuCatalog\.ready \? null : \(\s*<NpuSetupNotice/);
+});
