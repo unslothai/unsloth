@@ -321,7 +321,7 @@ export function ChatBackground({ active = true }: { active?: boolean }) {
 									backgroundImage: `url("${frame.url}")`,
 									backgroundPosition: adjustment.position,
 									backgroundSize: BACKGROUND_SIZE[adjustment.sizing],
-									transform: `scale(${adjustment.zoom / 100})`,
+									transform: `translate(${adjustment.offsetX}%, ${adjustment.offsetY}%) scale(${adjustment.zoom / 100})`,
 									transformOrigin: adjustment.position,
 									filter: adjustment.blur
 										? `blur(${adjustment.blur}px)`

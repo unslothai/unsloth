@@ -107,16 +107,11 @@ export const IMAGE_SIZING = [
 	"original",
 ] as const;
 export type ImageSizing = (typeof IMAGE_SIZING)[number];
-export const POSITIONS = [
-	"0% 0%",
-	"50% 0%",
-	"100% 0%",
-	"0% 50%",
-	"50% 50%",
-	"100% 50%",
-	"0% 100%",
-	"50% 100%",
-	"100% 100%",
+// Physical image movement, in percent of the wallpaper area (left/up are negative).
+export const POSITION_OFFSETS = [
+	[-50, -50], [0, -50], [50, -50],
+	[-50, 0], [0, 0], [50, 0],
+	[-50, 50], [0, 50], [50, 50],
 ] as const;
 export const DEFAULT_ADJUSTMENTS = {
 	scope: "chats" as BackgroundScope,
@@ -129,7 +124,10 @@ export const DEFAULT_ADJUSTMENTS = {
 	outline: 30,
 	sizing: "cover" as ImageSizing,
 	zoom: 100,
+	// Retain the saved crop anchor; signed movement is applied after zoom.
 	position: "50% 50%",
+	offsetX: 0,
+	offsetY: 0,
 	// Glass-only, so toggling glass never changes the non-glass look.
 	glassLightVisibility: 70,
 	glassDarkVisibility: 40,
@@ -186,10 +184,17 @@ export function sanitizeAdjustments(
 			: "cover",
 		zoom: Math.max(100, bounded(input.zoom, 300, 100)),
 		position: parsePosition(input.position) ? input.position! : "50% 50%",
+		offsetX: sanitizeOffset(input.offsetX),
+		offsetY: sanitizeOffset(input.offsetY),
 		glassLightVisibility: bounded(input.glassLightVisibility, 100, 70),
 		glassDarkVisibility: bounded(input.glassDarkVisibility, 100, 40),
 		glassFade: typeof input.glassFade === "boolean" ? input.glassFade : false,
 	};
+}
+export function sanitizeOffset(value: unknown): number {
+	return typeof value === "number" && Number.isFinite(value)
+		? Math.max(-100, Math.min(100, Math.round(value)))
+		: 0;
 }
 export function parsePosition(value: unknown): [number, number] | null {
 	if (typeof value !== "string") return null;
