@@ -2761,17 +2761,16 @@ def test_lend_streams_resident_blocks_only_when_the_encoder_then_fits_or_room_is
     assert released == [6000] and callable(restore)
     restore()
     assert released == [6000, "restored"]
-    # the whole encoder fits already: nothing lent
     released = _lend_env(monkeypatch, free_mib = whole + 1, held_mib = 20000)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
-    # cannot fit whole even with every resident block, but room clears the worker's streamed need: nothing lent
+    # room already clears the worker's streamed need: nothing lent
     released = _lend_env(monkeypatch, free_mib = 6900, held_mib = 4000)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
     # below the worker's streamed need: lend up to it
     released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is not None
     assert released == [6900 - 5000]
-    # an encoder that never streams (kill switch, layout): lending can only help a whole fit
+    # an encoder that never streams: no streamed target
     released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient(stream_need_mib = None)) is None
     assert released == []
@@ -2782,7 +2781,6 @@ def test_lend_streams_resident_blocks_only_when_the_encoder_then_fits_or_room_is
 
     assert v25.lend_resident_dit_for_encode(pipe, client) is not None
     assert released == [WORKER_CONTEXT_MIB]
-    # nothing resident, a resident encoder, or a non-CUDA device: nothing lent
     released = _lend_env(monkeypatch, free_mib = 100, held_mib = 0)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None
     released = _lend_env(monkeypatch, free_mib = 100, held_mib = 20000)
@@ -2832,8 +2830,7 @@ def test_remote_encode_prompt_pins_lent_blocks_back_after_the_encode_and_skips_c
 
 
 def test_a_cancelled_encode_stops_the_busy_worker_and_a_finished_one_does_not(monkeypatch):
-    """A cancel leaves the worker computing on memory lent from the denoiser: stop_if_busy stops it before the blocks
-    are pinned back. A worker that answered (embeds or an error) is idle and is kept."""
+    """Only a worker still computing an abandoned encode is stopped; one that answered (embeds or error) is kept."""
     import threading
 
     import torch
@@ -2857,7 +2854,7 @@ def test_a_cancelled_encode_stops_the_busy_worker_and_a_finished_one_does_not(mo
     )
     cancel = threading.Event()
     cancel.set()
-    client._cmd.put = lambda msg: None  # the worker is still encoding when the cancel lands
+    client._cmd.put = lambda msg: None  # no reply: still encoding
     with pytest.raises(RuntimeError):
         client.encode(["p"], 2, cancel = cancel)
     assert client.stop_if_busy() is True and closed == [True]

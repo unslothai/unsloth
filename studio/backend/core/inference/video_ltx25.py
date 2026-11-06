@@ -812,10 +812,8 @@ def _encode_room_mib(client: Any) -> Optional[int]:
 
 
 def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..., None]]:
-    """Stream enough resident denoiser blocks again (``video_stream_residency``) for a non-resident encoder to encode on
-        the card: the whole encoder when lending makes it fit, else the worker's layer-streamed need (``stream_need_mib``
-    from its ready message). Returns the restore that
-        pins them back after the encode, or None when nothing was lent. Placement only: the same weights run either way."""
+    """Stream resident denoiser blocks again so the encoder fits on the card (whole if lending makes it fit, else the
+    worker's ``stream_need_mib``); returns the restore that pins them back, or None when nothing was lent."""
     config = getattr(client, "config", None) or {}
     if (
         not config
@@ -925,7 +923,7 @@ class Ltx25TextEncoderClient:
         self._resp: Any = None
         self._ready = False
         self._seq = 0
-        # The request the worker is computing and no caller has collected yet (a cancel abandons it mid-encode).
+        # Request the worker is still computing (a cancel abandons it).
         self._inflight: Optional[int] = None
         self._lock = threading.Lock()
         self._cache: list[tuple[tuple, Any]] = []
@@ -1070,8 +1068,7 @@ class Ltx25TextEncoderClient:
 
     # encoding
     def stop_if_busy(self) -> bool:
-        """Stop a worker still computing an encode its caller abandoned (a cancel), so the card memory it uses is free
-        now; the next encode restarts it. True when it was stopped."""
+        """Stop a worker still running an abandoned encode, freeing its card memory; the next encode restarts it."""
         if self._inflight is None or not self.alive():
             return False
         logger.info("video.ltx25_te: stopping the encoder worker mid-encode (request cancelled)")
@@ -1119,7 +1116,7 @@ class Ltx25TextEncoderClient:
                 try:
                     msg = self._get(cancel, "encoding the prompt", request_id = seq)
                 except TextEncoderWorkerError:
-                    self._inflight = None  # the worker answered (or died): nothing left running
+                    self._inflight = None
                     raise
                 # A reply to a request a cancel abandoned arrives first; skip it.
                 if msg.get("type") == "embeds" and msg.get("id") == seq:
@@ -1160,7 +1157,7 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
         def _one(texts: list[str]) -> tuple[Any, Any]:
-            # A cache miss runs the worker: resident DiT blocks step aside for it and are pinned back after the encode.
+            # Cache miss: lend resident DiT blocks to the worker for the encode.
             is_cached = getattr(client, "cached", None)
             restore = (
                 lend_resident_dit_for_encode(pipe, client)
@@ -1171,7 +1168,7 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
                 # The client's own cached tensors (read only): every op below returns a new tensor.
                 cached, mask = client.encode(texts, max_sequence_length, copy = False)
             except BaseException:
-                # A cancelled encode may still run in the worker on the lent memory: stop it before pinning back.
+                # A cancelled encode may still use the lent memory: stop it before pinning back.
                 stop = getattr(client, "stop_if_busy", None)
                 if restore is not None and callable(stop):
                     stop()

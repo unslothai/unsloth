@@ -660,8 +660,7 @@ def _encode_plan(
 
 
 def _stream_need_mib_or_none(config: dict, model: Any) -> Optional[int]:
-    """``_encode_plan``'s streamed-encode need for this encoder, or None when it never streams (resident, not CUDA / XPU,
-    kill switch, or a layout that cannot stream)."""
+    """``_encode_plan``'s streamed need, or None when this encoder never streams."""
     if config.get("resident") or (os.environ.get(STREAM_ENCODE_ENV) or "").strip() == "0":
         return None
     if str(config.get("device") or "").split(":", 1)[0] not in ("cuda", "xpu"):
@@ -902,8 +901,7 @@ def run_text_encoder_worker(*, cmd_queue: Any, resp_queue: Any, config: dict) ->
                 # "hosted" (the unsloth file), "quantized_at_load" (built from the dense encoder) or None (bf16).
                 "te_source": config.get("_te_source"),
                 "weights_mib": _weights_mib_or_none(model),
-                # What a layer-streamed encode needs on the card, or None when this encoder never streams: the server
-                # lends resident denoiser blocks up to it (video_ltx25.lend_resident_dit_for_encode).
+                # video_ltx25.lend_resident_dit_for_encode lends resident denoiser blocks up to this.
                 "stream_need_mib": _stream_need_mib_or_none(config, model),
                 **_memory_stats(config.get("device") or ""),
             }

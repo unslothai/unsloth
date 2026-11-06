@@ -17,8 +17,7 @@ VIDEO_DIT_RESIDENT_MEASURED_ENV = "UNSLOTH_VIDEO_DIT_RESIDENT_MEASURED"
 RESIDENT_POLICIES = ("group", "streaming")
 # Single-DiT families measured under the fit (MiniMax-H3 has its own controller, video_minimax_h3_residency).
 RESIDENT_FAMILY_PREFIXES = ("wan", "hunyuanvideo-1.5")
-# Matched by exact name: "ltx-2" covers LTX-2.0 to 2.3. LTX-2.5's Gemma 4 encoder runs in a worker on the same card:
-# video_ltx25 lends it resident blocks for an encode (lend_resident_dit_for_encode).
+# Exact names: "ltx-2" covers LTX-2.0 to 2.3; LTX-2.5 lends blocks to its encoder worker (video_ltx25).
 RESIDENT_FAMILIES = ("ltx-2", "ltx-2.5")
 # A measured peak is scaled by this and a fixed slack is kept on top (allocator fragmentation, cuDNN workspaces).
 MEASURED_PEAK_MARGIN = 1.15
