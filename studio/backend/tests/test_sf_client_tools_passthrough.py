@@ -676,6 +676,30 @@ def test_streaming_heals_split_call_into_one_delta(monkeypatch):
     assert finishes == ["tool_calls"]
 
 
+_MINIMAX_CALL = (
+    '<minimax:tool_call>\n<invoke name="lookup">\n<parameter name="q">cats</parameter>\n'
+    "</invoke>\n</minimax:tool_call>"
+)
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_the_models_own_call_format_is_healed(monkeypatch, stream):
+    backend = _ScriptedBackend(_fixed("Looking.\n", f"Looking.\n{_MINIMAX_CALL}"))
+    backend.models["sf-model"]["chat_template_info"]["template"] = "{{ '<minimax:tool_call>' }}"
+    response = _call(_request(tools = [LOOKUP_TOOL], stream = stream), monkeypatch, backend)
+    if stream:
+        objs = _sse_objects(_collect_sse(response))
+        deltas = [(o.get("choices") or [{}])[0].get("delta") or {} for o in objs]
+        calls = [tc["function"] for d in deltas for tc in d.get("tool_calls") or []]
+        text = "".join(d.get("content") or "" for d in deltas)
+    else:
+        message = _json_body(response)["choices"][0]["message"]
+        calls = [tc["function"] for tc in message["tool_calls"]]
+        text = message["content"]
+    assert [(c["name"], json.loads(c["arguments"])) for c in calls] == [("lookup", {"q": "cats"})]
+    assert text.strip() == "Looking."
+
+
 def test_what_this_backend_can_serve_reaches_it_rather_than_being_refused(monkeypatch):
     """An empty stop sequence is dropped, since it would match at position 0 and end every turn."""
     backend = _ScriptedBackend(_fixed("hi"), stats = {"usage": {"prompt_tokens": 7}})
