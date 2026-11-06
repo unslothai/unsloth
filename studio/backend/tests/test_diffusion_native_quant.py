@@ -406,6 +406,17 @@ def test_int8_act_kill_switch_reads_only_zero(monkeypatch):
 
 
 def _block_torchao(monkeypatch):
+    # peft caches is_torchao_available() per process: a True from an earlier test on this worker would send its torchao
+    # LoRA dispatcher into the blocked import. Answer as peft does with torchao absent (monkeypatch restores it).
+    try:
+        import importlib
+        importlib.import_module("peft.tuners.lora.torchao")
+    except Exception:  # noqa: BLE001 - no peft: nothing caches the answer
+        pass
+    for name in ("peft.import_utils", "peft.tuners.lora.torchao"):
+        module = sys.modules.get(name)
+        if module is not None and hasattr(module, "is_torchao_available"):
+            monkeypatch.setattr(module, "is_torchao_available", lambda: False)
     # A None sys.modules entry makes any torchao import raise, proving the branch never reaches it.
     monkeypatch.setitem(sys.modules, "torchao", None)
     monkeypatch.setitem(sys.modules, "torchao.quantization", None)
@@ -1257,3 +1268,18 @@ def test_fp8_codes_layer_matches_the_dequant_formula_eager_and_compiled(fmt):
     assert explained.graph_break_count == 0
     compiled = torch.compile(layer, fullgraph = True)
     assert torch.equal(compiled(x), layer(x))
+
+
+def test_blocked_torchao_holds_after_peft_cached_it_available(monkeypatch):
+    """An earlier test on the same worker can leave peft's cached ``is_torchao_available()`` True; the blocked tests
+    must still keep peft's torchao dispatcher off the import (it raised ``torchao.quantization halted`` in CI)."""
+    peft = pytest.importorskip("peft")
+    import peft.tuners.lora.torchao as peft_torchao
+
+    monkeypatch.setattr(peft_torchao, "is_torchao_available", lambda: True)
+    _block_torchao(monkeypatch)
+    monkeypatch.setitem(
+        sys.modules, "torchao.utils", None
+    )  # newer peft's dispatcher imports this one instead
+    model = _toy()
+    peft.inject_adapter_in_model(peft.LoraConfig(r = 4, target_modules = ["to_q"]), model)

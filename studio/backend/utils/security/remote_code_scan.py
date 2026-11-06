@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import io
 import tokenize
@@ -60,6 +62,88 @@ def remote_code_config_paths(load_subdirs = ()) -> tuple[str, ...]:
 
 class RemoteCodeUnscannable(Exception):
     """The repo's executable code could not be fully fetched/listed to scan. Raised (not returned empty) so the gate distinguishes "code PRESENT but unreadable" (offline/gated/transient/404/listing failure), which fails CLOSED, from "repo has NO .py" (empty result), where trust_remote_code is a no-op and the load is allowed. Conflating them would block a code-free repo or fail open on code we could not see."""
+
+
+_CONFIG_READS: contextvars.ContextVar = contextvars.ContextVar(
+    "unsloth_remote_code_config_reads", default = None
+)
+
+
+@contextlib.contextmanager
+def shared_config_reads():
+    """Within this scope each Hub config is probed and downloaded once per (endpoint, source,
+    cache, repo, file, token); only a downloaded path or a confirmed 404 is kept, never a
+    failure. Per context, so concurrent requests and threads never see each other's reads."""
+    if _CONFIG_READS.get() is not None:
+        yield
+        return
+    reset = _CONFIG_READS.set({})
+    try:
+        yield
+    finally:
+        _CONFIG_READS.reset(reset)
+
+
+def _config_read_key(model_name: str, cfg_name: str, hf_token) -> Optional[tuple]:
+    try:
+        from huggingface_hub import constants as hf_constants
+        from utils.hub_settings import active_source
+
+        token = (
+            hashlib.sha256(hf_token.encode("utf-8")).hexdigest()
+            if isinstance(hf_token, str)
+            else repr(hf_token)
+        )
+        return (
+            hf_constants.ENDPOINT,
+            os.environ.get("HF_ENDPOINT"),
+            bool(hf_constants.HF_HUB_OFFLINE),
+            os.environ.get("HF_HUB_OFFLINE"),
+            active_source(),
+            str(active_hf_hub_cache()),
+            model_name,
+            cfg_name,
+            token,
+        )
+    except Exception:
+        return None
+
+
+def hub_config_path(model_name: str, cfg_name: str, hf_token) -> Optional[str]:
+    """Cached path of an optional Hub config, None when absent; any other failure raises.
+    Probes first so a 404 is not cached (utils/hf_probe.py)."""
+    from huggingface_hub import hf_hub_download
+    from huggingface_hub.errors import LocalEntryNotFoundError
+    from huggingface_hub.utils import EntryNotFoundError
+    from hub.utils.hf_tokens import anonymous_retrying
+    from utils.hf_probe import hf_file_definitely_absent
+
+    hf_hub_download = anonymous_retrying(hf_hub_download)
+    reads = _CONFIG_READS.get()
+    key = _config_read_key(model_name, cfg_name, hf_token) if reads is not None else None
+    if key is not None and key in reads:
+        path = reads[key]
+        # A kept path purged from the cache meanwhile is read again.
+        if path is None or os.path.isfile(path):
+            return path
+    if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
+        path = None
+    else:
+        try:
+            path = hf_hub_download(
+                model_name,
+                cfg_name,
+                token = hf_token,
+                cache_dir = active_hf_hub_cache(),
+            )
+        except EntryNotFoundError as exc:
+            # A local cache miss (offline, timeout) reads as absent but is no answer to keep.
+            if isinstance(exc, LocalEntryNotFoundError):
+                return None
+            path = None
+    if key is not None:
+        reads[key] = path
+    return path
 
 
 # Fallback used only if scripts/scan_packages.py is absent (stripped install).
@@ -468,28 +552,18 @@ def repo_remote_code_files(
 
         hf_hub_download = anonymous_retrying(hf_hub_download)
         list_repo_files = anonymous_retrying(list_repo_files)
-        from huggingface_hub.utils import EntryNotFoundError
-        from utils.hf_probe import hf_file_definitely_absent
 
-        # Collect auto_map refs from EVERY config that can declare one. A 404 (EntryNotFoundError) means the config is absent -> skip; any other failure is transient/auth and could hide an auto_map, so fail closed (unscannable).
+        # Refs from EVERY config that can declare auto_map; an unreadable one could hide one, so fail closed.
         refs = set()
         for cfg_name in remote_code_config_paths(load_subdirs):
-            # Avoid caching expected 404s; other failures still reach the fail-closed path.
-            if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
-                continue
             try:
-                cfg_path = hf_hub_download(
-                    model_name,
-                    cfg_name,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
-                )
-            except EntryNotFoundError:
-                continue
+                cfg_path = hub_config_path(model_name, cfg_name, hf_token)
             except Exception as exc:
                 raise RemoteCodeUnscannable(
                     f"{model_name}: config {cfg_name} could not be fetched ({exc})"
                 ) from exc
+            if cfg_path is None:
+                continue
             try:
                 refs |= _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
             except Exception:
@@ -631,27 +705,12 @@ def external_auto_map_repos(
                 repos.update(repo for repo, _fn in refs if repo)
             return repos
 
-        from huggingface_hub import hf_hub_download
-        from hub.utils.hf_tokens import anonymous_retrying
-
-        hf_hub_download = anonymous_retrying(hf_hub_download)
-        from huggingface_hub.utils import EntryNotFoundError
-        from utils.hf_probe import hf_file_definitely_absent
-
         for cfg_name in remote_code_config_paths(load_subdirs):
-            # Same guard as the scanner above; see utils/hf_probe.py.
-            if hf_file_definitely_absent(model_name, cfg_name, token = hf_token):
-                continue
             try:
-                cfg_path = hf_hub_download(
-                    model_name,
-                    cfg_name,
-                    token = hf_token,
-                    cache_dir = active_hf_hub_cache(),
-                )
-            except EntryNotFoundError:
-                continue
+                cfg_path = hub_config_path(model_name, cfg_name, hf_token)
             except Exception:
+                continue
+            if cfg_path is None:
                 continue
             try:
                 refs = _auto_map_refs(json.loads(Path(cfg_path).read_text(encoding = "utf-8-sig")))
