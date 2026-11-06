@@ -506,12 +506,14 @@ def test_a_model_swap_outside_the_load_routes_is_refused_mid_sweep(monkeypatch):
         "outside": 0,
     }
     monkeypatch.setattr(benchmarks_routes, "_lease", lease)
+    monkeypatch.setattr(benchmarks_routes, "_loads_in_flight", {})
     with pytest.raises(HTTPException) as refused:
         benchmarks_routes.refuse_if_sweep_holds(_Req())
     assert refused.value.status_code == 409
-    benchmarks_routes.refuse_if_sweep_holds(_Req("tab-aaaaaaaa"))
+    benchmarks_routes.refuse_if_sweep_holds(_Req("tab-aaaaaaaa"))()
     monkeypatch.setattr(benchmarks_routes, "_lease", None)
-    benchmarks_routes.refuse_if_sweep_holds(_Req())
+    benchmarks_routes.refuse_if_sweep_holds(_Req())()
+    assert benchmarks_routes._loads_in_flight == {}
 
     # Auto-switch (GGUF/NPU) and preview swap the server without a /load call; each checks first.
     src = (Path(__file__).resolve().parent.parent / "routes" / "inference.py").read_text(

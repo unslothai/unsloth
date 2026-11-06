@@ -7,7 +7,7 @@ the run here as it goes, so a run survives a reload and shows up on every device
 import asyncio
 import threading
 import time
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -264,20 +264,34 @@ SWEEP_BUSY_DETAIL = (
 EVAL_BUSY_DETAIL = SWEEP_BUSY_DETAIL.replace("A benchmark", "An eval", 1)
 
 
-def refuse_if_sweep_holds(request) -> None:
-    """409 a model swap that bypasses LOAD_PATHS (auto-switch, preview) while a sweep or an Eval holds the server."""
+def refuse_if_sweep_holds(request) -> Callable[[], None]:
+    """409 a model swap that bypasses LOAD_PATHS (auto-switch, preview) while a sweep or an Eval holds the server.
+    An admitted swap counts as a load in flight, so no lease is claimed under it; call the returned release when it ends."""
     headers = getattr(request, "headers", None)
     holder = headers.get(LEASE_HEADER.decode()) if headers is not None else None
-    from fastapi import HTTPException
-
-    if _eval_running() and not _holds_lease(holder):
-        raise HTTPException(status_code = 409, detail = EVAL_BUSY_DETAIL)
-    if _lease is None:
-        return
     with _lease_lock:
-        busy = _sweep_holds_against(holder)
-    if busy:
-        raise HTTPException(status_code = 409, detail = SWEEP_BUSY_DETAIL)
+        own = bool(
+            _lease and holder and _lease["holder"] == holder and _lease["expires"] > time.monotonic()
+        )
+        if _eval_running() and not own:
+            refused = EVAL_BUSY_DETAIL
+        elif _sweep_holds_against(holder):
+            refused = SWEEP_BUSY_DETAIL
+        else:
+            refused = None
+            _loads_in_flight[holder] = _loads_in_flight.get(holder, 0) + 1
+    if refused:
+        raise HTTPException(status_code = 409, detail = refused)
+    released = [False]
+
+    def release() -> None:
+        with _lease_lock:
+            if released[0]:
+                return
+            released[0] = True
+        _load_done(holder)
+
+    return release
 
 
 def _holds_lease(holder: Optional[str]) -> bool:

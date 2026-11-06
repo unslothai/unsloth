@@ -10701,11 +10701,12 @@ async def _auto_switch_npu_model(
     # Counted as a queued switch, so another switch's drain does not wait on this request.
     key = _switch_key(named_model, None)
     _note_switch_waiter(key, 1)
+    release_swap = None
     try:
         async with _auto_switch_lock():
             from routes.benchmarks import refuse_if_sweep_holds
 
-            refuse_if_sweep_holds(fastapi_request)
+            release_swap = refuse_if_sweep_holds(fastapi_request)
             await _acquire_swap_gate()
             try:
                 async with model_load_gate(), inference_lifecycle_gate():
@@ -10745,6 +10746,8 @@ async def _auto_switch_npu_model(
                 key = None
                 _auto_switch_process_lock.release()
     finally:
+        if release_swap is not None:
+            release_swap()
         if key is not None:
             _note_switch_waiter(key, -1)
 
@@ -11399,11 +11402,12 @@ async def _maybe_auto_switch_model(
         key = _switch_key(override_id, variant)
         _note_switch_waiter(key, 1)
         waiter_noted = True
+        release_swap = None
         try:
             async with _auto_switch_lock():
                 from routes.benchmarks import refuse_if_sweep_holds
 
-                refuse_if_sweep_holds(fastapi_request)
+                release_swap = refuse_if_sweep_holds(fastapi_request)
                 # Process-wide gate: the asyncio lock is per loop.
                 await _acquire_swap_gate()
                 try:
@@ -11606,6 +11610,8 @@ async def _maybe_auto_switch_model(
                     waiter_noted = False
                     _auto_switch_process_lock.release()
         finally:
+            if release_swap is not None:
+                release_swap()
             if waiter_noted:
                 _note_switch_waiter(key, -1)
 
@@ -12136,11 +12142,15 @@ async def load_model_for_preview(
         from routes.benchmarks import refuse_if_sweep_holds
 
         try:
-            refuse_if_sweep_holds(fastapi_request)
+            release_swap = refuse_if_sweep_holds(fastapi_request)
         except HTTPException:
             untrack_current_request(scope)
             raise
-        await _acquire_swap_gate()
+        try:
+            await _acquire_swap_gate()
+        except BaseException:
+            release_swap()
+            raise
         _swap_begun = False
         try:
             async with model_load_gate(), inference_lifecycle_gate():
@@ -12260,6 +12270,7 @@ async def load_model_for_preview(
             if _swap_begun:
                 note_preview_swap_end()
             _auto_switch_process_lock.release()
+            release_swap()
 
 
 def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
