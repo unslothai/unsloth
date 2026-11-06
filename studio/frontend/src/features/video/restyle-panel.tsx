@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
+import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import {
   cancelVideoRestyle,
@@ -37,6 +38,12 @@ const CLIPS = [
   { kind: "control", label: "Edges (what the model follows)" },
   { kind: "output", label: "Restyled" },
 ] as const;
+
+// Cosmos3 makes one latent frame per 4 output frames (the first stands alone).
+function outputFrames(step: number, total?: number): number {
+  const done = step <= 0 ? 0 : 1 + 4 * (step - 1);
+  return total ? Math.min(done, total) : done;
+}
 
 function seconds(value: number): string {
   return `${value.toFixed(1)} s`;
@@ -192,14 +199,14 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
 
   return (
     <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto @[50rem]:flex-row @[50rem]:overflow-hidden">
-      <div className="flex w-full shrink-0 flex-col gap-4 border-b border-border/60 px-10 pt-9 pb-6 max-sm:px-5 @[50rem]:w-[408px] @[50rem]:overflow-y-auto @[50rem]:border-r @[50rem]:border-b-0">
+      <div className="flex w-full shrink-0 flex-col gap-4 border-b border-border/60 px-10 pt-9 pb-6 max-sm:px-5 @[50rem]:w-[min(var(--media-rail-width,calc(408px*var(--ui-space-scale,1))),calc(100%-var(--media-header-min-width)))] @[50rem]:overflow-y-auto @[50rem]:border-r @[50rem]:border-b-0">
         <div className="grid gap-1.5">
           <h2 className="font-heading text-xl font-medium leading-none text-foreground">
             Restyle a video
           </h2>
           <p className="text-xs text-muted-foreground">
             Cosmos3-Nano-Sim-Transfer keeps the clip's shapes and motion (from its edges) and
-            repaints it from your prompt. Uses the first 4 seconds, at 832 x 480 and 30 fps.
+            repaints it from your prompt. Uses up to the first 4 seconds, at 832 x 480 and 30 fps.
           </p>
         </div>
 
@@ -304,11 +311,19 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
         </div>
 
         {running ? (
-          <Button variant="outline" onClick={() => void cancelVideoRestyle()}>
+          <Button
+            variant="outline"
+            className="h-11 text-ui-14"
+            onClick={() => void cancelVideoRestyle()}
+          >
+            <Spinner className="mr-2 size-4" />
             Cancel
           </Button>
         ) : (
           <Button
+            variant="primary"
+            // Same fill as Generate on the Create tab.
+            className="h-11 text-ui-14 bg-control-accent text-control-accent-foreground hover:bg-control-accent/85 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
             disabled={!source || !prompt.trim() || submitting || previewing || unavailable}
             onClick={() => void submit()}
           >
@@ -321,19 +336,19 @@ export function VideoRestylePanel({ active }: { active: boolean }) {
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>
                 {phase === "generate" && step === 0
-                  ? "Encoding the edge video"
+                  ? "Preparing the edges for the model"
                   : (PHASE_LABEL[phase] ?? phase)}
               </span>
-              {phase === "generate" && total > 0 && (
+              {phase === "generate" && step > 0 && (
                 <span>
-                  Latent frame {step} / {total}
-                  {progress?.eta_seconds != null && ` · ~${Math.ceil(progress.eta_seconds)}s`}
+                  Frame {outputFrames(step, progress?.num_frames)} of {progress?.num_frames ?? "?"}
+                  {progress?.eta_seconds != null && ` · about ${Math.ceil(progress.eta_seconds)} s left`}
                 </span>
               )}
             </div>
             <Progress
               value={phase === "generate" && total > 0 ? (100 * step) / total : undefined}
-              indeterminate={phase !== "generate"}
+              indeterminate={phase !== "generate" || step === 0}
             />
           </div>
         )}
