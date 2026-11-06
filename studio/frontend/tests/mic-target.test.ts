@@ -15,6 +15,7 @@ import {
 import { shouldSubmitDictation } from "../src/features/chat/utils/dictation-send.ts";
 import {
   micClipFilename,
+  MIN_MIC_CLIP_BYTES,
   micClipRoom,
   micSendsAudioToModel,
 } from "../src/features/chat/utils/mic-target.ts";
@@ -171,5 +172,29 @@ test("no room is refused with the attachment adapter's reason", () => {
   assert.match(
     (micClipRoom([], 8, true) as { reason: string }).reason,
     /staged audio clip/,
+  );
+});
+
+test("a room too small for a usable clip is refused", () => {
+  const nearlyFull = {
+    name: "a.wav",
+    type: "audio/wav",
+    size: MAX_AUDIO_SIZE - MIN_MIC_CLIP_BYTES + 1,
+  };
+  assert.match(
+    (micClipRoom([nearlyFull], 8, false) as { reason: string }).reason,
+    /per-message limit/,
+  );
+  const justFits = { ...nearlyFull, size: MAX_AUDIO_SIZE - MIN_MIC_CLIP_BYTES };
+  assert.deepEqual(micClipRoom([justFits], 8, false), {
+    maxBytes: MIN_MIC_CLIP_BYTES,
+  });
+});
+
+test("the audio attachment adapter refuses audio while a mic clip records", () => {
+  const adapter = readSrc("features/chat/audio-attachment-adapter.ts");
+  assert.match(
+    adapter,
+    /if \(micClipRecording\(\)\) \{[\s\S]*?throw new Error\(recordingReason\)/,
   );
 });

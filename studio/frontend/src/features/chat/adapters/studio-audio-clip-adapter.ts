@@ -12,6 +12,7 @@ import {
   markDictationClip,
   markDictationFailed,
 } from "./dictation-outcome";
+import { setMicClipRecording } from "./mic-clip-state";
 import { PcmRecorder } from "./pcm-recorder";
 import {
   type StudioDictationSession,
@@ -41,6 +42,7 @@ export function listenForAudioClip(
   });
 
   const release = () => {
+    setMicClipRecording(false);
     clearTimeout(limitTimer);
     stopLevelMeter();
     for (const track of stream?.getTracks() ?? []) track.stop();
@@ -71,6 +73,7 @@ export function listenForAudioClip(
       active.addEventListener(
         "dataavailable",
         (event) => {
+          setMicClipRecording(false);
           if (event.data.size === 0) return;
           delivering = true;
           const file = new File([event.data], micClipFilename(), {
@@ -125,6 +128,7 @@ export function listenForAudioClip(
     return session;
   }
   const maxBytes = room.maxBytes;
+  setMicClipRecording(true);
 
   void (async () => {
     const { micDeviceId } = useVoiceSettingsStore.getState();
@@ -152,6 +156,8 @@ export function listenForAudioClip(
         return;
       }
       recorder = new PcmRecorder(stream);
+      // The timer leaves a second of slack, but on a small room that slack is the whole clip.
+      recorder.maxBytes = maxBytes;
       recorder.start();
       // The attachment refuses a clip over what is left of the audio limit, so stop just under it.
       limitTimer = setTimeout(() => {

@@ -418,3 +418,18 @@ test("discard tears the graph down without encoding or firing events", () => {
   recorder.stop();
   assert.deepEqual(events, []);
 });
+
+test("stop trims the WAV to maxBytes", async () => {
+  const recorder = newRecorder();
+  let recorded: { data: Blob } | null = null;
+  recorder.addEventListener("dataavailable", (event) => {
+    recorded = event;
+  });
+  recorder.maxBytes = 44 + 3 * 2;
+  recorder.start();
+  FakeAudioContext.last?.processor.emit(new Float32Array([0.5, 0.5]));
+  FakeAudioContext.last?.processor.emit(new Float32Array([0.5, 0.5]));
+  recorder.stop();
+  assert.ok(recorded);
+  assert.equal((recorded as { data: Blob }).data.size, 44 + 3 * 2);
+});

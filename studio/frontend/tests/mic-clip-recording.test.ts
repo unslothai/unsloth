@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test, { mock } from "node:test";
 
 import * as dictationOutcome from "../src/features/chat/adapters/dictation-outcome.ts";
+import * as micClipState from "../src/features/chat/adapters/mic-clip-state.ts";
 import * as micTarget from "../src/features/chat/utils/mic-target.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -19,6 +20,7 @@ class FakeRecorder {
     lastRecorder = this;
   }
   limitBytes = 0;
+  maxBytes = Number.POSITIVE_INFINITY;
   secondsWithin(maxBytes: number) {
     this.limitBytes = maxBytes;
     return 30;
@@ -75,6 +77,7 @@ const { listenForAudioClip } = loadWithStubs<
     "../utils/mic-target": micTarget,
     "./dictation-level": { startDictationLevelMeter: () => () => {} },
     "./dictation-outcome": dictationOutcome,
+    "./mic-clip-state": micClipState,
     "./pcm-recorder": { PcmRecorder: FakeRecorder },
     "./studio-web-speech-dictation-adapter": { isMissingDeviceError: () => false },
   },
@@ -156,4 +159,31 @@ test("no room left refuses before opening the mic", async () => {
   assert.equal(ended, true);
   assert.deepEqual(session.status, { type: "ended", reason: "error" });
   assert.deepEqual(toasts, ["No room."]);
+});
+
+test("other audio is held off while recording, and the clip is capped at the room", async () => {
+  let recordingAtClip: boolean | null = null;
+  const session = listenForAudioClip(
+    () => {
+      recordingAtClip = micClipState.micClipRecording();
+    },
+    { maxBytes: 500_000 },
+  );
+  assert.equal(micClipState.micClipRecording(), true);
+  await flush();
+  assert.equal(lastRecorder?.maxBytes, 500_000);
+  await session.stop();
+  // The clip itself must get through the attachment adapter.
+  assert.equal(recordingAtClip, false);
+  assert.equal(micClipState.micClipRecording(), false);
+});
+
+test("cancel and a refused start leave other audio free to attach", async () => {
+  const session = listenForAudioClip(() => {});
+  await flush();
+  session.cancel();
+  assert.equal(micClipState.micClipRecording(), false);
+  listenForAudioClip(() => {}, { reason: "No room." });
+  assert.equal(micClipState.micClipRecording(), false);
+  await flush();
 });

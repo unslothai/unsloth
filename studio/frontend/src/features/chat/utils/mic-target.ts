@@ -21,6 +21,9 @@ export function micClipFilename(now: Date = new Date()): string {
   return `recording-${stamp}.wav`;
 }
 
+// One second at the recorder's preferred 16 kHz; less would hold no usable clip.
+export const MIN_MIC_CLIP_BYTES = 44 + 16_000 * 2;
+
 export type MicClipRoom = { maxBytes: number } | { reason: string };
 
 /** What the composer can still take for one more clip, by the audio attachment adapter's own limits. */
@@ -36,6 +39,11 @@ export function micClipRoom(
   }
   const audio = attached.filter(isAudioAttachmentFile);
   const totalSize = audio.reduce((sum, file) => sum + file.size, 0);
-  const reason = getAudioAddError(audio.length, totalSize, 1, maxFiles);
+  const reason = getAudioAddError(
+    audio.length,
+    totalSize,
+    MIN_MIC_CLIP_BYTES,
+    maxFiles,
+  );
   return reason ? { reason } : { maxBytes: MAX_AUDIO_SIZE - totalSize };
 }
