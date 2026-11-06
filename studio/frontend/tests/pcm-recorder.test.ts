@@ -474,3 +474,22 @@ test("bytesFor sizes a WAV at the recorder's actual rate", () => {
     FakeAudioContext.refuseRequestedRate = false;
   }
 });
+
+test("discard closes a recorder that was never started, once", () => {
+  const recorder = newRecorder();
+  const context = FakeAudioContext.last;
+  let closes = 0;
+  if (context) {
+    const close = context.close.bind(context);
+    context.close = () => {
+      closes += 1;
+      return close();
+    };
+  }
+  recorder.discard();
+  assert.equal(context?.closed, true);
+  assert.equal(context?.processor.disconnected, true);
+  recorder.discard();
+  recorder.stop();
+  assert.equal(closes, 1);
+});
