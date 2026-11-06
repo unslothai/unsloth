@@ -139,3 +139,20 @@ def test_sharegpt_mapping_with_content_less_tool_call_first(name):
 
     assert "ok" in expected
     assert _render(mapped, sharegpt, False) == expected
+
+
+@pytest.mark.parametrize("name", ["llama-3.1", "qwen3-instruct"])
+def test_content_only_mapping_keeps_canonical_tool_call_first_history(name):
+    call = [{"type": "function", "function": {"name": "f", "arguments": {}}}]
+    canonical = [
+        {"role": "assistant", "tool_calls": call},
+        {"role": "tool", "content": "42"},
+        {"role": "user", "content": "ok"},
+    ]
+    mapping = {"role": "role", "content": "text", "user": "user", "assistant": "assistant"}
+
+    expected = _render(get_chat_template(_tokenizer(), name), canonical, False)
+    mapped = get_chat_template(_tokenizer(), name, mapping = mapping)
+
+    assert "42" in expected and "ok" in expected
+    assert _render(mapped, canonical, False) == expected
