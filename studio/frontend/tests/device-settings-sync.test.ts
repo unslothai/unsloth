@@ -164,3 +164,16 @@ test("another tab switching accounts does not mark its cleanup as edits", async 
   assert.equal(readPending().spellcheck, false);
   assert.deepEqual(puts, []);
 });
+
+test("a same-account marker upgrade keeps syncing edits", async () => {
+  freshBrowser();
+  store.set(BROWSER_ACCOUNT_KEY, "alice");
+  account = { ...empty, saved: true, timeFormat: "12h" };
+  const stop = startClientPreferencesSync();
+  await settle();
+  store.set(BROWSER_ACCOUNT_KEY, "account:a1:alice");
+  setTimeFormat("24h");
+  await settle();
+  stop();
+  assert.deepEqual(puts, [{ timeFormat: "24h" }]);
+});

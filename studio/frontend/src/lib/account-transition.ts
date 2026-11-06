@@ -160,6 +160,17 @@ function isSameAccount(previous: MarkedAccount, next: MarkedAccount): boolean {
   return previous.username === next.username;
 }
 
+/** Whether `storage` still names the account `since` was taken from, across marker upgrades. */
+export function sameBrowserAccount(
+  since: string | null,
+  storage: Pick<Storage, "getItem"> = window.localStorage,
+): boolean {
+  return isSameAccount(
+    parseAccountMarker(since ?? OWNER_BROWSER_ACCOUNT),
+    parseAccountMarker(storage.getItem(BROWSER_ACCOUNT_KEY) ?? OWNER_BROWSER_ACCOUNT),
+  );
+}
+
 export function resetFullAccessForMultiUser(storage: Storage): void {
   if (storage.getItem("unsloth_chat_permission_mode") === "full") {
     storage.setItem("unsloth_chat_permission_mode", "auto");
