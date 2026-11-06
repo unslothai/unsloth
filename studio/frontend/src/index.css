@@ -6777,6 +6777,13 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
   display: none;
 }
 
+/* After a character chat's message frame, the 0x0 keyboard stop would sit on a line of its own and
+   add that line's height between messages. */
+.roleplay-reply + .aui-assistant-reveal-sentinel,
+.roleplay-user + .aui-user-reveal-sentinel {
+  display: block;
+}
+
 /* The composer's bottom fade turns clear just where the speaker bar sits, so the bar brings its own
    backdrop: messages scrolled up behind it stay out of the chips' way. */
 .roleplay-speaker-bar::before {
