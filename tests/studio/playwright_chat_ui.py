@@ -950,20 +950,40 @@ def exercise_floating_monitor_geometry(page):
 
     resize_start = drag_monitor_to(0, 0)
     want = (resize_start["width"] + 40, resize_start["height"] + 30)
-    # On a loaded runner the native grip sometimes follows only the first pointer step (296 wanted,
-    # 256 or 260 seen). The target is absolute, so dragging the grip there again is idempotent.
-    for attempt in range(3):
-        _, resized_box = resize_monitor_to(
-            resize_start["x"] + resize_start["width"] - 8 + 40,
-            resize_start["y"] + resize_start["height"] - 8 + 30,
+
+    def size_limits():
+        return monitor.evaluate(
+            """(el) => {
+                const s = getComputedStyle(el);
+                const px = (v) => (v === "none" ? Infinity : parseFloat(v));
+                return { minWidth: px(s.minWidth), maxWidth: px(s.maxWidth), minHeight: px(s.minHeight),
+                         maxHeight: px(s.maxHeight), inline: el.style.cssText };
+            }"""
         )
-        if (
-            abs(resized_box["width"] - want[0]) <= tolerance
-            and abs(resized_box["height"] - want[1]) <= tolerance
-        ) or attempt == 2:
-            break
+
+    # max-width/height follow the viewport through a ResizeObserver, so wait for them to allow the target before
+    # dragging. Failing runs stopped at 256-260 px wide, the narrow viewport's size, even after three drags.
+    deadline = time.time() + 5
+    limits = size_limits()
+    while (
+        limits["maxWidth"] < want[0] or limits["maxHeight"] < want[1]
+    ) and time.time() < deadline:
+        page.wait_for_timeout(50)
+        limits = size_limits()
+    if limits["maxWidth"] < want[0] or limits["maxHeight"] < want[1]:
+        fail(
+            f"floating monitor limits never left the narrow viewport after the restore: {limits!r}"
+        )
+    _, resized_box = resize_monitor_to(
+        resize_start["x"] + resize_start["width"] - 8 + 40,
+        resize_start["y"] + resize_start["height"] - 8 + 30,
+    )
+    if (
+        abs(resized_box["width"] - want[0]) > tolerance
+        or abs(resized_box["height"] - want[1]) > tolerance
+    ):
         info(
-            f"resize stopped at {resized_box['width']}x{resized_box['height']}, dragging the grip again"
+            f"resize landed at {resized_box['width']}x{resized_box['height']} with limits {size_limits()!r}"
         )
     expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
     expect_close(resized_box["height"], resize_start["height"] + 30, "resize height")
