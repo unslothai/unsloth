@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Released bf16 MiniMax-H3 denoiser placement: a card that holds the denoiser beside a streamed conditioner
-(but not beside a rotating bf16 one) keeps the denoiser resident and streams the conditioner leaf by leaf, instead
-of paging both through the CPU-offload rotation every clip. Cards that cannot hold it keep the rotation."""
+"""Released bf16 MiniMax-H3 denoiser placement beside a streamed conditioner."""
 
 import inspect
 
@@ -69,10 +67,8 @@ def test_streamed_conditioner_is_sized_at_its_encode_footprint(monkeypatch):
     streamed = _sizes(monkeypatch, te_scheme = None, te_streamed = True)
     assert rotating[0] == streamed[0]
     vae_gb = fam.bf16_components_gb[2]
-    # The rotating figure carries the 66.8 GB bf16 conditioner; streamed, only the larger of its footprint and the VAE.
     expected = int(fam.bf16_components_gb[1] * 1e9) - int(max(H3_TE_STREAMED_GB, vae_gb) * 1e9)
     assert abs((rotating[1] - streamed[1]) - expected) < 1000
-    # Default stays the rotating sizing every other caller relies on.
     import torch
 
     from core.inference import video as vid
@@ -86,14 +82,11 @@ def test_streamed_conditioner_is_sized_at_its_encode_footprint(monkeypatch):
 @pytest.mark.parametrize(
     "free_gb, te_scheme, expected",
     [
-        # RTX PRO 6000 96 GB (101.4 GB free measured): the bf16 conditioner cannot rotate beside a pinned
-        # denoiser (142 GB), but a streamed one can (86 GB).
+        # RTX PRO 6000: 142 GB beside a rotating conditioner, 86 GB beside a streamed one.
         (101.4, None, "pin_stream_te"),
         (101.4, "int8", "pin_stream_te"),
-        # B200 / H200 class: fits beside the rotating conditioner as before, no stream needed.
         (178.0, None, "pin"),
         (178.0, "int8", "pin"),
-        # 80 GB and smaller cards: stays in the rotation.
         (79.0, None, None),
         (47.0, None, None),
         (12.0, "int8", None),
@@ -108,13 +101,10 @@ def test_unreadable_or_unsized_keeps_the_rotation():
 
     assert vid._h3_dense_pin_plan(None, None, 100 * 10**9) is None
     assert vid._h3_dense_pin_plan((1, 1), (1, 1), None) is None
-    # The stream kill switch passes no streamed sizes: only the rotating tier is asked.
     assert vid._h3_dense_pin_plan((60 * 10**9, 60 * 10**9), None, 100 * 10**9) is None
 
 
 def test_load_streams_the_conditioner_before_pinning_and_falls_back_when_refused():
-    """The streamed tier must unhook the conditioner from the rotation before the pin, and a refused stream must
-    leave the denoiser in the rotation (its sizing assumed the stream)."""
     from core.inference import video as vid
 
     src = inspect.getsource(vid.VideoBackend)
@@ -129,8 +119,6 @@ def test_load_streams_the_conditioner_before_pinning_and_falls_back_when_refused
 
 
 def test_streamed_conditioner_tier_keeps_the_eager_tier_of_the_rotation_it_replaces():
-    """Placement alone is bit-identical to the rotation; the regional compile is not. The new tier holds the compile
-    off, through the same downgrade the rotation takes, so a load's output does not change."""
     from core.inference import video as vid
 
     src = inspect.getsource(vid.VideoBackend)

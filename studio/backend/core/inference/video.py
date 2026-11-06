@@ -2744,7 +2744,7 @@ def _h3_others_bytes(
 ) -> int:
     """Bytes beside the denoiser. ``rotating``: conditioner and VAEs rotate (the 40 GB reserve evicts
     one before placing the other), so only the larger counts; otherwise they add up. ``te_streamed``: the
-    conditioner streams leaf by leaf, so only its encode footprint is on the device."""
+    conditioner counts at its streamed encode footprint."""
     import torch
 
     scale = 2.0 if dtype is torch.float32 else 1.0
@@ -3085,10 +3085,7 @@ def _h3_dense_pin_plan(
     streamed_sizes: Optional[tuple[int, int]],
     free_bytes: Optional[int],
 ) -> Optional[str]:
-    """Where a released bf16 denoiser goes beside the rotation: ``"pin"`` (fits beside a rotating conditioner),
-    ``"pin_stream_te"`` (fits only once the conditioner streams leaf by leaf, as the quantized one does) or None
-    (stays in the rotation). The second tier is what keeps a 66 GB denoiser resident on a ~100 GB card, where a
-    rotating bf16 conditioner would page both of them across the bus every clip."""
+    """``"pin"`` (fits beside a rotating conditioner), ``"pin_stream_te"`` (only beside a streamed one) or None."""
     if _h3_dense_denoiser_fits(rotating_sizes, free_bytes):
         return "pin"
     if _h3_dense_denoiser_fits(streamed_sizes, free_bytes):
@@ -11328,7 +11325,6 @@ class VideoBackend:
                 )
         offload_policy = "none"
         denoiser_pinned = False
-        # The bf16 denoiser pinned beside a streamed conditioner: eager, as in the rotation it replaces.
         dense_compile_held = False
         denoiser_streamed: Optional[str] = None
         denoiser_single_host_copy = False
@@ -11585,7 +11581,7 @@ class VideoBackend:
                         )
                         pin_plan = _h3_dense_pin_plan(sizes, streamed_sizes, free_bytes)
                         if pin_plan == "pin_stream_te":
-                            # Stream the conditioner first: a pin beside a rotating one would OOM at the encode.
+                            # Stream first: a pin beside a rotating conditioner OOMs at the encode.
                             from .video_minimax_h3_te import stream_h3_text_encoder
                             te_streamed = stream_h3_text_encoder(
                                 manager,
@@ -11608,8 +11604,7 @@ class VideoBackend:
                                 label = "released bfloat16 denoiser",
                             )
                             if te_streamed:
-                                # Placement alone is bit-identical to the rotation; the regional compile is not
-                                # (G4: LPIPS 0.115 over 20 steps), so this tier keeps the rotation's eager tier.
+                                # Compile is not bit-identical here (G4: LPIPS 0.115 over 20 steps): stay eager.
                                 dense_compile_held = bool(denoiser_pinned)
                                 logger.info(
                                     "video.h3_denoiser_placement: %.1f GB free holds the denoiser beside the "
