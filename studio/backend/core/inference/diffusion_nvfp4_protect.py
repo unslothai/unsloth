@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Denoise steps that run W4A16 instead of W4A4; models with FlashInfer NVFP4 layers on an sm_100-class card default
-to ``auto``, other cards to off; UNSLOTH_NVFP4_PROTECT_STEPS overrides either way."""
+"""Denoise steps that run W4A16 instead of W4A4; NVFP4 models default to ``auto`` on sm_100-class cards, else off."""
 
 from __future__ import annotations
 
@@ -36,7 +35,6 @@ def protect_steps_explicit() -> bool:
 
 
 def default_model_spec(device: Any = None) -> str:
-    """The unset schedule on ``device`` (current CUDA device when None): ``auto`` on sm_100-class cards, else off."""
     try:
         import torch
         if not torch.cuda.is_available():
