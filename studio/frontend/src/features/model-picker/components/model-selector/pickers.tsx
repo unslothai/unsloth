@@ -553,7 +553,6 @@ function useRovingModelList({
   };
 }
 
-/** The NPU footer's note: what opening the NPU list would show. */
 function npuFooterHint(
   catalog: NpuCatalog,
   searching: boolean,
