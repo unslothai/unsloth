@@ -36,6 +36,9 @@ test("the glass Show on setting keeps old records on every page and maps routes 
 		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
 		assert.match(source, /useAppliedMaterial\(\)/, file);
 	}
+	// Pages without the image still get the plain glass canvas; only macOS draws its own.
+	const mount = readFileSync(new URL("../src/features/chat-background/mount.tsx", import.meta.url), "utf8");
+	assert.match(mount, /return backdrop && ready && material !== "solid" && material !== "macos" \? \(/);
 	const root = readFileSync(new URL("../src/app/routes/__root.tsx", import.meta.url), "utf8");
 	assert.match(root, /<WindowMaterialMount route=\{hideNavbar \? undefined : isChatRoute \? "chat" : "page"\} \/>/);
 });
