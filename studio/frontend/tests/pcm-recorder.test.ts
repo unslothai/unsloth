@@ -433,3 +433,33 @@ test("stop trims the WAV to maxBytes", async () => {
   assert.ok(recorded);
   assert.equal((recorded as { data: Blob }).data.size, 44 + 3 * 2);
 });
+
+test("PCM recording is supported without MediaRecorder", () => {
+  const saved = {
+    window: Object.getOwnPropertyDescriptor(globalThis, "window"),
+    navigator: Object.getOwnPropertyDescriptor(globalThis, "navigator"),
+    MediaRecorder: Object.getOwnPropertyDescriptor(globalThis, "MediaRecorder"),
+  };
+  const define = (key: string, value: unknown) =>
+    Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
+  try {
+    define("MediaRecorder", undefined);
+    define("navigator", { mediaDevices: { getUserMedia: async () => ({}) } });
+    define("window", { isSecureContext: true, AudioContext: FakeAudioContext });
+    assert.equal(PcmRecorder.isSupported(), true);
+    define("window", {
+      isSecureContext: true,
+      webkitAudioContext: FakeAudioContext,
+    });
+    assert.equal(PcmRecorder.isSupported(), true);
+    define("window", { isSecureContext: false, AudioContext: FakeAudioContext });
+    assert.equal(PcmRecorder.isSupported(), false);
+    define("window", { isSecureContext: true });
+    assert.equal(PcmRecorder.isSupported(), false);
+  } finally {
+    for (const [key, descriptor] of Object.entries(saved)) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete (globalThis as Record<string, unknown>)[key];
+    }
+  }
+});

@@ -106,6 +106,20 @@ function createAudioContext(): AudioContext {
 export class PcmRecorder implements SegmentRecorder {
   readonly mimeType = "audio/wav";
   readonly sampleRate: number;
+
+  /** Web Audio and a secure mic; MediaRecorder is not needed. */
+  static isSupported(): boolean {
+    return (
+      typeof window !== "undefined" &&
+      window.isSecureContext &&
+      typeof (
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: unknown })
+          .webkitAudioContext
+      ) === "function" &&
+      navigator.mediaDevices?.getUserMedia !== undefined
+    );
+  }
   /** stop() trims the WAV to this many bytes, header included. */
   maxBytes = Number.POSITIVE_INFINITY;
   private recordingState: RecordingState = "inactive";

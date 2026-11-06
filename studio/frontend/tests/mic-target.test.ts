@@ -198,3 +198,11 @@ test("the audio attachment adapter refuses audio while a mic clip records", () =
     /if \(micClipRecording\(\)\) \{[\s\S]*?throw new Error\(recordingReason\)/,
   );
 });
+
+test("the model clip path gates on PCM support, not MediaRecorder", () => {
+  const source = readSrc("features/chat/adapters/studio-dictation-adapter.tsx");
+  assert.match(
+    source,
+    /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{\s*if \(!PcmRecorder\.isSupported\(\)\)/,
+  );
+});

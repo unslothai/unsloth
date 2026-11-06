@@ -23,6 +23,7 @@ import {
   sttEngineStatusFor,
   sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
+import { PcmRecorder } from "./pcm-recorder";
 import { listenForAudioClip } from "./studio-audio-clip-adapter";
 import {
   type StudioDictationSession,
@@ -122,7 +123,7 @@ export class StudioDictationAdapter implements DictationAdapter {
   private createSession(): StudioDictationSession {
     const clipTarget = audioClipTarget;
     if (clipTarget && micRecordsForModel(this.chatId)) {
-      if (!StudioModelDictationAdapter.isSupported()) {
+      if (!PcmRecorder.isSupported()) {
         throw new Error("Voice recording is not supported in this browser.");
       }
       const { params, models, modelLoading, pendingAudioBase64 } =
