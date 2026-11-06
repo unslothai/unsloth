@@ -1855,7 +1855,9 @@ class MaxBodyMiddleware:
                     from backports import zstd
                 except ImportError:
                     await JSONResponse(
-                        {"detail": "zstd request bodies need Python 3.14 or the backports.zstd package."},
+                        {
+                            "detail": "zstd request bodies need Python 3.14 or the backports.zstd package."
+                        },
                         status_code = 415,
                     )(scope, receive, send)
                     return
@@ -1868,9 +1870,9 @@ class MaxBodyMiddleware:
                 await _send_413(send, len(body), max_bytes)
                 return
             if not decompressor.eof or decompressor.unused_data:
-                await JSONResponse(
-                    {"detail": "Request body is not valid zstd."}, status_code = 400
-                )(scope, receive, send)
+                await JSONResponse({"detail": "Request body is not valid zstd."}, status_code = 400)(
+                    scope, receive, send
+                )
                 return
             scope = dict(
                 scope,
