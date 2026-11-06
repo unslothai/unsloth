@@ -37,7 +37,7 @@ class _PipeProc:
         r, w = os.pipe()
         self.stdout = io.TextIOWrapper(io.FileIO(r, "r"), encoding = "utf-8", errors = "replace")
         self._w = io.FileIO(w, "w")
-        self.pid = 4242
+        self.pid = 2**31 - 1  # never a live process
         self.returncode = None
 
     def log(self, line: str) -> None:
@@ -210,8 +210,9 @@ def test_ready_is_seen_soon_after_listening_line(monkeypatch):
             time.sleep(0.12)  # model load
             proc.log(f"listening on: http://127.0.0.1:{port}")
             time.sleep(0.005)
-            fake.bind(port)
+            # Before bind: a ready poll can return before this thread runs again.
             bound.append(time.monotonic())
+            fake.bind(port)
 
         threading.Thread(target = _serve, daemon = True).start()
         try:
