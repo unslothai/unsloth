@@ -3781,6 +3781,63 @@ def _read_native_quant_from_cache(
         return {}
 
 
+def _read_native_quant_from_hosted(
+    fam: Any,
+    spec: Optional[dict],
+    *,
+    base: Optional[str],
+    source: Optional[str],
+    config_kwargs: dict,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> dict[str, Any]:
+    """``{component: module}`` for EVERY denoiser read from the hosted int8 file as native Linears, or ``{}`` (all or
+    nothing; the dense shards then load as before). Never raises."""
+    if spec is None:
+        return {}
+    try:
+        import diffusers
+
+        from .diffusion import hub_cache_dir
+        from .diffusion_native_hosted import load_native_from_hosted
+        from .diffusion_prequant import _resolve_checkpoint_path
+        from .video_denoiser_prequant import denoiser_prequant_sources
+
+        transformer_cls = getattr(diffusers, str(getattr(fam, "transformer_class", "")), None)
+        sources = denoiser_prequant_sources(fam, spec.get("scheme"), base, hf_token = hf_token)
+        if transformer_cls is None or not sources:
+            return {}
+        out: dict[str, Any] = {}
+        for component, src in sources.items():
+            path = _resolve_checkpoint_path(
+                src,
+                hf_token,
+                hub_cache_dir(),
+                local_files_only = local_files_only,
+                scheme = spec.get("scheme"),
+                logger = logger,
+            )
+            if path is None:
+                return {}
+            module = load_native_from_hosted(
+                path,
+                transformer_cls,
+                str(source or base),
+                spec = spec,
+                family = getattr(fam, "name", None),
+                component = component,
+                config_kwargs = config_kwargs,
+                logger = logger,
+            )
+            if module is None:
+                return {}
+            out[component] = module
+        return out
+    except Exception as exc:  # noqa: BLE001 - a hosted problem keeps the dense build
+        logger.warning("video.native_hosted: hosted read skipped (%s)", exc)
+        return {}
+
+
 def _video_native_stream_build(
     fam: Any,
     spec: Optional[dict],
@@ -4155,6 +4212,26 @@ def _auto_offload_scheme(requested: Optional[str]) -> Optional[str]:
     """auto takes int8 for an offloaded DiT: its torchao-free build rides every offload hook."""
     scheme = normalize_transformer_quant(requested)
     return TQ_INT8 if scheme == TQ_AUTO else scheme
+
+
+def _video_native_hosted_scheme(fam: Any, scheme: Optional[str], target: Any) -> Optional[str]:
+    """``int8`` when an offloaded load of ``scheme`` builds the W8A8 ConvRot native DiT that the family's hosted int8
+    checkpoint already holds (``diffusion_native_hosted``), else None. The load re-checks the file; never raises."""
+    try:
+        from .diffusion_native_hosted import native_hosted_family
+        from .diffusion_native_quant import int8_rotation_group
+
+        if scheme != TQ_INT8 or not native_hosted_family(fam):
+            return None
+        if getattr(target, "device", None) != "cuda":
+            return None
+        if native_quant_scheme(target, TQ_INT8, family = fam.name, offload = True) != TQ_INT8:
+            return None
+        if not native_int8_act(target) or int(int8_rotation_group() or 0) <= 0:
+            return None
+        return TQ_INT8
+    except Exception:  # noqa: BLE001 -- unanswerable: the dense shards and runtime build, as before
+        return None
 
 
 # Denoise-side base of estimate_video_runtime_mib; the rest scales with the decoded clip, held only by the VAE.
@@ -5597,6 +5674,7 @@ class VideoBackend:
                 if kind != "single_file"
                 else None
             )
+            native_hosted_out: list = []
             video_auto_denoiser = self._video_planned_auto_denoiser_scheme(
                 fam,
                 base = base,
@@ -5608,6 +5686,7 @@ class VideoBackend:
                 gpu_ordinal = kwargs.get("gpu_ordinal"),
                 hf_token = kwargs.get("hf_token"),
                 ltx25_dev = ltx25_dev,
+                native_hosted = native_hosted_out,
             )
             video_seed_declined = video_auto_denoiser == DENOISER_SEED_DECLINED
             if video_seed_declined:
@@ -5625,6 +5704,25 @@ class VideoBackend:
                 local_files_only = local_files_only,
                 kind = kind,
             )
+            # Offloaded int8 read from the hosted file as native Linears: its dense shards are not staged either.
+            native_hosted_planned = None
+            if (
+                video_seed_declined
+                and native_hosted_out
+                and not skip_transformer_weights
+                and self._denoiser_prequant_verified(
+                    fam,
+                    native_hosted_out[0],
+                    base,
+                    kwargs.get("h3_task"),
+                    kwargs.get("hf_token"),
+                    local_files_only = local_files_only,
+                    kind = kind,
+                )
+            ):
+                skip_transformer_weights = True
+                native_hosted_planned = native_hosted_out[0]
+            kwargs["_video_native_hosted_planned"] = native_hosted_planned
             skip_transformer_components = (
                 _planned_denoiser_components(fam, kind) if skip_transformer_weights else ()
             )
@@ -7029,8 +7127,12 @@ class VideoBackend:
         gpu_ordinal: Optional[int] = None,
         hf_token: Optional[str] = None,
         ltx25_dev: bool = False,
+        native_hosted: Optional[list] = None,
     ) -> Optional[str]:
-        """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload."""
+        """The pre-download auto denoiser scheme, None, or ``DENOISER_SEED_DECLINED`` if the plan would offload.
+
+        On a decline, ``native_hosted`` (a list) receives the scheme when the offloaded native build can be read from
+        the hosted checkpoint instead (``_video_native_hosted_scheme``)."""
         try:
             if kind != "pipeline" or getattr(fam, "modular_workflow", None):
                 return None
@@ -7090,6 +7192,17 @@ class VideoBackend:
                     hf_token = hf_token,
                     ltx25_dev = ltx25_dev,
                 ):
+                    hosted = _video_native_hosted_scheme(fam, scheme, target)
+                    if native_hosted is not None and hosted is not None:
+                        native_hosted.append(hosted)
+                        logger.info(
+                            "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
+                            "this card, so the hosted %s checkpoint is read as offload-safe native "
+                            "Linears instead of quantising the dense denoiser shards",
+                            scheme,
+                            hosted,
+                        )
+                        return DENOISER_SEED_DECLINED
                     logger.info(
                         "video.denoiser_prequant: an artifact-sized plan for %s still offloads on "
                         "this card, and offload moves the DiT, so the dense denoiser shards are "
@@ -7767,6 +7880,7 @@ class VideoBackend:
             if kind != "single_file"
             else None
         ) or transformer_quant
+        native_hosted_out: list = []
         video_planned = self._video_planned_auto_denoiser_scheme(
             fam,
             base = base,
@@ -7778,9 +7892,11 @@ class VideoBackend:
             gpu_ordinal = load_kwargs.get("gpu_ordinal"),
             hf_token = hf_token,
             ltx25_dev = ltx25_dev,
+            native_hosted = native_hosted_out,
         )
         if video_planned == DENOISER_SEED_DECLINED:
-            video_planned = None
+            # An offloaded int8 load reads the hosted file as native Linears: plan that file, not the dense shards.
+            video_planned = native_hosted_out[0] if native_hosted_out else None
         if kind == "pipeline" and not getattr(fam, "modular_workflow", None):
             transformer_quant = video_planned
         else:
@@ -8617,6 +8733,7 @@ class VideoBackend:
         _te_prequant_failed: Optional[dict] = None,
         _h3_auto_denoiser_planned: Optional[str] = None,
         _video_auto_denoiser_planned: Optional[str] = None,
+        _video_native_hosted_planned: Optional[str] = None,
         _denoiser_prequant_skipped: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         fam = self.validate_load_request(
@@ -9402,6 +9519,25 @@ class VideoBackend:
             cancel_check = lambda: self._raise_if_video_load_superseded(_load_token),
         )
         self._raise_if_video_load_superseded(_load_token)
+        native_from_hosted = False
+        if (
+            not native_cache_hits
+            and native_cache_spec is not None
+            and _video_native_hosted_planned is not None
+            and _video_native_hosted_planned == native_cache_spec.get("scheme")
+        ):
+            # The planner staged the hosted int8 file instead of the dense shards: read it as the native build.
+            native_cache_hits = _read_native_quant_from_hosted(
+                fam,
+                native_cache_spec,
+                base = fetch_base,
+                source = _base_local_dir or fetch_base,
+                config_kwargs = native_config_kwargs,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+            )
+            native_from_hosted = bool(native_cache_hits)
+            self._raise_if_video_load_superseded(_load_token)
         if not native_cache_hits and native_cache_spec is not None:
             # A miss whose dense load would not fit host RAM: build the same native experts per shard into the cache.
             native_cache_hits = _video_native_stream_build(
@@ -9930,6 +10066,18 @@ class VideoBackend:
                 "video.transformer_quant: %s pre-quantized denoiser(s) seeded for %s; skipping "
                 "the runtime quantise",
                 denoiser_seed_scheme,
+                fam.name,
+            )
+        elif native_cached and native_from_hosted:
+            transformer_quant_engaged = native_scheme
+            transformer_quant_source = (
+                native_quant_reason(getattr(pipe, "transformer", None), native_scheme)
+                + "; codes and scales read from the hosted pre-quantized checkpoint"
+            )
+            logger.info(
+                "video.transformer_quant: %s native denoiser(s) read from the hosted checkpoint for "
+                "%s; skipping the dense shards and the runtime quantise",
+                native_scheme,
                 fam.name,
             )
         elif native_cached:
