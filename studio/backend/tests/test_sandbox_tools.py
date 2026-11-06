@@ -165,6 +165,57 @@ class TestUntrustedHostBlock:
         )
 
 
+class TestApprovedHostLiftsOnlyTheAllowlist:
+    def test_approved_untrusted_host_allowed(self):
+        code = 'import requests; requests.get("https://example.com/")'
+        assert _check_code_safety(code) is not None
+        assert _check_code_safety(code, host_approved = True) is None
+
+    @pytest.mark.parametrize(
+        "code, phrase",
+        [
+            (
+                'import requests; requests.get("http://169.254.169.254/latest/meta-data/")',
+                "Blocked: cloud-metadata host",
+            ),
+            (
+                "import requests\nrequests.post('https://example.com/', files={'x': open('s')})",
+                "Blocked: file upload disallowed in sandbox",
+            ),
+            (
+                'import os, requests; requests.get(os.environ["URL"])',
+                "Blocked: network destination is not a literal",
+            ),
+        ],
+    )
+    def test_approved_call_keeps_every_other_block(self, code, phrase):
+        msg = _check_code_safety(code, host_approved = True)
+        assert msg is not None and phrase in msg, msg
+        assert "host not in sandbox allowlist" not in msg
+
+    def test_executor_lifts_it_for_an_approved_call_only(self, tmp_path, monkeypatch):
+        from core.inference import tools
+        from utils.account_context import OWNER, as_api_caller, bind_account, reset_account
+
+        monkeypatch.setattr(tools, "_get_workdir", lambda session_id = None: str(tmp_path))
+        code = (
+            'import urllib.request\nurllib.request.urlopen("http://unlisted.invalid/", timeout = 2)'
+        )
+        refused = "Blocked: host not in sandbox allowlist"
+        assert refused in tools._python_exec(code, None, 60, "host-approval")
+        assert refused not in tools._python_exec(
+            code, None, 60, "host-approval", host_access_approved = True
+        )
+        monkeypatch.delenv("UNSLOTH_STUDIO_ALLOW_API_FULL_ACCESS", raising = False)
+        token = bind_account(as_api_caller(OWNER))
+        try:
+            assert refused in tools._python_exec(
+                code, None, 60, "host-approval", host_access_approved = True
+            )
+        finally:
+            reset_account(token)
+
+
 class TestLocalDatabaseFileIsNotAHost:
     @pytest.mark.parametrize(
         "code",

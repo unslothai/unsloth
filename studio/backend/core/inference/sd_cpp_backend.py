@@ -364,10 +364,86 @@ def _linux_physical_cores(sysfs: str = "/sys/devices/system/cpu") -> Optional[in
     return len(cores) or None
 
 
-def _default_threads() -> int:
-    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else (Linux) the physical cores in the affinity mask, else
-    ``os.cpu_count() // 2``; capped by the cgroup quota on Linux. Half the logical CPUs is one thread per core only on
-    a 2-way SMT host that may use all of them: it halves a host without SMT and oversubscribes a cpuset."""
+# 0 keeps one sd.cpp thread per physical core on an SMT host (the default runs one per logical CPU there).
+SD_CPP_CPU_SMT_ENV = "UNSLOTH_DIFFUSION_CPU_SMT"
+# Many-core servers keep one thread per core: ggml's per-op barrier across many threads outweighs SMT gains.
+SD_CPP_CPU_SMT_MAX_CORES = 16
+
+
+def _linux_hybrid_cpu(sysfs: str = "/sys/devices") -> bool:
+    """Intel hybrid (P + E) hosts register a ``cpu_atom`` PMU."""
+    try:
+        with open(f"{sysfs}/cpu_atom/cpus", encoding = "utf-8") as f:
+            return bool(f.read().strip())
+    except OSError:
+        return False
+
+
+def _smt_threads_enabled() -> bool:
+    return os.environ.get(SD_CPP_CPU_SMT_ENV, "").strip().lower() not in ("0", "false", "no", "off")
+
+
+# GetLogicalProcessorInformationEx: RelationProcessorCore records (one per physical core).
+_RELATION_PROCESSOR_CORE = 0
+
+
+def _parse_windows_cores(buf: bytes) -> Optional[tuple[int, bool]]:
+    """(cores, hybrid); byte 9 of each record is EfficiencyClass, more than one class = P + E cores."""
+    import struct
+
+    offset, cores, classes = 0, 0, set()
+    while offset + 10 <= len(buf):
+        relationship, size = struct.unpack_from("<II", buf, offset)
+        if size <= 0:
+            return None
+        if relationship == _RELATION_PROCESSOR_CORE:
+            cores += 1
+            classes.add(buf[offset + 9])
+        offset += size
+    return (cores, len(classes) > 1) if cores else None
+
+
+def _windows_cores() -> Optional[tuple[int, bool]]:
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error = True)
+        size = wintypes.DWORD(0)
+        kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, None, ctypes.byref(size)
+        )
+        if not size.value:
+            return None
+        buf = ctypes.create_string_buffer(size.value)
+        if not kernel32.GetLogicalProcessorInformationEx(
+            _RELATION_PROCESSOR_CORE, buf, ctypes.byref(size)
+        ):
+            return None
+        return _parse_windows_cores(buf.raw[: size.value])
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _smt_threads(physical: int, allowed: Optional[int], hybrid: bool, smt: bool) -> int:
+    if (
+        smt
+        and allowed
+        and physical < allowed
+        and physical <= SD_CPP_CPU_SMT_MAX_CORES
+        and _smt_threads_enabled()
+        and not hybrid
+    ):
+        return allowed
+    return physical
+
+
+def _default_threads(smt: bool = True) -> int:
+    """``UNSLOTH_CPU_THREADS``, else macOS P-cores, else logical CPUs on a small non-hybrid SMT host, else physical
+    cores, else ``os.cpu_count() // 2``; capped by the cgroup quota. SMT measured 1.06-1.26x faster, pixel-identical,
+    on 2-4 core VMs; hybrid hosts keep the core count (ggml's even split would wait on E cores)."""
     try:
         configured = int(os.environ.get("UNSLOTH_CPU_THREADS") or 0)
     except ValueError:
@@ -379,8 +455,12 @@ def _default_threads() -> int:
         return performance_cores
     linux = sys.platform.startswith("linux")
     physical = _linux_physical_cores() if linux else None
+    windows = None if linux else _windows_cores()
     if physical:
-        threads = physical
+        threads = _smt_threads(physical, _allowed_cpus(), _linux_hybrid_cpu(), smt)
+    elif windows is not None and smt:
+        cores, hybrid = windows
+        threads = _smt_threads(cores, os.cpu_count(), hybrid, smt)
     else:
         cpu = os.cpu_count()
         threads = cpu // 2 if cpu else 8
@@ -427,7 +507,7 @@ def _explicit_threads() -> Optional[int]:
         return performance_cores
     if sys.platform.startswith("linux"):
         cpu = os.cpu_count()
-        threads = _default_threads()
+        threads = _default_threads(smt = False)
         sd_default = _sd_cpp_default_threads(cpu)
         if threads == sd_default:
             return None

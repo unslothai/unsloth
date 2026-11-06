@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { usesWindowsTitlebar } from "@/components/tauri/window-titlebar";
 import {
   ChatBackground,
   WindowMaterialMount,
@@ -431,6 +432,7 @@ function RootLayout() {
   const videoDisabled =
     videoNavHint(chatOnlyMeasured, chatOnlyReason, videoCpuOptIn, cpuTraining) !== undefined;
   const isChatRoute = pathname === "/chat";
+  const windowsWallpaperPage = !isChatRoute && usesWindowsTitlebar();
   const { pinned, setPinned, togglePinned } = useSidebarPin();
   const navigate = useNavigate();
 
@@ -716,12 +718,15 @@ function RootLayout() {
           setPinned={setPinned}
           togglePinned={togglePinned}
           data-wallpaper-workspace=""
+          data-windows-wallpaper-page={windowsWallpaperPage || undefined}
           data-wallpaper-route={isChatRoute ? "chat" : "page"}
+          data-wallpaper-media={isImagesRoute || isVideoRoute || isAudioRoute || undefined}
           className="relative !min-h-0 h-[calc(100dvh-var(--studio-titlebar-height,0px))] overflow-hidden"
         >
           <ChatBackground route={isChatRoute ? "chat" : "page"} backdrop />
           <AppSidebar />
           <SidebarEdgeTrigger />
+          {windowsWallpaperPage && <div data-slot="page-wallpaper-blur" aria-hidden="true" />}
           <SidebarInset
             className={
               isChatLike
