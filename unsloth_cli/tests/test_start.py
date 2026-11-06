@@ -2831,6 +2831,60 @@ def test_codex_keeps_the_users_mcp_servers(fake_studio, tmp_path, monkeypatch):
     assert user_config.read_text() == '[mcp_servers.docs]\nurl = "http://127.0.0.1:9000/mcp"\n'
 
 
+def test_codex_keeps_the_users_instructions_skills_rules_and_prompts(
+    fake_studio, tmp_path, monkeypatch
+):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    (source_home / "rules").mkdir()
+    (source_home / "rules" / "default.rules").write_text(
+        'prefix_rule(pattern = ["rm"], decision = "forbidden")\n'
+    )
+    (source_home / "prompts").mkdir()
+    (source_home / "prompts" / "summarize.md").write_text("Summarize the diff.\n")
+    (source_home / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "Answer in French.\n"
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert "forbidden" in (home / "rules" / "default.rules").read_text()
+    assert (home / "prompts" / "summarize.md").read_text() == "Summarize the diff.\n"
+
+    (source_home / "AGENTS.md").unlink()
+    (source_home / "AGENTS.override.md").write_text("Answer in German.\n")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+    assert not os.path.lexists(home / "AGENTS.md")
+    assert (source_home / "AGENTS.override.md").read_text() == "Answer in German.\n"
+
+
+def test_codex_refreshes_copied_user_files_without_symlinks(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "old").mkdir(parents = True)
+    (source_home / "AGENTS.md").write_text("first\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+
+    def deny_symlink(*args, **kwargs):
+        raise OSError("symlinks unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", deny_symlink)
+    monkeypatch.setattr(start, "_create_directory_junction", lambda source, target: False)
+    home = tmp_path / "agents" / "codex"
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "old").is_dir()
+
+    (source_home / "AGENTS.md").write_text("second\n")
+    (source_home / "skills" / "old").rmdir()
+    (source_home / "skills" / "new").mkdir()
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "AGENTS.md").read_text() == "second\n"
+    assert not (home / "skills" / "old").exists()
+    assert (home / "skills" / "new").is_dir()
+
+
 def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     user_home = tmp_path / "user-home"

@@ -173,6 +173,9 @@ _CODEX_SUBAGENT_MCP_SERVER = "unsloth_local_agent"
 _CODEX_SUBAGENT_MCP_TOOL = "spawn_local_agent"
 _CODEX_SUBAGENT_CONFIG_ENV = "UNSLOTH_CODEX_SUBAGENT_CONFIG"
 _CODEX_PARENT_OVERLAY_MANIFEST = ".unsloth-parent-overlay.json"
+_CODEX_USER_FILES = ("AGENTS.md", "AGENTS.override.md", "skills", "rules", "prompts")
+_CODEX_USER_FILES_MANIFEST = "unsloth_user_files.json"
+_CODEX_COPIED_DIRS = {"agents", "skills", "rules", "prompts", "plugins", "marketplaces", "sessions"}
 _CODEX_EPHEMERAL_STALE_SECONDS = 24 * 60 * 60
 _CODEX_EPHEMERAL_HEARTBEAT_SECONDS = 60
 _CODEX_SUBAGENT_TOOL_DESCRIPTION = (
@@ -3558,17 +3561,21 @@ def _codex_mcp_tables(source: Path, seen: frozenset) -> list:
     return tables
 
 
-def _with_user_codex_mcp_servers(text: str, home: Path) -> str:
-    _, _, carried = _codex_mcp_manifest(home)
+def _codex_user_home(home: Path) -> Path:
     source = _codex_source_home()
     home_key = home.resolve(strict = False)
-    if source.resolve(strict = False) == home_key:
-        # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
-        followed = _codex_mcp_followed(home)
-        if followed is not None and followed.resolve(strict = False) != home_key:
-            source = followed
-        else:
-            source = _codex_source_home(ignore_configured = True)
+    if source.resolve(strict = False) != home_key:
+        return source
+    # The printed recipe exports CODEX_HOME=home: keep reading the home it was built from.
+    followed = _codex_mcp_followed(home)
+    if followed is not None and followed.resolve(strict = False) != home_key:
+        return followed
+    return _codex_source_home(ignore_configured = True)
+
+
+def _with_user_codex_mcp_servers(text: str, home: Path, source: Path) -> str:
+    _, _, carried = _codex_mcp_manifest(home)
+    home_key = home.resolve(strict = False)
     source_key = str(source.resolve(strict = False))
     tables = _codex_mcp_tables(source, frozenset({str(home_key), source_key}))
     # Only replace what came from the user's config; servers added in this home stay.
@@ -3604,7 +3611,9 @@ def write_codex_config(
     existing = config.read_text(encoding = "utf-8") if config.exists() else ""
     merged = _merge_codex_config(existing, base)
     if keep_mcp_servers:
-        merged = _with_user_codex_mcp_servers(merged, home)
+        source = _codex_user_home(home)
+        merged = _with_user_codex_mcp_servers(merged, home, source)
+        _link_codex_user_files(home, source)
     if merged != existing:
         config.write_text(merged, encoding = "utf-8")
         typer.echo(f"Updated {config}")
@@ -3782,6 +3791,49 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
     return result.returncode == 0
 
 
+def _link_codex_entry(source: Path, target: Path) -> bool:
+    # Symlinks make this an overlay rather than a stale copy; if Windows denies them, directory junctions keep large runtime state shared without a bulk copy, and the configuration surfaces and sessions are copied only when both link forms are unavailable.
+    _remove_overlay_entry(target)
+    try:
+        target.symlink_to(source, target_is_directory = source.is_dir())
+        return True
+    except OSError:
+        pass
+    if source.is_file():
+        # Only auth.json: Codex rewrites it in place, but a SQLite db under a second name keeps its own WAL and corrupts (sqlite.org/howtocorrupt.html 2.6).
+        if source.name == "auth.json":
+            with contextlib.suppress(OSError):
+                os.link(source, target)
+                return True
+        shutil.copy2(source, target)
+        return True
+    if source.is_dir():
+        if _create_directory_junction(source, target):
+            return True
+        if source.name in _CODEX_COPIED_DIRS:
+            shutil.copytree(source, target)
+            return True
+    return False
+
+
+def _link_codex_user_files(home: Path, source: Path) -> None:
+    manifest = home / _CODEX_USER_FILES_MANIFEST
+    try:
+        linked = json.loads(manifest.read_text(encoding = "utf-8"))["entries"]
+    except (OSError, ValueError, TypeError, KeyError):
+        linked = []
+    entries = []
+    for name in _CODEX_USER_FILES:
+        target = home / name
+        if isinstance(linked, list) and name in linked:
+            _remove_overlay_entry(target)
+        elif os.path.lexists(target):
+            continue
+        if os.path.exists(source / name) and _link_codex_entry(source / name, target):
+            entries.append(name)
+    _write_private_json(manifest, {"entries": entries})
+
+
 def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
     """Add local-agent routing without replacing the cloud parent's configuration."""
     overlay.mkdir(parents = True, exist_ok = True, mode = 0o700)
@@ -3818,8 +3870,7 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
         for target in list(overlay.iterdir()):
             _remove_overlay_entry(target)
 
-    # Keep the user's auth, config, plugins, agents, skills, rules and session state visible. Symlinks make this an overlay rather than a stale copy; if Windows denies them, directory junctions keep large runtime state shared without a bulk copy, and the configuration surfaces and sessions are copied only when both link forms are unavailable.
-    fallback_dirs = {"agents", "skills", "rules", "plugins", "marketplaces", "sessions"}
+    # Keep the user's auth, config, plugins, agents, skills, rules and session state visible.
     entries = []
     if source_home.is_dir():
         for source in source_home.iterdir():
@@ -3829,28 +3880,8 @@ def write_codex_parent_overlay(overlay: Path, auto_route: bool = False) -> Path:
                 _CODEX_PARENT_OVERLAY_MANIFEST,
             }:
                 continue
-            target = overlay / source.name
-            _remove_overlay_entry(target)
-            try:
-                target.symlink_to(source, target_is_directory = source.is_dir())
+            if _link_codex_entry(source, overlay / source.name):
                 entries.append(source.name)
-            except OSError:
-                if source.is_file():
-                    # Only auth.json: Codex rewrites it in place, but a SQLite db under a second name keeps its own WAL and corrupts (sqlite.org/howtocorrupt.html 2.6).
-                    linked = False
-                    if source.name == "auth.json":
-                        with contextlib.suppress(OSError):
-                            os.link(source, target)
-                            linked = True
-                    if not linked:
-                        shutil.copy2(source, target)
-                    entries.append(source.name)
-                elif source.is_dir():
-                    if _create_directory_junction(source, target):
-                        entries.append(source.name)
-                    elif source.name in fallback_dirs:
-                        shutil.copytree(source, target)
-                        entries.append(source.name)
     # Not signed in yet: a dangling link lands the first login in the user's home, not the overlay.
     auth = source_home / "auth.json"
     if not os.path.lexists(auth):
