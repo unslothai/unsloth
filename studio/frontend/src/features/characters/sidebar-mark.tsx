@@ -55,7 +55,7 @@ export function CharacterChatMark({ threadId }: { threadId: string }) {
         className="size-4.5 rounded-full text-[0.5rem]"
       />
       {ids.length > 1 ? (
-        <span className="absolute -bottom-1 -right-1.5 flex h-3 min-w-3 items-center justify-center rounded-full bg-foreground px-[3px] text-[8px] font-semibold leading-none text-background ring-[1.5px] ring-sidebar">
+        <span className="absolute -bottom-1 -right-1.5 flex h-3 min-w-3 items-center justify-center rounded-full bg-foreground px-[3px] text-[length:calc(var(--text-ui-10)*0.8)] font-semibold leading-none text-background ring-[1.5px] ring-sidebar">
           {ids.length}
         </span>
       ) : null}
