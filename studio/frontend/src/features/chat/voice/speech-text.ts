@@ -157,6 +157,10 @@ export function splitIntoSentences(text: string): string[] {
       const tail = prev.replace(/["')\]]+$/, "");
       const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
       const decimal = /\d\.$/.test(tail) && !spaced && /^\d/.test(part);
+      // "J. Smith", "John F. Kennedy": an initial that starts the sentence or follows a capitalized
+      // word is part of a name; "pick option A. Then" is a real boundary.
+      const nameInitial =
+        /(?:^|(?:^|\s)(?:[A-Z][a-z]+|[A-Z]\.)\s)[A-Z]\.$/.test(tail) && /^[A-Z][a-z]/.test(part);
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
       // "llama.cpp", "config.json": a dot with a letter right after it is part of a name.
       const dotted = /[A-Za-z\d]\.$/.test(tail) && !spaced && /^[A-Za-z]/.test(part);
@@ -170,9 +174,9 @@ export function splitIntoSentences(text: string): string[] {
       const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
       // ", the docs" after "e.g." can't start a sentence.
       const continues = /^[,;:]/.test(part);
-      if (decimal || initial || dotted || abbrev || initialism || continues) {
+      if (decimal || initial || dotted || abbrev || initialism || continues || nameInitial) {
         // "3.50" and "D.C." close up; "Dr. Smith" keeps the space it was written with.
-        out[out.length - 1] = prev + (decimal || initial || dotted || continues ? "" : " ") + part;
+        out[out.length - 1] = prev + (decimal || (initial && !spaced) || dotted || continues ? "" : " ") + part;
         continue;
       }
     }

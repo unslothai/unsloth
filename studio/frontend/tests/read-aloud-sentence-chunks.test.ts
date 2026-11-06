@@ -198,3 +198,11 @@ test("an abbreviation that ends a sentence still ends it", () => {
     "It is Python vs. Rust.",
   ]);
 });
+
+test("an initial in a name stays with the surname", () => {
+  assert.deepEqual(speechText.splitIntoSentences("J. Smith wrote it. Then he left."), ["J. Smith wrote it.", "Then he left."]);
+  assert.deepEqual(speechText.splitIntoSentences("J. R. R. Tolkien wrote it."), ["J. R. R. Tolkien wrote it."]);
+  assert.deepEqual(speechText.splitIntoSentences("Ask John F. Kennedy about it."), ["Ask John F. Kennedy about it."]);
+  // After a lowercase word a single letter ends the sentence.
+  assert.deepEqual(speechText.splitIntoSentences("Pick option A. Then run it."), ["Pick option A.", "Then run it."]);
+});
