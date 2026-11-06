@@ -13,10 +13,10 @@ import os
 import re
 import secrets
 import weakref
-from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import chain, count
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -520,6 +520,8 @@ _ALIAS_RUN: dict[str, tuple[str, Optional[str]]] = {}
 _RUN_ALIAS: dict[str, str] = {}
 
 _ALIAS_CREATED: dict[str, int] = {}
+_ALIAS_ORDER: dict[str, int] = {}
+_alias_counter = count()
 
 _aliases_loaded: set[Optional[str]] = set()
 _drainer: Optional[asyncio.Task] = None
@@ -841,6 +843,7 @@ def _finish(
     done = [e for e in _ALIASES.values() if e.status in ("failed", "cancelled")]
     for old in done[: max(0, len(done) - _TERMINAL_KEEP)]:
         _ALIASES.pop(old.alias, None)
+        _ALIAS_ORDER.pop(old.alias, None)
 
 
 async def _start_queued(entry: _Queued) -> bool:
@@ -997,6 +1000,7 @@ def _enqueue(request: TrainingStartRequest, current_subject: str, via_api_key: b
     )
     _QUEUE.append(entry)
     _ALIASES[entry.alias] = entry
+    _ALIAS_ORDER[entry.alias] = next(_alias_counter)
     _ensure_drainer()
     return entry
 
@@ -1128,39 +1132,31 @@ def _run_created(run: dict[str, Any]) -> int:
     return _ALIAS_CREATED.get(_RUN_ALIAS.get(run["id"])) or _unix(run.get("started_at")) or 0
 
 
-def _runs_by_creation() -> Iterator[dict[str, Any]]:
-    waiting: list[tuple[int, int, dict[str, Any]]] = []
-    for seq, run in enumerate(_iter_runs()):
-        heapq.heappush(waiting, (-_run_created(run), seq, run))
-        # A job is queued before it starts: no run further down the history sorts above this.
-        floor = _unix(run.get("started_at")) or 0
-        while waiting and -waiting[0][0] >= floor:
-            yield heapq.heappop(waiting)[2]
-    while waiting:
-        yield heapq.heappop(waiting)[2]
-
-
 def _ordered_jobs(
     pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
 ) -> Iterator[tuple[dict[str, Any], bool]]:
-    # By creation time, queue entries first on ties: a started job keeps its place across pages.
-    remaining = deque(sorted(pending, key = lambda job: job["created_at"], reverse = True))
-    # A live run can acquire its history row between the status and history reads.
-    history = (
-        (run, True, _run_created(run)) for run in _runs_by_creation() if run["id"] not in live
-    )
-    running = sorted(
-        ((job, False, job["created_at"] or 0) for job in live.values()),
-        key = lambda item: item[2],
-        reverse = True,
-    )
-    # Live jobs go by creation time too, so they keep their place once their history rows appear.
-    rows = heapq.merge(running, history, key = lambda item: (item[2], not item[1]), reverse = True)
-    for row, is_run, created_at in rows:
-        while remaining and remaining[0]["created_at"] >= created_at:
-            yield remaining.popleft(), False
-        yield row, is_run
-    yield from ((job, False) for job in remaining)
+    # Newest created first; same-second ties by queue order then public id, so a job keeps its
+    # place from queue to history. History is newest start first and no job starts before it is
+    # created, so a buffered row created after the current row's start is final.
+    def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
+        return (-created_at, -_ALIAS_ORDER.get(public_id, -1), public_id, seq), row, is_run
+
+    heap = [
+        item(job["created_at"] or 0, job["id"], seq, job, False)
+        for seq, job in enumerate(chain(pending, live.values()))
+    ]
+    heapq.heapify(heap)
+    for seq, run in enumerate(_iter_runs(), len(heap)):
+        # A live run can acquire its history row between the status and history reads.
+        if run["id"] in live:
+            continue
+        started = _unix(run.get("started_at")) or 0
+        while heap and -heap[0][0][0] > started:
+            yield heapq.heappop(heap)[1:]
+        public_id = _RUN_ALIAS.get(run["id"]) or _job_id(run["id"])
+        heapq.heappush(heap, item(min(_run_created(run), started), public_id, seq, run, True))
+    while heap:
+        yield heapq.heappop(heap)[1:]
 
 
 def _list_job_page(
