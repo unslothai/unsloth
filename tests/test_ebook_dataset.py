@@ -438,3 +438,9 @@ def test_whitespace_windows_do_not_abort_books(
 def test_tiny_budget_still_rejects_an_incomplete_unicode_character(ebooks, byte_tokenizer):
     with pytest.raises(ValueError, match = "complete character"):
         list(ebooks._chunk_text("🦥", byte_tokenizer, 1, 0))
+
+
+def test_cjk_sentence_end_is_a_boundary_without_a_following_space(ebooks, byte_tokenizer):
+    text = ebooks._html_text("<p>今日は晴れ。「明日も？」と聞いた。</p>".encode())
+    chunks = list(ebooks._chunk_text(text, byte_tokenizer, 40, 0))
+    assert chunks == ["今日は晴れ。「明日も？」", "と聞いた。"]
