@@ -53,3 +53,47 @@ def test_only_vad_models_resolve(monkeypatch):
         vad.resolve_vad_model(fake.id)
     with pytest.raises(vad.VadError, match = "not an audio GGUF"):
         vad.resolve_vad_model("not a model id at all!!")
+
+
+def test_a_detect_keeps_the_server_it_loaded_until_the_run_ends(monkeypatch):
+    import io
+    import threading
+    import wave
+
+    sidecar = vad.AudioCppVadSidecar()
+    held_during_load = []
+
+    def lock_free_elsewhere() -> bool:
+        box = []
+        probe = threading.Thread(target = lambda: box.append(sidecar._lock.acquire(blocking = False)))
+        probe.start()
+        probe.join()
+        if box[0]:
+            sidecar._lock.release()
+        return box[0]
+
+    class Server:
+        model_id = "pulsevad"
+        process = type("P", (), {"poll": lambda self: None})()
+
+        def post_json(self, path, body, timeout):
+            # Another request's load would need the lock here; it must still be held.
+            held_during_load.append(not lock_free_elsewhere())
+            return 200, b'{"segments": [], "sample_rate": 16000}'
+
+    def load(model):
+        held_during_load.append(not lock_free_elsewhere())
+        sidecar._server = Server()
+        return "pulsevad"
+
+    monkeypatch.setattr(sidecar, "load", load)
+    monkeypatch.setattr(vad, "_debug_dump", lambda *a: None)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        w.writeframes(b"\x00\x00" * 1600)
+    result = sidecar.detect(buf.getvalue(), "pulsevad")
+    assert result["model"] == "pulsevad"
+    assert held_during_load == [True, True]

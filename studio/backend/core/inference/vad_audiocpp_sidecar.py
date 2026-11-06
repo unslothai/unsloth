@@ -232,8 +232,9 @@ class AudioCppVadSidecar:
         from core.inference.stt_sidecar import _decode_audio_bounded
 
         wav_bytes = _pcm_to_wav_bytes(_decode_audio_bounded(wav_bytes))
-        model_id = self.load(model)
+        # Loaded under the same hold as the run: another model's load cannot swap the server between.
         with self._lock:
+            model_id = self.load(model)
             server = self._server
             if server is None or not self._server_alive():
                 raise VadUnavailableError("The speech detector is not running.")

@@ -34,6 +34,7 @@ import {
 import { isAudioCppFolderId } from "@/features/audio/audio-cpp-catalog";
 import { LibraryAttachmentTargetContext } from "@/features/library";
 import { createVoiceSlotOwner } from "@/features/chat/voice/voice-slot-owner";
+import { unloadVadModel } from "@/features/chat/voice/vad-client";
 import { usePlatformStore } from "@/config/env";
 import { CopyableErrorChip } from "@/components/ui/copyable-error-chip";
 import {
@@ -2768,6 +2769,11 @@ type PendingHubAutoLoad = {
 };
 
 // `search` comes from RootLayout so ChatPage stays mounted off-route; `active` is false there.
+function releaseVoiceDetector(): void {
+  void unloadVadModel();
+  useChatRuntimeStore.getState().setVadSlotLoaded(false);
+}
+
 export function ChatPage({
   search,
   active,
@@ -3119,14 +3125,23 @@ export function ChatPage({
     );
   }, [voiceMode, selectedVoiceModelId, hasChatCheckpoint, voiceSlot]);
 
+  // The speech detector has no idle unload, so voice mode going off releases it too.
+  const prevVoiceModeRef = useRef(voiceMode);
   useEffect(() => {
-    if (voiceMode === "off") voiceSlot.unloadOwn();
+    const was = prevVoiceModeRef.current;
+    prevVoiceModeRef.current = voiceMode;
+    if (voiceMode !== "off") return;
+    voiceSlot.unloadOwn();
+    if (was !== "off") releaseVoiceDetector();
   }, [voiceMode, voiceSlot]);
 
   // Leaving Chat with voice mode on unmounts this without voiceMode going "off".
   useEffect(() => {
     voiceSlot.open();
-    return voiceSlot.close;
+    return () => {
+      voiceSlot.close();
+      if (prevVoiceModeRef.current !== "off") releaseVoiceDetector();
+    };
   }, [voiceSlot]);
 
   const prevConnectionsEnabledRef = useRef(connectionsEnabled);
