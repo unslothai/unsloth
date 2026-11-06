@@ -1685,6 +1685,8 @@ class _LoadState:
     # Pre-warmed torch.compile cache context when a compiled tier ran, else None.
     compile_cache_ctx: Any = None
     bg_compile: Any = None
+    # The first inline compile's float seeds (diffusion_bg_compile.InlineFloatSeeds); holds the DiTs until it kept.
+    inline_float_seeds: Any = None
     # GraphedForward handles installed on the denoiser modules.
     cuda_graphs: tuple = ()
     # Token kept so LoRA adapters selected at generate time can be fetched.
@@ -14085,6 +14087,29 @@ class DiffusionBackend:
             else "",
         )
 
+    def _inline_float_seeds(self, state: Any) -> Any:
+        """This load's seeder for a compile inside a render until it kept its names, else None. A load with a
+        background compile seeds there; a load not compiled yet (deferred tier) is asked again on the next render."""
+        held = getattr(state, "inline_float_seeds", None)
+        if held is not None:
+            return None if held.done() else held
+        try:
+            if getattr(state, "bg_compile", None) is not None:
+                return None
+            if "compiled" not in tuple(getattr(state, "speed_optims", None) or ()):
+                return None
+            seed_dir = getattr(getattr(state, "compile_cache_ctx", None), "dir", None)
+            if seed_dir is None or not bg_compile.float_seeds_enabled():
+                return None
+            dits = bg_compile.float_seed_dits(state.pipe)
+            if not dits:
+                return None
+            seeds = bg_compile.InlineFloatSeeds(dits, seed_dir, logger = logger)
+            object.__setattr__(state, "inline_float_seeds", seeds)
+            return seeds
+        except Exception:  # noqa: BLE001 - no seeds, main's compile
+            return None
+
     @_release_render_on_unload
     @holds_inference
     @with_hires
@@ -14185,6 +14210,7 @@ class DiffusionBackend:
             kick_bg = False
             bg_eager = False
             bg_token = None
+            float_seeds = None
             # A Detailer crop inpaint (diffusion_bg_compile.auxiliary_pass): eager, uncounted, nothing recorded.
             aux_pass = bg_compile.auxiliary()
             restore_eager_gate: Optional[Callable[[], None]] = None
@@ -14244,6 +14270,8 @@ class DiffusionBackend:
                 bg_eager = bg is not None and bg.pending()
                 if bg_eager:
                     bg_token = bg_compile._FORCE_EAGER.set(True)
+                # An inline compile (no background compile) skips the float restart a returning load already learned.
+                float_seeds = None if bg_eager or aux_pass else self._inline_float_seeds(state)
                 if aux_pass:
                     # The force-eager signal never reaches a whole-module compiled U-Net on its own.
                     restore_eager_gate = bg_compile.gate_compiled_eager(
@@ -15117,6 +15145,9 @@ class DiffusionBackend:
                         chunk_placement: list = []
 
                         def _enter_denoise_phase(gen = gen) -> None:
+                            if float_seeds is not None:
+                                # Before the first (compiling) denoiser forward.
+                                float_seeds.seed()
                             if gen.phase == "encode":
                                 gen.phase = "denoise"
                             # The prompt is encoded: the encoders are idle until the next prompt, so free them.
@@ -15146,6 +15177,9 @@ class DiffusionBackend:
                             """The decoder was entered: a HOST position, possibly far ahead of the GPU. Mark the
                             boundary in the stream and let the poller flip once the GPU reaches it; with no event
                             to wait on (CPU) there is no queue to be ahead of, so flip now."""
+                            if float_seeds is not None:
+                                # Before the VAE decode's compile adds its own names.
+                                float_seeds.keep()
                             # every step ran (deferred returns settled), the pin still holds, no VAE OOM unpin yet
                             chunk_placement.append(
                                 denoiser_offload(state.pipe, state.offload_policy)
@@ -15187,6 +15221,11 @@ class DiffusionBackend:
                                 ),
                                 protect_ctx,
                                 denoise_phase(pipe, _enter_denoise_phase),
+                                (
+                                    bg_compile.seed_before_first_forward(float_seeds)
+                                    if float_seeds is not None
+                                    else nullcontext()
+                                ),
                                 zimage_cfg_split_render(pipe, len(chunk)),
                                 decode_phase(pipe, _enter_decode_phase),
                                 _completed_step_poller(_pump),
