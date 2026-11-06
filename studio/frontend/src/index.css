@@ -2095,6 +2095,23 @@ html[data-chat-font] .aui-root {
 		--removed-body-scroll-bar-size: 0px;
 	}
 
+	/* Radix modal layers (dialogs, modal menus, selects) write pointer-events: none on <body>.
+	   That property is inherited, so every open and close restyled each element of the chat:
+	   about 40k elements at 100 turns, 0.45 s in Chromium and 2.4 s in WebKit per toggle. An
+	   explicit value on the scroller stops the inheritance there, and while the lock is up a
+	   transparent cover keeps the thread unclickable and unhovered exactly as before. Portaled
+	   layers (z-50) stay above the cover. */
+	:where(.aui-thread-viewport) {
+		pointer-events: auto;
+	}
+	body[style*="pointer-events: none"] .aui-thread-root::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: 49;
+		pointer-events: auto;
+	}
+
 	/* Firefox makes scrollable containers focusable; :where keeps specificity at zero. */
 	:where(div, main, section, aside, ul, ol):focus-visible {
 		outline: 1px solid var(--ring-soft);

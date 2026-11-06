@@ -52,6 +52,11 @@ LARGE = int(os.environ.get("LONG_THREAD_LARGE", "200"))
 # 423-472 ms (5.3-6.0x) and :has() 74-84 ms; healthy, 0.7-0.9 -> 0.7-1.0 ms (1.00x) and 0.2 ms.
 MAX_MATCH_RATIO = float(os.environ.get("LONG_THREAD_MAX_MATCH_RATIO", "2.0"))
 MAX_HAS_MS = float(os.environ.get("LONG_THREAD_MAX_HAS_MS", "5.0"))
+# Style recalc for one open or close of a modal layer (Radix writes pointer-events: none on <body>,
+# an inherited property). Healthy: 1-5 ms at 200 turns; when the thread inherits it, every message
+# restyles and this is hundreds of ms in Chromium and seconds in WebKit.
+MAX_LOCK_MS = float(os.environ.get("LONG_THREAD_MAX_LOCK_MS", "30.0"))
+LOCK_TOGGLES = 4
 # A ratio inside this band gets a second interleaved repeat before the verdict; outside it, one
 # measurement is decisive (healthy runs read 1.00x, the regression 5.3-6.0x).
 RECHECK_BAND = (1.5, 3.0)
@@ -191,6 +196,23 @@ def style_per_key(cdp, page, keys: str) -> float:
     return 1000 * (metrics(cdp)["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / len(keys)
 
 
+def lock_style_ms(cdp, page) -> float:
+    """Untraced style recalc per open/close of a modal layer's body pointer-events lock."""
+    m0 = metrics(cdp)
+    for _ in range(LOCK_TOGGLES):
+        for value in ("none", ""):
+            page.evaluate(
+                "(v) => { document.body.style.pointerEvents = v; return getComputedStyle(document.body).color; }",
+                value,
+            )
+            page.wait_for_timeout(30)
+    return (
+        1000
+        * (metrics(cdp)["RecalcStyleDuration"] - m0["RecalcStyleDuration"])
+        / (2 * LOCK_TOGGLES)
+    )
+
+
 def measure(browser, base: str, turns: int) -> dict:
     ctx, page, cdp = open_thread(browser, base, turns)
     shape = page.evaluate("""() => ({
@@ -250,6 +272,7 @@ def measure(browser, base: str, turns: int) -> dict:
     typing_s = time.perf_counter() - t0
     m1 = metrics(cdp)
     typed_ok = page.evaluate("() => window.__threadWeight.composerText()") == PRECHECK_KEYS + keys
+    lock_ms = lock_style_ms(cdp, page)
     ctx.close()
     n = len(keys)
     selectors: dict[str, dict] = {}
@@ -270,6 +293,7 @@ def measure(browser, base: str, turns: int) -> dict:
         "match_ms": sum(r["ms"] for r in selectors.values()),
         "has_ms": sum(r["ms"] for s, r in selectors.items() if ":has(" in s),
         "style_ms": 1000 * (m1["RecalcStyleDuration"] - m0["RecalcStyleDuration"]) / n,
+        "lock_ms": lock_ms,
         "selectors": selectors,
     }
 
@@ -485,7 +509,8 @@ def report(
                 f"{med(turns, 'has_ms'):.2f} ms/key, style recalc {med(turns, 'style_ms'):.1f} ms/key "
                 f"(tracing on; {runs[turns][-1]['precheck_style_ms']:.1f} ms/key untraced), "
                 f"{runs[turns][0]['shape']['nodes']:,} DOM nodes, {runs[turns][-1]['keys']} keys traced "
-                f"in {runs[turns][-1]['typing_s']} s"
+                f"in {runs[turns][-1]['typing_s']} s, dialog/menu open or close "
+                f"{med(turns, 'lock_ms'):.1f} ms style recalc"
             )
     print("\n".join(lines))
     if failures:
@@ -495,7 +520,9 @@ def report(
             print(d)
         print(f"  {HEALTHY}")
         return 1
-    print("PASS: selector work per keystroke does not grow with the chat")
+    print(
+        "PASS: selector work per keystroke does not grow with the chat, and opening a dialog or menu does not restyle it"
+    )
     return 0
 
 
@@ -540,6 +567,14 @@ def main() -> int:
                 details += top_selectors(large, only_has = True)
                 details += pin_down(browser, base)
                 details.append("  " + HINT)
+            if not failures and large.get("lock_ms", 0.0) > MAX_LOCK_MS:
+                failures.append(
+                    f"opening or closing a dialog or menu costs {large['lock_ms']:.0f} ms of style recalc at "
+                    f"{LARGE} turns, budget {MAX_LOCK_MS:.0f} ms ({large['lock_ms'] / MAX_LOCK_MS:.1f}x over). "
+                    "Radix writes pointer-events: none on <body> and the thread inherits it, so every message "
+                    "restyles. It is possible the explicit pointer-events on .aui-thread-viewport in index.css "
+                    "(the modal-layer cover rules) was removed or overridden, but we cannot be sure"
+                )
             if not failures:
                 small = measure(browser, base, SMALL)
                 runs[SMALL].append(small)
