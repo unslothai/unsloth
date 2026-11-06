@@ -4300,11 +4300,33 @@ def test_codex_too_old_for_profile_files_stops_before_launch(
         assert result.exit_code == 0, result.output
     else:
         assert result.exit_code == 1
-        assert "Codex 0.134.0 or newer is needed, but `codex` here is 0.133.0" in result.output
+        assert "Codex 0.134.0 or newer is needed, but /bin/codex is 0.133.0" in result.output
         assert f"`{start._npm_install_hint('@openai/codex@latest')}`" in result.output
-        if os.name != "nt":
-            assert "--prefix" in result.output
         assert not any(call[1].endswith("/api/inference/load") for call in fake_studio)
+
+
+def test_codex_update_hint_targets_the_resolved_install(tmp_path):
+    prefix = tmp_path / "global"
+    bin_dir = prefix if os.name == "nt" else prefix / "bin"
+    package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules")
+    (package / "@openai" / "codex").mkdir(parents = True)
+    assert start._codex_update_hint(str(bin_dir / "codex")) == start._npm_install_hint(
+        "@openai/codex@latest", prefix = prefix
+    )
+    assert start._codex_update_hint(str(tmp_path / "elsewhere" / "codex")) == (
+        start._npm_install_hint("@openai/codex@latest")
+    )
+
+
+@pytest.mark.skipif(os.name == "nt", reason = "Homebrew links codex with a symlink")
+def test_codex_update_hint_uses_brew_for_a_homebrew_codex(tmp_path):
+    target = tmp_path / "Caskroom" / "codex" / "0.133.0" / "codex"
+    target.parent.mkdir(parents = True)
+    target.touch()
+    link = tmp_path / "bin" / "codex"
+    link.parent.mkdir()
+    link.symlink_to(target)
+    assert start._codex_update_hint(str(link)) == "brew upgrade codex"
 
 
 def test_opencode_v1_reads_the_effort_as_reasoning_effort_option(

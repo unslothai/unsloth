@@ -656,9 +656,16 @@ def _vibe_install_hint() -> str:
     return _VIBE_WINDOWS_INSTALL_HINT if os.name == "nt" else _VIBE_POSIX_INSTALL_HINT
 
 
-def _npm_install_hint(package: str, *, ignore_scripts: bool = False) -> str:
+def _npm_install_hint(
+    package: str,
+    *,
+    ignore_scripts: bool = False,
+    prefix: Optional[Path] = None,
+) -> str:
     parts = ["npm", "install", "-g"]
-    if os.name != "nt":
+    if prefix is not None:
+        parts.extend(("--prefix", str(prefix)))
+    elif os.name != "nt":
         # No home (bare container UID): fall back to npm's own prefix instead of failing.
         try:
             parts.extend(("--prefix", str(Path.home() / ".local")))
@@ -3306,6 +3313,18 @@ def _codex_executable_version(executable: str) -> Optional[tuple[int, int, int]]
         return None
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", output)
     return tuple(int(part) for part in match.groups()) if match else None
+
+
+def _codex_update_hint(executable: str) -> str:
+    # Update the copy that resolves: a new one in ~/.local/bin sits behind an older one earlier on PATH.
+    directory = Path(executable).parent
+    prefix = directory if os.name == "nt" else directory.parent
+    package = prefix / ("node_modules" if os.name == "nt" else "lib/node_modules") / "@openai/codex"
+    if package.is_dir():
+        return _npm_install_hint("@openai/codex@latest", prefix = prefix)
+    if any(part in ("Cellar", "Caskroom") for part in Path(os.path.realpath(executable)).parts):
+        return "brew upgrade codex"
+    return _npm_install_hint("@openai/codex@latest")
 
 
 def _codex_supports_model_catalog() -> bool:
@@ -7546,8 +7565,8 @@ def codex(
     if version and version < _CODEX_PROFILE_FILE_MIN_VERSION:
         _fail(
             f"Codex {'.'.join(map(str, _CODEX_PROFILE_FILE_MIN_VERSION))} or newer is needed, "
-            f"but `codex` here is {'.'.join(map(str, version))}. Update it with "
-            f"`{_npm_install_hint('@openai/codex@latest')}`."
+            f"but {executable} is {'.'.join(map(str, version))}. Update it with "
+            f"`{_codex_update_hint(executable)}`."
         )
     codex_effort = _codex_reasoning_effort(reasoning, reasoning_effort)
     if codex_effort and not _agent_version_at_least("codex", _CODEX_REASONING_REQUEST_MIN_VERSION):
