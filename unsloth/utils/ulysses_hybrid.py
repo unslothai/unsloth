@@ -5,6 +5,7 @@
 runs its own attention function after the exchange) and for hybrid models, whose scans need the full sequence so
 they run on heads."""
 
+import builtins
 import functools
 import inspect
 
@@ -241,13 +242,36 @@ _SHARD_LOCAL_KWARGS = (
 )
 
 
-def _calls_attention_registry(function) -> bool:
+def _registry_caller(function, hops = 1):
+    """The function that looks up ALL_ATTENTION_FUNCTIONS for `function`: itself, or the one module-level function
+    a pure delegate calls. unsloth_zoo's compiled modules keep the Hugging Face body as `<Class>_forward` and the
+    class forward only calls it. A forward that calls several functions (Unsloth's fast forwards, which attend
+    themselves) is not a delegate, so a registry lookup in one of its helpers does not count. None otherwise."""
     try:
         function = inspect.unwrap(function)
     except Exception:
-        return False
+        return None
     code = getattr(function, "__code__", None)
-    return code is not None and "ALL_ATTENTION_FUNCTIONS" in code.co_names
+    if code is None:
+        return None
+    if "ALL_ATTENTION_FUNCTIONS" in code.co_names:
+        return function
+    if hops <= 0:
+        return None
+    globs = getattr(function, "__globals__", {})
+    callees = {
+        name for name in code.co_names if callable(globs.get(name)) or name in vars(builtins)
+    }
+    if len(callees) != 1:
+        return None
+    callee = globs.get(callees.pop())
+    if callee is None or callee is function or not inspect.isfunction(callee):
+        return None
+    return _registry_caller(callee, hops - 1)
+
+
+def _calls_attention_registry(function) -> bool:
+    return _registry_caller(function) is not None
 
 
 def hf_attention_forward(module):
@@ -275,7 +299,8 @@ def is_hf_registry_attention(module) -> bool:
 
 
 def _forward_globals(module) -> dict:
-    return getattr(inspect.unwrap(hf_attention_forward(module)), "__globals__", {})
+    # The globals of the function that resolves eager_attention_forward (a compiled module's own copy).
+    return getattr(_registry_caller(hf_attention_forward(module)), "__globals__", {})
 
 
 def _route_hf_forward(module, get_cp_manager) -> None:
