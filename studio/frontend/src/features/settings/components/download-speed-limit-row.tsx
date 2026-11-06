@@ -4,7 +4,7 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT } from "@/i18n";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   loadDownloadSpeedLimitSettings,
   updateDownloadSpeedLimitSettings,
@@ -20,12 +20,15 @@ export function DownloadSpeedLimitRow() {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const edited = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     loadDownloadSpeedLimitSettings()
       .then((settings) => {
-        if (!cancelled) setDraft(asDraft(settings.mbps));
+        if (!(cancelled || edited.current)) {
+          setDraft(asDraft(settings.mbps));
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -79,7 +82,10 @@ export function DownloadSpeedLimitRow() {
             value={draft}
             placeholder={t("settings.general.downloads.speedLimitNoLimit")}
             aria-label={t("settings.general.downloads.speedLimit")}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => {
+              edited.current = true;
+              setDraft(event.target.value);
+            }}
             className="h-control w-24"
           />
           <span className="text-xs font-medium text-muted-foreground">
