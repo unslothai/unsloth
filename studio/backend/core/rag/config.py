@@ -90,11 +90,8 @@ FOLDER_MAX_TEXT_BYTES = int(os.environ.get("RAG_FOLDER_MAX_TEXT_BYTES", str(20 *
 FOLDER_JOB_HISTORY_LIMIT = int(os.environ.get("RAG_FOLDER_JOB_HISTORY_LIMIT", "200"))
 # Linked-folder documents ingested concurrently, clamped to 1..4.
 FOLDER_INGEST_WORKERS = int(os.environ.get("RAG_FOLDER_INGEST_WORKERS", "2"))
-# Linked-folder documents in flight at once, clamped to the workers above..64. Only the workers
-# parse or store at a time; the rest wait to embed, so small files share one encode call.
+# Small linked-folder files in flight, clamped to workers..64; past the workers they only wait to embed.
 FOLDER_INGEST_IN_FLIGHT = int(os.environ.get("RAG_FOLDER_INGEST_IN_FLIGHT", "16"))
-# Only files this small ride the wider in-flight window: they are the ones a shared embedding batch
-# helps, and their snapshots and chunks are what it keeps in flight.
 FOLDER_INGEST_BATCH_FILE_BYTES = int(
     os.environ.get("RAG_FOLDER_INGEST_BATCH_FILE_BYTES", str(1024 * 1024))
 )

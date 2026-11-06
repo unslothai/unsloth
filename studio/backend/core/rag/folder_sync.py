@@ -1699,7 +1699,6 @@ def _reconcile_folder(job_id: str) -> None:
     stop_event = getattr(_worker_state, "stop_event", _stop)
     account = current_account()
     workers = _folder_ingest_workers()
-    # Documents beyond the parse workers only wait to embed, batched with the others (#16715).
     in_flight_limit = _folder_ingest_in_flight(workers)
     stage_slots = threading.Semaphore(workers)
     in_flight: dict[Future["_IngestionResult"], _PendingIngestion] = {}
@@ -1845,8 +1844,7 @@ def _reconcile_folder(job_id: str) -> None:
                             cached_grace = True
                         processed += 1
                         continue
-                    # Only small files queue past the parse workers: a shared embedding batch is what
-                    # they gain, and their snapshots are what the wider window keeps on disk.
+                    # Only small files queue past the workers: each queued one keeps a snapshot.
                     cap = (
                         in_flight_limit
                         if current[rel]["size_bytes"] <= config.FOLDER_INGEST_BATCH_FILE_BYTES
