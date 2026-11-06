@@ -2627,6 +2627,10 @@ export const sv = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Kontur för element",
+          description: "Styrka på kanterna runt knappar, fält, kort och menyer.",
+        },
         reduceMotion: {
           label: "Minska rörelse",
           description: "Minska animationer eller följ systemet.",

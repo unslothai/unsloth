@@ -2528,6 +2528,10 @@ export const fr = {
         contrast: {
           label: "Contraste",
         },
+        elementOutline: {
+          label: "Contour des éléments",
+          description: "Intensité des bordures des boutons, champs, cartes et menus.",
+        },
         reduceMotion: {
           label: "Réduire les animations",
           description: "Réduire les animations ou suivre votre système.",

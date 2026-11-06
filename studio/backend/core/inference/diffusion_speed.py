@@ -2059,6 +2059,13 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
                 "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
             )
         return False
+    from . import diffusion_lora_quant_merge as lora_quant_merge
+
+    # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
+    if lora_quant_merge.merged(pipe):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (merged LoRA weights change in place)")
+        return False
     # Prefer pipe-level fuse (covers every component); else fuse each DiT so dual-DiT families fuse both.
     fn = getattr(pipe, "fuse_qkv_projections", None)
     if callable(fn):

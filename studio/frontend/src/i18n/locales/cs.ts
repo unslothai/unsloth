@@ -2717,6 +2717,10 @@ export const cs = {
         contrast: {
           label: "Kontrast",
         },
+        elementOutline: {
+          label: "Obrys prvků",
+          description: "Síla okrajů tlačítek, polí, karet a nabídek.",
+        },
         reduceMotion: {
           label: "Omezit pohyb",
           description: "Omezit animace, nebo se řídit systémem.",

@@ -2485,6 +2485,10 @@ export const zhCN = {
         contrast: {
           label: "对比度",
         },
+        elementOutline: {
+          label: "元素轮廓",
+          description: "按钮、输入框、卡片和菜单的边框强度。",
+        },
         reduceMotion: {
           label: "减少动态效果",
           description: "减少动画，或跟随系统设置。",

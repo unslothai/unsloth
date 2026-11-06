@@ -2580,6 +2580,10 @@ export const zhTW = {
         contrast: {
           label: "對比",
         },
+        elementOutline: {
+          label: "元素外框",
+          description: "按鈕、輸入欄位、卡片和選單的邊框強度。",
+        },
         reduceMotion: {
           label: "減少動態效果",
           description: "減少動畫，或跟隨系統設定。",

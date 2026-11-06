@@ -2738,6 +2738,10 @@ export const es419 = {
         contrast: {
           label: "Contraste",
         },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
+        },
         reduceMotion: {
           label: "Reducir el movimiento",
           description:

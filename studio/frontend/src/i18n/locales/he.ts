@@ -2556,6 +2556,10 @@ export const he = {
         contrast: {
           label: "ניגודיות",
         },
+        elementOutline: {
+          label: "מתאר רכיבים",
+          description: "עוצמת הגבול של כפתורים, שדות, כרטיסים ותפריטים.",
+        },
         reduceMotion: {
           label: "הפחתת תנועה",
           description: "הפחת אנימציות או התאם להגדרות המערכת.",

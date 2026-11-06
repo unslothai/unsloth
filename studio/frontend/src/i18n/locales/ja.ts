@@ -2482,6 +2482,10 @@ export const ja = {
         contrast: {
           label: "コントラスト",
         },
+        elementOutline: {
+          label: "要素の枠線",
+          description: "ボタン、入力欄、カード、メニューの枠線の濃さ。",
+        },
         reduceMotion: {
           label: "モーションを減らす",
           description: "アニメーションを減らすか、システム設定に従います。",
