@@ -40,7 +40,6 @@ def _signals(rng: np.random.Generator):
         yield np.where(np.sin(2 * np.pi * 100 * t) >= 0, 1.0, -1.0).astype(np.float32)[:, None]
         yield np.zeros((n, 2), np.float32)
         yield np.clip(3.0 * tone, -1.0, 1.0)
-        # Quiet, loud and denormal float samples, and the float specials a float WAV can carry.
         yield (rng.standard_normal((n, 1)) * 1e-30).astype(np.float32)
         yield (rng.standard_normal((n, 2)) * 1e20).astype(np.float32)
         yield np.full((n, 1), 1e-40, np.float32)
@@ -48,7 +47,6 @@ def _signals(rng: np.random.Generator):
             spiked = rng.uniform(-0.5, 0.5, (n, 1)).astype(np.float32)
             spiked[rng.integers(n)] = special
             yield spiked
-        # 16-bit PCM noise and speech-like bursts.
         pcm = np.round(rng.standard_normal((n, 2)) * 6000).clip(-32768, 32767) / 32768.0
         yield pcm.astype(np.float32)
         envelope = np.abs(np.sin(2 * np.pi * 3 * t))[:, None] ** 4
@@ -104,5 +102,4 @@ def test_a_long_take_convolves_only_near_its_peak(monkeypatch):
     expected = _walk(speech[:, None])
     monkeypatch.setattr(np, "convolve", counting)
     assert repr(am.true_peak(speech[:, None])) == repr(expected)
-    # The screen leaves a few short spans, not whole chunks.
     assert calls and max(calls) < 1000

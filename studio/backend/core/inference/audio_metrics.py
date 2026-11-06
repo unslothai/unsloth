@@ -255,13 +255,11 @@ _PEAK_SPANS_MAX = 128
 def _phase_peak(
     window: np.ndarray, taps: np.ndarray, peak: float, screen: Optional[np.ndarray], err: float
 ) -> float:
-    """``max(peak, max |np.convolve(window, taps, "valid")|)``, convolving only where ``screen``
-    (that output within ``err``) says the maximum can be; ``screen`` None convolves it all."""
+    """max(peak, max |np.convolve(window, taps, "valid")|), convolving only where ``screen`` (+-err) allows."""
     if screen is None:
         return max(peak, float(np.max(np.abs(np.convolve(window, taps, mode = "valid")))))
     top = float(screen.max())
-    # Output j is within err of screen[j], so one screened under top - 2 err cannot be the
-    # maximum and one screened under peak - err cannot raise peak.
+    # |output j - screen[j]| <= err: below top - 2 err cannot be the max, below peak - err cannot raise it.
     floor = max(top - 2.0 * err, peak - err)
     if floor > top:
         return peak
@@ -298,7 +296,6 @@ def true_peak(data: np.ndarray) -> float:
             window = _padded(x, start - before, stop + after)
             scale = float(np.max(np.abs(window)))
             screens, err = [None] * len(phases), 0.0
-            # Silence, NaN, inf and extreme samples skip the screen.
             if 2.0**-60 <= scale <= 2.0**60:
                 # Screen and np.convolve each lie within ~14 * 2**-24 * reach * scale of the exact
                 # sum in any summation order; 2**-19 leaves 2x margin.
