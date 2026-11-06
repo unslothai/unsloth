@@ -460,6 +460,32 @@ def test_a_stale_window_delete_keeps_turns_it_never_saw(tmp_path, monkeypatch):
     assert parents == {"u1": None, "a1": "u1", "u3": "a1", "a3": "u3"}
 
 
+@pytest.mark.parametrize(
+    "other_window, seen_count, deleted",
+    [
+        ([_turn("a2b", "u2", 5)], 4, ["u2", "a2"]),
+        ([], 3, ["u2"]),
+    ],
+)
+def test_a_stale_window_delete_drops_replies_it_never_saw(
+    tmp_path, monkeypatch, other_window, seen_count, deleted
+):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    turns = [_turn("u1", None, 1), _turn("a1", "u1", 2), _turn("u2", "a1", 3), _turn("a2", "u2", 4)]
+    studio_db.sync_chat_messages("thread-1", turns + other_window)
+
+    messages = studio_db.sync_chat_messages(
+        "thread-1",
+        [m for m in turns[:seen_count] if m["id"] not in deleted],
+        prune_missing = True,
+        deleted_message_ids = deleted,
+    )
+
+    parents = {message["id"]: message["parentId"] for message in messages}
+    assert parents == {"u1": None, "a1": "u1"}
+
+
 def test_upsert_chat_message_rejects_cross_thread_id_conflict(tmp_path, monkeypatch):
     _reset_studio_db(tmp_path, monkeypatch)
     studio_db.upsert_chat_thread(_thread("thread-1"))
@@ -1252,6 +1278,23 @@ def test_deleting_a_mid_chain_ancestor_relinks_to_the_surviving_grandparent(tmp_
     synced = studio_db.sync_chat_messages("src", payload, prune_missing = True)
 
     assert next(m for m in synced if m["id"] == "prompt")["parentId"] == "a0"
+
+
+def test_a_stale_window_delete_relinks_a_research_prompt_it_never_saw(tmp_path, monkeypatch):
+    _, messages = _research_thread(tmp_path, monkeypatch, extra_ancestors = 2)
+
+    synced = studio_db.sync_chat_messages(
+        "src",
+        _without(messages, "a1", "prompt", "report"),
+        prune_missing = True,
+        deleted_message_ids = ["a1"],
+    )
+
+    assert {m["id"]: m["parentId"] for m in synced} == {
+        "a0": None,
+        "prompt": "a0",
+        "report": "prompt",
+    }
 
 
 def test_a_relink_to_a_surviving_message_that_is_not_the_ancestor_is_ignored(tmp_path, monkeypatch):

@@ -4426,16 +4426,25 @@ def sync_chat_messages(
         pruned: set = set()
         unseen_ids: set = set()
         if prune_missing:
-            unseen_ids = {
-                str(row["id"])
-                for row in conn.execute(
-                    "SELECT id FROM chat_messages WHERE thread_id = ?",
-                    (thread_id,),
-                ).fetchall()
-            } - requested_ids
+            stored_rows = conn.execute(
+                "SELECT id, parent_id, role FROM chat_messages WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+            unseen_ids = {str(row["id"]) for row in stored_rows} - requested_ids
             pruned = unseen_ids - prune_protected_ids
             if explicitly_deleted_ids:
-                pruned &= explicitly_deleted_ids
+                # Deleting a user message also deletes its replies, including ones this window never saw.
+                deleted_user_ids = {
+                    str(row["id"]) for row in stored_rows if row["role"] == "user"
+                } & explicitly_deleted_ids
+                pruned &= explicitly_deleted_ids | (
+                    {
+                        str(row["id"])
+                        for row in stored_rows
+                        if row["role"] == "assistant" and row["parent_id"] in deleted_user_ids
+                    }
+                    - managed_ids
+                )
         protected = generation_ids if allow_research_update else managed_ids
         messages = [
             m
