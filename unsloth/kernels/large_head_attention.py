@@ -6,7 +6,8 @@
 # https://github.com/axolotl-ai-cloud/axolotl); this one reads GQA kv heads in place and
 # takes any mask whose allowed keys per row are one interval [lo, hi], lo and hi
 # non-decreasing down the rows (causal, packed, right padding, sliding window).
-# UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched.
+# UNSLOTH_HD512_ATTENTION=0 leaves SDPA untouched. On ROCm (gfx906 only) it is opt in with
+# UNSLOTH_HD512_ATTENTION=1.
 
 import os
 import sys
@@ -26,10 +27,30 @@ __all__ = [
 LARGE_HEAD_ENGAGED = {"calls": 0, "fallback": 0}
 _SUPPORTED_HEAD_DIMS = (512,)
 _INT32_MAX = 2**31 - 1
+# ROCm archs the kernel was validated on, by gcnArchName. HIP reports the gfx major as the
+# capability (gfx906 -> 9), so the sm80 rule would admit every AMD GPU.
+_ROCM_ARCHS = ("gfx906",)
+
+
+def _rocm_arch_allowed(device):
+    try:
+        arch = torch.cuda.get_device_properties(device).gcnArchName
+    except Exception:
+        return False
+    return str(arch).split(":", 1)[0].strip().lower() in _ROCM_ARCHS
+
+
+def _rocm_allowlisted_device():
+    if torch.version.hip is None:
+        return False
+    try:
+        return any(_rocm_arch_allowed(i) for i in range(torch.cuda.device_count()))
+    except Exception:
+        return False
 
 
 def _fwd_configs():
-    return [
+    configs = [
         triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps = w, num_stages = s)
         for bm, bn, w, s in (
             (32, 32, 4, 1),
@@ -38,10 +59,18 @@ def _fwd_configs():
             (16, 16, 4, 1),
         )
     ]
+    if _rocm_allowlisted_device():
+        # gfx906 (no matrix cores, 64 KiB LDS): a taller query block timed fastest on an MI50.
+        configs.append(
+            triton.Config(
+                {"BLOCK_M": 64, "BLOCK_N": 16, "waves_per_eu": 1}, num_warps = 4, num_stages = 2
+            )
+        )
+    return configs
 
 
 def _bwd_configs():
-    return [
+    configs = [
         triton.Config({"BLOCK_M": bm, "BLOCK_N": bn}, num_warps = w, num_stages = 1)
         for bm, bn, w in (
             (16, 32, 4),
@@ -50,6 +79,9 @@ def _bwd_configs():
             (16, 16, 4),
         )
     ]
+    if _rocm_allowlisted_device():
+        configs.append(triton.Config({"BLOCK_M": 64, "BLOCK_N": 32}, num_warps = 4, num_stages = 1))
+    return configs
 
 
 @triton.autotune(configs = _fwd_configs(), key = ["HEAD_DIM", "G"])
@@ -717,7 +749,18 @@ def _enabled():
     return _ENABLED[0]
 
 
-_enabled.cache_clear = lambda: _ENABLED.__setitem__(0, None)
+_ROCM_OPT_IN = [None]
+
+
+def _rocm_opted_in():
+    # gfx906 has no matrix cores: there the kernel is 4.5x to 6.4x slower than SDPA and only saves
+    # memory (SDPA ran out of memory at S 8192 on a 16 GB MI50), so ROCm needs an explicit "1".
+    if _ROCM_OPT_IN[0] is None:
+        _ROCM_OPT_IN[0] = os.environ.get("UNSLOTH_HD512_ATTENTION", "") == "1"
+    return _ROCM_OPT_IN[0]
+
+
+_enabled.cache_clear = lambda: (_ENABLED.__setitem__(0, None), _ROCM_OPT_IN.__setitem__(0, None))
 
 
 def _row_span(x):
@@ -761,6 +804,8 @@ _SELF_CHECK = {}
 def _measured_faster_on(device):
     # Timed faster than SDPA on sm80+ only. Pre-Ampere (T4) also lacks the shared memory for the
     # larger tiles and has no bf16, so it keeps SDPA without compiling or autotuning anything.
+    if torch.version.hip is not None:
+        return _rocm_opted_in() and _rocm_arch_allowed(device)
     try:
         return torch.cuda.get_device_capability(device)[0] >= 8
     except Exception:
@@ -894,7 +939,6 @@ def _make_router(original):
             and kwargs.get("position_bias", None) is None
             and kwargs.get("softcap", None) is None
             and not kwargs.get("output_attentions", False)
-            and torch.version.hip is None
             and _shapes_qualify(query, key, value)
             and not _autocast_dtype_differs(query)
             and not _math_sdpa_requested()
@@ -974,7 +1018,10 @@ def patch_large_head_attention(model = None):
     """Route transformers' `sdpa` attention through the large head kernel when a call
     qualifies; everything else reaches the previous `sdpa` function unchanged. With a
     model, only installs if one of its modules has head_dim > 256."""
-    if not _enabled() or not torch.cuda.is_available() or torch.version.hip is not None:
+    if not _enabled() or not torch.cuda.is_available():
+        return False
+    # ROCm: opt in, allowlisted archs only, so every other AMD setup keeps SDPA with nothing installed.
+    if torch.version.hip is not None and not (_rocm_opted_in() and _rocm_allowlisted_device()):
         return False
     if model is not None:
         head_dims = (getattr(m, "head_dim", 0) for m in model.modules())
