@@ -738,7 +738,6 @@ def test_restore_uploads_fix_up_stores_in_bounded_chunks(_clean, monkeypatch):
     assert fold.stats()["restored"] == 1
 
 
-
 def test_bf16_folds_only_when_opted_in(_clean, monkeypatch):
     """bf16 rounding of W + B @ A is less accurate than the unfolded path, so the default refuses it."""
     monkeypatch.delenv("UNSLOTH_LORA_FOLD_GENERATE", raising = False)
