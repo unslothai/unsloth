@@ -102,7 +102,9 @@ def flashinfer_unavailable(device: Any = None) -> Optional[str]:
         import torch
     except Exception as exc:  # noqa: BLE001
         return f"torch unavailable: {exc}"
-    if not torch.cuda.is_available() or getattr(torch.version, "hip", None):
+    from .rocm_bf16 import is_rocm_torch
+
+    if not torch.cuda.is_available() or is_rocm_torch(torch):
         return "needs an NVIDIA CUDA device"
     try:
         cap = tuple(torch.cuda.get_device_capability(device))
