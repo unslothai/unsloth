@@ -7086,10 +7086,7 @@ class VideoBackend:
                     memory_mode = memory_mode,
                     text_encoder_quant = text_encoder_quant,
                     base_repo = base,
-                    reclaimable_mib = _pipeline_device_mib(
-                        getattr(resident, "pipe", None),
-                        ordinal = _target_ordinal(target),
-                    ),
+                    reclaimable_mib = reclaimable,
                     hf_token = hf_token,
                     ltx25_dev = ltx25_dev,
                     device_memory_reader = _settled_once,

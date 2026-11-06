@@ -73,18 +73,14 @@ _TERMINAL_CANCELLED = "cancelled"
 _CANCEL_GRACE_S = 5.0
 
 
-# Shortest gap between polls a server log line can cause; also caps log-driven polling at 50/s.
+# Floor between a log line and the next poll; caps log-driven polling at 50/s.
 _LOG_WAKE_FLOOR_S = 0.02
 
 
 class _LogPacedWait:
-    """Sleeps between polls for ``interval`` (the fallback timer), cut short by a server log line.
-
-    sd-server logs no line at a job status flip or at the port bind, but it logs one just before each
-    (``generate_image completed``, then PNG encode; ``listening on``, then bind), so a line starts
-    follow-up polls at the floor, doubling (20, 40, 80 ms ...) until the timer cadence is back. The
-    HTTP status stays the only source of truth: a line only moves the next poll earlier.
-    """
+    """Sleeps ``interval`` between polls; a server log line cuts it short and starts polls at ``floor``,
+    doubling back to ``interval``. sd-server logs just before a status flip or port bind, not at it.
+    HTTP status stays the only source of truth."""
 
     def __init__(
         self,
@@ -108,7 +104,7 @@ class _LogPacedWait:
         else:
             woke = self._wake.wait(self._follow)
         if woke:
-            # Coalesce a burst of lines into one poll at least ``floor`` after the line.
+            # One poll per burst of lines.
             self._wake.clear()
             time.sleep(self._floor)
             self._wake.clear()
