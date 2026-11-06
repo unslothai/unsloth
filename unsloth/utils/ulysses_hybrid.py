@@ -243,10 +243,8 @@ _SHARD_LOCAL_KWARGS = (
 
 
 def _registry_caller(function, hops = 1):
-    """The function that looks up ALL_ATTENTION_FUNCTIONS for `function`: itself, or the one module-level function
-    a pure delegate calls. unsloth_zoo's compiled modules keep the Hugging Face body as `<Class>_forward` and the
-    class forward only calls it. A forward that calls several functions (Unsloth's fast forwards, which attend
-    themselves) is not a delegate, so a registry lookup in one of its helpers does not count. None otherwise."""
+    """`function` or the single function it delegates to (unsloth_zoo's compiled `<Class>_forward`) that reads
+    ALL_ATTENTION_FUNCTIONS, else None. A forward calling several functions is not a delegate (fast forwards)."""
     try:
         function = inspect.unwrap(function)
     except Exception:
@@ -299,7 +297,6 @@ def is_hf_registry_attention(module) -> bool:
 
 
 def _forward_globals(module) -> dict:
-    # The globals of the function that resolves eager_attention_forward (a compiled module's own copy).
     return getattr(_registry_caller(hf_attention_forward(module)), "__globals__", {})
 
 

@@ -276,9 +276,7 @@ def _attention_modules(model) -> list:
 
 
 def _uses_unsloth_attention(model, rl = False) -> bool:
-    """Every attention layer runs an Unsloth fast forward declared context parallel ready
-    (attention_dispatch.context_parallel_attention): run_attention owns the Ulysses exchange, ring replaces SDPA.
-    rl: declared for DPO / GRPO too."""
+    """Every attention layer runs a forward marked by context_parallel_attention (with rl: marked for DPO / GRPO)."""
     from .models.llama import running_forward
     from .utils.attention_dispatch import is_context_parallel_attention
 
@@ -392,8 +390,7 @@ class ContextParallelManager:
             for module, _ in _stateful_mixers(model):
                 if is_ulysses_gated_delta(module):
                     wrap_gated_delta_forward(module, get_cp_manager)
-            # Unsloth's fast forwards have their own Ulysses path (run_attention); every other Hugging Face attention layer
-            # runs its own attention function after the exchange.
+            # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
             generic = not _uses_unsloth_attention(model)
             for name, module in model.named_modules():
                 if name.endswith("self_attn") and (

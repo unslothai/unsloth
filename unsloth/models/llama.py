@@ -3423,8 +3423,7 @@ def runs_fast_forward(
 
 
 def running_forward(module, name = "forward"):
-    """The function `module` runs as its class `name`: the class attribute, or for pre_patch's gate the fast
-    forward it wraps on modules marked by mark_unsloth_fast_path (the gated original otherwise, None here)."""
+    """The function `module` runs as `name`; for pre_patch's gate, the wrapped fast forward only on marked modules."""
     method = getattr(type(module), name, None)
     method = getattr(method, "__func__", method)
     if getattr(method, "_unsloth_gated", False):

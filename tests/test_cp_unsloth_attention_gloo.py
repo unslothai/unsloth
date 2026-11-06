@@ -1,10 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Context parallel over Unsloth's own attention forwards: FastLanguageModel's fast Qwen3 attention (run_attention,
-which owns the Ulysses exchange) and FastModel's compiled attention (unsloth_zoo's class forward delegating to a
-module-level copy of the Hugging Face forward). Two gloo CPU ranks vs one process. The Triton RoPE / RMSNorm
-kernels are GPU-only, so the fast forward's kernel names are swapped for torch references here; the attention
-path (run_attention -> ulysses_attention -> SDPA) is the real one."""
+"""CP over the fast Qwen3 attention and unsloth_zoo's compiled attention: two gloo CPU ranks vs one process.
+GPU-only Triton RoPE / RMSNorm are swapped for torch references; the attention path is the real one."""
 
 import importlib
 import inspect
@@ -43,8 +40,7 @@ def _fast_class(cls, forward):
     return type(f"Fast{cls.__name__}", (cls,), {"forward": forward})
 
 
-# unsloth_zoo's compiler template: the HF forward body becomes a module-level `<Class>_forward`, and the class
-# forward only calls it (unsloth_compiled_cache/unsloth_compiled_module_qwen3.py).
+# unsloth_zoo's compiler template: the class forward only calls a module-level `<Class>_forward`.
 def _compiled_like(cls):
     modeling = sys.modules[cls.__module__]
     source = textwrap.dedent(inspect.getsource(cls.forward))
@@ -74,8 +70,6 @@ def _compile_like_model(model):
 
 
 class _Rotary:
-    """Unsloth's rotary cache API on CPU: tables of exactly the rows asked for."""
-
     def __init__(self, head_dim, theta):
         self.head_dim, self.theta, self.asked = head_dim, theta, []
 
@@ -176,7 +170,6 @@ def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
     lengths = [6, 7, 3] if packed else None
     positions = torch.arange(SEQ).expand(bsz, -1)
 
-    # One process: whole rows, or each packed document as its own row.
     pieces = [(0, SEQ)] if lengths is None else []
     start = 0
     for n in lengths or []:
@@ -245,9 +238,9 @@ def _fast_parity_worker(rank, world, kv_heads, packed, out_dir):
 @pytest.mark.parametrize(
     "kv_heads, packed",
     [
-        (2, False),  # GQA: 2 kv heads split over cp 2
+        (2, False),
         (1, False),  # 1 kv head replicated over cp 2
-        (2, True),  # packed documents: varlen lengths stay global after the exchange
+        (2, True),
     ],
 )
 def test_unsloth_fast_qwen3_attention_matches_one_process(kv_heads, packed):
@@ -276,13 +269,12 @@ _RL_REFUSAL = "DPO / GRPO context parallelism supports Unsloth's Llama-style att
 
 
 def test_rl_keeps_context_parallel_llama_only():
-    """The Qwen3 declaration opens SFTTrainer only: DPO / GRPO under cp keep the Llama-style rule until an RL
-    parity run on the fast Qwen3 attention exists."""
+    """Qwen3 is SFTTrainer only: DPO / GRPO need an RL parity run on the fast Qwen3 attention first."""
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
     from unsloth.models.llama import LlamaAttention_fast_forward
 
     qwen3 = _wrap(_fast_qwen3_attention(2))
-    cp._check_cp_model(qwen3, 2, "ulysses")  # SFTTrainer
+    cp._check_cp_model(qwen3, 2, "ulysses")
     with pytest.raises(NotImplementedError, match = _RL_REFUSAL):
         cp._check_cp_model(qwen3, 2, "ulysses", allow_hybrids = False)
     llama = _fast_qwen3_attention(2)
@@ -313,15 +305,14 @@ print("REAL_COMPILED_OK")
 
 
 def test_real_zoo_compiled_qwen3_attention_matches_one_process(tmp_path):
-    """unsloth_zoo's compiler output for the tiny Qwen3 (CPU), not a copy: pins the compiled class forward shape
-    and runs the generic Ulysses parity on it (sdpa rows / packed, eager)."""
+    """Real unsloth_zoo compiler output (not a copy): pins the class forward shape and runs Ulysses parity on it."""
     import os
     import subprocess
 
     pytest.importorskip("unsloth_zoo.compiler")
     generic._config("qwen3")
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # A fresh interpreter without this session's test-only CPU fallback switches (tests/conftest.py).
+    # Fresh interpreter: no test-only CPU fallback switches from tests/conftest.py.
     env = {k: v for k, v in os.environ.items() if k != "UNSLOTH_DISABLE_CPU_FALLBACK"}
     env.update(
         CUDA_VISIBLE_DEVICES = "",
