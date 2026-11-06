@@ -1205,8 +1205,12 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         name = "chroma",
         comfy_shift_node = "sd3",
         label = "Chroma",
-        # Quantized activations drift Chroma (fp8 letterboxes some seeds): fp8 and GGUF weights widen to bf16.
-        profile = FamilyProfile(scheme_deny = frozenset({"fp8", "int8", "nvfp4", "mxfp8"})),
+        # A ComfyUI fp8 file computes in fp8, as ComfyUI does (1.78x per step on RTX 6000 Ada). Auto never
+        # re-quantizes bf16 or GGUF weights, which ComfyUI runs unquantized; an explicit fp8 / int8 request is kept.
+        profile = FamilyProfile(
+            scheme_deny = frozenset({"nvfp4", "mxfp8"}),
+            auto_scheme_skip = frozenset({"fp8", "int8"}),
+        ),
         pipeline_class = "ChromaPipeline",
         transformer_class = "ChromaTransformer2DModel",
         base_repo = "lodestones/Chroma1-HD",
