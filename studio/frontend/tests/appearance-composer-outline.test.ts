@@ -47,7 +47,7 @@ test("a set outline reaches every composer, and 0 drops the glass edge too", () 
   // !important: the glass composer rules are more specific and would otherwise keep their 14% ring.
   assert.match(css, /html\[data-composer-outline="on"\] :is\(\.unsloth-composer-surface, \.wallpaper-preview-composer\) \{\s*--composer-shadow: inset 0 0 0 1px [^;]*var\(--composer-outline\)[^;]*!important;/);
   // macOS glass has no background image, so its 14% ring needs its own selector.
-  assert.match(css, /html\[data-glass="macos"\]\[data-composer-outline="off"\] \.unsloth-composer-surface,[^{]*\.chat-wallpaper\[data-ready\]\) \.unsloth-composer-surface,[^{]*\{\s*--composer-shadow: none !important;/);
+  assert.match(css, /html\[data-glass="macos"\]\[data-composer-outline="off"\] \.unsloth-composer-surface,[^{]*\[data-wallpaper-ready\]\[data-wallpaper-ready\] \.unsloth-composer-surface,[^{]*\{\s*--composer-shadow: none !important;/);
   assert.match(css, /var\(--composer-outline, var\(--wallpaper-outline, 30%\)\)/);
 });
 
