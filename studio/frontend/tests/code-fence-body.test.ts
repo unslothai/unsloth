@@ -413,3 +413,18 @@ test("a capped block colours only what is in view and a streaming one follows it
   assert.match(pin, /body\.scrollTop = saved\.atBottom \? body\.scrollHeight : saved\.top;/);
   assert.match(DEFER, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown", "pointerdown"\] as const;/);
 });
+
+test("Expand code resumes colouring a capped block that had stopped at its view", () => {
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
+  assert.match(hook, /if \(next === null \|\| !lineWindowColoured\(tokens, progress, next\)\) setScrolled/);
+  assert.match(hook, /new ResizeObserver\(recheck\)/);
+  assert.match(hook, /resized\?\.observe\(body\);/);
+});
+
+test("only a finished body mounting right after a stream takes its scroll place, once", () => {
+  const pin = DEFER.slice(DEFER.indexOf("type BodyScroll"), DEFER.indexOf("export const FenceBody = memo("));
+  assert.match(pin, /if \(streamedRef\.current\) rememberBodyScroll\(keyRef\.current, body\);/);
+  assert.match(pin, /const saved = streamedRef\.current \? undefined : takeBodyScroll\(keyRef\.current\);/);
+  assert.match(pin, /bodyScrolls\.delete\(key\);\s*return saved !== undefined && performance\.now\(\) - saved\.at < JUST_STREAMED_MS/);
+  assert.equal(pin.match(/rememberBodyScroll\(/g)?.length, 1);
+});
