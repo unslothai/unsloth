@@ -104,7 +104,6 @@ class _LogPacedWait:
         else:
             woke = self._wake.wait(self._follow)
         if woke:
-            # One poll per burst of lines.
             self._wake.clear()
             time.sleep(self._floor)
             self._wake.clear()
@@ -461,7 +460,6 @@ class SdCppServer:
                 self._wake_pollers()
         except Exception:  # noqa: BLE001 -- drain thread must never raise (pipe closed at teardown)
             pass
-        # EOF: the process is exiting, so a waiting poll can notice it now.
         self._wake_pollers()
 
     def _wake_pollers(self) -> None:

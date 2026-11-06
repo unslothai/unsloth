@@ -58,7 +58,6 @@ def _backend(monkeypatch, *, scheme, resident_mib):
             device = "cuda", dtype = torch.bfloat16, ordinal = None, supports_model_cpu_offload = True
         ),
     )
-    # The sizes table, never the hub.
     monkeypatch.setattr(
         dcs, "video_components_gb", lambda fam, base, **kw: tuple(fam.bf16_components_gb)
     )
@@ -136,7 +135,6 @@ def test_planner_decisions_match_the_two_settle_planner(
                 card.free_mib, card.total_mib = free * MIB_PER_GIB, total * MIB_PER_GIB
                 main.append((total, free, _plan(backend, fam, requested)))
     assert head == main
-    # The matrix exercises every outcome the planner has, not one constant answer.
     if requested in ("auto", None) and scheme == "fp8" and resident_mib == 0:
         outcomes = {d for _t, _f, d in head}
         assert outcomes == {None, vid.DENOISER_SEED_DECLINED, "fp8"}, outcomes
