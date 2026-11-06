@@ -895,3 +895,20 @@ def test_chart_titles_name_the_headline_metric():
     assert _metric_title([gsm, arc], "__accuracy__") == "Score"
     assert _metric_title([{"default_metric": ""}], "__accuracy__") == "Score"
     assert _metric_title([gsm], "f1,none") == "f1,none"
+
+
+def test_an_eval_refuses_internal_model_swaps(monkeypatch):
+    # Auto-switch and preview swap the server without going through LOAD_PATHS.
+    from routes import benchmarks as lease_routes
+
+    monkeypatch.setattr(lease_routes, "_lease", None)
+    backend = _orchestrator(monkeypatch, lambda params: {"results": {}})
+    monkeypatch.setattr(orch, "_orchestrator", backend)
+    request = SimpleNamespace(headers = {})
+    lease_routes.refuse_if_sweep_holds(request)
+    seq = backend.try_begin()
+    with pytest.raises(benchmark_routes.HTTPException) as exc:
+        lease_routes.refuse_if_sweep_holds(request)
+    assert exc.value.status_code == 409 and exc.value.detail == lease_routes.EVAL_BUSY_DETAIL
+    backend.release(seq)
+    lease_routes.refuse_if_sweep_holds(request)
