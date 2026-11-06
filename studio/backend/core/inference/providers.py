@@ -1091,8 +1091,12 @@ def list_available_providers(
             continue
         if info.get("auth_kind") == "chatgpt_oauth" and not (include_hidden or include_oauth):
             continue
-        if provider_type == "claude_agent" and not claude_agent_available():
-            continue
+        turned_off = False
+        if provider_type == "claude_agent":
+            # The owner sees it while off, so Add connection can offer to turn it on.
+            if _managed_account_caller():
+                continue
+            turned_off = not claude_agent_enabled()
         result.append(
             {
                 "provider_type": provider_type,
@@ -1109,6 +1113,7 @@ def list_available_providers(
                 "auth_kind": info.get("auth_kind", "api_key"),
                 "base_url_editable": info.get("base_url_editable", True),
                 "model_ids_editable": info.get("model_ids_editable", True),
+                "available_but_off": turned_off,
             }
         )
     return result

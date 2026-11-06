@@ -17,7 +17,7 @@ from utils.paths.storage_roots import cache_root
 PROVIDER_TYPE = "claude_agent"
 SDK_MISSING = (
     "Install the Claude Agent SDK in the Unsloth environment: "
-    f'uv pip install --python "{sys.executable}" "claude-agent-sdk>=0.2.178"'
+    f'uv pip install --python "{sys.executable}" --no-binary claude-agent-sdk "claude-agent-sdk==0.2.178"'
 )
 CLI_MISSING = "Install Claude Code, then run `claude` in a terminal and sign in."
 SIGN_IN = "Run `claude` in a terminal and sign in."
@@ -107,6 +107,8 @@ def _model_object(entry: dict[str, Any]) -> dict[str, Any]:
     return {
         "id": entry["value"],
         "display_name": entry.get("displayName") or entry["value"],
+        # An alias like "opus" follows the newest model; a full id is pinned.
+        "alias": entry.get("resolvedModel") not in (None, entry["value"]),
         "efforts": [effort for effort in efforts or [] if effort in EFFORTS],
         "thinking_off": bool(entry.get("supportsThinkingOff")),
         "context_window": entry.get("context_window"),
@@ -205,19 +207,20 @@ async def claude_agent_status() -> dict[str, Any]:
         "account": None,
         "models": [],
         "message": None,
+        "problem": None,
     }
     sdk = _sdk()
     if sdk is None:
-        status["message"] = SDK_MISSING
+        status.update(message = SDK_MISSING, problem = "sdk_missing")
         return status
     cli = shutil.which("claude")
     if cli is None:
-        status["message"] = CLI_MISSING
+        status.update(message = CLI_MISSING, problem = "cli_missing")
         return status
     try:
         info = await _probe(sdk, cli, discover = [])
     except (sdk.ClaudeSDKError, asyncio.TimeoutError) as exc:
-        status["message"] = f"Claude Code did not start: {exc or 'timed out'}"
+        status.update(message = f"Claude Code did not start: {exc or 'timed out'}", problem = "failed")
         return status
     account = info.get("account") or {}
     status["version"] = info.get("claude_code_version")
@@ -228,7 +231,7 @@ async def claude_agent_status() -> dict[str, Any]:
     if status["ready"]:
         status["account"] = _account_label(account) or "Claude account"
     else:
-        status["message"] = SIGN_IN
+        status.update(message = SIGN_IN, problem = "signed_out")
     return status
 
 

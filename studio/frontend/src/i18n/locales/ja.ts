@@ -1930,6 +1930,13 @@ export const ja = {
         ramUnknown: "最小の動画モデルは CPU で約 {min} GB の RAM が必要で、より大きなモデルはさらに多くを必要とします。",
         performanceEstimate: "ノイズ除去 1 ステップあたり数分かかります。Wan2.1 1.3B で 3 ステップ、5 フレームの 832x480 クリップは 16 CPU スレッドで約 4 分かかり、デフォルト設定のフルレングスのクリップでは数時間かかることがあります。",
         confirmAction: "それでも有効にする",
+        claudeAgent: "Claude Agent (実験的)",
+        claudeAgentDescription:
+          "このマシンの Claude Code のログイン情報を使う Claude Agent 接続を追加します。実験的な機能です。サードパーティ製アプリに関する Anthropic の規約が適用されます。",
+        claudeAgentForcedOnByEnv:
+          "バックエンド環境の UNSLOTH_CLAUDE_AGENT によってオンになっています。",
+        claudeAgentForcedOffByEnv:
+          "バックエンド環境の UNSLOTH_CLAUDE_AGENT によってオフになっています。",
         loadError: "開発者モードの設定を読み込めませんでした。",
         saveError: "開発者モードの設定を保存できませんでした。",
       },
@@ -5465,8 +5472,59 @@ export const ja = {
     update: "更新",
     undo: "元に戻す",
   },
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "実験的",
+    connectionHint: "このマシンの Claude Code を介した Claude。",
+    intro:
+      "このマシンの Claude Code のログイン情報を使用します。Unsloth がそれを読み取ったり保存したりすることはありません。",
+    offBody:
+      "Claude Agent は、このマシンの Claude Code CLI を介し、お使いの Claude プランまたは API キーでチャットします。これは実験的な機能で、サードパーティ製アプリに関する Anthropic の規約が適用されます。",
+    turnOn: "オンにする",
+    turningOn: "オンにしています...",
+    forcedOff:
+      "バックエンド環境の UNSLOTH_CLAUDE_AGENT によってオフになっています。設定を解除するか 1 に設定してから、Unsloth を再起動してください。",
+    checking: "このマシンの Claude Code を確認中...",
+    ready: "準備完了",
+    notReady: "Claude Code はまだ準備ができていません",
+    stepInstall: "Claude Code をインストール",
+    stepInstallHelp:
+      "Unsloth を実行しているマシンのターミナルでこれを実行してください。",
+    stepInstallNpm: "または Node.js を使う場合:",
+    stepInstallOther: "その他のインストール方法",
+    stepSignIn: "サインイン",
+    stepSignInHelp:
+      "ターミナルでこれを実行し、表示される指示に従ってください。",
+    stepCheck: "もう一度確認",
+    stepCheckHelp: "この画面に戻ると自動的にもう一度確認します。",
+    sdkMissing:
+      "Unsloth の Python に Claude Agent SDK がありません。この接続を修復するにはインストールしてください。",
+    sdkManual: "または手動でインストール:",
+    install: "インストール",
+    installing:
+      "Claude Agent SDK をインストール中です。数分かかる場合があります...",
+    checkFailed: "Claude Code を確認できませんでした。",
+    checkAgain: "もう一度確認",
+    models: "モデル",
+    modelsSelected: "{count} 件選択中",
+    moreModels: "その他のモデル",
+    advanced: "詳細設定",
+    extraModels: "別のモデル ID を追加",
+    extraModelsHelp:
+      "1 行に 1 つ、またはカンマ区切りで、Claude Code での名前どおりに入力します。",
+    maxTokens: "Max Tokens の上限",
+    maxTokensHelp:
+      "この接続の Max Tokens を制限します。空欄にすると各モデルの上限を使用します。",
+    connect: "接続",
+    save: "接続を保存",
+    cancel: "キャンセル",
+    pickModel: "モデルを 1 つ以上選択してください。",
+    copy: "コピー",
+    copied: "コピーしました",
+  },
   generationStats: {
     working: "処理中...",
+    startingClaude: "Claude を起動中...",
     processingPrompt: "プロンプトを処理中 {percent}%",
     compactingContext: "コンテキストを圧縮中...",
     timeLeft: "残り {eta}",

@@ -55,7 +55,8 @@ import { useSettingsDialogStore } from "@/features/settings";
 import { useT } from "@/i18n";
 import { ApiProviderLogo } from "./api-provider-logo";
 
-import { ClaudeAgentStatusCard } from "./claude-agent-status";
+import { connectionModelLabel, useClaudeAgentModelNames } from "./claude-agent";
+import { ClaudeAgentSetup, ClaudeExperimentalBadge } from "./claude-agent-status";
 import { OpenAICodexConnect } from "./openai-codex-connect";
 import {
   type CodexSubscriptionModels,
@@ -413,6 +414,9 @@ export function ChatProvidersSettings({
 
   const isCodexSubscription = usesOAuth;
   const isClaudeAgent = providerType === CLAUDE_AGENT_PROVIDER_TYPE;
+  const claudeAgentOff =
+    registryByType.get(CLAUDE_AGENT_PROVIDER_TYPE)?.available_but_off === true;
+  const claudeAgentNames = useClaudeAgentModelNames((state) => state.names);
   const modelIdsEditable =
     selectedProviderContract?.model_ids_editable !== false;
   const showApiKeyField =
@@ -1468,6 +1472,91 @@ export function ChatProvidersSettings({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openProviderId, providers, providersReady, onOpenProviderConsumed]);
 
+  async function refreshAfterClaudeAgentTurnedOn() {
+    const [registryRows, synced] = await Promise.all([
+      listProviderRegistry(),
+      syncExternalProvidersFromBackend(providersRef.current),
+    ]);
+    setRegistry(registryRows.filter((entry) => !entry.hidden));
+    providersRef.current = synced;
+    onProvidersChange(synced);
+  }
+
+  async function saveClaudeAgent(models: string[], maxTokensDraft: string) {
+    const parseTime = (value: string) =>
+      Number.isFinite(Date.parse(value)) ? Date.parse(value) : Date.now();
+    setMutatingProvider(true);
+    try {
+      const maxOutputTokens = parseMaxOutputTokens(maxTokensDraft);
+      const existing = editingProviderId
+        ? useExternalProvidersStore
+            .getState()
+            .providers.find((provider) => provider.id === editingProviderId)
+        : undefined;
+      if (editingProviderId && !existing) throw new Error("Connection not found.");
+      let saved: ExternalProviderConfig;
+      if (existing) {
+        const updated = await updateProviderConfig(existing.id, {
+          models,
+          availableModels: [],
+          maxOutputTokens,
+        });
+        saved = {
+          ...existing,
+          models,
+          availableModels: [],
+          maxOutputTokens: updated.max_output_tokens ?? undefined,
+          updatedAt: parseTime(updated.updated_at),
+        };
+      } else {
+        const created = await createProviderConfig({
+          providerType: CLAUDE_AGENT_PROVIDER_TYPE,
+          displayName:
+            registryByType.get(CLAUDE_AGENT_PROVIDER_TYPE)?.display_name ??
+            t("claudeAgent.title"),
+          baseUrl: null,
+          models,
+          availableModels: [],
+          maxOutputTokens,
+          apiKey: "",
+        });
+        saved = {
+          id: created.id,
+          providerType: CLAUDE_AGENT_PROVIDER_TYPE,
+          backendProviderType: created.provider_type,
+          name: created.display_name,
+          baseUrl: "",
+          ...connectionApiFields(created.api_type),
+          models,
+          availableModels: [],
+          maxOutputTokens: created.max_output_tokens ?? undefined,
+          extraHeaders: created.extra_headers ?? {},
+          hasApiKey: created.has_api_key,
+          shared: false,
+          authKind: created.auth_kind,
+          authStatus: created.auth_status,
+          createdAt: parseTime(created.created_at),
+          updatedAt: parseTime(created.updated_at),
+        };
+      }
+      const current = useExternalProvidersStore.getState().providers;
+      onProvidersChange(
+        existing
+          ? current.map((provider) => (provider.id === saved.id ? saved : provider))
+          : [...current.filter((provider) => provider.id !== saved.id), saved],
+      );
+      toast.success(existing ? "Connection updated." : "Claude Agent connected.");
+      resetForm();
+      autoOpenedAddFormRef.current = true;
+      setPage("list");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error";
+      toast.error(`Failed to save connection: ${message}`);
+    } finally {
+      setMutatingProvider(false);
+    }
+  }
+
   async function deleteProvider(providerId: string) {
     setMutatingProvider(true);
     try {
@@ -1597,7 +1686,9 @@ export function ChatProvidersSettings({
                     Connection
                   </Label>
                   <p className="text-xs leading-snug text-muted-foreground">
-                    OpenAI, Anthropic, or a compatible local endpoint.
+                    {isClaudeAgent
+                      ? t("claudeAgent.connectionHint")
+                      : "OpenAI, Anthropic, or a compatible local endpoint."}
                   </p>
                 </div>
                 <Select
@@ -1661,6 +1752,9 @@ export function ChatProvidersSettings({
                               <span className="truncate">
                                 {entry.provider_type === "opencode" ? "OpenCode" : entry.display_name}
                               </span>
+                              {entry.provider_type === CLAUDE_AGENT_PROVIDER_TYPE ? (
+                                <ClaudeExperimentalBadge />
+                              ) : null}
                             </span>
                           </SelectItem>
                         ))}
@@ -1669,6 +1763,7 @@ export function ChatProvidersSettings({
                 </Select>
               </div>
 
+              {isClaudeAgent ? null : (<>
               {isOpenCodeProviderType(providerType) ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-start gap-4 px-4 py-3 @max-[520px]:grid-cols-1">
                   <div className="flex min-w-0 flex-col gap-0.5">
@@ -2075,12 +2170,22 @@ export function ChatProvidersSettings({
                   </p>
                 </div>
               ) : null}
+              </>)}
             </div>
           </section>
 
-
-          {isClaudeAgent ? <ClaudeAgentStatusCard /> : null}
-
+          {isClaudeAgent ? (
+            <ClaudeAgentSetup
+              key={editingProviderId ?? "new"}
+              savedModels={editingProvider ? editingProvider.models : null}
+              savedMaxOutputTokens={maxOutputTokensDraft}
+              off={claudeAgentOff}
+              saving={mutatingProvider}
+              onTurnedOn={refreshAfterClaudeAgentTurnedOn}
+              onSave={(models, maxTokens) => void saveClaudeAgent(models, maxTokens)}
+              onCancel={closeForm}
+            />
+          ) : (<>
           {isCodexSubscription ? (
             <OpenAICodexConnect
               providerId={editingProviderId}
@@ -2422,6 +2527,7 @@ export function ChatProvidersSettings({
               </Button>
             </div>
           </div>
+          </>)}
         </div>
       </div>
     );
@@ -2491,7 +2597,10 @@ export function ChatProvidersSettings({
                 const providerLabel =
                   registryEntry?.display_name ??
                   customProviderDisplayName(provider.providerType);
-                const modelSummary = formatModelSummary(provider.models);
+                const modelLabels = provider.models.map((model) =>
+                  connectionModelLabel(provider.providerType, model, claudeAgentNames),
+                );
+                const modelSummary = formatModelSummary(modelLabels);
                 return (
                   <div
                     key={provider.id}
@@ -2536,7 +2645,7 @@ export function ChatProvidersSettings({
                         </div>
                         <div
                           className="mt-1 truncate text-ui-11 leading-4 text-muted-foreground/80"
-                          title={provider.models.join(", ")}
+                          title={modelLabels.join(", ")}
                         >
                           {modelSummary}
                         </div>

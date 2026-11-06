@@ -2106,6 +2106,13 @@ export const fa = {
         performanceEstimate:
           "برای هر گام نویززدایی چند دقیقه زمان در نظر بگیرید: یک کلیپ 5 فریمی 832x480 از Wan2.1 1.3B با 3 گام روی 16 رشتهٔ CPU حدود 4 دقیقه طول کشید و یک کلیپ کامل با تنظیمات پیش‌فرض ممکن است ساعت‌ها طول بکشد.",
         confirmAction: "در هر صورت فعال شود",
+        claudeAgent: "Claude Agent (آزمایشی)",
+        claudeAgentDescription:
+          "یک اتصال Claude Agent اضافه می‌کند که از ورود Claude Code روی این رایانه استفاده می‌کند. آزمایشی است؛ شرایط Anthropic برای برنامه‌های شخص ثالث اعمال می‌شود.",
+        claudeAgentForcedOnByEnv:
+          "با UNSLOTH_CLAUDE_AGENT در محیط بک‌اند روشن شده است.",
+        claudeAgentForcedOffByEnv:
+          "با UNSLOTH_CLAUDE_AGENT در محیط بک‌اند خاموش شده است.",
         loadError: "بارگذاری تنظیمات حالت توسعه‌دهنده ناموفق بود.",
         saveError: "ذخیرهٔ تنظیمات حالت توسعه‌دهنده ناموفق بود.",
       },
@@ -5890,8 +5897,57 @@ export const fa = {
     update: "به‌روزرسانی",
     undo: "واگرد",
   },
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "آزمایشی",
+    connectionHint: "Claude از طریق Claude Code روی این رایانه.",
+    intro:
+      "از ورود Claude Code روی این رایانه استفاده می‌کند. Unsloth هرگز آن را نمی‌خواند یا ذخیره نمی‌کند.",
+    offBody:
+      "Claude Agent از طریق رابط خط فرمان Claude Code روی این رایانه، با اشتراک Claude یا کلید API شما گفتگو می‌کند. این قابلیت آزمایشی است و شرایط Anthropic برای برنامه‌های شخص ثالث بر آن اعمال می‌شود.",
+    turnOn: "روشن کردن",
+    turningOn: "در حال روشن کردن...",
+    forcedOff:
+      "با UNSLOTH_CLAUDE_AGENT در محیط بک‌اند خاموش شده است. آن را حذف کنید یا روی 1 بگذارید، سپس Unsloth را دوباره راه‌اندازی کنید.",
+    checking: "در حال بررسی Claude Code روی این رایانه...",
+    ready: "آماده",
+    notReady: "Claude Code هنوز آماده نیست",
+    stepInstall: "Claude Code را نصب کنید",
+    stepInstallHelp:
+      "این را در ترمینال رایانه‌ای که Unsloth را اجرا می‌کند اجرا کنید.",
+    stepInstallNpm: "یا با Node.js:",
+    stepInstallOther: "روش‌های دیگر نصب",
+    stepSignIn: "وارد شوید",
+    stepSignInHelp: "این را در ترمینال اجرا کنید و دستورها را دنبال کنید.",
+    stepCheck: "بررسی دوباره",
+    stepCheckHelp: "وقتی به اینجا برگردید، بررسی خودکار دوباره انجام می‌شود.",
+    sdkMissing:
+      "Claude Agent SDK در Python مربوط به Unsloth وجود ندارد. برای تعمیر این اتصال آن را نصب کنید.",
+    sdkManual: "یا آن را دستی نصب کنید:",
+    install: "نصب",
+    installing: "در حال نصب Claude Agent SDK. ممکن است چند دقیقه طول بکشد...",
+    checkFailed: "بررسی Claude Code ممکن نشد.",
+    checkAgain: "بررسی دوباره",
+    models: "مدل‌ها",
+    modelsSelected: "{count} انتخاب شده",
+    moreModels: "مدل‌های بیشتر",
+    advanced: "پیشرفته",
+    extraModels: "افزودن شناسهٔ مدل دیگر",
+    extraModelsHelp:
+      "هر کدام در یک خط یا جداشده با ویرگول، همان‌طور که Claude Code آن‌ها را نام‌گذاری می‌کند.",
+    maxTokens: "سقف Max Tokens",
+    maxTokensHelp:
+      "Max Tokens را برای این اتصال محدود می‌کند. برای استفاده از سقف هر مدل، خالی بگذارید.",
+    connect: "اتصال",
+    save: "ذخیرهٔ اتصال",
+    cancel: "لغو",
+    pickModel: "دست‌کم یک مدل انتخاب کنید.",
+    copy: "کپی",
+    copied: "کپی شد",
+  },
   generationStats: {
     working: "در حال انجام...",
+    startingClaude: "در حال راه‌اندازی Claude...",
     processingPrompt: "پردازش پرامپت {percent}%",
     compactingContext: "در حال فشرده‌سازی زمینه...",
     timeLeft: "{eta} مانده",

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Install the optional Claude Agent SDK into Studio's own Python when the owner asks for it."""
+"""Repair a missing Claude Agent SDK (installs older than its requirements entry) from its sdist."""
 
 import importlib
 from importlib.metadata import distributions
@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 
@@ -20,8 +21,13 @@ from utils.s3_runtime import _INSTALL_ENV_KEYS, _find_uv
 from utils.subprocess_compat import windows_hidden_subprocess_kwargs
 from utils.utils import hf_env_offline
 
-SDK_REQUIREMENT = "claude-agent-sdk>=0.2.178"
-MANUAL_COMMAND = f'uv pip install --python "{sys.executable}" "{SDK_REQUIREMENT}"'
+SDK_PACKAGE = "claude-agent-sdk"
+SDK_REQUIREMENT = f"{SDK_PACKAGE}==0.2.178"
+# Every wheel bundles a ~150 MB Claude Code CLI that Studio never runs, so only the sdist is allowed.
+SDK_SOURCE_ONLY = ("--no-binary", SDK_PACKAGE)
+MANUAL_COMMAND = (
+    f'uv pip install --python "{sys.executable}" --no-binary {SDK_PACKAGE} "{SDK_REQUIREMENT}"'
+)
 _INSTALL_SECONDS = 300
 _URL_USERINFO = re.compile(r"(\b[a-z][a-z0-9+.-]*://)[^/\s@'\"]+@", re.IGNORECASE)
 logger = logging.getLogger(__name__)
@@ -60,6 +66,22 @@ def _installer_reason(exc: subprocess.CalledProcessError) -> str:
     )
 
 
+def _installed_pins() -> str:
+    # Only the environment uv installs into; a stale or shadowing copy elsewhere would pin a package twice.
+    paths = list(dict.fromkeys(sysconfig.get_paths()[key] for key in ("purelib", "platlib")))
+    versions: dict[str, set[str]] = {}
+    names: dict[str, str] = {}
+    for dist in distributions(path = paths):
+        name = dist.metadata["Name"]
+        if name:
+            key = re.sub(r"[-_.]+", "-", name).lower()
+            names.setdefault(key, name)
+            versions.setdefault(key, set()).add(dist.version)
+    return "".join(
+        f"{names[key]}=={next(iter(found))}\n" for key, found in versions.items() if len(found) == 1
+    )
+
+
 def ensure_claude_agent_sdk():
     sdk = _import_sdk()
     if sdk is not None:
@@ -82,12 +104,7 @@ def ensure_claude_agent_sdk():
             with tempfile.TemporaryDirectory(prefix = "unsloth-claude-agent-") as staging:
                 # Never upgrade a package Studio already runs on.
                 constraints = Path(staging) / "constraints.txt"
-                constraints.write_text(
-                    "".join(
-                        f"{dist.metadata['Name']}=={dist.version}\n" for dist in distributions()
-                    ),
-                    encoding = "utf-8",
-                )
+                constraints.write_text(_installed_pins(), encoding = "utf-8")
                 uv = _find_uv()
                 command = (
                     [uv, "pip", "install", "--python", sys.executable, "--no-config"]
@@ -104,6 +121,7 @@ def ensure_claude_agent_sdk():
                 command += [
                     "--only-binary",
                     ":all:",
+                    *SDK_SOURCE_ONLY,
                     "--constraint",
                     str(constraints),
                     "--index-url",

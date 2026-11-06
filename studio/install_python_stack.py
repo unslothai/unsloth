@@ -7995,6 +7995,7 @@ NO_TORCH_SKIP_PACKAGES = {
 }
 
 # No wheel on PyPI at any version, so always built from source (antlr4 arrives via omegaconf).
+# claude-agent-sdk has wheels, but each bundles a ~150 MB Claude Code CLI Studio never runs.
 # A package-scoped --no-binary keeps a user's binary-only policy everywhere else.
 # Keep in sync with .github/scripts/clean-machine-assert.sh and .github/scripts/assert-nobuild.ps1.
 SDIST_ONLY_PACKAGES = (
@@ -8002,6 +8003,7 @@ SDIST_ONLY_PACKAGES = (
     "argbind",
     "randomname",
     "antlr4-python3-runtime",
+    "claude-agent-sdk",
 )
 
 

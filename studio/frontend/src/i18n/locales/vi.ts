@@ -2121,6 +2121,13 @@ export const vi = {
         performanceEstimate:
           "Mỗi bước khử nhiễu có thể mất vài phút: một đoạn 5 khung hình 832x480 từ Wan2.1 1.3B với 3 bước mất khoảng 4 phút trên 16 luồng CPU, và một đoạn đầy đủ với cài đặt mặc định có thể mất hàng giờ.",
         confirmAction: "Vẫn bật",
+        claudeAgent: "Claude Agent (thử nghiệm)",
+        claudeAgentDescription:
+          "Thêm kết nối Claude Agent dùng thông tin đăng nhập Claude Code trên máy này. Thử nghiệm; áp dụng điều khoản của Anthropic dành cho ứng dụng bên thứ ba.",
+        claudeAgentForcedOnByEnv:
+          "Được bật bởi UNSLOTH_CLAUDE_AGENT trong môi trường backend.",
+        claudeAgentForcedOffByEnv:
+          "Bị tắt bởi UNSLOTH_CLAUDE_AGENT trong môi trường backend.",
         loadError: "Không thể tải cài đặt Chế độ nhà phát triển.",
         saveError: "Không thể lưu cài đặt Chế độ nhà phát triển.",
       },
@@ -5922,8 +5929,58 @@ export const vi = {
     update: "Cập nhật",
     undo: "Hoàn tác",
   },
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "Thử nghiệm",
+    connectionHint: "Claude qua Claude Code trên máy này.",
+    intro:
+      "Dùng thông tin đăng nhập Claude Code trên máy này. Unsloth không bao giờ đọc hay lưu trữ thông tin đó.",
+    offBody:
+      "Claude Agent trò chuyện qua Claude Code CLI trên máy này, bằng gói Claude hoặc khóa API của bạn. Tính năng này đang thử nghiệm và tuân theo điều khoản của Anthropic dành cho ứng dụng bên thứ ba.",
+    turnOn: "Bật",
+    turningOn: "Đang bật...",
+    forcedOff:
+      "Bị tắt bởi UNSLOTH_CLAUDE_AGENT trong môi trường backend. Hãy bỏ đặt biến này hoặc đặt thành 1, rồi khởi động lại Unsloth.",
+    checking: "Đang kiểm tra Claude Code trên máy này...",
+    ready: "Sẵn sàng",
+    notReady: "Claude Code chưa sẵn sàng",
+    stepInstall: "Cài đặt Claude Code",
+    stepInstallHelp:
+      "Hãy chạy lệnh này trong terminal trên máy đang chạy Unsloth.",
+    stepInstallNpm: "Hoặc dùng Node.js:",
+    stepInstallOther: "Các cách cài đặt khác",
+    stepSignIn: "Đăng nhập",
+    stepSignInHelp: "Hãy chạy lệnh này trong terminal và làm theo hướng dẫn.",
+    stepCheck: "Kiểm tra lại",
+    stepCheckHelp: "Mục này sẽ tự kiểm tra lại khi bạn quay lại đây.",
+    sdkMissing:
+      "Python của Unsloth đang thiếu Claude Agent SDK. Hãy cài đặt để sửa kết nối này.",
+    sdkManual: "Hoặc cài đặt thủ công:",
+    install: "Cài đặt",
+    installing:
+      "Đang cài đặt Claude Agent SDK. Việc này có thể mất vài phút...",
+    checkFailed: "Không thể kiểm tra Claude Code.",
+    checkAgain: "Kiểm tra lại",
+    models: "Mô hình",
+    modelsSelected: "Đã chọn {count}",
+    moreModels: "Thêm mô hình",
+    advanced: "Nâng cao",
+    extraModels: "Thêm ID mô hình khác",
+    extraModelsHelp:
+      "Mỗi dòng một ID hoặc phân tách bằng dấu phẩy, đúng như tên Claude Code dùng.",
+    maxTokens: "Giới hạn Max Tokens",
+    maxTokensHelp:
+      "Giới hạn Max Tokens cho kết nối này. Để trống để dùng giới hạn của từng mô hình.",
+    connect: "Kết nối",
+    save: "Lưu kết nối",
+    cancel: "Hủy",
+    pickModel: "Hãy chọn ít nhất một mô hình.",
+    copy: "Sao chép",
+    copied: "Đã sao chép",
+  },
   generationStats: {
     working: "Đang xử lý...",
+    startingClaude: "Đang khởi động Claude...",
     processingPrompt: "Đang xử lý lời nhắc {percent}%",
     compactingContext: "Đang thu gọn ngữ cảnh...",
     timeLeft: "còn {eta}",

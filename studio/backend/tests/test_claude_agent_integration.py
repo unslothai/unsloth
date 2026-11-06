@@ -10,11 +10,13 @@ import sys
 import threading
 import types
 from contextlib import nullcontext
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from packaging.requirements import Requirement
 
 from auth import policy
 from auth.authentication import (
@@ -199,10 +201,69 @@ def test_the_installer_targets_studio_python_with_constraints(monkeypatch, tmp_p
     assert claude_agent_runtime.ensure_claude_agent_sdk() is sdk
     ((command, kwargs),) = calls
     assert command[:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
-    assert "--constraint" in command and command[-1] == "claude-agent-sdk>=0.2.178"
+    assert "--constraint" in command and command[-1] == "claude-agent-sdk==0.2.178"
+    assert _no_binary_targets(command) == ["claude-agent-sdk"]
     assert kwargs["check"] is True and 0 < kwargs["timeout"] <= 300
     assert "PIP_CONFIG_FILE" in kwargs["env"]
     assert invalidated, "import caches must be invalidated so no restart is needed"
+
+
+def _no_binary_targets(command):
+    return [value for flag, value in zip(command, command[1:]) if flag == "--no-binary"]
+
+
+def test_the_pip_fallback_also_refuses_the_wheel(monkeypatch, tmp_path):
+    calls = []
+    installed = {"done": False}
+    monkeypatch.setattr(sys, "prefix", str(tmp_path))
+    monkeypatch.setattr(claude_agent_runtime, "_find_uv", lambda: None)
+    monkeypatch.setattr(claude_agent_runtime, "hf_env_offline", lambda: False)
+    monkeypatch.setattr(
+        claude_agent_runtime, "_import_sdk", lambda: object() if installed["done"] else None
+    )
+
+    def run(command, **kwargs):
+        calls.append(command)
+        installed["done"] = True
+
+    monkeypatch.setattr(claude_agent_runtime.subprocess, "run", run)
+    claude_agent_runtime.ensure_claude_agent_sdk()
+    (command,) = calls
+    assert command[:4] == [sys.executable, "-m", "pip", "install"]
+    assert _no_binary_targets(command) == ["claude-agent-sdk"]
+
+
+def test_the_constraints_skip_a_package_installed_twice(monkeypatch):
+    def dist(name, version):
+        return SimpleNamespace(metadata = {"Name": name}, version = version)
+
+    seen = []
+
+    def fake_distributions(path):
+        seen.append(path)
+        return [dist("idna", "3.18"), dist("anyio", "4.13.0"), dist("IDNA", "3.10")]
+
+    monkeypatch.setattr(claude_agent_runtime, "distributions", fake_distributions)
+    assert claude_agent_runtime._installed_pins() == "anyio==4.13.0\n"
+    assert seen and all(path for path in seen[0])
+
+
+def test_the_manual_commands_build_from_source():
+    for text in (claude_agent_runtime.MANUAL_COMMAND, claude_agent.SDK_MISSING):
+        assert '--no-binary claude-agent-sdk "claude-agent-sdk==0.2.178"' in text
+
+
+def test_the_repair_installs_the_version_studio_requires():
+    extras = (
+        Path(claude_agent_runtime.__file__).resolve().parents[1] / "requirements" / "extras.txt"
+    )
+    pins = [
+        Requirement(line.split("#", 1)[0].strip())
+        for line in extras.read_text(encoding = "utf-8").splitlines()
+        if line.startswith("claude-agent-sdk")
+    ]
+    assert [str(pin.specifier) for pin in pins] == ["==0.2.178"]
+    assert claude_agent_runtime.SDK_REQUIREMENT == f"{pins[0].name}{pins[0].specifier}"
 
 
 def test_an_installer_failure_is_reported_without_credentials(monkeypatch, tmp_path):
@@ -298,7 +359,39 @@ def test_a_managed_account_cannot_update_a_claude_agent_row(isolated):
     assert response.status_code == 403
 
 
+def test_a_managed_account_never_sees_it_even_while_off(monkeypatch, isolated):
+    monkeypatch.setenv(ENV, "0")
+    with providers_client(ALICE) as client:
+        registry = client.get("/providers/registry").json()
+    assert "claude_agent" not in {row["provider_type"] for row in registry}
+
+
 # -- 4. hidden while off ----------------------------------------------------------------------------
+
+
+def test_the_owner_is_offered_it_while_off_but_cannot_use_it(monkeypatch, isolated):
+    monkeypatch.setenv(ENV, "0")
+    with providers_client(OWNER) as client:
+        registry = client.get("/providers/registry").json()
+        created = _create(client, models = ["opus"])
+        status = client.get("/providers/claude-agent/status")
+        tested = client.post("/providers/test", json = {"provider_type": "claude_agent"})
+        listed = client.post("/providers/models", json = {"provider_type": "claude_agent"})
+    row = next(r for r in registry if r["provider_type"] == "claude_agent")
+    assert row["available_but_off"] is True
+    assert {r["available_but_off"] for r in registry if r is not row} == {False}
+    assert created.status_code == 403 and created.json()["detail"] == CLAUDE_AGENT_OFF
+    assert status.status_code == 403
+    assert tested.status_code in (400, 403)
+    assert listed.status_code in (400, 403)
+    assert providers_db.list_providers() == []
+
+
+def test_the_status_route_names_the_host_os(monkeypatch, isolated):
+    monkeypatch.setattr(providers.sys, "platform", "win32")
+    with providers_client(OWNER) as client:
+        body = client.get("/providers/claude-agent/status").json()
+    assert body["host_os"] == "windows" and body["ready"] is True
 
 
 def test_saved_connections_hide_while_off_and_come_back(monkeypatch, isolated):

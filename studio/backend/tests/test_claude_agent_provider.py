@@ -306,13 +306,23 @@ def _tool(name):
 TOOLS = [_tool("get_time"), _tool("get_weather")]
 
 
-def test_claude_agent_is_listed_only_when_opted_in(monkeypatch):
+def _claude_agent_row():
+    return next(r for r in list_available_providers() if r["provider_type"] == "claude_agent")
+
+
+def test_claude_agent_is_offered_while_off_but_connectable_only_when_opted_in(monkeypatch):
     monkeypatch.setenv("UNSLOTH_CLAUDE_AGENT", "0")
-    assert "claude_agent" not in {row["provider_type"] for row in list_available_providers()}
+    assert _claude_agent_row()["available_but_off"] is True
     assert get_connectable_provider_info("claude_agent") is None
+    assert all(
+        not r["available_but_off"]
+        for r in list_available_providers()
+        if r["provider_type"] != "claude_agent"
+    )
 
     monkeypatch.setenv("UNSLOTH_CLAUDE_AGENT", "1")
-    row = next(r for r in list_available_providers() if r["provider_type"] == "claude_agent")
+    row = _claude_agent_row()
+    assert row["available_but_off"] is False
     assert row["display_name"] == "Claude Agent"
     assert row["model_list_mode"] == "curated"
     assert row["supports_studio_tools"] is True
@@ -663,10 +673,12 @@ def test_status_reports_plan_version_and_model_objects(monkeypatch, tmp_path):
         "version": "2.1.318",
         "account": "Claude Max",
         "message": None,
+        "problem": None,
         "models": [
             {
                 "id": "opus",
                 "display_name": "Opus 5.5",
+                "alias": True,
                 "efforts": ["low", "medium", "high", "xhigh", "max"],
                 "thinking_off": False,
                 "context_window": 1_000_000,
@@ -674,6 +686,7 @@ def test_status_reports_plan_version_and_model_objects(monkeypatch, tmp_path):
             {
                 "id": "claude-sonnet-4-6",
                 "display_name": "Sonnet 4.6",
+                "alias": False,
                 "efforts": ["low", "medium", "high", "max"],
                 "thinking_off": True,
                 "context_window": None,
@@ -681,6 +694,7 @@ def test_status_reports_plan_version_and_model_objects(monkeypatch, tmp_path):
             {
                 "id": "claude-haiku-4-5-20251001",
                 "display_name": "Haiku 4.5",
+                "alias": False,
                 "efforts": [],
                 "thinking_off": True,
                 "context_window": None,
@@ -695,21 +709,24 @@ def test_status_reports_plan_version_and_model_objects(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("kwargs", "message"),
+    ("kwargs", "message", "problem"),
     [
         (
             {"server_info": {"account": {"tokenSource": "none"}, "models": []}},
             "Run `claude` in a terminal and sign in.",
+            "signed_out",
         ),
-        ({"connect_error": "boom"}, "Claude Code did not start: boom"),
+        ({"connect_error": "boom"}, "Claude Code did not start: boom", "failed"),
+        ({"cli": False}, claude_agent.CLI_MISSING, "cli_missing"),
     ],
 )
-def test_status_explains_what_is_missing(monkeypatch, tmp_path, kwargs, message):
+def test_status_explains_what_is_missing(monkeypatch, tmp_path, kwargs, message, problem):
     _install(monkeypatch, tmp_path, **kwargs)
     status = asyncio.run(claude_agent.claude_agent_status())
 
     assert status["ready"] is False
     assert status["message"] == message
+    assert status["problem"] == problem
 
 
 def test_status_without_the_sdk_names_the_install_command(monkeypatch, tmp_path):
@@ -719,6 +736,7 @@ def test_status_without_the_sdk_names_the_install_command(monkeypatch, tmp_path)
 
     assert status["ready"] is False
     assert "claude-agent-sdk" in status["message"]
+    assert status["problem"] == "sdk_missing"
 
 
 def _calls(lines):

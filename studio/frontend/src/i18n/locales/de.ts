@@ -1950,6 +1950,13 @@ export const de = {
         ramUnknown: "Das kleinste Videomodell benötigt auf der CPU etwa {min} GB RAM; größere Modelle benötigen deutlich mehr.",
         performanceEstimate: "Rechne mit Minuten pro Denoising-Schritt: Ein 832x480-Clip mit 5 Frames aus Wan2.1 1.3B mit 3 Schritten dauerte auf 16 CPU-Threads etwa 4 Minuten, und ein Clip in voller Länge mit Standardeinstellungen kann Stunden dauern.",
         confirmAction: "Trotzdem aktivieren",
+        claudeAgent: "Claude Agent (experimentell)",
+        claudeAgentDescription:
+          "Fügt eine Claude-Agent-Verbindung hinzu, die die Claude-Code-Anmeldung auf diesem Computer nutzt. Experimentell; es gelten die Bedingungen von Anthropic für Drittanbieter-Apps.",
+        claudeAgentForcedOnByEnv:
+          "Aktiviert durch UNSLOTH_CLAUDE_AGENT in der Backend-Umgebung.",
+        claudeAgentForcedOffByEnv:
+          "Deaktiviert durch UNSLOTH_CLAUDE_AGENT in der Backend-Umgebung.",
         loadError: "Entwicklermodus-Einstellungen konnten nicht geladen werden.",
         saveError: "Entwicklermodus-Einstellungen konnten nicht gespeichert werden.",
       },
@@ -5588,8 +5595,60 @@ export const de = {
     update: "Aktualisieren",
     undo: "Rückgängig",
   },
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "Experimentell",
+    connectionHint: "Claude über Claude Code auf diesem Computer.",
+    intro:
+      "Nutzt die Claude-Code-Anmeldung auf diesem Computer. Unsloth liest oder speichert sie nie.",
+    offBody:
+      "Claude Agent chattet über die Claude Code CLI auf diesem Computer, mit deinem Claude-Abo oder API-Schlüssel. Die Funktion ist experimentell, und es gelten die Bedingungen von Anthropic für Drittanbieter-Apps.",
+    turnOn: "Aktivieren",
+    turningOn: "Wird aktiviert...",
+    forcedOff:
+      "Deaktiviert durch UNSLOTH_CLAUDE_AGENT in der Backend-Umgebung. Entferne die Variable oder setze sie auf 1 und starte Unsloth dann neu.",
+    checking: "Claude Code auf diesem Computer wird geprüft...",
+    ready: "Bereit",
+    notReady: "Claude Code ist noch nicht bereit",
+    stepInstall: "Claude Code installieren",
+    stepInstallHelp:
+      "Führe dies in einem Terminal auf dem Computer aus, auf dem Unsloth läuft.",
+    stepInstallNpm: "Oder mit Node.js:",
+    stepInstallOther: "Weitere Installationsmöglichkeiten",
+    stepSignIn: "Anmelden",
+    stepSignInHelp:
+      "Führe dies in einem Terminal aus und folge den Anweisungen.",
+    stepCheck: "Erneut prüfen",
+    stepCheckHelp:
+      "Die Prüfung läuft automatisch erneut, wenn du hierher zurückkehrst.",
+    sdkMissing:
+      "Das Claude Agent SDK fehlt im Python von Unsloth. Installiere es, um diese Verbindung zu reparieren.",
+    sdkManual: "Oder installiere es manuell:",
+    install: "Installieren",
+    installing:
+      "Das Claude Agent SDK wird installiert. Das kann einige Minuten dauern...",
+    checkFailed: "Claude Code konnte nicht geprüft werden.",
+    checkAgain: "Erneut prüfen",
+    models: "Modelle",
+    modelsSelected: "{count} ausgewählt",
+    moreModels: "Weitere Modelle",
+    advanced: "Erweitert",
+    extraModels: "Weitere Modell-ID hinzufügen",
+    extraModelsHelp:
+      "Eine pro Zeile oder durch Kommas getrennt, so wie Claude Code sie benennt.",
+    maxTokens: "Limit für Max Tokens",
+    maxTokensHelp:
+      "Begrenzt Max Tokens für diese Verbindung. Leer lassen, um das Limit des jeweiligen Modells zu verwenden.",
+    connect: "Verbinden",
+    save: "Verbindung speichern",
+    cancel: "Abbrechen",
+    pickModel: "Wähle mindestens ein Modell aus.",
+    copy: "Kopieren",
+    copied: "Kopiert",
+  },
   generationStats: {
     working: "Wird bearbeitet...",
+    startingClaude: "Claude wird gestartet...",
     processingPrompt: "Prompt-Verarbeitung {percent}%",
     compactingContext: "Kontext wird komprimiert...",
     timeLeft: "noch {eta}",

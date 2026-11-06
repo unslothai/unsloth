@@ -5566,8 +5566,56 @@ export const en = {
   },
   // The live prompt and reply figures (Settings > Chat > Display > Generation details), the reply's
   // timing tooltip and the Run settings "Weight placement" row. Keep GPU, CPU, RAM and VRAM.
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "Experimental",
+    connectionHint: "Claude through Claude Code on this machine.",
+    intro:
+      "Uses the Claude Code login on this machine. Unsloth never reads or stores it.",
+    offBody:
+      "Claude Agent chats through the Claude Code CLI on this machine, with your Claude plan or API key. It is experimental, and Anthropic's terms for third-party apps apply.",
+    turnOn: "Turn on",
+    turningOn: "Turning on...",
+    forcedOff:
+      "Turned off by UNSLOTH_CLAUDE_AGENT in the backend environment. Unset it or set it to 1, then restart Unsloth.",
+    checking: "Checking Claude Code on this machine...",
+    ready: "Ready",
+    notReady: "Claude Code is not ready yet",
+    stepInstall: "Install Claude Code",
+    stepInstallHelp: "Run this in a terminal on the machine running Unsloth.",
+    stepInstallNpm: "Or with Node.js:",
+    stepInstallOther: "Other ways to install",
+    stepSignIn: "Sign in",
+    stepSignInHelp: "Run this in a terminal and follow the prompts.",
+    stepCheck: "Check again",
+    stepCheckHelp: "This checks again by itself when you come back here.",
+    sdkMissing:
+      "The Claude Agent SDK is missing from Unsloth's Python. Install it to repair this connection.",
+    sdkManual: "Or install it by hand:",
+    install: "Install",
+    installing: "Installing the Claude Agent SDK. This can take a few minutes...",
+    checkFailed: "Could not check Claude Code.",
+    checkAgain: "Check again",
+    models: "Models",
+    modelsSelected: "{count} selected",
+    moreModels: "More models",
+    advanced: "Advanced",
+    extraModels: "Add another model ID",
+    extraModelsHelp:
+      "One per line or comma-separated, as Claude Code names them.",
+    maxTokens: "Max Tokens limit",
+    maxTokensHelp:
+      "Caps Max Tokens for this connection. Leave blank to use each model's limit.",
+    connect: "Connect",
+    save: "Save connection",
+    cancel: "Cancel",
+    pickModel: "Choose at least one model.",
+    copy: "Copy",
+    copied: "Copied",
+  },
   generationStats: {
     working: "Working...",
+    startingClaude: "Starting Claude...",
     processingPrompt: "Processing prompt {percent}%",
     compactingContext: "Compacting context...",
     // {eta}: a short duration such as "12s" or "2m 10s".

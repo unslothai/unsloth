@@ -352,6 +352,7 @@ export {
   servesMediaRequests,
 } from "./external-providers";
 export type { ExternalProviderConfig } from "./external-providers";
+export { connectionModelLabel, useClaudeAgentModelNames } from "./claude-agent";
 export {
   externalReasoningTakesEffort,
   getExternalReasoningCapabilities,

@@ -2131,6 +2131,13 @@ export const uk = {
         performanceEstimate:
           "Розраховуйте на кілька хвилин на кожен крок шумозаглушення: 5-кадровий кліп 832x480 з Wan2.1 1.3B за 3 кроки генерувався близько 4 хвилин на 16 потоках CPU, а повний кліп із типовими налаштуваннями може тривати годинами.",
         confirmAction: "Однаково ввімкнути",
+        claudeAgent: "Claude Agent (експериментально)",
+        claudeAgentDescription:
+          "Додає з’єднання Claude Agent, яке використовує вхід у Claude Code на цьому комп’ютері. Експериментально; діють умови Anthropic для сторонніх застосунків.",
+        claudeAgentForcedOnByEnv:
+          "Увімкнено змінною UNSLOTH_CLAUDE_AGENT у середовищі бекенда.",
+        claudeAgentForcedOffByEnv:
+          "Вимкнено змінною UNSLOTH_CLAUDE_AGENT у середовищі бекенда.",
         loadError: "Не вдалося завантажити налаштування режиму розробника.",
         saveError: "Не вдалося зберегти налаштування режиму розробника.",
       },
@@ -5967,8 +5974,58 @@ export const uk = {
     update: "Оновити",
     undo: "Скасувати",
   },
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "Експериментально",
+    connectionHint: "Claude через Claude Code на цьому комп’ютері.",
+    intro:
+      "Використовує вхід у Claude Code на цьому комп’ютері. Unsloth ніколи не читає і не зберігає його.",
+    offBody:
+      "Claude Agent спілкується через CLI Claude Code на цьому комп’ютері з вашим планом Claude або ключем API. Функція експериментальна, і на неї поширюються умови Anthropic для сторонніх застосунків.",
+    turnOn: "Увімкнути",
+    turningOn: "Вмикання...",
+    forcedOff:
+      "Вимкнено змінною UNSLOTH_CLAUDE_AGENT у середовищі бекенда. Видаліть її або встановіть значення 1, а потім перезапустіть Unsloth.",
+    checking: "Перевірка Claude Code на цьому комп’ютері...",
+    ready: "Готово",
+    notReady: "Claude Code ще не готовий",
+    stepInstall: "Установіть Claude Code",
+    stepInstallHelp:
+      "Виконайте це в терміналі на комп’ютері, де працює Unsloth.",
+    stepInstallNpm: "Або через Node.js:",
+    stepInstallOther: "Інші способи встановлення",
+    stepSignIn: "Увійдіть",
+    stepSignInHelp: "Виконайте це в терміналі та дотримуйтеся підказок.",
+    stepCheck: "Перевірити ще раз",
+    stepCheckHelp: "Перевірка повториться сама, коли ви повернетеся сюди.",
+    sdkMissing:
+      "У Python Unsloth немає Claude Agent SDK. Установіть його, щоб відновити це з’єднання.",
+    sdkManual: "Або встановіть його вручну:",
+    install: "Установити",
+    installing:
+      "Установлення Claude Agent SDK. Це може тривати кілька хвилин...",
+    checkFailed: "Не вдалося перевірити Claude Code.",
+    checkAgain: "Перевірити ще раз",
+    models: "Моделі",
+    modelsSelected: "Вибрано: {count}",
+    moreModels: "Інші моделі",
+    advanced: "Додатково",
+    extraModels: "Додати ще один ID моделі",
+    extraModelsHelp:
+      "По одному в рядку або через кому, як їх називає Claude Code.",
+    maxTokens: "Ліміт Max Tokens",
+    maxTokensHelp:
+      "Обмежує Max Tokens для цього з’єднання. Залиште порожнім, щоб використовувати ліміт кожної моделі.",
+    connect: "Під’єднати",
+    save: "Зберегти з’єднання",
+    cancel: "Скасувати",
+    pickModel: "Виберіть принаймні одну модель.",
+    copy: "Копіювати",
+    copied: "Скопійовано",
+  },
   generationStats: {
     working: "Виконання...",
+    startingClaude: "Запуск Claude...",
     processingPrompt: "Обробка запиту {percent}%",
     compactingContext: "Стиснення контексту...",
     timeLeft: "залишилось {eta}",

@@ -10,6 +10,7 @@ import inspect
 import ipaddress
 import json
 import re
+import sys
 import time
 import uuid
 from typing import Optional
@@ -337,7 +338,12 @@ def _require_claude_agent_access(via_api_key: bool) -> None:
 
 async def _claude_agent_status_with_sdk() -> dict:
     status = await claude_agent_status()
-    return {**status, "sdk_missing": importlib.util.find_spec("claude_agent_sdk") is None}
+    return {
+        **status,
+        "sdk_missing": importlib.util.find_spec("claude_agent_sdk") is None,
+        # The CLI is installed on this machine, so the UI shows this OS's install command.
+        "host_os": "windows" if sys.platform == "win32" else "unix",
+    }
 
 
 async def _owner_claude_agent_status(via_api_key: bool) -> dict:

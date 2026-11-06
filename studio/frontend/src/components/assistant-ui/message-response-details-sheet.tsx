@@ -21,6 +21,8 @@ import {
   formatMcpToolName,
   mcpServerFromProvenance,
   mcpToolFromProvenance,
+  connectionModelLabel,
+  useClaudeAgentModelNames,
 } from "@/features/chat";
 import { FIND_SKIP_ATTRIBUTE } from "@/features/find-in-page";
 import { cn } from "@/lib/utils";
@@ -267,6 +269,7 @@ function useResponseModelDisplay() {
   const message = useMessage();
   const models = useChatRuntimeStore((s) => s.models);
   const providers = useExternalProvidersStore((s) => s.providers);
+  const claudeAgentNames = useClaudeAgentModelNames((s) => s.names);
 
   const custom = (
     message.metadata as Record<string, unknown> | undefined
@@ -286,7 +289,14 @@ function useResponseModelDisplay() {
   const modelSummary = models.find(
     (candidate) => candidate.id === recordedModelId,
   );
+  const claudeAgentModel =
+    provider?.providerType === "claude_agent"
+      ? (responseDetails?.responseModelId ?? parsedExternal?.modelId)
+      : undefined;
   const modelLabel =
+    (claudeAgentModel
+      ? connectionModelLabel(provider?.providerType, claudeAgentModel, claudeAgentNames)
+      : undefined) ??
     responseDetails?.modelLabel ??
     responseDetails?.responseModelId ??
     parsedExternal?.modelId ??

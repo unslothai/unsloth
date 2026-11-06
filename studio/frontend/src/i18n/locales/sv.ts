@@ -2044,6 +2044,13 @@ export const sv = {
         ramUnknown: "Den minsta videomodellen behöver cirka {min} GB RAM på CPU; större modeller behöver betydligt mer.",
         performanceEstimate: "Räkna med minuter per brusreduceringssteg: ett klipp på 5 bildrutor i 832x480 från Wan2.1 1.3B med 3 steg tog cirka 4 minuter på 16 CPU-trådar, och ett klipp i full längd med standardinställningar kan ta timmar.",
         confirmAction: "Aktivera ändå",
+        claudeAgent: "Claude Agent (experimentell)",
+        claudeAgentDescription:
+          "Lägger till en Claude Agent-anslutning som använder inloggningen till Claude Code på den här datorn. Experimentell; Anthropics villkor för tredjepartsappar gäller.",
+        claudeAgentForcedOnByEnv:
+          "Aktiverat av UNSLOTH_CLAUDE_AGENT i backend-miljön.",
+        claudeAgentForcedOffByEnv:
+          "Inaktiverat av UNSLOTH_CLAUDE_AGENT i backend-miljön.",
         loadError: "Det gick inte att läsa in inställningarna för utvecklarläge.",
         saveError: "Det gick inte att spara inställningarna för utvecklarläge.",
       },
@@ -5758,8 +5765,57 @@ export const sv = {
     update: "Uppdatera",
     undo: "Ångra",
   },
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "Experimentell",
+    connectionHint: "Claude via Claude Code på den här datorn.",
+    intro:
+      "Använder inloggningen till Claude Code på den här datorn. Unsloth läser eller sparar den aldrig.",
+    offBody:
+      "Claude Agent chattar via Claude Code CLI på den här datorn, med ditt Claude-abonnemang eller din API-nyckel. Funktionen är experimentell, och Anthropics villkor för tredjepartsappar gäller.",
+    turnOn: "Aktivera",
+    turningOn: "Aktiverar...",
+    forcedOff:
+      "Inaktiverat av UNSLOTH_CLAUDE_AGENT i backend-miljön. Ta bort variabeln eller sätt den till 1 och starta sedan om Unsloth.",
+    checking: "Kontrollerar Claude Code på den här datorn...",
+    ready: "Klar",
+    notReady: "Claude Code är inte klart än",
+    stepInstall: "Installera Claude Code",
+    stepInstallHelp: "Kör detta i en terminal på datorn som kör Unsloth.",
+    stepInstallNpm: "Eller med Node.js:",
+    stepInstallOther: "Andra sätt att installera",
+    stepSignIn: "Logga in",
+    stepSignInHelp: "Kör detta i en terminal och följ anvisningarna.",
+    stepCheck: "Kontrollera igen",
+    stepCheckHelp:
+      "Kontrollen körs igen automatiskt när du kommer tillbaka hit.",
+    sdkMissing:
+      "Claude Agent SDK saknas i Unsloths Python. Installera det för att reparera anslutningen.",
+    sdkManual: "Eller installera det manuellt:",
+    install: "Installera",
+    installing: "Installerar Claude Agent SDK. Det kan ta några minuter...",
+    checkFailed: "Det gick inte att kontrollera Claude Code.",
+    checkAgain: "Kontrollera igen",
+    models: "Modeller",
+    modelsSelected: "{count} valda",
+    moreModels: "Fler modeller",
+    advanced: "Avancerat",
+    extraModels: "Lägg till ett annat modell-ID",
+    extraModelsHelp:
+      "Ett per rad eller kommaseparerade, så som Claude Code namnger dem.",
+    maxTokens: "Gräns för Max Tokens",
+    maxTokensHelp:
+      "Begränsar Max Tokens för den här anslutningen. Lämna tomt för att använda varje modells gräns.",
+    connect: "Anslut",
+    save: "Spara anslutning",
+    cancel: "Avbryt",
+    pickModel: "Välj minst en modell.",
+    copy: "Kopiera",
+    copied: "Kopierat",
+  },
   generationStats: {
     working: "Arbetar...",
+    startingClaude: "Startar Claude...",
     processingPrompt: "Bearbetar prompt {percent}%",
     compactingContext: "Komprimerar kontext...",
     timeLeft: "{eta} kvar",

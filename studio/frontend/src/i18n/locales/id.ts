@@ -2116,6 +2116,13 @@ export const id = {
         performanceEstimate:
           "Perkirakan beberapa menit per langkah denoising: klip 5 frame 832x480 dari Wan2.1 1.3B dengan 3 langkah memakan waktu sekitar 4 menit pada 16 thread CPU, dan klip berdurasi penuh dengan pengaturan default dapat memakan waktu berjam-jam.",
         confirmAction: "Tetap aktifkan",
+        claudeAgent: "Claude Agent (eksperimental)",
+        claudeAgentDescription:
+          "Menambahkan koneksi Claude Agent yang menggunakan login Claude Code di mesin ini. Eksperimental; ketentuan Anthropic untuk aplikasi pihak ketiga berlaku.",
+        claudeAgentForcedOnByEnv:
+          "Diaktifkan oleh UNSLOTH_CLAUDE_AGENT di lingkungan backend.",
+        claudeAgentForcedOffByEnv:
+          "Dinonaktifkan oleh UNSLOTH_CLAUDE_AGENT di lingkungan backend.",
         loadError: "Gagal memuat pengaturan Mode pengembang.",
         saveError: "Gagal menyimpan pengaturan Mode pengembang.",
       },
@@ -5924,8 +5931,59 @@ export const id = {
     update: "Perbarui",
     undo: "Urungkan",
   },
+  claudeAgent: {
+    title: "Claude Agent",
+    experimental: "Eksperimental",
+    connectionHint: "Claude melalui Claude Code di mesin ini.",
+    intro:
+      "Menggunakan login Claude Code di mesin ini. Unsloth tidak pernah membaca atau menyimpannya.",
+    offBody:
+      "Claude Agent mengobrol melalui CLI Claude Code di mesin ini, dengan paket Claude atau kunci API Anda. Fitur ini eksperimental, dan ketentuan Anthropic untuk aplikasi pihak ketiga berlaku.",
+    turnOn: "Aktifkan",
+    turningOn: "Mengaktifkan...",
+    forcedOff:
+      "Dinonaktifkan oleh UNSLOTH_CLAUDE_AGENT di lingkungan backend. Hapus variabel tersebut atau setel ke 1, lalu mulai ulang Unsloth.",
+    checking: "Memeriksa Claude Code di mesin ini...",
+    ready: "Siap",
+    notReady: "Claude Code belum siap",
+    stepInstall: "Instal Claude Code",
+    stepInstallHelp:
+      "Jalankan ini di terminal pada mesin yang menjalankan Unsloth.",
+    stepInstallNpm: "Atau dengan Node.js:",
+    stepInstallOther: "Cara lain untuk menginstal",
+    stepSignIn: "Masuk",
+    stepSignInHelp: "Jalankan ini di terminal dan ikuti petunjuknya.",
+    stepCheck: "Periksa lagi",
+    stepCheckHelp:
+      "Pemeriksaan berjalan lagi dengan sendirinya saat Anda kembali ke sini.",
+    sdkMissing:
+      "Claude Agent SDK tidak ada di Python Unsloth. Instal untuk memperbaiki koneksi ini.",
+    sdkManual: "Atau instal secara manual:",
+    install: "Instal",
+    installing:
+      "Menginstal Claude Agent SDK. Ini bisa memakan waktu beberapa menit...",
+    checkFailed: "Tidak dapat memeriksa Claude Code.",
+    checkAgain: "Periksa lagi",
+    models: "Model",
+    modelsSelected: "{count} dipilih",
+    moreModels: "Model lainnya",
+    advanced: "Lanjutan",
+    extraModels: "Tambahkan ID model lain",
+    extraModelsHelp:
+      "Satu per baris atau dipisahkan koma, sesuai penamaan Claude Code.",
+    maxTokens: "Batas Max Tokens",
+    maxTokensHelp:
+      "Membatasi Max Tokens untuk koneksi ini. Biarkan kosong untuk memakai batas masing-masing model.",
+    connect: "Hubungkan",
+    save: "Simpan koneksi",
+    cancel: "Batal",
+    pickModel: "Pilih setidaknya satu model.",
+    copy: "Salin",
+    copied: "Disalin",
+  },
   generationStats: {
     working: "Memproses...",
+    startingClaude: "Memulai Claude...",
     processingPrompt: "Memproses prompt {percent}%",
     compactingContext: "Memadatkan konteks...",
     timeLeft: "{eta} lagi",

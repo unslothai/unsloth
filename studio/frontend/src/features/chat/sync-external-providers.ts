@@ -9,12 +9,14 @@ import {
 import {
   type ProviderRegistryEntry,
   fetchModelCatalog,
+  getClaudeAgentStatus,
   listProviderConfigs,
   listProviderModelCapabilities,
   listProviderRegistry,
   migrateProviderApiKey,
   updateProviderConfig,
 } from "./api/providers-api";
+import { rememberClaudeAgentModels } from "./claude-agent";
 import { normalizeCustomReasoningConfig } from "./custom-reasoning";
 import {
   modelsDevCatalogFetchedAt,
@@ -23,6 +25,7 @@ import {
   setProviderModelCatalog,
 } from "./model-catalog";
 import {
+  CLAUDE_AGENT_PROVIDER_TYPE,
   CUSTOM_BACKEND_PROVIDER_TYPE,
   CUSTOM_PROVIDER_DISPLAY_NAME,
   CUSTOM_PROVIDER_PRESETS,
@@ -197,9 +200,27 @@ export function mergeLocalProviderOptions(
 
 
 
-/** The registry drops Claude Agent while it is off; its saved connections stay, unlisted. */
+/** Claude Agent's saved connections stay unlisted while it is off or not offered. */
 export function connectionTypeListed(providerType: string, registryTypes: ReadonlySet<string>): boolean {
-  return providerType !== "claude_agent" || registryTypes.has(providerType);
+  return providerType !== CLAUDE_AGENT_PROVIDER_TYPE || registryTypes.has(providerType);
+}
+
+export function usableRegistryTypes(rows: readonly ProviderRegistryEntry[]): Set<string> {
+  return new Set(rows.filter((entry) => !entry.available_but_off).map((entry) => entry.provider_type));
+}
+
+let claudeAgentNamesRequested = false;
+
+// Once per page load: the status starts the CLI, so focus re-syncs must not repeat it.
+function learnClaudeAgentModelNames(providers: readonly ExternalProviderConfig[]): void {
+  if (claudeAgentNamesRequested) return;
+  if (!providers.some((provider) => provider.providerType === CLAUDE_AGENT_PROVIDER_TYPE)) return;
+  claudeAgentNamesRequested = true;
+  void getClaudeAgentStatus()
+    .then((status) => rememberClaudeAgentModels(status.models))
+    .catch(() => {
+      claudeAgentNamesRequested = false;
+    });
 }
 
 export async function syncExternalProvidersFromBackend(
@@ -239,7 +260,7 @@ export async function syncExternalProvidersFromBackend(
   }
 
   const backfillTasks: Array<() => Promise<unknown>> = [];
-  const registryTypes = new Set(registryRows.map((entry) => entry.provider_type));
+  const registryTypes = usableRegistryTypes(registryRows);
   const syncedProviders = configRows
     .filter((config) => config.is_enabled && connectionTypeListed(config.provider_type, registryTypes))
     .map((config) => {
@@ -338,6 +359,7 @@ export async function syncExternalProvidersFromBackend(
 
   await settleTasksIfCurrent(backfillTasks, isCurrent);
   void refreshProviderModelCatalogs(syncedProviders, isCurrent);
+  learnClaudeAgentModelNames(syncedProviders);
   return syncedProviders;
 }
 
