@@ -2756,7 +2756,7 @@ def test_gguf_execution_gate_is_built_from_the_sanitized_catalog():
     """A tool dropped for unsafe markup is absent from the prompt, so it must be absent
     from what we are willing to EXECUTE: otherwise the model can still name it and the
     raw gate lets the call through (#7066)."""
-    source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_cpp.py").read_text(
+    source = (_REPO_ROOT / "studio" / "backend" / "core" / "inference" / "llama_chat.py").read_text(
         encoding = "utf-8"
     )
     gate = source.index("_enabled_tool_names = {")
@@ -2810,7 +2810,7 @@ def test_vendor_extension_fields_are_swept_not_dropped():
 
 _INFERENCE_DIR = _REPO_ROOT / "studio" / "backend" / "core" / "inference"
 
-_CONTROLLER_MODULES = ("llama_cpp.py", "safetensors_agentic.py")
+_CONTROLLER_MODULES = ("llama_chat.py", "safetensors_agentic.py")
 
 # studio_tool_loop.py is a known gap; keyed by site count, so adding or removing a controller fails
 _CONTROLLER_SITES_OUT_OF_SCOPE = frozenset(

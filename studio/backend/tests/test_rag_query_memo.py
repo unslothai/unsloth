@@ -11,7 +11,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from core.inference import llama_cpp  # noqa: E402
+from core.inference import chat_compaction  # noqa: E402
 from core.rag import conversation_archive, embeddings, retrieval, store  # noqa: E402
 
 THREAD = "thread-memo"
@@ -74,7 +74,7 @@ def test_a_compaction_encodes_its_query_once_across_budget_retries(encodes):
     conversation = [{"role": "system", "content": "sys"}, {"role": "user", "content": query}]
     del encodes[:]
 
-    result = llama_cpp._archive_and_recall(
+    result = chat_compaction._archive_and_recall(
         conversation,
         conversation,
         thread_id = THREAD,

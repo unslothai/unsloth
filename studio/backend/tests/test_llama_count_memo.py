@@ -108,9 +108,9 @@ def test_admission_counts_are_not_memoised(monkeypatch):
 
 
 def test_memo_stays_bounded(monkeypatch):
-    from core.inference import llama_cpp
+    from core.inference import llama_chat
 
     backend, _ = _setup(monkeypatch)
-    for i in range(3 * llama_cpp._COUNT_MEMO_SIZE):
+    for i in range(3 * llama_chat._COUNT_MEMO_SIZE):
         backend.count_chat_tokens([{"role": "user", "content": f"turn {i}"}], strict = True)
-    assert len(llama_cpp._count_memo(backend)[1]) == llama_cpp._COUNT_MEMO_SIZE
+    assert len(llama_chat._count_memo(backend)[1]) == llama_chat._COUNT_MEMO_SIZE

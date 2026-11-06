@@ -3322,9 +3322,7 @@ class TestGGUFSafetensorsHealingParity:
         }
 
     def test_intent_regex_matches_same_phrases_as_gguf(self):
-        from core.inference.llama_cpp import (
-            _is_short_intent_without_action as gguf_fn,
-        )
+        from core.inference.llama_chat import _is_short_intent_without_action as gguf_fn
         from core.inference.safetensors_agentic import (
             is_short_intent_without_action as sf_fn,
         )
@@ -3395,7 +3393,7 @@ class TestGGUFSafetensorsHealingParity:
             assert not shared_fn(plain), f"helper wrongly fired on {plain!r}"
 
     def test_max_reprompts_equal_on_both_backends(self):
-        from core.inference.llama_cpp import _MAX_REPROMPTS as gguf_cap
+        from core.inference.llama_chat import _MAX_REPROMPTS as gguf_cap
         from core.inference.safetensors_agentic import MAX_ACT_REPROMPTS as sf_cap
         from core.inference.tool_call_parser import MAX_ACT_REPROMPTS as shared_cap
 
@@ -4778,7 +4776,7 @@ def test_both_tool_loops_say_they_are_waiting_for_approval():
     import os
 
     backend = os.path.join(os.path.dirname(__file__), "..")
-    for name in ("core/inference/safetensors_agentic.py", "core/inference/llama_cpp.py"):
+    for name in ("core/inference/safetensors_agentic.py", "core/inference/llama_chat.py"):
         with open(os.path.join(backend, name), encoding = "utf-8") as f:
             tree = ast.parse(f.read())
         calls = [

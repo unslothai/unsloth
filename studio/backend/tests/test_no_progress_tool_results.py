@@ -15,9 +15,9 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-import core.inference.llama_cpp as llama_cpp_module
-from core.inference.llama_cpp import _MAX_IDENTICAL_TOOL_RESULTS, LlamaCppBackend
-import core.inference.llama_cpp as _lc
+from core.inference import llama_chat
+from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_chat import _MAX_IDENTICAL_TOOL_RESULTS
 
 _TRUNCATION_NOTICE = "(truncated to 0 chars for the model; showing lines 1-11 of 63.)"
 
@@ -283,7 +283,7 @@ def test_distinct_calls_answered_with_the_same_acknowledgement_are_left_alone(mo
 
 def _starve_the_budget(monkeypatch):
     """Force every result budget under _MIN_USEFUL_RESULT_TOKENS, as a tight window does."""
-    monkeypatch.setattr(_lc, "tool_result_budget", lambda *_a, **_k: 0)
+    monkeypatch.setattr(llama_chat, "tool_result_budget", lambda *_a, **_k: 0)
 
 
 def test_a_short_result_that_fit_is_not_called_starved(monkeypatch):
@@ -335,7 +335,7 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
     monkeypatch.setattr("core.inference.tools.execute_tool", lambda *_a, **_k: "contents")
 
     rescued: list[int] = []
-    real_compact = llama_cpp_module.compact_completed_tool_arguments
+    real_compact = llama_chat.compact_completed_tool_arguments
 
     def spy_compact(messages, *args, **kwargs):
         fitted, n = real_compact(messages, *args, **kwargs)
@@ -343,7 +343,7 @@ def test_the_budget_rescue_recounts_with_the_stand_in_reply_too(monkeypatch):
             rescued.append(n)
         return fitted, n
 
-    monkeypatch.setattr(llama_cpp_module, "compact_completed_tool_arguments", spy_compact)
+    monkeypatch.setattr(llama_chat, "compact_completed_tool_arguments", spy_compact)
 
     # Two calls: the rescue protects the newest, so one call leaves nothing to compact.
     _thread = _thread_with_a_big_completed_call()
@@ -396,13 +396,13 @@ def test_a_resumed_turn_prices_its_tool_result_by_what_is_left(monkeypatch):
 
     caps: list[object] = []
 
-    real_budget = _lc.tool_result_budget
+    real_budget = llama_chat.tool_result_budget
 
     def recording_budget(context_length, max_tokens, spent):
         caps.append(max_tokens)
         return real_budget(context_length, max_tokens, spent)
 
-    monkeypatch.setattr(_lc, "tool_result_budget", recording_budget)
+    monkeypatch.setattr(llama_chat, "tool_result_budget", recording_budget)
 
     payloads: list[dict] = []
     backend = _make_backend(
@@ -434,13 +434,13 @@ def test_a_resumed_turn_sizes_its_recall_by_what_is_left(monkeypatch):
 
     caps: list[object] = []
 
-    real_budget = _lc._retrieval_budget
+    real_budget = llama_chat._retrieval_budget
 
     def recording_budget(context_length, max_tokens, spent, **kwargs):
         caps.append(max_tokens)
         return real_budget(context_length, max_tokens, spent, **kwargs)
 
-    monkeypatch.setattr(_lc, "_retrieval_budget", recording_budget)
+    monkeypatch.setattr(llama_chat, "_retrieval_budget", recording_budget)
 
     payloads: list[dict] = []
     backend = _make_backend(

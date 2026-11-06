@@ -17,8 +17,13 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from auth.authentication import get_current_subject
-from core.inference import llama_cpp, os_sandbox, safetensors_agentic, tools
-from core.inference import studio_tool_loop as loop_mod
+from core.inference import (
+    llama_chat,
+    os_sandbox,
+    safetensors_agentic,
+    studio_tool_loop as loop_mod,
+    tools,
+)
 from routes import inference
 from state import tool_approvals, tool_policy
 from utils.account_context import (
@@ -187,7 +192,7 @@ def _run_loop(loop, monkeypatch, launcher, answer, code, mode):
             _streamed_structured_tool_call,
         )
 
-        monkeypatch.setattr(llama_cpp, "wait_tool_decision", answer)
+        monkeypatch.setattr(llama_chat, "wait_tool_decision", answer)
         monkeypatch.setattr("core.inference.tools.execute_tool", launcher)
         backend, _payloads = _backend_and_payloads(
             monkeypatch,

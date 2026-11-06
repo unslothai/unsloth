@@ -6,15 +6,12 @@ import ast
 from pathlib import Path
 
 
-SOURCE_PATH = (
-    Path(__file__).resolve().parents[2]
-    / "studio"
-    / "backend"
-    / "core"
-    / "inference"
-    / "llama_cpp.py"
+# The GGUF backend: llama_cpp.py and the chat modules it imports.
+INFERENCE_DIR = Path(__file__).resolve().parents[2] / "studio" / "backend" / "core" / "inference"
+SRC = "\n".join(
+    (INFERENCE_DIR / name).read_text(encoding = "utf-8")
+    for name in ("llama_cpp.py", "llama_chat.py", "chat_compaction.py")
 )
-SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
 
 

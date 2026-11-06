@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from core.inference import llama_cpp
+from core.inference import llama_chat
 from core.inference import search_images
 from core.inference import studio_tool_loop as loop_mod
 from core.inference import tools
@@ -454,7 +454,7 @@ def _local_turn(
     **loop_kwargs,
 ):
     if wait_denies:
-        monkeypatch.setattr(llama_cpp, "wait_tool_decision", lambda *a, **k: "deny", raising = False)
+        monkeypatch.setattr(llama_chat, "wait_tool_decision", lambda *a, **k: "deny", raising = False)
 
     frames = [
         local_sse(

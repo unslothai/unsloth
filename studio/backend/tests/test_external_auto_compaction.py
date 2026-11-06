@@ -318,14 +318,14 @@ def test_a_short_chat_keeps_a_reply_cap_past_half_the_window():
 
 
 def test_a_tool_enabled_chat_starts_from_the_saved_boundary(monkeypatch):
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     monkeypatch.setattr(
-        llama_cpp,
+        chat_compaction,
         "_sticky_compaction_state",
         lambda thread_id, *a, **k: (20 if thread_id else 0, False),
     )
-    monkeypatch.setattr(llama_cpp, "_keeps_compaction_boundary", lambda thread_id: False)
+    monkeypatch.setattr(chat_compaction, "_keeps_compaction_boundary", lambda thread_id: False)
 
     async def connected(self) -> bool:
         return False

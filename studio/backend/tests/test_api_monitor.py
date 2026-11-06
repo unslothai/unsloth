@@ -1599,7 +1599,7 @@ def test_a_bad_predicted_ms_is_dropped_rather_than_raising(monkeypatch, predicte
 
 def test_perf_callback_reports_decode_phase_once_per_prefill_round(monkeypatch):
     import routes.inference as inf_mod
-    from core.inference.llama_cpp import _report_live_llama_timings
+    from core.inference.llama_chat import _report_live_llama_timings
 
     seen = []
     monkeypatch.setattr(

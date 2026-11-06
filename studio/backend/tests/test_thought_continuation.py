@@ -22,7 +22,8 @@ from core.inference.chat_template_helpers import (
     append_assistant_turn,
     trailing_assistant_resume_kind,
 )
-from core.inference.llama_cpp import LlamaCppBackend, _finalize_reasoning_only_cumulative
+from core.inference.llama_cpp import LlamaCppBackend
+from core.inference.llama_chat import _finalize_reasoning_only_cumulative
 
 _THOUGHT = "The user wants three primes. Small ones are"
 _QUESTION = {"role": "user", "content": "Name three primes."}

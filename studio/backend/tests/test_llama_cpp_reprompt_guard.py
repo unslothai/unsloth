@@ -32,10 +32,7 @@ except ModuleNotFoundError as _exc:
     _loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
     sys.modules["loggers"] = _loggers_stub
 
-from core.inference.llama_cpp import (  # noqa: E402
-    _HAS_ANSWER_ARTIFACT,
-    _has_answer_artifact,
-)
+from core.inference.llama_chat import _has_answer_artifact  # noqa: E402
 from core.inference.tool_call_parser import INTENT_SIGNAL as _INTENT_SIGNAL  # noqa: E402
 import time
 
@@ -442,7 +439,7 @@ def test_step_labelled_results_are_not_a_plan():
 
 def _would_reprompt(content: str) -> bool:
     """Return True if the re-prompt block at llama_cpp.py would fire."""
-    from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
+    from core.inference.llama_chat import _REPROMPT_MAX_CHARS
 
     stripped = content.strip()
     return bool(
@@ -976,7 +973,7 @@ def test_hidden_reasoning_artifact_still_reprompts():
     """When content tokens were emitted but content_accum is empty (a
     streaming oddity) and reasoning hides a complete artifact, the user
     sees nothing, so the re-prompt MUST still fire."""
-    from core.inference.llama_cpp import _REPROMPT_MAX_CHARS
+    from core.inference.llama_chat import _REPROMPT_MAX_CHARS
 
     content_accum = ""
     reasoning_accum = "First, let me draft it.\n```python\nprint('hidden answer')\n```"
@@ -994,7 +991,7 @@ def _gate_would_reprompt(
     finish_reason = "stop",
 ):
     """The re-prompt gate's own derivation of what counts as the visible answer."""
-    from core.inference.llama_cpp import _REPROMPT_MAX_CHARS, _text_outside_think
+    from core.inference.llama_chat import _REPROMPT_MAX_CHARS, _text_outside_think
     from core.inference.tool_call_parser import strip_tool_markup
 
     visible_raw = content_accum.strip()

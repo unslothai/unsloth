@@ -314,8 +314,8 @@ def _fit(
     counter = _chars,
     **kwargs,
 ):
-    from core.inference import llama_cpp
-    return llama_cpp._fit_with_instruction_pins(
+    from core.inference import chat_compaction
+    return chat_compaction._fit_with_instruction_pins(
         messages,
         context_length = 1000,
         max_tokens = 128,
@@ -348,9 +348,9 @@ def test_a_fit_that_keeps_everything_reports_nothing():
 
 
 def test_a_forced_reset_reports(monkeypatch):
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
     reports = []
     fitted, info = _fit(
         _turns(100),
@@ -418,9 +418,9 @@ def test_a_replay_that_no_longer_fits_is_reported(policy):
 def test_a_new_checkpoint_past_a_saved_cut_is_reported(monkeypatch):
     # No system message, so the checkpoint block adds one, and a block the template prices at nothing leaves the
     # reset's own count under budget: only the eviction decision itself shows that a new epoch started.
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
-    monkeypatch.setattr(llama_cpp, "_archive_is_degraded", lambda: False)
+    monkeypatch.setattr(chat_compaction, "_archive_is_degraded", lambda: False)
     reports = []
     fitted, info = _fit(
         _compacted_chat(450),
@@ -444,9 +444,9 @@ def test_a_failing_report_never_breaks_the_fit():
 
 
 def test_only_a_live_signal_is_a_compaction_reporter():
-    from core.inference import llama_cpp
+    from core.inference import chat_compaction
 
     signal = route._PrefillProgressSignal(None, live = True)
-    assert llama_cpp._compaction_reporter(signal) == signal.compacting
-    assert llama_cpp._compaction_reporter(lambda sample: None) is None
-    assert llama_cpp._compaction_reporter(None) is None
+    assert chat_compaction._compaction_reporter(signal) == signal.compacting
+    assert chat_compaction._compaction_reporter(lambda sample: None) is None
+    assert chat_compaction._compaction_reporter(None) is None

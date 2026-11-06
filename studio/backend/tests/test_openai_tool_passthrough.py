@@ -10924,7 +10924,7 @@ def test_every_gguf_choice_gets_a_seed_of_its_own():
 
 def test_the_two_seed_helpers_agree_on_which_seeds_are_random():
     """The seed helpers must agree on what is random: -1, 4294967295 and 2**64-1 are the same sentinel."""
-    from core.inference.llama_cpp import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
+    from core.inference.llama_chat import _LLAMA_RANDOM_SEED, _apply_seeded_llama_request
     from routes.inference import _choice_seed
 
     for seed in (-1, 0xFFFFFFFF, 2**64 - 1):

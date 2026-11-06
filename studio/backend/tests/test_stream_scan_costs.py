@@ -15,7 +15,7 @@ if _BACKEND_DIR not in sys.path:
 
 
 from core import tool_healing
-from core.inference import llama_cpp, safetensors_agentic
+from core.inference import llama_chat, safetensors_agentic
 from core.inference.tool_call_parser import held_bare_gemma_tail_len
 
 _TOOLS = [
@@ -33,8 +33,8 @@ def _walk_tail(text: str) -> str:
 
 def _gguf_hold_reference(text: str, tools: list) -> int:
     tail = _walk_tail(text)
-    held = len(tail) if tail and llama_cpp._is_rehearsal_prefix(tail, tools) else 0
-    names = lambda: set(llama_cpp._gguf_active_tool_names(tools))  # noqa: E731
+    held = len(tail) if tail and llama_chat._is_rehearsal_prefix(tail, tools) else 0
+    names = lambda: set(llama_chat._gguf_active_tool_names(tools))  # noqa: E731
     return max(held, held_bare_gemma_tail_len(text, names))
 
 
@@ -88,7 +88,7 @@ def test_held_tail_matches_the_unbounded_walk():
     for _ in range(1500):
         tools = rng.sample(_TOOLS, rng.randint(0, len(_TOOLS)))
         text = "".join(rng.choice(pieces) for _ in range(rng.randint(0, 24)))
-        assert llama_cpp._held_rehearsal_tail_len(text, tools) == _gguf_hold_reference(
+        assert llama_chat._held_rehearsal_tail_len(text, tools) == _gguf_hold_reference(
             text, tools
         ), (text, tools)
         for unrestricted in (False, True):
@@ -110,7 +110,7 @@ def test_held_tail_does_not_rewalk_spaceless_text():
             CountingStr.reads += 1
             return str.__getitem__(self, key)
 
-    for module in (llama_cpp, safetensors_agentic):
+    for module in (llama_chat, safetensors_agentic):
         reads = []
         for n in (100, 10_000):
             CountingStr.reads = 0
