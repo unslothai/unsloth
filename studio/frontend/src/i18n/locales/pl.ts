@@ -3697,6 +3697,9 @@ export const pl = {
     connections: {
       title: "Połączenia",
       description: "Zarządzaj dostawcami i połączeniami zewnętrznymi.",
+      useSiteIcon: "Użyj ikony witryny",
+      fetchingSiteIcon: "Pobieranie…",
+      removeSiteIcon: "Usuń ikonę witryny",
     },
     remoteLan: {
       title: "Zdalnie i LAN",

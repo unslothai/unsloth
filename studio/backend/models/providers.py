@@ -13,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError, 
 
 ProviderApiType = Literal["chat_completions", "responses", "systemone"]
 
+PROVIDER_FAVICON_DATA_URL_PATTERN = r"^data:image/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$"
+MAX_PROVIDER_ICON_DATA_URL_LENGTH = 96 * 1024
+
 
 class ProviderReasoningConfig(BaseModel):
     """Explicit Custom Chat Completions wire dialect, never inferred from the URL."""
@@ -158,6 +161,21 @@ class ProviderRegistryEntry(BaseModel):
     )
 
 
+class ProviderFaviconRequest(BaseModel):
+    """Request to fetch the site favicon for a custom provider's origin."""
+
+    base_url: str = Field(..., description = "Provider base URL whose site icon is wanted")
+
+
+class ProviderFaviconResponse(BaseModel):
+    """A size-capped PNG data URL of the site icon, or None when none was found."""
+
+    favicon_data_url: Optional[str] = Field(
+        None,
+        description = "PNG data URL of the site icon, or null when none was found.",
+    )
+
+
 class ExtraHeadersMixin(BaseModel):
     extra_headers: Optional[dict[str, str]] = Field(
         default = None,
@@ -177,6 +195,13 @@ class ProviderCreate(ExtraHeadersMixin):
 
     api_type: ProviderApiType = "chat_completions"
     reasoning_config: Optional[ProviderReasoningConfig] = None
+
+    favicon_data_url: Optional[str] = Field(
+        None,
+        max_length = MAX_PROVIDER_ICON_DATA_URL_LENGTH,
+        pattern = PROVIDER_FAVICON_DATA_URL_PATTERN,
+        description = "Custom provider site icon as a size-capped image data URL.",
+    )
 
     provider_type: str = Field(..., description = "Provider type from the registry")
     display_name: str = Field(..., description = "User-chosen label (e.g. 'My OpenAI Key')")
@@ -215,6 +240,13 @@ class ProviderUpdate(ExtraHeadersMixin):
 
     api_type: Optional[ProviderApiType] = None
     reasoning_config: Optional[ProviderReasoningConfig] = None
+
+    favicon_data_url: Optional[str] = Field(
+        None,
+        max_length = MAX_PROVIDER_ICON_DATA_URL_LENGTH,
+        pattern = PROVIDER_FAVICON_DATA_URL_PATTERN,
+        description = "Custom provider site icon; null clears it.",
+    )
 
     display_name: Optional[str] = Field(None, description = "New display name")
     base_url: Optional[str] = Field(None, description = "New base URL")
@@ -261,6 +293,12 @@ class ProviderResponse(BaseModel):
 
     api_type: ProviderApiType = "chat_completions"
     reasoning_config: Optional[ProviderReasoningConfig] = None
+
+    favicon_data_url: Optional[str] = Field(
+        None,
+        max_length = MAX_PROVIDER_ICON_DATA_URL_LENGTH,
+        description = "Custom provider site icon as a size-capped image data URL.",
+    )
 
     id: str = Field(..., description = "Unique provider config ID")
     provider_type: str = Field(..., description = "Provider type (e.g. 'openai')")

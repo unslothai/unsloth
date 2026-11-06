@@ -6362,6 +6362,7 @@ export function HubModelPicker({
         providerId: string;
         providerName: string;
         providerType: string;
+        faviconDataUrl?: string;
         models: ExternalModelOption[];
       }
     >();
@@ -6375,6 +6376,7 @@ export function HubModelPicker({
           providerId: model.providerId,
           providerName: model.providerName,
           providerType: model.providerType,
+          faviconDataUrl: model.faviconDataUrl,
           models: [model],
         });
       }
@@ -7994,6 +7996,7 @@ export function HubModelPicker({
                                 providerType={group.providerType}
                                 className="size-3.5"
                                 title={group.providerName}
+                                faviconDataUrl={group.faviconDataUrl}
                               />
                             }
                             label={group.providerName}

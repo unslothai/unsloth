@@ -1782,6 +1782,7 @@ export function ImagesPage({
                 providerId: c.id,
                 providerName: c.name,
                 providerType: c.providerType,
+                faviconDataUrl: c.faviconDataUrl,
               })),
             )
         : [],

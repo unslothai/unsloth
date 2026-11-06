@@ -3390,6 +3390,9 @@ export const en = {
     connections: {
       title: "Connections",
       description: "Manage providers and external connections.",
+      useSiteIcon: "Use site icon",
+      fetchingSiteIcon: "Fetching…",
+      removeSiteIcon: "Remove site icon",
     },
     remoteLan: {
       title: "Remote & LAN",

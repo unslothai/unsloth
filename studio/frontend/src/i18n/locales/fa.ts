@@ -3638,6 +3638,9 @@ export const fa = {
     connections: {
       title: "اتصال‌ها",
       description: "ارائه‌دهندگان و اتصال‌های خارجی را مدیریت کنید.",
+      useSiteIcon: "استفاده از آیکون وب‌سایت",
+      fetchingSiteIcon: "در حال دریافت…",
+      removeSiteIcon: "حذف آیکون وب‌سایت",
     },
     remoteLan: {
       title: "راه دور و LAN",

@@ -3682,6 +3682,9 @@ export const uk = {
     connections: {
       title: "Підключення",
       description: "Керуйте постачальниками й зовнішніми підключеннями.",
+      useSiteIcon: "Використати іконку сайту",
+      fetchingSiteIcon: "Отримання…",
+      removeSiteIcon: "Прибрати іконку сайту",
     },
     remoteLan: {
       title: "Віддалений доступ і LAN",

@@ -3669,6 +3669,9 @@ export const cs = {
     connections: {
       title: "Připojení",
       description: "Spravujte poskytovatele a externí připojení.",
+      useSiteIcon: "Použít ikonu webu",
+      fetchingSiteIcon: "Načítání…",
+      removeSiteIcon: "Odebrat ikonu webu",
     },
     remoteLan: {
       title: "Vzdálený přístup a LAN",
