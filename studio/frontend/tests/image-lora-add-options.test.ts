@@ -98,7 +98,6 @@ test("only a typed owner/name that is not listed is offered as a Hugging Face id
 });
 
 test("a typed id already in a row is offered as added, so it cannot be added twice", () => {
-  // The backend rejects a repeated LoRA id, so a second row with it would fail the load or generate.
   const taken = new Set(["someone/custom"]);
   assert.deepEqual(customLoraId("someone/custom", CATALOG, taken), {
     id: "someone/custom",

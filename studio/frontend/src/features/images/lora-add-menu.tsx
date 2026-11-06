@@ -27,10 +27,7 @@ import { customLoraId, loraAddGroups } from "./lib/lora-add-options";
 const EMPTY_ROW = "__empty-row__";
 const CUSTOM_ROW = "__custom-row__";
 
-/**
- * Add LoRA: a searchable list of the catalog when there is one, else a plain button for an empty row.
- * `onAdd`'s `focusRow` asks the caller to focus the new row's id field, which the popover then leaves alone.
- */
+/** `onAdd`'s `focusRow` asks the caller to focus the new row's id field; the popover then leaves focus alone. */
 export function LoraAddMenu({
   catalog,
   takenIds,
@@ -42,7 +39,6 @@ export function LoraAddMenu({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  // Set when the pick needs its typed id field focused rather than the trigger.
   const keepFocusOnRow = useRef(false);
   const groups = useMemo(
     () => loraAddGroups(catalog, takenIds, query),
@@ -92,7 +88,6 @@ export function LoraAddMenu({
         align="start"
         sideOffset={4}
         collisionPadding={12}
-        // Capped at the space Radix measures; only the catalog gives way, so search and footer stay reachable.
         className="w-[max(var(--radix-popover-trigger-width),20rem)] gap-0 overflow-hidden rounded-lg p-1"
         onCloseAutoFocus={(e) => {
           if (keepFocusOnRow.current) e.preventDefault();
@@ -110,8 +105,7 @@ export function LoraAddMenu({
             aria-label="Search LoRAs"
             placeholder="Search LoRAs or paste owner/name"
           />
-          {/* Only the catalog scrolls, and it shrinks first in a short window, so the footer row stays in view.
-              The flex column runs through cmdk's own sizer div. */}
+          {/* Only the catalog scrolls and shrinks, so the footer stays visible in a short window; the flex column runs through cmdk's sizer div. */}
           <CommandList className="flex max-h-none min-h-0 flex-col overflow-hidden [&>[cmdk-list-sizer]]:flex [&>[cmdk-list-sizer]]:min-h-0 [&>[cmdk-list-sizer]]:flex-col">
             {/* Not CommandEmpty: the Hugging Face row below is always an item, so cmdk never counts zero. */}
             {groups.length === 0 && !custom && (
@@ -137,7 +131,6 @@ export function LoraAddMenu({
                       }
                       className="cursor-pointer"
                     >
-                      {/* File-stem names run long with no spaces, so wrap anywhere rather than cut. */}
                       <span className="line-clamp-2 min-w-0 flex-1 [overflow-wrap:anywhere]">
                         {lora.display_name}
                       </span>

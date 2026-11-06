@@ -5,7 +5,6 @@ import type { DiffusionLoraInfo } from "../api.ts";
 
 export interface LoraAddOption {
   lora: DiffusionLoraInfo;
-  /** Already in a LoRA row: shown checked, not pickable twice. */
   added: boolean;
 }
 
@@ -27,7 +26,7 @@ const GROUPS: { heading: string; match: (l: DiffusionLoraInfo) => boolean }[] =
     },
   ];
 
-/** The Add LoRA picker's sections, filtered by a case-insensitive match on name or id. Catalog order is kept. */
+/** Keeps catalog order within each group. */
 export function loraAddGroups(
   catalog: readonly DiffusionLoraInfo[],
   takenIds: ReadonlySet<string>,
@@ -49,7 +48,7 @@ export function loraAddGroups(
   })).filter((g) => g.options.length > 0);
 }
 
-/** A typed `owner/name` (or `owner/name:file`) not in the catalog, offered as a Hugging Face id; `added` when a row has it. */
+/** A typed `owner/name[:file]` not in the catalog, offered as a Hugging Face id. */
 export function customLoraId(
   query: string,
   catalog: readonly DiffusionLoraInfo[],
