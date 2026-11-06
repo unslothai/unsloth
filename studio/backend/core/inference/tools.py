@@ -104,6 +104,7 @@ from core.inference.mcp_client import (
 from storage import mcp_servers_db
 from utils.account_context import account_thread, current_account_id, is_owner_context
 from utils.current_date_prompt_settings import strip_current_date_update_note
+from utils.host_policy import _literal_ip_address
 from utils import sandbox_memory_limit, tool_result_limit
 from core.inference.tool_confinement import ToolConfinementUnavailable, account_confinement
 from pathlib import Path
@@ -18330,6 +18331,9 @@ def _check_signal_escape_patterns(code: str):
         h = _normalize_host(host)
         if not h:
             return False
+        ip = _literal_ip_address(h)
+        if ip is not None:
+            h = str(ip)
         if h in _METADATA_HOST_LITERALS:
             return True
         if any(h.startswith(p) for p in _METADATA_HOST_PREFIXES):

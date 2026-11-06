@@ -193,6 +193,23 @@ class TestApprovedHostLiftsOnlyTheAllowlist:
         assert msg is not None and phrase in msg, msg
         assert "host not in sandbox allowlist" not in msg
 
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "2852039166",
+            "0xa9fea9fe",
+            "0251.0376.0251.0376",
+            "[::ffff:169.254.169.254]",
+            "[::ffff:a9fe:a9fe]",
+            "[fd00:ec2:0::254]",
+            "[::ffff:100.100.100.200]",
+        ],
+    )
+    def test_approved_call_blocks_other_spellings_of_a_metadata_host(self, host):
+        code = f'import urllib.request; urllib.request.urlopen("http://{host}/")'
+        msg = _check_code_safety(code, host_approved = True)
+        assert msg is not None and "Blocked: cloud-metadata host" in msg, msg
+
     def test_executor_lifts_it_for_an_approved_call_only(self, tmp_path, monkeypatch):
         from core.inference import tools
         from utils.account_context import OWNER, as_api_caller, bind_account, reset_account
