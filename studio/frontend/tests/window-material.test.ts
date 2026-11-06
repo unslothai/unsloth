@@ -4,6 +4,7 @@ import test from "node:test";
 import {
 	MATERIALS,
 	LENS_SCALE,
+	lensDrawn,
 	sanitizeLens,
 	sanitizeMaterial,
 	sanitizeStrength,
@@ -111,6 +112,15 @@ test("glass lens modes repair malformed data and scale the right way", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /\.glass-lens \{\n  position: absolute;\n  inset: 0;\n  z-index: -1;/);
 	assert.match(css, /\[data-outline="false"\]\) \.glass-lens \.glass-lens-rim,/);
+});
+
+test("a glass lens set to off draws no wallpaper copies", () => {
+	for (const material of MATERIALS) assert.equal(lensDrawn(material, "off"), false);
+	for (const lens of ["magnify", "shrink"] as const) {
+		assert.equal(lensDrawn("solid", lens), false);
+		for (const material of MATERIALS.filter((m) => m !== "solid"))
+			assert.equal(lensDrawn(material, lens), true);
+	}
 });
 
 test("glass panes thicken over images that would wash out their text", async () => {
