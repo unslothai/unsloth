@@ -44,7 +44,11 @@ def _load():
 def patched():
     original = {
         name: PreTrainedModel.__dict__[name]
-        for name in ("gradient_checkpointing_enable", "activation_checkpointing_enable")
+        for name in (
+            "gradient_checkpointing_enable",
+            "activation_checkpointing_enable",
+            "_activation_checkpointing_enable",
+        )
         if name in PreTrainedModel.__dict__
     }
     previous_checkpoint = hf_modeling_utils.checkpoint
@@ -166,6 +170,22 @@ def test_every_n_layers_survives_flag_rewrite_through_activation_checkpointing_e
         if hasattr(module, "gradient_checkpointing"):
             module.gradient_checkpointing = True
     assert _flags(model) == [True, False, True, False]
+
+
+@pytest.mark.skipif(
+    not RENAMED,
+    reason = "the old name is an alias of activation_checkpointing_enable from transformers 5.23",
+)
+def test_every_n_layers_dict_through_instance_wrapper_of_old_name(patched):
+    # vision.py wraps the old name per instance (gemma3n / gemma4, forced non-reentrant).
+    model = _model()
+    original = model.gradient_checkpointing_enable
+    model.gradient_checkpointing_enable = lambda **kwargs: original(**kwargs)
+    model.gradient_checkpointing_enable(
+        gradient_checkpointing_kwargs = {"use_reentrant": False, "every_n_layers": 2}
+    )
+    assert _flags(model) == [True, False, True, False]
+    _grads(model)
 
 
 @pytest.mark.skipif(

@@ -90,10 +90,15 @@ def patch_gradient_checkpointing_enable_kwargs():
         import transformers.modeling_utils as hf_modeling_utils
     except Exception:
         return
-    # transformers >= 5.23: gradient_checkpointing_enable is an alias that calls this one.
-    name = "activation_checkpointing_enable"
-    if not hasattr(PreTrainedModel, name):
-        name = "gradient_checkpointing_enable"
+    # transformers >= 5.23: both public names and instance wrappers of the old one end here.
+    name = next(
+        (
+            n
+            for n in ("_activation_checkpointing_enable", "activation_checkpointing_enable")
+            if hasattr(PreTrainedModel, n)
+        ),
+        "gradient_checkpointing_enable",
+    )
     original = getattr(PreTrainedModel, name)
     if getattr(original, "_unsloth_gc_kwargs", False):
         return
@@ -101,7 +106,7 @@ def patch_gradient_checkpointing_enable_kwargs():
         params = list(inspect.signature(original).parameters)
     except Exception:
         return
-    kwargs_name = name.replace("_enable", "_kwargs")
+    kwargs_name = name.lstrip("_").replace("_enable", "_kwargs")
     positional = [p for p in params if p not in ("self", kwargs_name)]
     native_every = "every_n_layers" in params
     native_offload = "offload" in params
@@ -121,8 +126,9 @@ def patch_gradient_checkpointing_enable_kwargs():
             gc_kwargs = dict(gradient_checkpointing_kwargs)
             dict_every = gc_kwargs.pop("every_n_layers", None)
             dict_offload = gc_kwargs.pop("offload", None)
-            every = dict_every if every is None else every
-            offload = dict_offload if offload is None else offload
+            # transformers >= 5.23 always forwards the defaults (1, False), so they cannot override the dict.
+            every = dict_every if every in (None, 1) and dict_every is not None else every
+            offload = offload or dict_offload
             if len(gc_kwargs) != len(gradient_checkpointing_kwargs):
                 gradient_checkpointing_kwargs = gc_kwargs or None
         every = 1 if every is None else int(every)
