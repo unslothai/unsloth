@@ -20,8 +20,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Union
 
-import httpx
-
 _HERE = Path(__file__).resolve().parent
 _BACKEND = _HERE.parent.parent
 if str(_BACKEND) not in sys.path:
@@ -105,18 +103,20 @@ class _Pacer:
             time.sleep(delay)
 
 
-class _PacedStream(httpx.SyncByteStream):
-    def __init__(self, inner, pacer: _Pacer):
-        self._inner = inner
-        self._pacer = pacer
+def _paced_stream(inner, pacer: _Pacer):
+    # iter_raw demands its own library's SyncByteStream: httpx on hub 1.x, httpx2 on 2.x.
+    base = sys.modules[type(inner).__module__.partition(".")[0]].SyncByteStream
 
-    def __iter__(self):
-        for chunk in self._inner:
-            self._pacer.wait(len(chunk))
-            yield chunk
+    class _PacedStream(base):
+        def __iter__(self):
+            for chunk in inner:
+                pacer.wait(len(chunk))
+                yield chunk
 
-    def close(self) -> None:
-        self._inner.close()
+        def close(self) -> None:
+            inner.close()
+
+    return _PacedStream()
 
 
 def _install_speed_limit() -> None:
@@ -140,7 +140,7 @@ def _install_speed_limit() -> None:
     )
 
     def pace(response) -> None:
-        response.stream = _PacedStream(response.stream, pacer)
+        response.stream = _paced_stream(response.stream, pacer)
 
     def paced_client():
         client = default_client_factory()
