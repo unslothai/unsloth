@@ -4,6 +4,8 @@ import test from "node:test";
 import {
 	MATERIALS,
 	LENS_SCALE,
+	inScope,
+	sanitizeScope,
 	sanitizeLens,
 	sanitizeMaterial,
 	sanitizeStrength,
@@ -15,6 +17,27 @@ test("glass material repairs malformed persisted data", () => {
 	assert.equal(sanitizeMaterial("glass"), "solid");
 	assert.equal(sanitizeMaterial({}), "solid");
 	for (const material of MATERIALS) assert.equal(sanitizeMaterial(material), material);
+});
+
+test("the glass Show on setting keeps old records on every page and maps routes like the background", () => {
+	assert.equal(sanitizeScope(undefined, "all"), "all");
+	assert.equal(sanitizeScope("pages", "all"), "all");
+	assert.equal(sanitizeScope("chats", "all"), "chats");
+	assert.deepEqual(
+		(["newChat", "chat", "page"] as const).map((route) => [inScope("newChat", route), inScope("chats", route), inScope("all", route)]),
+		[[true, true, true], [false, true, true], [false, false, true]],
+	);
+	const material = readFileSync(new URL("../src/features/chat-background/material.ts", import.meta.url), "utf8");
+	assert.match(material, /scope: sanitizeScope\(stored\?\.scope, "all"\)/);
+	// Out of scope the page draws solid: no glass attribute, no glass menus, no lens or plain backdrop.
+	assert.match(material, /if \(shown === "solid" \|\| !here\) root\.removeAttribute\("data-glass"\);/);
+	assert.match(material, /menus && material !== "solid" && here,/);
+	for (const file of ["lens.tsx", "mount.tsx", "background.tsx"]) {
+		const source = readFileSync(new URL(`../src/features/chat-background/${file}`, import.meta.url), "utf8");
+		assert.match(source, /useAppliedMaterial\(\)/, file);
+	}
+	const root = readFileSync(new URL("../src/app/routes/__root.tsx", import.meta.url), "utf8");
+	assert.match(root, /<WindowMaterialMount route=\{hideNavbar \? undefined : isChatRoute \? "chat" : "page"\} \/>/);
 });
 
 test("every glass material has its stylesheet tokens", () => {
