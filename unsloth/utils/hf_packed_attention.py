@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Packed rows use varlen flash; heads past 256 and shapes FA4/FA3 refuses use SDPA mem-efficient;
+"""Packed rows use varlen flash; wide heads use SDPA mem-efficient or opt-in HD512 Triton;
 anything else goes to the wrapped sdpa."""
 
 import contextlib
@@ -19,13 +19,14 @@ _ENV = "UNSLOTH_HF_PACKED_VARLEN"
 _ORIG_SDPA = [None]
 # True inside _block_compile's own compiled blocks (not a user's outer compile); see _leaves_block.
 IN_COMPILED_BLOCK = [False]
-# efficient: the subset of fast calls that ran SDPA's memory-efficient kernel over cu_seqlens;
+# efficient: fast calls on SDPA memory-efficient over cu_seqlens; large_head: packed HD512 Triton.
 # int32_split: fast calls run in document groups to keep flash's varlen backward under int32.
 HF_PACKED_ATTENTION_STATS = {
     "fast": 0,
     "fallback": 0,
     "mask_checks": 0,
     "efficient": 0,
+    "large_head": 0,
     "compiled": 0,
     "int32_split": 0,
 }
@@ -306,6 +307,70 @@ def _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window):
     return _EfficientVarlenAttention.apply(
         q, k, v, cu_seqlens.to(torch.int32), int(max_seqlen), float(scale), window
     )
+
+
+def _packed_key_intervals(cu_seqlens, total, window):
+    """Build per-token bounds after _mask_is_block_causal validated these exact boundaries."""
+    cacheable = not (torch.is_inference(cu_seqlens) or torch.is_inference_mode_enabled())
+    version = cu_seqlens._version if cacheable else None
+    cache = getattr(cu_seqlens, "_unsloth_large_head_intervals", {}) if cacheable else {}
+    cached = cache.get(window)
+    if cached is not None and cached[:2] == (version, total):
+        return cached[2:]
+    hi = torch.arange(total, device = cu_seqlens.device, dtype = torch.int32)
+    segment = torch.searchsorted(cu_seqlens[1:], hi, right = True)
+    lo = cu_seqlens[segment].to(torch.int32)
+    if window is not None:
+        lo = torch.maximum(lo, hi - window + 1)
+    lo, hi = lo[None].contiguous(), hi[None].contiguous()
+    if cacheable:
+        cache[window] = (version, total, lo, hi)
+        cu_seqlens._unsloth_large_head_intervals = cache
+    return lo, hi
+
+
+def _packed_large_head(query, key, value, cu_seqlens, scale, window):
+    """Try the existing HD512 kernel on a validated packed call; None keeps efficient varlen.
+
+    Experimental until measured against efficient varlen, rather than dense masked SDPA.
+    The caller keeps all efficient-varlen policy / shape checks and the exact mask check.
+    """
+    if (
+        query.shape[-1] != 512
+        or os.environ.get("UNSLOTH_HF_PACKED_HD512", "0").lower() not in ("1", "true", "yes", "on")
+        or torch.compiler.is_compiling()
+        or torch.version.hip is not None
+    ):
+        return None
+    try:
+        from ..kernels import large_head_attention as lh
+    except ImportError:
+        return None
+    if (
+        not lh._enabled()
+        or not lh._shapes_qualify(query, key, value)
+        or lh._autocast_dtype_differs(query)
+        or lh._math_sdpa_requested()
+        or lh._is_capturing(query.device)
+        or not lh._self_check(query.device, query.dtype)
+    ):
+        return None
+    try:
+        lo, hi = _packed_key_intervals(cu_seqlens, query.shape[2], window)
+        out = lh.large_head_attention(query, key, value, lo, hi, scale)
+    except torch.OutOfMemoryError:
+        raise
+    except Exception as exc:
+        if _ACCELERATOR_ERROR is not None and isinstance(exc, _ACCELERATOR_ERROR):
+            raise
+        lh.LARGE_HEAD_ENGAGED["fallback"] += 1
+        lh._SELF_CHECK[(str(query.device), query.dtype)] = False
+        lh._warn_once(
+            f"Unsloth: packed head_dim 512 kernel unavailable ({exc}); using efficient varlen."
+        )
+        return None
+    lh.LARGE_HEAD_ENGAGED["calls"] += 1
+    return out
 
 
 _SDPA_MATH = []
@@ -613,6 +678,11 @@ def _sdpa_packed_varlen(
     n_kv_heads = key.shape[1]
     _, cu_seqlens, max_seqlen = seq_info
     if efficient:
+        if not kwargs.get("output_attentions", False):
+            out = _packed_large_head(query, key, value, cu_seqlens, scale, window)
+            if out is not None:
+                HF_PACKED_ATTENTION_STATS["large_head"] += 1
+                return out, None
         try:
             out = _efficient_varlen(query, key, value, cu_seqlens, max_seqlen, scale, window)
         except torch.OutOfMemoryError:
