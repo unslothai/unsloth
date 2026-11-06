@@ -542,7 +542,7 @@ def test_a_partial_another_account_owns_is_refused_on_windows(tmp_path):
     if subprocess.run(
         ["icacls", str(target), "/setowner", "*S-1-5-18"], capture_output = True
     ).returncode:
-        pytest.skip("cannot hand the file to another owner without administrator rights")
+        pytest.skip(reason = "changing a file owner needs administrator rights")
     descriptor = os.open(target, os.O_WRONLY | os.O_APPEND)
     try:
         assert rp._objection_to(descriptor) == "owned by another user"
