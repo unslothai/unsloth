@@ -457,14 +457,15 @@ def test_an_unopenable_partial_defers_instead_of_failing_the_download(monkeypatc
 def test_a_partial_swapped_after_the_last_write_is_not_published(monkeypatch, tmp_path):
     """_chmod_and_move re-resolves the name, so the partial must still be the file written, not a swap."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
-    real_http_get = module.http_get
+    real_check = rp._still_the_written_file
 
-    def swap_then_write(url, handle, **kwargs):
-        real_http_get(url, handle, **kwargs)
-        partial.unlink()
-        partial.write_bytes(b"attacker's model")
+    # After the handle closes: Windows refuses to move an open file. Moved aside, not unlinked, so the inode cannot be reused.
+    def swap_then_check(path, written):
+        path.rename(tmp_path / "moved-aside")
+        path.write_bytes(b"attacker's model")
+        return real_check(path, written)
 
-    module.http_get = swap_then_write
+    monkeypatch.setattr(rp, "_still_the_written_file", swap_then_check)
 
     _shared_setup_1(module, partial, tmp_path)
 
