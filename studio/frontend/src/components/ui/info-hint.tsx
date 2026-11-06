@@ -27,15 +27,16 @@ function useNearFocus(hint: RefObject<HTMLElement | null>): void {
       const near = rows.some((row) => row.querySelector(":focus-visible") !== null);
       if (near !== el.hasAttribute("data-near-focus")) el.toggleAttribute("data-near-focus", near);
     };
-    // After the event: :focus-visible has settled on the element gaining or losing focus.
+    // After the event: :focus-visible has settled on the element gaining or losing focus. Keyboard
+    // input can turn it on without moving focus (a mouse-focused slider nudged with an arrow key),
+    // and a pointer press can turn it off, so those re-check too.
     const later = () => queueMicrotask(sync);
     const top = rows[rows.length - 1];
-    top.addEventListener("focusin", later);
-    top.addEventListener("focusout", later);
+    const events = ["focusin", "focusout", "keydown", "pointerdown"] as const;
+    for (const type of events) top.addEventListener(type, later);
     sync();
     return () => {
-      top.removeEventListener("focusin", later);
-      top.removeEventListener("focusout", later);
+      for (const type of events) top.removeEventListener(type, later);
     };
   }, [hint]);
 }

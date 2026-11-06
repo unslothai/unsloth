@@ -78,3 +78,11 @@ test("the Windows page blur learns about the sidebar frame from the root, not a 
     /data-windows-glass-frame=\{\(pinned && usesWindowsTitlebar\(\)\) \|\| undefined\}/,
   );
 });
+
+test("the info hint re-checks keyboard focus on key and pointer input, not only on focus moves", () => {
+  const hint = readSrc("components/ui/info-hint.tsx");
+  // A mouse-focused slider nudged with an arrow key gains :focus-visible without a focus event.
+  assert.match(hint, /\["focusin", "focusout", "keydown", "pointerdown"\]/);
+  assert.match(hint, /for \(const type of events\) top\.addEventListener\(type, later\);/);
+  assert.match(hint, /for \(const type of events\) top\.removeEventListener\(type, later\);/);
+});
