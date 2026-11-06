@@ -18,8 +18,54 @@ import {
   initialWindow,
   isCovered,
   stepsToCover,
+  watchProgressiveScroll,
   widen,
 } from "../src/components/assistant-ui/progressive-mount-controller.ts";
+
+test("mounting waits for wheel momentum and thumb release, without pausing on its own corrections", () => {
+  const viewport = new EventTarget();
+  let time = 1000;
+  const activity = watchProgressiveScroll(viewport, () => time);
+  const send = (type: string) => viewport.dispatchEvent(new Event(type));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  send("scroll");
+  assert.equal(activity.blocked(false), false);
+  send("wheel");
+  assert.equal(activity.blocked(false), true);
+  time += 250;
+  send("scroll");
+  time += 250;
+  assert.equal(activity.blocked(false), true);
+  time += 51;
+  assert.equal(activity.blocked(false), false);
+  send("scroll");
+  assert.equal(activity.blocked(false), false);
+  assert.equal(activity.blocked(true), true);
+  time += 1000;
+  assert.equal(activity.blocked(true), true);
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  assert.equal(activity.blocked(false), false);
+  activity.dispose();
+  send("wheel");
+  assert.equal(activity.blocked(false), false);
+});
+
+test("scroll keys and touch momentum pause mounting; ordinary typing does not", () => {
+  const viewport = new EventTarget();
+  let time = 1000;
+  const activity = watchProgressiveScroll(viewport, () => time);
+  time += 301;
+  viewport.dispatchEvent(Object.assign(new Event("keydown"), { key: "a" }));
+  assert.equal(activity.blocked(false), false);
+  viewport.dispatchEvent(Object.assign(new Event("keydown"), { key: "PageUp" }));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  viewport.dispatchEvent(new Event("touchmove"));
+  assert.equal(activity.blocked(false), true);
+  activity.dispose();
+});
 
 test("a thread under the floor is never windowed", () => {
   for (const count of [0, 1, 20, MIN_PROGRESSIVE_MESSAGES - 1]) {

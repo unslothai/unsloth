@@ -127,7 +127,7 @@ test("the widening step is deferred and transition-wrapped", () => {
     /setTimeout|setInterval|queueMicrotask/,
     "cancelAnimationFrame does not cancel a timer, so a closed window would still widen",
   );
-  assert.match(widening, /if \(inputPointerHeld\(\)\) \{\s*frame = requestAnimationFrame\(advance\);\s*return;/);
+  assert.match(widening, /if \(scrollActivity\.current\?\.blocked\(inputPointerHeld\(\)\)\) \{\s*frame = requestAnimationFrame\(advance\);\s*return;/);
 });
 
 test("the anchor is measured against its scroll container, not against the window", () => {

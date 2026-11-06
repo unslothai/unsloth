@@ -27,6 +27,7 @@ import {
   CHUNK_MESSAGES,
   anchorCorrection,
   initialWindow,
+  watchProgressiveScroll,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
 import {
@@ -252,6 +253,18 @@ function useProgressiveMountWindow(
     | null
   >(null);
   const idleRef = useRef<HeldAnchor | null>(null);
+  const scrollActivity = useRef<ReturnType<typeof watchProgressiveScroll> | null>(null);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const activity = watchProgressiveScroll(viewport);
+    scrollActivity.current = activity;
+    return () => {
+      activity.dispose();
+      scrollActivity.current = null;
+    };
+  }, [viewportRef]);
 
   const captureAnchor = useCallback(() => {
     const viewport = viewportRef.current;
@@ -281,8 +294,8 @@ function useProgressiveMountWindow(
         setMountWindow(null);
         return;
       }
-      // Prepending during a native thumb drag changes the range under the pointer.
-      if (inputPointerHeld()) {
+      // A prepend's instant anchor correction also interrupts native wheel momentum.
+      if (scrollActivity.current?.blocked(inputPointerHeld())) {
         frame = requestAnimationFrame(advance);
         return;
       }
@@ -321,8 +334,7 @@ function useProgressiveMountWindow(
     idleRef.current = holdAnchor(viewport, element);
   }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
 
-  // Compensates reflows above a detached reader while native anchoring is off. Currently dormant
-  // because the widening effect above registers first: reordering these two effects turns it on.
+  // Compensate reflows between prepends while native anchoring is off.
   useEffect(() => {
     if (mountWindow == null) {
       idleRef.current = null;
@@ -334,6 +346,10 @@ function useProgressiveMountWindow(
       const viewport = viewportRef.current;
       // A pending widening capture owns the correction; stepping in would correct twice.
       if (!viewport || anchorRef.current) return;
+      if (scrollActivity.current?.blocked(inputPointerHeld())) {
+        idleRef.current = null;
+        return;
+      }
       const held = idleRef.current;
       if (!held) {
         const element = pickAnchorRow(viewport);

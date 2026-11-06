@@ -16,6 +16,39 @@ export const INITIAL_MESSAGES = 16;
 /** Messages added per widening frame; trades build-in height against length, not total work. */
 export const CHUNK_MESSAGES = 32;
 
+/** Leave native scrolling and its momentum alone before changing the scroll range. */
+export function watchProgressiveScroll(
+  viewport: EventTarget,
+  now: () => number = () => performance.now(),
+) {
+  // Let the initial tail paint before starting background work.
+  let resumeAt = now() + 300;
+  const pause = () => { resumeAt = now() + 300; };
+  const onScroll = () => { if (now() < resumeAt) pause(); };
+  const onKey = (event: Event) => {
+    const key = event as KeyboardEvent;
+    if (key.defaultPrevented || !["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(key.key)) return;
+    const target = key.target as HTMLElement | null;
+    if (target?.isContentEditable || target?.closest?.("input, textarea, select")) return;
+    pause();
+  };
+  const listeners = { wheel: pause, touchmove: pause, keydown: onKey, scroll: onScroll };
+  for (const [type, listener] of Object.entries(listeners)) {
+    viewport.addEventListener(type, listener, { capture: true, passive: true });
+  }
+  return {
+    blocked(pointerHeld: boolean): boolean {
+      if (pointerHeld) pause();
+      return now() < resumeAt;
+    },
+    dispose() {
+      for (const [type, listener] of Object.entries(listeners)) {
+        viewport.removeEventListener(type, listener, { capture: true });
+      }
+    },
+  };
+}
+
 /** Caps the tail walk so a tail of non-rendering messages cannot mount the whole thread. */
 export const MAX_INITIAL_SPAN = INITIAL_MESSAGES * 4;
 
