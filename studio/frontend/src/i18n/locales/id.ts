@@ -5893,8 +5893,7 @@ export const id = {
     skippedVersion: "{component} {version} dilewati untuk saat ini",
     skippedUpdate: "Pembaruan {component} dilewati untuk saat ini",
     skippedUpdates: "Pembaruan {components} dilewati untuk saat ini",
-    vulkanFaster:
-      "Vulkan >10% lebih cepat daripada ROCM. Tidak perlu memulai ulang",
+    vulkanFaster: "Lebih dari 10% lebih cepat",
     noRestart: "Tidak perlu memulai ulang",
     downloadSize: "Unduhan {size}",
     backendChange: "Backend {change}",
@@ -5903,8 +5902,8 @@ export const id = {
     installingPhase: "Menginstal {component} ({current} dari {total})...",
     installingCount: "Menginstal {count} pembaruan...",
     bundleTitle: "{count} pembaruan runtime",
-    newBackend: "Backend {component} baru",
-    newUpdate: "Pembaruan {component} baru",
+    newBackend: "Backend runtime baru",
+    newUpdate: "Pembaruan runtime baru",
     hideUpdate:
       "Sembunyikan pembaruan {component} hingga Unsloth dibuka kembali",
     hideUpdates:

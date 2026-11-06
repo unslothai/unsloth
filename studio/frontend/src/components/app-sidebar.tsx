@@ -271,6 +271,7 @@ import {
   prefersReducedMotion,
 } from "@/features/settings/stores/appearance-custom-store";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import {
   isSurfaceBackgrounded,
   useShortcutLabel,
@@ -3950,6 +3951,12 @@ export function AppSidebar() {
   }
 
   function clearChatNotifications(item: SidebarItem) {
+    // Capture the unread result before Recents clears its persistent unread marker.
+    const { ttsEnabled, autoReadAloud } = useVoiceSettingsStore.getState();
+    useUnseenScheduledRuns.getState().openThread(
+      item.type === "single" ? item.id : null,
+      ttsEnabled && autoReadAloud,
+    );
     clearThreadsUnread(getSidebarItemThreadIds(item));
   }
 

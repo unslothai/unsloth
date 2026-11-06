@@ -2913,9 +2913,9 @@ def _configure_mlx_training_schedule(
     )
     trainer.args.max_steps = max_steps
     if warmup_ratio is not None:
-        trainer.args.warmup_steps = int(round(warmup_ratio * max_steps))
+        trainer.args.warmup_steps = math.ceil(warmup_ratio * max_steps)
     if eval_steps_ratio is not None:
-        trainer.args.eval_steps = max(1, int(eval_steps_ratio * max_steps))
+        trainer.args.eval_steps = max(1, math.ceil(eval_steps_ratio * max_steps))
     return max_steps, int(trainer.args.eval_steps)
 
 

@@ -14229,6 +14229,16 @@ def _thread_document_ids(thread_id) -> set | None:
 
 def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     """Pre-retrieves the latest turn for models that skip search_knowledge_base. Toggle rag_scope.autoinject or RAG_AUTOINJECT; floor RAG_AUTOINJECT_MIN_SCORE."""
+    try:
+        from core.rag.retrieval import query_vector_memo
+    except Exception:  # noqa: BLE001 - the build reports an unavailable RAG stack itself
+        return _build_rag_autoinject(conversation, rag_scope)
+    # The thread retry, the hybrid retry and the dense probe re-ask the same query: encode it once.
+    with query_vector_memo():
+        return _build_rag_autoinject(conversation, rag_scope)
+
+
+def _build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> dict | None:
     enabled, whole_doc_requested = rag_autoinject_reaches_retrieval(conversation, rag_scope)
     if not enabled and not whole_doc_requested:
         return None

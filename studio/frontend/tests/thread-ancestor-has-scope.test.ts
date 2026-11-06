@@ -11,6 +11,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import ts from "@typescript/typescript6";
+import postcss from "postcss";
+import selectorParser from "postcss-selector-parser";
 
 import { openingTag } from "./helpers/tsx-ast.ts";
 
@@ -97,4 +99,109 @@ test("index.css has no descendant-argument :has() on the panels that hold the th
   const offenders =
     css.match(/(?:#chat-thread|\.chat-artifact-split|\.chat-thread-pane)[^{},]*:has\((?!\s*>)/g) ?? [];
   assert.deepEqual(offenders, [], `descendant-argument :has() on a thread ancestor: ${offenders.join(" | ")}`);
+});
+
+// Elements that hold the whole thread: a descendant :has() on any of them re-walks every message.
+const THREAD_ANCESTORS = [
+  ["attribute", "data-wallpaper-workspace"],
+  ["attribute", "data-chat-content-root"],
+  // Same element as the workspace on Windows non-chat pages, where the chat stays mounted.
+  ["attribute", "data-windows-wallpaper-page"],
+  ["class", "aui-thread-viewport"],
+] as const;
+
+type Node = selectorParser.Node;
+
+// The compound (run of simple selectors between combinators) that `node` sits in.
+const compoundOf = (node: Node): Node[] => {
+  const parts = node.parent?.nodes ?? [];
+  const at = parts.indexOf(node as never);
+  let from = at;
+  while (from > 0 && parts[from - 1].type !== "combinator") from--;
+  let to = at;
+  while (to < parts.length - 1 && parts[to + 1].type !== "combinator") to++;
+  return parts.slice(from, to + 1) as Node[];
+};
+
+// :has() nested in :not()/:is()/:where() still anchors on the outer compound.
+const anchorCompound = (pseudo: selectorParser.Pseudo): Node[] => {
+  let node: Node = pseudo;
+  for (;;) {
+    const outer: Node | undefined = node.parent?.parent as Node | undefined;
+    if (!outer || !selectorParser.isPseudo(outer) || outer.value === ":has") break;
+    node = outer;
+  }
+  return compoundOf(node);
+};
+
+const isThreadAncestor = (compound: Node[]): boolean => {
+  const hits = (node: Node): boolean =>
+    THREAD_ANCESTORS.some(([type, value]) =>
+      node.type === type
+      && (type === "attribute" ? (node as selectorParser.Attribute).attribute : node.value) === value)
+    || (node.type === "pseudo" && node.value === ":is" && node.nodes.some((sel) => sel.nodes.some(hits)));
+  return compound.some(hits);
+};
+
+const childOnly = (path: selectorParser.Selector): boolean => {
+  if (path.first?.type !== "combinator" || path.first.value !== ">") return false;
+  let ok = true;
+  path.each((node) => {
+    if (node.type === "combinator" && node.value !== ">") ok = false;
+  });
+  return ok;
+};
+
+const descendantHasOnThreadAncestors = (cssText: string): string[] => {
+  const offenders: string[] = [];
+  postcss.parse(cssText).walkRules((rule) => {
+    if (!rule.selector.includes(":has(")) return;
+    selectorParser().astSync(rule.selector).walkPseudos((pseudo) => {
+      if (pseudo.value !== ":has" || !isThreadAncestor(anchorCompound(pseudo))) return;
+      for (const path of pseudo.nodes) {
+        if (!childOnly(path)) offenders.push(`${String(pseudo)} in ${rule.selector}`);
+      }
+    });
+  });
+  return offenders;
+};
+
+test("no descendant-argument :has() anchored on an element that holds the thread", () => {
+  const offenders = descendantHasOnThreadAncestors(readText("../src/index.css"));
+  assert.deepEqual(offenders, [], offenders.join("\n"));
+});
+
+test("the thread-ancestor :has() guard catches the shapes that regressed typing", () => {
+  const workspace = ":is([data-wallpaper-workspace], [data-chat-content-root])";
+  const bad = [
+    `${workspace}:has(> .chat-wallpaper[data-ready] .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {}`,
+    `${workspace}:has(> .chat-wallpaper[data-ready]):not(:has(.aui-thread-welcome-center)) > .chat-wallpaper {}`,
+    `${workspace}:has([data-tour="chat-compare-view"]) > .chat-wallpaper {}`,
+    `${workspace} .aui-thread-viewport:has(.aui-thread-welcome-center) {}`,
+    `html:not(.dark)[data-glass] ${workspace}:has(.aui-thread-welcome-center) .chat-wallpaper-frame {}`,
+    "[data-windows-wallpaper-page]:has([data-windows-glass-frame]) > [data-slot=\"page-wallpaper-blur\"] {}",
+  ];
+  for (const css of bad) assert.equal(descendantHasOnThreadAncestors(css).length, 1, css);
+  const good = [
+    `${workspace}:has(> .chat-wallpaper[data-ready] > .chat-wallpaper-frame > .chat-wallpaper-image[data-fade="false"]) .thread-bottom-fade {}`,
+    `html:not([data-chat-welcome]) ${workspace}:has(> .chat-wallpaper[data-ready]) > .chat-wallpaper {}`,
+    `${workspace} .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {}`,
+    ".composer-pill-btn:has(.composer-pill-caret) {}",
+  ];
+  for (const css of good) assert.deepEqual(descendantHasOnThreadAncestors(css), [], css);
+});
+
+test("the welcome and compare views stamp the root flags the wallpaper CSS reads", () => {
+  const welcome = readText("../src/features/chat-background/welcome.ts");
+  assert.match(welcome, /ROOT_WELCOME = "data-chat-welcome"/);
+  assert.match(welcome, /ROOT_COMPARE = "data-chat-compare"/);
+  const thread = readText("../src/components/assistant-ui/thread.tsx");
+  const welcomeBody = thread.slice(thread.indexOf("const ThreadWelcome"));
+  assert.ok(welcomeBody.includes("useMarkChatWelcome();"), "ThreadWelcome must mark the welcome flag");
+  // The child-only viewport rule depends on this exact nesting.
+  assert.match(welcomeBody, /className="aui-thread-welcome-root[^"]*"[\s\S]{0,200}"aui-thread-welcome-center/);
+  const page = readText("../src/features/chat/chat-page.tsx");
+  const shell = page.slice(page.indexOf("function CompareShell"), page.indexOf("function CompareShell") + 800);
+  assert.ok(shell.includes("useMarkChatCompare();"), "CompareShell must mark the compare flag");
+  assert.ok(shell.includes('data-tour="chat-compare-view"'));
 });
