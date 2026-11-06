@@ -2885,6 +2885,35 @@ def test_codex_refreshes_copied_user_files_without_symlinks(fake_studio, tmp_pat
     assert (home / "skills" / "new").is_dir()
 
 
+def test_codex_merges_user_skills_into_a_used_saved_home(fake_studio, tmp_path, monkeypatch):
+    source_home = tmp_path / "user-codex"
+    (source_home / "skills" / "release").mkdir(parents = True)
+    (source_home / "skills" / "release" / "SKILL.md").write_text("release steps\n")
+    monkeypatch.setenv("CODEX_HOME", str(source_home))
+    home = tmp_path / "agents" / "codex"
+    (home / "skills" / ".system").mkdir(parents = True)
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (home / "skills" / "release" / "SKILL.md").read_text() == "release steps\n"
+    assert (home / "skills" / ".system").is_dir()
+    assert not (source_home / "skills" / ".system").exists()
+
+    shutil.rmtree(source_home / "skills" / "release")
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert not os.path.lexists(home / "skills" / "release")
+    assert (home / "skills" / ".system").is_dir()
+
+
+def test_codex_links_user_files_from_a_relative_codex_home(fake_studio, tmp_path, monkeypatch):
+    (tmp_path / "user-codex").mkdir()
+    (tmp_path / "user-codex" / "AGENTS.md").write_text("Answer in French.\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CODEX_HOME", "user-codex")
+
+    assert CliRunner().invoke(start.start_app, ["codex", "--no-launch"]).exit_code == 0
+    assert (tmp_path / "agents" / "codex" / "AGENTS.md").read_text() == "Answer in French.\n"
+
+
 def test_codex_keeps_mcp_servers_added_in_the_saved_home(fake_studio, tmp_path, monkeypatch):
     tomllib = pytest.importorskip("tomllib")
     user_home = tmp_path / "user-home"

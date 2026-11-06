@@ -3822,15 +3822,37 @@ def _link_codex_user_files(home: Path, source: Path) -> None:
         linked = json.loads(manifest.read_text(encoding = "utf-8"))["entries"]
     except (OSError, ValueError, TypeError, KeyError):
         linked = []
+    for entry in linked if isinstance(linked, list) else []:
+        parts = entry.split("/") if isinstance(entry, str) else []
+        if (
+            0 < len(parts) <= 2
+            and parts[0] in _CODEX_USER_FILES
+            and all(part not in ("", ".", "..") and "\\" not in part for part in parts)
+            and os.path.lexists(home.joinpath(*parts))
+        ):
+            _remove_overlay_entry(home.joinpath(*parts))
     entries = []
     for name in _CODEX_USER_FILES:
+        # Resolved, so a relative CODEX_HOME or a temporary session home does not leave dangling links.
+        entry = (source / name).resolve(strict = False)
         target = home / name
-        if isinstance(linked, list) and name in linked:
-            _remove_overlay_entry(target)
-        elif os.path.lexists(target):
+        if not entry.exists():
             continue
-        if os.path.exists(source / name) and _link_codex_entry(source / name, target):
-            entries.append(name)
+        if not os.path.lexists(target):
+            if _link_codex_entry(entry, target):
+                entries.append(name)
+        elif (
+            entry.is_dir()
+            and target.is_dir()
+            and not target.is_symlink()
+            and not _is_junction(target)
+        ):
+            # Codex creates skills/.system in every home it runs in, so merge instead of skipping.
+            for child in entry.iterdir():
+                if not os.path.lexists(target / child.name) and _link_codex_entry(
+                    child.resolve(strict = False), target / child.name
+                ):
+                    entries.append(f"{name}/{child.name}")
     _write_private_json(manifest, {"entries": entries})
 
 
