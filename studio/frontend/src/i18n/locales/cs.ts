@@ -206,12 +206,16 @@ export const cs = {
         history: "Čtení vaší historie prohlížení",
         move: "Pohyb myši",
         drag: "Přetahování",
+        tabs: "Prohlížení karet",
+        readFile: "Čtení souboru",
+        editFile: "Úprava souboru",
       },
     },
     title: "Prohlížeč",
     tabs: "Karty prohlížeče",
     newTab: "Nová karta",
     newTabFullView: "Nová karta v plném zobrazení",
+    newTabFloating: "Nová karta v plovoucím okně",
     closeTab: "Zavřít kartu",
     close: "Zavřít prohlížeč",
     show: "Zobrazit prohlížeč",
@@ -361,6 +365,8 @@ export const cs = {
     askBeforeDownloadingSetting: "Ptát se před stažením",
     askBeforeDownloadingSettingDescription:
       "Potvrzovat soubory z webů před jejich uložením.",
+    askBeforeProgramDownloadsSetting: "Ptát se před stažením programů",
+    askBeforeProgramDownloadsSettingDescription: "Potvrzovat soubory, které mohou spouštět programy, například .exe nebo .dmg, i když se ostatní stahování neptají.",
     downloadSitesSetting: "Oprávnění webů ke stahování",
     downloadSitesSettingDescription:
       "Weby, ze kterých jste zvolili vždy povolit nebo blokovat stahování.",
@@ -369,6 +375,7 @@ export const cs = {
     downloadSitesFor: "Stahování z webu {host}",
     downloadSitesRemove: "Zapomenout {host}",
     downloadSiteAllow: "Vždy povolit",
+    downloadSiteAllowAll: "Povolit i programy",
     downloadSiteBlock: "Vždy blokovat",
     downloadPrompt: {
       title: "Stáhnout tento soubor?",
@@ -376,6 +383,9 @@ export const cs = {
       dangerous:
         "Soubory tohoto typu mohou ve vašem počítači spouštět programy. Stáhněte ho, jen pokud webu {host} důvěřujete.",
       remember: "Zapamatovat si příště",
+      once: "Zeptat se příště",
+      site: "Vždy pro {host}",
+      all: "Vždy stahovat ze všech webů",
       cancel: "Zrušit",
       download: "Stáhnout",
       blocked: "Stahování z webu {host} bylo zablokováno.",
@@ -424,6 +434,12 @@ export const cs = {
       openChat: "Otevřít v plném zobrazení",
       moveLeft: "Přesunout do levého podokna",
       moveRight: "Přesunout do pravého podokna",
+    },
+    floating: {
+      enter: "Plovoucí okno",
+      dock: "Připnout ke straně",
+      close: "Zavřít plovoucí okno",
+      handle: "Přesunout okno. Šipky jej posouvají, Shift se šipkami mění jeho velikost.",
     },
     annotate: {
       countOne: "1 anotace",
@@ -877,6 +893,8 @@ export const cs = {
     unifiedTightFit: "Těsně se vejde",
     unifiedTightFitHint:
       "Na tomto Macu se model může načíst s kratším kontextem nebo běžet pomaleji.",
+    residentToRun: "ke spuštění",
+    residentToRunHint: "Paměť GPU, kterou kontrola načtení vyžaduje za běhu",
     onDevice: "V zařízení",
     huggingFace: "Hugging Face",
     retry: "Zkusit znovu",
@@ -1199,6 +1217,9 @@ export const cs = {
         "Jeden model na řádek, například unsloth/Qwen3-4B-GGUF, nebo unsloth/* pro celou organizaci. Pokud chcete povolit všechny modely, ponechte pole prázdné.",
       modelAccessSave: "Uložit",
       modelAccessLimited: "Omezený přístup k modelům",
+      rename: "Přejmenovat",
+      renameTitle: "Přejmenovat {username}",
+      renameDescription: "Zvolte jméno, kterým se tento účet přihlašuje. Chaty, soubory a klíče API zůstanou u účtu. Uživatel bude odhlášen a znovu se přihlásí novým jménem a stávajícím heslem.",
       empty: "Zatím žádné další účty",
       setupCode: "Kód nastavení",
       setupFor: "Kód nastavení pro účet {username}",
@@ -2299,6 +2320,12 @@ export const cs = {
         autoCurrently:
           "Automatický režim na tomto počítači používá: {transport}.",
         xetMissing: "Xet není k dispozici, protože není nainstalován hf_xet.",
+        speedLimit: "Limit rychlosti stahování",
+        speedLimitDescription:
+          "Bez limitu, dokud nezadáte hodnotu. Omezené stahování používá HTTPS.",
+        speedLimitNoLimit: "Bez limitu",
+        speedLimitInvalid: "Zadejte počet Mbit/s nebo nechte pole prázdné.",
+        speedLimitUsesHttps: "Když je nastaven limit rychlosti, stahování používá HTTPS. Soubory nad 50 GB stále používají Xet, bez limitu.",
       },
       uploads: {
         sectionTitle: "Nahrávání",
@@ -2689,6 +2716,10 @@ export const cs = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Obrys prvků",
+          description: "Síla okrajů tlačítek, polí, karet a nabídek.",
         },
         reduceMotion: {
           label: "Omezit pohyb",
@@ -3255,9 +3286,8 @@ export const cs = {
         "Zobrazovat Upravit odpověď u každé odpovědi místo v nabídce Další.",
       turnNavigation: "Navigace v kolech",
       turnNavigationDescription: "Zobrazí vaše zprávy jako lištu u levého okraje dlouhých chatů. Najetím zobrazíte náhled kola, kliknutím na něj přejdete a záložkami si kola označíte.",
-      composerAtBottom: "Pole zprávy dole",
-      composerAtBottomDescription:
-        "Zahajovat nové chaty s polem zprávy v dolní části stránky místo uprostřed.",
+      composerPosition: "Umístění pole zprávy",
+      composerPositionDescription: "Kde je pole zprávy při zahájení nového chatu, od horní části stránky až dolů.",
       projectAttachments: "Sdílet soubory v rámci projektu",
       projectAttachmentsDescription:
         "Zpřístupnit nové přílohy chatu všem chatům v projektu.",
@@ -3772,6 +3802,9 @@ export const cs = {
         docsLabel: "Otevřít dokumentaci Decision API",
         description:
           "Odpovídejte na otázky typu ano/ne, s výběrem z možností a s hodnocením týkající se textu pomocí modelu v tomto počítači nebo rozhodovacího modelu z Připojení. Funguje se sadou TypeSafe SDK.",
+        codeTitle: "Volání z kódu",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Ostatní klienti MCP se sem připojují se stejným tokenem.",
         enable: "Obsluhovat požadavky",
         enableDescription: "Obsluhuje /v1/systemone. Zapnutím se stáhne model.",
         enableRemoteDescription: "Obsluhuje /v1/systemone.",
@@ -3932,7 +3965,7 @@ export const cs = {
         desktopAvailableDescription:
           "Aktualizujte nyní; po dokončení se desktopová aplikace restartuje.",
         desktopExternalServer:
-          "Aplikace se připojila k již spuštěnému serveru Unsloth a nemůže ho aktualizovat. Zastavte tento server, potom desktopovou aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
+          "Připojeno k serveru Unsloth na portu {port}, který tato aplikace nespustila, například `unsloth studio` v terminálu. Zastavte ho tam, kde byl spuštěn, potom aplikaci ukončete a znovu otevřete, aby se aktualizovala.",
         desktopManualInstall:
           "Otevřete stránku vydání a nainstalujte nejnovější balíček pro Linux.",
         desktopCheckFailed: "Aktualizace se nepodařilo zkontrolovat",
@@ -4250,8 +4283,6 @@ export const cs = {
             "Tato datová sada vypadá jako obrázky, které nelze streamovat.",
           audioDataset:
             "Tato datová sada vypadá jako zvuk, který nelze streamovat.",
-          appleSilicon:
-            "Streamování zatím není na Apple Silicon (MLX) podporováno.",
         },
         options: {
           trainOnCompletions: "pouze odpovědi asistenta",
@@ -5510,6 +5541,8 @@ export const cs = {
     removeLevel: "Odebrat úroveň {n}",
     addLevel: "Přidat úroveň",
     jsonHelp: "Tělo požadavku. Spuštění ho odešle přesně tak, jak je napsané.",
+    copyBody: "Kopírovat tělo",
+    copyCurl: "Kopírovat jako cURL",
     examples: "Příklady",
     presetToolApproval: "Schvalovat volání nástrojů agenta",
     presetPromptInjection: "Odhalit prompt injection",
@@ -5886,8 +5919,7 @@ export const cs = {
     skippedVersion: "{component} {version} je zatím přeskočeno",
     skippedUpdate: "Aktualizace {component} je zatím přeskočena",
     skippedUpdates: "Aktualizace {components} jsou zatím přeskočeny",
-    vulkanFaster:
-      "Vulkan je o více než 10 % rychlejší než ROCm. Restart není potřeba",
+    vulkanFaster: "O více než 10 % rychlejší",
     noRestart: "Restart není potřeba",
     downloadSize: "Stažení {size}",
     backendChange: "Backend {change}",
@@ -5896,8 +5928,8 @@ export const cs = {
     installingPhase: "Instalace {component} ({current} z {total})...",
     installingCount: "Instalace aktualizací ({count})...",
     bundleTitle: "Aktualizace běhových prostředí: {count}",
-    newBackend: "Nový backend {component}",
-    newUpdate: "Nová aktualizace {component}",
+    newBackend: "Nový backend běhového prostředí",
+    newUpdate: "Nová aktualizace běhového prostředí",
     hideUpdate: "Skrýt aktualizaci {component} do dalšího spuštění Unsloth",
     hideUpdates: "Skrýt aktualizace {components} do dalšího spuštění Unsloth",
     whatsNew: "Co je nového",
@@ -5909,6 +5941,7 @@ export const cs = {
   generationStats: {
     working: "Probíhá zpracování...",
     processingPrompt: "Zpracování promptu {percent} %",
+    compactingContext: "Zhušťování kontextu...",
     timeLeft: "zbývá {eta}",
     tokensOne: "tokeny: {count}",
     tokens: "tokeny: {count}",

@@ -93,6 +93,55 @@ def test_honour_rules(capsys):
     assert foreign.gradient_checkpointing is True
 
 
+def test_off_reaches_activation_checkpointing():
+    module = _load_module()
+    Config = _config_class()
+    module.track_explicit_gradient_checkpointing(Config)
+    args = Config()
+    args.__dict__["activation_checkpointing"] = True
+    assert module.honour_gradient_checkpointing_off(args, _Model(False))
+    assert args.gradient_checkpointing is False
+    assert args.activation_checkpointing is False
+
+
+def _renamed_config_class():
+    class Config:
+        def __init__(
+            self,
+            output_dir = None,
+            activation_checkpointing = None,
+            gradient_checkpointing = True,
+            **kwargs,
+        ):
+            self.output_dir = output_dir
+            if activation_checkpointing is None:
+                activation_checkpointing = gradient_checkpointing
+            self.activation_checkpointing = activation_checkpointing
+            self.gradient_checkpointing = activation_checkpointing
+
+    return Config
+
+
+def test_explicit_activation_checkpointing_is_kept():
+    module = _load_module()
+    Config = _renamed_config_class()
+    assert module.track_explicit_gradient_checkpointing(Config)
+    assert Config().__dict__[module.EXPLICIT_FLAG] is False
+
+    passed = Config(activation_checkpointing = True)
+    assert not module.honour_gradient_checkpointing_off(passed, _Model(False))
+    assert passed.activation_checkpointing is True
+
+    assigned = Config()
+    assigned.activation_checkpointing = True
+    assert not module.honour_gradient_checkpointing_off(assigned, _Model(False))
+    assert assigned.activation_checkpointing is True
+
+    default = Config()
+    assert module.honour_gradient_checkpointing_off(default, _Model(False))
+    assert default.activation_checkpointing is False
+
+
 def test_assignment_after_construction_is_explicit():
     import dataclasses
 

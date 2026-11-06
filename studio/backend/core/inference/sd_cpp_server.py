@@ -73,6 +73,47 @@ _TERMINAL_CANCELLED = "cancelled"
 _CANCEL_GRACE_S = 5.0
 
 
+# Floor between a log line and the next poll; caps log-driven polling at 50/s.
+_LOG_WAKE_FLOOR_S = 0.02
+
+
+class _LogPacedWait:
+    """Sleeps ``interval`` between polls; a server log line cuts it short and starts polls at ``floor``,
+    doubling back to ``interval``. sd-server logs just before a status flip or port bind, not at it.
+    HTTP status stays the only source of truth."""
+
+    def __init__(
+        self,
+        wake: Optional[threading.Event],
+        interval: float,
+        floor: float = _LOG_WAKE_FLOOR_S,
+    ) -> None:
+        self._wake = wake
+        self._interval = max(0.0, float(interval))
+        self._floor = max(0.0, min(float(floor), self._interval))
+        self._follow: Optional[float] = None
+        if wake is not None:
+            wake.clear()
+
+    def wait(self) -> None:
+        if self._wake is None or self._floor <= 0.0:
+            time.sleep(self._interval)
+            return
+        if self._follow is None:
+            woke = self._wake.wait(self._interval)
+        else:
+            woke = self._wake.wait(self._follow)
+        if woke:
+            self._wake.clear()
+            time.sleep(self._floor)
+            self._wake.clear()
+            self._follow = self._floor
+            return
+        if self._follow is not None:
+            nxt = self._follow * 2.0
+            self._follow = nxt if nxt < self._interval else None
+
+
 def _socket_owner_is_always_named() -> bool:
     """Windows names every socket's owner: an unnamed one there is a psutil quirk (#15022)."""
     return sys.platform == "win32"
@@ -132,6 +173,8 @@ class SdCppServer:
         self._abort = threading.Event()
         # Set during a generation so the stdout drain feeds the step-progress callback.
         self._step_listener: Optional[Callable[[str], None]] = None
+        # Set by the stdout drain on every line (and at EOF) so readiness / job polls run sooner.
+        self._log_wake = threading.Event()
         # trust_env=False: loopback-only client must not route through HTTP(S)_PROXY.
         self._client = httpx.Client(timeout = 30.0, trust_env = False)
         self._scratch_dir: Optional[str] = None
@@ -290,6 +333,7 @@ class SdCppServer:
         """A 200 is a true ready signal: upstream binds the port only after the model has loaded."""
         deadline = time.monotonic() + timeout
         url = f"{self.base_url}{_READY_PATH}"
+        pacer = _LogPacedWait(getattr(self, "_log_wake", None), interval)
         while time.monotonic() < deadline:
             # stop() sets _abort so the wait bails early instead of holding the load for startup_timeout.
             if self._abort.is_set():
@@ -306,7 +350,7 @@ class SdCppServer:
                     return True
             except (*_TRANSPORT_ERRORS, httpx.TimeoutException):
                 pass
-            time.sleep(interval)
+            pacer.wait()
         logger.error("sd-server readiness timed out after %ss", timeout)
         return False
 
@@ -412,8 +456,16 @@ class SdCppServer:
                         cb(line)
                     except Exception:  # noqa: BLE001 -- a progress callback must never break drain
                         pass
+                # After the callback, so a woken poll never outruns this line's progress event.
+                self._wake_pollers()
         except Exception:  # noqa: BLE001 -- drain thread must never raise (pipe closed at teardown)
             pass
+        self._wake_pollers()
+
+    def _wake_pollers(self) -> None:
+        wake = getattr(self, "_log_wake", None)
+        if wake is not None:
+            wake.set()
 
     def reclaimable_params_vram_gb(
         self, physical_gpu_id: Optional[int]
@@ -549,6 +601,8 @@ class SdCppServer:
 
         self._step_listener = on_step
         job_id: Optional[str] = None
+        # Before submit, so a line logged while the POST is in flight already counts.
+        pacer = _LogPacedWait(getattr(self, "_log_wake", None), poll_interval)
         try:
             try:
                 resp = self._client.post(
@@ -642,7 +696,7 @@ class SdCppServer:
                     raise RuntimeError(message)
                 if status == _TERMINAL_CANCELLED:
                     raise SdCppCancelled("sd-server generation was cancelled.")
-                time.sleep(poll_interval)
+                pacer.wait()
         finally:
             self._step_listener = None
 

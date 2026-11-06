@@ -730,7 +730,10 @@ def test_the_converter_writes_a_bit_identical_nvfp4_artifact(tmp_path, act_scale
     conv = _converter()
     rec = conv.convert(str(src), str(tmp_path / "out"), repo = None, revision = None, sha = None)
     assert rec["verified_bit_identical"] and rec["scheme"] == "nvfp4" and rec["quantized"] == 1
-    a = pq._load_prequant_checkpoint(str(src), map_location = "cpu")["state_dict"]
+    # Studio itself refuses the nvfp4 pickle; only the converter's offline read opens it.
+    with pytest.raises(ValueError, match = "safetensors only"):
+        pq._load_prequant_checkpoint(str(src), map_location = "cpu")
+    a = pq._torch_load_prequant(str(src), map_location = "cpu")["state_dict"]
     b = pq._load_prequant_checkpoint(rec["dst"], map_location = "cpu", mmap = True)["state_dict"]
     got, want = b["blk.proj.weight"], a["blk.proj.weight"]
     assert type(got) is nv.NVFP4Tensor

@@ -206,12 +206,16 @@ export const nl = {
         history: "Je browsegeschiedenis lezen",
         move: "Muis verplaatsen",
         drag: "Slepen",
+        tabs: "Tabbladen bekijken",
+        readFile: "Bestand lezen",
+        editFile: "Bestand bewerken",
       },
     },
     title: "Browser",
     tabs: "Browsertabbladen",
     newTab: "Nieuw tabblad",
     newTabFullView: "Nieuw tabblad in volledige weergave",
+    newTabFloating: "Nieuw tabblad in zwevend venster",
     closeTab: "Tabblad sluiten",
     close: "Browser sluiten",
     show: "Browser weergeven",
@@ -362,6 +366,8 @@ export const nl = {
     askBeforeDownloadingSetting: "Vragen voor het downloaden",
     askBeforeDownloadingSettingDescription:
       "Bevestig bestanden van websites voordat ze worden opgeslagen.",
+    askBeforeProgramDownloadsSetting: "Vragen voor het downloaden van programma's",
+    askBeforeProgramDownloadsSettingDescription: "Bevestig bestanden die programma's kunnen uitvoeren, zoals .exe of .dmg, ook als andere downloads niets vragen.",
     downloadSitesSetting: "Downloadtoestemmingen per site",
     downloadSitesSettingDescription:
       "Sites waarvan je downloads altijd wilt toestaan of blokkeren.",
@@ -370,6 +376,7 @@ export const nl = {
     downloadSitesFor: "Downloads van {host}",
     downloadSitesRemove: "{host} vergeten",
     downloadSiteAllow: "Altijd toestaan",
+    downloadSiteAllowAll: "Ook programma's toestaan",
     downloadSiteBlock: "Altijd blokkeren",
     downloadPrompt: {
       title: "Dit bestand downloaden?",
@@ -377,6 +384,9 @@ export const nl = {
       dangerous:
         "Bestanden zoals dit kunnen programma's op je computer uitvoeren. Download het alleen als je {host} vertrouwt.",
       remember: "Onthouden voor de volgende keer",
+      once: "Volgende keer vragen",
+      site: "Altijd voor {host}",
+      all: "Altijd downloaden, van elke site",
       cancel: "Annuleren",
       download: "Downloaden",
       blocked: "Een download van {host} is geblokkeerd.",
@@ -425,6 +435,12 @@ export const nl = {
       openChat: "Openen in volledige weergave",
       moveLeft: "Naar linkerpaneel verplaatsen",
       moveRight: "Naar rechterpaneel verplaatsen",
+    },
+    floating: {
+      enter: "Zwevend venster",
+      dock: "Aan de zijkant vastzetten",
+      close: "Zwevend venster sluiten",
+      handle: "Venster verplaatsen. Pijltoetsen verplaatsen het; Shift en pijltoetsen wijzigen de grootte.",
     },
     annotate: {
       countOne: "1 annotatie",
@@ -886,6 +902,9 @@ export const nl = {
     unifiedTightFit: "Krap",
     unifiedTightFitHint:
       "Wordt op deze Mac mogelijk geladen met een kortere context of werkt langzamer.",
+    residentToRun: "om te draaien",
+    residentToRunHint:
+      "GPU-geheugen dat de laadcontrole tijdens het draaien vereist",
     onDevice: "Op apparaat",
     huggingFace: "Hugging Face",
     retry: "Opnieuw proberen",
@@ -1210,6 +1229,9 @@ export const nl = {
         "Eén model per regel, bijvoorbeeld unsloth/Qwen3-4B-GGUF, of unsloth/* voor een hele organisatie. Laat leeg om elk model toe te staan.",
       modelAccessSave: "Opslaan",
       modelAccessLimited: "Beperkte toegang tot modellen",
+      rename: "Naam wijzigen",
+      renameTitle: "Naam van {username} wijzigen",
+      renameDescription: "Kies de naam waarmee dit account zich aanmeldt. Chats, bestanden en API-sleutels blijven bij het account. De gebruiker wordt afgemeld en meldt zich opnieuw aan met de nieuwe naam en het huidige wachtwoord.",
       empty: "Nog geen andere accounts",
       setupCode: "Installatiecode",
       setupFor: "Installatiecode voor {username}",
@@ -2319,6 +2341,12 @@ export const nl = {
         autoCurrently: "Automatisch gebruikt {transport} op deze machine.",
         xetMissing:
           "Xet is niet beschikbaar omdat hf_xet niet is geïnstalleerd.",
+        speedLimit: "Downloadsnelheidslimiet",
+        speedLimitDescription:
+          "Geen limiet zolang er geen waarde is ingesteld. Een beperkte download gebruikt HTTPS.",
+        speedLimitNoLimit: "Geen limiet",
+        speedLimitInvalid: "Voer een getal in Mbit/s in of laat het veld leeg.",
+        speedLimitUsesHttps: "Zolang er een snelheidslimiet is ingesteld, gebruiken downloads HTTPS. Bestanden groter dan 50 GB gebruiken nog steeds Xet, zonder de limiet.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2708,6 +2736,10 @@ export const nl = {
         },
         contrast: {
           label: "Contrast",
+        },
+        elementOutline: {
+          label: "Omlijning van elementen",
+          description: "Sterkte van de randen van knoppen, velden, kaarten en menu's.",
         },
         reduceMotion: {
           label: "Beweging beperken",
@@ -3279,9 +3311,8 @@ export const nl = {
         "Antwoord bewerken bij elk antwoord tonen, in plaats van in het menu Meer.",
       turnNavigation: "Beurtnavigatie",
       turnNavigationDescription: "Toont je berichten als een balk aan de linkerrand van lange chats. Wijs een beurt aan voor een voorbeeld, klik om erheen te gaan en zet bladwijzers om beurten terug te vinden.",
-      composerAtBottom: "Invoerveld onderaan",
-      composerAtBottomDescription:
-        "Nieuwe chats starten met het invoerveld onderaan de pagina in plaats van in het midden.",
+      composerPosition: "Positie van het invoerveld",
+      composerPositionDescription: "Waar het invoerveld staat bij het starten van een nieuwe chat, van de bovenkant van de pagina tot onderaan.",
       projectAttachments: "Bestanden delen binnen een project",
       projectAttachmentsDescription:
         "Nieuwe chatbijlagen beschikbaar maken voor elke chat in het project.",
@@ -3798,6 +3829,9 @@ export const nl = {
         docsLabel: "Documentatie van de Decision API openen",
         description:
           "Beantwoord ja/nee-, meerkeuze- en scorevragen over tekst met een model op deze computer of een beslissingsmodel uit Verbindingen. Werkt met de TypeSafe SDK.",
+        codeTitle: "Aanroepen vanuit code",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andere MCP-clients maken hier verbinding met hetzelfde token.",
         enable: "Verzoeken verwerken",
         enableDescription:
           "Biedt /v1/systemone aan. Bij inschakelen wordt het model gedownload.",
@@ -3961,7 +3995,7 @@ export const nl = {
         desktopAvailableDescription:
           "Werk nu bij; de desktop-app start opnieuw wanneer dit klaar is.",
         desktopExternalServer:
-          "De app is verbonden met een Unsloth-server die al draaide en kan deze niet bijwerken. Stop die server, sluit de desktop-app af en open hem opnieuw om bij te werken.",
+          "Verbonden met een Unsloth-server op poort {port} die deze app niet heeft gestart, zoals `unsloth studio` in een terminal. Stop hem waar hij is gestart, sluit dan de app af en open hem opnieuw om bij te werken.",
         desktopManualInstall:
           "Open de releasepagina om het nieuwste Linux-pakket te installeren.",
         desktopCheckFailed: "Kan niet controleren op updates",
@@ -4280,8 +4314,6 @@ export const nl = {
             "Deze dataset lijkt uit afbeeldingen te bestaan, die niet kunnen worden gestreamd.",
           audioDataset:
             "Deze dataset lijkt uit audio te bestaan, die niet kan worden gestreamd.",
-          appleSilicon:
-            "Streamen wordt nog niet ondersteund op Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "alleen assistentaanvullingen",
@@ -5546,6 +5578,8 @@ export const nl = {
     removeLevel: "Niveau {n} verwijderen",
     addLevel: "Niveau toevoegen",
     jsonHelp: "De request body. Uitvoeren verstuurt deze zoals geschreven.",
+    copyBody: "Body kopiëren",
+    copyCurl: "Kopiëren als cURL",
     examples: "Voorbeelden",
     presetToolApproval: "Toolaanroepen van agents goedkeuren",
     presetPromptInjection: "Promptinjectie detecteren",
@@ -5926,7 +5960,7 @@ export const nl = {
     skippedVersion: "{component} {version} voorlopig overgeslagen",
     skippedUpdate: "De update van {component} voorlopig overgeslagen",
     skippedUpdates: "De updates van {components} voorlopig overgeslagen",
-    vulkanFaster: "Vulkan is >10% sneller dan ROCM. Opnieuw starten niet nodig",
+    vulkanFaster: "Meer dan 10% sneller",
     noRestart: "Opnieuw starten niet nodig",
     downloadSize: "{size} downloaden",
     backendChange: "Backend {change}",
@@ -5935,8 +5969,8 @@ export const nl = {
     installingPhase: "{component} installeren ({current} van {total})...",
     installingCount: "{count} updates installeren...",
     bundleTitle: "{count} runtime-updates",
-    newBackend: "Nieuwe backend voor {component}",
-    newUpdate: "Nieuwe update voor {component}",
+    newBackend: "Nieuwe runtime-backend",
+    newUpdate: "Nieuwe runtime-update",
     hideUpdate:
       "De update van {component} verbergen totdat Unsloth opnieuw wordt geopend",
     hideUpdates:
@@ -5950,6 +5984,7 @@ export const nl = {
   generationStats: {
     working: "Bezig...",
     processingPrompt: "Prompt verwerken {percent}%",
+    compactingContext: "Context comprimeren...",
     timeLeft: "nog {eta}",
     tokensOne: "{count} token",
     tokens: "{count} tokens",

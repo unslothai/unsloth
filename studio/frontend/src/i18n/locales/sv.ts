@@ -196,12 +196,16 @@ export const sv = {
         history: "Läser din webbhistorik",
         move: "Flyttar musen",
         drag: "Drar",
+        tabs: "Tittar på flikarna",
+        readFile: "Läser filen",
+        editFile: "Redigerar filen",
       },
     },
     title: "Webbläsare",
     tabs: "Webbläsarflikar",
     newTab: "Ny flik",
     newTabFullView: "Ny flik i helvy",
+    newTabFloating: "Ny flik i flytande fönster",
     closeTab: "Stäng flik",
     close: "Stäng webbläsaren",
     show: "Visa webbläsaren",
@@ -338,18 +342,24 @@ export const sv = {
     downloadLocationReset: "Återställ",
     askBeforeDownloadingSetting: "Fråga innan hämtning",
     askBeforeDownloadingSettingDescription: "Bekräfta filer från webbplatser innan de sparas.",
+    askBeforeProgramDownloadsSetting: "Fråga innan program hämtas",
+    askBeforeProgramDownloadsSettingDescription: "Bekräfta filer som kan köra program, till exempel .exe eller .dmg, även när andra hämtningar inte frågar.",
     downloadSitesSetting: "Behörigheter för hämtning per webbplats",
     downloadSitesSettingDescription: "Webbplatser du har valt att alltid tillåta eller blockera hämtningar från.",
     downloadSitesNone: "Markera Kom ihåg till nästa gång när du tillfrågas, så visas webbplatsen här.",
     downloadSitesFor: "Hämtningar från {host}",
     downloadSitesRemove: "Glöm {host}",
     downloadSiteAllow: "Tillåt alltid",
+    downloadSiteAllowAll: "Tillåt även program",
     downloadSiteBlock: "Blockera alltid",
     downloadPrompt: {
       title: "Hämta den här filen?",
       description: "{host} vill spara {name} på din dator.",
       dangerous: "Filer som den här kan köra program på din dator. Ladda bara ned den om du litar på {host}.",
       remember: "Kom ihåg till nästa gång",
+      once: "Fråga nästa gång",
+      site: "Alltid för {host}",
+      all: "Hämta alltid, från alla webbplatser",
       cancel: "Avbryt",
       download: "Hämta",
       blocked: "En hämtning från {host} blockerades.",
@@ -392,6 +402,12 @@ export const sv = {
       openChat: "Öppna i helvy",
       moveLeft: "Flytta till vänstra panelen",
       moveRight: "Flytta till högra panelen",
+    },
+    floating: {
+      enter: "Flytande fönster",
+      dock: "Docka vid sidan",
+      close: "Stäng flytande fönster",
+      handle: "Flytta fönstret. Piltangenterna flyttar det; Skift och piltangenterna ändrar storleken.",
     },
     annotate: {
       countOne: "1 anteckning",
@@ -830,6 +846,8 @@ export const sv = {
   picker: {
     unifiedTightFit: "Snäv passform",
     unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
+    residentToRun: "för att köra",
+    residentToRunHint: "GPU-minne som laddningskontrollen kräver under körning",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -1145,6 +1163,9 @@ export const sv = {
       modelAccessHint: "En modell per rad, till exempel unsloth/Qwen3-4B-GGUF, eller unsloth/* för en hel organisation. Lämna tomt för att tillåta alla modeller.",
       modelAccessSave: "Spara",
       modelAccessLimited: "Begränsad modellåtkomst",
+      rename: "Byt namn",
+      renameTitle: "Byt namn på {username}",
+      renameDescription: "Välj namnet som det här kontot loggar in med. Chattar, filer och API-nycklar stannar kvar i kontot. Personen loggas ut och loggar in igen med det nya namnet och sitt nuvarande lösenord.",
       empty: "Inga andra konton ännu",
       setupCode: "Konfigurationskod",
       setupFor: "Konfigurationskod för {username}",
@@ -2221,6 +2242,12 @@ export const sv = {
           "Automatiskt läge använder {transport} på den här datorn.",
         xetMissing:
           "Xet är inte tillgängligt eftersom hf_xet inte är installerat.",
+        speedLimit: "Hastighetsgräns för nedladdning",
+        speedLimitDescription:
+          "Ingen gräns om inget värde anges. En begränsad nedladdning använder HTTPS.",
+        speedLimitNoLimit: "Ingen gräns",
+        speedLimitInvalid: "Ange ett tal i Mbit/s eller lämna fältet tomt.",
+        speedLimitUsesHttps: "Så länge en hastighetsgräns är satt använder nedladdningar HTTPS. Filer över 50 GB använder fortfarande Xet, utan gränsen.",
       },
       uploads: {
         sectionTitle: "Uppladdningar",
@@ -2599,6 +2626,10 @@ export const sv = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Kontur för element",
+          description: "Styrka på kanterna runt knappar, fält, kort och menyer.",
         },
         reduceMotion: {
           label: "Minska rörelse",
@@ -3152,8 +3183,8 @@ export const sv = {
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
       turnNavigation: "Turnavigering",
       turnNavigationDescription: "Visar dina meddelanden som en list vid vänsterkanten i långa chattar. Hovra för att förhandsgranska en tur, klicka för att hoppa dit och bokmärk turer för att hitta dem igen.",
-      composerAtBottom: "Inmatningsfält längst ned",
-      composerAtBottomDescription: "Starta nya chattar med inmatningsfältet längst ned på sidan i stället för i mitten.",
+      composerPosition: "Inmatningsfältets placering",
+      composerPositionDescription: "Var inmatningsfältet hamnar när en ny chatt startar, från sidans överkant ända ned till botten.",
       projectAttachments: "Dela filer i ett projekt",
       projectAttachmentsDescription:
         "Gör nya chattbilagor tillgängliga för alla chattar i projektet.",
@@ -3646,6 +3677,9 @@ export const sv = {
         docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
+        codeTitle: "Anropa från kod",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andra MCP-klienter ansluter hit med samma token.",
         enable: "Hantera begäranden",
         enableDescription:
           "Hanterar /v1/systemone. När du aktiverar det hämtas modellen.",
@@ -3802,7 +3836,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Ansluten till en Unsloth-server på port {port} som den här appen inte har startat, till exempel `unsloth studio` i en terminal. Stoppa den där den startades, avsluta sedan appen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -4120,7 +4154,6 @@ export const sv = {
             "Den här datauppsättningen verkar innehålla bilder, som inte kan strömmas.",
           audioDataset:
             "Den här datauppsättningen verkar innehålla ljud, som inte kan strömmas.",
-          appleSilicon: "Strömning stöds inte på Apple Silicon (MLX) ännu.",
         },
         options: {
           trainOnCompletions: "endast assistentslutföranden",
@@ -5341,6 +5374,8 @@ export const sv = {
     removeLevel: "Ta bort nivå {n}",
     addLevel: "Lägg till nivå",
     jsonHelp: "Begärans body. Kör skickar den precis som den är.",
+    copyBody: "Kopiera brödtext",
+    copyCurl: "Kopiera som cURL",
     examples: "Exempel",
     presetToolApproval: "Godkänna agentens verktygsanrop",
     presetPromptInjection: "Upptäcka promptinjektion",
@@ -5704,7 +5739,7 @@ export const sv = {
     skippedVersion: "Hoppade över {component} {version} tills vidare",
     skippedUpdate: "Hoppade över uppdateringen av {component} tills vidare",
     skippedUpdates: "Hoppade över uppdateringarna av {components} tills vidare",
-    vulkanFaster: "Vulkan är över 10 % snabbare än ROCM. Ingen omstart krävs",
+    vulkanFaster: "Över 10 % snabbare",
     noRestart: "Ingen omstart krävs",
     downloadSize: "{size} att ladda ned",
     backendChange: "Bakände: {change}",
@@ -5713,8 +5748,8 @@ export const sv = {
     installingPhase: "Installerar {component} ({current} av {total})...",
     installingCount: "Installerar {count} uppdateringar...",
     bundleTitle: "{count} körmiljöuppdateringar",
-    newBackend: "Ny bakände för {component}",
-    newUpdate: "Ny uppdatering för {component}",
+    newBackend: "Ny bakände för körmiljön",
+    newUpdate: "Ny uppdatering av körmiljön",
     hideUpdate: "Dölj uppdateringen av {component} tills Unsloth öppnas igen",
     hideUpdates: "Dölj uppdateringarna av {components} tills Unsloth öppnas igen",
     whatsNew: "Nyheter",
@@ -5726,6 +5761,7 @@ export const sv = {
   generationStats: {
     working: "Arbetar...",
     processingPrompt: "Bearbetar prompt {percent}%",
+    compactingContext: "Komprimerar kontext...",
     timeLeft: "{eta} kvar",
     tokensOne: "{count} token",
     tokens: "{count} token",

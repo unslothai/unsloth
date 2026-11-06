@@ -3,7 +3,8 @@
 
 """Faster MiniMax-H3 video VAE encode/decode: Triton GroupNorm/SiLU/pad, RMSNorm/rope/SwiGLU fusions
 and tile batching around Diffusers' own matmuls/convs; UNSLOTH_H3_VAE_FAST=0 disables all;
-int8_decoder is opt-in via UNSLOTH_H3_VAE_INT8=1; CUDA+Triton only, else stock."""
+int8_decoder runs on the default / max tiers (UNSLOTH_H3_VAE_INT8=0 keeps it float, =1 adds it to eager);
+CUDA+Triton only, else stock."""
 
 from __future__ import annotations
 
@@ -67,7 +68,8 @@ def plan_h3_vae_levers(
         if mode != _SPEED_EAGER:
             levers.append(LEVER_FP16_ENCODER)
     levers += [LEVER_FUSED_DECODER, LEVER_TILE_BATCH]
-    if _env(H3_VAE_INT8_ENV) in _TRUE:
+    int8 = _env(H3_VAE_INT8_ENV)
+    if int8 in _TRUE or (int8 not in _FALSE and mode != _SPEED_EAGER):
         levers.append(LEVER_INT8_DECODER)
     if mode == _SPEED_MAX and consumer_gpu and _env(FP16_ACCUM_DISABLE_ENV) not in _TRUE:
         levers.append(LEVER_FP16_ACCUM)
@@ -86,7 +88,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
     # Triton <= 3.2 resolves string annotations against module globals, not this function's locals
     globals().update(triton = triton, tl = tl, libdevice = libdevice)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["T", "HW", "W", "n_chunks"])
     def _gn_partials(
         x_ptr,
         bias_ptr,
@@ -139,7 +141,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(pm2_ptr + slot * G + g, m2)
         tl.store(pn_ptr + slot, n_pix * CPG)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_chunks"])
     def _gn_combine(
         pn_ptr,
         pmean_ptr,
@@ -177,7 +179,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         tl.store(mean_ptr + row, mean)
         tl.store(rstd_ptr + row, 1.0 / tl.sqrt(acc_m2 / acc_n + eps))
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["T", "H", "W", "To", "Ho", "Wo"])
     def _gn_silu_pad(
         x_ptr,
         out_ptr,
@@ -248,7 +250,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         v = tl.where(t_ok, v, 0.0)
         tl.store(out_base + (wo[:, None] * C + c[None, :]), v.to(out_ptr.dtype.element_ty), mask = m)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["P", "T", "H", "W"])
     def _add_residual(
         o_ptr,
         ob_ptr,
@@ -327,7 +329,7 @@ def _kernels() -> Optional[types.SimpleNamespace]:
         y = h * (1.0 / tl.sqrt(ms + eps)) * w
         tl.store(n_ptr + row * N + cols, y.to(n_ptr.dtype.element_ty), mask = mask)
 
-    @triton.jit
+    @triton.jit(do_not_specialize = ["n_head_rows"])
     def _qk_norm_rope(
         x_ptr,
         cos_ptr,
@@ -1479,6 +1481,8 @@ def settle_h3_vae_fallback(state: Any, pipe: Any) -> None:
             for lever, part in ((LEVER_FUSED_ENCODER, "encoder"), (LEVER_FUSED_DECODER, "decoder"))
             if getattr(getattr(vae, part, None), "_unsloth_fast_failed", False)
         ]
+        if getattr(vae, "__dict__", {}).get("_unsloth_h3_sol_vae_failed"):
+            failed.append("h3_sol_vae")
         optims = tuple(getattr(state, "speed_optims", None) or ())
         updated = tuple(o for o in optims if o not in failed)
         if updated != optims:

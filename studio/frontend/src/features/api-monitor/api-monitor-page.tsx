@@ -35,6 +35,7 @@ import {
   loadLanAccess,
   loadMultiModelEnabled,
   publishLanUrls,
+  useKeylessExampleAccess,
   useSettingsDialogStore,
 } from "@/features/settings";
 // Not through the barrel: these pull in chat, which every barrel importer would then load.
@@ -145,9 +146,10 @@ const PANE_HEIGHT =
   "max-h-[calc(560px*var(--ui-space-scale,1))] min-h-[calc(260px*var(--ui-space-scale,1))] max-lg:max-h-[45dvh] 3xl:max-h-[calc(100dvh-22rem*var(--ui-space-scale,1))] overflow-y-auto";
 
 const SURFACE = "elevated-card bg-card";
-const DIVIDER = "border-border/60 dark:border-background";
+// glass-divider / glass-inset: index.css glass hooks.
+const DIVIDER = "glass-divider border-border/60 dark:border-background";
 const INSET =
-  "border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
+  "glass-inset border border-border/50 bg-muted/40 dark:border-transparent dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 const INSET_OPAQUE =
   "bg-[color-mix(in_oklab,var(--muted)_40%,var(--card))] dark:bg-[rgb(255_255_255_/_calc(0.05*var(--contrast-wash-gain,1)))]";
 
@@ -919,6 +921,12 @@ function QuickStart({
   const [useTunnel] = useApiTunnelPref();
   const [kind, setKind] = useState<ApiExampleKind>("chat");
   const freshKey = useFreshApiKeyStore((s) => s.key);
+  const isOwner = useIsAccountOwner();
+  const keylessAccess = useKeylessExampleAccess(isOwner);
+  const keyless = {
+    keylessScope: keylessAccess.scope,
+    keylessExposure: keylessAccess.exposure,
+  };
   return (
     <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
       <span className="flex size-10 items-center justify-center icon-disc text-muted-foreground">
@@ -961,15 +969,22 @@ function QuickStart({
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
+              {...keyless}
             />
           ) : kind === "audio" ? (
             <AudioApiExamples
               apiKey={freshKey}
               useTunnel={useTunnel}
               showHeading={false}
+              {...keyless}
             />
           ) : (
-            <DecisionApiSection showHeading={false} />
+            <DecisionApiSection
+              apiKey={freshKey}
+              useTunnel={useTunnel}
+              showHeading={false}
+              {...keyless}
+            />
           )}
         </div>
       )}
@@ -1480,6 +1495,7 @@ export function ApiMonitorPage(): ReactElement {
     <>
       {/* In the macOS titlebar row like Chat's header; click-through so the row still drags. */}
       <div
+        data-page-model-header=""
         className={cn(
           "pointer-events-none sticky top-0 z-40 flex min-h-[calc(48px*var(--ui-space-scale,1))] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
           !isMobileShell &&
@@ -1509,6 +1525,7 @@ export function ApiMonitorPage(): ReactElement {
         </div>
         <div
           aria-hidden={true}
+          data-slot="api-toolbar-fade"
           className="pointer-events-none absolute inset-x-0 top-full h-6 bg-gradient-to-b from-background to-transparent"
         />
       </div>
