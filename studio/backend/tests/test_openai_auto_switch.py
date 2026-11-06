@@ -3168,6 +3168,26 @@ def test_idle_reload_lets_a_saved_override_win_over_the_freed_launch(monkeypatch
     assert reload.cache_type_kv == "q8_0"
 
 
+def test_idle_reload_strips_a_freed_flag_the_saved_context_shadows(monkeypatch):
+    launch = {**_CUSTOM_LAUNCH, "llama_extra_args": ["--ctx-size", "8192", "--no-warmup"]}
+    rec = _idle_unload_a_custom_launch(monkeypatch, launch = launch)
+    saved = {"org/A-GGUF": {"max_seq_length": 4096}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert reload.max_seq_length == 4096
+    assert reload.llama_extra_args == ["--no-warmup"]
+
+
+def test_idle_reload_uses_saved_auto_layers_over_a_freed_cpu_only_launch(monkeypatch):
+    rec = _idle_unload_a_custom_launch(monkeypatch)
+    saved = {"org/A-GGUF": {"gpu_memory_mode": "manual"}}
+    monkeypatch.setattr(settings, "get_model_override", lambda mid: saved.get(mid, {}))
+    _reload_unnamed()
+    (reload,) = rec.calls
+    assert (reload.gpu_memory_mode, reload.gpu_layers) == ("manual", -1)
+
+
 def test_idle_reload_replays_only_fields_the_launch_set(monkeypatch):
     rec = _idle_unload_a_custom_launch(monkeypatch, launch = {"max_seq_length": 8192})
     _reload_unnamed()

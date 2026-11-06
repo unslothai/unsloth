@@ -8207,6 +8207,17 @@ def _replay_load_kwargs(launch, override_kwargs) -> dict[str, Any]:
         kwargs.pop("tensor_split", None)
     if "max_seq_length" in override_kwargs:
         kwargs.pop("max_seq_length_auto_derived", None)
+    if "gpu_memory_mode" in override_kwargs:
+        kwargs.pop("gpu_layers", None)
+    if kwargs.get("llama_extra_args") and "llama_extra_args" not in override_kwargs:
+        from utils.openai_auto_switch_settings import strip_args_shadowed_by
+        kwargs["llama_extra_args"] = strip_args_shadowed_by(
+            kwargs["llama_extra_args"],
+            override_kwargs,
+            strip_offload = override_kwargs.get("gpu_memory_mode") == "manual",
+            strip_load_mode = "load_mode" in override_kwargs,
+            strip_load_mode_aliases = "load_mode" in override_kwargs,
+        )
     return kwargs
 
 
