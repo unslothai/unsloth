@@ -3792,7 +3792,7 @@ def _create_directory_junction(source: Path, target: Path) -> bool:
 
 
 def _link_codex_entry(source: Path, target: Path) -> bool:
-    # Symlinks make this an overlay rather than a stale copy; if Windows denies them, directory junctions keep large runtime state shared without a bulk copy, and the configuration surfaces and sessions are copied only when both link forms are unavailable.
+    # Symlink, then junction; copy only _CODEX_COPIED_DIRS when neither link works.
     _remove_overlay_entry(target)
     try:
         target.symlink_to(source, target_is_directory = source.is_dir())
