@@ -524,6 +524,28 @@ def smi_free_total_mib(ordinal: int) -> tuple[Optional[int], Optional[int]]:
     return None, None
 
 
+def smi_util_pct(ordinal: int) -> Optional[float]:
+    """nvidia-smi utilization.gpu (percent) of torch ordinal ``ordinal``, without a CUDA context; None wherever
+    :func:`smi_free_total_mib` would not trust the rows. Never raises."""
+    try:
+        from utils.hardware import hardware as hw
+
+        if hw.IS_ROCM or hw._cuda_instance_ids_active() or not hw._cuda_order_matches_smi():
+            return None
+        visible = hw.get_parent_visible_gpu_ids()
+        if not 0 <= int(ordinal) < len(visible):
+            return None
+        index = visible[int(ordinal)]
+        result = hw._smi_visible_utilization(hw._get_parent_visible_gpu_spec())
+        for device in (result or {}).get("devices", []):
+            if device.get("index") == index:
+                util = device.get("gpu_utilization_pct")
+                return None if util is None else float(util)
+    except Exception:  # noqa: BLE001 -- unknown utilisation: the memory test alone decides
+        pass
+    return None
+
+
 def auto_cuda_ranking_possible_cached() -> Optional[bool]:
     """``auto_cuda_ranking_possible`` when it can be answered from state already in memory, else None.
 
@@ -949,6 +971,27 @@ def _mps_or_cpu_target(torch: Any) -> DiffusionDeviceTarget:
             supports_float64 = False,
         )
     return _cpu_target(torch)
+
+
+def apply_cpu_render_threads(device: Any) -> Optional[int]:
+    """Match torch CPU threads to sd.cpp's ``_default_threads``; per thread, so call from the render thread. An explicit
+    OMP_NUM_THREADS / MKL_NUM_THREADS (torch sizes its intra-op pool from them) is kept, as configure_cpu_threads does."""
+    if str(device).split(":")[0] != "cpu":
+        return None
+    if any(os.environ.get(name, "").strip() for name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS")):
+        return None
+    try:
+        import torch
+
+        from .sd_cpp_backend import _default_threads
+
+        threads = int(_default_threads())
+        if threads > 0 and torch.get_num_threads() != threads:
+            torch.set_num_threads(threads)
+            return threads
+    except Exception:  # noqa: BLE001 -- a thread count is an optimisation only
+        return None
+    return None
 
 
 def _cpu_target(torch: Any, dtype: Any = None) -> DiffusionDeviceTarget:

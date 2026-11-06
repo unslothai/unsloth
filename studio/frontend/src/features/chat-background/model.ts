@@ -38,6 +38,10 @@ export const LENS_SCALE: Record<LensMode, number> = {
 export function sanitizeLens(value: unknown): LensMode {
 	return LENS_MODES.includes(value as LensMode) ? (value as LensMode) : "off";
 }
+// Off draws nothing: without GPU rendering, WebKitGTK repaints each wallpaper copy and its filter on every frame.
+export function lensDrawn(material: WindowMaterial, lens: LensMode): boolean {
+	return material !== "solid" && lens !== "off";
+}
 export function sanitizeStrength(value: unknown, fallback = 50): number {
 	return typeof value === "number" && Number.isFinite(value)
 		? Math.max(0, Math.min(100, Math.round(value)))

@@ -35,7 +35,7 @@ def _record(**overrides):
         "policy_version": 1,
         "checkpoint_sha256": "a" * 64,
         "repo_id": "unsloth/Z-Image-Turbo-NVFP4",
-        "filename": "Z-Image-Turbo-NVFP4.pt",
+        "filename": "Z-Image-Turbo-NVFP4.safetensors",
         "gptq": False,
         "all_pass": True,
         "num_pairs": 28,

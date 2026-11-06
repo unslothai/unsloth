@@ -79,6 +79,9 @@ import {
   InternetIcon,
   MinusSignIcon,
   MoreHorizontalIcon,
+  PanelLeftIcon,
+  PanelRightIcon,
+  PictureInPictureOnIcon,
   PlusSignIcon,
   SmartPhone01Icon,
   SourceCodeIcon,
@@ -99,7 +102,9 @@ import {
   type ReactElement,
   type ReactNode,
   type RefObject,
+  createContext,
   memo,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -129,6 +134,9 @@ import { useBookmarkFor } from "./bookmarks-store";
 import { browserTabType, fileBarKind, mediaKind } from "./file-kind";
 import { canCopyVideoFrame, copyVideoFrame, tabVideo } from "./video-registry";
 import { CONTEXT_MENU } from "./link-context-menu";
+import { FLOATING_SCALE_VAR } from "./floating-events";
+import { nudgeFloating, startFloatingGesture } from "./floating-preview";
+import { closeOrFloatBrowser } from "./close-browser";
 import { CONTEXT_TAB_MENU, TabMenuItems, focusRenameField, renameTabTo, setTabMuted } from "./tab-menu";
 import {
   CertificateIcon,
@@ -230,12 +238,13 @@ const TOOLBAR_BUTTON =
 const TOOLBAR_ICON_BUTTON =
   "flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent disabled:hover:text-muted-foreground";
 const NAV_BUTTON =
-  "size-8 rounded-[10px] text-foreground disabled:hover:text-foreground disabled:opacity-30";
-const NAV_ICON = "size-4.5";
-const ANNOTATE_BUTTON = "size-8 shrink-0 rounded-[10px] p-0 text-foreground";
+  "size-7 rounded-[9px] text-foreground disabled:hover:text-foreground disabled:opacity-30";
+const NAV_ICON = "size-4";
+const ANNOTATE_BUTTON = "size-7 shrink-0 rounded-[9px] p-0 text-foreground";
 // Half a pixel right and down: the frame's whole top-left corner and the pointer aimed back at it
 // read as up and left of centre, though the strokes are centred.
-const ANNOTATE_GLYPH = "size-4.5 translate-x-[0.5px] translate-y-[0.5px]";
+// Under the row's 16px: its dashed square fills the box, so at full size it reads larger.
+const ANNOTATE_GLYPH = "size-[calc(var(--spacing)*3.84)] translate-x-[0.5px] translate-y-[0.5px]";
 const NAV_STROKE = 2;
 const URLBAR =
   "bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-within:bg-[color-mix(in_oklab,var(--foreground)_calc(9%*var(--contrast-wash-gain,1)),transparent)]";
@@ -606,11 +615,15 @@ function useTabDrag(listRef: RefObject<HTMLDivElement | null>, tabCount: number)
   };
 }
 
+// The chat header's button size, so the two rows match.
+const STRIP_BUTTON = "size-[calc(30px*var(--ui-space-scale,1))]";
+
 function TabStrip({
   tabs,
   activeTabId,
   active,
-}: { tabs: BrowserTab[]; activeTabId: string | null; active: boolean }) {
+  floatable,
+}: { tabs: BrowserTab[]; activeTabId: string | null; active: boolean; floatable: boolean }) {
   const t = useT();
   const tabTitle = useTabTitle();
   const fullView = useBrowserStore((state) => state.fullView);
@@ -678,7 +691,7 @@ function TabStrip({
                     activateTab(tab.id);
                 }}
                 className={cn(
-                  "group/tab relative flex h-[calc(34px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1 rounded-[10px] pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+                  "group/tab relative flex h-[calc(32px*var(--ui-space-scale,1))] min-w-[calc(88px*var(--ui-space-scale,1))] max-w-60 flex-1 basis-0 cursor-pointer touch-none select-none items-center gap-1 rounded-[10px] pl-2 pr-1.5 text-ui-13 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
                   active
                     ? "bg-card text-foreground dark:bg-accent"
                     : "text-muted-foreground hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground",
@@ -735,26 +748,30 @@ function TabStrip({
           );
         })}
       </div>
-      <IconButton
-        label={t("browser.newTab")}
-        icon={PlusSignIcon}
-        onClick={newTab}
-        className="size-8"
-      />
+      <IconButton label={t("browser.newTab")} onClick={newTab} className={STRIP_BUTTON}>
+        <HugeiconsIcon icon={PlusSignIcon} strokeWidth={1.75} className="size-icon" />
+      </IconButton>
       <span aria-hidden={true} className="mx-1 h-4 w-px shrink-0 bg-border" />
       <IconButton
         label={t(fullView ? "browser.fullView.exit" : "browser.fullView.enter")}
         shortcut={fullViewShortcut}
-        icon={fullView ? ExitFullViewIcon : EnterFullViewIcon}
         onClick={() => setFullView(!fullView)}
-        className="size-8"
-      />
+        className={STRIP_BUTTON}
+      >
+        {/* Its marks sit inside the box, so it is drawn larger to match the plus. */}
+        <HugeiconsIcon
+          icon={fullView ? ExitFullViewIcon : EnterFullViewIcon}
+          strokeWidth={1.75}
+          className="size-[calc(var(--icon-size)*1.2)]"
+        />
+      </IconButton>
       <IconButton
         label={t("browser.close")}
-        icon={Cancel01Icon}
-        onClick={closePanel}
-        className="size-8"
-      />
+        onClick={floatable ? closeOrFloatBrowser : closePanel}
+        className={STRIP_BUTTON}
+      >
+        <HugeiconsIcon icon={Cancel01Icon} strokeWidth={1.75} className="size-icon" />
+      </IconButton>
     </div>
   );
 }
@@ -806,7 +823,7 @@ function AddressBar({
         inputRef.current?.blur();
       }}
     >
-      <div className={cn("flex h-9 items-center gap-0.5 rounded-full pl-1 pr-1 transition-colors", URLBAR)}>
+      <div className={cn("flex h-8 items-center gap-0.5 rounded-full pl-1 pr-1 transition-colors", URLBAR)}>
         {/* Icons step aside while typing and come back after. */}
         {editing ? null : (leading ?? <SiteIdentity address={address} tab={tab} />)}
         <div className="relative min-w-0 flex-1">
@@ -835,7 +852,8 @@ function AddressBar({
             autoCapitalize="off"
             autoCorrect="off"
             className={cn(
-              "h-9 w-full min-w-0 bg-transparent pe-1 text-ui-13 text-foreground outline-none placeholder:text-muted-foreground",
+              // pb-px: the UI font's lowercase sits low in its line box.
+              "h-8 w-full min-w-0 bg-transparent pe-1 pb-px text-ui-12p5 text-foreground outline-none placeholder:text-muted-foreground",
               editing ? "ps-2.5" : "ps-0",
               // The input keeps the full URL, so focusing never changes its text or selection.
               !editing && address && "text-transparent",
@@ -844,7 +862,7 @@ function AddressBar({
           {!editing && address ? (
             <span
               aria-hidden={true}
-              className="pointer-events-none absolute inset-0 flex items-center ps-0 pe-1 text-ui-13 text-foreground"
+              className="pointer-events-none absolute inset-0 flex items-center ps-0 pe-1 pb-px text-ui-12p5 text-foreground"
             >
               <span className="truncate">{displayAddress(address, showFullUrl)}</span>
             </span>
@@ -880,7 +898,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
   }
   if (!url || !/^https?:$/.test(url.protocol)) {
     return (
-      <span className="flex size-[calc(26px*var(--ui-space-scale,1))] shrink-0 items-center justify-center text-muted-foreground">
+      <span className="flex size-[calc(24px*var(--ui-space-scale,1))] shrink-0 items-center justify-center text-muted-foreground">
         <HugeiconsIcon icon={Search01Icon} strokeWidth={1.75} aria-hidden={true} className="size-4" />
       </span>
     );
@@ -908,7 +926,7 @@ function SiteIdentity({ address, tab }: { address: string; tab: BrowserTab | und
               <button
                 type="button"
                 aria-label={label}
-                className="flex size-[calc(26px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
+                className="flex size-[calc(24px*var(--ui-space-scale,1))] shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(10%*var(--contrast-wash-gain,1)),transparent)] aria-expanded:text-foreground"
               >
                 {secure ? (
                   <HugeiconsIcon icon={SiteInfoIcon} strokeWidth={2.25} className="size-4" />
@@ -1237,9 +1255,9 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
                 ref={triggerRef}
                 type="button"
                 aria-label={t("browser.more")}
-                className="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-[10px] text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
+                className="flex size-7 shrink-0 cursor-pointer items-center justify-center rounded-[9px] text-foreground transition-colors hover:bg-[color-mix(in_oklab,var(--foreground)_calc(6%*var(--contrast-wash-gain,1)),transparent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-expanded:bg-[color-mix(in_oklab,var(--foreground)_calc(8%*var(--contrast-wash-gain,1)),transparent)]"
               >
-                <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-5" />
+                <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-4.5" />
               </button>
             </DropdownMenuTrigger>
           </TooltipTrigger>
@@ -1252,7 +1270,14 @@ function PanelMenu({ tab, children }: { tab: BrowserTab | undefined; children?: 
           sideOffset={6}
           className="browser-menu min-w-72 rounded-lg p-1 [&_[data-slot=dropdown-menu-separator]]:mx-3 [&_[data-slot=dropdown-menu-separator]]:my-1.5"
           onCloseAutoFocus={(event) => {
-            if (!keepFocus.current) return;
+            // A click outside that took focus (the address bar) keeps it.
+            const active = document.activeElement;
+            const focusedOutside =
+              active instanceof HTMLElement &&
+              active !== document.body &&
+              active !== triggerRef.current &&
+              !active.closest('[data-slot="dropdown-menu-content"]');
+            if (!keepFocus.current && !focusedOutside) return;
             keepFocus.current = false;
             event.preventDefault();
           }}
@@ -1431,23 +1456,135 @@ function AnnotatePageButton({ tab }: { tab: BrowserTab | undefined }) {
   );
 }
 
+/** Keyboard focus survives a layout switch that unmounts the pressed button; a mouse press is left alone. */
+function focusAfterLayout(selector: string): void {
+  if (!document.activeElement?.matches(":focus-visible")) return;
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-slot="browser-panel"] ${selector}`)?.focus({ preventScroll: true }),
+    ),
+  );
+}
+
+const SHOWN_TAB = '[role="tab"][aria-selected="true"]';
+
+function canGoBackIn(tab: BrowserTab | undefined): boolean {
+  const native = nativePage(tab);
+  return Boolean(
+    tab && (tab.index > 0 || tab.pageHistory?.back || (native && (tab.nativeError || tab.nativeHistory?.back))),
+  );
+}
+
+function goBackIn(tab: BrowserTab | undefined): void {
+  if (!tab) return;
+  const native = nativePage(tab);
+  if (native && tab.nativeError && returnToNativePage(tab.id)) return;
+  if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
+  else if (!tab.pageHistory?.back || !sendFrameCommand(tab.id, { command: "go", delta: -1 })) {
+    useBrowserStore.getState().goBack(tab.id);
+  }
+}
+
+const FLOATING_BUTTON = "size-6 rounded-[7px]";
+const FLOATING_GLYPH = "size-3.5";
+
+function FloatingBar({ tab, active }: { tab: BrowserTab | undefined; active: boolean }) {
+  const t = useT();
+  const tabTitle = useTabTitle();
+  const chatOnRight = useBrowserStore((state) => state.chatSide === "right");
+  const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
+  const { setFloating, setFullView, closePanel } = useBrowserStore.getState();
+  useShortcut(
+    "toggleBrowserFullView",
+    (event) => {
+      event.preventDefault();
+      setFullView(true);
+    },
+    { enabled: active },
+  );
+  const title = tab ? tabTitle(tab, currentEntry(tab)) : t("browser.title");
+  const glyph = (icon: IconSvgElement) => (
+    <HugeiconsIcon icon={icon} strokeWidth={1.75} className={FLOATING_GLYPH} />
+  );
+  return (
+    <div
+      onPointerDown={(event) => startFloatingGesture(event, "move")}
+      onDoubleClick={(event) => {
+        if (!(event.target as Element).closest("button:not([data-floating-handle])")) setFloating(false);
+      }}
+      className="browser-chrome flex h-[calc(30px*var(--ui-space-scale,1))] shrink-0 cursor-grab touch-none select-none items-center gap-px border-b border-border/70 px-1"
+    >
+      <IconButton label={t("browser.back")} disabled={!canGoBackIn(tab)} onClick={() => goBackIn(tab)} className={FLOATING_BUTTON}>
+        <ArrowLeft strokeWidth={NAV_STROKE} className={FLOATING_GLYPH} />
+      </IconButton>
+      <button
+        type="button"
+        data-floating-handle=""
+        aria-label={t("browser.floating.handle")}
+        title={title}
+        onKeyDown={nudgeFloating}
+        className="flex h-6 min-w-0 flex-1 cursor-grab items-center gap-1.5 rounded-[7px] px-1 text-start text-ui-11 text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_img]:size-3.5 [&_svg]:size-3"
+      >
+        {tab ? <TabIcon tab={tab} /> : null}
+        <span className="min-w-0 flex-1 truncate">{title}</span>
+      </button>
+      <IconButton
+        label={t("browser.floating.dock")}
+        onClick={() => {
+          setFloating(false);
+          focusAfterLayout(SHOWN_TAB);
+        }}
+        className={FLOATING_BUTTON}
+      >
+        {glyph(chatOnRight ? PanelLeftIcon : PanelRightIcon)}
+      </IconButton>
+      <IconButton
+        label={t("browser.fullView.enter")}
+        shortcut={fullViewShortcut}
+        onClick={() => {
+          setFullView(true);
+          focusAfterLayout(SHOWN_TAB);
+        }}
+        className={FLOATING_BUTTON}
+      >
+        {glyph(EnterFullViewIcon)}
+      </IconButton>
+      <IconButton label={t("browser.floating.close")} onClick={closePanel} className={FLOATING_BUTTON}>
+        {glyph(Cancel01Icon)}
+      </IconButton>
+    </div>
+  );
+}
+
+const FloatableContext = createContext(false);
+
+function FloatButton() {
+  const t = useT();
+  if (!useContext(FloatableContext)) return null;
+  return (
+    <IconButton
+      label={t("browser.floating.enter")}
+      onClick={() => {
+        useBrowserStore.getState().setFloating(true);
+        focusAfterLayout("[data-floating-handle]");
+      }}
+      className={NAV_BUTTON}
+    >
+      <HugeiconsIcon icon={PictureInPictureOnIcon} strokeWidth={1.75} className={NAV_ICON} />
+    </IconButton>
+  );
+}
+
 /** `visible`: the panel's chat is shown (BrowserPanel `active`). */
 function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: boolean }) {
   const t = useT();
-  const { goBack, goForward, reload } = useBrowserStore.getState();
+  const { goForward, reload } = useBrowserStore.getState();
   const native = nativePage(tab);
-  const canGoBack = Boolean(
-    tab && (tab.index > 0 || tab.pageHistory?.back || (native && (tab.nativeError || tab.nativeHistory?.back))),
-  );
+  const canGoBack = canGoBackIn(tab);
   const canGoForward = Boolean(
     tab && (tab.index < tab.history.length - 1 || tab.pageHistory?.forward || (native && tab.nativeHistory?.forward)),
   );
-  const back = () => {
-    if (!tab) return;
-    if (native && tab.nativeError && returnToNativePage(tab.id)) return;
-    if (native && tab.nativeHistory?.back) nativeAction(tab.id, "back");
-    else if (!tab.pageHistory?.back || !sendFrameCommand(tab.id, { command: "go", delta: -1 })) goBack(tab.id);
-  };
+  const back = () => goBackIn(tab);
   const forward = () => {
     if (!tab) return;
     if (native && tab.nativeHistory?.forward) nativeAction(tab.id, "forward");
@@ -1492,6 +1629,7 @@ function WebToolbar({ tab, visible }: { tab: BrowserTab | undefined; visible: bo
       />
       <div className="flex shrink-0 items-center gap-0.5">
         <WebActions tab={tab} visible={visible} />
+        <FloatButton />
         <PanelMenu tab={tab} />
       </div>
     </>
@@ -1701,6 +1839,7 @@ function BrowserFileToolbar({
           <HugeiconsIcon icon={Download01Icon} strokeWidth={1.75} className="size-4.5" />
         </IconButton>
         <DownloadsButton className={cn(TOOLBAR_ICON_BUTTON, NAV_BUTTON)} visible={visible} idleHidden={true} />
+        <FloatButton />
         <PanelMenu tab={tab}>
           <div className="flex items-start gap-3 px-3 py-2 text-sm">
             <KindIcon name={entry.name} contentType={entry.contentType} className="mt-0.5 size-4.5" mono={true} />
@@ -1807,7 +1946,7 @@ function FloatingFileToolbar({
             type="button"
             className={cn(
               PILL,
-              "flex h-9 min-w-24 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full pl-3.5 pr-2.5 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
+              "flex h-8 min-w-24 max-w-[55%] shrink cursor-pointer items-center gap-2 rounded-full pl-3.5 pr-2.5 text-ui-13p5 text-foreground outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
             )}
           >
             {fileLabel}
@@ -1866,7 +2005,7 @@ function FloatingFileToolbar({
           title={entry.name}
           className={cn(
             PILL_SURFACE,
-            "flex h-9 min-w-24 max-w-[55%] shrink items-center gap-2 rounded-full px-3.5 text-ui-13p5 text-foreground",
+            "flex h-8 min-w-24 max-w-[55%] shrink items-center gap-2 rounded-full px-3.5 text-ui-13p5 text-foreground",
           )}
         >
           {fileLabel}
@@ -1905,7 +2044,7 @@ function FloatingFileToolbar({
         <div
           role="tablist"
           aria-label={t("browser.file.viewMode")}
-          className={cn(PILL_SURFACE, "flex h-9 shrink-0 items-center gap-0.5 rounded-full p-0.5")}
+          className={cn(PILL_SURFACE, "flex h-8 shrink-0 items-center gap-0.5 rounded-full p-0.5")}
         >
           {(["preview", "source"] as const).map((mode) => (
             <Tooltip key={mode}>
@@ -1917,7 +2056,7 @@ function FloatingFileToolbar({
                   aria-label={t(`browser.file.${mode}`)}
                   onClick={() => setView({ mode })}
                   className={cn(
-                    "flex size-8 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                    "flex size-7 cursor-pointer items-center justify-center rounded-full text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                     view.mode === mode
                       ? "bg-background text-foreground shadow-sm dark:bg-card"
                       : "hover:text-foreground",
@@ -1948,7 +2087,7 @@ function FloatingFileToolbar({
             .getState()
             .setZoom(tab.id, value === "fit" ? 1 : value)
         }
-        className={cn(PILL, "mr-0 hidden h-9 pr-2.5 @[28rem]:flex")}
+        className={cn(PILL, "mr-0 hidden h-8 pr-2.5 @[28rem]:flex")}
         />
       )}
       <OpenSplit key={entry.fileId} entry={entry} blob={blob} />
@@ -1966,7 +2105,7 @@ function FloatingFileToolbar({
 
 const SPLIT_PILL = cn(
   PILL,
-  "flex h-9 shrink-0 items-center rounded-full",
+  "flex h-8 shrink-0 items-center rounded-full",
   "has-[[data-state=open]]:bg-[color-mix(in_oklab,var(--pill-bg),var(--foreground)_var(--pill-hover))]",
 );
 const SPLIT_PART =
@@ -2253,6 +2392,15 @@ function DeviceBar() {
   );
 }
 
+// Floating keeps the side-pane layout, scaled down, so resizing never reflows the page; native pages zoom instead.
+const FLOATING_PAGE_STYLE = {
+  width: `calc(100% / var(${FLOATING_SCALE_VAR}, 1))`,
+  height: `calc(100% / var(${FLOATING_SCALE_VAR}, 1))`,
+  margin: 0,
+  transform: `scale(var(${FLOATING_SCALE_VAR}, 1))`,
+  transformOrigin: "0 0",
+} as const;
+
 const MAX_MOUNTED_TABS = 4;
 // Hidden pages share the chat's thread; keep only one ordinary page and three drafts.
 const MAX_HIDDEN_WEB_PAGES = 1;
@@ -2304,7 +2452,11 @@ function retainedTabs(mounted: readonly string[], tabs: BrowserTab[], activeTabI
 }
 
 /** The chat's in-app browser, memoized so chat renders skip it. `active`: its chat is shown. */
-export const BrowserPanel = memo(function BrowserPanel({ active = true }: { active?: boolean }) {
+export const BrowserPanel = memo(function BrowserPanel({
+  active = true,
+  floating = false,
+  floatable = false,
+}: { active?: boolean; floating?: boolean; floatable?: boolean }) {
   const t = useT();
   const tabs = useBrowserStore(useShallow(chatTabs));
   const activeTabId = useBrowserStore((state) => state.activeTabId);
@@ -2362,6 +2514,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
   const htmlAnnotating = frameAvailable && activeEntry?.kind === "file" &&
     fileBarKind(activeEntry.name, activeEntry.contentType, activeEntry.plainText) === "html" && fileMode === "preview";
   const pageAnnotating = activeTab && annotateTabId === activeTab.id ? annotateMode(activeTab, native) : null;
+  // Only a page native-view.ts shows (its pageRect) is zoomed instead; files and new tabs are DOM.
+  const nativeShown = native && activeEntry?.kind === "web" && !activeTab?.nativeError;
 
   return (
     <section
@@ -2383,7 +2537,8 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
         }
       }}
       className={cn(
-        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted pt-[var(--studio-content-top-inset,0px)]",
+        "relative flex h-full min-h-0 flex-col overflow-hidden bg-muted",
+        floating ? "rounded-[inherit]" : "pt-[var(--studio-content-top-inset,0px)]",
         documentShown
           ? "[--browser-surface:color-mix(in_oklab,var(--muted)_55%,var(--card))]"
           : "[--browser-surface:var(--card)]",
@@ -2408,17 +2563,24 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} />
+      <FloatableContext.Provider value={floatable}>
+      {floating ? (
+        <FloatingBar tab={activeTab} active={active} />
+      ) : (
+        <TabStrip tabs={tabs} activeTabId={activeTabId} active={active} floatable={floatable} />
+      )}
       {/* Not on the section: before Safari 18.5 container-type makes a stacking context, sinking the strip under the macOS drag strip. */}
       <div className="browser-panel-body @container/browser relative flex min-h-0 flex-1 flex-col overflow-hidden bg-[var(--browser-surface)]">
         <div
           className={cn(
             "browser-chrome @container flex shrink-0 items-center gap-2 px-2.5",
+            // Kept mounted, so its shortcuts still reach the page.
+            floating && "!hidden",
             (!activeEntry || activeEntry.kind !== "file") && "browser-web-toolbar flex-wrap",
             floatingFileControls
               ? "browser-file-toolbar pointer-events-none absolute inset-x-0 top-0 z-20 py-2 *:pointer-events-auto"
               : // 1px less at the bottom for the page's top border.
-                "pt-2 pb-[calc(var(--spacing)*2-1px)]",
+                "pt-1.5 pb-[calc(var(--spacing)*1.5-1px)]",
           )}
         >
           {activeTab && activeEntry?.kind === "file" ? (
@@ -2431,17 +2593,17 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
             <WebToolbar tab={activeTab} visible={active} />
           )}
         </div>
-        {floatingFileControls ? null : (
+        {floatingFileControls || floating ? null : (
           <BookmarksBar tab={activeTab} />
         )}
-        {deviceWidth ? <DeviceBar /> : null}
+        {deviceWidth && !floating ? <DeviceBar /> : null}
         <AgentBar activeTabId={activeTabId} />
         <div
           ref={setPageElement}
           data-browser-page=""
           className={cn(
             "relative min-h-0 flex-1 overflow-hidden",
-            floatingFileControls ? "browser-file-page" : "border-t border-border/70",
+            floatingFileControls ? "browser-file-page" : !floating && "border-t border-border/70",
             documentShown ? "bg-transparent" : "bg-background",
             deviceWidth && "bg-muted/60",
           )}
@@ -2462,7 +2624,11 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
                 "border-x border-border/70 bg-background shadow-sm",
             )}
             style={
-              deviceWidth ? { width: `min(100%, ${deviceWidth}px)` } : undefined
+              floating && !nativeShown
+                ? FLOATING_PAGE_STYLE
+                : deviceWidth
+                  ? { width: `min(100%, ${deviceWidth}px)` }
+                  : undefined
             }
           >
             {tabs.map((tab) =>
@@ -2518,6 +2684,7 @@ export const BrowserPanel = memo(function BrowserPanel({ active = true }: { acti
           ) : null}
         </div>
       </div>
+      </FloatableContext.Provider>
     </section>
   );
 });
