@@ -9,7 +9,9 @@ import {
 } from "@/features/settings/stores/voice-settings-store";
 import { toast } from "@/lib/toast";
 import type { DictationAdapter } from "@assistant-ui/react";
+import { useChatRuntimeStore } from "../stores/chat-runtime-store";
 import { useExternalProvidersStore } from "../stores/external-providers-store";
+import { micSendsAudioToModel } from "../utils/mic-target";
 import {
   currentDictationEntryMode,
   insecureDictationGuidance,
@@ -20,6 +22,7 @@ import {
   sttEngineStatusFor,
   sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
+import { listenForAudioClip } from "./studio-audio-clip-adapter";
 import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
@@ -34,6 +37,29 @@ export function cancelActiveStudioDictation(): void {
   const session = activeSession;
   activeSession = null;
   session?.cancel();
+}
+
+type AudioClipTarget = (file: File) => Promise<unknown> | unknown;
+// The chat composer that takes the mic's clip; Compare registers none and keeps transcribing.
+let audioClipTarget: AudioClipTarget | null = null;
+
+/** Returns an unregister that only clears its own target. */
+export function setMicAudioClipTarget(target: AudioClipTarget): () => void {
+  audioClipTarget = target;
+  return () => {
+    if (audioClipTarget === target) audioClipTarget = null;
+  };
+}
+
+/** Whether the next mic press records a clip for the loaded model rather than transcribing. */
+export function micRecordsForModel(chatId?: string | null): boolean {
+  if (chatId === null || !audioClipTarget) return false;
+  const { micTarget } = useVoiceSettingsStore.getState();
+  const { params, models, modelLoading } = useChatRuntimeStore.getState();
+  const activeModel = modelLoading
+    ? undefined
+    : models.find((model) => model.id === params.checkpoint);
+  return micSendsAudioToModel(micTarget, activeModel?.hasAudioInput === true);
 }
 
 /** Local and custom transcription record through the media recorder. */
@@ -90,6 +116,13 @@ export class StudioDictationAdapter implements DictationAdapter {
   }
 
   private createSession(): StudioDictationSession {
+    const clipTarget = audioClipTarget;
+    if (clipTarget && micRecordsForModel(this.chatId)) {
+      if (!StudioModelDictationAdapter.isSupported()) {
+        throw new Error("Voice recording is not supported in this browser.");
+      }
+      return listenForAudioClip(clipTarget);
+    }
     const { dictationEngine } = useVoiceSettingsStore.getState();
     // The conversation loop needs an adapter that owns its own turn: capture,
     // end-of-utterance, transcribe, submit, re-arm. The dictation adapters here
