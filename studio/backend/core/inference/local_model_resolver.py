@@ -1057,7 +1057,21 @@ def invalidate_index(*, additions_only: bool = False) -> None:
             _warm_pending = True
 
 
+_detection_generation = 0
+
+
+def _drop_scans_from_before_detection() -> None:
+    global _detection_generation
+    from utils.hardware import hardware as hw
+
+    detected = hw.DETECTION_GENERATION
+    if detected != _detection_generation:
+        _detection_generation = detected
+        invalidate_index(additions_only = True)
+
+
 def _index() -> dict[str, _LocalGgufEntry]:
+    _drop_scans_from_before_detection()
     # Build under the lock so concurrent expired callers don't all scan.
     with _lock:
         now = time.monotonic()
@@ -1170,6 +1184,7 @@ def resolve_local_gguf_for_switch(
     if not isinstance(requested, str) or not requested.strip():
         return None
     requested = requested.strip()
+    _drop_scans_from_before_detection()
     key = (_miss_scope(), requested)
     generation = _generation
     started = time.monotonic()

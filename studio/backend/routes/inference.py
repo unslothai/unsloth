@@ -11320,6 +11320,11 @@ async def _maybe_auto_switch_model(
         stashed_gguf_companion_roots: tuple[str, ...] = ()
         stashed_mlx = False
         if auto_switch_on and not reload_only:
+            from utils.hardware import hardware as hw
+
+            # Non-GGUF targets need the device; undetected hardware would resolve GGUF only.
+            if not hw.DETECTION_COMPLETE.is_set():
+                await asyncio.to_thread(hw.ensure_hardware_detected)
             # audio.cpp GGUFs load via the audio worker, not llama-server; the HF cache resolves them.
             resolved = await asyncio.to_thread(_audio_cpp_switch_target, requested_model)
             if resolved is None:

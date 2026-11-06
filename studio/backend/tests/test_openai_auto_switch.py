@@ -11675,6 +11675,75 @@ def test_a_host_with_no_accelerator_serves_gguf_only(monkeypatch):
     assert _REAL_HOST_HAS_NON_GGUF_BACKEND() is True
 
 
+def _checkpoint_before_hardware_detection(tmp_path, monkeypatch, device):
+    from utils import paths
+
+    path = _local_checkpoint(tmp_path, "my-finetune")
+    monkeypatch.setattr(models_route, "_scan_hf_cache", lambda *a, **k: [])
+    monkeypatch.setattr(models_route, "_scan_lmstudio_dir", lambda *a, **k: [])
+    monkeypatch.setattr(paths, "legacy_hf_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "hf_default_cache_dir", lambda: None)
+    monkeypatch.setattr(paths, "lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(tmp_path)}])
+    monkeypatch.setattr(resolver, "_host_has_a_non_gguf_backend", _REAL_HOST_HAS_NON_GGUF_BACKEND)
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+    monkeypatch.setattr(
+        importlib.util,
+        "find_spec",
+        lambda name, *a: object() if name == "torch" else real_find_spec(name, *a),
+    )
+    monkeypatch.setattr(hw, "DEVICE", None)
+    monkeypatch.setattr(hw, "DETECTION_COMPLETE", threading.Event())
+    monkeypatch.setattr(hw, "DETECTION_GENERATION", hw.DETECTION_GENERATION)
+
+    def _detect(*_a):
+        hw.DEVICE = device
+        hw.DETECTION_GENERATION += 1
+        hw.DETECTION_COMPLETE.set()
+        return device
+
+    monkeypatch.setattr(hw, "ensure_hardware_detected", _detect)
+    resolver._scan = (0.0, {})
+    return path, _detect
+
+
+@pytest.mark.parametrize("device", [hw.DeviceType.CUDA, hw.DeviceType.MLX])
+def test_a_fresh_start_switches_to_a_local_checkpoint(tmp_path, monkeypatch, device):
+    path, _ = _checkpoint_before_hardware_detection(tmp_path, monkeypatch, device)
+    backend = _FakeBackend("org/A-GGUF")
+    rec = _LoadRecorder(backend)
+    monkeypatch.setattr(settings, "get_openai_auto_switch_enabled", lambda: True)
+    monkeypatch.setattr(inference_route, "get_llama_cpp_backend", lambda: backend)
+    monkeypatch.setattr(inference_route, "_load_model_impl", rec)
+    monkeypatch.setattr(inference_route, "_auto_switch_waiters", {})
+    monkeypatch.setattr(inference_route, "_preflight_speech_codec_for_switch", lambda *_a: None)
+    monkeypatch.setattr(
+        inference_route,
+        "get_inference_backend",
+        lambda: SimpleNamespace(active_model_name = None, models = {}),
+    )
+
+    _run_hook("my-finetune")
+
+    assert [c.model_path for c in rec.calls] == [str(path)]
+
+
+@pytest.mark.parametrize("device", [hw.DeviceType.CUDA, hw.DeviceType.MLX])
+def test_a_miss_from_before_hardware_detection_is_not_reused(tmp_path, monkeypatch, device):
+    path, detect = _checkpoint_before_hardware_detection(tmp_path, monkeypatch, device)
+    assert resolver.resolve_local_gguf_for_switch("my-finetune") is None
+
+    detect()
+
+    assert resolver.resolve_local_gguf_for_switch("my-finetune") == (
+        str(path),
+        None,
+        "my-finetune",
+    )
+
+
 def test_a_serving_hf_cache_row_is_reported_loaded(tmp_path, monkeypatch):
     repo = tmp_path / "models--org--Chat"
     snapshot = repo / "snapshots" / "abc"
