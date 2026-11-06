@@ -1706,7 +1706,8 @@ def _search_view_attachment_part(part: Any) -> bool:
 
 
 # Mirrors searchableText: tool output keeps only text it would index, so images and widget seeds stay home.
-_SEARCH_SKIPPED_KEY = re.compile(r"b64|base64|^(?:images?|audio|video)\Z", re.IGNORECASE)
+# ASCII: JavaScript's /i never folds a non-ASCII letter such as "ı" onto an ASCII one.
+_SEARCH_SKIPPED_KEY = re.compile(r"b64|base64|^(?:images?|audio|video)\Z", re.IGNORECASE | re.ASCII)
 _MCP_IMAGES_MARKER = "\n__MCP_IMAGES__:"
 _IMAGES_MARKER = "\n__IMAGES__:"
 
@@ -1721,8 +1722,11 @@ def _split_mcp_images(text: str) -> str:
     if at == -1:
         return text
     try:
+        # parse_int: JSON.parse takes integers past Python's digit limit.
         images = json.loads(
-            text[at + len(_MCP_IMAGES_MARKER) :], parse_constant = _reject_json_constant
+            text[at + len(_MCP_IMAGES_MARKER) :],
+            parse_constant = _reject_json_constant,
+            parse_int = float,
         )
     except ValueError:
         return text
@@ -1745,8 +1749,7 @@ _DATA_URL = re.compile(f"data:[^;,{_JS_SPACE}]+;base64,[A-Za-z0-9+/=]+")
 
 
 def _searchable_string(text: str) -> str:
-    """searchableText on a string, short of stripBase64Runs: a Python scan for bare runs costs far more
-    than the prefixed data URL one, so those runs are left to the browser."""
+    """searchableText on a string, minus stripBase64Runs, which is far slower in Python."""
     text = _split_mcp_images(text)
     at = text.find(_IMAGES_MARKER)
     if at != -1:
@@ -1755,9 +1758,14 @@ def _searchable_string(text: str) -> str:
 
 
 def _search_view_string(text: str) -> str:
-    cut = _searchable_string(text)
-    # Sent only when the browser would read it back unchanged, else the original.
-    return cut if _searchable_string(cut) == cut else text
+    try:
+        cut = _searchable_string(text)
+        # Sent only when the browser would read it back unchanged, else the original.
+        stable = _searchable_string(cut) == cut
+    except RecursionError:
+        # JSON.parse may still read nesting this deep, so leave the string to the browser.
+        return text
+    return cut if stable else text
 
 
 def _search_view_value(

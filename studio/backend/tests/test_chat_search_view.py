@@ -200,6 +200,8 @@ def _tool_call(**part):
 
 def test_search_view_drops_tool_output_the_index_skips():
     envelope = json.dumps([{"data": "QUJD" * 1000, "mimeType": "image/png"}])
+    # JSON.parse reads an integer past Python's 4300 digit limit, so this envelope is valid too.
+    big = envelope[:-2] + ', "n": ' + "1" * 5000 + "}]"
     part = _tool_call(
         toolName = "python",
         args = {"code": "plot()", "image_b64": "QUJD"},
@@ -207,7 +209,12 @@ def test_search_view_drops_tool_output_the_index_skips():
         result = {
             "stdout": "done\n__IMAGES__:" + "QUJD" * 1000,
             "images": [IMAGE],
-            "nested": {"audio": "QUJD", "log": "kept\n__MCP_IMAGES__:" + envelope},
+            "nested": {
+                "audio": "QUJD",
+                "log": "kept\n__MCP_IMAGES__:" + envelope,
+                "big": "kept\n__MCP_IMAGES__:" + big,
+                "\u0131mage": "dotless i is no binary key to JavaScript",
+            },
             "deep": [[[[[{"gone": "too deep to index"}]]]]],
         },
     )
@@ -217,7 +224,11 @@ def test_search_view_drops_tool_output_the_index_skips():
         "argsText": '{"code": "plot()"}',
         "result": {
             "stdout": "done",
-            "nested": {"log": "kept"},
+            "nested": {
+                "log": "kept",
+                "big": "kept",
+                "\u0131mage": "dotless i is no binary key to JavaScript",
+            },
             "deep": [[[[None]]]],
         },
     }
@@ -250,7 +261,15 @@ def test_search_view_strips_data_urls_the_index_drops():
         "no marker",
         "text\n__MCP_IMAGES__:not json",
         "text\n__MCP_IMAGES__:[]",
-        "text\n__MCP_IMAGES__:[NaN]",
+        'text\n__MCP_IMAGES__:[{"data": "", "mimeType": "", "x": NaN}]',
+        pytest.param("text\n__MCP_IMAGES__:" + "[" * 100_000, id = "too-deep-for-python"),
+        pytest.param(
+            'data:a;base64,QQ\n__MCP_IMAGES__:[{"data": "", "mimeType": "", "x": '
+            + "[" * 100_000
+            + "]" * 100_000
+            + "}]",
+            id = "valid-but-too-deep-for-python",
+        ),
         'text\n__MCP_IMAGES__:[{"data": 1, "mimeType": "x"}]',
         # Cutting the last envelope would expose an earlier valid one the browser never strips.
         'a\n__MCP_IMAGES__:[{"data": "", "mimeType": ""}]\n__MCP_IMAGES__:[{"data": "", "mimeType": ""}]',
