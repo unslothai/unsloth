@@ -566,7 +566,8 @@ def test_typesafe_check_asks_its_decision_endpoint(upstream):
 
 
 @pytest.mark.parametrize(
-    "provider_type,api_type", [("typesafe", "chat_completions"), ("custom", "systemone")]
+    "provider_type,api_type",
+    [("typesafe", "chat_completions"), ("nace", "chat_completions"), ("custom", "systemone")],
 )
 def test_chat_refuses_a_decision_connection(upstream, provider_type, api_type):
     from models.inference import ChatCompletionRequest
@@ -585,3 +586,150 @@ def test_chat_refuses_a_decision_connection(upstream, provider_type, api_type):
     assert refused.value.status_code == 400
     assert "Decision API" in refused.value.detail
     assert upstream.calls == []
+
+
+NACE_UPSTREAM = {
+    "model": "drex-max",
+    "answers": {
+        "urgent": {"type": "noul", "noul": 0.0017},
+        "team": {
+            "type": "choice",
+            "choice": "outage",
+            "confidence": 0.9987,
+            "probabilities": {"outage": 0.9991, "billing": 0.0007},
+        },
+        "grade": {
+            "type": "score",
+            "score": 0.93,
+            "legend": ["unclear", "partly clear", "clear"],
+            "probabilities": {"0": 0.133, "1": 0.803, "2": 0.063},
+            "confidence": 0.705,
+        },
+    },
+    "usage": {"input_tokens": 307, "output_tokens": 311},
+    "evaluation_time_ms": 180.8,
+    "request_id": "req_1",
+}
+
+
+def _nace_connection():
+    providers_db.create_provider(
+        id = "nace",
+        provider_type = "nace",
+        display_name = "Nace",
+        base_url = "https://console.nace.ai/v1",
+        models = ["drex-max", "drex-v2.0"],
+        api_type = "chat_completions",
+    )
+    credential_secrets.save_provider_api_key("nace", "nace-key")
+    return "connection:nace:drex-max"
+
+
+def test_a_nace_connection_answers_with_its_list_legend_untouched(upstream):
+    upstream.replies[0] = httpx.Response(200, json = NACE_UPSTREAM)
+    client = _client()
+    name = _nace_connection()
+    listed = client.get("/api/settings/systemone/connections").json()
+    assert [(option["provider"], option["model"]) for option in listed] == [
+        ("Nace", "drex-max"),
+        ("Nace", "drex-v2.0"),
+    ]
+    assert client.put("/api/settings/systemone", json = {"model": name}).status_code == 200
+    questions = {
+        **QUESTIONS,
+        "grade": {
+            "type": "score",
+            "instructions": "How clear is the report?",
+            "criteria": ["unclear", "partly clear", "clear"],
+        },
+    }
+    response = client.post(
+        "/v1/systemone",
+        json = {"model": "default", "state": "The site is down.", "questions": questions},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == NACE_UPSTREAM
+    request = upstream.calls[-1]
+    assert str(request.url) == "https://console.nace.ai/v1/systemone"
+    assert request.headers["authorization"] == "Bearer nace-key"
+    body = json.loads(request.content)
+    assert set(body) == {"model", "state", "questions"}
+    assert body["model"] == "drex-max"
+    assert body["questions"]["grade"]["criteria"] == ["unclear", "partly clear", "clear"]
+
+
+def test_nace_check_asks_its_decision_endpoint(upstream):
+    upstream.replies[0] = httpx.Response(
+        200, json = {"answers": {"outage": {"type": "noul", "noul": 0.9}}}
+    )
+    result = _provider_test({"provider_type": "nace", "model_id": "drex-max"})
+    assert result["success"] is True, result
+    assert str(upstream.calls[0].url) == "https://console.nace.ai/v1/systemone"
+    assert json.loads(upstream.calls[0].content)["model"] == "drex-max"
+
+
+def test_a_saved_nace_key_is_never_sent_to_another_origin(upstream, monkeypatch):
+    upstream.replies[0] = httpx.Response(200, json = NACE_UPSTREAM)
+    from models.providers import ProviderUpdate
+    from routes import providers as providers_route
+
+    name = _nace_connection()
+
+    def update(**fields):
+        return asyncio.run(
+            providers_route.update_provider_config(
+                "nace",
+                ProviderUpdate(**fields),
+                credential = ("tester", None),
+                via_api_key = False,
+            )
+        )
+
+    with pytest.raises(HTTPException) as excinfo:
+        update(base_url = "https://attacker.example/v1")
+    assert excinfo.value.status_code == 400
+    assert providers_db.get_provider("nace")["base_url"] == "https://console.nace.ai/v1"
+    assert credential_secrets.get_provider_api_key("nace") == "nace-key"
+
+    # The saved key still only reaches the original host.
+    client = _client()
+    assert client.put("/api/settings/systemone", json = {"model": name}).status_code == 200
+    reply = _post(client, "default")
+    assert reply.status_code == 200, reply.text
+    assert [request.url.host for request in upstream.calls] == ["console.nace.ai"]
+    assert upstream.calls[0].headers["authorization"] == "Bearer nace-key"
+
+    # Same-origin edits keep the saved key.
+    update(base_url = "https://console.nace.ai/v2")
+    assert credential_secrets.get_provider_api_key("nace") == "nace-key"
+
+    # Moving the connection works once a key for the new host is supplied.
+    monkeypatch.setattr(providers_route, "resolve_provider_api_key_or_400", lambda *_: "new-key")
+    update(base_url = "https://proxy.example.com/v1", encrypted_api_key = "envelope")
+    assert credential_secrets.get_provider_api_key("nace") == "new-key"
+
+
+def test_a_nace_connection_without_a_key_or_clearing_it_may_change_host():
+    from models.providers import ProviderUpdate
+    from routes import providers as providers_route
+
+    def update(provider_id, **fields):
+        return asyncio.run(
+            providers_route.update_provider_config(
+                provider_id,
+                ProviderUpdate(**fields),
+                credential = ("tester", None),
+                via_api_key = False,
+            )
+        )
+
+    _nace_connection()
+    credential_secrets.delete_provider_api_key("nace")
+    update("nace", base_url = "https://proxy.example.com/v1")
+    assert providers_db.get_provider("nace")["base_url"] == "https://proxy.example.com/v1"
+
+    providers_db.update_provider("nace", base_url = "https://console.nace.ai/v1")
+    credential_secrets.save_provider_api_key("nace", "nace-key")
+    update("nace", base_url = "https://other.example.com/v1", clear_api_key = True)
+    assert providers_db.get_provider("nace")["base_url"] == "https://other.example.com/v1"
+    assert credential_secrets.get_provider_api_key("nace") is None
