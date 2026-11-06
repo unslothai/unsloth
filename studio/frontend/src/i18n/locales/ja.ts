@@ -2091,6 +2091,12 @@ export const ja = {
           "マシンごとに選び、ここで Xet が停滞または失敗した場合は HTTPS に切り替えます。",
         autoCurrently: "このマシンでは Auto は {transport} を使用しています。",
         xetMissing: "hf_xet がインストールされていないため Xet は利用できません。",
+        speedLimit: "ダウンロード速度制限",
+        speedLimitDescription:
+          "値を設定しない限り制限はありません。制限中のダウンロードは HTTPS を使用します。",
+        speedLimitNoLimit: "制限なし",
+        speedLimitInvalid: "Mbit/s の数値を入力するか、空欄のままにしてください。",
+        speedLimitUsesHttps: "速度制限が設定されている間、ダウンロードは HTTPS を使用します。50 GB を超えるファイルは引き続き Xet を使用し、制限は適用されません。",
       },
       uploads: {
         sectionTitle: "アップロード",
@@ -2475,6 +2481,10 @@ export const ja = {
         },
         contrast: {
           label: "コントラスト",
+        },
+        elementOutline: {
+          label: "要素の枠線",
+          description: "ボタン、入力欄、カード、メニューの枠線の濃さ。",
         },
         reduceMotion: {
           label: "モーションを減らす",
@@ -5436,7 +5446,7 @@ export const ja = {
     skippedVersion: "{component} {version} を今回はスキップしました",
     skippedUpdate: "{component} の更新を今回はスキップしました",
     skippedUpdates: "{components} の更新を今回はスキップしました",
-    vulkanFaster: "Vulkan は ROCM より 10% 以上高速です。再起動は不要です",
+    vulkanFaster: "10% 以上高速",
     noRestart: "再起動は不要です",
     downloadSize: "ダウンロードサイズ {size}",
     backendChange: "{change} バックエンド",
@@ -5445,8 +5455,8 @@ export const ja = {
     installingPhase: "{component} をインストールしています ({current}/{total})...",
     installingCount: "{count} 件の更新をインストールしています...",
     bundleTitle: "{count} 件のランタイム更新",
-    newBackend: "新しい {component} バックエンド",
-    newUpdate: "新しい {component} の更新",
+    newBackend: "新しいランタイムのバックエンド",
+    newUpdate: "新しいランタイムの更新",
     hideUpdate: "Unsloth を再度開くまで {component} の更新を非表示",
     hideUpdates: "Unsloth を再度開くまで {components} の更新を非表示",
     whatsNew: "新機能",

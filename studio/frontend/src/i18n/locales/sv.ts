@@ -2242,6 +2242,12 @@ export const sv = {
           "Automatiskt läge använder {transport} på den här datorn.",
         xetMissing:
           "Xet är inte tillgängligt eftersom hf_xet inte är installerat.",
+        speedLimit: "Hastighetsgräns för nedladdning",
+        speedLimitDescription:
+          "Ingen gräns om inget värde anges. En begränsad nedladdning använder HTTPS.",
+        speedLimitNoLimit: "Ingen gräns",
+        speedLimitInvalid: "Ange ett tal i Mbit/s eller lämna fältet tomt.",
+        speedLimitUsesHttps: "Så länge en hastighetsgräns är satt använder nedladdningar HTTPS. Filer över 50 GB använder fortfarande Xet, utan gränsen.",
       },
       uploads: {
         sectionTitle: "Uppladdningar",
@@ -2620,6 +2626,10 @@ export const sv = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Kontur för element",
+          description: "Styrka på kanterna runt knappar, fält, kort och menyer.",
         },
         reduceMotion: {
           label: "Minska rörelse",
@@ -5729,7 +5739,7 @@ export const sv = {
     skippedVersion: "Hoppade över {component} {version} tills vidare",
     skippedUpdate: "Hoppade över uppdateringen av {component} tills vidare",
     skippedUpdates: "Hoppade över uppdateringarna av {components} tills vidare",
-    vulkanFaster: "Vulkan är över 10 % snabbare än ROCM. Ingen omstart krävs",
+    vulkanFaster: "Över 10 % snabbare",
     noRestart: "Ingen omstart krävs",
     downloadSize: "{size} att ladda ned",
     backendChange: "Bakände: {change}",
@@ -5738,8 +5748,8 @@ export const sv = {
     installingPhase: "Installerar {component} ({current} av {total})...",
     installingCount: "Installerar {count} uppdateringar...",
     bundleTitle: "{count} körmiljöuppdateringar",
-    newBackend: "Ny bakände för {component}",
-    newUpdate: "Ny uppdatering för {component}",
+    newBackend: "Ny bakände för körmiljön",
+    newUpdate: "Ny uppdatering av körmiljön",
     hideUpdate: "Dölj uppdateringen av {component} tills Unsloth öppnas igen",
     hideUpdates: "Dölj uppdateringarna av {components} tills Unsloth öppnas igen",
     whatsNew: "Nyheter",

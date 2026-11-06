@@ -692,7 +692,7 @@ function RootLayout() {
       <PersonalizationSyncMount />
       <SttDeviceSyncMount />
       <InterfaceZoom />
-      <WindowMaterialMount />
+      <WindowMaterialMount route={hideNavbar ? undefined : isChatRoute ? "chat" : "page"} />
       <ReloadSnapshotPrivacy />
       {!isAuthFlowRoute && <ChatSettingsHydrationMount />}
       {!isAuthFlowRoute && <LowDiskNoticeMount />}

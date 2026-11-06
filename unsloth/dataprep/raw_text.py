@@ -360,10 +360,12 @@ class TextPreprocessor:
     _MULTIPLE_SPACES_PATTERN = re.compile(r"[ ]{2,}")
     _NEWLINE_SPACES_PATTERN = re.compile(r" *\n *")
     _MULTIPLE_NEWLINES_PATTERN = re.compile(r"\n\n\n+")
-    _CHAPTER_PATTERN = re.compile(r"^# (.+)$", re.MULTILINE)
-    _SECTION_PATTERN = re.compile(r"^## (.+)$", re.MULTILINE)
-    _SUBSECTION_PATTERN = re.compile(r"^### (.+)$", re.MULTILINE)
-    _CODE_BLOCK_PATTERN = re.compile(r"```(\w*)\n(.*?)\n```", re.DOTALL)
+    # One pass, so a "# comment" inside a fenced block stays code instead of becoming a heading.
+    _STRUCTURE_PATTERN = re.compile(
+        r"```(\w*)\n((?s:.*?))\n```|^(#{1,3}) (.+)$",
+        re.MULTILINE,
+    )
+    _HEADING_TAGS = {1: "chapter", 2: "section", 3: "subsection"}
 
     def clean_text(self, text):
         """Remove unwanted characters, normalize whitespace"""
@@ -386,11 +388,14 @@ class TextPreprocessor:
 
     def add_structure_tokens(self, text):
         """Add special tokens for structure (chapters, sections)"""
-        text = self._CHAPTER_PATTERN.sub(r"<|chapter|>\1<|/chapter|>", text)
-        text = self._SECTION_PATTERN.sub(r"<|section|>\1<|/section|>", text)
-        text = self._SUBSECTION_PATTERN.sub(r"<|subsection|>\1<|/subsection|>", text)
-        text = self._CODE_BLOCK_PATTERN.sub(r"<|code|\1|>\2<|/code|>", text)
-        return text
+
+        def tag(match):
+            if match[3] is None:
+                return f"<|code|{match[1]}|>{match[2]}<|/code|>"
+            name = self._HEADING_TAGS[len(match[3])]
+            return f"<|{name}|>{match[4]}<|/{name}|>"
+
+        return self._STRUCTURE_PATTERN.sub(tag, text)
 
     def validate_dataset(
         self,

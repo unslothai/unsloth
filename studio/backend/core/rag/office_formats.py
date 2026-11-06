@@ -491,16 +491,32 @@ def _column_index(ref: str) -> int:
     return index - 1
 
 
+def _decode_xstring(text: str) -> str:
+    if "_x" not in text:
+        return text
+    return re.sub(
+        r"_x005[Ff]_(x[0-9a-fA-F]{4}_)|_x([0-9a-fA-F]{4})_",
+        lambda match: f"_{match[1]}" if match[1] else chr(int(match[2], 16)),
+        text,
+    )
+
+
+def _xlsx_unicode(text: str) -> str:
+    if re.search(r"[\ud800-\udfff]", text):
+        return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    return text
+
+
 def _xlsx_text(node: ET.Element) -> str:
     # Plain <t> or rich runs <r><t>; phonetic hints (<rPh>) are skipped.
     parts = []
     for child in node:
         if child.tag == _q("s", "t"):
-            parts.append(child.text or "")
+            parts.append(_decode_xstring(child.text or ""))
         elif child.tag == _q("s", "r"):
             t = child.find(_q("s", "t"))
-            parts.append((t.text or "") if t is not None else "")
-    return "".join(parts)
+            parts.append(_decode_xstring(t.text or "") if t is not None else "")
+    return _xlsx_unicode("".join(parts))
 
 
 def xlsx(path: str) -> list[Section]:
@@ -562,7 +578,9 @@ def xlsx(path: str) -> list[Section]:
                         value = _xlsx_text(inline) if inline is not None else ""
                     elif kind == "b":
                         value = "TRUE" if raw == "1" else "FALSE"
-                    elif kind in ("str", "e"):
+                    elif kind == "str":
+                        value = _xlsx_unicode(_decode_xstring(raw))
+                    elif kind == "e":
                         value = raw
                     else:
                         try:

@@ -5055,6 +5055,108 @@ def test_zoo_multimodal_detection_fails_open_to_text(monkeypatch):
     assert mlx_inference._zoo_declares_multimodal("repo") is False
 
 
+def _text_family_backend(
+    monkeypatch,
+    vlm_only,
+    *,
+    configs = None,
+    fail_vlm_load = False,
+    config_dir = None,
+):
+    """A backend over a stub unsloth-zoo that builds `raon1_mini` on mlx-vlm when `vlm_only`."""
+    pytest.importorskip("mlx.core")
+    from core.inference import mlx_inference
+    from utils.models import model_config
+
+    attempts, asked = [], []
+
+    class _Loader:
+        @staticmethod
+        def from_pretrained(name, **kwargs):
+            attempts.append(kwargs["text_only"])
+            if fail_vlm_load and not kwargs["text_only"]:
+                raise RuntimeError("mlx-vlm load failed")
+            return SimpleNamespace(config = {}), SimpleNamespace()
+
+    loader = types.ModuleType("unsloth_zoo.mlx.loader")
+    loader.FastMLXModel = _Loader
+    loader._is_vlm = lambda cfg: False
+    loader._mlx_vlm_only_text_model = lambda cfg, model_type: (
+        asked.append(model_type) or (vlm_only and model_type == "raon1_mini")
+    )
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.mlx.loader", loader)
+    configs = configs or {"org/raon": {"model_type": "raon1_mini"}}
+    monkeypatch.setattr(
+        model_config, "_read_raw_config_json", lambda name, token: configs.get(name)
+    )
+    monkeypatch.setattr(mlx_inference, "_classify_mlx_audio_type", lambda *a, **k: None)
+    monkeypatch.setattr(mlx_inference, "_row_quantized_cache_gap", lambda: None)
+    monkeypatch.setattr(
+        mlx_inference, "_kv_quant_eligibility", lambda *a: ("none", "MLA cache", False)
+    )
+    monkeypatch.setattr(
+        mlx_inference.MLXInferenceBackend, "_resolve_context_lengths", lambda *a: (8192, 8192, 8192)
+    )
+    config = SimpleNamespace(
+        identifier = "org/raon", is_vision = False, is_lora = False, config_dir = config_dir
+    )
+    return mlx_inference.MLXInferenceBackend(), config, attempts, asked
+
+
+@pytest.mark.parametrize("vlm_only", [True, False])
+def test_a_text_family_only_mlx_vlm_ships_is_loaded_and_served_there(monkeypatch, vlm_only):
+    backend, config, attempts, asked = _text_family_backend(monkeypatch, vlm_only)
+    backend.load_model(config)
+    assert "raon1_mini" in asked and attempts == [not vlm_only]
+    assert backend._is_vlm is vlm_only and not backend._reads_vision_input()
+
+
+def test_a_text_family_only_mlx_vlm_ships_is_routed_by_its_precision_folder_config(monkeypatch):
+    # The repo root has no config; the loader builds from 8bit/, whose config declares the family.
+    backend, config, attempts, _ = _text_family_backend(
+        monkeypatch,
+        True,
+        configs = {"/snap/8bit": {"model_type": "raon1_mini"}},
+        config_dir = "/snap/8bit",
+    )
+    backend.load_model(config)
+    assert attempts == [False] and backend._is_vlm is True
+
+
+def test_a_multimodal_precision_folder_is_routed_by_its_own_config(monkeypatch):
+    # The root config is a text family mlx-lm serves; the picked folder's is one zoo calls multimodal.
+    backend, config, attempts, _ = _text_family_backend(
+        monkeypatch,
+        False,
+        configs = {"org/raon": {"model_type": "qwen3"}, "/snap/8bit": {"model_type": "mm_family"}},
+        config_dir = "/snap/8bit",
+    )
+    seen = []
+    sys.modules["unsloth_zoo.mlx.loader"]._is_vlm = lambda cfg: (
+        seen.append(cfg["model_type"]) or cfg["model_type"] == "mm_family"
+    )
+    backend.load_model(config)
+    assert seen == ["mm_family"] and attempts == [False] and backend._is_vlm is True
+
+
+@pytest.mark.parametrize("vlm_only", [True, False])
+@pytest.mark.parametrize("failure", ["kv_refused", "load_failed"])
+def test_a_text_family_only_mlx_vlm_ships_never_falls_back_to_mlx_lm(
+    monkeypatch, vlm_only, failure
+):
+    backend, config, attempts, _ = _text_family_backend(
+        monkeypatch, vlm_only, fail_vlm_load = failure == "load_failed"
+    )
+    if failure == "load_failed" and vlm_only:
+        with pytest.raises(RuntimeError, match = "mlx-vlm load failed"):
+            backend.load_model(config, kv_quant = "8")
+        assert attempts == [False]
+        return
+    backend.load_model(config, kv_quant = "8")
+    assert attempts == ([False] if vlm_only else [False, True])
+    assert backend._is_vlm is vlm_only and backend._kv_quant["kv_bits"] is None
+
+
 def test_mlx_audio_input_normalizes_split_native_reasoning_channels(monkeypatch):
     from core.inference import mlx_inference
     from core.inference.mlx_inference import MLXInferenceBackend

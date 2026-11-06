@@ -282,7 +282,8 @@ def _rewrite_json_manifest(manifest_path: str, resolve) -> None:
     except json.JSONDecodeError:
         data = None  # JSON Lines in a .json file
     if data is None:
-        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+        # Text mode normalizes CRLF; Unicode separators inside strings are data.
+        rows = [json.loads(line) for line in text.split("\n") if line.strip()]
         for row in rows:
             _rewrite_row(row, resolve)
         with open(manifest_path, "w", encoding = "utf-8") as f:

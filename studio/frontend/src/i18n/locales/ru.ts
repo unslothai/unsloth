@@ -2108,6 +2108,12 @@ export const ru = {
           "Выбирает для этой машины и переключается на HTTPS, если Xet зависает или падает.",
         autoCurrently: "Auto использует {transport} на этой машине.",
         xetMissing: "Xet недоступен, так как hf_xet не установлен.",
+        speedLimit: "Ограничение скорости загрузки",
+        speedLimitDescription:
+          "Без ограничения, пока не задано значение. Ограниченная загрузка идёт по HTTPS.",
+        speedLimitNoLimit: "Без ограничения",
+        speedLimitInvalid: "Введите число в Мбит/с или оставьте поле пустым.",
+        speedLimitUsesHttps: "Пока задано ограничение скорости, загрузки используют HTTPS. Файлы больше 50 ГБ по-прежнему загружаются через Xet без ограничения.",
       },
       uploads: {
         sectionTitle: "Загрузки",
@@ -2504,6 +2510,10 @@ export const ru = {
         },
         contrast: {
           label: "Контраст",
+        },
+        elementOutline: {
+          label: "Контур элементов",
+          description: "Насыщенность границ кнопок, полей, карточек и меню.",
         },
         reduceMotion: {
           label: "Уменьшить анимацию",
@@ -5513,7 +5523,7 @@ export const ru = {
     skippedVersion: "Версия {component} {version} пока пропущена",
     skippedUpdate: "Обновление {component} пока пропущено",
     skippedUpdates: "Обновления {components} пока пропущены",
-    vulkanFaster: "Vulkan более чем на 10% быстрее ROCM. Перезапуск не требуется",
+    vulkanFaster: "Быстрее более чем на 10%",
     noRestart: "Перезапуск не требуется",
     downloadSize: "Загрузка: {size}",
     backendChange: "Бэкенд: {change}",
@@ -5522,8 +5532,8 @@ export const ru = {
     installingPhase: "Установка {component} ({current} из {total})...",
     installingCount: "Установка обновлений: {count}...",
     bundleTitle: "Обновления среды выполнения: {count}",
-    newBackend: "Новый бэкенд {component}",
-    newUpdate: "Новое обновление {component}",
+    newBackend: "Новый бэкенд среды выполнения",
+    newUpdate: "Новое обновление среды выполнения",
     hideUpdate: "Скрыть обновление {component} до перезапуска Unsloth",
     hideUpdates: "Скрыть обновления {components} до перезапуска Unsloth",
     whatsNew: "Что нового",

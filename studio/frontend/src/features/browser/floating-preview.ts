@@ -45,7 +45,7 @@ type Geometry = {
   height: number;
 };
 type Box = { left: number; top: number; width: number; height: number };
-type Room = Box & { composer: Box | null };
+type Room = Box & { headerGap: number };
 
 let geometry: Geometry | null = null;
 // The page's side-pane layout width, shown scaled down.
@@ -97,37 +97,8 @@ function writeGeometry(next: Geometry): void {
 const clamp = (value: number, min: number, max: number) =>
   Math.min(max, Math.max(min, value));
 
-const toBox = (rect: DOMRect): Box => ({
-  left: rect.left,
-  top: rect.top,
-  width: rect.width,
-  height: rect.height,
-});
-
-function overlaps(a: Box, b: Box): boolean {
-  return (
-    a.left < b.left + b.width &&
-    b.left < a.left + a.width &&
-    a.top < b.top + b.height &&
-    b.top < a.top + a.height
-  );
-}
-
-function composerIn(split: HTMLElement): Box | null {
-  for (const form of split.querySelectorAll?.<HTMLElement>(
-    "form.aui-composer-root",
-  ) ?? []) {
-    if (
-      form.offsetParent === null ||
-      form.closest('[aria-hidden="true"], [inert]')
-    )
-      continue;
-    const box = form.getBoundingClientRect();
-    if (box.width > 0 && box.height > 0) return toBox(box);
-  }
-  return null;
-}
-
+/** The whole chat, header included: the window goes wherever it is dragged. `headerGap`: where
+ *  it opens, below the chat header's controls. */
 function roomFor(surface: HTMLElement): Room | null {
   const split = surface.closest<HTMLElement>(".chat-artifact-split");
   if (!split) return null;
@@ -138,41 +109,29 @@ function roomFor(surface: HTMLElement): Room | null {
     ?.querySelector<HTMLElement>(
       ":scope > [data-side-panel-inset]:not(.chat-header-fade)",
     );
-  const top =
-    Math.max(box.top, header?.getBoundingClientRect().bottom ?? box.top) +
-    EDGE_GAP;
+  const top = box.top + EDGE_GAP;
   const width = box.width - 2 * EDGE_GAP;
   const height = box.bottom - EDGE_GAP - top;
+  const headerBottom = header?.getBoundingClientRect().bottom ?? box.top;
   return width > 0 && height > 0
     ? {
         left: box.left + EDGE_GAP,
         top,
         width,
         height,
-        composer: composerIn(split),
+        headerGap: Math.max(0, headerBottom - box.top),
       }
     : null;
 }
 
-function clearOfComposer(box: Box, room: Room): Box {
-  const composer = room.composer;
-  if (!composer || !overlaps(box, composer)) return box;
-  const tops = [
-    composer.top - EDGE_GAP - box.height,
-    composer.top + composer.height + EDGE_GAP,
-  ].filter(
-    (top) => top >= room.top && top + box.height <= room.top + room.height,
-  );
-  if (tops.length === 0) return box;
-  const top = tops.reduce((best, next) =>
-    Math.abs(next - box.top) < Math.abs(best - box.top) ? next : best,
-  );
-  return { ...box, top };
-}
-
-function defaultGeometry(room: Box): Geometry {
+function defaultGeometry(room: Room): Geometry {
   const width = Math.round(clamp(room.width * 0.38, 320, 480));
-  return { left: null, top: 0, width, height: Math.round(width * 0.68) };
+  return {
+    left: null,
+    top: room.headerGap,
+    width,
+    height: Math.round(width * 0.68),
+  };
 }
 
 function boxIn(room: Room, intent: Geometry): Box {
@@ -186,15 +145,12 @@ function boxIn(room: Room, intent: Geometry): Box {
     Math.min(MIN_HEIGHT, room.height),
     room.height,
   );
-  return clearOfComposer(
-    {
-      left: room.left + placeAxis(intent.left, room.width - width),
-      top: room.top + clamp(intent.top, 0, room.height - height),
-      width,
-      height,
-    },
-    room,
-  );
+  return {
+    left: room.left + placeAxis(intent.left, room.width - width),
+    top: room.top + clamp(intent.top, 0, room.height - height),
+    width,
+    height,
+  };
 }
 
 function intentOf(room: Box, box: Box): Geometry {
@@ -268,13 +224,6 @@ export function floatSurface(surface: HTMLElement): () => void {
   place();
   const observer = new ResizeObserver(place);
   if (split) observer.observe(split);
-  const observeComposer = () => {
-    const composer = split?.querySelector?.<HTMLElement>(
-      "form.aui-composer-root",
-    );
-    if (composer) observer.observe(composer);
-  };
-  observeComposer();
   window.addEventListener("resize", place);
   return () => {
     observer.disconnect();
@@ -314,35 +263,6 @@ function resized(
   if (edge.includes("s"))
     bottom = clamp(bottom + dy, top + minHeight, roomBottom);
   return { left, top, width: right - left, height: bottom - top };
-}
-
-function settled(
-  start: Box,
-  previous: Box,
-  next: Box,
-  edge: FloatingEdge,
-  room: Room,
-): Box {
-  if (edge === "move") return clearOfComposer(next, room);
-  const composer = room.composer;
-  if (!composer || !overlaps(next, composer) || overlaps(start, composer))
-    return next;
-  let { top, height } = next;
-  const bottom = top + height;
-  if (edge.includes("s") && start.top + start.height <= composer.top) {
-    height = composer.top - EDGE_GAP - top;
-  } else if (
-    edge.includes("n") &&
-    start.top >= composer.top + composer.height
-  ) {
-    top = composer.top + composer.height + EDGE_GAP;
-    height = bottom - top;
-  }
-  const stopped = { ...next, top, height };
-  return height >= Math.min(MIN_HEIGHT, room.height) &&
-    !overlaps(stopped, composer)
-    ? stopped
-    : previous;
 }
 
 const CURSORS: Record<FloatingEdge, string> = {
@@ -427,13 +347,7 @@ export function startFloatingGesture(
       if (Math.hypot(dx, dy) < DRAG_SLOP_PX) return;
       begin();
     }
-    latest = settled(
-      start,
-      latest,
-      resized(start, edge, dx, dy, room),
-      edge,
-      room,
-    );
+    latest = resized(start, edge, dx, dy, room);
     if (!frame) frame = requestAnimationFrame(draw);
   };
   const finish = () => {
@@ -466,13 +380,7 @@ export function nudgeFloating(event: ReactKeyboardEvent<HTMLElement>): void {
   const step = 2;
   const edge = event.shiftKey ? "se" : "move";
   const start = currentBox(room);
-  const next = settled(
-    start,
-    start,
-    resized(start, edge, delta.dx * step, delta.dy * step, room),
-    edge,
-    room,
-  );
+  const next = resized(start, edge, delta.dx * step, delta.dy * step, room);
   paint(surface, next);
   writeGeometry(intentOf(room, next));
   announceMove();

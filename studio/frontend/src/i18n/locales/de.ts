@@ -2124,6 +2124,12 @@ export const de = {
           "Wählt pro Rechner und wechselt zu HTTPS, wenn Xet hier stockt oder fehlschlägt.",
         autoCurrently: "Auto verwendet auf diesem Rechner {transport}.",
         xetMissing: "Xet ist nicht verfügbar, da hf_xet nicht installiert ist.",
+        speedLimit: "Download-Geschwindigkeitslimit",
+        speedLimitDescription:
+          "Kein Limit, solange kein Wert gesetzt ist. Ein begrenzter Download verwendet HTTPS.",
+        speedLimitNoLimit: "Kein Limit",
+        speedLimitInvalid: "Gib eine Zahl in Mbit/s ein oder lass das Feld leer.",
+        speedLimitUsesHttps: "Solange ein Geschwindigkeitslimit gesetzt ist, verwenden Downloads HTTPS. Dateien über 50 GB verwenden weiterhin Xet, ohne das Limit.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2523,6 +2529,10 @@ export const de = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Umrandung der Elemente",
+          description: "Stärke der Ränder von Schaltflächen, Feldern, Karten und Menüs.",
         },
         reduceMotion: {
           label: "Bewegung reduzieren",
@@ -5559,7 +5569,7 @@ export const de = {
     skippedVersion: "{component} {version} vorerst übersprungen",
     skippedUpdate: "Das {component}-Update vorerst übersprungen",
     skippedUpdates: "Die Updates für {components} vorerst übersprungen",
-    vulkanFaster: "Vulkan ist >10 % schneller als ROCM. Kein Neustart nötig",
+    vulkanFaster: "Über 10 % schneller",
     noRestart: "Kein Neustart nötig",
     downloadSize: "{size} Download",
     backendChange: "Backend {change}",
@@ -5568,8 +5578,8 @@ export const de = {
     installingPhase: "{component} wird installiert ({current} von {total})...",
     installingCount: "{count} Updates werden installiert...",
     bundleTitle: "{count} Laufzeit-Updates",
-    newBackend: "Neues {component}-Backend",
-    newUpdate: "Neues {component}-Update",
+    newBackend: "Neues Laufzeit-Backend",
+    newUpdate: "Neues Laufzeit-Update",
     hideUpdate: "Das {component}-Update ausblenden, bis Unsloth erneut geöffnet wird",
     hideUpdates: "Die Updates für {components} ausblenden, bis Unsloth erneut geöffnet wird",
     whatsNew: "Neuigkeiten",

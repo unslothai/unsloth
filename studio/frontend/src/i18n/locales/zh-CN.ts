@@ -2079,6 +2079,12 @@ export const zhCN = {
         autoHint: "按本机情况选择，若 Xet 在这里卡住或失败则切换到 HTTPS。",
         autoCurrently: "本机上 Auto 正在使用 {transport}。",
         xetMissing: "未安装 hf_xet，因此无法使用 Xet。",
+        speedLimit: "下载速度限制",
+        speedLimitDescription:
+          "未设置数值时不限速。限速下载使用 HTTPS。",
+        speedLimitNoLimit: "不限速",
+        speedLimitInvalid: "请输入 Mbit/s 数值，或留空。",
+        speedLimitUsesHttps: "设置了速度限制时，下载使用 HTTPS。超过 50 GB 的文件仍使用 Xet，不受限制。",
       },
       uploads: {
         sectionTitle: "上传",
@@ -2478,6 +2484,10 @@ export const zhCN = {
         },
         contrast: {
           label: "对比度",
+        },
+        elementOutline: {
+          label: "元素轮廓",
+          description: "按钮、输入框、卡片和菜单的边框强度。",
         },
         reduceMotion: {
           label: "减少动态效果",
@@ -5387,7 +5397,7 @@ export const zhCN = {
     skippedVersion: "已暂时跳过 {component} {version}",
     skippedUpdate: "已暂时跳过 {component} 更新",
     skippedUpdates: "已暂时跳过 {components} 更新",
-    vulkanFaster: "Vulkan 比 ROCM 快 10% 以上。无需重启",
+    vulkanFaster: "快 10% 以上",
     noRestart: "无需重启",
     downloadSize: "下载大小 {size}",
     backendChange: "{change} 后端",
@@ -5396,8 +5406,8 @@ export const zhCN = {
     installingPhase: "正在安装 {component}（第 {current} 个，共 {total} 个）...",
     installingCount: "正在安装 {count} 项更新...",
     bundleTitle: "{count} 项运行时更新",
-    newBackend: "新的 {component} 后端",
-    newUpdate: "新的 {component} 更新",
+    newBackend: "新的运行时后端",
+    newUpdate: "新的运行时更新",
     hideUpdate: "在重新打开 Unsloth 之前隐藏 {component} 更新",
     hideUpdates: "在重新打开 Unsloth 之前隐藏 {components} 更新",
     whatsNew: "新功能",

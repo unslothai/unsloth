@@ -47,6 +47,20 @@ test("recognizes NPU model paths only", () => {
   assert.equal(api.isNpuModelId(null), false);
 });
 
+test("npuRuntimeLabel names the installed FastFlowLM and Lemonade versions", () => {
+  const { api } = client(() => Response.json({}));
+  assert.equal(
+    api.npuRuntimeLabel({ fastflowlm: "1.0.12", lemonade: "2026.44.1" }),
+    "FastFlowLM v1.0.12 · Lemonade v2026.44.1",
+  );
+  assert.equal(
+    api.npuRuntimeLabel({ fastflowlm: "v1.0.12", lemonade: null }),
+    "FastFlowLM v1.0.12",
+  );
+  assert.equal(api.npuRuntimeLabel({ fastflowlm: null, lemonade: null }), null);
+  assert.equal(api.npuRuntimeLabel(undefined), null);
+});
+
 test("download reports progress across split frames and resolves on complete", async () => {
   const c = client(() =>
     sse([

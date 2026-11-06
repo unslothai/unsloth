@@ -632,9 +632,9 @@ def apply_speed_optims(
         except Exception:  # noqa: BLE001
             pass
 
+    if mode in (SPEED_DEFAULT, SPEED_MAX) and on_cuda and tf32_enabled():
+        applied["tf32"] = _enable_tf32(logger)
     if mode == SPEED_MAX:
-        if on_cuda:
-            applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
 
     # Deliberately NOT gated on applied["compiled"]: a launch-bound step survives the compile.
@@ -1986,6 +1986,14 @@ def _enable_miopen_immediate(logger: Any) -> bool:
         return False
 
 
+TF32_ENV = "UNSLOTH_DIFFUSION_TF32"
+
+
+def tf32_enabled() -> bool:
+    import os
+    return (os.environ.get(TF32_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
+
+
 def _enable_tf32(logger: Any) -> bool:
     try:
         import torch
@@ -2050,6 +2058,13 @@ def _fuse_qkv(pipe: Any, logger: Any) -> bool:
             logger.info(
                 "diffusion.speed: fuse_qkv skipped (native quantised projections stay unfused)"
             )
+        return False
+    from . import diffusion_lora_quant_merge as lora_quant_merge
+
+    # A fused to_qkv copy would miss in-place re-merges of merged adapter weights.
+    if lora_quant_merge.merged(pipe):
+        if logger is not None:
+            logger.info("diffusion.speed: fuse_qkv skipped (merged LoRA weights change in place)")
         return False
     # Prefer pipe-level fuse (covers every component); else fuse each DiT so dual-DiT families fuse both.
     fn = getattr(pipe, "fuse_qkv_projections", None)

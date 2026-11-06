@@ -196,6 +196,15 @@ def _unregister_cp_sharding_rules() -> None:
     unregister_cp_sharding_rules(clear_the_cache = False)
 
 
+# A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
+_ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
+
+
+# Before the imports below: on the CPU route they bind this from the partially initialised module.
+def get_cp_manager() -> Optional["ContextParallelManager"]:
+    return _ACTIVE_MANAGER
+
+
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
@@ -206,9 +215,6 @@ from .utils.ulysses_hybrid import (
     is_ulysses_gated_delta,
     wrap_gated_delta_forward,
 )
-
-# A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
-_ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
@@ -233,10 +239,6 @@ def _multimodal_inputs(inputs: dict) -> list:
 
 _INSTALLED_MESH = []
 _INSTALLED_PARALLELISM_CONFIG = []
-
-
-def get_cp_manager() -> Optional["ContextParallelManager"]:
-    return _ACTIVE_MANAGER
 
 
 def _stateful_mixers(model) -> list:
@@ -273,10 +275,15 @@ def _attention_modules(model) -> list:
     return [module for name, module in model.named_modules() if name.endswith("self_attn")]
 
 
-def _uses_fast_llama_attention(model) -> bool:
-    from .models.llama import LlamaAttention_fast_forward, runs_fast_forward
+def _uses_unsloth_attention(model, rl = False) -> bool:
+    """Every attention layer runs a forward marked by context_parallel_attention (with rl: marked for DPO / GRPO)."""
+    from .models.llama import running_forward
+    from .utils.attention_dispatch import is_context_parallel_attention
+
     modules = _attention_modules(model)
-    return bool(modules) and all(runs_fast_forward(m, LlamaAttention_fast_forward) for m in modules)
+    return bool(modules) and all(
+        is_context_parallel_attention(running_forward(m), rl) for m in modules
+    )
 
 
 def _generic_hf_attention(model) -> bool:
@@ -293,7 +300,7 @@ def _supports_context_parallel(
     backend = "ring",
     generic = True,
 ) -> bool:
-    if _uses_fast_llama_attention(model):
+    if _uses_unsloth_attention(model):
         return not _stateful_mixers(model)
     if backend != "ulysses" or _hybrid_config_blocker(model) is not None:
         return False
@@ -328,6 +335,14 @@ def _check_stateful_mixers(model, backend, size) -> None:
 
 def _self_attn_pre_forward_hook(_module, module_args, module_kwargs):
     if get_cp_manager() is not None and "attention_mask" in module_kwargs:
+        module_kwargs["attention_mask"] = None
+    return module_args, module_kwargs
+
+
+def _decoder_layer_pre_forward_hook(_module, module_args, module_kwargs):
+    # HF's shard-local mask is None on shards with no document start, a tensor elsewhere; CP attention never
+    # reads it, so always pass None: a compiled layer guards on the argument type and keeps one graph.
+    if get_cp_manager() is not None and module_kwargs.get("attention_mask") is not None:
         module_kwargs["attention_mask"] = None
     return module_args, module_kwargs
 
@@ -383,9 +398,8 @@ class ContextParallelManager:
             for module, _ in _stateful_mixers(model):
                 if is_ulysses_gated_delta(module):
                     wrap_gated_delta_forward(module, get_cp_manager)
-            # Unsloth's fast Llama forward has its own Ulysses path; every other Hugging Face attention layer
-            # runs its own attention function after the exchange.
-            generic = not _uses_fast_llama_attention(model)
+            # Fast forwards exchange inside run_attention; other HF layers run their attention after the exchange.
+            generic = not _uses_unsloth_attention(model)
             for name, module in model.named_modules():
                 if name.endswith("self_attn") and (
                     type(module).__name__ in GATED_DELTA_ATTENTION_CLASSES
@@ -394,12 +408,25 @@ class ContextParallelManager:
                     install_hf_attention_wrapper(
                         module, module.config._attn_implementation, get_cp_manager
                     )
-        for name, module in model.named_modules():
-            if name.endswith("self_attn") and not getattr(module, "_unsloth_cp_hooked", False):
+        for name, module in list(model.named_modules()):
+            if not name.endswith("self_attn"):
+                continue
+            if not getattr(module, "_unsloth_cp_hooked", False):
                 module.register_forward_pre_hook(
                     _self_attn_pre_forward_hook, with_kwargs = True, prepend = True
                 )
                 module._unsloth_cp_hooked = True
+            # Skip layers with linear_attn: its scan reads the padding mask.
+            layer = model.get_submodule(name.rpartition(".")[0]) if "." in name else None
+            if (
+                layer is not None
+                and not hasattr(layer, "linear_attn")
+                and not getattr(layer, "_unsloth_cp_mask_hooked", False)
+            ):
+                layer.register_forward_pre_hook(
+                    _decoder_layer_pre_forward_hook, with_kwargs = True, prepend = True
+                )
+                layer._unsloth_cp_mask_hooked = True
 
     def _prepare_inputs(self, inputs: dict) -> None:
         input_ids = inputs.get("input_ids")
@@ -1214,7 +1241,7 @@ def _check_cp_model(
     generic = (
         allow_hybrids
         and backend == "ulysses"
-        and not _uses_fast_llama_attention(model)
+        and not _uses_unsloth_attention(model)
         and _generic_hf_attention(model)
     )
     unsupported = _unsupported_attention(model_config, backend, generic = generic)
@@ -1243,14 +1270,20 @@ def _check_cp_model(
         raise NotImplementedError(
             f"Unsloth: Ulysses context parallelism does not support {blocker}."
         )
-    if not allow_hybrids and not _uses_fast_llama_attention(model) and _generic_hf_attention(model):
+    if not allow_hybrids and (
+        _uses_unsloth_attention(model)
+        and not _uses_unsloth_attention(model, rl = True)
+        or not _uses_unsloth_attention(model)
+        and _generic_hf_attention(model)
+    ):
+        # Fast forwards not declared for RL (Qwen3) and generic HF attention: SFTTrainer only.
         raise NotImplementedError(
             "Unsloth: DPO / GRPO context parallelism supports Unsloth's Llama-style attention only; generic "
             "Ulysses on other Hugging Face attention models is verified for SFTTrainer."
         )
     if not _supports_context_parallel(model, backend):
         raise NotImplementedError(
-            "Unsloth: context parallelism supports Unsloth's Llama-style attention with either backend, "
+            "Unsloth: context parallelism supports Unsloth's fast attention (Llama-style, Qwen3) with either backend, "
             "and with Ulysses any Hugging Face attention model (attention through ALL_ATTENTION_FUNCTIONS) "
             "and the Qwen3-Next / Qwen3.5 Gated DeltaNet hybrids."
         )
