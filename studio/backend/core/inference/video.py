@@ -5723,6 +5723,13 @@ class VideoBackend:
                 skip_transformer_weights = True
                 native_hosted_planned = native_hosted_out[0]
             kwargs["_video_native_hosted_planned"] = native_hosted_planned
+            # The scheme whose hosted artifact replaces the dense shards (claimed, then fetched under the cancel event).
+            planned_denoiser = (
+                h3_auto_denoiser
+                or video_auto_denoiser
+                or requested_denoiser
+                or native_hosted_planned
+            )
             skip_transformer_components = (
                 _planned_denoiser_components(fam, kind) if skip_transformer_weights else ()
             )
@@ -5786,7 +5793,7 @@ class VideoBackend:
                     if skip_transformer_weights:
                         claimed = self._denoiser_prequant_repo_ids(
                             fam,
-                            h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
+                            planned_denoiser,
                             base,
                             kwargs.get("h3_task"),
                         )
@@ -5946,7 +5953,7 @@ class VideoBackend:
                 self._fetch_denoiser_prequant(
                     self._denoiser_prequant_source_list(
                         fam,
-                        h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
+                        planned_denoiser,
                         base,
                         kwargs.get("h3_task"),
                         hf_token = kwargs.get("hf_token"),
@@ -5954,7 +5961,7 @@ class VideoBackend:
                     kwargs.get("hf_token"),
                     cancel_event = cancel_event,
                     local_files_only = local_files_only,
-                    scheme = h3_auto_denoiser or video_auto_denoiser or requested_denoiser,
+                    scheme = planned_denoiser,
                 )
             base_plan = planned_files.get(_FETCH_BASE)
             actual_te_skip = tuple(te_skipped) + tuple(h3_te_skipped)
