@@ -6868,6 +6868,27 @@ html[data-glass][data-glass-menus] [data-slot="dialog-content"] {
   --color-accent: var(--glass-hover);
   --color-sidebar-accent: var(--glass-hover);
 }
+/* Settings blurs on its own layer underneath it. On the dialog itself, Chromium re-ran the blur for every frame
+   its panes scrolled; a pseudo-element's backdrop is left alone while only the content above it moves, which
+   takes about 36% off the CPU of scrolling Settings. The look is unchanged to the eye. Only Settings: its
+   shell never scrolls (overflow-hidden), while a dialog that scrolls its own box would carry an absolute
+   layer away with its content and lose the blur. Not on WebKit (data-glass-layers), where the layer costs
+   about 9% more; no will-change, which made the Style dropdown inside Settings slower to open. */
+html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  isolation: isolate;
+}
+html[data-glass][data-glass-menus]:not([data-glass-layers]) [data-slot="dialog-content"][data-settings-dialog]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+  -webkit-backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+  backdrop-filter: blur(max(var(--glass-blur), 24px)) saturate(var(--glass-saturate));
+}
 /* Picture controls (dark:bg-neutral-700) stay solid on purpose. */
 html.dark[data-glass][data-chat-wallpaper-workspace-ready] [data-wallpaper-route="page"] [class*="dark:hover:bg-neutral-600"]:not([class*="dark:bg-neutral-700"]):hover {
   background-color: var(--glass-hover);
