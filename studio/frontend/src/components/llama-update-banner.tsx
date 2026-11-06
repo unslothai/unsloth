@@ -404,11 +404,19 @@ export function LlamaUpdateBanner({
       ? rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0)
       : null,
   );
+  // Bundles leave versions and the restart note to What's new so the line fits.
+  const releaseOf = (row: UpdateRow) =>
+    !bundled && row.versionChanged && row.latestTag
+      ? `${row.component} ${row.latestTag.replace(/^(b\d+)-.+$/, "$1")}`
+      : row.component;
+  const releases = new Intl.ListFormat(locale, { type: "conjunction" }).format(
+    rows.map(releaseOf),
+  );
   const summary = [
-    bundled ? label : null,
+    releases,
     sizeLabel ? t("runtimeUpdate.downloadSize", { size: sizeLabel }) : null,
     backendChange ? t("runtimeUpdate.backendChange", { change: backendChange }) : null,
-    restartNote,
+    bundled ? null : restartNote,
   ]
     .filter(Boolean)
     .join(" · ");
@@ -442,8 +450,8 @@ export function LlamaUpdateBanner({
     title = firstInstall
       ? t("runtimeUpdate.installAudio")
       : backendOnly
-        ? t("runtimeUpdate.newBackend", { component: label })
-        : t("runtimeUpdate.newUpdate", { component: label });
+        ? t("runtimeUpdate.newBackend")
+        : t("runtimeUpdate.newUpdate");
   }
   const updateProgress = status?.job.progress ?? null;
   const jobSucceeded = status?.job.state === "success";

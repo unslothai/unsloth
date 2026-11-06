@@ -18,14 +18,18 @@ import {
   useRef,
   useState,
 } from "react";
+import { flushSync } from "react-dom";
 
 import { createRowNotificationGate } from "@/components/assistant-ui/row-notification-gate";
 import { MessageByIndexProvider } from "@/components/assistant-ui/stale-safe-scopes";
 import {
   type AnchorSample,
   type MountWindow,
+  CHUNK_MESSAGES,
   anchorCorrection,
+  alignAnchorCorrection,
   initialWindow,
+  watchProgressiveScroll,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
 import {
@@ -33,6 +37,13 @@ import {
   rendersAsRow,
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
+import { inputPointerHeld } from "@/lib/input-pointer-state";
+import { isWebKitGTK } from "@/components/ui/theme-view-transition";
+
+const WEBKIT_GTK = typeof navigator !== "undefined"
+  && isWebKitGTK(navigator.platform, navigator.userAgent);
+const MOUNT_CHUNK = WEBKIT_GTK ? 2 : CHUNK_MESSAGES;
+const ANCHOR_PRECISION = WEBKIT_GTK ? 1 / 64 : 1;
 
 /** Module-level: consumers are imperative DOM readers, and a thread can mount twice (Compare). */
 interface ActiveCompleter {
@@ -84,6 +95,13 @@ function restoreScrollAnchoring(viewport: HTMLElement | null): void {
   if (viewport.getAttribute("style") === "") viewport.removeAttribute("style");
 }
 
+function* layoutChildren(element: Element): Generator<Element> {
+  for (const child of element.children) {
+    if (getComputedStyle(child).display === "contents") yield* layoutChildren(child);
+    else yield child;
+  }
+}
+
 /** The first row the reader can SEE: a relayout above the fold moves them, not the top row. */
 function pickAnchorRow(viewport: HTMLElement): Element | null {
   const fold = viewport.getBoundingClientRect().top;
@@ -96,6 +114,7 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
     }
   }
   if (!anchor) return null;
+  if (anchor.hasAttribute("data-message-parked")) return anchor;
   if (
     typeof anchor.checkVisibility === "function"
     && !anchor.checkVisibility({ contentVisibilityAuto: true })
@@ -114,7 +133,7 @@ function pickAnchorRow(viewport: HTMLElement): Element | null {
   for (let depth = 0; depth < 8; depth += 1) {
     if (anchor.getBoundingClientRect().top >= fold) break;
     let next: Element | null = null;
-    for (const child of anchor.children) {
+    for (const child of layoutChildren(anchor)) {
       if (
         typeof child.checkVisibility === "function"
         && !child.checkVisibility({ contentVisibilityAuto: true })
@@ -171,9 +190,21 @@ function useProgressiveMountWindow(
   count: number,
   resetKey: string | undefined,
   viewportRef: RefObject<HTMLElement | null>,
+  alignmentRef: RefObject<HTMLDivElement | null>,
 ): MountWindow {
   const aui = useAui();
-  const adjustForContentInsertedAbove = useAdjustForContentInsertedAbove();
+  const adjustScroll = useAdjustForContentInsertedAbove();
+  const adjustForContentInsertedAbove = useCallback((shift: number) => {
+    const spacer = alignmentRef.current;
+    if (spacer) {
+      // WebKit rounds scrollTop. Align the inserted height instead of moving text
+      // between two fractional positions on every background prepend.
+      const aligned = alignAnchorCorrection(shift, Number.parseFloat(spacer.style.height) || 0);
+      spacer.style.height = `${aligned.inset}px`;
+      return adjustScroll(aligned.scroll);
+    }
+    return adjustScroll(shift);
+  }, [adjustScroll, alignmentRef]);
 
   // Imperative, so run start/stop does not re-render and rebuild the row array.
   const isRunningNow = useCallback(
@@ -238,12 +269,35 @@ function useProgressiveMountWindow(
     | null
   >(null);
   const idleRef = useRef<HeldAnchor | null>(null);
+  const scrollActivity = useRef<ReturnType<typeof watchProgressiveScroll> | null>(null);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const activity = watchProgressiveScroll(viewport);
+    scrollActivity.current = activity;
+    return () => {
+      activity.dispose();
+      scrollActivity.current = null;
+    };
+  }, [viewportRef]);
 
   const captureAnchor = useCallback(() => {
     const viewport = viewportRef.current;
     // Disarm native anchoring right before the capture. A layout effect is too early: as a descendant,
     // this runs before the viewport ref callback on the mounting commit.
     if (viewport) viewport.style.setProperty("overflow-anchor", "none");
+    // Preserve the last compensated position, including reflows between widening frames.
+    const held = idleRef.current;
+    if (viewport && held?.element.isConnected && isAnchorVisible(viewport, held.element)) {
+      anchorRef.current = {
+        element: held.element,
+        ...held.sample,
+        row: held.row,
+        rowSample: held.rowSample,
+      };
+      return;
+    }
     const anchor = viewport ? pickAnchorRow(viewport) : null;
     // Fall back to the row: the anchor is often a `<pre>` replaced when Shiki finishes.
     const row = anchor?.closest("[data-role]") ?? null;
@@ -260,17 +314,27 @@ function useProgressiveMountWindow(
 
   useEffect(() => {
     if (mountWindow == null) return;
-    const frame = requestAnimationFrame(() => {
+    let frame = 0;
+    const advance = () => {
       // Re-check: a run can start between the commit and this frame.
       if (isRunningNow()) {
         setMountWindow(null);
         return;
       }
+      // A prepend's instant anchor correction also interrupts native wheel momentum.
+      if (scrollActivity.current?.blocked(inputPointerHeld())) {
+        frame = requestAnimationFrame(advance);
+        return;
+      }
       captureAnchor();
-      startTransition(() => {
-        setMountWindow((current) => widen(current, count));
-      });
-    });
+      const commit = () => {
+        setMountWindow((current) => widen(current, count, MOUNT_CHUNK));
+      };
+      // Keep the prepend and its scroll correction inside the same WebKit rendering frame.
+      if (WEBKIT_GTK) flushSync(commit);
+      else startTransition(commit);
+    };
+    frame = requestAnimationFrame(advance);
     return () => cancelAnimationFrame(frame);
   }, [mountWindow, count, captureAnchor, isRunningNow]);
 
@@ -280,22 +344,27 @@ function useProgressiveMountWindow(
     const captured = anchorRef.current;
     anchorRef.current = null;
     const viewport = viewportRef.current;
-    if (!captured || !viewport) return;
+    if (!viewport) return;
+    if (!captured) {
+      // The initial tail has no earlier anchor. Pin it before its first paint,
+      // just as later prepends are corrected in this commit.
+      adjustForContentInsertedAbove(0);
+      return;
+    }
     const [element, baseline] = captured.element.isConnected
       ? [captured.element, captured as AnchorSample]
       : captured.row?.isConnected && captured.rowSample
         ? [captured.row, captured.rowSample]
         : [null, null];
     if (!element || !baseline) return;
-    const shift = anchorCorrection(baseline, sampleAnchor(viewport, element));
+    const shift = anchorCorrection(baseline, sampleAnchor(viewport, element), ANCHOR_PRECISION);
     // Call even with zero shift: it resyncs the hook's scroll bookkeeping.
     adjustForContentInsertedAbove(shift ?? 0);
     // Keep a post-correction baseline; nulling it folds an in-between reflow into the next one.
     idleRef.current = holdAnchor(viewport, element);
   }, [mountWindow, adjustForContentInsertedAbove, viewportRef]);
 
-  // Compensates reflows above a detached reader while native anchoring is off. Currently dormant
-  // because the widening effect above registers first: reordering these two effects turns it on.
+  // Compensate reflows between prepends while native anchoring is off.
   useEffect(() => {
     if (mountWindow == null) {
       idleRef.current = null;
@@ -307,6 +376,10 @@ function useProgressiveMountWindow(
       const viewport = viewportRef.current;
       // A pending widening capture owns the correction; stepping in would correct twice.
       if (!viewport || anchorRef.current) return;
+      if (scrollActivity.current?.blocked(inputPointerHeld())) {
+        idleRef.current = null;
+        return;
+      }
       const held = idleRef.current;
       if (!held) {
         const element = pickAnchorRow(viewport);
@@ -335,7 +408,7 @@ function useProgressiveMountWindow(
           : null;
         return;
       }
-      const shift = anchorCorrection(baseline, sampleAnchor(viewport, element));
+      const shift = anchorCorrection(baseline, sampleAnchor(viewport, element), ANCHOR_PRECISION);
       if (shift !== null) adjustForContentInsertedAbove(shift);
       // Re-base every frame: anchorCorrection's clamp term reads the baseline scrollTop.
       idleRef.current = holdAnchor(viewport, element);
@@ -405,7 +478,8 @@ export const ProgressiveMessages: FC<{
 }> = memo(
   ({ renderMessage, resetKey, viewportRef }) => {
     const count = useAuiState(({ thread }) => thread.messages.length);
-    const mountWindow = useProgressiveMountWindow(count, resetKey, viewportRef);
+    const alignmentRef = useRef<HTMLDivElement>(null);
+    const mountWindow = useProgressiveMountWindow(count, resetKey, viewportRef, alignmentRef);
     const aui = useAui();
     const gate = useMemo(() => createRowNotificationGate(aui), [aui]);
 
@@ -425,7 +499,10 @@ export const ProgressiveMessages: FC<{
           </AuiProvider>,
         );
       }
-      return <>{rows}</>;
+      return <>
+        {WEBKIT_GTK && <div ref={alignmentRef} aria-hidden="true" style={{ height: 0, flexShrink: 0 }} />}
+        {rows}
+      </>;
     }, [count, mountWindow, renderMessage, gate]);
   },
   (prev, next) =>

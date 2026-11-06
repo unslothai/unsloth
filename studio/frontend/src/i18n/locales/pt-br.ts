@@ -207,6 +207,7 @@ export const ptBR = {
     tabs: "Abas do navegador",
     newTab: "Nova aba",
     newTabFullView: "Nova aba em tela cheia",
+    newTabFloating: "Nova guia em janela flutuante",
     closeTab: "Fechar aba",
     close: "Fechar navegador",
     show: "Mostrar navegador",
@@ -389,6 +390,12 @@ export const ptBR = {
       openChat: "Abrir em visualização completa",
       moveLeft: "Mover para o painel esquerdo",
       moveRight: "Mover para o painel direito",
+    },
+    floating: {
+      enter: "Janela flutuante",
+      dock: "Encaixar na lateral",
+      close: "Fechar janela flutuante",
+      handle: "Mover a janela. As setas a movem; Shift e as setas a redimensionam.",
     },
     annotate: {
       countOne: "1 anotação",
@@ -786,6 +793,8 @@ export const ptBR = {
   picker: {
     unifiedTightFit: "Ajuste apertado",
     unifiedTightFitHint: "Pode carregar com um contexto menor ou rodar mais devagar neste Mac.",
+    residentToRun: "para rodar",
+    residentToRunHint: "Memória de GPU que a verificação de carregamento exige durante a execução",
     onDevice: "No dispositivo",
     huggingFace: "Hugging Face",
     retry: "Tentar novamente",
@@ -1098,6 +1107,9 @@ export const ptBR = {
       modelAccessHint: "Um modelo por linha, por exemplo unsloth/Qwen3-4B-GGUF, ou unsloth/* para uma organização inteira. Deixe vazio para permitir todos os modelos.",
       modelAccessSave: "Salvar",
       modelAccessLimited: "Acesso a modelos limitado",
+      rename: "Renomear",
+      renameTitle: "Renomear {username}",
+      renameDescription: "Escolha o nome com que esta conta entra. Os chats, arquivos e chaves de API continuam na conta. A pessoa será desconectada e entrará de novo com o novo nome e a senha atual.",
       empty: "Ainda não há outras contas",
       setupCode: "Código de configuração",
       setupFor: "Código de configuração para {username}",
@@ -2100,6 +2112,12 @@ export const ptBR = {
           "Escolhe por máquina e muda para HTTPS se o Xet travar ou falhar aqui.",
         autoCurrently: "O Auto está usando {transport} nesta máquina.",
         xetMissing: "O Xet está indisponível porque o hf_xet não está instalado.",
+        speedLimit: "Limite de velocidade de download",
+        speedLimitDescription:
+          "Sem limite até que um valor seja definido. Um download limitado usa HTTPS.",
+        speedLimitNoLimit: "Sem limite",
+        speedLimitInvalid: "Digite um número em Mbit/s ou deixe o campo vazio.",
+        speedLimitUsesHttps: "Os downloads usam HTTPS enquanto houver um limite de velocidade. Arquivos acima de 50 GB continuam usando Xet, sem o limite.",
       },
       uploads: {
         sectionTitle: "Uploads",
@@ -2495,6 +2513,10 @@ export const ptBR = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contorno dos elementos",
+          description: "Intensidade da borda de botões, campos, cartões e menus.",
         },
         reduceMotion: {
           label: "Reduzir movimento",
@@ -5502,7 +5524,7 @@ export const ptBR = {
     skippedVersion: "{component} {version} pulado por enquanto",
     skippedUpdate: "Atualização do {component} pulada por enquanto",
     skippedUpdates: "Atualizações de {components} puladas por enquanto",
-    vulkanFaster: "O Vulkan é mais de 10% mais rápido que o ROCM. Não é preciso reiniciar",
+    vulkanFaster: "Mais de 10% mais rápido",
     noRestart: "Não é preciso reiniciar",
     downloadSize: "Download de {size}",
     backendChange: "Backend {change}",
@@ -5511,8 +5533,8 @@ export const ptBR = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} atualizações...",
     bundleTitle: "{count} atualizações de runtime",
-    newBackend: "Novo backend do {component}",
-    newUpdate: "Nova atualização do {component}",
+    newBackend: "Novo backend do runtime",
+    newUpdate: "Nova atualização do runtime",
     hideUpdate: "Ocultar a atualização do {component} até o Unsloth ser reaberto",
     hideUpdates: "Ocultar as atualizações de {components} até o Unsloth ser reaberto",
     whatsNew: "Novidades",

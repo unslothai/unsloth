@@ -681,9 +681,9 @@ def encoder_resident_for_plan(plan: Any) -> bool:
 
     The plan prices the family's text encoder (the table's 23.9 GB) as if it were in-process: resident under ``none``
     and under ``group`` with resident companions, streamed under ``group`` with streamed text encoders and under
-    ``streaming`` / ``sequential``, alone on the card under ``model``. The worker cannot stream, so on every tier that did
-    not budget it resident it keeps the encoder on the host and onloads it only for an encode, when the card has room
-    (else it encodes on the CPU; see ``video_ltx25_te_worker._encode_device``)."""
+    ``streaming`` / ``sequential``, alone on the card under ``model``. On every tier that did not budget it resident the
+    worker keeps the encoder on the host and onloads it only for an encode: whole when the card has room, else one
+    decoder layer at a time, else it encodes on the CPU (see ``video_ltx25_te_worker._encode_plan``)."""
     from .diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
 
     policy = getattr(plan, "offload_policy", None)
@@ -791,6 +791,19 @@ def ensure_text_encoder_sidecar() -> str:
     return _VENV_T5_510_DIR
 
 
+def _release_cached_device_memory(device: Optional[str]) -> None:
+    kind = str(device or "").split(":", 1)[0]
+    if kind not in ("cuda", "xpu"):
+        return
+    try:
+        import torch
+        accel = getattr(torch, kind)
+        if accel.is_available():
+            accel.empty_cache()
+    except Exception:  # noqa: BLE001 -- best effort; the worker re-measures
+        pass
+
+
 def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
     """What this (server) process holds on ``device`` right now, for the worker's budget check."""
     kind = str(device or "").split(":", 1)[0]
@@ -800,6 +813,59 @@ def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
         import torch
         return int(getattr(torch, kind).memory_reserved(torch.device(str(device)))) >> 20
     except Exception:  # noqa: BLE001 -- unknown: the worker judges by free memory alone
+        return None
+
+
+def _encode_room_mib(client: Any) -> Optional[int]:
+    """The room the worker's encode plan sees now (``video_ltx25_te_worker._encode_room_mib``); None when unreadable."""
+    from .video_ltx25_te_worker import _encode_room_mib as worker_room
+
+    device = client.config.get("device")
+    return worker_room(client.config, _server_reserved_mib(device))
+
+
+def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..., None]]:
+    """Stream resident denoiser blocks again so the encoder fits on the card (whole if lending makes it fit, else the
+    worker's ``stream_need_mib``); returns the restore that pins them back, or None when nothing was lent."""
+    config = getattr(client, "config", None) or {}
+    if (
+        not config
+        or config.get("resident")
+        or not str(config.get("device") or "").startswith("cuda")
+    ):
+        return None
+    try:
+        import torch
+
+        from .diffusion_memory import release_resident_groups
+        from .video_ltx25_te_worker import ENCODE_MARGIN_MIB
+        from .video_stream_residency import resident_mib
+
+        held = resident_mib(getattr(pipe, "transformer", None))
+        if held <= 0:
+            return None
+        torch.cuda.empty_cache()
+        room = _encode_room_mib(client)
+        if room is None:
+            return None
+        info = getattr(client, "info", None) or {}
+        weights = int(info.get("weights_mib") or 0)
+        whole = weights + ENCODE_MARGIN_MIB if weights > 0 else None
+        streamed = info.get("stream_need_mib")
+        if whole is not None and room < whole <= room + held:
+            target = whole
+        elif streamed is not None and room < int(streamed):
+            target = int(streamed)
+        else:
+            return None
+        restore = release_resident_groups(
+            pipe, target - room, logger, denoisers_only = True, reason = "the prompt encode"
+        )
+        if restore is not None:
+            torch.cuda.empty_cache()
+        return restore
+    except Exception as exc:  # noqa: BLE001 -- the encode still runs, maybe on the CPU
+        logger.warning("video.ltx25_te: lending resident blocks skipped (%s)", exc)
         return None
 
 
@@ -870,6 +936,8 @@ class Ltx25TextEncoderClient:
         self._resp: Any = None
         self._ready = False
         self._seq = 0
+        # Request the worker is still computing (a cancel abandons it).
+        self._inflight: Optional[int] = None
         self._lock = threading.Lock()
         self._cache: list[tuple[tuple, Any]] = []
         self.info: dict[str, Any] = {}
@@ -995,6 +1063,7 @@ class Ltx25TextEncoderClient:
     def close(self) -> None:
         proc, self._proc = self._proc, None
         self._ready = False
+        self._inflight = None
         self._cache.clear()
         if proc is None:
             return
@@ -1011,6 +1080,19 @@ class Ltx25TextEncoderClient:
         logger.info("video.ltx25_te: encoder worker stopped")
 
     # encoding
+    def stop_if_busy(self) -> bool:
+        """Stop a worker still running an abandoned encode, freeing its card memory; the next encode restarts it."""
+        if self._inflight is None or not self.alive():
+            return False
+        logger.info("video.ltx25_te: stopping the encoder worker mid-encode (request cancelled)")
+        self.close()
+        return True
+
+    def cached(self, prompts: list[str], max_sequence_length: int) -> bool:
+        key = (tuple(prompts), int(max_sequence_length))
+        with self._lock:
+            return any(cached_key == key for cached_key, _ in self._cache)
+
     def encode(
         self,
         prompts: list[str],
@@ -1033,6 +1115,9 @@ class Ltx25TextEncoderClient:
             self.wait_ready(cancel)
             self._seq += 1
             seq = self._seq
+            if not self.config.get("resident"):
+                # Cached-only blocks must not count against the worker's room (it subtracts what we reserve).
+                _release_cached_device_memory(self.config.get("device"))
             self._cmd.put(
                 {
                     "type": "encode",
@@ -1042,11 +1127,17 @@ class Ltx25TextEncoderClient:
                     "server_reserved_mib": _server_reserved_mib(self.config.get("device")),
                 }
             )
+            self._inflight = seq
             while True:
-                msg = self._get(cancel, "encoding the prompt", request_id = seq)
+                try:
+                    msg = self._get(cancel, "encoding the prompt", request_id = seq)
+                except TextEncoderWorkerError:
+                    self._inflight = None
+                    raise
                 # A reply to a request a cancel abandoned arrives first; skip it.
                 if msg.get("type") == "embeds" and msg.get("id") == seq:
                     break
+            self._inflight = None
             embeds, mask = msg["embeds"], msg["mask"]
             self.last_encode = {
                 k: v for k, v in msg.items() if k not in ("type", "id", "embeds", "mask")
@@ -1082,15 +1173,38 @@ def install_remote_encode_prompt(pipe: Any, client: Ltx25TextEncoderClient) -> N
         dtype = dtype or getattr(getattr(pipe, "transformer", None), "dtype", None)
 
         def _one(texts: list[str]) -> tuple[Any, Any]:
-            # The client's own cached tensors (read only): every op below returns a new tensor.
-            embeds, mask = client.encode(texts, max_sequence_length, copy = False)
-            batch = embeds.shape[0]
-            embeds = embeds.to(device = device, dtype = dtype)
+            # Cache miss: lend resident DiT blocks to the worker for the encode.
+            is_cached = getattr(client, "cached", None)
+            restore = (
+                lend_resident_dit_for_encode(pipe, client)
+                if callable(is_cached) and not is_cached(texts, max_sequence_length)
+                else None
+            )
+            try:
+                # The client's own cached tensors (read only): every op below returns a new tensor.
+                cached, mask = client.encode(texts, max_sequence_length, copy = False)
+            except BaseException:
+                # A cancelled encode may still use the lent memory: stop it before pinning back.
+                stop = getattr(client, "stop_if_busy", None)
+                if restore is not None and callable(stop):
+                    stop()
+                raise
+            finally:
+                if restore is not None:
+                    restore()
+            batch = cached.shape[0]
+            embeds = cached.to(device = device, dtype = dtype)
             mask = mask.to(device = device)
             seq_len = embeds.shape[1]
-            embeds = embeds.repeat(1, num_videos_per_prompt, 1).view(
-                batch * num_videos_per_prompt, seq_len, -1
-            )
+            # A ``.to`` that moved or cast already copied, so one video skips ``repeat``; a no-op ``.to`` aliases the cache.
+            if (
+                num_videos_per_prompt != 1
+                or embeds.data_ptr() == cached.data_ptr()
+                or not embeds.is_contiguous()
+            ):
+                embeds = embeds.repeat(1, num_videos_per_prompt, 1).view(
+                    batch * num_videos_per_prompt, seq_len, -1
+                )
             mask = mask.view(batch, -1).repeat(num_videos_per_prompt, 1)
             return embeds, mask
 

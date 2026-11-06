@@ -15,11 +15,71 @@ import {
   type MountWindow,
   admits,
   anchorCorrection,
+  alignAnchorCorrection,
   initialWindow,
   isCovered,
   stepsToCover,
+  watchProgressiveScroll,
   widen,
 } from "../src/components/assistant-ui/progressive-mount-controller.ts";
+
+test("mounting waits for wheel momentum and thumb release, without pausing on its own corrections", () => {
+  const viewport = new EventTarget();
+  let time = 1000;
+  const activity = watchProgressiveScroll(viewport, () => time);
+  const send = (type: string) => viewport.dispatchEvent(new Event(type));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  send("scroll");
+  assert.equal(activity.blocked(false), false);
+  send("wheel");
+  assert.equal(activity.blocked(false), true);
+  time += 250;
+  send("scroll");
+  time += 250;
+  assert.equal(activity.blocked(false), true);
+  time += 51;
+  assert.equal(activity.blocked(false), false);
+  send("scroll");
+  assert.equal(activity.blocked(false), false);
+  assert.equal(activity.blocked(true), true);
+  time += 1000;
+  assert.equal(activity.blocked(true), true);
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  assert.equal(activity.blocked(false), false);
+  activity.dispose();
+  send("wheel");
+  assert.equal(activity.blocked(false), false);
+});
+
+test("scroll keys, touch momentum, and composer input outside the viewport pause mounting", () => {
+  const document = new EventTarget();
+  const viewport = Object.assign(new EventTarget(), { ownerDocument: document });
+  let time = 1000;
+  const activity = watchProgressiveScroll(viewport, () => time);
+  time += 301;
+  viewport.dispatchEvent(Object.assign(new Event("keydown"), { key: "a" }));
+  assert.equal(activity.blocked(false), false);
+  viewport.dispatchEvent(Object.assign(new Event("keydown"), { key: "PageUp" }));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  viewport.dispatchEvent(new Event("touchmove"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("beforeinput"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("compositionupdate"));
+  assert.equal(activity.blocked(false), true);
+  time += 301;
+  document.dispatchEvent(new Event("pointerdown"));
+  assert.equal(activity.blocked(false), true);
+  activity.dispose();
+  time += 301;
+  document.dispatchEvent(new Event("beforeinput"));
+  assert.equal(activity.blocked(false), false);
+});
 
 test("a thread under the floor is never windowed", () => {
   for (const count of [0, 1, 20, MIN_PROGRESSIVE_MESSAGES - 1]) {
@@ -69,6 +129,17 @@ test("widening only ever moves start down", () => {
     );
     previous = current.start;
     current = widen(current, 220);
+  }
+});
+
+test("smaller renderer batches still converge without skipping messages", () => {
+  let current = initialWindow(600, false);
+  let previous = current!.start;
+  while (current !== null) {
+    current = widen(current, 600, 2);
+    const start = current?.start ?? 0;
+    assert.ok(start < previous && previous - start <= 2);
+    previous = start;
   }
 });
 
@@ -331,4 +402,29 @@ test("a capped window still only widens, and still converges", () => {
     steps += 1;
     assert.ok(steps <= count + 2, "widen made no progress");
   }
+});
+
+test("fractional prepends and reflows keep the visible anchor stationary with integer scrolling", () => {
+  let inset = 0;
+  let contentTop = 0;
+  let scrollTop = 0;
+  for (let index = 0; index < 600; index++) {
+    const delta = [4408.625, 4210.4375, -0.375, 0.1875, -12.5625][index % 5];
+    contentTop += delta;
+    const aligned = alignAnchorCorrection(delta, inset);
+    assert.equal(Number.isInteger(aligned.scroll), true);
+    assert.ok(aligned.inset >= 0 && aligned.inset < 1);
+    inset = aligned.inset;
+    scrollTop += aligned.scroll;
+    assert.equal(contentTop + inset - scrollTop, 0);
+  }
+});
+
+test("subpixel reflows can be absorbed without issuing fractional scroll writes", () => {
+  const before = sample(30, 12000);
+  const after = sample(30.375, 12000);
+  assert.equal(anchorCorrection(before, after), null);
+  assert.equal(anchorCorrection(before, after, 1 / 64), 0.375);
+  assert.equal(anchorCorrection(before, before, 1 / 64), null);
+  assert.deepEqual(alignAnchorCorrection(-0.375, 0), { scroll: 0, inset: 0.375 });
 });

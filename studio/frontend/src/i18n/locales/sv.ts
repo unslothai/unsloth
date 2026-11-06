@@ -205,6 +205,7 @@ export const sv = {
     tabs: "Webbläsarflikar",
     newTab: "Ny flik",
     newTabFullView: "Ny flik i helvy",
+    newTabFloating: "Ny flik i flytande fönster",
     closeTab: "Stäng flik",
     close: "Stäng webbläsaren",
     show: "Visa webbläsaren",
@@ -401,6 +402,12 @@ export const sv = {
       openChat: "Öppna i helvy",
       moveLeft: "Flytta till vänstra panelen",
       moveRight: "Flytta till högra panelen",
+    },
+    floating: {
+      enter: "Flytande fönster",
+      dock: "Docka vid sidan",
+      close: "Stäng flytande fönster",
+      handle: "Flytta fönstret. Piltangenterna flyttar det; Skift och piltangenterna ändrar storleken.",
     },
     annotate: {
       countOne: "1 anteckning",
@@ -839,6 +846,8 @@ export const sv = {
   picker: {
     unifiedTightFit: "Snäv passform",
     unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
+    residentToRun: "för att köra",
+    residentToRunHint: "GPU-minne som laddningskontrollen kräver under körning",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -1154,6 +1163,9 @@ export const sv = {
       modelAccessHint: "En modell per rad, till exempel unsloth/Qwen3-4B-GGUF, eller unsloth/* för en hel organisation. Lämna tomt för att tillåta alla modeller.",
       modelAccessSave: "Spara",
       modelAccessLimited: "Begränsad modellåtkomst",
+      rename: "Byt namn",
+      renameTitle: "Byt namn på {username}",
+      renameDescription: "Välj namnet som det här kontot loggar in med. Chattar, filer och API-nycklar stannar kvar i kontot. Personen loggas ut och loggar in igen med det nya namnet och sitt nuvarande lösenord.",
       empty: "Inga andra konton ännu",
       setupCode: "Konfigurationskod",
       setupFor: "Konfigurationskod för {username}",
@@ -2230,6 +2242,12 @@ export const sv = {
           "Automatiskt läge använder {transport} på den här datorn.",
         xetMissing:
           "Xet är inte tillgängligt eftersom hf_xet inte är installerat.",
+        speedLimit: "Hastighetsgräns för nedladdning",
+        speedLimitDescription:
+          "Ingen gräns om inget värde anges. En begränsad nedladdning använder HTTPS.",
+        speedLimitNoLimit: "Ingen gräns",
+        speedLimitInvalid: "Ange ett tal i Mbit/s eller lämna fältet tomt.",
+        speedLimitUsesHttps: "Så länge en hastighetsgräns är satt använder nedladdningar HTTPS. Filer över 50 GB använder fortfarande Xet, utan gränsen.",
       },
       uploads: {
         sectionTitle: "Uppladdningar",
@@ -2608,6 +2626,10 @@ export const sv = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Kontur för element",
+          description: "Styrka på kanterna runt knappar, fält, kort och menyer.",
         },
         reduceMotion: {
           label: "Minska rörelse",
@@ -5717,7 +5739,7 @@ export const sv = {
     skippedVersion: "Hoppade över {component} {version} tills vidare",
     skippedUpdate: "Hoppade över uppdateringen av {component} tills vidare",
     skippedUpdates: "Hoppade över uppdateringarna av {components} tills vidare",
-    vulkanFaster: "Vulkan är över 10 % snabbare än ROCM. Ingen omstart krävs",
+    vulkanFaster: "Över 10 % snabbare",
     noRestart: "Ingen omstart krävs",
     downloadSize: "{size} att ladda ned",
     backendChange: "Bakände: {change}",
@@ -5726,8 +5748,8 @@ export const sv = {
     installingPhase: "Installerar {component} ({current} av {total})...",
     installingCount: "Installerar {count} uppdateringar...",
     bundleTitle: "{count} körmiljöuppdateringar",
-    newBackend: "Ny bakände för {component}",
-    newUpdate: "Ny uppdatering för {component}",
+    newBackend: "Ny bakände för körmiljön",
+    newUpdate: "Ny uppdatering av körmiljön",
     hideUpdate: "Dölj uppdateringen av {component} tills Unsloth öppnas igen",
     hideUpdates: "Dölj uppdateringarna av {components} tills Unsloth öppnas igen",
     whatsNew: "Nyheter",

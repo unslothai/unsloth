@@ -207,6 +207,7 @@ export const ru = {
     tabs: "Вкладки браузера",
     newTab: "Новая вкладка",
     newTabFullView: "Новая вкладка во весь экран",
+    newTabFloating: "Новая вкладка в плавающем окне",
     closeTab: "Закрыть вкладку",
     close: "Закрыть браузер",
     show: "Показать браузер",
@@ -389,6 +390,12 @@ export const ru = {
       openChat: "Открыть на весь экран",
       moveLeft: "Переместить в левую панель",
       moveRight: "Переместить в правую панель",
+    },
+    floating: {
+      enter: "Плавающее окно",
+      dock: "Закрепить сбоку",
+      close: "Закрыть плавающее окно",
+      handle: "Переместить окно. Стрелки перемещают его, Shift со стрелками меняет размер.",
     },
     annotate: {
       countOne: "1 пометка",
@@ -786,6 +793,8 @@ export const ru = {
   picker: {
     unifiedTightFit: "Впритык",
     unifiedTightFitHint: "На этом Mac может загрузиться с более коротким контекстом или работать медленнее.",
+    residentToRun: "для запуска",
+    residentToRunHint: "Память GPU, которую проверка загрузки требует во время работы",
     onDevice: "На устройстве",
     huggingFace: "Hugging Face",
     retry: "Повторить",
@@ -1098,6 +1107,9 @@ export const ru = {
       modelAccessHint: "По одной модели в строке, например unsloth/Qwen3-4B-GGUF, или unsloth/* для всей организации. Оставьте пустым, чтобы разрешить все модели.",
       modelAccessSave: "Сохранить",
       modelAccessLimited: "Ограниченный доступ к моделям",
+      rename: "Переименовать",
+      renameTitle: "Переименовать {username}",
+      renameDescription: "Выберите имя, под которым эта учётная запись входит в систему. Чаты, файлы и ключи API остаются в учётной записи. Пользователь выйдет из системы и снова войдёт с новым именем и текущим паролем.",
       empty: "Других учётных записей пока нет",
       setupCode: "Код настройки",
       setupFor: "Код настройки для {username}",
@@ -2096,6 +2108,12 @@ export const ru = {
           "Выбирает для этой машины и переключается на HTTPS, если Xet зависает или падает.",
         autoCurrently: "Auto использует {transport} на этой машине.",
         xetMissing: "Xet недоступен, так как hf_xet не установлен.",
+        speedLimit: "Ограничение скорости загрузки",
+        speedLimitDescription:
+          "Без ограничения, пока не задано значение. Ограниченная загрузка идёт по HTTPS.",
+        speedLimitNoLimit: "Без ограничения",
+        speedLimitInvalid: "Введите число в Мбит/с или оставьте поле пустым.",
+        speedLimitUsesHttps: "Пока задано ограничение скорости, загрузки используют HTTPS. Файлы больше 50 ГБ по-прежнему загружаются через Xet без ограничения.",
       },
       uploads: {
         sectionTitle: "Загрузки",
@@ -2492,6 +2510,10 @@ export const ru = {
         },
         contrast: {
           label: "Контраст",
+        },
+        elementOutline: {
+          label: "Контур элементов",
+          description: "Насыщенность границ кнопок, полей, карточек и меню.",
         },
         reduceMotion: {
           label: "Уменьшить анимацию",
@@ -5501,7 +5523,7 @@ export const ru = {
     skippedVersion: "Версия {component} {version} пока пропущена",
     skippedUpdate: "Обновление {component} пока пропущено",
     skippedUpdates: "Обновления {components} пока пропущены",
-    vulkanFaster: "Vulkan более чем на 10% быстрее ROCM. Перезапуск не требуется",
+    vulkanFaster: "Быстрее более чем на 10%",
     noRestart: "Перезапуск не требуется",
     downloadSize: "Загрузка: {size}",
     backendChange: "Бэкенд: {change}",
@@ -5510,8 +5532,8 @@ export const ru = {
     installingPhase: "Установка {component} ({current} из {total})...",
     installingCount: "Установка обновлений: {count}...",
     bundleTitle: "Обновления среды выполнения: {count}",
-    newBackend: "Новый бэкенд {component}",
-    newUpdate: "Новое обновление {component}",
+    newBackend: "Новый бэкенд среды выполнения",
+    newUpdate: "Новое обновление среды выполнения",
     hideUpdate: "Скрыть обновление {component} до перезапуска Unsloth",
     hideUpdates: "Скрыть обновления {components} до перезапуска Unsloth",
     whatsNew: "Что нового",

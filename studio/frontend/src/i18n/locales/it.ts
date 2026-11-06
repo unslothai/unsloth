@@ -204,6 +204,7 @@ export const it = {
     tabs: "Schede del browser",
     newTab: "Nuova scheda",
     newTabFullView: "Nuova scheda a schermo intero",
+    newTabFloating: "Nuova scheda in finestra mobile",
     closeTab: "Chiudi scheda",
     close: "Chiudi browser",
     show: "Mostra browser",
@@ -386,6 +387,12 @@ export const it = {
       openChat: "Apri in vista completa",
       moveLeft: "Sposta nel riquadro sinistro",
       moveRight: "Sposta nel riquadro destro",
+    },
+    floating: {
+      enter: "Finestra mobile",
+      dock: "Aggancia di lato",
+      close: "Chiudi finestra mobile",
+      handle: "Sposta la finestra. Le frecce la spostano; Maiusc e le frecce la ridimensionano.",
     },
     annotate: {
       countOne: "1 annotazione",
@@ -999,6 +1006,9 @@ export const it = {
       modelAccessHint: "Un modello per riga, ad esempio unsloth/Qwen3-4B-GGUF, oppure unsloth/* per un'intera organizzazione. Lascia vuoto per consentire tutti i modelli.",
       modelAccessSave: "Salva",
       modelAccessLimited: "Accesso ai modelli limitato",
+      rename: "Rinomina",
+      renameTitle: "Rinomina {username}",
+      renameDescription: "Scegli il nome con cui questo account accede. Chat, file e chiavi API restano nell'account. L'utente viene disconnesso e accede di nuovo con il nuovo nome e la password attuale.",
       empty: "Nessun altro account",
       setupCode: "Codice di configurazione",
       setupFor: "Codice di configurazione per {username}",
@@ -2032,6 +2042,12 @@ export const it = {
           "Sceglie in base alla macchina e passa a HTTPS se Xet si blocca o fallisce qui.",
         autoCurrently: "Auto sta usando {transport} su questa macchina.",
         xetMissing: "Xet non è disponibile perché hf_xet non è installato.",
+        speedLimit: "Limite di velocità dei download",
+        speedLimitDescription:
+          "Nessun limite finché non viene impostato un valore. Un download limitato usa HTTPS.",
+        speedLimitNoLimit: "Nessun limite",
+        speedLimitInvalid: "Inserisci un numero in Mbit/s oppure lascia il campo vuoto.",
+        speedLimitUsesHttps: "I download usano HTTPS finché è impostato un limite di velocità. I file oltre 50 GB usano comunque Xet, senza il limite.",
       },
       uploads: {
         sectionTitle: "Caricamenti",
@@ -2413,6 +2429,10 @@ export const it = {
         },
         contrast: {
           label: "Contrasto",
+        },
+        elementOutline: {
+          label: "Contorno degli elementi",
+          description: "Intensità del bordo di pulsanti, campi, schede e menu.",
         },
         reduceMotion: {
           label: "Riduci le animazioni",
@@ -3663,6 +3683,8 @@ export const it = {
   picker: {
     unifiedTightFit: "Al limite",
     unifiedTightFitHint: "Su questo Mac potrebbe caricarsi con un contesto più breve o essere più lento.",
+    residentToRun: "per l'esecuzione",
+    residentToRunHint: "Memoria GPU richiesta dal controllo di caricamento durante l'esecuzione",
     onDevice: "Sul dispositivo",
     huggingFace: "Hugging Face",
     retry: "Riprova",
@@ -5542,7 +5564,7 @@ export const it = {
     skippedVersion: "{component} {version} saltato per ora",
     skippedUpdate: "Aggiornamento di {component} saltato per ora",
     skippedUpdates: "Aggiornamenti di {components} saltati per ora",
-    vulkanFaster: "Vulkan è oltre il 10% più veloce di ROCM. Nessun riavvio necessario",
+    vulkanFaster: "Oltre il 10% più veloce",
     noRestart: "Nessun riavvio necessario",
     downloadSize: "Download di {size}",
     backendChange: "Backend {change}",
@@ -5551,8 +5573,8 @@ export const it = {
     installingPhase: "Installazione di {component} ({current} di {total})...",
     installingCount: "Installazione di {count} aggiornamenti...",
     bundleTitle: "{count} aggiornamenti del runtime",
-    newBackend: "Nuovo backend {component}",
-    newUpdate: "Nuovo aggiornamento di {component}",
+    newBackend: "Nuovo backend del runtime",
+    newUpdate: "Nuovo aggiornamento del runtime",
     hideUpdate: "Nascondi l’aggiornamento di {component} fino alla riapertura di Unsloth",
     hideUpdates: "Nascondi gli aggiornamenti di {components} fino alla riapertura di Unsloth",
     whatsNew: "Novità",

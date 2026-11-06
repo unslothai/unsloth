@@ -207,6 +207,7 @@ export const fr = {
     tabs: "Onglets du navigateur",
     newTab: "Nouvel onglet",
     newTabFullView: "Nouvel onglet en plein écran",
+    newTabFloating: "Nouvel onglet en fenêtre flottante",
     closeTab: "Fermer l’onglet",
     close: "Fermer le navigateur",
     show: "Afficher le navigateur",
@@ -389,6 +390,12 @@ export const fr = {
       openChat: "Ouvrir en plein écran",
       moveLeft: "Déplacer vers le volet gauche",
       moveRight: "Déplacer vers le volet droit",
+    },
+    floating: {
+      enter: "Fenêtre flottante",
+      dock: "Ancrer sur le côté",
+      close: "Fermer la fenêtre flottante",
+      handle: "Déplacer la fenêtre. Les flèches la déplacent ; Maj et les flèches la redimensionnent.",
     },
     annotate: {
       countOne: "1 annotation",
@@ -786,6 +793,8 @@ export const fr = {
   picker: {
     unifiedTightFit: "Juste",
     unifiedTightFitHint: "Peut se charger avec un contexte plus court ou être plus lent sur ce Mac.",
+    residentToRun: "pour l'exécution",
+    residentToRunHint: "Mémoire GPU que la vérification de chargement exige pendant l'exécution",
     onDevice: "Sur l'appareil",
     huggingFace: "Hugging Face",
     retry: "Réessayer",
@@ -1100,6 +1109,9 @@ export const fr = {
       modelAccessHint: "Un modèle par ligne, par exemple unsloth/Qwen3-4B-GGUF, ou unsloth/* pour toute une organisation. Laissez vide pour autoriser tous les modèles.",
       modelAccessSave: "Enregistrer",
       modelAccessLimited: "Accès aux modèles limité",
+      rename: "Renommer",
+      renameTitle: "Renommer {username}",
+      renameDescription: "Choisissez le nom avec lequel ce compte se connecte. Ses conversations, fichiers et clés API restent attachés au compte. La personne est déconnectée et se reconnecte avec le nouveau nom et son mot de passe actuel.",
       empty: "Aucun autre compte pour l'instant",
       setupCode: "Code de configuration",
       setupFor: "Code de configuration pour {username}",
@@ -2111,6 +2123,12 @@ export const fr = {
           "Choisit selon la machine et passe à HTTPS si Xet se bloque ou échoue ici.",
         autoCurrently: "Auto utilise {transport} sur cette machine.",
         xetMissing: "Xet est indisponible car hf_xet n'est pas installé.",
+        speedLimit: "Limite de vitesse de téléchargement",
+        speedLimitDescription:
+          "Aucune limite tant qu'aucune valeur n'est définie. Un téléchargement limité utilise HTTPS.",
+        speedLimitNoLimit: "Aucune limite",
+        speedLimitInvalid: "Saisissez un nombre en Mbit/s ou laissez le champ vide.",
+        speedLimitUsesHttps: "Les téléchargements utilisent HTTPS tant qu'une limite de vitesse est définie. Les fichiers de plus de 50 Go utilisent toujours Xet, sans la limite.",
       },
       uploads: {
         sectionTitle: "Téléversements",
@@ -2509,6 +2527,10 @@ export const fr = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contour des éléments",
+          description: "Intensité des bordures des boutons, champs, cartes et menus.",
         },
         reduceMotion: {
           label: "Réduire les animations",
@@ -5557,7 +5579,7 @@ export const fr = {
     skippedVersion: "{component} {version} ignoré pour l'instant",
     skippedUpdate: "Mise à jour de {component} ignorée pour l'instant",
     skippedUpdates: "Mises à jour de {components} ignorées pour l'instant",
-    vulkanFaster: "Vulkan est plus de 10 % plus rapide que ROCM. Aucun redémarrage nécessaire",
+    vulkanFaster: "Plus de 10 % plus rapide",
     noRestart: "Aucun redémarrage nécessaire",
     downloadSize: "Téléchargement de {size}",
     backendChange: "Backend {change}",
@@ -5566,8 +5588,8 @@ export const fr = {
     installingPhase: "Installation de {component} ({current} sur {total})...",
     installingCount: "Installation de {count} mises à jour...",
     bundleTitle: "{count} mises à jour du runtime",
-    newBackend: "Nouveau backend {component}",
-    newUpdate: "Nouvelle mise à jour de {component}",
+    newBackend: "Nouveau backend du runtime",
+    newUpdate: "Nouvelle mise à jour du runtime",
     hideUpdate: "Masquer la mise à jour de {component} jusqu'à la réouverture d'Unsloth",
     hideUpdates: "Masquer les mises à jour de {components} jusqu'à la réouverture d'Unsloth",
     whatsNew: "Nouveautés",

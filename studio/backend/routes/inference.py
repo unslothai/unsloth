@@ -3604,6 +3604,18 @@ def _request_is_saved_credential_workflow(request: Any) -> bool:
 
 # A UI session, the Deep Research key, or the key `unsloth start` minted for the owner's coding
 # agents. Every other API key, keyless caller and data-recipe key still gets nothing.
+def _saved_extra_headers(row: Optional[dict], request: Any) -> dict:
+    """A saved row's headers, under the same API-key gate as its saved key."""
+    if not row or _request_has_api_key(request):
+        return {}
+    return row.get("extra_headers") or {}
+
+
+def _saved_extra_headers_kwarg(row: Optional[dict], request: Any) -> dict:
+    headers = _saved_extra_headers(row, request)
+    return {"extra_headers": headers} if headers else {}
+
+
 def _request_may_use_saved_provider_key(request: Any) -> bool:
     if not _request_has_api_key(request) or _request_is_saved_credential_workflow(request):
         return True
@@ -15706,6 +15718,25 @@ class _NativeAudioAvailability(NamedTuple):
         return self.credited_owner or self.owner_snapshot[0]
 
 
+def _visible_gpu_memory_gb() -> dict[int, tuple[float, float]]:
+    """(free, total) GiB per visible GPU, read fresh, keyed as GPU selection keys them."""
+    import utils.hardware as hardware
+    from utils.hardware import gpu_query
+
+    with gpu_query.fresh_reads():
+        utilization = hardware.get_visible_gpu_utilization()
+    live: dict[int, tuple[float, float]] = {}
+    for device in utilization.get("devices", []):
+        try:
+            index = int(device["index"])
+            total = float(device["vram_total_gb"])
+            used = float(device["vram_used_gb"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        live[index] = (max(total - used, 0.0), total)
+    return live
+
+
 def _native_audio_post_handoff_free_gb(
     outgoing: Optional[str] = None,
 ) -> Optional[_NativeAudioAvailability]:
@@ -15734,19 +15765,8 @@ def _native_audio_post_handoff_free_gb(
     reclaimable: dict[int, float] = {}
 
     def _read_live() -> bool:
-        from utils.hardware import gpu_query
-
-        with gpu_query.fresh_reads():
-            utilization = hardware.get_visible_gpu_utilization()
         live.clear()
-        for device in utilization.get("devices", []):
-            try:
-                index = int(device["index"])
-                total = float(device["vram_total_gb"])
-                used = float(device["vram_used_gb"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            live[index] = (max(total - used, 0.0), total)
+        live.update(_visible_gpu_memory_gb())
         return bool(live)
 
     def _merge_report(reported) -> bool:
@@ -16307,10 +16327,17 @@ async def _preflight_native_audio_placement(
                         classify_audio_cpp_failure,
                     )
 
-                    free_by_gpu = availability.effective_free_gb if availability is not None else {}
+                    # With nothing to unload, the cards' free memory as it is now.
+                    if availability is not None:
+                        free_by_gpu = availability.effective_free_gb
+                    else:
+                        free_by_gpu = {i: free for i, (free, _) in _visible_gpu_memory_gb().items()}
                     free = [gb for index, gb in free_by_gpu.items() if index in candidates]
                     failure = classify_audio_cpp_failure(
-                        str(refusal), model = audio_cpp_model, free_gb = max(free, default = None)
+                        str(refusal),
+                        model = audio_cpp_model,
+                        free_gb = max(free, default = None),
+                        required_gb = required_gb,
                     )
                     attach_failure(refusal, failure)
                 raise refusal
@@ -24463,6 +24490,7 @@ async def _external_tts_speech(body: AudioSpeechRequest, request: Request) -> Re
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        **_saved_extra_headers_kwarg(current, request),
     )
     # FastAPI does not cancel non-streaming handlers on disconnect; paid synthesis would continue.
     speech_task = asyncio.create_task(
@@ -24746,6 +24774,7 @@ async def _external_stt_transcription(
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        **_saved_extra_headers_kwarg(current, request),
     )
     transcription_task = asyncio.create_task(
         client.create_transcription(
@@ -25471,6 +25500,8 @@ async def stt_status(
     audiocpp_downloaded = await asyncio.to_thread(stt_audiocpp_sidecar.downloaded_model_ids)
     # Choosing the launch backend can run the binary's --version.
     audio_cpp_runtime = await asyncio.to_thread(_audio_cpp_runtime_status)
+    # The first probe imports torch, Transformers and PyAV (seconds); keep it off the event loop.
+    transformers_available = await asyncio.to_thread(is_available)
     transformers_downloaded = [
         model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
     ]
@@ -25478,7 +25509,7 @@ async def stt_status(
         transformers_downloaded.append(model)
     response = JSONResponse(
         content = {
-            "available": is_available(),
+            "available": transformers_available,
             "loaded_model": sidecar.loaded_model,
             "loading": sidecar.is_loading(),
             "device": sidecar.device,
@@ -25487,7 +25518,7 @@ async def stt_status(
             "models": list(STT_MODELS.keys()),
             # Transformers block mirrors the gguf shape so clients read either generically; top-level fields above are kept for old clients.
             "transformers": {
-                "available": is_available(),
+                "available": transformers_available,
                 "loaded_model": sidecar.loaded_model,
                 "loading": sidecar.is_loading(),
                 "device": sidecar.device,
@@ -28535,6 +28566,7 @@ async def _proxy_to_external_provider(
     base_url = payload.provider_base_url
     api_type = payload.provider_api_type
     reasoning_config = normalize_provider_reasoning_config(payload.provider_reasoning_config)
+    extra_headers: Optional[dict] = None
     saved_provider_snapshot: Optional[dict] = None
 
     if managed is not None:
@@ -28566,6 +28598,11 @@ async def _proxy_to_external_provider(
         base_url = config["base_url"]
         api_type = config.get("api_type", "chat_completions")
         reasoning_config = normalize_provider_reasoning_config(config.get("reasoning_config"))
+        extra_headers = config.get("extra_headers")
+
+    # An explicit key keeps the edited target: headers come from the request, not the saved row.
+    if managed is None and payload.encrypted_api_key:
+        extra_headers = payload.extra_headers
 
     if not provider_type:
         raise HTTPException(
@@ -29081,12 +29118,16 @@ async def _proxy_to_external_provider(
             account_access.require_connection_model_allowed(
                 current, payload.external_model or payload.model
             )
+            may_use_saved = _request_may_use_saved_provider_key(request)
             api_key = await asyncio.to_thread(
                 resolve_provider_api_key_or_400,
                 payload.provider_id,
                 payload.encrypted_api_key,
-                allow_saved_key = _request_may_use_saved_provider_key(request),
+                allow_saved_key = may_use_saved,
             )
+            if not payload.encrypted_api_key:
+                # Saved headers can carry credentials: same gate as the saved key.
+                extra_headers = current.get("extra_headers") if may_use_saved else None
     else:
         api_key = resolve_provider_api_key_or_400(
             payload.provider_id,
@@ -29145,8 +29186,12 @@ async def _proxy_to_external_provider(
         api_key = api_key,
         api_type = api_type,
         **({"reasoning_config": reasoning_config} if reasoning_config is not None else {}),
+        **({"extra_headers": extra_headers} if extra_headers else {}),
         **({"managed_loopback": True} if managed is not None else {}),
     )
+    # Metadata preflights (served context window, template) run before streaming starts.
+    if extra_headers:
+        client.set_header_context(payload.thread_id, model)
     _non_stream_custom_responses = (
         provider_type == "custom" and api_type == "responses" and payload.stream is False
     )
@@ -29998,7 +30043,9 @@ def _resolve_openai_cloud_client(
 ) -> ExternalProviderClient:
     """Needs an OpenAI cloud base URL (shell tool exists only there); runs on the loop for one snapshot."""
     base_url = body.provider_base_url or get_base_url("openai")
-    if body.provider_id and not body.encrypted_api_key:
+    config: dict = {}
+    saved_config = bool(body.provider_id and not body.encrypted_api_key)
+    if saved_config:
         config = providers_db.get_provider(body.provider_id)
         if config is None:
             raise HTTPException(
@@ -30041,10 +30088,13 @@ def _resolve_openai_cloud_client(
     )
     if not api_key:
         raise HTTPException(status_code = 400, detail = "No OpenAI API key is saved.")
+    # Same project / organization scope as chat on this connection.
+    headers = config.get("extra_headers") if saved_config and allow_saved_key else None
     return ExternalProviderClient(
         provider_type = "openai",
         base_url = base_url,
         api_key = api_key,
+        **({"extra_headers": headers} if headers else {}),
     )
 
 
@@ -39170,6 +39220,13 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesUnknownInputItem):
+            if item.type == "item_reference":
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses input items of type 'item_reference' are not supported. Send "
+                    "the full conversation history in 'input', for example with 'store' set "
+                    "to false.",
+                )
             if item.type == "reasoning":
                 replayed = _coerce_responses_reasoning_text(
                     getattr(item, "content", None)
@@ -49138,6 +49195,7 @@ async def _external_image_generation(
         provider_type = config["provider_type"],
         base_url = base_url,
         api_key = api_key,
+        **_saved_extra_headers_kwarg(current, request),
         timeout = 600.0,
     )
     owner = current_account_id()
@@ -50192,6 +50250,27 @@ async def audio_catalog(current_subject: str = Depends(get_current_subject)):
             status_code = 503,
             detail = "Unsloth Studio could not list audio models right now.",
         ) from None
+
+    def _estimate_rows() -> None:
+        from core.inference.audio_cpp_failures import gpu_estimate_applies
+        from core.inference.audio_cpp_models import audio_type_for_task
+
+        # Off the event loop: YuE2's estimate reads the cards through nvidia-smi.
+        applies = {
+            task: gpu_estimate_applies(audio_type_for_task(task))
+            for task in {row.get("task") for row in rows}
+        }
+        for row in rows:
+            if not applies[row.get("task")]:
+                continue
+            for size_key, estimate_key in (
+                ("size_bytes", "estimated_resident_gb"),
+                ("smallest_size_bytes", "smallest_estimated_resident_gb"),
+            ):
+                if row.get(size_key):
+                    row[estimate_key] = audio_cpp_resident_gb(row[size_key], row.get("family"))
+
+    await asyncio.to_thread(_estimate_rows)
     return payload.model_copy(update = {"models": [AudioCatalogModel(**r) for r in rows]})
 
 

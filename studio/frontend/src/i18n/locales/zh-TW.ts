@@ -211,6 +211,7 @@ export const zhTW = {
     tabs: "瀏覽器分頁",
     newTab: "新分頁",
     newTabFullView: "以完整檢視開啟新分頁",
+    newTabFloating: "在浮動視窗中開新分頁",
     closeTab: "關閉分頁",
     close: "關閉瀏覽器",
     show: "顯示瀏覽器",
@@ -413,6 +414,12 @@ export const zhTW = {
       openChat: "以完整檢視開啟",
       moveLeft: "移到左側窗格",
       moveRight: "移到右側窗格",
+    },
+    floating: {
+      enter: "浮動視窗",
+      dock: "停駐到側邊",
+      close: "關閉浮動視窗",
+      handle: "移動視窗。方向鍵移動，Shift 加方向鍵調整大小。",
     },
     annotate: {
       countOne: "1 則註解",
@@ -834,6 +841,8 @@ export const zhTW = {
     unifiedTightFit: "勉強可容納",
     unifiedTightFitHint:
       "在這台 Mac 上可能會以較短的上下文載入，或執行速度較慢。",
+    residentToRun: "執行所需",
+    residentToRunHint: "載入檢查要求的執行時 GPU 記憶體",
     onDevice: "裝置上",
     huggingFace: "Hugging Face",
     retry: "重試",
@@ -1148,6 +1157,9 @@ export const zhTW = {
         "每行一個模型，例如 unsloth/Qwen3-4B-GGUF，或以 unsloth/* 表示整個組織。留空則允許所有模型。",
       modelAccessSave: "儲存",
       modelAccessLimited: "模型存取權受限",
+      rename: "重新命名",
+      renameTitle: "重新命名 {username}",
+      renameDescription: "選擇此帳號用來登入的名稱。其對話、檔案和 API 金鑰仍保留在該帳號中。該使用者會被登出，需要以新名稱和目前的密碼重新登入。",
       empty: "目前還沒有其他帳號",
       setupCode: "設定碼",
       setupFor: "{username} 的設定碼",
@@ -2176,6 +2188,12 @@ export const zhTW = {
         autoHint: "依每台電腦自動選擇，若 Xet 在此停滯或失敗則改用 HTTPS。",
         autoCurrently: "「自動」在這台電腦上使用 {transport}。",
         xetMissing: "由於未安裝 hf_xet，無法使用 Xet。",
+        speedLimit: "下載速度限制",
+        speedLimitDescription:
+          "未設定數值時不限速。限速下載使用 HTTPS。",
+        speedLimitNoLimit: "不限速",
+        speedLimitInvalid: "請輸入 Mbit/s 數值，或留空。",
+        speedLimitUsesHttps: "設定速度限制時，下載會使用 HTTPS。超過 50 GB 的檔案仍使用 Xet，不受限制。",
       },
       uploads: {
         sectionTitle: "上傳",
@@ -2561,6 +2579,10 @@ export const zhTW = {
         },
         contrast: {
           label: "對比",
+        },
+        elementOutline: {
+          label: "元素外框",
+          description: "按鈕、輸入欄位、卡片和選單的邊框強度。",
         },
         reduceMotion: {
           label: "減少動態效果",
@@ -5554,7 +5576,7 @@ export const zhTW = {
     skippedVersion: "已暫時略過 {component} {version}",
     skippedUpdate: "已暫時略過 {component} 更新",
     skippedUpdates: "已暫時略過 {components} 更新",
-    vulkanFaster: "Vulkan 比 ROCM 快 10% 以上。無須重新啟動",
+    vulkanFaster: "快 10% 以上",
     noRestart: "無須重新啟動",
     downloadSize: "下載大小 {size}",
     backendChange: "{change} 後端",
@@ -5563,8 +5585,8 @@ export const zhTW = {
     installingPhase: "正在安裝 {component}（第 {current} 個，共 {total} 個）…",
     installingCount: "正在安裝 {count} 項更新…",
     bundleTitle: "{count} 項執行環境更新",
-    newBackend: "新的 {component} 後端",
-    newUpdate: "新的 {component} 更新",
+    newBackend: "新的執行環境後端",
+    newUpdate: "新的執行環境更新",
     hideUpdate: "在重新開啟 Unsloth 前隱藏 {component} 更新",
     hideUpdates: "在重新開啟 Unsloth 前隱藏 {components} 更新",
     whatsNew: "新功能",

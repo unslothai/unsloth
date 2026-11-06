@@ -208,6 +208,7 @@ export const he = {
     tabs: "כרטיסיות דפדפן",
     newTab: "כרטיסייה חדשה",
     newTabFullView: "כרטיסייה חדשה בתצוגה מלאה",
+    newTabFloating: "כרטיסייה חדשה בחלון צף",
     closeTab: "סגור כרטיסייה",
     close: "סגור דפדפן",
     show: "הצג דפדפן",
@@ -399,6 +400,12 @@ export const he = {
       openChat: "פתח בתצוגה מלאה",
       moveLeft: "העבר לחלונית השמאלית",
       moveRight: "העבר לחלונית הימנית",
+    },
+    floating: {
+      enter: "חלון צף",
+      dock: "עגינה לצד",
+      close: "סגירת החלון הצף",
+      handle: "הזזת החלון. מקשי החצים מזיזים אותו, ו־Shift עם החצים משנה את גודלו.",
     },
     annotate: {
       countOne: "הערה אחת",
@@ -823,6 +830,8 @@ export const he = {
   picker: {
     unifiedTightFit: "התאמה צפופה",
     unifiedTightFitHint: "ייתכן שייטען עם הקשר קצר יותר או ירוץ לאט יותר ב-Mac הזה.",
+    residentToRun: "להרצה",
+    residentToRunHint: "זיכרון GPU שבדיקת הטעינה דורשת בזמן הריצה",
     onDevice: "במכשיר",
     huggingFace: "Hugging Face",
     retry: "נסה שוב",
@@ -1134,6 +1143,9 @@ export const he = {
       modelAccessHint: "מודל אחד בכל שורה, למשל unsloth/Qwen3-4B-GGUF, או unsloth/* לארגון שלם. השאירו ריק כדי לאפשר את כל המודלים.",
       modelAccessSave: "שמירה",
       modelAccessLimited: "גישה מוגבלת למודלים",
+      rename: "שינוי שם",
+      renameTitle: "שינוי השם של {username}",
+      renameDescription: "בחרו את השם שבו החשבון הזה מתחבר. השיחות, הקבצים ומפתחות ה-API נשארים בחשבון. המשתמש יתנתק ויתחבר מחדש עם השם החדש והסיסמה הנוכחית.",
       empty: "אין עדיין חשבונות נוספים",
       setupCode: "קוד הגדרה",
       setupFor: "קוד הגדרה עבור {username}",
@@ -2163,6 +2175,12 @@ export const he = {
         autoHint: "בוחר לפי המחשב ועובר ל-HTTPS אם Xet נתקע או נכשל כאן.",
         autoCurrently: "מצב אוטומטי משתמש כעת ב-{transport} במחשב זה.",
         xetMissing: "Xet אינו זמין מכיוון ש-hf_xet אינו מותקן.",
+        speedLimit: "מגבלת מהירות הורדה",
+        speedLimitDescription:
+          "ללא מגבלה אלא אם הוגדר ערך. הורדה מוגבלת משתמשת ב-HTTPS.",
+        speedLimitNoLimit: "ללא מגבלה",
+        speedLimitInvalid: "הזינו מספר ב-Mbit/s או השאירו את השדה ריק.",
+        speedLimitUsesHttps: "כל עוד מוגדרת מגבלת מהירות, ההורדות משתמשות ב-HTTPS. קבצים מעל 50GB עדיין משתמשים ב-Xet, ללא המגבלה.",
       },
       uploads: {
         sectionTitle: "העלאות",
@@ -2537,6 +2555,10 @@ export const he = {
         },
         contrast: {
           label: "ניגודיות",
+        },
+        elementOutline: {
+          label: "מתאר רכיבים",
+          description: "עוצמת הגבול של כפתורים, שדות, כרטיסים ותפריטים.",
         },
         reduceMotion: {
           label: "הפחתת תנועה",
@@ -5572,7 +5594,7 @@ export const he = {
     skippedVersion: "דילגת על {component} {version} בינתיים",
     skippedUpdate: "דילגת על העדכון של {component} בינתיים",
     skippedUpdates: "דילגת על העדכונים של {components} בינתיים",
-    vulkanFaster: "Vulkan מהיר ביותר מ-10% מ-ROCM. אין צורך בהפעלה מחדש",
+    vulkanFaster: "מהיר ביותר מ-10%",
     noRestart: "אין צורך בהפעלה מחדש",
     downloadSize: "הורדה של {size}",
     backendChange: "סביבת חישוב {change}",
@@ -5581,8 +5603,8 @@ export const he = {
     installingPhase: "מתקין את {component} ({current} מתוך {total})...",
     installingCount: "מתקין {count} עדכונים...",
     bundleTitle: "{count} עדכוני סביבת זמן ריצה",
-    newBackend: "סביבת חישוב חדשה עבור {component}",
-    newUpdate: "עדכון חדש עבור {component}",
+    newBackend: "סביבת חישוב חדשה לזמן הריצה",
+    newUpdate: "עדכון חדש לסביבת זמן הריצה",
     hideUpdate: "הסתר את העדכון של {component} עד לפתיחה מחדש של Unsloth",
     hideUpdates: "הסתר את העדכונים של {components} עד לפתיחה מחדש של Unsloth",
     whatsNew: "מה חדש",

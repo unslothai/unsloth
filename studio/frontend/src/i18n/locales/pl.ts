@@ -215,6 +215,7 @@ export const pl = {
     tabs: "Karty przeglądarki",
     newTab: "Nowa karta",
     newTabFullView: "Nowa karta w pełnym widoku",
+    newTabFloating: "Nowa karta w pływającym oknie",
     closeTab: "Zamknij kartę",
     close: "Zamknij przeglądarkę",
     show: "Pokaż przeglądarkę",
@@ -434,6 +435,12 @@ export const pl = {
       openChat: "Otwórz w pełnym widoku",
       moveLeft: "Przenieś do lewego panelu",
       moveRight: "Przenieś do prawego panelu",
+    },
+    floating: {
+      enter: "Pływające okno",
+      dock: "Przypnij z boku",
+      close: "Zamknij pływające okno",
+      handle: "Przesuń okno. Strzałki je przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
     },
     annotate: {
       countOne: "1 adnotacja",
@@ -892,6 +899,9 @@ export const pl = {
     unifiedTightFit: "Ciasne dopasowanie",
     unifiedTightFitHint:
       "Może wczytać się z krótszym kontekstem lub działać wolniej na tym Macu.",
+    residentToRun: "do uruchomienia",
+    residentToRunHint:
+      "Pamięć GPU wymagana przez kontrolę ładowania podczas działania",
     onDevice: "Na urządzeniu",
     huggingFace: "Hugging Face",
     retry: "Ponów",
@@ -1214,6 +1224,9 @@ export const pl = {
         "Jeden model w wierszu, np. unsloth/Qwen3-4B-GGUF, lub unsloth/* dla całej organizacji. Pozostaw puste, aby zezwolić na każdy model.",
       modelAccessSave: "Zapisz",
       modelAccessLimited: "Ograniczony dostęp do modeli",
+      rename: "Zmień nazwę",
+      renameTitle: "Zmień nazwę {username}",
+      renameDescription: "Wybierz nazwę, której to konto używa do logowania. Czaty, pliki i klucze API pozostają na koncie. Użytkownik zostanie wylogowany i zaloguje się ponownie nową nazwą oraz obecnym hasłem.",
       empty: "Nie ma jeszcze innych kont",
       setupCode: "Kod konfiguracji",
       setupFor: "Kod konfiguracji dla: {username}",
@@ -2320,6 +2333,12 @@ export const pl = {
           "Opcja Automatycznie używa na tym komputerze metody {transport}.",
         xetMissing:
           "Xet jest niedostępny, ponieważ hf_xet nie jest zainstalowany.",
+        speedLimit: "Limit prędkości pobierania",
+        speedLimitDescription:
+          "Brak limitu, dopóki nie ustawisz wartości. Ograniczone pobieranie używa HTTPS.",
+        speedLimitNoLimit: "Brak limitu",
+        speedLimitInvalid: "Wpisz liczbę w Mbit/s albo zostaw pole puste.",
+        speedLimitUsesHttps: "Gdy ustawiony jest limit prędkości, pobieranie używa HTTPS. Pliki większe niż 50 GB nadal używają Xet, bez limitu.",
       },
       uploads: {
         sectionTitle: "Przesyłanie",
@@ -2713,6 +2732,10 @@ export const pl = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Obramowanie elementów",
+          description: "Intensywność obramowania przycisków, pól, kart i menu.",
         },
         reduceMotion: {
           label: "Ogranicz ruch",
@@ -5932,8 +5955,7 @@ export const pl = {
     skippedVersion: "Na razie pominięto {component} {version}",
     skippedUpdate: "Na razie pominięto aktualizację: {component}",
     skippedUpdates: "Na razie pominięto aktualizacje: {components}",
-    vulkanFaster:
-      "Vulkan jest o ponad 10% szybszy niż ROCM. Nie trzeba uruchamiać ponownie",
+    vulkanFaster: "Ponad 10% szybciej",
     noRestart: "Nie trzeba uruchamiać ponownie",
     downloadSize: "Do pobrania: {size}",
     backendChange: "Backend: {change}",
@@ -5942,8 +5964,8 @@ export const pl = {
     installingPhase: "Instalowanie: {component} ({current} z {total})...",
     installingCount: "Instalowanie aktualizacji ({count})...",
     bundleTitle: "Aktualizacje środowiska uruchomieniowego: {count}",
-    newBackend: "Nowy backend: {component}",
-    newUpdate: "Nowa aktualizacja: {component}",
+    newBackend: "Nowy backend środowiska uruchomieniowego",
+    newUpdate: "Nowa aktualizacja środowiska uruchomieniowego",
     hideUpdate: "Ukryj aktualizację {component} do ponownego otwarcia Unsloth",
     hideUpdates:
       "Ukryj aktualizacje {components} do ponownego otwarcia Unsloth",

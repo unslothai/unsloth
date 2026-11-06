@@ -207,6 +207,7 @@ export const hi = {
     tabs: "ब्राउज़र टैब",
     newTab: "नया टैब",
     newTabFullView: "पूरे व्यू में नया टैब",
+    newTabFloating: "फ़्लोटिंग विंडो में नया टैब",
     closeTab: "टैब बंद करें",
     close: "ब्राउज़र बंद करें",
     show: "ब्राउज़र दिखाएँ",
@@ -389,6 +390,12 @@ export const hi = {
       openChat: "पूर्ण दृश्य में खोलें",
       moveLeft: "बाएँ पैन में ले जाएँ",
       moveRight: "दाएँ पैन में ले जाएँ",
+    },
+    floating: {
+      enter: "फ़्लोटिंग विंडो",
+      dock: "साइड में डॉक करें",
+      close: "फ़्लोटिंग विंडो बंद करें",
+      handle: "विंडो खिसकाएँ। ऐरो कुंजियाँ इसे खिसकाती हैं; Shift और ऐरो कुंजियाँ इसका आकार बदलती हैं।",
     },
     annotate: {
       countOne: "1 टिप्पणी",
@@ -786,6 +793,8 @@ export const hi = {
   picker: {
     unifiedTightFit: "तंग फ़िट",
     unifiedTightFitHint: "इस Mac पर छोटे कॉन्टेक्स्ट के साथ लोड हो सकता है या धीमा चल सकता है।",
+    residentToRun: "चलाने के लिए",
+    residentToRunHint: "चलते समय लोड जांच के लिए आवश्यक GPU मेमोरी",
     onDevice: "डिवाइस पर",
     huggingFace: "Hugging Face",
     retry: "पुनः प्रयास करें",
@@ -1099,6 +1108,9 @@ export const hi = {
       modelAccessHint: "हर पंक्ति में एक मॉडल, जैसे unsloth/Qwen3-4B-GGUF, या पूरे संगठन के लिए unsloth/*। सभी मॉडल की अनुमति देने के लिए खाली छोड़ें।",
       modelAccessSave: "सहेजें",
       modelAccessLimited: "सीमित मॉडल एक्सेस",
+      rename: "नाम बदलें",
+      renameTitle: "{username} का नाम बदलें",
+      renameDescription: "वह नाम चुनें जिससे यह खाता साइन इन करता है। इसकी चैट, फ़ाइलें और API कुंजियाँ खाते में ही रहती हैं। उन्हें साइन आउट कर दिया जाएगा और वे नए नाम और अपने मौजूदा पासवर्ड से फिर से साइन इन करेंगे।",
       empty: "अभी कोई अन्य खाता नहीं",
       setupCode: "सेटअप कोड",
       setupFor: "{username} के लिए सेटअप कोड",
@@ -2092,6 +2104,12 @@ export const hi = {
           "मशीन के अनुसार चुनता है और यहाँ Xet अटकने या विफल होने पर HTTPS पर चला जाता है।",
         autoCurrently: "इस मशीन पर Auto {transport} उपयोग कर रहा है।",
         xetMissing: "hf_xet इंस्टॉल नहीं है, इसलिए Xet उपलब्ध नहीं है।",
+        speedLimit: "डाउनलोड गति सीमा",
+        speedLimitDescription:
+          "कोई सीमा नहीं जब तक कोई मान सेट न हो। सीमित डाउनलोड HTTPS का उपयोग करता है।",
+        speedLimitNoLimit: "कोई सीमा नहीं",
+        speedLimitInvalid: "Mbit/s में कोई संख्या दर्ज करें या फ़ील्ड खाली छोड़ दें।",
+        speedLimitUsesHttps: "जब तक गति सीमा सेट है, डाउनलोड HTTPS का उपयोग करते हैं। 50 GB से बड़ी फ़ाइलें अब भी बिना सीमा के Xet का उपयोग करती हैं।",
       },
       uploads: {
         sectionTitle: "अपलोड",
@@ -2488,6 +2506,10 @@ export const hi = {
         },
         contrast: {
           label: "कंट्रास्ट",
+        },
+        elementOutline: {
+          label: "तत्वों की आउटलाइन",
+          description: "बटन, फ़ील्ड, कार्ड और मेनू की बॉर्डर की तीव्रता।",
         },
         reduceMotion: {
           label: "एनिमेशन कम करें",
@@ -5484,7 +5506,7 @@ export const hi = {
     skippedVersion: "{component} {version} को फ़िलहाल छोड़ दिया गया",
     skippedUpdate: "{component} अपडेट को फ़िलहाल छोड़ दिया गया",
     skippedUpdates: "{components} अपडेट को फ़िलहाल छोड़ दिया गया",
-    vulkanFaster: "Vulkan, ROCM से 10% से ज़्यादा तेज़ है। रीस्टार्ट की ज़रूरत नहीं",
+    vulkanFaster: "10% से ज़्यादा तेज़",
     noRestart: "रीस्टार्ट की ज़रूरत नहीं",
     downloadSize: "{size} डाउनलोड",
     backendChange: "{change} बैकएंड",
@@ -5493,8 +5515,8 @@ export const hi = {
     installingPhase: "{component} इंस्टॉल हो रहा है ({total} में से {current})...",
     installingCount: "{count} अपडेट इंस्टॉल हो रहे हैं...",
     bundleTitle: "{count} रनटाइम अपडेट",
-    newBackend: "नया {component} बैकएंड",
-    newUpdate: "नया {component} अपडेट",
+    newBackend: "नया रनटाइम बैकएंड",
+    newUpdate: "नया रनटाइम अपडेट",
     hideUpdate: "Unsloth दोबारा खुलने तक {component} अपडेट छिपाएँ",
     hideUpdates: "Unsloth दोबारा खुलने तक {components} अपडेट छिपाएँ",
     whatsNew: "नया क्या है",

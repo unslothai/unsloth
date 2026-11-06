@@ -207,6 +207,7 @@ export const ko = {
     tabs: "브라우저 탭",
     newTab: "새 탭",
     newTabFullView: "전체 보기로 새 탭",
+    newTabFloating: "플로팅 창에서 새 탭",
     closeTab: "탭 닫기",
     close: "브라우저 닫기",
     show: "브라우저 표시",
@@ -389,6 +390,12 @@ export const ko = {
       openChat: "전체 보기로 열기",
       moveLeft: "왼쪽 창으로 이동",
       moveRight: "오른쪽 창으로 이동",
+    },
+    floating: {
+      enter: "플로팅 창",
+      dock: "옆에 고정",
+      close: "플로팅 창 닫기",
+      handle: "창 이동. 화살표 키로 이동하고 Shift와 화살표 키로 크기를 바꿉니다.",
     },
     annotate: {
       countOne: "주석 1개",
@@ -785,6 +792,8 @@ export const ko = {
   picker: {
     unifiedTightFit: "빠듯함",
     unifiedTightFitHint: "이 Mac에서는 더 짧은 컨텍스트로 로드되거나 느리게 실행될 수 있습니다.",
+    residentToRun: "실행에 필요",
+    residentToRunHint: "실행 중 로드 검사가 요구하는 GPU 메모리",
     onDevice: "기기",
     huggingFace: "Hugging Face",
     retry: "다시 시도",
@@ -1095,6 +1104,9 @@ export const ko = {
       modelAccessHint: "한 줄에 모델 하나씩 입력합니다. 예: unsloth/Qwen3-4B-GGUF, 조직 전체는 unsloth/*. 비워 두면 모든 모델을 허용합니다.",
       modelAccessSave: "저장",
       modelAccessLimited: "모델 접근 제한됨",
+      rename: "이름 변경",
+      renameTitle: "{username} 이름 변경",
+      renameDescription: "이 계정이 로그인할 때 사용할 이름을 선택하세요. 채팅, 파일, API 키는 계정에 그대로 남습니다. 사용자는 로그아웃되며 새 이름과 현재 비밀번호로 다시 로그인합니다.",
       empty: "아직 다른 계정이 없습니다",
       setupCode: "설정 코드",
       setupFor: "{username}의 설정 코드",
@@ -2085,6 +2097,12 @@ export const ko = {
           "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
         autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
         xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
+        speedLimit: "다운로드 속도 제한",
+        speedLimitDescription:
+          "값을 설정하지 않으면 제한이 없습니다. 제한된 다운로드는 HTTPS를 사용합니다.",
+        speedLimitNoLimit: "제한 없음",
+        speedLimitInvalid: "Mbit/s 단위의 숫자를 입력하거나 비워 두세요.",
+        speedLimitUsesHttps: "속도 제한이 설정되어 있는 동안 다운로드는 HTTPS를 사용합니다. 50GB를 넘는 파일은 여전히 Xet을 사용하며 제한이 적용되지 않습니다.",
       },
       uploads: {
         sectionTitle: "업로드",
@@ -2476,6 +2494,10 @@ export const ko = {
         },
         contrast: {
           label: "대비",
+        },
+        elementOutline: {
+          label: "요소 윤곽선",
+          description: "버튼, 입력란, 카드, 메뉴의 테두리 강도입니다.",
         },
         reduceMotion: {
           label: "동작 줄이기",
@@ -5464,7 +5486,7 @@ export const ko = {
     skippedVersion: "{component} {version}을(를) 이번에는 건너뛰었습니다",
     skippedUpdate: "{component} 업데이트를 이번에는 건너뛰었습니다",
     skippedUpdates: "{components} 업데이트를 이번에는 건너뛰었습니다",
-    vulkanFaster: "Vulkan이 ROCM보다 10% 이상 빠릅니다. 다시 시작할 필요 없음",
+    vulkanFaster: "10% 이상 빠름",
     noRestart: "다시 시작할 필요 없음",
     downloadSize: "{size} 다운로드",
     backendChange: "{change} 백엔드",
@@ -5473,8 +5495,8 @@ export const ko = {
     installingPhase: "{component} 설치 중 ({current}/{total})...",
     installingCount: "업데이트 {count}개 설치 중...",
     bundleTitle: "런타임 업데이트 {count}개",
-    newBackend: "새 {component} 백엔드",
-    newUpdate: "새 {component} 업데이트",
+    newBackend: "새 런타임 백엔드",
+    newUpdate: "새 런타임 업데이트",
     hideUpdate: "Unsloth를 다시 열 때까지 {component} 업데이트 숨기기",
     hideUpdates: "Unsloth를 다시 열 때까지 {components} 업데이트 숨기기",
     whatsNew: "새로운 기능",

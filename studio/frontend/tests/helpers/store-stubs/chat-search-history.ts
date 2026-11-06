@@ -4,6 +4,7 @@
 let threads: unknown[] = [];
 let messagesByThread = new Map<string, unknown[]>();
 let batchFails = false;
+let batchFailures = new Set<string>();
 let messageReadsFail = false;
 let messageReadFailures = new Set<string>();
 
@@ -25,7 +26,7 @@ export function batchListChatMessages(
   options?: unknown,
 ): Promise<Map<string, unknown[]>> {
   batchRequests.push({ threadIds, options });
-  if (batchFails) {
+  if (batchFails || threadIds.some((id) => batchFailures.has(id))) {
     return Promise.reject(new Error("batch read failed"));
   }
   return Promise.resolve(
@@ -37,6 +38,8 @@ export function configureChatSearchHistoryStub(options: {
   threads?: unknown[];
   messagesByThread?: Map<string, unknown[]>;
   batchFails?: boolean;
+  // A batch holding any of these threads fails.
+  batchFailures?: Set<string>;
   messageReadsFail?: boolean;
   messageReadFailures?: Set<string>;
 }): void {
@@ -44,6 +47,7 @@ export function configureChatSearchHistoryStub(options: {
   threads = options.threads ?? [];
   messagesByThread = options.messagesByThread ?? new Map();
   batchFails = options.batchFails ?? false;
+  batchFailures = options.batchFailures ?? new Set();
   messageReadsFail = options.messageReadsFail ?? false;
   messageReadFailures = options.messageReadFailures ?? new Set();
 }

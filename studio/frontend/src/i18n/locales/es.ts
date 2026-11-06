@@ -207,6 +207,7 @@ export const es = {
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -389,6 +390,12 @@ export const es = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al lateral",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -786,6 +793,8 @@ export const es = {
   picker: {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint: "Puede cargarse con un contexto más corto o ir más lento en este Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint: "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -1099,6 +1108,9 @@ export const es = {
       modelAccessHint: "Un modelo por línea, por ejemplo unsloth/Qwen3-4B-GGUF, o unsloth/* para toda una organización. Déjalo vacío para permitir todos los modelos.",
       modelAccessSave: "Guardar",
       modelAccessLimited: "Acceso a modelos limitado",
+      rename: "Cambiar nombre",
+      renameTitle: "Cambiar el nombre de {username}",
+      renameDescription: "Elige el nombre con el que inicia sesión esta cuenta. Sus chats, archivos y claves de API se quedan en la cuenta. Se cerrará su sesión y volverá a iniciarla con el nuevo nombre y su contraseña actual.",
       empty: "Aún no hay otras cuentas",
       setupCode: "Código de configuración",
       setupFor: "Código de configuración para {username}",
@@ -2107,6 +2119,12 @@ export const es = {
           "Elige según la máquina y cambia a HTTPS si Xet se atasca o falla aquí.",
         autoCurrently: "Auto está usando {transport} en esta máquina.",
         xetMissing: "Xet no está disponible porque hf_xet no está instalado.",
+        speedLimit: "Límite de velocidad de descarga",
+        speedLimitDescription:
+          "Sin límite a menos que se indique un valor. Una descarga limitada usa HTTPS.",
+        speedLimitNoLimit: "Sin límite",
+        speedLimitInvalid: "Introduce un número en Mbit/s o deja el campo vacío.",
+        speedLimitUsesHttps: "Las descargas usan HTTPS mientras haya un límite de velocidad. Los archivos de más de 50 GB siguen usando Xet, sin el límite.",
       },
       uploads: {
         sectionTitle: "Subidas",
@@ -2506,6 +2524,10 @@ export const es = {
         },
         contrast: {
           label: "Contraste",
+        },
+        elementOutline: {
+          label: "Contorno de los elementos",
+          description: "Intensidad del borde de botones, campos, tarjetas y menús.",
         },
         reduceMotion: {
           label: "Reducir el movimiento",
@@ -5546,7 +5568,7 @@ export const es = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster: "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5555,8 +5577,8 @@ export const es = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate: "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates: "Ocultar las actualizaciones de {components} hasta que se vuelva a abrir Unsloth",
     whatsNew: "Novedades",

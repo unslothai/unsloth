@@ -4371,6 +4371,8 @@ class ModelConfig:
     # Repo a refused-Hub cached GGUF came from, for the download interlock.
     gguf_cache_repo: Optional[str] = None
     gguf_variant: Optional[str] = None  # Quantization variant (e.g. "Q4_K_M")
+    # A picked MLX precision folder's config, for route checks only; sizing needs the folder's weights.
+    config_dir: Optional[str] = None
     base_model: Optional[str] = None  # Base model (for LoRAs)
     # Set for a GGUF only audio.cpp runs; loads via the native-audio worker, never llama-server.
     audio_cpp: Optional[Any] = None
@@ -4861,6 +4863,7 @@ class ModelConfig:
 
         return cls(
             gguf_variant = precision_folder,
+            config_dir = check_model if precision_folder else None,
             identifier = identifier,
             display_name = display_name,
             path = path,
