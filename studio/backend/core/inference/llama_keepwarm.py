@@ -903,9 +903,20 @@ def loaded_identity():
     return _loaded_identity(get_llama_cpp_backend())
 
 
-def stash_for_reload(identity) -> None:
+def launch_to_replay(backend = None):
+    if backend is None:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+    launch = getattr(backend, "replay_launch", None)
+    if not backend.is_loaded or launch is None:
+        return None
+    intent = getattr(backend, "last_load_intent", None)
+    return {"kwargs": launch, "cpu_fallback": bool(getattr(intent, "cpu_fallback", False))}
+
+
+def stash_for_reload(identity, launch = None) -> None:
     """Let the next reload-only request bring ``identity`` back, as after an idle unload."""
-    _set_last_unloaded(identity)
+    _set_last_unloaded(identity, intent = launch)
 
 
 def _note_idle_unload_event(freed, reason: str = "idle") -> None:
@@ -1008,7 +1019,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                         if manifest:
                             _delete_resume_files(manifest)
                         continue
-                    intent = getattr(backend, "last_load_intent", None) if mlx is None else None
+                    launch = launch_to_replay(backend) if mlx is None else None
                     try:
                         if mlx is None:
                             await asyncio.to_thread(backend.unload_model)
@@ -1019,7 +1030,7 @@ async def idle_unload_loop(poll_seconds: float = 15.0) -> None:
                             _delete_resume_files(manifest)
                         raise
                     _set_last_unloaded(
-                        freed, mlx = mlx is not None, intent = intent
+                        freed, mlx = mlx is not None, intent = launch
                     )  # let an alias request reload it
                     if manifest and freed:
                         _set_kv_resume({"identity": freed, "origin": "idle", **manifest})
