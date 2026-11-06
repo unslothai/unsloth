@@ -1629,23 +1629,60 @@ function useLineWindow(
 const NO_WINDOW = { window: null, pins: null, measured: false } as const;
 const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } as const;
 
-/** A streaming block that was showing its last line keeps following it, until the reader scrolls up. */
+const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
+type BodyScroll = { top: number; atBottom: boolean };
+// A finished stream swaps its body for a new one, which would start back at the first line; keyed by the
+// opening text, which a stream stops changing once it is past it.
+const bodyScrolls = new Map<string, BodyScroll>();
+const BODY_SCROLLS_KEPT = 64;
+
+const rememberBodyScroll = (key: string, body: HTMLElement): void => {
+  bodyScrolls.delete(key);
+  bodyScrolls.set(key, {
+    top: body.scrollTop,
+    atBottom: body.scrollHeight - body.scrollTop - body.clientHeight < 24,
+  });
+  if (bodyScrolls.size > BODY_SCROLLS_KEPT) bodyScrolls.delete(bodyScrolls.keys().next().value as string);
+};
+
+/** A streaming block follows its last line until the reader scrolls up, and a remounted one keeps its place. */
 function usePinnedWhileStreaming(
   surface: RefObject<HTMLElement | null>,
   isIncomplete: boolean | undefined,
   tokens: FenceTokens["tokens"] | null,
+  language: string | null,
+  source: string,
 ): void {
   const following = useRef(true);
   const mounted = tokens !== null && tokens.length > 0;
-  useEffect(() => {
+  const key = `${language ?? ""}\n${source.slice(0, 200)}`;
+  const keyRef = useRef(key);
+  keyRef.current = key;
+  useLayoutEffect(() => {
     const body = surface.current;
-    if (!(isIncomplete && mounted && body)) return;
+    if (!(mounted && body)) return;
+    const saved = bodyScrolls.get(keyRef.current);
+    if (saved) {
+      following.current = saved.atBottom;
+      body.scrollTop = saved.atBottom ? body.scrollHeight : saved.top;
+    }
+    // Only the reader's own scroll stops the follow: lines settling above shift scrollTop too.
+    let readerAt = Number.NEGATIVE_INFINITY;
+    const onReader = (): void => {
+      readerAt = performance.now();
+    };
     const onScroll = (): void => {
-      following.current = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+      const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+      if (atBottom || performance.now() - readerAt < 250) following.current = atBottom;
+      if (body.scrollHeight > body.clientHeight) rememberBodyScroll(keyRef.current, body);
     };
     body.addEventListener("scroll", onScroll, { passive: true });
-    return () => body.removeEventListener("scroll", onScroll);
-  }, [surface, isIncomplete, mounted]);
+    for (const type of READER_SCROLL_EVENTS) body.addEventListener(type, onReader, { passive: true });
+    return () => {
+      body.removeEventListener("scroll", onScroll);
+      for (const type of READER_SCROLL_EVENTS) body.removeEventListener(type, onReader);
+    };
+  }, [surface, mounted]);
   useLayoutEffect(() => {
     const body = surface.current;
     if (!(isIncomplete && following.current && body)) return;
@@ -1682,7 +1719,7 @@ export const FenceBody = memo(function FenceBody({
   const highlight = useFenceHighlightLimit(
     tokens, isIncomplete, windowing, language, source, code, frame, surface,
   );
-  usePinnedWhileStreaming(surface, isIncomplete, tokens);
+  usePinnedWhileStreaming(surface, isIncomplete, tokens, language, source);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,
     surface,
