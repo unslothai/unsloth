@@ -318,6 +318,8 @@ export function sweepVariants(
   }
 }
 
+const ALL_EXPERTS_LABEL = "Experts on CPU · all";
+
 /** Context every offload row loads at: the backend's own offload cap, so the Auto row compares. */
 export const OFFLOAD_CONTEXT = 8192;
 
@@ -360,7 +362,7 @@ export function offloadVariants(shape?: ModelShape | null): Variant[] {
   return [
     auto,
     {
-      label: moe ? `Experts on CPU · all ${moe} layers` : "Experts on CPU · all",
+      label: moe ? `${ALL_EXPERTS_LABEL} ${moe} layers` : ALL_EXPERTS_LABEL,
       load: manual(999, moe ?? 999),
     },
     ...counts.map((n) => ({
@@ -481,6 +483,10 @@ export interface ServedStatus {
   offloaded_layers?: number | null;
   /** A GPU was detected but llama.cpp's GPU backend did not start. */
   gpu_backend_unavailable?: boolean | null;
+  /** Expert layers kept on the CPU; 0 when the model has none to move. */
+  n_cpu_moe?: number | null;
+  /** The loaded model's MoE layer count, the ceiling llama.cpp clamps n_cpu_moe to. */
+  n_moe_layers?: number | null;
 }
 
 const NGRAM_FLAGS = [
@@ -591,6 +597,13 @@ export function servedMismatch(
     return "llama.cpp's GPU backend did not start, so this load ran on the CPU";
   if (wantGpu && st.offloaded_layers === 0)
     return "The server placed no layers on the GPU";
+  // Unknown-shape rows use fixed expert counts; past the model's MoE count they repeat a row already run.
+  const wantMoe = variant.load.gpu_memory_mode === "manual" ? (variant.load.n_cpu_moe ?? 0) : 0;
+  if (wantMoe > 0 && st.n_cpu_moe === 0)
+    return "This model has no expert layers to keep on the CPU";
+  const moe = st.n_moe_layers ?? 0;
+  if (wantMoe > 0 && moe > 0 && wantMoe >= moe && !variant.label.startsWith(ALL_EXPERTS_LABEL))
+    return `This model has ${moe} expert layers, so this row repeats ${ALL_EXPERTS_LABEL}`;
   const want = variant.load.speculative_type;
   // A fallback only fails a forced mode; Auto's fallback is the default config we mean to measure.
   if (

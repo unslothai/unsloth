@@ -330,6 +330,25 @@ test("a dense model gets GPU layer steps, and an unknown shape still gets sensib
   assert.equal(new Set(unknown.map((r) => r.label)).size, unknown.length);
 });
 
+test("unknown-shape expert rows that collapse onto another placement are skipped", () => {
+  const [, all, n32, n24, n16, , allGpu] = offloadVariants(null);
+  const served = (want: Variant, moe: number) => ({
+    n_moe_layers: moe,
+    n_cpu_moe: moe ? Math.min(want.load.n_cpu_moe ?? 0, 999) : 0,
+  });
+  assert.equal(servedMismatch(all, served(all, 24)), null);
+  assert.match(servedMismatch(n32, served(n32, 24)) ?? "", /24 expert layers/);
+  assert.match(servedMismatch(n24, served(n24, 24)) ?? "", /24 expert layers/);
+  assert.equal(servedMismatch(n16, served(n16, 24)), null);
+  // Dense: the backend sends no --n-cpu-moe and reports 0, so only All on GPU is left.
+  assert.equal(servedMismatch(all, served(all, 0)), "This model has no expert layers to keep on the CPU");
+  assert.equal(servedMismatch(n16, served(n16, 0)), "This model has no expert layers to keep on the CPU");
+  assert.equal(servedMismatch(allGpu, served(allGpu, 0)), null);
+  // Known shape: the all row asks for exactly the MoE count and still runs.
+  const known = offloadVariants({ layers: 48, moeLayers: 40 });
+  assert.ok(known.every((r) => servedMismatch(r, { n_moe_layers: 40, n_cpu_moe: r.load.n_cpu_moe ?? 0 }) === null));
+});
+
 test("a value every row shares prints as pinned, not varied", () => {
   const line = baseLine(
     [
