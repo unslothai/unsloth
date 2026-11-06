@@ -332,6 +332,7 @@ export function ChatProvidersSettings({
   const [reasoningConfig, setReasoningConfig] = useState<CustomReasoningConfig | null>(null);
   const [autoReloadModels, setAutoReloadModels] = useState(false);
   const [sharedDraft, setSharedDraft] = useState(false);
+  const [requestUsage, setRequestUsage] = useState(false);
   const isAccountOwner = useIsAccountOwner();
   const loginMode = useLoginMode();
   const modelFieldsAtOpenRef = useRef<string | null>(null);
@@ -537,6 +538,7 @@ export function ChatProvidersSettings({
     setExtraHeadersDraft("");
     setApiType("chat_completions");
     setReasoningConfig(null);
+    setRequestUsage(false);
     setEditingBackendProviderType(null);
     const entry = registryByType.get(providerType);
     if (!entry) {
@@ -662,6 +664,7 @@ export function ChatProvidersSettings({
     setIsReasoningModel(false);
     setAutoReloadModels(false);
     setSharedDraft(false);
+    setRequestUsage(false);
     modelFieldsAtOpenRef.current = null;
   }
 
@@ -1025,6 +1028,7 @@ export function ChatProvidersSettings({
           : undefined,
         extraHeaders,
         ...(showShareToggle && sharedDraft ? { shared: true } : {}),
+        ...(showCustomReasoning && requestUsage ? { requestUsage: true } : {}),
         apiKey: apiKey.trim(),
 
       });
@@ -1052,6 +1056,9 @@ export function ChatProvidersSettings({
         extraHeaders: created.extra_headers ?? extraHeaders,
         reasoningConfig: created.provider_type === "custom"
           ? normalizeCustomReasoningConfig(created.reasoning_config)
+          : undefined,
+        requestUsage: created.provider_type === "custom"
+          ? created.request_usage === true
           : undefined,
 
         hasApiKey: created.has_api_key,
@@ -1209,6 +1216,9 @@ export function ChatProvidersSettings({
         ...(showShareToggle && sharedDraft !== (existing.shared === true)
           ? { shared: sharedDraft }
           : {}),
+        ...(showCustomReasoning && requestUsage !== (existing.requestUsage === true)
+          ? { requestUsage }
+          : {}),
         ...(credentialEdit.action === "replace"
           ? { apiKey: credentialEdit.apiKey }
           : credentialEdit.action === "clear"
@@ -1241,6 +1251,9 @@ export function ChatProvidersSettings({
         extraHeaders: updated.extra_headers ?? extraHeaders,
         reasoningConfig: updated.provider_type === "custom"
           ? normalizeCustomReasoningConfig(updated.reasoning_config)
+          : undefined,
+        requestUsage: updated.provider_type === "custom"
+          ? updated.request_usage === true
           : undefined,
 
         hasApiKey: updated.has_api_key,
@@ -1351,6 +1364,7 @@ export function ChatProvidersSettings({
     setBaseUrlDraft(provider.baseUrl);
     setAutoReloadModels(provider.autoReloadModels === true);
     setSharedDraft(provider.shared === true);
+    setRequestUsage(provider.requestUsage === true);
     modelFieldsAtOpenRef.current = null;
     setApiType(
       provider.decisionsOnly ? "systemone" : (provider.apiType ?? "chat_completions"),
@@ -2035,6 +2049,31 @@ export function ChatProvidersSettings({
                     </div>
                   ) : null}
                 </>
+              ) : null}
+              {showCustomReasoning ? (
+                <div className="flex items-start justify-between gap-4 px-4 py-3">
+                  <div className="space-y-1">
+                    <Label
+                      htmlFor="provider-request-usage"
+                      className="text-sm font-medium"
+                    >
+                      {t("settings.apiKeys.requestUsage.label")}
+                    </Label>
+                    <p
+                      id="provider-request-usage-help"
+                      className="text-xs text-muted-foreground"
+                    >
+                      {t("settings.apiKeys.requestUsage.description")}
+                    </p>
+                  </div>
+                  <Switch
+                    className="mt-[var(--ui-title-cap-inset)]"
+                    id="provider-request-usage"
+                    checked={requestUsage}
+                    onCheckedChange={setRequestUsage}
+                    aria-describedby="provider-request-usage-help"
+                  />
+                </div>
               ) : null}
               {showReasoningToggle ? (
                 <div className="grid grid-cols-[minmax(140px,0.8fr)_minmax(0,1.2fr)] items-center gap-4 px-4 py-3 @max-[520px]:grid-cols-1">

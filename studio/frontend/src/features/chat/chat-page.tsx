@@ -183,7 +183,8 @@ import {
   type ChatModelSwitchTarget,
 } from "./components/chat-model-notice-switch";
 import { ContextUsageBar } from "./components/context-usage-bar";
-import { contextUsageRows } from "./lib/context-usage-bar-state";
+import { contextBarWindow, contextUsageRows } from "./lib/context-usage-bar-state";
+import { resolveModelCatalogEntry } from "./model-catalog";
 import { ModelLoadInlineStatus } from "./components/model-load-status";
 import { ProjectSwitcher } from "./components/project-switcher";
 import { EditProjectDialog } from "./components/edit-project-dialog";
@@ -3342,6 +3343,30 @@ export function ChatPage({
     subscribeModelCatalog,
     modelCatalogVersion,
   );
+  const reportedExternalWindow = useChatRuntimeStore((s) =>
+    inferenceCheckpoint ? s.externalContextWindows[inferenceCheckpoint] : undefined,
+  );
+  // modelCatalogChange re-resolves once a fetched catalogue lands.
+  const contextBarTotal = useMemo(
+    () =>
+      contextBarWindow({
+        isExternalModel,
+        loadedContextLength,
+        reportedWindow: reportedExternalWindow,
+        catalogWindow: resolveModelCatalogEntry(
+          activeExternalProviderType,
+          parseExternalModelId(inferenceCheckpoint)?.modelId,
+        )?.contextLength,
+      }),
+    [
+      activeExternalProviderType,
+      inferenceCheckpoint,
+      isExternalModel,
+      loadedContextLength,
+      modelCatalogChange,
+      reportedExternalWindow,
+    ],
+  );
   const appliedCatalogChange = useRef(modelCatalogChange);
   useEffect(() => {
     if (appliedCatalogChange.current === modelCatalogChange) return;
@@ -4863,8 +4888,9 @@ export function ChatPage({
               <ContextUsageBar
                 compactUnknownAsIcon={view.mode === "single"}
                 used={contextUsage?.contextTokens ?? contextUsage?.totalTokens ?? null}
-                // null on external providers; the bar handles that.
-                total={loadedContextLength}
+                // null for an API model with no known window; the bar handles that.
+                total={contextBarTotal}
+                providerWindow={isExternalModel}
                 cached={usageRows.cached}
                 cacheWrites={usageRows.cacheWrites}
                 promptTokens={usageRows.promptTokens}

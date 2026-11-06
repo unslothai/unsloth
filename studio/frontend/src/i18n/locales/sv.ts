@@ -3563,6 +3563,10 @@ export const sv = {
         "Anslut till denna Unsloth från andra enheter, via ditt lokala nätverk eller en tillfällig offentlig URL.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Rapportera tokenanvändning",
+        description: "Ber slutpunkten om exakta tokenantal så att kontextfältet visar verklig användning. Stäng av om slutpunkten avvisar förfrågningar.",
+      },
       title: "API",
       description: "Anslut till Unsloth via det OpenAI-kompatibla API:et.",
       readDocs: "Läs API-dokumentationen",

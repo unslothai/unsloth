@@ -3373,6 +3373,10 @@ export const ko = {
         "로컬 네트워크나 임시 공개 URL을 통해 다른 기기에서 이 Unsloth에 접속합니다.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "토큰 사용량 보고",
+        description: "엔드포인트에 정확한 토큰 수를 요청해 컨텍스트 바에 실제 사용량을 표시합니다. 엔드포인트가 요청을 거부하면 끄세요.",
+      },
       title: "API",
       description: "OpenAI 호환 API를 통해 Unsloth에 접근합니다.",
       readDocs: "API 문서 읽기",

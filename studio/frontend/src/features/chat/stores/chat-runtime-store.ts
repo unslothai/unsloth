@@ -2593,6 +2593,8 @@ type ChatRuntimeStore = {
   pendingImageEditReference: PendingImageEditReference | null;
   contextUsage: ContextUsageSnapshot | null;
   contextUsageByThreadId: Record<string, ContextUsageSnapshot>;
+  // API model windows the server reported, by checkpoint; session-only, the catalogue covers a reload.
+  externalContextWindows: Record<string, number>;
   modelLoading: boolean;
   loadingModelPick: (LoadingModelPick & { selectionSuperseded: boolean }) | null;
   activeLoadId: string | null;
@@ -2773,6 +2775,7 @@ type ChatRuntimeStore = {
     threadId: string,
     usage: ContextUsageSnapshot | null,
   ) => void;
+  setExternalContextWindow: (checkpoint: string, window: number) => void;
 };
 
 type PersistedChatSettings = Awaited<
@@ -4369,6 +4372,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   pendingImageEditReference: null,
   contextUsage: null,
   contextUsageByThreadId: {},
+  externalContextWindows: {},
   modelLoading: false,
   loadingModelPick: null,
   activeLoadId: null,
@@ -6165,6 +6169,17 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       }
       return { contextUsage: stamped, contextUsageByThreadId: next };
     }),
+  setExternalContextWindow: (checkpoint, window) =>
+    set((state) =>
+      state.externalContextWindows[checkpoint] === window
+        ? state
+        : {
+            externalContextWindows: {
+              ...state.externalContextWindows,
+              [checkpoint]: window,
+            },
+          },
+    ),
   setThreadContextUsage: (threadId, usage) =>
     set((state) => {
       if (!usage) {

@@ -3329,6 +3329,10 @@ export const zhCN = {
         "通过局域网或临时公开 URL，从其他设备访问此 Unsloth。",
     },
     apiKeys: {
+      requestUsage: {
+        label: "报告 token 用量",
+        description: "向端点请求精确的 token 数，让上下文栏显示真实用量。如果端点拒绝请求，请关闭此项。",
+      },
       title: "API",
       description: "通过兼容 OpenAI 的 API 以编程方式访问 Unsloth。",
       readDocs: "阅读 API 文档",

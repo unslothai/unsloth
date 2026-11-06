@@ -3676,6 +3676,10 @@ export const cs = {
         "Přistupujte k tomuto Unsloth z dalších zařízení přes místní síť nebo dočasnou veřejnou adresu URL.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Hlásit využití tokenů",
+        description: "Požádá koncový bod o přesné počty tokenů, aby lišta kontextu ukazovala skutečné využití. Vypněte, pokud koncový bod požadavky odmítá.",
+      },
       title: "API",
       description:
         "Přistupujte k Unsloth přes API kompatibilní s OpenAI a Anthropic.",

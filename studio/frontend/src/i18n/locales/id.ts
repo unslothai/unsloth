@@ -3658,6 +3658,10 @@ export const id = {
         "Akses Unsloth ini dari perangkat Anda yang lain, melalui jaringan lokal atau URL publik sementara.",
     },
     apiKeys: {
+      requestUsage: {
+        label: "Laporkan penggunaan token",
+        description: "Meminta jumlah token yang tepat dari endpoint agar bilah konteks menampilkan penggunaan sebenarnya. Matikan jika endpoint menolak permintaan.",
+      },
       title: "API",
       description:
         "Akses Unsloth melalui API yang kompatibel dengan OpenAI dan Anthropic.",

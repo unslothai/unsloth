@@ -57,6 +57,7 @@ export interface ProviderConfig {
   reasoning_config?: CustomReasoningConfig | null;
   extra_headers?: Record<string, string>;
   shared?: boolean;
+  request_usage?: boolean;
   shared_by_owner?: boolean;
   created_at: string;
   updated_at: string;
@@ -228,6 +229,7 @@ export async function createProviderConfig(payload: {
   reasoningConfig?: CustomReasoningConfig | null;
   extraHeaders?: Record<string, string>;
   shared?: boolean;
+  requestUsage?: boolean;
   apiKey?: string;
 }): Promise<ProviderConfig> {
   return withApiKeyEncryptionRetry(payload.apiKey ?? "", async (encryptedApiKey) => {
@@ -251,6 +253,9 @@ export async function createProviderConfig(payload: {
           ? {}
           : { extra_headers: payload.extraHeaders }),
         ...(payload.shared === undefined ? {} : { shared: payload.shared }),
+        ...(payload.requestUsage === undefined
+          ? {}
+          : { request_usage: payload.requestUsage }),
         encrypted_api_key: encryptedApiKey,
       }),
     });
@@ -285,6 +290,7 @@ export async function updateProviderConfig(
     reasoningConfig?: CustomReasoningConfig | null;
     extraHeaders?: Record<string, string>;
     shared?: boolean;
+    requestUsage?: boolean;
     apiKey?: string;
     clearApiKey?: boolean;
   },
@@ -312,6 +318,9 @@ export async function updateProviderConfig(
           ? {}
           : { extra_headers: payload.extraHeaders }),
         ...(payload.shared === undefined ? {} : { shared: payload.shared }),
+        ...(payload.requestUsage === undefined
+          ? {}
+          : { request_usage: payload.requestUsage }),
         ...(payload.apiKey === undefined ? {} : { encrypted_api_key: encryptedApiKey }),
         ...(payload.clearApiKey === undefined ? {} : { clear_api_key: payload.clearApiKey }),
       }),
