@@ -178,3 +178,85 @@ def test_repeated_tool_write_reports_no_change(db):
     assert memory.execute(args, "chat").startswith("Memory updated:")
     assert memory.execute(args, "chat").startswith("Memory unchanged:")
     assert memory.read()["revision"] == 1
+
+
+@pytest.mark.parametrize("enable_tools", [False, None])
+def test_memory_does_not_take_over_client_tool_catalog(db, enable_tools):
+    from types import SimpleNamespace
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _takes_tool_passthrough, _explicit_studio_tool_loop_requested
+    from state.tool_policy import reset_tool_policy
+
+    reset_tool_policy()
+    payload = ChatCompletionRequest(
+        model = "test",
+        thread_id = "chat",
+        enable_tools = enable_tools,
+        messages = [{"role": "user", "content": "Check the weather"}],
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "client_weather", "parameters": {"type": "object"}},
+            }
+        ],
+        tool_choice = {"type": "function", "function": {"name": "client_weather"}},
+    )
+    memory.apply_to_request(payload)
+    assert _takes_tool_passthrough(payload, SimpleNamespace(supports_tools = True))
+    assert not _explicit_studio_tool_loop_requested(payload)
+
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        {"tool_choice": "none"},
+        {"response_format": {"type": "json_object"}},
+        {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "client_weather", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "Sunny"},
+            ]
+        },
+    ],
+)
+def test_memory_respects_other_client_contracts(db, contract):
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _explicit_studio_tool_loop_requested
+    from state.tool_policy import reset_tool_policy
+
+    reset_tool_policy()
+    payload = ChatCompletionRequest(
+        **{
+            "model": "test",
+            "thread_id": "chat",
+            "enable_tools": False,
+            "messages": [{"role": "user", "content": "hello"}],
+            **contract,
+        }
+    )
+    assert not _explicit_studio_tool_loop_requested(payload)
+
+
+def test_plain_chat_can_still_request_only_memory(db):
+    from models.inference import ChatCompletionRequest
+    from routes.inference import _explicit_studio_tool_loop_requested, _effective_enable_tools
+    from state.tool_policy import reset_tool_policy
+
+    reset_tool_policy()
+    payload = ChatCompletionRequest(
+        model = "test",
+        thread_id = "chat",
+        enable_tools = False,
+        messages = [{"role": "user", "content": "Remember my preference"}],
+    )
+    assert _explicit_studio_tool_loop_requested(payload)
+    assert _effective_enable_tools(payload)

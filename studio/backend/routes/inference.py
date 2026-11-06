@@ -4541,6 +4541,23 @@ def _sf_parse_think_markers(
     return _resolved_kwargs_think(None, resolved)
 
 
+def _memory_tool_requested(payload) -> bool:
+    """Saved memory may add a tool only when the caller has no client-owned contract."""
+    if (
+        getattr(payload, "tools", None)
+        or getattr(payload, "tool_choice", None) == "none"
+        or _response_format_constrains_decoding(payload)
+        or (
+            _has_openai_tool_history(getattr(payload, "messages", None) or [])
+            and not _only_studio_tool_history(payload)
+        )
+    ):
+        return False
+    from core.chat_memory import thread_context
+
+    return thread_context(getattr(payload, "thread_id", None)) is not None
+
+
 def _effective_enable_tools(payload) -> Optional[bool]:
     """An explicit enable_tools false beats the launcher default; a CLI policy override outranks it."""
     from state.tool_policy import get_tool_policy, get_tool_policy_default
@@ -4548,9 +4565,7 @@ def _effective_enable_tools(payload) -> Optional[bool]:
     policy = get_tool_policy()
     if policy is not None:
         return policy
-    from core.chat_memory import thread_context
-
-    if thread_context(getattr(payload, "thread_id", None)) is not None:
+    if _memory_tool_requested(payload):
         return True
     if payload.enable_tools is None:
         return get_tool_policy_default()
@@ -4608,12 +4623,8 @@ def _explicit_studio_tool_loop_requested(payload) -> bool:
     from state.tool_policy import get_tool_policy
 
     policy = get_tool_policy()
-    from core.chat_memory import thread_context
-
     return policy is not False and (
-        payload.enable_tools is True
-        or bool(payload.mcp_enabled)
-        or thread_context(getattr(payload, "thread_id", None)) is not None
+        payload.enable_tools is True or bool(payload.mcp_enabled) or _memory_tool_requested(payload)
     )
 
 
@@ -4623,9 +4634,7 @@ def _selects_only_provider_hosted_tools(
     enabled_skills: list[dict] | None = None,
 ) -> bool:
     """Provider-hosted names alone stay with the provider; Unsloth-only names or MCP keep the local loop."""
-    from core.chat_memory import thread_context
-
-    if thread_context(getattr(payload, "thread_id", None)) is not None:
+    if _memory_tool_requested(payload):
         return False
     if getattr(payload, "mcp_enabled", False):
         return False
@@ -6202,19 +6211,26 @@ async def _select_request_tools(
             tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
     from core.chat_memory import offer
 
-    memory_tools = offer(getattr(payload, "thread_id", None)) if tools_on else []
-    from state.tool_policy import get_tool_policy, get_tool_policy_default
-
-    policy = get_tool_policy()
-    base_tools = (
-        policy
-        if policy is not None
-        else (
-            payload.enable_tools if payload.enable_tools is not None else get_tool_policy_default()
-        )
+    memory_tools = (
+        offer(getattr(payload, "thread_id", None))
+        if tools_on and _memory_tool_requested(payload)
+        else []
     )
-    if memory_tools and not base_tools:
-        tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
+    if memory_tools:
+        from state.tool_policy import get_tool_policy, get_tool_policy_default
+
+        policy = get_tool_policy()
+        base_tools = (
+            policy
+            if policy is not None
+            else (
+                payload.enable_tools
+                if payload.enable_tools is not None
+                else get_tool_policy_default()
+            )
+        )
+        if not base_tools:
+            tools = [t for t in tools if t["function"]["name"] == "search_conversation"]
     tools += memory_tools
     tools = _tools_for_search_images(tools)
     # Before the MCP append: Full access says nothing about how an MCP server runs.
