@@ -11595,14 +11595,26 @@ class VideoBackend:
                                 pin_plan = None
                         denoiser_bytes, others_bytes = sizes
                         if pin_plan is not None:
+                            import contextlib
+
+                            from .diffusion_fast_load import fast_upload
                             from .diffusion_prequant import pin_prequantized_module
-                            denoiser_pinned = pin_prequantized_module(
-                                manager,
-                                denoiser,
-                                device,
-                                logger = logger,
-                                label = "released bfloat16 denoiser",
+
+                            # Main reads this 66 GB lazily in its first clip; a one-thread .to() here would
+                            # read it at ~1/2 the disk rate, so the load ends up slower than main's first clip.
+                            upload = (
+                                fast_upload([denoiser], device, logger = logger)
+                                if te_streamed
+                                else contextlib.nullcontext()
                             )
+                            with upload:
+                                denoiser_pinned = pin_prequantized_module(
+                                    manager,
+                                    denoiser,
+                                    device,
+                                    logger = logger,
+                                    label = "released bfloat16 denoiser",
+                                )
                             if te_streamed:
                                 # Compile is not bit-identical here (G4: LPIPS 0.115 over 20 steps): stay eager.
                                 dense_compile_held = bool(denoiser_pinned)

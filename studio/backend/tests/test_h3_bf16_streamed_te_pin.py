@@ -129,3 +129,15 @@ def test_streamed_conditioner_tier_keeps_the_eager_tier_of_the_rotation_it_repla
     assert src.index("effective_speed = SPEED_EAGER", gate) < src.index(
         "snapshot_backend_flags()", gate
     )
+
+
+def test_streamed_conditioner_tier_uploads_the_denoiser_on_the_threaded_ring():
+    from core.inference import video as vid
+
+    src = inspect.getsource(vid.VideoBackend)
+    start = src.index("pin_plan = _h3_dense_pin_plan(")
+    end = src.index("video.h3_denoiser_placement: %.1f GB free is under", start)
+    block = src[start:end]
+    upload = block.index("fast_upload([denoiser], device, logger = logger)")
+    assert "if te_streamed" in block[upload : upload + 200]
+    assert upload < block.index("pin_prequantized_module(\n", upload)
