@@ -85,9 +85,15 @@ class MessageWindowController {
     if (!row.saved) return false;
     row.text.remove();
     row.holder.append(row.content);
-    // Hold the scroll range steady until the native thumb is released.
-    if (freeze) row.frozen = row.saved;
-    else this.restoreHeight(row, row.saved);
+    // Hold the scroll range steady until the native thumb is released. The reconnected body may
+    // be taller than its frozen height after a reflow, so clip it until then instead of painting
+    // over the next messages; release restores the original overflow with the height.
+    if (freeze) {
+      const style = row.root.style;
+      row.frozen = [...row.saved, ["overflow", style.getPropertyValue("overflow"), style.getPropertyPriority("overflow")]];
+      style.setProperty("overflow", "hidden");
+      style.setProperty("overflow", "clip");
+    } else this.restoreHeight(row, row.saved);
     row.saved = null;
     row.root.removeAttribute("data-message-parked");
     return true;

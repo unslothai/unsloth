@@ -298,3 +298,20 @@ test("with an autoscroll owner the correction goes through it instead of writing
   above.cleanup();
   visible.cleanup();
 });
+
+test("a body restored during a thumb drag is clipped until release, then keeps its own overflow", () => {
+  const w = world(), row = w.add();
+  row.root.style.setProperty("overflow", "visible");
+  w.near(row.root, false);
+  assert.equal(row.parked(), true);
+  w.viewport.fire("pointerdown", { target: w.viewport, pointerType: "mouse", button: 0 });
+  row.root.top = 100;
+  w.viewport.fire("scroll");
+  assert.equal(row.parked(), false);
+  assert.equal(row.root.style.getPropertyValue("height"), "200px", "height frozen while the thumb is held");
+  assert.equal(row.root.style.getPropertyValue("overflow"), "clip", "a reflowed body cannot paint over the next messages");
+  w.win.fire("pointerup");
+  assert.equal(row.root.style.getPropertyValue("overflow"), "visible", "release restores the original overflow");
+  assert.equal(row.root.style.getPropertyPriority("height"), "important", "and the original height");
+  row.cleanup();
+});
