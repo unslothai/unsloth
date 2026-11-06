@@ -1,0 +1,197 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+"""The long-chat gate's area matrix covers every appearance mode and every keyboard-opened surface."""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import _area_matrix as am  # noqa: E402
+
+MODEL = am.MODEL_TS.read_text(encoding = "utf-8")
+MATERIALS = am.parse_registry(MODEL, "MATERIALS")
+LENS_MODES = am.parse_registry(MODEL, "LENS_MODES")
+
+
+def test_registries_are_what_the_app_sanitizes_with():
+    # A value outside these lists is dropped by the store, so they are every mode a user can pick.
+    assert "MATERIALS.includes(" in MODEL and "LENS_MODES.includes(" in MODEL
+    assert (
+        am.DEFAULT["material"] in MATERIALS
+        and am.DEFAULT["lens"] in LENS_MODES
+        and am.GLASS in MATERIALS
+    )
+
+
+def test_every_material_and_lens_mode_is_measured():
+    modes = am.modes(MATERIALS, LENS_MODES)
+    names = {m["name"] for m in modes}
+    for material in MATERIALS:
+        if material != am.DEFAULT["material"]:
+            assert material in names, f"material {material} is not in the area matrix"
+    for lens in LENS_MODES:
+        if lens != am.DEFAULT["lens"]:
+            assert any(
+                m["set"]["lens"] == lens for m in modes
+            ), f"lens mode {lens} is not in the area matrix"
+    assert {
+        "name": "aurora",
+        "base": "default",
+        "set": {**am.DEFAULT, "material": "aurora"},
+    } in am.modes(MATERIALS + ["aurora"], LENS_MODES)
+
+
+def test_every_mode_is_measured_at_the_short_length():
+    jobs = am.plan(am.app_modes(), "default", full = False)
+    assert {m["name"] for t, m, _ in jobs if t == am.SHORT} == {m["name"] for m in am.app_modes()}
+    assert [m["name"] for t, m, _ in jobs if t == am.LONG] == ["default"]
+    for t, m, areas in jobs:
+        # every material runs every area; a setting layered on one runs the areas it changes
+        assert areas == (am.with_deps(am.VARIANT_AREAS) if am.is_variant(m) else list(am.AREAS))
+    # an area that reuses an open dialog brings the area that opened it
+    assert "settings_tabs" in am.with_deps(["settings_scroll"])
+    assert set(am.VARIANT_AREAS) <= set(am.AREAS)
+    full = am.plan(am.app_modes(), "all", full = True)
+    assert len(full) == 2 * len(am.app_modes()) and all(a == list(am.AREAS) for _, _, a in full)
+
+
+def test_every_keyboard_shortcut_is_an_area_or_says_why_not():
+    ids = am.shortcut_ids(am.SHORTCUTS_TS.read_text(encoding = "utf-8"))
+    listed = set(am.SHORTCUT_AREAS) | {i for group in am.SHORTCUT_NOT_AREAS.values() for i in group}
+    missing = [i for i in ids if i not in listed]
+    assert not missing, (
+        f"new keyboard shortcut(s) {missing}: add each to SHORTCUT_AREAS in tests/studio/_area_matrix.py with the area "
+        "that measures what it opens (add an area if none does), or to SHORTCUT_NOT_AREAS with the reason"
+    )
+    stale = listed - set(ids)
+    assert not stale, f"shortcuts listed in _area_matrix.py that no longer exist: {sorted(stale)}"
+    assert set(am.SHORTCUT_AREAS.values()) <= set(am.AREAS)
+
+
+def test_coverage_matcher():
+    triggers = {
+        "dropdown-menu-trigger:Chat options": 1,
+        "reasoning-trigger:Worked for 3s": 40,
+        "context-menu-trigger:Gate 40 turns": 1,
+        "popover-trigger:Request failed (404)": 1,
+        "dropdown-menu-trigger:Brand new menu": 1,
+    }
+    assert am.uncovered(triggers) == ["dropdown-menu-trigger:Brand new menu"]
+
+
+def _page(cells):
+    return {"cells": {a: {"status": "OK", **c} for a, c in cells.items()}}
+
+
+def _result(pages):
+    return {"pages": pages, "modes": {m["name"]: m for m in am.app_modes()}, "areas": ["a"]}
+
+
+@pytest.mark.parametrize(
+    "short, long_, fails",
+    [(1000, 1000, False), (1000, 5000, True), (100, 1000, False), (4000, 7000, False)],
+)
+def test_length_check(short, long_, fails, monkeypatch):
+    monkeypatch.setattr(am, "COUNT_FLOOR", 3000)
+    pages = {
+        (am.SHORT, "default"): _page({"a": {"elements": short, "layout_objects": 0, "cpu_ms": 10}}),
+        (am.LONG, "default"): _page({"a": {"elements": long_, "layout_objects": 0, "cpu_ms": 10}}),
+    }
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["kind"] == "length" and v["metric"] == "elements"
+    ]
+    assert [v["fail"] for v in rows] == [fails]
+    if fails:
+        assert not [v for v in am.judge(_result(pages), known = "length:a=6") if v["fail"]]
+
+
+@pytest.mark.parametrize(
+    "base, mode, fails", [(100, 300, False), (100, 500, True), (10, 60, False)]
+)
+def test_appearance_check(base, mode, fails, monkeypatch):
+    monkeypatch.setattr(am, "MAX_RATIO", 4.0)
+    monkeypatch.setattr(am, "CPU_FLOOR_MS", 80.0)
+    pages = {
+        (am.SHORT, "default"): _page({"a": {"elements": 10, "cpu_ms": base}}),
+        (am.SHORT, "frosted"): _page({"a": {"elements": 10, "cpu_ms": mode}}),
+    }
+    rows = [
+        v
+        for v in am.judge(_result(pages), known = "")
+        if v["kind"] == "appearance" and v["metric"] == "cpu_ms"
+    ]
+    assert [v["fail"] for v in rows] == [fails]
+
+
+def test_an_area_that_stops_running_fails():
+    pages = {
+        (am.SHORT, "default"): _page({"a": {"elements": 10, "cpu_ms": 10}}),
+        (am.SHORT, "frosted"): {"cells": {"a": {"status": "NOT_RUN: control not found"}}},
+    }
+    [bad] = [v for v in am.judge(_result(pages), known = "") if v["fail"]]
+    assert bad["kind"] == "broken" and bad["mode"] == "frosted"
+    pages[(am.SHORT, "default")] = {"cells": {"a": {"status": "NOT_RUN: control not found"}}}
+    assert any(
+        v["kind"] == "broken" and v["mode"] == "default" for v in am.judge(_result(pages), known = "")
+    )
+
+
+def test_trace_windows_split_by_marks():
+    ev = [
+        {"ph": "M", "name": "thread_name", "pid": 1, "tid": 1, "args": {"name": "CrRendererMain"}},
+        {"ph": "M", "name": "process_name", "pid": 1, "args": {"name": "Renderer"}},
+        {
+            "ph": "I",
+            "name": "TimeStamp",
+            "ts": 100,
+            "pid": 1,
+            "tid": 1,
+            "args": {"data": {"message": "gate:begin:a"}},
+        },
+        {
+            "ph": "X",
+            "name": "UpdateLayoutTree",
+            "cat": "devtools.timeline",
+            "ts": 110,
+            "dur": 2000,
+            "pid": 1,
+            "tid": 1,
+            "args": {"elementCount": 7},
+        },
+        {
+            "ph": "X",
+            "name": "RunTask",
+            "cat": "toplevel",
+            "ts": 105,
+            "dur": 5000,
+            "tdur": 4000,
+            "pid": 1,
+            "tid": 1,
+        },
+        {
+            "ph": "I",
+            "name": "TimeStamp",
+            "ts": 9000,
+            "pid": 1,
+            "tid": 1,
+            "args": {"data": {"message": "gate:end:a"}},
+        },
+        {
+            "ph": "X",
+            "name": "UpdateLayoutTree",
+            "cat": "devtools.timeline",
+            "ts": 9500,
+            "dur": 1000,
+            "pid": 1,
+            "tid": 1,
+            "args": {"elementCount": 99},
+        },
+    ]
+    row = am.split_trace(ev)["a"]
+    assert row["elements"] == 7 and row["cpu_ms"] == 4.0 and row["longest_task_ms"] == 5.0

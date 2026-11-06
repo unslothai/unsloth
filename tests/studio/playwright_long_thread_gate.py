@@ -22,6 +22,15 @@ they are, and the selectors responsible with their cost per key; selectors tried
 DOM are marked as likely victims of a whole-page restyle. It then pins the trigger down by
 removing :has() rules from the stylesheet before fresh page loads (a bisection, time-boxed) and
 names the rule whose removal makes typing cheap, with the CSS file and line it probably comes from.
+
+Then, on Linux, the area matrix (_area_matrix.py): the real chat page from the same build, its API
+answered in-process, a SHORT and a LONG agent chat, and every interactive area (typing, scrolling,
+each menu, dialog, picker and pane, the sidebar, the message controls) run under the default
+appearance and every appearance mode enumerated from the app (each window material incl.
+Transparent, lens modes, glass menus off, dark). Chromium trace counters per area. It fails when an
+area costs more as the chat grows (elements restyled / layout objects) or when a mode makes an area
+cost more than LONG_THREAD_AREAS_MAX_RATIO times the default (CPU of all browser threads), and when
+a popup trigger on the chat page belongs to no area.
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _area_matrix as areas  # noqa: E402
 from _css_culprit import explain, has_descendant, thread_anchor  # noqa: E402
 from _playwright_robust import chromium_launch_args  # noqa: E402
 
@@ -62,6 +72,11 @@ LOCK_TOGGLES = 4
 RECHECK_BAND = (1.5, 3.0)
 # Keeps sub-millisecond noise from becoming a large ratio.
 MATCH_FLOOR_MS = 2.0
+# Area matrix (tests/studio/_area_matrix.py). "auto" runs it on Linux: the Windows and macOS lanes
+# keep the quick long-chat checks.
+AREAS = os.environ.get("LONG_THREAD_AREAS", "auto")
+# Skip the long-chat checks and run only the area matrix (local A/A and noise studies).
+ONLY_AREAS = os.environ.get("LONG_THREAD_ONLY_AREAS") == "1"
 HEALTHY = "healthy reference: 0.7-1.0 ms/key selector matching, 1.00x, 0.2 ms/key :has()"
 KEYS = "the quick "
 PRECHECK_KEYS = "ab"
@@ -489,7 +504,11 @@ def growth(small: dict, large: dict) -> list[str]:
 
 
 def report(
-    runs: dict[int, list[dict]], failures: list[str], details: list[str], started: float
+    runs: dict[int, list[dict]],
+    failures: list[str],
+    details: list[str],
+    started: float,
+    extra: list[str] | None = None,
 ) -> int:
     def med(turns: int, key: str):
         vals = [r[key] for r in runs.get(turns, [])]
@@ -512,7 +531,7 @@ def report(
                 f"in {runs[turns][-1]['typing_s']} s, dialog/menu open or close "
                 f"{med(turns, 'lock_ms'):.1f} ms style recalc"
             )
-    print("\n".join(lines))
+    print("\n".join(lines + (extra or [])))
     if failures:
         for f in failures:
             print(f"FAIL: {f}")
@@ -521,7 +540,9 @@ def report(
         print(f"  {HEALTHY}")
         return 1
     print(
-        "PASS: selector work per keystroke does not grow with the chat, and opening a dialog or menu does not restyle it"
+        "PASS: selector work per keystroke does not grow with the chat, opening a dialog or menu does not "
+        "restyle it, no area costs more as the chat grows, and no appearance mode makes an area cost more "
+        "than its limit"
     )
     return 0
 
@@ -539,6 +560,9 @@ def main() -> int:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(args = chromium_launch_args())
+            if ONLY_AREAS:
+                browser.close()
+                return finish_areas(runs, failures, details, started)
             # Large first: a blown :has() budget is decisive on its own and stops the run here.
             large = measure(browser, base, LARGE)
             runs[LARGE].append(large)
@@ -609,9 +633,42 @@ def main() -> int:
                     details += pin_down(browser, base)
                     details.append("  " + HINT)
             browser.close()
+            return finish_areas(runs, failures, details, started)
     finally:
         server.shutdown()
-    return report(runs, failures, details, started)
+
+
+def areas_enabled() -> bool:
+    if AREAS == "auto":
+        return sys.platform.startswith("linux")
+    return AREAS not in ("0", "", "off")
+
+
+def finish_areas(runs, failures, details, started) -> int:
+    """Run the area matrix after the long-chat checks; independent of their verdict."""
+    extra: list[str] = []
+    if not areas_enabled():
+        extra.append(f"  area matrix: off (LONG_THREAD_AREAS={AREAS})")
+    elif not (DIST / "index.html").exists():
+        failures.append(f"no app build at {DIST / 'index.html'} for the area matrix")
+    else:
+        lines, fails, more, result = areas.run(DIST, chromium_launch_args())
+        extra += lines
+        failures += fails
+        details += more
+        dump = os.environ.get("LONG_THREAD_AREAS_JSON")
+        if dump:
+            Path(dump).write_text(
+                json.dumps(
+                    {
+                        "pages": {f"{t}|{m}": v for (t, m), v in result["result"]["pages"].items()},
+                        "verdicts": result["verdicts"],
+                        "seconds": result["result"]["seconds"],
+                    },
+                    default = str,
+                )
+            )
+    return report(runs, failures, details, started, extra)
 
 
 if __name__ == "__main__":
