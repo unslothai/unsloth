@@ -403,3 +403,18 @@ test("the recording call sites go through createAudioRecorder", () => {
     assert.equal(source.includes("createAudioRecorder("), true, path);
   }
 });
+
+test("discard tears the graph down without encoding or firing events", () => {
+  const recorder = newRecorder();
+  const events: string[] = [];
+  recorder.addEventListener("dataavailable", () => events.push("dataavailable"));
+  recorder.addEventListener("stop", () => events.push("stop"));
+  recorder.start();
+  FakeAudioContext.last?.processor.emit(new Float32Array([0.5, 0.5]));
+  recorder.discard();
+  assert.deepEqual(events, []);
+  assert.equal(recorder.state, "inactive");
+  assert.equal(FakeAudioContext.last?.closed, true);
+  recorder.stop();
+  assert.deepEqual(events, []);
+});

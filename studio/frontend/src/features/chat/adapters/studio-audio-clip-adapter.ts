@@ -97,13 +97,8 @@ export function listenForAudioClip(
     cancel: () => {
       const active = recorder;
       recorder = null;
-      if (active && active.state !== "inactive") {
-        try {
-          active.stop();
-        } catch {
-          // ignore
-        }
-      }
+      // Discard, not stop: stop() encodes the whole WAV just to drop it.
+      active?.discard();
       finish("cancelled");
     },
     onSpeechStart: (callback) => {
