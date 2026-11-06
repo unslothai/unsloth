@@ -1931,12 +1931,9 @@ export const ja = {
         performanceEstimate: "ノイズ除去 1 ステップあたり数分かかります。Wan2.1 1.3B で 3 ステップ、5 フレームの 832x480 クリップは 16 CPU スレッドで約 4 分かかり、デフォルト設定のフルレングスのクリップでは数時間かかることがあります。",
         confirmAction: "それでも有効にする",
         claudeAgent: "Claude Agent (実験的)",
-        claudeAgentDescription:
-          "このマシンの Claude Code のログイン情報を使う Claude Agent 接続を追加します。実験的な機能です。サードパーティ製アプリに関する Anthropic の規約が適用されます。",
-        claudeAgentForcedOnByEnv:
-          "バックエンド環境の UNSLOTH_CLAUDE_AGENT によってオンになっています。",
-        claudeAgentForcedOffByEnv:
-          "バックエンド環境の UNSLOTH_CLAUDE_AGENT によってオフになっています。",
+        claudeAgentDescription: "Claude Code を介して Claude プランでチャットします。",
+        claudeAgentForcedOnByEnv: "UNSLOTH_CLAUDE_AGENT によりオンになっています。",
+        claudeAgentForcedOffByEnv: "UNSLOTH_CLAUDE_AGENT によりオフになっています。",
         loadError: "開発者モードの設定を読み込めませんでした。",
         saveError: "開発者モードの設定を保存できませんでした。",
       },
@@ -5475,34 +5472,27 @@ export const ja = {
   claudeAgent: {
     title: "Claude Agent",
     experimental: "実験的",
-    connectionHint: "このマシンの Claude Code を介した Claude。",
-    intro:
-      "このマシンの Claude Code のログイン情報を使用します。Unsloth がそれを読み取ったり保存したりすることはありません。",
-    offBody:
-      "Claude Agent は、このマシンの Claude Code CLI を介し、お使いの Claude プランまたは API キーでチャットします。これは実験的な機能で、サードパーティ製アプリに関する Anthropic の規約が適用されます。",
+    connectionHint: "お使いの Claude プランを使用します。",
+    intro: "お使いの Claude Code のログインを使用します。",
+    offBody: "Claude Code を介して Claude プランでチャットします。",
     turnOn: "オンにする",
     turningOn: "オンにしています...",
-    forcedOff:
-      "バックエンド環境の UNSLOTH_CLAUDE_AGENT によってオフになっています。設定を解除するか 1 に設定してから、Unsloth を再起動してください。",
-    checking: "このマシンの Claude Code を確認中...",
+    forcedOff: "UNSLOTH_CLAUDE_AGENT によりオフになっています。",
+    checking: "Claude Code を確認しています...",
     ready: "準備完了",
-    notReady: "Claude Code はまだ準備ができていません",
+    notReady: "Claude Code の準備ができていません",
     stepInstall: "Claude Code をインストール",
-    stepInstallHelp:
-      "Unsloth を実行しているマシンのターミナルでこれを実行してください。",
+    stepInstallHelp: "ターミナルで実行してください。",
     stepInstallNpm: "または Node.js を使う場合:",
     stepInstallOther: "その他のインストール方法",
     stepSignIn: "サインイン",
-    stepSignInHelp:
-      "ターミナルでこれを実行し、表示される指示に従ってください。",
+    stepSignInHelp: "ターミナルで実行してください。",
     stepCheck: "もう一度確認",
-    stepCheckHelp: "この画面に戻ると自動的にもう一度確認します。",
-    sdkMissing:
-      "Unsloth の Python に Claude Agent SDK がありません。この接続を修復するにはインストールしてください。",
+    stepCheckHelp: "戻ると再確認します。",
+    sdkMissing: "Claude Agent SDK がありません。",
     sdkManual: "または手動でインストール:",
     install: "インストール",
-    installing:
-      "Claude Agent SDK をインストール中です。数分かかる場合があります...",
+    installing: "インストールしています...",
     checkFailed: "Claude Code を確認できませんでした。",
     checkAgain: "もう一度確認",
     models: "モデル",
@@ -5510,11 +5500,9 @@ export const ja = {
     moreModels: "その他のモデル",
     advanced: "詳細設定",
     extraModels: "別のモデル ID を追加",
-    extraModelsHelp:
-      "1 行に 1 つ、またはカンマ区切りで、Claude Code での名前どおりに入力します。",
+    extraModelsHelp: "1 行に 1 つ。",
     maxTokens: "Max Tokens の上限",
-    maxTokensHelp:
-      "この接続の Max Tokens を制限します。空欄にすると各モデルの上限を使用します。",
+    maxTokensHelp: "空欄にすると各モデルの上限を使用します。",
     connect: "接続",
     save: "接続を保存",
     cancel: "キャンセル",

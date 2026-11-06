@@ -2145,11 +2145,9 @@ export const nl = {
         confirmAction: "Toch inschakelen",
         claudeAgent: "Claude Agent (experimenteel)",
         claudeAgentDescription:
-          "Voegt een Claude Agent-verbinding toe die de Claude Code-aanmelding op deze computer gebruikt. Experimenteel; de voorwaarden van Anthropic voor apps van derden zijn van toepassing.",
-        claudeAgentForcedOnByEnv:
-          "Ingeschakeld door UNSLOTH_CLAUDE_AGENT in de backendomgeving.",
-        claudeAgentForcedOffByEnv:
-          "Uitgeschakeld door UNSLOTH_CLAUDE_AGENT in de backendomgeving.",
+          "Chat met je Claude-abonnement via Claude Code.",
+        claudeAgentForcedOnByEnv: "Ingeschakeld door UNSLOTH_CLAUDE_AGENT.",
+        claudeAgentForcedOffByEnv: "Uitgeschakeld door UNSLOTH_CLAUDE_AGENT.",
         loadError: "Kan de instellingen voor de ontwikkelaarsmodus niet laden.",
         saveError:
           "Kan de instellingen voor de ontwikkelaarsmodus niet opslaan.",
@@ -5991,34 +5989,27 @@ export const nl = {
   claudeAgent: {
     title: "Claude Agent",
     experimental: "Experimenteel",
-    connectionHint: "Claude via Claude Code op deze computer.",
-    intro:
-      "Gebruikt de Claude Code-aanmelding op deze computer. Unsloth leest of bewaart die nooit.",
-    offBody:
-      "Claude Agent chat via de Claude Code CLI op deze computer, met je Claude-abonnement of API-sleutel. Dit is experimenteel en de voorwaarden van Anthropic voor apps van derden zijn van toepassing.",
+    connectionHint: "Gebruikt je Claude-abonnement.",
+    intro: "Gebruikt je Claude Code-aanmelding.",
+    offBody: "Chat met je Claude-abonnement via Claude Code.",
     turnOn: "Inschakelen",
     turningOn: "Inschakelen...",
-    forcedOff:
-      "Uitgeschakeld door UNSLOTH_CLAUDE_AGENT in de backendomgeving. Verwijder de variabele of zet hem op 1 en start Unsloth daarna opnieuw.",
-    checking: "Claude Code op deze computer controleren...",
+    forcedOff: "Uitgeschakeld door UNSLOTH_CLAUDE_AGENT.",
+    checking: "Claude Code controleren...",
     ready: "Gereed",
-    notReady: "Claude Code is nog niet gereed",
+    notReady: "Claude Code is niet klaar",
     stepInstall: "Claude Code installeren",
-    stepInstallHelp:
-      "Voer dit uit in een terminal op de computer waarop Unsloth draait.",
+    stepInstallHelp: "Voer uit in een terminal.",
     stepInstallNpm: "Of met Node.js:",
     stepInstallOther: "Andere installatiemethoden",
     stepSignIn: "Aanmelden",
-    stepSignInHelp: "Voer dit uit in een terminal en volg de aanwijzingen.",
+    stepSignInHelp: "Voer uit in een terminal.",
     stepCheck: "Opnieuw controleren",
-    stepCheckHelp:
-      "Dit wordt vanzelf opnieuw gecontroleerd als je hier terugkomt.",
-    sdkMissing:
-      "De Claude Agent SDK ontbreekt in de Python van Unsloth. Installeer hem om deze verbinding te herstellen.",
+    stepCheckHelp: "Wordt opnieuw gecontroleerd als je terugkomt.",
+    sdkMissing: "De Claude Agent SDK ontbreekt.",
     sdkManual: "Of installeer hem handmatig:",
     install: "Installeren",
-    installing:
-      "De Claude Agent SDK wordt geïnstalleerd. Dit kan een paar minuten duren...",
+    installing: "Installeren...",
     checkFailed: "Kan Claude Code niet controleren.",
     checkAgain: "Opnieuw controleren",
     models: "Modellen",
@@ -6026,11 +6017,9 @@ export const nl = {
     moreModels: "Meer modellen",
     advanced: "Geavanceerd",
     extraModels: "Nog een model-ID toevoegen",
-    extraModelsHelp:
-      "Eén per regel of gescheiden door komma's, zoals Claude Code ze noemt.",
+    extraModelsHelp: "Eén per regel.",
     maxTokens: "Limiet voor Max Tokens",
-    maxTokensHelp:
-      "Begrenst Max Tokens voor deze verbinding. Laat leeg om de limiet van elk model te gebruiken.",
+    maxTokensHelp: "Laat leeg voor de limiet van elk model.",
     connect: "Verbinden",
     save: "Verbinding opslaan",
     cancel: "Annuleren",

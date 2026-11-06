@@ -2108,11 +2108,9 @@ export const fa = {
         confirmAction: "در هر صورت فعال شود",
         claudeAgent: "Claude Agent (آزمایشی)",
         claudeAgentDescription:
-          "یک اتصال Claude Agent اضافه می‌کند که از ورود Claude Code روی این رایانه استفاده می‌کند. آزمایشی است؛ شرایط Anthropic برای برنامه‌های شخص ثالث اعمال می‌شود.",
-        claudeAgentForcedOnByEnv:
-          "با UNSLOTH_CLAUDE_AGENT در محیط بک‌اند روشن شده است.",
-        claudeAgentForcedOffByEnv:
-          "با UNSLOTH_CLAUDE_AGENT در محیط بک‌اند خاموش شده است.",
+          "با اشتراک Claude خود از طریق Claude Code گفتگو کنید.",
+        claudeAgentForcedOnByEnv: "با UNSLOTH_CLAUDE_AGENT روشن شده است.",
+        claudeAgentForcedOffByEnv: "با UNSLOTH_CLAUDE_AGENT خاموش شده است.",
         loadError: "بارگذاری تنظیمات حالت توسعه‌دهنده ناموفق بود.",
         saveError: "ذخیرهٔ تنظیمات حالت توسعه‌دهنده ناموفق بود.",
       },
@@ -5900,32 +5898,27 @@ export const fa = {
   claudeAgent: {
     title: "Claude Agent",
     experimental: "آزمایشی",
-    connectionHint: "Claude از طریق Claude Code روی این رایانه.",
-    intro:
-      "از ورود Claude Code روی این رایانه استفاده می‌کند. Unsloth هرگز آن را نمی‌خواند یا ذخیره نمی‌کند.",
-    offBody:
-      "Claude Agent از طریق رابط خط فرمان Claude Code روی این رایانه، با اشتراک Claude یا کلید API شما گفتگو می‌کند. این قابلیت آزمایشی است و شرایط Anthropic برای برنامه‌های شخص ثالث بر آن اعمال می‌شود.",
+    connectionHint: "از اشتراک Claude شما استفاده می‌کند.",
+    intro: "از ورود Claude Code شما استفاده می‌کند.",
+    offBody: "با اشتراک Claude خود از طریق Claude Code گفتگو کنید.",
     turnOn: "روشن کردن",
     turningOn: "در حال روشن کردن...",
-    forcedOff:
-      "با UNSLOTH_CLAUDE_AGENT در محیط بک‌اند خاموش شده است. آن را حذف کنید یا روی 1 بگذارید، سپس Unsloth را دوباره راه‌اندازی کنید.",
-    checking: "در حال بررسی Claude Code روی این رایانه...",
+    forcedOff: "با UNSLOTH_CLAUDE_AGENT خاموش شده است.",
+    checking: "در حال بررسی Claude Code...",
     ready: "آماده",
-    notReady: "Claude Code هنوز آماده نیست",
+    notReady: "Claude Code آماده نیست",
     stepInstall: "Claude Code را نصب کنید",
-    stepInstallHelp:
-      "این را در ترمینال رایانه‌ای که Unsloth را اجرا می‌کند اجرا کنید.",
+    stepInstallHelp: "در ترمینال اجرا کنید.",
     stepInstallNpm: "یا با Node.js:",
     stepInstallOther: "روش‌های دیگر نصب",
     stepSignIn: "وارد شوید",
-    stepSignInHelp: "این را در ترمینال اجرا کنید و دستورها را دنبال کنید.",
+    stepSignInHelp: "در ترمینال اجرا کنید.",
     stepCheck: "بررسی دوباره",
-    stepCheckHelp: "وقتی به اینجا برگردید، بررسی خودکار دوباره انجام می‌شود.",
-    sdkMissing:
-      "Claude Agent SDK در Python مربوط به Unsloth وجود ندارد. برای تعمیر این اتصال آن را نصب کنید.",
+    stepCheckHelp: "با بازگشت شما دوباره بررسی می‌شود.",
+    sdkMissing: "Claude Agent SDK وجود ندارد.",
     sdkManual: "یا آن را دستی نصب کنید:",
     install: "نصب",
-    installing: "در حال نصب Claude Agent SDK. ممکن است چند دقیقه طول بکشد...",
+    installing: "در حال نصب...",
     checkFailed: "بررسی Claude Code ممکن نشد.",
     checkAgain: "بررسی دوباره",
     models: "مدل‌ها",
@@ -5933,11 +5926,9 @@ export const fa = {
     moreModels: "مدل‌های بیشتر",
     advanced: "پیشرفته",
     extraModels: "افزودن شناسهٔ مدل دیگر",
-    extraModelsHelp:
-      "هر کدام در یک خط یا جداشده با ویرگول، همان‌طور که Claude Code آن‌ها را نام‌گذاری می‌کند.",
+    extraModelsHelp: "هر کدام در یک خط.",
     maxTokens: "سقف Max Tokens",
-    maxTokensHelp:
-      "Max Tokens را برای این اتصال محدود می‌کند. برای استفاده از سقف هر مدل، خالی بگذارید.",
+    maxTokensHelp: "برای سقف هر مدل، خالی بگذارید.",
     connect: "اتصال",
     save: "ذخیرهٔ اتصال",
     cancel: "لغو",

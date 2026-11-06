@@ -2126,11 +2126,9 @@ export const cs = {
         confirmAction: "Přesto zapnout",
         claudeAgent: "Claude Agent (experimentální)",
         claudeAgentDescription:
-          "Přidá připojení Claude Agent, které používá přihlášení ke Claude Code na tomto počítači. Experimentální; platí podmínky Anthropic pro aplikace třetích stran.",
-        claudeAgentForcedOnByEnv:
-          "Zapnuto proměnnou UNSLOTH_CLAUDE_AGENT v prostředí backendu.",
-        claudeAgentForcedOffByEnv:
-          "Vypnuto proměnnou UNSLOTH_CLAUDE_AGENT v prostředí backendu.",
+          "Chatujte se svým předplatným Claude přes Claude Code.",
+        claudeAgentForcedOnByEnv: "Zapnuto přes UNSLOTH_CLAUDE_AGENT.",
+        claudeAgentForcedOffByEnv: "Vypnuto přes UNSLOTH_CLAUDE_AGENT.",
         loadError: "Nastavení vývojářského režimu se nepodařilo načíst.",
         saveError: "Nastavení vývojářského režimu se nepodařilo uložit.",
       },
@@ -5948,33 +5946,27 @@ export const cs = {
   claudeAgent: {
     title: "Claude Agent",
     experimental: "Experimentální",
-    connectionHint: "Claude přes Claude Code na tomto počítači.",
-    intro:
-      "Používá přihlášení ke Claude Code na tomto počítači. Unsloth ho nikdy nečte ani neukládá.",
-    offBody:
-      "Claude Agent komunikuje přes rozhraní příkazového řádku Claude Code na tomto počítači s vaším předplatným Claude nebo klíčem API. Funkce je experimentální a platí pro ni podmínky Anthropic pro aplikace třetích stran.",
+    connectionHint: "Využívá vaše předplatné Claude.",
+    intro: "Využívá vaše přihlášení ke Claude Code.",
+    offBody: "Chatujte se svým předplatným Claude přes Claude Code.",
     turnOn: "Zapnout",
     turningOn: "Zapínání...",
-    forcedOff:
-      "Vypnuto proměnnou UNSLOTH_CLAUDE_AGENT v prostředí backendu. Zrušte ji nebo ji nastavte na 1 a potom Unsloth restartujte.",
-    checking: "Kontrola Claude Code na tomto počítači...",
+    forcedOff: "Vypnuto přes UNSLOTH_CLAUDE_AGENT.",
+    checking: "Kontrola Claude Code...",
     ready: "Připraveno",
-    notReady: "Claude Code zatím není připraven",
+    notReady: "Claude Code není připraven",
     stepInstall: "Nainstalujte Claude Code",
-    stepInstallHelp:
-      "Spusťte tento příkaz v terminálu na počítači, na kterém běží Unsloth.",
+    stepInstallHelp: "Spusťte v terminálu.",
     stepInstallNpm: "Nebo pomocí Node.js:",
     stepInstallOther: "Další způsoby instalace",
     stepSignIn: "Přihlaste se",
-    stepSignInHelp:
-      "Spusťte tento příkaz v terminálu a postupujte podle pokynů.",
+    stepSignInHelp: "Spusťte v terminálu.",
     stepCheck: "Zkontrolovat znovu",
-    stepCheckHelp: "Po návratu sem se kontrola spustí znovu sama.",
-    sdkMissing:
-      "V Pythonu Unsloth chybí Claude Agent SDK. Nainstalujte ho, abyste toto připojení opravili.",
+    stepCheckHelp: "Po návratu se znovu zkontroluje.",
+    sdkMissing: "Chybí Claude Agent SDK.",
     sdkManual: "Nebo ho nainstalujte ručně:",
     install: "Nainstalovat",
-    installing: "Instalace Claude Agent SDK. Může to trvat několik minut...",
+    installing: "Instalace...",
     checkFailed: "Claude Code se nepodařilo zkontrolovat.",
     checkAgain: "Zkontrolovat znovu",
     models: "Modely",
@@ -5982,11 +5974,9 @@ export const cs = {
     moreModels: "Další modely",
     advanced: "Pokročilé",
     extraModels: "Přidat další ID modelu",
-    extraModelsHelp:
-      "Jedno na řádek nebo oddělené čárkami, tak jak je pojmenovává Claude Code.",
+    extraModelsHelp: "Jeden na řádek.",
     maxTokens: "Limit Max Tokens",
-    maxTokensHelp:
-      "Omezuje Max Tokens pro toto připojení. Ponechte prázdné, chcete-li použít limit jednotlivých modelů.",
+    maxTokensHelp: "Ponechte prázdné pro limit každého modelu.",
     connect: "Připojit",
     save: "Uložit připojení",
     cancel: "Zrušit",

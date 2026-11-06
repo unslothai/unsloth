@@ -1849,11 +1849,9 @@ export const it = {
         confirmAction: "Attiva comunque",
         claudeAgent: "Claude Agent (sperimentale)",
         claudeAgentDescription:
-          "Aggiunge una connessione Claude Agent che usa l'accesso a Claude Code di questo computer. Sperimentale; si applicano i termini di Anthropic per le app di terze parti.",
-        claudeAgentForcedOnByEnv:
-          "Attivato da UNSLOTH_CLAUDE_AGENT nell'ambiente del backend.",
-        claudeAgentForcedOffByEnv:
-          "Disattivato da UNSLOTH_CLAUDE_AGENT nell'ambiente del backend.",
+          "Chatta con il tuo piano Claude tramite Claude Code.",
+        claudeAgentForcedOnByEnv: "Attivato da UNSLOTH_CLAUDE_AGENT.",
+        claudeAgentForcedOffByEnv: "Disattivato da UNSLOTH_CLAUDE_AGENT.",
         loadError: "Impossibile caricare le impostazioni della modalità sviluppatore.",
         saveError: "Impossibile salvare le impostazioni della modalità sviluppatore.",
       },
@@ -5593,34 +5591,27 @@ export const it = {
   claudeAgent: {
     title: "Claude Agent",
     experimental: "Sperimentale",
-    connectionHint: "Claude tramite Claude Code su questo computer.",
-    intro:
-      "Usa l'accesso a Claude Code di questo computer. Unsloth non lo legge né lo memorizza mai.",
-    offBody:
-      "Claude Agent chatta tramite la CLI di Claude Code su questo computer, con il tuo piano Claude o la tua chiave API. È sperimentale e si applicano i termini di Anthropic per le app di terze parti.",
+    connectionHint: "Usa il tuo piano Claude.",
+    intro: "Usa il tuo accesso a Claude Code.",
+    offBody: "Chatta con il tuo piano Claude tramite Claude Code.",
     turnOn: "Attiva",
     turningOn: "Attivazione...",
-    forcedOff:
-      "Disattivato da UNSLOTH_CLAUDE_AGENT nell'ambiente del backend. Rimuovi la variabile o impostala su 1, poi riavvia Unsloth.",
-    checking: "Verifica di Claude Code su questo computer...",
+    forcedOff: "Disattivato da UNSLOTH_CLAUDE_AGENT.",
+    checking: "Verifica di Claude Code...",
     ready: "Pronto",
-    notReady: "Claude Code non è ancora pronto",
+    notReady: "Claude Code non è pronto",
     stepInstall: "Installa Claude Code",
-    stepInstallHelp:
-      "Esegui questo comando in un terminale del computer dove gira Unsloth.",
+    stepInstallHelp: "Esegui in un terminale.",
     stepInstallNpm: "Oppure con Node.js:",
     stepInstallOther: "Altri modi per installarlo",
     stepSignIn: "Accedi",
-    stepSignInHelp:
-      "Esegui questo comando in un terminale e segui le istruzioni.",
+    stepSignInHelp: "Esegui in un terminale.",
     stepCheck: "Verifica di nuovo",
-    stepCheckHelp: "La verifica si ripete da sola quando torni qui.",
-    sdkMissing:
-      "Il Claude Agent SDK manca nel Python di Unsloth. Installalo per riparare questa connessione.",
+    stepCheckHelp: "Si ricontrolla quando torni.",
+    sdkMissing: "Manca il Claude Agent SDK.",
     sdkManual: "Oppure installalo manualmente:",
     install: "Installa",
-    installing:
-      "Installazione del Claude Agent SDK. Può richiedere qualche minuto...",
+    installing: "Installazione...",
     checkFailed: "Impossibile verificare Claude Code.",
     checkAgain: "Verifica di nuovo",
     models: "Modelli",
@@ -5628,11 +5619,9 @@ export const it = {
     moreModels: "Altri modelli",
     advanced: "Avanzate",
     extraModels: "Aggiungi un altro ID modello",
-    extraModelsHelp:
-      "Uno per riga o separati da virgole, come li chiama Claude Code.",
+    extraModelsHelp: "Uno per riga.",
     maxTokens: "Limite di Max Tokens",
-    maxTokensHelp:
-      "Limita Max Tokens per questa connessione. Lascia vuoto per usare il limite di ciascun modello.",
+    maxTokensHelp: "Lascia vuoto per il limite di ciascun modello.",
     connect: "Connetti",
     save: "Salva connessione",
     cancel: "Annulla",

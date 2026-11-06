@@ -1935,12 +1935,9 @@ export const ko = {
         performanceEstimate: "노이즈 제거 단계마다 몇 분씩 걸립니다. Wan2.1 1.3B로 3단계, 5프레임 832x480 클립을 만드는 데 16개 CPU 스레드에서 약 4분이 걸렸으며, 기본 설정의 전체 길이 클립은 몇 시간이 걸릴 수 있습니다.",
         confirmAction: "그래도 활성화",
         claudeAgent: "Claude Agent (실험적)",
-        claudeAgentDescription:
-          "이 컴퓨터의 Claude Code 로그인을 사용하는 Claude Agent 연결을 추가합니다. 실험적 기능이며, 서드파티 앱에 대한 Anthropic의 약관이 적용됩니다.",
-        claudeAgentForcedOnByEnv:
-          "백엔드 환경의 UNSLOTH_CLAUDE_AGENT에 의해 켜졌습니다.",
-        claudeAgentForcedOffByEnv:
-          "백엔드 환경의 UNSLOTH_CLAUDE_AGENT에 의해 꺼졌습니다.",
+        claudeAgentDescription: "Claude Code를 통해 Claude 요금제로 채팅합니다.",
+        claudeAgentForcedOnByEnv: "UNSLOTH_CLAUDE_AGENT로 켜졌습니다.",
+        claudeAgentForcedOffByEnv: "UNSLOTH_CLAUDE_AGENT로 꺼졌습니다.",
         loadError: "개발자 모드 설정을 불러오지 못했습니다.",
         saveError: "개발자 모드 설정을 저장하지 못했습니다.",
       },
@@ -5515,33 +5512,27 @@ export const ko = {
   claudeAgent: {
     title: "Claude Agent",
     experimental: "실험적",
-    connectionHint: "이 컴퓨터의 Claude Code를 통한 Claude.",
-    intro:
-      "이 컴퓨터의 Claude Code 로그인을 사용합니다. Unsloth는 이를 읽거나 저장하지 않습니다.",
-    offBody:
-      "Claude Agent는 이 컴퓨터의 Claude Code CLI를 통해 Claude 요금제 또는 API 키로 채팅합니다. 실험적 기능이며, 서드파티 앱에 대한 Anthropic의 약관이 적용됩니다.",
+    connectionHint: "Claude 요금제를 사용합니다.",
+    intro: "Claude Code 로그인을 사용합니다.",
+    offBody: "Claude Code를 통해 Claude 요금제로 채팅합니다.",
     turnOn: "켜기",
     turningOn: "켜는 중...",
-    forcedOff:
-      "백엔드 환경의 UNSLOTH_CLAUDE_AGENT에 의해 꺼졌습니다. 이 변수를 해제하거나 1로 설정한 뒤 Unsloth를 다시 시작하세요.",
-    checking: "이 컴퓨터의 Claude Code 확인 중...",
+    forcedOff: "UNSLOTH_CLAUDE_AGENT로 꺼졌습니다.",
+    checking: "Claude Code 확인 중...",
     ready: "준비됨",
-    notReady: "Claude Code가 아직 준비되지 않았습니다",
+    notReady: "Claude Code가 준비되지 않음",
     stepInstall: "Claude Code 설치",
-    stepInstallHelp:
-      "Unsloth가 실행 중인 컴퓨터의 터미널에서 이 명령을 실행하세요.",
+    stepInstallHelp: "터미널에서 실행하세요.",
     stepInstallNpm: "또는 Node.js로:",
     stepInstallOther: "다른 설치 방법",
     stepSignIn: "로그인",
-    stepSignInHelp: "터미널에서 이 명령을 실행하고 안내를 따르세요.",
+    stepSignInHelp: "터미널에서 실행하세요.",
     stepCheck: "다시 확인",
-    stepCheckHelp: "이 화면으로 돌아오면 자동으로 다시 확인합니다.",
-    sdkMissing:
-      "Unsloth의 Python에 Claude Agent SDK가 없습니다. 이 연결을 복구하려면 설치하세요.",
+    stepCheckHelp: "돌아오면 다시 확인합니다.",
+    sdkMissing: "Claude Agent SDK가 없습니다.",
     sdkManual: "또는 직접 설치:",
     install: "설치",
-    installing:
-      "Claude Agent SDK 설치 중입니다. 몇 분 정도 걸릴 수 있습니다...",
+    installing: "설치 중...",
     checkFailed: "Claude Code를 확인할 수 없습니다.",
     checkAgain: "다시 확인",
     models: "모델",
@@ -5549,11 +5540,9 @@ export const ko = {
     moreModels: "더 많은 모델",
     advanced: "고급",
     extraModels: "다른 모델 ID 추가",
-    extraModelsHelp:
-      "한 줄에 하나씩 또는 쉼표로 구분하여, Claude Code에서 쓰는 이름 그대로 입력하세요.",
+    extraModelsHelp: "한 줄에 하나씩.",
     maxTokens: "Max Tokens 한도",
-    maxTokensHelp:
-      "이 연결의 Max Tokens를 제한합니다. 비워 두면 각 모델의 한도를 사용합니다.",
+    maxTokensHelp: "비워 두면 각 모델의 한도를 사용합니다.",
     connect: "연결",
     save: "연결 저장",
     cancel: "취소",

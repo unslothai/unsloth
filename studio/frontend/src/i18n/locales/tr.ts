@@ -2113,11 +2113,9 @@ export const tr = {
         confirmAction: "Yine de etkinleştir",
         claudeAgent: "Claude Agent (deneysel)",
         claudeAgentDescription:
-          "Bu makinedeki Claude Code oturumunu kullanan bir Claude Agent bağlantısı ekler. Deneysel; Anthropic'in üçüncü taraf uygulamalara yönelik koşulları geçerlidir.",
-        claudeAgentForcedOnByEnv:
-          "Arka uç ortamındaki UNSLOTH_CLAUDE_AGENT tarafından açıldı.",
-        claudeAgentForcedOffByEnv:
-          "Arka uç ortamındaki UNSLOTH_CLAUDE_AGENT tarafından kapatıldı.",
+          "Claude Code üzerinden Claude planınızla sohbet edin.",
+        claudeAgentForcedOnByEnv: "UNSLOTH_CLAUDE_AGENT tarafından açıldı.",
+        claudeAgentForcedOffByEnv: "UNSLOTH_CLAUDE_AGENT tarafından kapatıldı.",
         loadError: "Geliştirici modu ayarları yüklenemedi.",
         saveError: "Geliştirici modu ayarları kaydedilemedi.",
       },
@@ -5929,32 +5927,27 @@ export const tr = {
   claudeAgent: {
     title: "Claude Agent",
     experimental: "Deneysel",
-    connectionHint: "Bu makinedeki Claude Code üzerinden Claude.",
-    intro:
-      "Bu makinedeki Claude Code oturumunu kullanır. Unsloth bunu asla okumaz veya saklamaz.",
-    offBody:
-      "Claude Agent, bu makinedeki Claude Code CLI üzerinden Claude planınız veya API anahtarınızla sohbet eder. Deneyseldir ve Anthropic'in üçüncü taraf uygulamalara yönelik koşulları geçerlidir.",
+    connectionHint: "Claude planınızı kullanır.",
+    intro: "Claude Code oturumunuzu kullanır.",
+    offBody: "Claude Code üzerinden Claude planınızla sohbet edin.",
     turnOn: "Aç",
     turningOn: "Açılıyor...",
-    forcedOff:
-      "Arka uç ortamındaki UNSLOTH_CLAUDE_AGENT tarafından kapatıldı. Değişkeni kaldırın veya 1 olarak ayarlayın, ardından Unsloth'u yeniden başlatın.",
-    checking: "Bu makinedeki Claude Code denetleniyor...",
+    forcedOff: "UNSLOTH_CLAUDE_AGENT tarafından kapatıldı.",
+    checking: "Claude Code denetleniyor...",
     ready: "Hazır",
-    notReady: "Claude Code henüz hazır değil",
+    notReady: "Claude Code hazır değil",
     stepInstall: "Claude Code'u yükleyin",
-    stepInstallHelp:
-      "Bunu, Unsloth'u çalıştıran makinede bir terminalde çalıştırın.",
+    stepInstallHelp: "Bir terminalde çalıştırın.",
     stepInstallNpm: "Veya Node.js ile:",
     stepInstallOther: "Diğer yükleme yolları",
     stepSignIn: "Oturum açın",
-    stepSignInHelp: "Bunu bir terminalde çalıştırın ve yönergeleri izleyin.",
+    stepSignInHelp: "Bir terminalde çalıştırın.",
     stepCheck: "Yeniden denetle",
-    stepCheckHelp: "Buraya döndüğünüzde kendiliğinden yeniden denetlenir.",
-    sdkMissing:
-      "Claude Agent SDK, Unsloth'un Python ortamında yok. Bu bağlantıyı onarmak için yükleyin.",
+    stepCheckHelp: "Döndüğünüzde yeniden denetlenir.",
+    sdkMissing: "Claude Agent SDK eksik.",
     sdkManual: "Veya elle yükleyin:",
     install: "Yükle",
-    installing: "Claude Agent SDK yükleniyor. Bu birkaç dakika sürebilir...",
+    installing: "Yükleniyor...",
     checkFailed: "Claude Code denetlenemedi.",
     checkAgain: "Yeniden denetle",
     models: "Modeller",
@@ -5962,11 +5955,9 @@ export const tr = {
     moreModels: "Diğer modeller",
     advanced: "Gelişmiş",
     extraModels: "Başka bir model kimliği ekle",
-    extraModelsHelp:
-      "Her satıra bir tane veya virgülle ayrılmış olarak, Claude Code'un adlandırdığı şekilde.",
+    extraModelsHelp: "Her satıra bir tane.",
     maxTokens: "Max Tokens sınırı",
-    maxTokensHelp:
-      "Bu bağlantı için Max Tokens değerini sınırlar. Her modelin kendi sınırını kullanmak için boş bırakın.",
+    maxTokensHelp: "Her modelin sınırı için boş bırakın.",
     connect: "Bağlan",
     save: "Bağlantıyı kaydet",
     cancel: "İptal",
