@@ -41,6 +41,8 @@ const DEFINITION = /^ {0,3}\[((?:[^\[\]\\]|\\.)+)\]:/;
 const ESCAPE = /\\([!-/:-@[-`{-~])/g;
 // Private-use sentinels park code spans and mark links, so document text cannot contain them.
 const SENTINELS = /[\uE000-\uE003]/g;
+// Browsers read `\` as `/` where the expanded view sends `%5C`, so those links stay plain.
+const UNSAFE_HREF = /[\s<>\\]/;
 const LINK_OPEN = "\uE002";
 const LINK_CLOSE = "\uE003";
 // Each mark carries its href index, so a pair removed by tag stripping cannot shift the rest.
@@ -217,10 +219,11 @@ function toPlainText(
         const href = hrefs
           ? WEB_DESTINATION.exec(match.slice(label.length + 2))?.[1]
           : undefined;
-        if (!href) {
+        const decoded = href?.replace(ENTITY, decodeEntity);
+        if (!decoded || UNSAFE_HREF.test(decoded)) {
           return label;
         }
-        const id = hrefs?.push(href.replace(ENTITY, decodeEntity)) ?? 0;
+        const id = hrefs?.push(decoded) ?? 0;
         // Edge spaces stay outside the marks, so emphasis around the link strips as before.
         const [, before, inner, after] = EDGE_SPACE.exec(label) ?? [];
         return `${before}${LINK_OPEN}${id}${LINK_OPEN}${inner}${LINK_CLOSE}${id}${LINK_CLOSE}${after}`;

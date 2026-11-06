@@ -120,6 +120,8 @@ test("only plain http and https links become clickable", () => {
       "- Escaped \\[y](https://unsloth.ai) stays text",
       "- Image ![logo](https://unsloth.ai/logo.png) hidden",
       "- Escaped [dest](https://unsloth.ai/a\\_b) stays text",
+      "- Backslash [path](https://unsloth.ai/docs\\alpha.md) stays text",
+      "- Encoded [path](https://unsloth.ai/docs&#92;alpha.md) stays text",
     ].join("\n"),
     10,
   );
