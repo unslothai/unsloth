@@ -4127,6 +4127,13 @@ html[data-chat-font] .aui-root {
 		top: calc(0.25rem * var(--ui-space-scale, 1) + 0.5px);
 	}
 
+	/* The scrollbar sits in the bottom padding over the code's last gap, so a wide block is no taller. */
+	@supports selector(::-webkit-scrollbar) {
+		.aui-thread-root [data-scrolls-x] [data-streamdown="code-block-body"] {
+			padding-bottom: calc(0.75rem * var(--ui-space-scale, 1) - 6px) !important;
+		}
+	}
+
 	@media print {
 		.aui-thread-root [data-streamdown="code-block-body"] {
 			max-height: none;
@@ -4455,6 +4462,15 @@ html[data-chat-font] .aui-root {
 
 	html[data-code-block-containment="on"] .aui-thread-root [data-unsloth-fence-paint] {
 		contain: paint;
+	}
+
+	/* Paint containment clips at this box, so it takes the body's bleed and the scrollbar stays inside it. */
+	.aui-thread-root [data-unsloth-fence-paint] {
+		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
+	}
+
+	.aui-thread-root [data-unsloth-fence-paint] > [data-streamdown="code-block-body"] {
+		margin-inline-end: 0;
 	}
 
 	.aui-thread-root [data-unsloth-fence-paint] pre {
@@ -4837,6 +4853,31 @@ html.force-reduced-motion .sidebar-section-drop-line {
 
 .dark *::-webkit-scrollbar-thumb {
 	background: oklch(0.67 0 0 / 0.5);
+}
+
+/* A thin sideways scrollbar with no track, shown only while the pointer is over the block. Chromium ignores
+   ::-webkit-scrollbar while scrollbar-width or scrollbar-color is set. */
+@supports selector(::-webkit-scrollbar) {
+	.aui-thread-root [data-streamdown="code-block-body"] {
+		scrollbar-width: auto;
+		scrollbar-color: auto;
+	}
+}
+
+.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar {
+	height: 6px;
+}
+
+.aui-thread-root [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: transparent;
+}
+
+.aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: oklch(0.5 0 0 / 0.4);
+}
+
+.dark .aui-thread-root [data-streamdown="code-block"]:hover [data-streamdown="code-block-body"]::-webkit-scrollbar-thumb:horizontal {
+	background: oklch(0.72 0 0 / 0.4);
 }
 
 /* Classic, not overlay: a wide chat table shows it scrolls before it is touched. */
@@ -5617,6 +5658,12 @@ html.force-reduced-motion .sidebar-section-drop-line {
 :is(.aui-root.aui-thread-root, .aui-md-table.aui-md-table) :is(.aui-chat-icon-btn, .aui-md-table-actions button) svg {
 	width: round(var(--icon-size), 2px);
 	height: round(var(--icon-size), 2px);
+}
+
+/* Code block actions one even step smaller (14px at the default size). */
+.aui-root.aui-thread-root [data-code-block-actions] .aui-chat-icon-btn svg {
+	width: round(var(--icon-size) - 2px, 2px);
+	height: round(var(--icon-size) - 2px, 2px);
 }
 
 /* Sonner injects fixed 13px toast text and 12px action labels at runtime;

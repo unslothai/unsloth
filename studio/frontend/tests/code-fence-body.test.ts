@@ -349,6 +349,7 @@ test("paint containment is limited to large completed full-token bodies", () => 
     updateFenceChunks,
     useLineWindow: () => ({ window: null, pins: null, measured: false }),
     usePinnedWhileStreaming: () => {},
+    CodeBlockLanguage: () => null,
     lineRendered,
     WINDOW_CAP_LINES,
     joinClasses: (...parts: (string | null)[]) => parts.filter(Boolean).join(" "),
