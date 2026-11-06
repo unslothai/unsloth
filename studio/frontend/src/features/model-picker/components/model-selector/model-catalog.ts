@@ -85,7 +85,7 @@ export interface CatalogGroup {
   aliases?: readonly string[];
   /** Capability glyph fallback; the Hub listing's tags win. */
   capabilities?: Partial<ModelCapabilities>;
-  /** A package the load needs that Unsloth Studio does not install, shown as a chip on the row. */
+  /** A package the load needs that the app does not install, shown as a chip on the row. */
   requires?: string;
   /** Leads the Recommended list whatever the dropdown sort, in catalog order among pinned groups. */
   pinToTop?: boolean;
@@ -706,7 +706,7 @@ export const VIDEO_CATALOG: CatalogGroup[] = [
       }),
     ],
   },
-  // Nano's checkpoint enables the Cosmos guardrail, which Unsloth Studio does not install: the load refuses with the fix.
+  // Nano's checkpoint enables the Cosmos guardrail, which the app does not install: the load refuses with the fix.
   {
     canonicalId: "nvidia/Cosmos3-Nano",
     displayName: "Cosmos3 Nano",
