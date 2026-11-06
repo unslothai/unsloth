@@ -25,6 +25,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import {
   COLOR_THEMES,
   FLAVOR_THEME_IDS,
+  HALLOWEEN_THEME_IDS,
   type ColorThemeId,
   UNSLOTH_THEME_IDS,
 } from "../lib/color-themes";
@@ -170,7 +171,9 @@ export function ColorThemeSelect() {
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="flex max-h-[min(--spacing(112),var(--radix-dropdown-menu-content-available-height))] w-64 flex-col">
             <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-              {FLAVOR_THEME_IDS.map(renderItem)}
+              {FLAVOR_THEME_IDS.flatMap((id) =>
+                id === "trick-or-treat" ? [id, ...HALLOWEEN_THEME_IDS] : [id],
+              ).map(renderItem)}
             </div>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
