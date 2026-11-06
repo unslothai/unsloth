@@ -3258,6 +3258,8 @@ export const tr = {
       generationStatsUpdates: "Hız ve bağlam istatistikleri",
       generationStatsUpdatesDescription:
         "Gerçek zamanlı, bir yanıt akarken saniye başına token ve bağlam kullanımını sayar. Bitince, her yanıt tamamlandığında bunları günceller.",
+      generationStatsUpdatesHint:
+        "Gerçek zamanlı, yanıt yazılırken yanıtın altındaki saniye başına token göstergesini ve sohbetin üstündeki bağlam çubuğunu saniyede birkaç kez yeniler. Bitince, her yanıt tamamlandığında bunları bir kez günceller. Gerçek zamanlı mod, özellikle eski veya yoğun makinelerde takılmaya ya da daha düşük performansa yol açabilir.",
       generationStatsUpdatesSettled: "Bitince",
       generationStatsUpdatesRealtime: "Gerçek zamanlı",
       generationStatsUpdatesKeywords:

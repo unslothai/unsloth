@@ -3011,6 +3011,8 @@ export const ar = {
       generationStatsUpdates: "إحصاءات السرعة والسياق",
       generationStatsUpdatesDescription:
         "يحسب الوضع الفوري الرموز في الثانية واستخدام السياق أثناء بث الرد. أما عند الانتهاء فيحدّثها عند اكتمال كل رد.",
+      generationStatsUpdatesHint:
+        "يحدّث الوضع الفوري مؤشر الرموز في الثانية أسفل الرد وشريط السياق أعلى المحادثة عدة مرات في الثانية أثناء كتابة الرد. أما عند الانتهاء فيحدّثهما مرة واحدة بعد انتهاء كل رد. قد يسبب الوضع الفوري بطئًا أو تراجعًا في الأداء، خاصةً على الأجهزة القديمة أو المشغولة.",
       generationStatsUpdatesSettled: "عند الانتهاء",
       generationStatsUpdatesRealtime: "فوري",
       generationStatsUpdatesKeywords:

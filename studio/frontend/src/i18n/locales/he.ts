@@ -3091,6 +3091,8 @@ export const he = {
       generationStatsUpdates: "נתוני מהירות והקשר",
       generationStatsUpdatesDescription:
         "מצב זמן אמת סופר טוקנים לשנייה ושימוש בהקשר בזמן שתשובה מוזרמת. מצב בסיום מעדכן אותם כשכל תשובה מסתיימת.",
+      generationStatsUpdatesHint:
+        "זמן אמת מרענן את מד הטוקנים לשנייה מתחת לתשובה ואת סרגל ההקשר בראש הצ'אט כמה פעמים בשנייה בזמן שהתשובה נכתבת. בסיום מעדכן אותם פעם אחת, אחרי שכל תשובה מסתיימת. זמן אמת עלול לגרום להאטה או לביצועים נמוכים יותר, במיוחד במחשבים ישנים או עמוסים.",
       generationStatsUpdatesSettled: "בסיום",
       generationStatsUpdatesRealtime: "זמן אמת",
       generationStatsUpdatesKeywords:

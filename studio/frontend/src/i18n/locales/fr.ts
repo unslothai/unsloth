@@ -3048,6 +3048,8 @@ export const fr = {
       generationStatsUpdates: "Statistiques de vitesse et de contexte",
       generationStatsUpdatesDescription:
         "En temps réel compte les tokens par seconde et l'utilisation du contexte pendant la diffusion d'une réponse. À la fin les met à jour quand chaque réponse se termine.",
+      generationStatsUpdatesHint:
+        "En temps réel actualise l'indicateur de tokens par seconde sous une réponse et la barre de contexte en haut du chat plusieurs fois par seconde pendant l'écriture de la réponse. À la fin les met à jour une fois, quand chaque réponse se termine. Le mode en temps réel peut provoquer des ralentissements ou baisser les performances, surtout sur les machines anciennes ou chargées.",
       generationStatsUpdatesSettled: "À la fin",
       generationStatsUpdatesRealtime: "En temps réel",
       generationStatsUpdatesKeywords:

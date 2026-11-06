@@ -3305,6 +3305,8 @@ export const es419 = {
       generationStatsUpdates: "Estadísticas de velocidad y contexto",
       generationStatsUpdatesDescription:
         "En tiempo real cuenta los tokens por segundo y el uso del contexto mientras se transmite una respuesta. Al terminar los actualiza cuando termina cada respuesta.",
+      generationStatsUpdatesHint:
+        "En tiempo real actualiza el indicador de tokens por segundo bajo una respuesta y la barra de contexto en la parte superior del chat varias veces por segundo mientras se escribe la respuesta. Al terminar los actualiza una vez, cuando termina cada respuesta. En tiempo real puede causar lentitud o menor rendimiento, sobre todo en equipos antiguos u ocupados.",
       generationStatsUpdatesSettled: "Al terminar",
       generationStatsUpdatesRealtime: "En tiempo real",
       generationStatsUpdatesKeywords:

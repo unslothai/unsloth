@@ -3027,6 +3027,8 @@ export const en = {
       generationStatsUpdates: "Speed and context stats",
       generationStatsUpdatesDescription:
         "Realtime counts tokens per second and context usage while a reply streams. When done updates them as each reply finishes.",
+      generationStatsUpdatesHint:
+        "Realtime refreshes the tokens per second readout under a reply and the context bar at the top of the chat a few times a second while the reply is written. When done updates them once, after each reply finishes. Realtime may cause lag or slower performance, especially on older or busy machines.",
       generationStatsUpdatesSettled: "When done",
       generationStatsUpdatesRealtime: "Realtime",
       generationStatsUpdatesKeywords:

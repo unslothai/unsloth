@@ -3173,6 +3173,8 @@ export const sv = {
       generationStatsUpdates: "Hastighets- och kontextstatistik",
       generationStatsUpdatesDescription:
         "Realtid räknar token per sekund och kontextanvändning medan ett svar strömmas. När klart uppdaterar dem när varje svar är färdigt.",
+      generationStatsUpdatesHint:
+        "Realtid uppdaterar visningen av token per sekund under ett svar och kontextfältet högst upp i chatten några gånger per sekund medan svaret skrivs. När klart uppdaterar dem en gång, när varje svar är färdigt. Realtid kan orsaka fördröjning eller sämre prestanda, särskilt på äldre eller belastade datorer.",
       generationStatsUpdatesSettled: "När klart",
       generationStatsUpdatesRealtime: "Realtid",
       generationStatsUpdatesKeywords:

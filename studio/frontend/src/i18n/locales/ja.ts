@@ -2997,6 +2997,8 @@ export const ja = {
       generationStatsUpdates: "速度とコンテキストの統計",
       generationStatsUpdatesDescription:
         "リアルタイムでは、応答のストリーミング中に毎秒トークン数とコンテキスト使用量を数えます。完了時は各応答の終了時に更新します。",
+      generationStatsUpdatesHint:
+        "リアルタイムでは、応答の生成中に応答の下の毎秒トークン数表示とチャット上部のコンテキストバーを毎秒数回更新します。完了時は各応答が終わった後に一度だけ更新します。リアルタイムは、特に古いマシンや負荷の高いマシンで動作の遅れやパフォーマンス低下を招くことがあります。",
       generationStatsUpdatesSettled: "完了時",
       generationStatsUpdatesRealtime: "リアルタイム",
       generationStatsUpdatesKeywords:

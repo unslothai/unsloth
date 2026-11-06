@@ -3025,6 +3025,8 @@ export const ptBR = {
       generationStatsUpdates: "Estatísticas de velocidade e contexto",
       generationStatsUpdatesDescription:
         "Em tempo real conta tokens por segundo e uso do contexto enquanto uma resposta é transmitida. Ao terminar atualiza quando cada resposta termina.",
+      generationStatsUpdatesHint:
+        "Em tempo real atualiza o indicador de tokens por segundo abaixo de uma resposta e a barra de contexto no topo do chat algumas vezes por segundo enquanto a resposta é escrita. Ao terminar atualiza uma vez, quando cada resposta termina. O modo em tempo real pode causar lentidão ou queda de desempenho, principalmente em máquinas antigas ou ocupadas.",
       generationStatsUpdatesSettled: "Ao terminar",
       generationStatsUpdatesRealtime: "Em tempo real",
       generationStatsUpdatesKeywords:

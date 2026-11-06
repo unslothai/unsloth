@@ -3260,6 +3260,8 @@ export const id = {
       generationStatsUpdates: "Statistik kecepatan dan konteks",
       generationStatsUpdatesDescription:
         "Waktu nyata menghitung token per detik dan penggunaan konteks saat balasan sedang dialirkan. Setelah selesai memperbaruinya saat setiap balasan selesai.",
+      generationStatsUpdatesHint:
+        "Waktu nyata menyegarkan penunjuk token per detik di bawah balasan dan bilah konteks di atas chat beberapa kali per detik saat balasan ditulis. Setelah selesai memperbaruinya sekali, setelah setiap balasan selesai. Waktu nyata dapat menyebabkan lag atau kinerja lebih lambat, terutama pada perangkat lama atau sibuk.",
       generationStatsUpdatesSettled: "Setelah selesai",
       generationStatsUpdatesRealtime: "Waktu nyata",
       generationStatsUpdatesKeywords:

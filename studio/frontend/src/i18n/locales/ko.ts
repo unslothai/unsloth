@@ -3004,6 +3004,8 @@ export const ko = {
       generationStatsUpdates: "속도 및 컨텍스트 통계",
       generationStatsUpdatesDescription:
         "실시간은 응답이 스트리밍되는 동안 초당 토큰과 컨텍스트 사용량을 셉니다. 완료 시는 각 응답이 끝날 때 업데이트합니다.",
+      generationStatsUpdatesHint:
+        "실시간은 응답이 작성되는 동안 응답 아래의 초당 토큰 표시와 채팅 상단의 컨텍스트 막대를 초당 몇 번씩 새로 고칩니다. 완료 시는 각 응답이 끝난 뒤 한 번만 업데이트합니다. 실시간은 특히 오래되었거나 바쁜 기기에서 지연이나 성능 저하를 일으킬 수 있습니다.",
       generationStatsUpdatesSettled: "완료 시",
       generationStatsUpdatesRealtime: "실시간",
       generationStatsUpdatesKeywords:

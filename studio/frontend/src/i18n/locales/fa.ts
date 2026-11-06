@@ -3246,6 +3246,8 @@ export const fa = {
       generationStatsUpdates: "آمار سرعت و زمینه",
       generationStatsUpdatesDescription:
         "حالت بی‌درنگ توکن در ثانیه و مصرف زمینه را هنگام پخش پاسخ می‌شمارد. حالت پس از پایان آن‌ها را با تمام شدن هر پاسخ به‌روز می‌کند.",
+      generationStatsUpdatesHint:
+        "حالت بی‌درنگ نمایشگر توکن در ثانیه زیر پاسخ و نوار زمینه در بالای گفتگو را هنگام نوشتن پاسخ چند بار در ثانیه تازه می‌کند. حالت پس از پایان آن‌ها را یک بار، پس از پایان هر پاسخ، به‌روز می‌کند. حالت بی‌درنگ ممکن است باعث کندی یا افت کارایی شود، به‌ویژه روی دستگاه‌های قدیمی یا پرمشغله.",
       generationStatsUpdatesSettled: "پس از پایان",
       generationStatsUpdatesRealtime: "بی‌درنگ",
       generationStatsUpdatesKeywords:

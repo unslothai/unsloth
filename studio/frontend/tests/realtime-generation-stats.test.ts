@@ -366,3 +366,32 @@ test("the toggle row sits in Chat defaults only, is searchable, and is translate
     }
   }
 });
+
+test("the toggle's tooltip explains both modes and warns that Realtime may cost performance", async () => {
+  const row = readSrc(
+    "features/settings/components/generation-stats-updates-row.tsx",
+  );
+  assert.match(
+    row,
+    /hint=\{t\("settings\.chat\.generationStatsUpdatesHint"\)\}/,
+  );
+  const { en } = (await import("../src/i18n/locales/en.ts")) as {
+    en: { settings: { chat: { generationStatsUpdatesHint: string } } };
+  };
+  const hint = en.settings.chat.generationStatsUpdatesHint;
+  assert.match(hint, /lag/);
+  assert.match(hint, /performance/);
+  for (const locale of LOCALES) {
+    const module = (await import(`../src/i18n/locales/${locale}.ts`)) as Record<
+      string,
+      unknown
+    >;
+    const catalog = Object.values(module)[0] as {
+      settings: { chat: Record<string, unknown> };
+    };
+    assert.ok(
+      typeof catalog.settings.chat.generationStatsUpdatesHint === "string",
+      `${locale} hint`,
+    );
+  }
+});

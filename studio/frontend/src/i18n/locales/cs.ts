@@ -3276,6 +3276,8 @@ export const cs = {
       generationStatsUpdates: "Statistiky rychlosti a kontextu",
       generationStatsUpdatesDescription:
         "Režim V reálném čase počítá tokeny za sekundu a využití kontextu během streamování odpovědi. Po dokončení je aktualizuje, až každá odpověď skončí.",
+      generationStatsUpdatesHint:
+        "V reálném čase obnovuje ukazatel tokenů za sekundu pod odpovědí a lištu kontextu nahoře v chatu několikrát za sekundu, zatímco se odpověď píše. Po dokončení je aktualizuje jednou, až každá odpověď skončí. Režim v reálném čase může způsobit zasekávání nebo nižší výkon, hlavně na starších či vytížených počítačích.",
       generationStatsUpdatesSettled: "Po dokončení",
       generationStatsUpdatesRealtime: "V reálném čase",
       generationStatsUpdatesKeywords:

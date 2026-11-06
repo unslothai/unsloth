@@ -3259,6 +3259,8 @@ export const vi = {
       generationStatsUpdates: "Thống kê tốc độ và ngữ cảnh",
       generationStatsUpdatesDescription:
         "Thời gian thực đếm token mỗi giây và mức dùng ngữ cảnh trong khi phản hồi đang truyền. Khi xong cập nhật chúng khi mỗi phản hồi kết thúc.",
+      generationStatsUpdatesHint:
+        "Thời gian thực làm mới chỉ số token mỗi giây dưới phản hồi và thanh ngữ cảnh ở đầu cuộc trò chuyện vài lần mỗi giây trong khi phản hồi đang được viết. Khi xong cập nhật chúng một lần, sau khi mỗi phản hồi kết thúc. Thời gian thực có thể gây giật hoặc giảm hiệu năng, nhất là trên máy cũ hoặc đang bận.",
       generationStatsUpdatesSettled: "Khi xong",
       generationStatsUpdatesRealtime: "Thời gian thực",
       generationStatsUpdatesKeywords:

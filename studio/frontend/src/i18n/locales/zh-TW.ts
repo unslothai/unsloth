@@ -3106,6 +3106,8 @@ export const zhTW = {
       generationStatsUpdates: "速度與上下文統計",
       generationStatsUpdatesDescription:
         "即時模式在回覆串流輸出時統計每秒 token 數和上下文用量。完成後模式在每則回覆結束時更新。",
+      generationStatsUpdatesHint:
+        "即時模式會在回覆產生期間，每秒數次重新整理回覆下方的每秒 token 數讀數和聊天頂端的上下文列。完成後模式會在每則回覆結束後更新一次。即時模式可能造成卡頓或效能下降，在較舊或忙碌的電腦上尤其明顯。",
       generationStatsUpdatesSettled: "完成後",
       generationStatsUpdatesRealtime: "即時",
       generationStatsUpdatesKeywords:

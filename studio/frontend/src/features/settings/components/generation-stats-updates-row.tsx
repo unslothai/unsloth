@@ -23,6 +23,7 @@ export function GenerationStatsUpdatesRow() {
     <SettingsRow
       label={t("settings.chat.generationStatsUpdates")}
       description={t("settings.chat.generationStatsUpdatesDescription")}
+      hint={t("settings.chat.generationStatsUpdatesHint")}
     >
       <div
         className="hub-tab-toggle inline-flex h-8 items-center rounded-full"

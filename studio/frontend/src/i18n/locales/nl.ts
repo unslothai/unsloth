@@ -3301,6 +3301,8 @@ export const nl = {
       generationStatsUpdates: "Snelheids- en contextstatistieken",
       generationStatsUpdatesDescription:
         "Realtime telt tokens per seconde en contextgebruik terwijl een antwoord wordt gestreamd. Na afloop werkt ze bij zodra elk antwoord klaar is.",
+      generationStatsUpdatesHint:
+        "Realtime ververst de weergave van tokens per seconde onder een antwoord en de contextbalk boven in de chat een paar keer per seconde terwijl het antwoord wordt geschreven. Na afloop werkt ze één keer bij, als elk antwoord klaar is. Realtime kan vertraging of tragere prestaties veroorzaken, vooral op oudere of drukke computers.",
       generationStatsUpdatesSettled: "Na afloop",
       generationStatsUpdatesRealtime: "Realtime",
       generationStatsUpdatesKeywords:

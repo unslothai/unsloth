@@ -3020,6 +3020,8 @@ export const hi = {
       generationStatsUpdates: "गति और संदर्भ आँकड़े",
       generationStatsUpdatesDescription:
         "रीयल-टाइम उत्तर स्ट्रीम होते समय प्रति सेकंड टोकन और संदर्भ उपयोग गिनता है। पूरा होने पर हर उत्तर खत्म होने पर इन्हें अपडेट करता है।",
+      generationStatsUpdatesHint:
+        "रीयल-टाइम उत्तर लिखे जाते समय उत्तर के नीचे प्रति सेकंड टोकन संकेतक और चैट के ऊपर संदर्भ बार को प्रति सेकंड कुछ बार ताज़ा करता है। पूरा होने पर हर उत्तर खत्म होने के बाद इन्हें एक बार अपडेट करता है। रीयल-टाइम से धीमापन या कम प्रदर्शन हो सकता है, खासकर पुरानी या व्यस्त मशीनों पर।",
       generationStatsUpdatesSettled: "पूरा होने पर",
       generationStatsUpdatesRealtime: "रीयल-टाइम",
       generationStatsUpdatesKeywords:

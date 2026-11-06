@@ -3296,6 +3296,8 @@ export const pl = {
       generationStatsUpdates: "Statystyki szybkości i kontekstu",
       generationStatsUpdatesDescription:
         "Tryb Na bieżąco liczy tokeny na sekundę i użycie kontekstu podczas strumieniowania odpowiedzi. Po zakończeniu aktualizuje je, gdy każda odpowiedź się skończy.",
+      generationStatsUpdatesHint:
+        "Na bieżąco odświeża wskaźnik tokenów na sekundę pod odpowiedzią i pasek kontekstu u góry czatu kilka razy na sekundę, gdy odpowiedź jest pisana. Po zakończeniu aktualizuje je raz, gdy każda odpowiedź się skończy. Tryb na bieżąco może powodować opóźnienia lub spadek wydajności, zwłaszcza na starszych lub obciążonych komputerach.",
       generationStatsUpdatesSettled: "Po zakończeniu",
       generationStatsUpdatesRealtime: "Na bieżąco",
       generationStatsUpdatesKeywords:

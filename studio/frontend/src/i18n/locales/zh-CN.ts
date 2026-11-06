@@ -2968,6 +2968,8 @@ export const zhCN = {
       generationStatsUpdates: "速度与上下文统计",
       generationStatsUpdatesDescription:
         "实时模式在回复流式输出时统计每秒 token 数和上下文用量。完成后模式在每条回复结束时更新。",
+      generationStatsUpdatesHint:
+        "实时模式会在回复生成期间，每秒数次刷新回复下方的每秒 token 数读数和聊天顶部的上下文条。完成后模式会在每条回复结束后更新一次。实时模式可能导致卡顿或性能下降，在较旧或繁忙的机器上尤其明显。",
       generationStatsUpdatesSettled: "完成后",
       generationStatsUpdatesRealtime: "实时",
       generationStatsUpdatesKeywords:

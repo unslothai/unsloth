@@ -3052,6 +3052,8 @@ export const de = {
       generationStatsUpdates: "Geschwindigkeits- und Kontextstatistik",
       generationStatsUpdatesDescription:
         "Echtzeit zählt Token pro Sekunde und Kontextnutzung, während eine Antwort gestreamt wird. Nach Abschluss aktualisiert sie, sobald jede Antwort fertig ist.",
+      generationStatsUpdatesHint:
+        "Echtzeit aktualisiert die Anzeige der Token pro Sekunde unter einer Antwort und die Kontextleiste oben im Chat mehrmals pro Sekunde, während die Antwort geschrieben wird. Nach Abschluss aktualisiert sie einmal, wenn jede Antwort fertig ist. Echtzeit kann zu Verzögerungen oder geringerer Leistung führen, besonders auf älteren oder ausgelasteten Geräten.",
       generationStatsUpdatesSettled: "Nach Abschluss",
       generationStatsUpdatesRealtime: "Echtzeit",
       generationStatsUpdatesKeywords:
