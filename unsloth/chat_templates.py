@@ -97,9 +97,28 @@ def _render_dataset_row(row, tokenizer):
     if not isinstance(row, dict):
         raise _MalformedRow("row is not a dict")
     column = next((c for c in _DATASET_CHECK_COLUMNS if c in row), None)
-    if column is None:
-        raise _MalformedRow("no messages, conversations or text column")
-    value = row[column]
+    if column is not None:
+        value = row[column]
+    elif "prompt" in row and "completion" in row:
+        prompt, completion = row["prompt"], row["completion"]
+        if isinstance(prompt, str) and isinstance(completion, str):
+            text = prompt + completion
+            return text, text.strip() == "", True
+        if not isinstance(prompt, list) or not isinstance(completion, list):
+            raise _MalformedRow("prompt and completion are not both strings or both message lists")
+        column, value = "prompt/completion", prompt + completion
+    elif "instruction" in row and "output" in row:
+        instruction, extra, output = row["instruction"], row.get("input"), row["output"]
+        extra = "" if extra is None else extra
+        if not all(isinstance(x, str) for x in (instruction, extra, output)):
+            raise _MalformedRow("instruction, input or output is not a string")
+        user = f"{instruction}\n\n{extra}".strip() if extra.strip() else instruction
+        column = "instruction/output"
+        value = [{"role": "user", "content": user}, {"role": "assistant", "content": output}]
+    else:
+        raise _MalformedRow(
+            "no messages, conversations, text, prompt/completion or instruction/output column"
+        )
     if column == "text":
         if not isinstance(value, str):
             raise _MalformedRow("text is not a string")
@@ -168,8 +187,9 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
         print(problem)
     if lengths:
         s = sorted(lengths)
+        median = f"{(s[(len(s) - 1) // 2] + s[len(s) // 2]) / 2:,.1f}".removesuffix(".0")
         print(
-            f"Token lengths: min {s[0]:,} | median {s[len(s) // 2]:,} | "
+            f"Token lengths: min {s[0]:,} | median {median} | "
             f"p95 {s[int(0.95 * (len(s) - 1))]:,} | max {s[-1]:,}"
         )
     print(f"Over max_seq_length ({max_seq_length:,}): {over:,} ({100 * over / max(rows, 1):.1f}%)")

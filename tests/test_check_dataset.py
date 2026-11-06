@@ -67,9 +67,12 @@ def test_counts_malformed_empty_and_over_length_rows(capsys):
     out = capsys.readouterr().out
     assert "Rows: 11  |  Malformed: 5  |  Empty: 1" in out
     assert "row 6: row is not a dict" in out
-    assert "row 7: no messages, conversations or text column" in out
+    assert (
+        "row 7: no messages, conversations, text, prompt/completion or instruction/output column"
+        in out
+    )
     assert "row 10: chat template failed: bad role" in out
-    assert "Token lengths: min 4 | median 8 | p95 35 | max 36" in out
+    assert "Token lengths: min 4 | median 7 | p95 35 | max 36" in out
     assert "Over max_seq_length (8): 2 (18.2%)" in out
     assert (
         "Template: tiny/chat-tokenizer (tokenizer's own) | Response marker found in: 6 / 11" in out
@@ -195,3 +198,63 @@ def test_tokenizer_with_backend_attribute_is_not_unwrapped():
     expected = check_dataset(ROWS[:5], tok, max_seq_length = 8)["lengths"]
     tok.tokenizer = object()
     assert check_dataset(ROWS[:5], tok, max_seq_length = 8)["lengths"] == expected
+
+
+def _lengths(rows, tok):
+    return check_dataset(rows, tok, max_seq_length = 8)["lengths"]
+
+
+def test_alpaca_rows():
+    tok = _tokenizer()
+    rows = [
+        {"instruction": "hi", "input": "there", "output": "hello"},
+        {"instruction": "hi", "input": "", "output": LONG},
+        {"instruction": "hi", "output": "hello"},
+    ]
+    report = check_dataset(rows, tok, max_seq_length = 8)
+
+    assert report["malformed"] == 0
+    assert report["over_max_seq_length"] == 1
+    assert report["response_marker_found"] == 3
+    assert report["lengths"] == _lengths(
+        [_chat("hi\n\nthere", "hello"), _chat("hi", LONG), _chat("hi", "hello")], tok
+    )
+
+
+def test_prompt_completion_rows():
+    tok = _tokenizer()
+    rows = [
+        {"prompt": "hi there", "completion": " hello"},
+        {"prompt": "hi", "completion": " " + LONG},
+        {
+            "prompt": [{"role": "user", "content": "hi"}],
+            "completion": [{"role": "assistant", "content": "hello"}],
+        },
+    ]
+    report = check_dataset(rows, tok, max_seq_length = 8)
+
+    assert report["malformed"] == 0
+    assert report["over_max_seq_length"] == 1
+    assert report["response_marker_found"] == 1
+    assert report["lengths"] == [3, 31] + _lengths([_chat("hi", "hello")], tok)
+
+
+def test_unusable_prompt_completion_and_alpaca_rows_stay_malformed(capsys):
+    rows = [
+        {"prompt": "hi", "completion": [{"role": "assistant", "content": "hello"}]},
+        {"instruction": "hi", "output": 42},
+        {"instruction": "hi", "input": [], "output": "hello"},
+    ]
+    report = check_dataset(rows, _tokenizer(), max_seq_length = 8)
+
+    assert report["malformed"] == 3
+    assert report["lengths"] == []
+    out = capsys.readouterr().out
+    assert "row 0: prompt and completion are not both strings or both message lists" in out
+    assert "row 1: instruction, input or output is not a string" in out
+
+
+def test_median_of_an_even_number_of_rows(capsys):
+    check_dataset([{"text": "hi"}, {"text": "hi hello"}], _tokenizer(), max_seq_length = 8)
+
+    assert "Token lengths: min 1 | median 1.5 | p95 1 | max 2" in capsys.readouterr().out
