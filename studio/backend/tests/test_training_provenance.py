@@ -1068,7 +1068,6 @@ def test_loaded_hub_dataset_validates_each_snapshot_once_per_call(tmp_path, monk
             str(snapshot.resolve()),
             None,
         )
-        # One whole-snapshot walk per call plus per-source checks, not one walk per source.
         per_source = 2 if local else 1
         assert len(calls) == files + per_source * files
 
