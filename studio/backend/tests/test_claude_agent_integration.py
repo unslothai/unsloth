@@ -123,8 +123,6 @@ def _create(client, **extra):
     )
 
 
-
-
 def test_the_saved_setting_turns_claude_agent_on(store):
     assert claude_agent_enabled() is False
     with settings_client(OWNER) as client:
@@ -169,8 +167,6 @@ def test_toggling_one_switch_leaves_the_other(store):
 
 def test_the_off_message_points_at_the_toggle():
     assert "Developer mode" in CLAUDE_AGENT_OFF and ENV in CLAUDE_AGENT_OFF
-
-
 
 
 def test_the_installer_targets_studio_python_with_constraints(monkeypatch, tmp_path):
@@ -318,8 +314,6 @@ def test_the_install_route_is_owner_only(monkeypatch, isolated):
         assert client.post("/providers/claude-agent/install-sdk").status_code == 403
 
 
-
-
 def test_a_managed_account_never_sees_or_creates_claude_agent(isolated):
     with providers_client(ALICE) as client:
         registry = client.get("/providers/registry").json()
@@ -360,8 +354,6 @@ def test_a_managed_account_never_sees_it_even_while_off(monkeypatch, isolated):
     assert "claude_agent" not in {row["provider_type"] for row in registry}
 
 
-
-
 def test_the_owner_is_offered_it_while_off_but_cannot_use_it(monkeypatch, isolated):
     monkeypatch.setenv(ENV, "0")
     with providers_client(OWNER) as client:
@@ -397,8 +389,6 @@ def test_saved_connections_hide_while_off_and_come_back(monkeypatch, isolated):
         shown = client.get("/providers/").json()
     assert [row["provider_type"] for row in hidden] == []
     assert [row["id"] for row in shown] == [created.json()["id"]]
-
-
 
 
 def test_create_and_update_drop_endpoint_key_and_headers(isolated):
@@ -439,8 +429,6 @@ def test_models_route_lists_claude_agent_models_with_display_names(monkeypatch, 
     assert listed.status_code == 200, listed.text
     assert listed.json()[0]["display_name"] == "Opus 5.5"
     assert listed.json()[0]["context_length"] == 1_000_000
-
-
 
 
 @pytest.fixture
@@ -484,8 +472,6 @@ def test_transcription_refuses_a_claude_agent_connection(claude_agent_row):
         )
     assert refused.value.status_code == 400
     assert "chat only" in refused.value.detail
-
-
 
 
 def test_a_scheduled_run_with_claude_agent_off_fails_with_the_reason(monkeypatch):
