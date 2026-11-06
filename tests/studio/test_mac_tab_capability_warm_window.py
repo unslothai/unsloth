@@ -91,8 +91,12 @@ class FakePage:
         row_missing: bool = False,
         sections: frozenset = frozenset(),
         hidden_sections: frozenset = frozenset(),
+        mounts_after_wait: dict | None = None,
     ) -> None:
         self.rows = rows
+        # The app's boot screen: no rows until the script waits, then these mount.
+        self.mounts_after_wait = mounts_after_wait
+        self.waited_for_shell = 0
         self.row_missing = row_missing
         self.sections = sections
         self.hidden_sections = hidden_sections
@@ -140,6 +144,18 @@ class FakePage:
 
     def wait_for_timeout(self, ms) -> None:
         pass
+
+    def wait_for_function(
+        self,
+        script,
+        arg = None,
+        timeout = None,
+    ) -> None:
+        self.waited_for_shell += 1
+        if self.mounts_after_wait is not None:
+            self.rows = self.mounts_after_wait
+        if not any(state is not None for state in self.rows.values()):
+            raise TimeoutError("no nav row mounted")
 
     def screenshot(
         self,
@@ -341,6 +357,34 @@ def test_drive_tabs_fails_when_the_pinned_rows_never_render(tmp_path, monkeypatc
     assert mod._rows_seen == set()
     for row_id in mod.INLINE_ROW_IDS:
         assert any(f"nav row {row_id} is pinned inline" in m for m in mod._failed), mod._failed
+
+
+def test_drive_tabs_waits_out_the_boot_screen_before_judging_the_rows(tmp_path, monkeypatch):
+    """A full navigation boots the app again, and a slow macOS runner can still show the
+    "Loading..." screen after the fixed settle wait (Library, twice on 2026-10-29). The rows
+    are judged once the sidebar has mounted, not while nothing has rendered yet."""
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    page = FakePage({}, mounts_after_wait = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS})
+
+    mod.drive_tabs(page)
+
+    assert page.waited_for_shell >= 1
+    assert mod._failed == []
+    assert mod._rows_seen == set(mod.INLINE_ROW_IDS)
+
+
+def test_a_row_missing_from_a_mounted_sidebar_still_fails(tmp_path, monkeypatch):
+    mod = _load(tmp_path, monkeypatch)
+    _health(mod, [SETTLED])
+    rows = {rid: SETTLED_ENABLED for rid in mod.INLINE_ROW_IDS if rid != "library"}
+    page = FakePage({}, mounts_after_wait = rows)
+
+    mod.drive_tabs(page)
+
+    failures = [m for m in mod._failed if "nav row library is pinned inline" in m]
+    assert failures, mod._failed
+    assert "shell mounted: True" in failures[0]
 
 
 def test_drive_tabs_does_not_fail_on_the_rows_that_live_under_more(tmp_path, monkeypatch):

@@ -8,6 +8,7 @@ the cyclic GC runs. The name must be gone before any later locals() call."""
 import ast
 import inspect
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -16,9 +17,15 @@ from unsloth.models.rl_replacements import grpo_trainer__generate_and_score_comp
 
 def _rewritten():
     trl_grpo = pytest.importorskip("trl.trainer.grpo_trainer")
-    source = textwrap.dedent(
-        inspect.getsource(trl_grpo.GRPOTrainer._generate_and_score_completions)
+    # Read TRL's own file: importing unsloth swaps GRPOTrainer for the compiled, wrapped trainer, so
+    # inspect.getsource on the class returns the wrapper and the rewrite would never anchor.
+    text = Path(inspect.getsourcefile(trl_grpo)).read_text(encoding = "utf-8")
+    node = next(
+        n
+        for n in ast.walk(ast.parse(text))
+        if isinstance(n, ast.FunctionDef) and n.name == "_generate_and_score_completions"
     )
+    source = textwrap.dedent(ast.get_source_segment(text, node, padded = True))
     source = textwrap.indent(source, "    ")
     out = grpo_trainer__generate_and_score_completions("_generate_and_score_completions", source)
     if "_unsloth_reward_locals = locals()" not in out:

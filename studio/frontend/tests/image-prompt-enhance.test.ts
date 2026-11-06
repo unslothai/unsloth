@@ -19,9 +19,14 @@ import {
   promptUpsamplerCapability,
   readEnhanceChoices,
   resolveEnhancePrompt,
+  shouldWarmUpsampler,
   upsamplerDownloadBytes,
+  WARM_RETRY_DELAY_MS,
+  WARM_RETRY_LIMIT,
+  WARM_RETRY_OUTCOMES,
   upsamplerDownloadFraction,
   upsamplerNeedsDownload,
+  upsamplerServesEarlierQuant,
   upsamplerVariantFor,
   withEnhanceChoice,
 } from "../src/features/images/lib/prompt-enhance.ts";
@@ -81,7 +86,7 @@ test("enhance_prompt is sent only when the loaded family supports it", () => {
   assert.deepEqual(enhancePromptRequestField(promptUpsamplerCapability(null), true), {});
   // Wired into the generate request.
   const page = readSrc("features/images/images-page.tsx");
-  const call = page.slice(page.indexOf("res = await generateDiffusionImage({"));
+  const call = page.slice(page.indexOf("res = await generateDiffusionImage("));
   assert.match(call.slice(0, 4000), /\.\.\.enhancePromptRequestField\(upsamplerCapability, enhanceOn\)/);
 });
 
@@ -163,8 +168,46 @@ test("status parsing tolerates missing and malformed fields", () => {
   const noProjector = { ...full, downloaded: true };
   assert.equal(upsamplerNeedsDownload(noProjector), true);
   assert.equal(upsamplerDownloadBytes(noProjector), 900_000_000);
-  assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true }), false);
+  assert.equal(upsamplerNeedsDownload({ ...noProjector, mmproj_downloaded: true, current_downloaded: true }), false);
   assert.equal(upsamplerNeedsDownload({ ...full, supported: false }), false);
+
+  // An earlier quant serving keeps the control offered, sized at the current default.
+  const earlier = parsePromptUpsamplerStatus({
+    supported: true,
+    downloaded: true,
+    mmproj_downloaded: true,
+    filename: "upsampler-Q4_K_M.gguf",
+    size_bytes: 5_600_000_000,
+    mmproj_size_bytes: 900_000_000,
+    current_downloaded: false,
+    current_missing_bytes: 5_900_000_000,
+  });
+  assert.equal(upsamplerServesEarlierQuant(earlier), true);
+  assert.equal(upsamplerNeedsDownload(earlier), true);
+  assert.equal(upsamplerDownloadBytes(earlier), 5_900_000_000);
+  assert.equal(upsamplerNeedsDownload({ ...earlier, override: true }), false);
+  const current = parsePromptUpsamplerStatus({ ...earlier, current_downloaded: true, current_missing_bytes: 0 });
+  assert.equal(upsamplerNeedsDownload(current), false);
+  assert.equal(upsamplerServesEarlierQuant(current), false);
+  // Model-only earlier quant: the Download fetches the default AND the projector.
+  const modelOnly = parsePromptUpsamplerStatus({
+    ...earlier,
+    mmproj_downloaded: false,
+    current_filename: "upsampler-UD-Q4_K_XL.gguf",
+    current_missing_bytes: 6_888_000_000,
+  });
+  assert.equal(upsamplerServesEarlierQuant(modelOnly), true);
+  assert.equal(upsamplerNeedsDownload(modelOnly), true);
+  assert.equal(upsamplerDownloadBytes(modelOnly), 6_888_000_000);
+  // The current default itself with its projector missing is the projector-only case.
+  const currentNoProjector = { ...modelOnly, filename: "upsampler-UD-Q4_K_XL.gguf", current_missing_bytes: 900_000_000 };
+  assert.equal(upsamplerServesEarlierQuant(currentNoProjector), false);
+  assert.equal(upsamplerDownloadBytes(currentNoProjector), 900_000_000);
+  // Without current_filename (not reported) a model with no projector stays the projector-only case.
+  assert.equal(upsamplerServesEarlierQuant({ ...modelOnly, current_filename: "" }), false);
+  const olderBackend = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: true });
+  assert.equal(olderBackend.current_downloaded, true);
+  assert.equal(upsamplerNeedsDownload(olderBackend), false);
 
   const empty = parsePromptUpsamplerStatus(null);
   assert.deepEqual(
@@ -193,7 +236,7 @@ test("routes live in one place; variant and notices", () => {
   assert.equal(upsamplerVariantFor("flux.3-klein-base"), "base");
   assert.equal(upsamplerVariantFor("flux.3-klein"), "distilled");
   assert.equal(upsamplerVariantFor(null), "distilled");
-  assert.ok(enhancementNotice("unavailable"));
+  assert.equal(enhancementNotice("unavailable"), null);
   assert.ok(enhancementNotice("failed"));
   assert.equal(enhancementNotice("applied"), null);
   assert.equal(enhancementNotice("off"), null);
@@ -221,8 +264,7 @@ test("a preview caption goes stale when the prompt, the variant or a reference i
   );
 });
 
-test("an unavailable outcome does not claim the weights are missing, and overrides offer no download", () => {
-  assert.match(enhancementNotice("unavailable")!.description, /llama\.cpp is unavailable/);
+test("overrides offer no download", () => {
   const status = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: false, override: true });
   assert.equal(status.override, true);
   assert.equal(upsamplerNeedsDownload(status), false);
@@ -240,5 +282,37 @@ test("a family change consumes the one-off override instead of leaving it dorman
   // A model without an upsampler consumes a bound override but keeps one set before any model loaded.
   assert.equal(overrideAfterFamilyChange(bound, ENHANCE_UNSUPPORTED_FAMILY), null);
   assert.equal(overrideAfterFamilyChange(unloaded, ENHANCE_UNSUPPORTED_FAMILY), unloaded);
+});
+
+test("the upsampler warms only while Enhance is on and its files are ready", () => {
+  const ready = parsePromptUpsamplerStatus({ supported: true, downloaded: true, mmproj_downloaded: true });
+  assert.equal(shouldWarmUpsampler(true, ready), true);
+  assert.equal(shouldWarmUpsampler(false, ready), false);
+  assert.equal(shouldWarmUpsampler(true, null), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, downloaded: false }), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, supported: false }), false);
+  assert.equal(shouldWarmUpsampler(true, { ...ready, download: { ...ready.download, downloading: true } }), false);
+  assert.equal(PROMPT_UPSAMPLER_ROUTES.warm, "/api/inference/images/prompt-upsampler/warm");
+  // The panel warms on the toggle, the download finishing and a model switch.
+  const panel = readSrc("features/images/prompt-enhance-panel.tsx");
+  assert.match(panel, /warmPromptUpsampler\(controller\.signal\)[\s\S]{0,600}\}, \[warm, modelKey\]\)/);
+  // Transient declines are asked again, a bounded number of times; memory and placement ones are not.
+  for (const outcome of ["generating", "loading", "gpu", "busy"]) assert.ok(WARM_RETRY_OUTCOMES.has(outcome));
+  for (const outcome of ["tight", "memory", "placement", "shared", "loaded", "scheduled"]) {
+    assert.ok(!WARM_RETRY_OUTCOMES.has(outcome), outcome);
+  }
+  assert.ok(WARM_RETRY_LIMIT * WARM_RETRY_DELAY_MS <= 5 * 60_000);
+  assert.match(panel, /WARM_RETRY_OUTCOMES\.has\(outcome\)/);
+  // Enhance turned off releases the server the warm start brought up.
+  assert.equal(PROMPT_UPSAMPLER_ROUTES.release, "/api/inference/images/prompt-upsampler/release");
+  assert.match(panel, /if \(wasEnabled\.current && !enabled\) releasePromptUpsampler\(\)/);
+  // A warm start waits for a release still in flight, so a quick off / on cannot stop the server it asked for.
+  const api = readSrc("features/images/prompt-upsampler-api.ts");
+  assert.match(api, /warmPromptUpsampler[\s\S]{0,200}await pendingRelease;[\s\S]{0,120}authFetch\(PROMPT_UPSAMPLER_ROUTES\.warm/);
+  assert.match(api, /pendingRelease = release\.catch/);
+  // A reload of the same repo and file stops the upsampler, so the key carries the load too.
+  const page = readSrc("features/images/images-page.tsx");
+  assert.match(page, /modelKey=\{`\$\{status\?\.repo_id \?\? ""\}\|\$\{status\?\.gguf_filename \?\? ""\}\|\$\{loadEpoch\}`\}/);
+  assert.match(page, /if \(wasLoading\.current && busy !== "loading"\) setLoadEpoch/);
 });
 

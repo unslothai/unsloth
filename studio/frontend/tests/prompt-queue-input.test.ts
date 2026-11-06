@@ -58,8 +58,7 @@ test("a drag carrying the queue type is a reorder", () => {
 });
 
 test("file and foreign drags are not claimed", () => {
-  // A claimed file drag would be swallowed: the page dropzone skips events the
-  // row already prevented, so the file would never attach.
+  // The page dropzone skips prevented events, so a claimed file drag never attaches.
   assert.equal(isPromptQueueDragTypes(["Files"]), false);
   assert.equal(isPromptQueueDragTypes(["text/plain"]), false);
   assert.equal(isPromptQueueDragTypes(["text/uri-list", "text/html"]), false);
@@ -78,9 +77,7 @@ const pending = (threadId: string | null, cancelled = false) => ({
   threadId,
 });
 
-// Starting a queue awaits settings hydration. During that gap nothing else
-// marks the thread as queueing, so a plain Enter took the send path and the
-// pending queue then dispatched its own copy of the same prompt.
+// Queue start awaits hydration; without this a plain Enter double-sends the prompt.
 test("a pending start counts as queueing for its own thread", () => {
   assert.equal(
     hasPendingPromptQueueStart([pending("thread-1")], "thread-1"),
@@ -106,8 +103,7 @@ test("nothing pending is not queueing", () => {
   assert.equal(hasPendingPromptQueueStart([], "thread-1"), false);
 });
 
-// A new chat has no id until it persists, so null has to match null rather
-// than being treated as "no thread".
+// A new chat has no id until it persists, so null matches null.
 test("a new chat's pending start is matched on null", () => {
   assert.equal(hasPendingPromptQueueStart([pending(null)], null), true);
   assert.equal(hasPendingPromptQueueStart([pending(null)], "thread-1"), false);
@@ -123,21 +119,17 @@ test("one live reservation among cancelled ones still counts", () => {
   );
 });
 
-// Reading a pasted-text attachment registers its intent in a plain list while
-// the read is in flight, so the same predicate has to work over that shape.
 test("concurrent pasted-text reads are tracked per thread", () => {
   const reads = [pending("thread-1"), pending("thread-2")];
   assert.equal(hasPendingPromptQueueStart(reads, "thread-1"), true);
   assert.equal(hasPendingPromptQueueStart(reads, "thread-2"), true);
   assert.equal(hasPendingPromptQueueStart(reads, "thread-3"), false);
-  // Finishing one read leaves the other counted.
   reads.splice(0, 1);
   assert.equal(hasPendingPromptQueueStart(reads, "thread-1"), false);
   assert.equal(hasPendingPromptQueueStart(reads, "thread-2"), true);
 });
 
-// A submit during the file read is routed to the queue branch, so the read has
-// to be recognisable or it starts a second one and queues a duplicate.
+// A submit during the read is queued, so the read must be recognisable to avoid a duplicate.
 test("the same pasted prompt reads under one key", () => {
   const key = () => pastedTextQueueKey("t1", "notes", ["a1", "a2"]);
   assert.equal(key(), key());
@@ -150,7 +142,6 @@ test("a different thread, text or attachment is a different read", () => {
   assert.notEqual(base, pastedTextQueueKey("t1", "notes", ["a2"]));
 });
 
-// Attachment order is part of the prompt, since the texts are joined in order.
 test("reordered attachments are a different read", () => {
   assert.notEqual(
     pastedTextQueueKey("t1", "notes", ["a1", "a2"]),
@@ -158,7 +149,6 @@ test("reordered attachments are a different read", () => {
   );
 });
 
-// A new chat has no id yet, and the composer survives thread switches.
 test("a null thread does not collide with a named one", () => {
   assert.notEqual(
     pastedTextQueueKey(null, "notes", []),

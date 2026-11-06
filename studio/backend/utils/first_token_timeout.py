@@ -1,12 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Installation-wide local inference wait limit and request-scoped prefill lease.
-
-Infinity represents Unlimited in deadline arithmetic only; socket APIs receive None.
-The mutable wait state crosses asyncio.to_thread's copied context so durable runs can
-renew their lease during an explicitly permitted wait, without disabling orphan cleanup.
-"""
+"""Wait limit and prefill lease; Infinity is unlimited in deadline math, None for sockets; durable
+runs renew the lease during permitted waits without disabling orphan cleanup"""
 
 from __future__ import annotations
 

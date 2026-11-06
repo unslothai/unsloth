@@ -96,8 +96,7 @@ test("pending transcript mutations use the current view and deletion callback", 
 });
 
 test("a failed view switch does not leave the other view's rows on screen", async () => {
-  // `records`/`cursor` are written only by refresh's success path, so a rejected refresh
-  // used to leave the previous view's rows under the new heading, with the wrong cursor.
+  // `records`/`cursor` are written only on refresh success, so a failed refresh must clear them.
   const source = readSrc("features/audio/transcript-gallery.tsx");
   const tree = ts.createSourceFile(
     "transcript-gallery.tsx",
@@ -165,13 +164,11 @@ test("a failed view switch does not leave the other view's rows on screen", asyn
     );
   };
 
-  // History loads normally.
   render().setArchived(false);
   await render().refresh();
   assert.deepEqual(state[0], [{ id: "false" }], "History rows should be loaded");
   assert.equal(state[2], "cursor-false");
 
-  // Switch to Archived; that refresh fails.
   failNext = true;
   render().setArchived(true);
   await render().refresh();

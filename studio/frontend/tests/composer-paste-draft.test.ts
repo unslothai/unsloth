@@ -6,9 +6,13 @@ import test from "node:test";
 
 const store = new Map<string, string>();
 let failWrites = false;
+const windowListeners = new Map<string, ((event: unknown) => void)[]>();
 
-// The draft helpers read window at call time, so a stub is enough here.
 (globalThis as { window?: unknown }).window = {
+  addEventListener: (type: string, listener: (event: unknown) => void) => {
+    windowListeners.set(type, [...(windowListeners.get(type) ?? []), listener]);
+  },
+  removeEventListener: () => {},
   localStorage: {
     getItem: (key: string) => store.get(key) ?? null,
     setItem: (key: string, value: string) => {
@@ -102,6 +106,60 @@ test("composers hear each other's text, never their own", () => {
   assert.equal(latestDraft(), "after stop");
 });
 
+// A fresh module stands in for a newly opened tab or a reload.
+const openTab = () =>
+  import(`../src/features/chat/utils/composer-draft.ts?tab=${Math.random()}`);
+
+test("a new tab or a reload starts from the saved draft", async () => {
+  writeComposerDraft(composerDraftKey(), "saved before the reload");
+  const tab = await openTab();
+  assert.equal(tab.latestDraft(), "saved before the reload");
+});
+
+test("typing or sending in another tab never rewrites this tab's draft", async () => {
+  const tab = await openTab();
+  assert.equal(tab.latestDraft(), "", "nothing saved when the tab opened");
+  const heard: string[] = [];
+  const stop = tab.subscribeDraft(Symbol("chat"), (text: string) => heard.push(text));
+  // The other tab's debounced save, then its send clearing the slot; the browser
+  // tells this tab about each with a storage event.
+  const otherTabWrites = (text: string) => {
+    writeComposerDraft(composerDraftKey(), text);
+    for (const listener of windowListeners.get("storage") ?? []) {
+      listener({ key: composerDraftKey(), newValue: text === "" ? null : text });
+    }
+  };
+  otherTabWrites("typed in the other tab");
+  assert.equal(tab.latestDraft(), "", "a chat switch here does not pick it up");
+  otherTabWrites("");
+  stop();
+  assert.deepEqual(heard, []);
+});
+
+test("this tab keeps its own text after another tab saves", async () => {
+  const tab = await openTab();
+  tab.publishDraft("mine", Symbol("chat"));
+  writeComposerDraft(composerDraftKey(), "theirs");
+  assert.equal(tab.latestDraft(), "mine");
+});
+
+test("a new tab starts from the saved pastes, then keeps its own", async () => {
+  writePasteDraft(composerPasteDraftKey(), ["saved paste"]);
+  const tab = await openTab();
+  assert.deepEqual(tab.latestPasteDraft(), ["saved paste"]);
+  tab.writePasteDraft(tab.composerPasteDraftKey(), []);
+  writePasteDraft(composerPasteDraftKey(), ["pasted in the other tab"]);
+  assert.deepEqual(tab.latestPasteDraft(), [], "a chat switch here does not pick it up");
+});
+
+test("an adopted per-chat paste reaches the restore", async () => {
+  const tab = await openTab();
+  tab.writePasteDraft(tab.composerPasteDraftKey(), []);
+  store.set("chat-draft-pastes:t1", '["old paste"]');
+  assert.equal(tab.adoptLegacyDraft("t1"), true);
+  assert.deepEqual(tab.latestPasteDraft(), ["old paste"]);
+});
+
 test("a failed adoption keeps the old draft rather than losing it", () => {
   store.set("chat-draft:t1", "unsent");
   failWrites = true;
@@ -116,7 +174,6 @@ test("an unsent paste survives a reload", () => {
   writePasteDraft(key, [paste]);
   assert.deepEqual(readPasteDraft(key), [paste]);
 
-  // Several pastes keep their order, and clearing removes the slot.
   writePasteDraft(key, [paste, "second"]);
   assert.deepEqual(readPasteDraft(key), [paste, "second"]);
   writePasteDraft(key, []);
@@ -161,7 +218,6 @@ test("a corrupt paste slot reads as empty rather than throwing", () => {
     store.set(key, raw);
     assert.deepEqual(readPasteDraft(key), []);
   }
-  // Non-string entries are dropped, the rest survive.
   store.set(key, JSON.stringify(["keep", 5, null, "also"]));
   assert.deepEqual(readPasteDraft(key), ["keep", "also"]);
 });

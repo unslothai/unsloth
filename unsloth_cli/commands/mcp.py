@@ -1,11 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""`unsloth mcp add <agent>` and the checks behind `unsloth doctor --mcp`.
-
-Agent configs only name the environment variable that holds the API key. `mcp add`
-never reads the key; doctor sends it to the server to test it and never prints it.
-"""
+"""mcp add never reads the API key (configs name only its env var); doctor tests it, never prints it."""
 
 import copy
 import difflib
@@ -29,6 +25,7 @@ from unsloth_cli._inference import (
     find_studio_server,
     is_loopback_url,
     urlopen_no_redirect,
+    verify_studio_identity,
 )
 from unsloth_cli.commands.start import (
     _codex_source_home,
@@ -501,6 +498,12 @@ def gather_mcp_facts(env_var: str = "UNSLOTH_API_KEY", timeout: float = 5.0) -> 
     # Like the other auto flows, the key only goes to loopback or an explicit UNSLOTH_STUDIO_URL.
     if key and not (is_loopback_url(facts.base) or os.environ.get("UNSLOTH_STUDIO_URL")):
         facts.key, key = "unsent", None
+    elif (
+        key and not os.environ.get("UNSLOTH_STUDIO_URL") and not verify_studio_identity(facts.base)
+    ):
+        # A found port answering /api/health is not proof it is Unsloth Studio: another local user can
+        # listen there. Same check `unsloth chat` and `unsloth start` make before sending a secret.
+        facts.key, key = "unverified", None
     elif key:
         status, detail = _probe(f"{facts.base}/api/inference/loaded-models", key, timeout, None)
         if status is not None and 200 <= status < 300:
@@ -528,6 +531,8 @@ def mcp_verdict(facts: McpFacts) -> Tuple[bool, List[str], List[str]]:
     key_hints = {
         "missing": f"Set {var} to an Unsloth Studio API key (Settings → API).",
         "unsent": f"{facts.base} is not on this machine; set UNSLOTH_STUDIO_URL to test the key.",
+        "unverified": f"{facts.base} did not prove it is this machine's Unsloth Studio, so {var} "
+        "was not sent. If it is (for example through an SSH tunnel), set UNSLOTH_STUDIO_URL.",
         "invalid": f"Unsloth Studio refused the key in {var}. Create one in Settings → API.",
         "error": f"Unsloth Studio failed while checking the key: {facts.key_detail}",
     }
@@ -564,6 +569,7 @@ def mcp_doctor(env_var: str = "UNSLOTH_API_KEY", timeout: float = 5.0) -> int:
         "invalid": "refused",
         "error": "not checked",
         "unsent": "not sent",
+        "unverified": "not sent",
     }
     if facts.base and facts.key in checked:
         key += f", {checked[facts.key]}"

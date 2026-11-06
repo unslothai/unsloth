@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * #8893: picking the model that is already loaded raised "Stop 1 running chat?" and reloaded
- * it. The pick and the status name one model with different strings -- a cached row pinned to
- * a snapshot dir loads by path while its picker row keeps the repo id -- so comparing the row
- * id against the status checkpoint alone read a resident model as a different one.
- */
+/** A pinned cached row loads by path while its picker row keeps the repo id, so ids differ. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -22,8 +17,6 @@ const REPO_ID = "unsloth/Qwen3.5-9B-GGUF";
 const SNAPSHOT =
   "D:\\models\\hub\\models--unsloth--Qwen3.5-9B-GGUF\\snapshots\\a1b2c3";
 
-/** What /api/inference/status publishes for a pinned cached row: the clean public id next to
- * the raw path the load actually ran as. */
 const pinnedStatus = {
   active_model: REPO_ID,
   model_identifier: SNAPSHOT,
@@ -73,8 +66,7 @@ test("a different quant of the same repo is a real reload", () => {
   );
 });
 
-/** A local file load derives its quant label from the filename, so the status reports one the
- * picker row never carries. Comparing them left the reported bug in place for On Device files. */
+/** A local file load derives its quant label from the filename, which the row never carries. */
 test("a standalone .gguf matches the label the backend derived for it", () => {
   assert.equal(
     residentModelMatchesPick(
@@ -89,7 +81,6 @@ test("a standalone .gguf matches the label the backend derived for it", () => {
   );
 });
 
-/** The exemption is for the file's own derived label, not for picking a different quant. */
 test("a repo row still has to name the resident quant", () => {
   assert.equal(
     residentModelMatchesPick(pinnedStatus, {
@@ -100,8 +91,7 @@ test("a repo row still has to name the resident quant", () => {
   );
 });
 
-/** A repo that advanced to a newer snapshot reports the same public id for both, and the
- * inventory repoints load_id at the newest, so matching on the id alone kept stale weights. */
+/** A newer snapshot reports the same public id, so matching on id alone kept stale weights. */
 test("a newer snapshot of the resident repo is a real reload", () => {
   assert.equal(
     residentModelMatchesPick(pinnedStatus, {
@@ -133,9 +123,6 @@ test("nothing resident matches nothing", () => {
   );
 });
 
-/** The rules above only help if the pick is tested before the confirmation is raised: the
- * dialog is what the report is about, and /load answers already_loaded without stopping
- * anything. */
 test("selectModel checks residency before prompting to stop running chats", () => {
   const source = readSrc("features/chat/hooks/use-chat-model-runtime.ts");
   const residencyCheck = source.indexOf(
@@ -147,7 +134,6 @@ test("selectModel checks residency before prompting to stop running chats", () =
   assert.ok(residencyCheck > 0, "selectModel no longer checks residency");
   assert.ok(confirmPrompt > 0, "selectModel no longer confirms running chats");
   assert.ok(residencyCheck < confirmPrompt);
-  // gating the check on an external checkpoint is the shape that left #8893 open
   assert.doesNotMatch(
     source.slice(Math.max(0, residencyCheck - 500), residencyCheck),
     /isExternalModelId\(selectedCheckpoint\)/,

@@ -13,6 +13,7 @@ from typing import Iterable, Optional, Sequence
 
 from hub.utils.hf_tokens import call_with_anonymous_retry
 from loggers import get_logger
+from utils import gguf_names as _gguf_names
 from utils.paths.path_utils import (
     drop_shadowed_appledouble_names as _drop_shadowed_appledouble_names,
     file_contents_available_locally,
@@ -74,59 +75,25 @@ GGUF_QUANT_PREFERENCE = [
 ]
 
 _GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
-_GGUF_QUANT_RE = re.compile(
-    r"(UD-)?"
-    r"((?:MX|NV)FP[0-9]+(?:_[A-Z0-9]+)*"
-    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
-    r"|P?TQ[0-9]+_[0-9]+"
-    r"|Q[0-9]+_K_[A-Z]+"
-    r"|P?Q[0-9]+_(?:[0-9]+(?:_G[0-9]+)?|G[0-9]+)"
-    r"|Q[0-9]+_K"
-    r"|BF16|F16|F32)",
-    re.IGNORECASE,
-)
+_GGUF_QUANT_RE = _gguf_names.GGUF_QUANT_RE
 
 
 def is_mmproj_filename(filename: str) -> bool:
-    return "mmproj" in filename.lower()
+    return _gguf_names.is_mmproj_filename(filename)
 
 
-# Anchored at an END of the stem, never a substring, for the reason is_mtp_drafter_path documents: a name that merely contains the word (Qwen3-Imatrix-Tuned-Q4_K_M.gguf) is a real model, while every published imatrix leads or closes with it.
-_IMATRIX_TOKEN_RE = re.compile(r"^imatrix(?:[._\-]|$)|[._\-]imatrix$", re.IGNORECASE)
+_IMATRIX_TOKEN_RE = _gguf_names.IMATRIX_TOKEN_RE
+_DRAFTER_KINDS = _gguf_names.DRAFTER_KINDS
+_DRAFTER_DIR_KINDS = _gguf_names.DRAFTER_DIR_KINDS
+_DSPARK_BEFORE_QUANT_RE = _gguf_names.DSPARK_BEFORE_QUANT_RE
 
 
 def is_imatrix_filename(path: str) -> bool:
-    """True for a calibration imatrix: ``imatrix.gguf``, ``imatrix_unsloth.gguf``, ``imatrix_unsloth.dat``, ``<model>-imatrix.gguf``, ``<model>.imatrix``. It holds activation statistics for llama-quantize, not a model, and llama-server never opens one, so it is neither a selectable variant nor a companion to fetch: unlike mmproj and the MTP drafter it is excluded outright, everywhere they are. Most repos spell it .dat or .gguf_file, which no GGUF listing sees; the ones that publish imatrix_unsloth.gguf (unsloth/Qwen3.8-27B-GGUF) put a valid GGUF container carrying no model in front of the variant menu, download and loader. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_imatrix_path`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports)."""
-    name = path.replace("\\", "/").rsplit("/", 1)[-1]
-    stem = name.rsplit(".", 1)[0] if "." in name else name
-    return bool(_IMATRIX_TOKEN_RE.search(stem)) or name.lower().endswith(".imatrix")
-
-
-# dspark and dflash are the same DeepSeek V4 Flash drafter: the folder it ships in and the architecture it reports.
-_DRAFTER_KINDS = ("mtp", "dspark", "dflash", "eagle3", "lilicorr")
-
-# Directories only: mtp/ and dspark/ are always a publisher's companion folder, while dflash/ is a family name a user picks for real weights.
-_DRAFTER_DIR_KINDS = ("mtp", "dspark")
-
-# <model>-dspark-<quant>.gguf drafters (prism-ml Bonsai, third-party DSpark GGUFs); a name going on past the quant (DeepSeek-V4-Flash-Dspark-Abliterated-MXFP4-BF16.gguf) is the model.
-_DSPARK_BEFORE_QUANT_RE = re.compile(
-    rf"-dspark-(?:{_GGUF_QUANT_RE.pattern})(?:-[0-9]{{5}}-of-[0-9]{{5}})?\.gguf$",
-    re.IGNORECASE,
-)
+    return _gguf_names.is_imatrix_filename(path)
 
 
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file drafter, a companion to the main model rather than a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4), the ``dspark/`` drafters (DeepSeek V4 Flash), the ``<model>-dspark-<quant>.gguf`` drafters (prism-ml Bonsai) the ``eagle3-*.gguf`` draft heads (ggml-org gpt-oss) and the ``lilicorr-*.gguf`` drafters (NVIDIA Nemotron 3.5). Repos that bake the head into the main GGUF (Qwen) have no such file, so this is False for them. Must be excluded from main-model selection everywhere mmproj is. Matched by basename prefix, by an exact parent dir for ``_DRAFTER_DIR_KINDS``, or by ``_DSPARK_BEFORE_QUANT_RE``; never a bare substring, since the kind names double as family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model. CANONICAL COPY. Two mirrors must change in lockstep: utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub imports; bundles the mmproj check)."""
-    p = path.replace("\\", "/").lower()
-    if not p.endswith(".gguf"):
-        return False
-    parts = [segment for segment in p.split("/") if segment]
-    name, parents = parts[-1], parts[:-1]
-    return (
-        any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
-        or any(kind in parents for kind in _DRAFTER_DIR_KINDS)
-        or _DSPARK_BEFORE_QUANT_RE.search(name) is not None
-    )
+    return _gguf_names.is_mtp_drafter_path(path)
 
 
 def is_reclaimable_drafter_path(path: str) -> bool:

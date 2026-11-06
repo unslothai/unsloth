@@ -9,6 +9,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "unsloth"
+CLI_ROOT = REPO_ROOT / "unsloth_cli"
 
 # studio/ union debt is ratcheted: only shrink this set; fix new files with the future import.
 STUDIO_UNION_DEBT_FILES = frozenset(
@@ -351,8 +352,10 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
         known_typing_names = typing_names(tree)
         # The future import defers annotations only; an assigned value still runs.
         deferred = has_future_annotations(tree)
-        in_unsloth = PACKAGE_ROOT in path.parents
-        annotation_sources = [] if (deferred or not in_unsloth) else evaluated_annotations(tree)
+        in_floor_package = PACKAGE_ROOT in path.parents or CLI_ROOT in path.parents
+        annotation_sources = (
+            [] if (deferred or not in_floor_package) else evaluated_annotations(tree)
+        )
         for expression in annotation_sources:
             for inner in ast.walk(expression):
                 if isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.BitOr):

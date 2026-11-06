@@ -5,7 +5,7 @@
 peer when lspci prints the Krackan die name shared with Krackan Point ("Krackan [Radeon 840M /
 860M Graphics]"), so a runtime-less lone gfx1153 host gets no "gfx1153" from
 _setup_unsupported_gfx_any and setup.sh forwards no --rocm-gfx gfx1153 to
-install_llama_prebuilt.py (whose gfx1153 HIP bundle exists). install.sh (_infer_linux_amd_gfx_arch)
+install_llama_prebuilt.py (which picks a covering ROCm bundle, else Vulkan without hipcc). install.sh (_infer_linux_amd_gfx_arch)
 and install_python_stack.py both skip that line beside a Krackan Point 2 CPU; setup.sh must too.
 Same gap in the marketing-name block (_setup_mkt names the K2, lspci Krackan line = "peer").
 

@@ -14,14 +14,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { ParamSlider } from "@/features/chat";
 import type { ModelOption } from "@/features/model-picker/components/model-selector/types";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import { SpeechToTextIcon } from "@hugeicons/core-free-icons";
+import { ClosedCaptionIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ComponentProps, useEffect, useState } from "react";
 import { type AudioGalleryClip, fetchAudioBlob } from "../api";
 import { audioModelLabel } from "../audio-workspace-utils";
 import { sourceFileUrl } from "../audio-run-request";
 import { ABCompare } from "../components/convert-ab-compare";
-import { Field } from "../components/field";
+import { Field, FieldLabel, FieldTag } from "../components/field";
 import {
   AudioHistoryProvider,
   AudioSourceInput,
@@ -147,7 +147,7 @@ function ConvertInputs({
       {pitchSupport.show ? (
         <div className="grid gap-1.5">
           {pitchSupport.auto ? (
-            <label
+            <FieldLabel
               htmlFor="convert-pitch-auto"
               className="flex items-center justify-between gap-3 text-ui-13 font-medium text-foreground"
             >
@@ -158,7 +158,7 @@ function ConvertInputs({
                 disabled={disabled}
                 onCheckedChange={store.setPitchAuto}
               />
-            </label>
+            </FieldLabel>
           ) : null}
           {pitchSupport.auto &&
           convert.pitchAuto &&
@@ -208,15 +208,15 @@ function SourceTextField({
   return (
     <div className="grid gap-1.5">
       <div className="flex items-center justify-between gap-2">
-        <label
+        <FieldLabel
           htmlFor={CONVERT_SOURCE_TEXT_FIELD_ID}
           className="text-ui-13 font-medium text-foreground"
         >
           What's said in the recording
-          <span className="ml-1.5 font-normal text-muted-foreground">
+          <FieldTag>
             Required
-          </span>
-        </label>
+          </FieldTag>
+        </FieldLabel>
         <Button
           type="button"
           variant="ghost"
@@ -225,7 +225,7 @@ function SourceTextField({
           disabled={!sourceUsable || transcriber.transcribing || disabled}
           onClick={() => void transcriber.transcribe(source)}
         >
-          <HugeiconsIcon icon={SpeechToTextIcon} className="size-3.5" />
+          <HugeiconsIcon icon={ClosedCaptionIcon} className="size-[1em]" />
           {transcriber.transcribing ? "Transcribing…" : "Transcribe"}
         </Button>
       </div>
@@ -322,7 +322,7 @@ export function ConvertFooter({
       ? (convert.switchNotice?.before ?? null)
       : null;
   return (
-    <div className="flex w-full flex-col items-center gap-1.5">
+    <div className="flex w-full max-w-sm flex-col items-center gap-1.5">
       <TtsFooter
         {...props}
         prompt="convert"
@@ -344,7 +344,6 @@ function useSourceSide(clip: AudioGalleryClip | null): {
   src?: string;
   unavailable?: string;
 } {
-  // The saved copy outlives the upload it was made from.
   const savedUrl = clip?.source_saved
     ? `/api/inference/audio/gallery/${encodeURIComponent(clip.id)}/source/file`
     : null;
@@ -410,7 +409,6 @@ export function ConvertOutput({
   return (
     <TtsOutput
       {...props}
-      // The selected clip's line already names the model.
       clipBadge={(clip, place) =>
         place === "history" ? audioModelLabel(clip.model) : null
       }

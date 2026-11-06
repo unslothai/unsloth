@@ -16,7 +16,6 @@ const ASYNC_ATTR = /\basync\b/;
 const UUID_V4 =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
-// Check every HTML entry as raw markup so comments cannot satisfy the patterns.
 const PAGES = readdirSync(new URL("../", import.meta.url))
   .filter((name) => name.endsWith(".html"))
   .map(
@@ -69,7 +68,6 @@ const generate = boot({
 }).randomUUID;
 
 test("the drawn bytes are what the UUID is built from", () => {
-  // A fixed byte stream catches changes to UUID masking and folding.
   cursor = 0;
   const uuid = generate?.() ?? "";
   assert.equal(uuid, "f799fac5-2c00-4cd8-8e79-8fac53c00cd8");

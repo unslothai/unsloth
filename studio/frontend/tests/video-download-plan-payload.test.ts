@@ -1,13 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * The staged-plan request has to carry the same precision the load will send.
- *
- * /video/download-plan refuses a scheme this host cannot honour, so a plan asked without the
- * precision succeeded, staged tens of GB of pipeline weights, and left the refusal to the load
- * afterwards -- which is the whole failure the plan-time check was added to prevent.
- */
+/** /video/download-plan refuses an unsupported precision, so the plan must carry it or GBs
+ * get staged before the load refuses. */
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -61,9 +56,7 @@ test("the staged plan carries the memory request too", () => {
 });
 
 test("the selected H3 task reaches both the plan and the load", () => {
-  // The STAGING plan, sliced out of loadOrStage rather than found by the first
-  // `getVideoDownloadPlan` in the file: the row-sizing footprint probe calls it earlier and only
-  // ever for a named GGUF file, where the partition is the filename, not a task flag.
+  // The STAGING plan, not the earlier footprint probe call for a named GGUF file.
   const flow = source.slice(
     source.indexOf("const loadOrStage = useCallback("),
     source.indexOf("// A GGUF pick can arrive"),
@@ -82,10 +75,7 @@ test("the selected H3 task reaches both the plan and the load", () => {
 });
 
 test("a routed H3 pipeline pick asks for the task instead of loading a default", () => {
-  // The chat picker cannot load a diffusion model, so a pick there arrives on this page as
-  // ?model=. That route calls loadOrStage directly: without the same interception the direct
-  // pick makes, a cached MiniMax H3 silently staged the fl2va denoiser, tens of GB, and left no
-  // way to ask for References.
+  // A ?model= pick from chat calls loadOrStage directly, so it needs the same H3 interception.
   const routeEffect = source.slice(
     source.indexOf("const pick = diffusionRoutePick("),
     source.indexOf("const chooseH3Task = useCallback"),
@@ -102,7 +92,6 @@ test("a routed H3 pipeline pick asks for the task instead of loading a default",
     "the interception must come before the unconditional load",
   );
   assert.ok(routeEffect.includes("setPendingH3Load({"));
-  // One predicate, so the two entry points cannot drift apart again.
   assert.ok(source.includes("function isH3PipelinePick("));
   assert.ok(source.includes("isH3PipelinePick(id, spec.kind, nextFamilyOverride)"));
 });

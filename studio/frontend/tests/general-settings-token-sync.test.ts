@@ -108,6 +108,7 @@ function generalTab(initialToken: string) {
     "@/components/ui/button": componentStub,
     "@/components/ui/dialog": componentStub,
     "@/components/ui/input": { Input: "Input" },
+    "@/components/ui/select": componentStub,
     "@/components/ui/switch": componentStub,
     "@/features/chat": {
       useChatRuntimeStore: Object.assign(
@@ -115,6 +116,7 @@ function generalTab(initialToken: string) {
         { getState: () => runtime },
       ),
     },
+    "@/features/chat-background": { resetChatBackground: async () => true },
     "@/features/chat/stores/sidebar-organization-keys": {
       SIDEBAR_ORGANIZATION_STORAGE_KEY: "sidebar-order",
     },
@@ -135,6 +137,7 @@ function generalTab(initialToken: string) {
       emitTrainingRunsChanged: noop,
       TRAINING_UI_PREFERENCE_KEYS: [],
     },
+    "@/hooks/floating-panel-position": { FLOATING_PANEL_POSITION_KEYS: {} },
     "@/hooks/use-notification-frequency": notificationPrefStub,
     "@/hooks": {
       useHfTokenValidation: () => ({
@@ -150,11 +153,20 @@ function generalTab(initialToken: string) {
       setSpellCheck: noop,
       useSpellCheck: () => true,
     },
+    "@/lib/time-format": {
+      TIME_FORMAT_STORAGE_KEY: "unsloth_time_format",
+      setTimeFormat: noop,
+      useTimeFormat: () => "system",
+    },
     "@/lib/toast": { toast: { success: noop, error: noop } },
     "@/lib/utils": {
       cn: (...values: unknown[]) => values.filter(Boolean).join(" "),
     },
     "lucide-react": componentStub,
+    "@/lib/tick-icon": { Tick02Icon: {} },
+    "@hugeicons/react": { HugeiconsIcon: "HugeiconsIcon" },
+    "@hugeicons/core-free-icons": new Proxy({}, { get: () => ({}) }),
+    "@/lib/folder-icons": new Proxy({}, { get: () => ({}) }),
     "../api/helper-precache": {
       loadHelperPrecacheSettings: never,
       updateHelperPrecacheSettings: never,
@@ -173,6 +185,10 @@ function generalTab(initialToken: string) {
       loadCloseToTray: noop,
       updateCloseToTray: noop,
     },
+    "../api/tray-icon": {
+      loadTrayIconVisible: noop,
+      updateTrayIconVisible: noop,
+    },
     "../api/launch-at-login": {
       loadLaunchAtLogin: noop,
       updateLaunchAtLogin: noop,
@@ -183,13 +199,21 @@ function generalTab(initialToken: string) {
       LIBRARY_SETTINGS_STORAGE_KEY: "library-settings",
       LIBRARY_VIEW_STORAGE_KEY: "library-view",
     },
+    "../lib/client-prefs-pending": {
+      readPending: () => ({ scale: false, browser: false }),
+      writePending: () => undefined,
+    },
+    "../components/full-install-dialog": componentStub,
     "../components/change-password-dialog": componentStub,
     "../components/desktop-repair-control": componentStub,
     "../components/desktop-update-control": componentStub,
     "../components/documents-rag-section": componentStub,
     "../components/language-select": componentStub,
     "../components/download-transport-row": componentStub,
+    "../components/developer-mode-section": componentStub,
+    "../components/engine-versions-section": componentStub,
     "../components/hub-settings-section": componentStub,
+    "../components/ml-warmup-section": componentStub,
     "../components/notification-frequency-select": componentStub,
     "../components/settings-row": componentStub,
     "../components/settings-section": componentStub,

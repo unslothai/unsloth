@@ -2,23 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * The keyless usage example must only be offered for a base admission can accept.
- *
- * `keyless_api_access.keyless_authority_address_allowed` decides that on the backend:
- * loopback always, private LAN under `inference`, nothing else -- no hostname, no
- * IPv4-mapped literal, no unspecified or public address. The panel must give the same
- * answer or it prints a copy-paste `Bearer not-needed` command that answers 401.
- *
- * It has been wrong three ways, each time by testing something adjacent to the real question:
- *   1. `exposure === "private_lan"` short-circuited the host test, so
- *      `unsloth studio -H box.local` advertised keyless for a hostname.
- *   2. the replacement tested literal SYNTAX, so `[::ffff:192.168.1.24]`, `[::]` and
- *      `8.8.8.8` all sailed through.
- *   3. `isPrivateLanHost` unwrapped `::ffff:`, the one thing that form is refused for.
- *
- * So this pins the verdict table itself, not the presence of a guard, mirroring
- * `test_what_the_ui_advertises_matches_what_admission_accepts` in
- * studio/backend/tests/test_keyless_api_access_adversarial.py -- change both together.
+ * The keyless example must only be offered for a base admission accepts
+ * (keyless_api_access.keyless_authority_address_allowed): loopback always, private LAN under
+ * `inference`, never a hostname, IPv4-mapped, unspecified or public address.
  */
 
 import assert from "node:assert/strict";
@@ -29,10 +15,8 @@ import {
   keylessBaseEligible,
 } from "../src/features/settings/components/keyless-example-eligibility.ts";
 
-// base -> whether the panel may advertise keyless for it, under scope=inference and the
-// widest exposure the backend ever reports. Mirrors
-// test_what_the_ui_advertises_matches_what_admission_accepts in
-// studio/backend/tests/test_keyless_api_access_adversarial.py -- change both together.
+// Mirrors test_what_the_ui_advertises_matches_what_admission_accepts in
+// studio/backend/tests/test_keyless_api_access_adversarial.py: change both together.
 const TABLE: [string, boolean, string][] = [
   ["http://127.0.0.1:8888", true, "loopback"],
   ["http://127.0.0.2:8888", true, "loopback, whole 127/8"],
@@ -73,8 +57,7 @@ test("the keyless example is offered exactly where admission accepts the authori
 });
 
 test("exposure alone cannot make a rejected base eligible", () => {
-  // The regression that started this: `private_lan` is computed from the RESOLVED
-  // address, so it must never widen a base the authority rule rejected.
+  // `private_lan` is computed from the RESOLVED address, so it must never widen a rejected base.
   for (const exposure of ["private_lan", "network", null] as const) {
     assert.equal(
       keylessBaseEligible("http://box.local:8888", "inference", exposure),

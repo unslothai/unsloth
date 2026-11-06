@@ -263,7 +263,6 @@ def test_compiled_kernels_keep_fp_fusion(tmp_path, default):
     expected = {
         "rms_layernorm._rms_layernorm_forward",
         "rms_layernorm._rms_layernorm_backward",
-        "rope_embedding._rope_embedding",
         "rope_embedding._rope_embedding_QK",
         "cross_entropy_loss._cross_entropy_forward",
         "cross_entropy_loss._chunked_cross_entropy_forward",
@@ -293,7 +292,7 @@ def test_compiled_kernels_keep_fp_fusion(tmp_path, default):
     if not result["hip"]:
         # Contraction really happened: fma.rn in PTX.
         for name in (
-            "rope_embedding._rope_embedding",
+            "rope_embedding._rope_embedding_QK",
             "geglu._exact_forward_kernel",
             "swiglu._DWf_DW_dfg_kernel",
         ):

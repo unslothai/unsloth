@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Source contracts cover decisions inside a React hook whose awaits span dialogs,
-// backend unload and load. Keep each regression named; share only its assertion runner.
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
@@ -42,7 +40,7 @@ const blocks = {
     "if (pendingReplacementRollback?.config)",
   ),
   rollbackClear: section(runtime, "function restoreRollbackConfigForClear(", "const approvedRemoteCodeFingerprints"),
-  preliminaryUnload: section(runtime, "if (!forceCancelActive && !touchesOnlySelected) {", "// Set either way: /load can still leave no model resident"),
+  preliminaryUnload: section(runtime, "if (!forceCancelActive && !touchesOnlySelected", "// Set either way: /load can still leave no model resident"),
   preflightLease: section(runtime, "// Hold the lifecycle lease through confirmation and loading.", "if (lifecycleLease === null) {"),
   loadGate: section(runtime, "async function performLoad(): Promise<void> {", "const pendingLoadConfig ="),
   stagedMetadata: section(runtime, "if (isGguf && isDiffusion === undefined) {", "const targetIsDiffusion = isDiffusion === true;"),
@@ -108,6 +106,10 @@ const contracts: Contract[] = [
       ["cancel", /activeLoadRunRef\.current = releaseOwnedModelLoadRun\(/]],
     order: [["preliminaryUnload", "await unloadModel({ model_path: currentCheckpoint });", "loadRun.residentModelUnloaded = true;"],
       ["cancel", "run.residentModelUnloaded", "activeLoadRunRef.current = releaseOwnedModelLoadRun("]] },
+  { name: "a GGUF that still has to download keeps the resident model until /load stops it",
+    match: [["runtime", /loadRun\.downloadKeepsResident = isGguf && !downloadComplete;\s*\/\/[^\n]*\n\s*if \(!forceCancelActive && !touchesOnlySelected && !loadRun\.downloadKeepsResident\) \{\s*await unloadModel\(/],
+      ["cancel", /\(run\.forceCancelActive \|\| run\.downloadKeepsResident\) &&\s*!run\.residentModelUnloaded/],
+      ["cancel", /\(run\.forceCancelActive \|\| run\.downloadKeepsResident\) &&\s*run\.residentModelUnloaded/]] },
   { name: "a cancelled preflight keeps the slot until its coroutine unwinds",
     match: [["runtime", /settledPromise: Promise<void>;/], ["runtime", /markLoadRunSettled = resolve;/],
       ["runtime", /settledPromise: loadRunSettled,/],
@@ -135,8 +137,6 @@ const contracts: Contract[] = [
     match: [["runtime", /residentUnloaded\?: boolean;/],
       ["inherit", /residentUnloaded: cancelledRun\.residentModelUnloaded,/], ["registration", /residentModelUnloaded: inheritedPendingRollback\?\.residentUnloaded === true,/],
       ["loadGate", /let previousWasUnloaded =\n\s*inheritedPendingRollback\?\.residentUnloaded === true;/],
-      // The rollback is gated on the inherited unloaded state; further guards (#11729's
-      // answered-failure check) may follow, and the formatter may wrap the condition.
       ["runtime", /if \(\s*previousWasUnloaded &&\s*previousCheckpoint\s*(?:&&|\))/]] },
   { name: "a failed cancellation clears the rollback the replacement would inherit",
     match: [["loop", /pendingReplacementRollback = null;/], ["loop", /if \(throwOnError\) throw new Error\(message\);/]],
@@ -269,6 +269,7 @@ test("declining B before A unloads X lets C inherit X's newly edited settings", 
   const decline = section(runtime, "if (!stopDecision.proceed) {", "// Re-check the tracked picker for a load");
   const chooseC = section(runtime, "if (pendingReplacementRollback?.config) {", "// The cancelled run's own rollback target");
   const declineB = new Function("state", `let pendingReplacementRollback = state.pending;
+    let modelLoadCancelEpoch = 0;
     const modelSelectionIntentEpoch = state.epoch, loadIntentId = 2, stopDecision = { proceed: false };
     const releasePreflightLifecycleLease = () => { state.released = true; };
     const restorePreviousConfig = () => { state.restored = true; };

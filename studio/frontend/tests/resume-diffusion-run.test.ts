@@ -10,8 +10,6 @@ const { buildDiffusionResumePayload, resumeActionLabel } = await import(
   "../src/features/images/train/resume-diffusion-run.ts"
 );
 
-// A finished run's persisted record, as GET /api/train/diffusion/runs/{id} returns it. `config`
-// is the scrubbed start request the run was launched with, which a resume replays verbatim.
 function stoppedRun(
   overrides: Partial<DiffusionTrainingRunDetail> = {},
 ): DiffusionTrainingRunDetail {
@@ -32,7 +30,6 @@ function stoppedRun(
       train_steps: 500,
       lora_rank: 16,
       seed: 42,
-      // Left over from the run that produced this record; both must be replaced, not inherited.
       resume_from_checkpoint: "/studio/outputs/my-lora/checkpoint-3",
       resumed_from_job_id: "b".repeat(32),
     },
@@ -42,13 +39,12 @@ function stoppedRun(
 
 test("replays the run's own config and points it at the run's output directory", () => {
   const payload = buildDiffusionResumePayload(stoppedRun(), { hfToken: "hf_x" });
-  // train_steps is the TARGET TOTAL: the backend continues at 12 and stops at 500.
+  // train_steps is the target total, not additional steps.
   assert.equal(payload.train_steps, 500);
   assert.equal(payload.lora_rank, 16);
   assert.equal(payload.seed, 42);
   assert.equal(payload.base_model, "stabilityai/sdxl-turbo");
-  // The EXACT bundle the backend named, not just the folder: two runs can share an output
-  // directory, so "newest in that folder" is not necessarily the step the UI is showing.
+  // Two runs can share an output dir, so the exact bundle is needed, not the newest.
   assert.equal(
     payload.resume_from_checkpoint,
     "/studio/outputs/my-lora/checkpoint-11",

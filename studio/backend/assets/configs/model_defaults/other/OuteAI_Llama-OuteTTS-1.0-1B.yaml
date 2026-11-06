@@ -1,14 +1,10 @@
-# Model defaults for OuteAI/Llama-OuteTTS-1.0-1B
-# Based on Oute_TTS_(1B).ipynb
 # Also applies to: OuteAI/Llama-OuteTTS-1.0-1B
-# added inference parameters from unsloth notebook
 
 audio_type: dac
 
 training:
   eval_steps: 0
   max_seq_length: 2048
-  # num_epochs: 4
   num_epochs: 0
   learning_rate: 2e-4
   batch_size: 2

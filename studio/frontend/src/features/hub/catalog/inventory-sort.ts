@@ -44,14 +44,13 @@ export function inventoryItemFormatRank(item: InventoryItem): number {
   return FORMAT_RANK[inventoryRowFormat(item.row)];
 }
 
-/** row timestamp in epoch milliseconds, or null when unknown. */
 export function inventoryItemUpdatedAt(item: InventoryItem): number | null {
   return item.variant === "cached"
     ? (item.row.lastModified ?? null)
     : item.row.updatedAt;
 }
 
-/** newest known timestamp first; preserve source order for ties and unknowns. */
+/** Newest first; ties and unknowns keep source order. */
 export function compareInventoryItemsByRecent(
   a: InventoryItem,
   b: InventoryItem,

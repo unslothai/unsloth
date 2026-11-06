@@ -92,6 +92,14 @@ def test_unknown_host_reading_keeps_the_unified_reserve(host):
     assert _plan().estimates["safe_device_budget_mib"] == POOL_FREE - int(POOL_TOTAL * 0.20)
 
 
+@pytest.mark.parametrize("device", ["mps", "cpu"])
+def test_a_unified_snapshot_of_another_device_keeps_the_unified_reserve(host, device):
+    memory = DeviceMemory(device, device, "unified_memory", POOL_FREE, POOL_TOTAL)
+    assert dm._safe_device_budget_mib(memory) == POOL_FREE - int(POOL_TOTAL * 0.20)
+    cuda = DeviceMemory("cuda", "cuda", "unified_memory", POOL_FREE, POOL_TOTAL)
+    assert dm._safe_device_budget_mib(cuda) == POOL_FREE - int(POOL_TOTAL * 0.10)
+
+
 @pytest.mark.parametrize("platform", ["win32", "darwin"])
 def test_other_platforms_unchanged(host, platform):
     host["platform"] = platform
@@ -105,10 +113,11 @@ def test_nvidia_unified_memory_unchanged(host):
     assert _plan().estimates["safe_device_budget_mib"] == POOL_FREE - int(POOL_TOTAL * 0.20)
 
 
-def test_discrete_vram_unchanged(host):
-    assert _plan(kind = "discrete_vram").estimates["safe_device_budget_mib"] == POOL_FREE - int(
-        POOL_TOTAL * 0.10
-    )
+def test_discrete_vram_keeps_the_discrete_reserve(host):
+    # a real discrete card: the fixed discrete reserve (diffusion_memory.discrete_reserve_mib)
+    assert _plan(kind = "discrete_vram").estimates[
+        "safe_device_budget_mib"
+    ] == POOL_FREE - dm.discrete_reserve_mib(POOL_TOTAL)
 
 
 def test_fast_budget_follows_the_same_reserve(host):
@@ -120,7 +129,7 @@ def test_fast_budget_follows_the_same_reserve(host):
 
 
 def test_total_capacity_gates_follow_the_same_reserve(host):
-    # 47 GiB fits 0.85 * (64 - 6.4), not 0.85 * (64 - 12.8): a disagreeing prefetch gate drops the load to GGUF.
+    # 47 GiB fits 0.85 * (64 - 6.4), not 0.85 * (64 - 12.8): a disagreeing prefetch gate drops to GGUF.
     memory = DeviceMemory("cuda", "cuda:0", "unified_memory", POOL_FREE, POOL_TOTAL)
     plan = types.SimpleNamespace(
         estimates = {"resident_required_mib": 47 * 1024}, device_memory = memory

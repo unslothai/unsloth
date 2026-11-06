@@ -1109,6 +1109,8 @@ gemma4_template = \
     {%- endif -%}
     {{ '<turn|>\n' }}
 {%- endif -%}
+{%- set ns_turn = namespace(last_user_idx=-1) -%}
+{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}
 {%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
 {%- for message in loop_messages -%}
     {%- if message['role'] != 'tool' -%}
@@ -1124,6 +1126,12 @@ gemma4_template = \
     {%- if not continues -%}
         {%- set ns_tool.turns = ns_tool.turns + 1 -%}
         {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- endif -%}
     {%- endif -%}
     {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
     {%- if ns_tool.tool_calls -%}
@@ -1444,6 +1452,8 @@ gemma4_thinking_template = \
     {{ '<turn|>\n' }}
 {%- endif -%}
 {%- set ns_tool = namespace(turns=0, tool_calls=false, tool_response=false) -%}
+{%- set ns_turn = namespace(last_user_idx=-1) -%}
+{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}
 {%- for message in loop_messages -%}
     {%- if message['role'] != 'tool' -%}
     {%- set continues = message['role'] == 'assistant' and ns_tool.tool_calls -%}
@@ -1458,6 +1468,12 @@ gemma4_thinking_template = \
     {%- if not continues -%}
         {%- set ns_tool.turns = ns_tool.turns + 1 -%}
         {{ '<|turn>' + role + '\n' }}
+    {%- endif -%}
+    {%- if role == "model" -%}
+        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
+        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
+            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
+        {%- endif -%}
     {%- endif -%}
     {%- set ns_tool.tool_calls = message.get('tool_calls') -%}
     {%- if ns_tool.tool_calls -%}
@@ -1581,26 +1597,12 @@ DEFAULT_SYSTEM_MESSAGE["gemma-4-thinking"] = None
 CHAT_TEMPLATES["gemma4-thinking"] = (gemma4_thinking_template, gemma4_template_eos_token, False, gemma4_ollama,)
 DEFAULT_SYSTEM_MESSAGE["gemma4-thinking"] = None
 
-# 26B-A4B / 31B generate after an empty thought channel their template omits from history; final-turn reasoning fills it.
-_gemma4_model_turn = "{{ '<|turn>' + role + '\n' }}\n"
+# 26B-A4B / 31B generate after an empty thought channel their template omits from history; with thinking off, model turns without reasoning get it.
 gemma4_empty_thought_template = gemma4_thinking_template.replace(
-    _gemma4_model_turn + "    {%- endif -%}\n",
-    _gemma4_model_turn + "    {%- endif -%}\n" + \
-"""    {%- if role == "model" -%}
-        {%- set thinking_text = message.get('reasoning') or message.get('reasoning_content') -%}
-        {%- if thinking_text and loop.index0 > ns_turn.last_user_idx -%}
-            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}
-        {%- elif not thinking and not continues -%}
-            {{ '<|channel>thought\n<channel|>' }}
-        {%- endif -%}
-    {%- endif -%}
-""",
-    1,
-).replace(
-    "{%- for message in loop_messages -%}",
-    "{%- set ns_turn = namespace(last_user_idx=-1) -%}\n"
-    "{%- for m in loop_messages -%}{%- if m['role'] == 'user' -%}{%- set ns_turn.last_user_idx = loop.index0 -%}{%- endif -%}{%- endfor -%}\n"
-    "{%- for message in loop_messages -%}",
+    "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n",
+    "            {{ '<|channel>thought\n' + thinking_text + '\n<channel|>' }}\n"
+    "        {%- elif not thinking and not continues -%}\n"
+    "            {{ '<|channel>thought\n<channel|>' }}\n",
     1,
 )
 assert gemma4_empty_thought_template != gemma4_thinking_template
@@ -1622,6 +1624,9 @@ TEMPLATE """{{- range $i, $_ := .Messages }}
 {{- end }}"""
 '''
 GEMMA4_TEMPLATE_NAMES = ("gemma-4", "gemma4", "gemma-4-thinking", "gemma4-thinking",)
+# Unsloth's gemma-4-thinking primes it in the generation prompt for every size, in every release
+_gemma4_thinking_prompt_empty_thought = "    {%- if not thinking -%}\n        {{ '<|channel>thought\n<channel|>' }}\n    {%- endif -%}\n"
+assert _gemma4_thinking_prompt_empty_thought in gemma4_thinking_template
 
 
 def _gemma4_wants_empty_thought(*holders):
@@ -1630,8 +1635,7 @@ def _gemma4_wants_empty_thought(*holders):
         template = getattr(holder, "chat_template", None)
         if isinstance(template, dict): template = template.get("default")
         if not isinstance(template, str): continue
-        # Unsloth's gemma-4-thinking primes it for every size
-        if template.endswith(gemma4_thinking_template): continue
+        template = template.replace(_gemma4_thinking_prompt_empty_thought, "")
         if "<|channel>thought\\n<channel|>" in template or "<|channel>thought\n<channel|>" in template:
             return True
     return False
@@ -1906,12 +1910,12 @@ gptoss_template = \
     {#- At this point only assistant/user/tool messages should remain #}
     {%- if message.role == 'assistant' -%}
         {#- Checks to ensure the messages are being passed in the format we expect #}
-        {%- if "content" in message %}
+        {%- if message.content is string %}
             {%- if "<|channel|>analysis<|message|>" in message.content or "<|channel|>final<|message|>" in message.content %}
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the content field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
         {%- endif %}
-        {%- if "thinking" in message %}
+        {%- if message.thinking is string %}
             {%- if "<|channel|>analysis<|message|>" in message.thinking or "<|channel|>final<|message|>" in message.thinking %}
                 {{- raise_exception("You have passed a message containing <|channel|> tags in the thinking field. Instead of doing this, you should pass analysis messages (the string between '<|message|>' and '<|end|>') in the 'thinking' field, and final messages (the string between '<|message|>' and '<|end|>') in the 'content' field.") }}
             {%- endif %}
@@ -1952,16 +1956,16 @@ gptoss_template = \
         {%- elif loop.last and not add_generation_prompt %}
             {#- Only render the CoT if the final turn is an assistant turn and add_generation_prompt is false #}
             {#- This is a situation that should only occur in training, never in inference. #}
-            {%- if "thinking" in message %}
+            {%- if message.thinking is string %}
                 {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
             {%- endif %}
             {#- <|return|> indicates the end of generation, but <|end|> does not #}
             {#- <|return|> should never be an input to the model, but we include it as the final token #}
             {#- when training, so the model learns to emit it. #}
             {{- "<|start|>assistant<|channel|>final<|message|>" + message.content + "<|return|>" }}
-        {%- elif "thinking" in message %}
-            {#- CoT is dropped during all previous turns, so we never render it for inference #}
-            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.content + "<|end|>" }}
+        {%- elif message.thinking is string and message.content is not string %}
+            {#- A previous turn with only CoT and no final answer: keep the analysis message #}
+            {{- "<|start|>assistant<|channel|>analysis<|message|>" + message.thinking + "<|end|>" }}
             {%- set last_tool_call.name = none %}
         {%- else %}
             {#- CoT is dropped during all previous turns, so we never render it for inference #}
@@ -2466,9 +2470,12 @@ def get_chat_template(
 ):
     assert(type(map_eos_token) is bool)
     import sys
-    is_mlx_backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None) == "mlx"
+    _backend = getattr(sys.modules.get("unsloth"), "DEVICE_TYPE", None)
+    is_mlx_backend = _backend == "mlx"
+    # The CPU backend, like MLX, never loads the GPU model stack that models._utils / save pull in.
+    is_light_backend = _backend in ("mlx", "cpu")
     if use_zoo_tokenizer_patch is None:
-        use_zoo_tokenizer_patch = is_mlx_backend
+        use_zoo_tokenizer_patch = is_light_backend
 
     # mlx-lm's TokenizerWrapper._tokenizer is the HF tokenizer, not the Rust backend the vocab-edit
     # paths below need; unwrap here, re-wrap before return.
@@ -2729,7 +2736,7 @@ def get_chat_template(
                 setattr(_processor, _token + "_id", getattr(tokenizer, _token + "_id"))
         tokenizer = _processor
 
-    if patch_saving and not is_mlx_backend:
+    if patch_saving and not is_light_backend:
         from .save import patch_saving_functions
         tokenizer = patch_saving_functions(tokenizer, vision = _processor is not None)
 

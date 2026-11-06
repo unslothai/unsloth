@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Seed an official image PIPELINE pick with its hosted pre-quantized denoiser.
-
-A ``kind == "pipeline"`` pick assembles every component from one repo, so the only way to run a
-quantised denoiser without materialising the bf16 shards is handing ``from_pretrained`` an
-already-quantised ``transformer=``. Torch-free at import."""
+"""Seeds an official pipeline pick with its hosted pre-quantized transformer to avoid bf16 shards;
+torch-free at import"""
 
 from __future__ import annotations
 
@@ -13,8 +10,7 @@ from typing import Any, Optional
 
 from .diffusion_families import IDEOGRAM4_FAMILY_NAME
 
-# The planner DECIDED against the seed, unlike never having asked: the pull kept the dense shards, so
-# the loader must not re-take the decision and fetch the artifact inline.
+# Planner declined (dense shards kept): the loader must not re-decide and fetch the artifact inline.
 PIPELINE_SEED_DECLINED = "__declined__"
 
 DENOISER_COMPONENT = "transformer"
@@ -136,7 +132,11 @@ def denoiser_prequant_pipe_kwargs(
         from .diffusion_prequant import load_prequantized_transformer
         from .diffusion_transformer_quant import DEFAULT_MIN_LINEAR_FEATURES
 
-        transformer_cls = getattr(diffusers, str(getattr(fam, "transformer_class", "")), None)
+        class_name = str(getattr(fam, "transformer_class", ""))
+        transformer_cls = getattr(diffusers, class_name, None)
+        if transformer_cls is None:
+            from .diffusion_moss_image import in_tree_class
+            transformer_cls = in_tree_class(class_name)
         if transformer_cls is None:
             _warn(
                 logger,
@@ -186,10 +186,7 @@ def denoiser_prequant_pipe_kwargs(
 
 
 def prequant_artifact_label(source: Any, module: Any = None) -> Optional[str]:
-    """``prequant:<repo>/<file>`` for a hosted artifact, ``prequant:<path>`` for a local override;
-    the scheme alone cannot tell either from a runtime quantise. ``module`` is the seeded denoiser,
-    which carries the file that really loaded: a repo holding only ``fallback_filename`` serves
-    that one, and ``source.filename`` would then name a file nobody fetched."""
+    """Labels the file that loaded (on module), since a fallback-only repo serves a different file."""
     if source is None:
         return None
     kind = getattr(source, "kind", None)

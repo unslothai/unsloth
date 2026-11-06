@@ -25,6 +25,16 @@ export function fitOutputType(dataUrl: string): "image/jpeg" | "image/png" {
   return /^data:image\/(jpeg|jpg|pjpeg)[;,]/i.test(dataUrl) ? "image/jpeg" : "image/png";
 }
 
+export function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () =>
+      typeof reader.result === "string" ? resolve(reader.result) : reject(new Error("Could not read the image"));
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the image"));
+    reader.readAsDataURL(blob);
+  });
+}
+
 /** Anything that fits, or that this browser cannot decode, is returned unchanged so the server still reports it. */
 export async function fitImageDataUrl(dataUrl: string, maxSide: number): Promise<string> {
   let image: HTMLImageElement;

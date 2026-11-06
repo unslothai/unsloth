@@ -26,8 +26,6 @@ test("silence keeps a pre-recording draft instead of sending it", () => {
   assert.equal(dictationProducedText("draft", "draft"), false);
 });
 
-// Anchored on the text at session start, so a final result identical to the
-// interim the browser engine already streamed in still counts as produced.
 test("a final transcript matching its interim still sends", () => {
   assert.equal(dictationProducedText("", "hello there"), true);
   assert.equal(dictationProducedText("draft", "draft hello there"), true);
@@ -50,8 +48,6 @@ test("a transcript submits in the composer the send started in", () => {
   assert.equal(shouldSubmitDictation(base), true);
 });
 
-// The composer is reused across thread switches, so a send that lands after
-// the move would otherwise submit the destination thread's draft.
 test("a thread switch during transcription drops the send", () => {
   assert.equal(
     shouldSubmitDictation({
@@ -63,8 +59,6 @@ test("a thread switch during transcription drops the send", () => {
   );
 });
 
-// The identity has to survive a new chat's first persist, which moves
-// activeThreadId from null to the remote id without changing the composer.
 test("hydrating a new chat keeps the pending send alive", () => {
   assert.equal(shouldSubmitDictation(base), true);
 });
@@ -81,8 +75,6 @@ test("silence in the original composer sends nothing", () => {
   );
 });
 
-// The plus menu stays open while recording: inserting a saved prompt changes
-// the composer without any speech, which text alone cannot tell apart.
 test("a menu insertion with no transcript sends nothing", () => {
   assert.equal(
     shouldSubmitDictation({
@@ -122,12 +114,10 @@ test("the composer's own unavailable states block regardless of a run", () => {
   assert.equal(dictationSendBlocked({ ...open, researchActive: true }), true);
 });
 
-// Plain text queues while a response runs, which is what the bar exists for.
 test("a running response alone does not block", () => {
   assert.equal(dictationSendBlocked({ ...open, runActive: true }), false);
 });
 
-// Only text can be queued, so these block a send that would have to queue.
 test("non-queueable content blocks only while a run is active", () => {
   for (const key of [
     "queueDisabled",
@@ -143,8 +133,6 @@ test("non-queueable content blocks only while a run is active", () => {
   }
 });
 
-// The case the button gate cannot cover: an attachment added after the press,
-// whose upload finishes before transcription does.
 test("an attachment completing mid-transcription blocks a queued send", () => {
   assert.equal(
     dictationSendBlocked({

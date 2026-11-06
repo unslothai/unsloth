@@ -26,6 +26,11 @@ for _up in _iso.parents:
 # Loaded by path: tests/_shared is put on sys.path only below.
 import os as _os  # noqa: E402
 
+# The suite predates the CPU training backend: a GPU-less runner must keep refusing `import unsloth`
+# (so GPU-path tests skip there, as before) and stubbed-torch tests must not inherit this host's
+# CPU-fallback answer. tests/test_cpu_backend_init.py removes it to exercise the backend itself.
+_os.environ.setdefault("UNSLOTH_DISABLE_CPU_FALLBACK", "1")
+
 _share_path = _iso.parent / "_shared" / "xdist_cpu_share.py"
 if _share_path.is_file():
     _spec = _ilu.spec_from_file_location("xdist_cpu_share", _share_path)
@@ -45,6 +50,11 @@ _shared_dir = _iso.parent / "_shared"
 if _shared_dir.is_dir() and str(_shared_dir) not in _sys.path:
     _sys.path.insert(0, str(_shared_dir))
 
+# pytest 9.2's monkeypatch deletes a torch config entry on undo instead of restoring it; see torch_config_guard.py.
+from torch_config_guard import install_monkeypatch_fix  # noqa: E402
+
+install_monkeypatch_fix()
+
 import importlib.util
 import os
 import sys
@@ -63,6 +73,24 @@ def _contain_installer_venv_root(tmp_path_factory, monkeypatch):
     """Imported in the body because tests/_shared is added to sys.path further down this file."""
     from installer_venv_root import contain_installer_venv_root
     contain_installer_venv_root(monkeypatch, tmp_path_factory)
+
+
+@pytest.fixture(autouse = True)
+def _no_deleted_torch_config_entries():
+    """A test that leaves a dynamo / inductor config entry deleted errors at its own teardown; see
+    tests/_shared/torch_config_guard.py."""
+    from torch_config_guard import check_after_test, install_delete_recorder
+
+    install_delete_recorder()
+    yield
+    check_after_test()
+
+
+@pytest.hookimpl(trylast = True)
+def pytest_collection_modifyitems(config, items):
+    """After xdist tags grouped tests; see tests/_shared/xdist_group_check.py."""
+    from xdist_group_check import check
+    check(config, items)
 
 
 def _has_real_accelerator() -> bool:
@@ -168,6 +196,15 @@ def _install_device_type_stub(name: str) -> None:
     stub.hip_visible_archs = lambda: []
     stub.cuda_visible_capabilities = lambda *a, **k: []
     stub.cuda_gate_capabilities = lambda: []
+    stub.cuda_current_capability = lambda: None
+    stub.cuda_bf16_capability = lambda: None
+    stub.distributed_launch = lambda: False
+    stub.apply_pre_volta_compile_workaround = lambda *a, **k: False
+    stub.hip_current_arch = lambda: ""
+    stub.arch_breaks_compile = lambda arch: False
+    stub.cuda_order_mismatch_names = lambda: []
+    stub.xpu_supports_native_bf16 = lambda: True
+    stub.zoo_shares_xpu_bf16 = lambda: False
     sys.modules[name] = stub
 
 
@@ -199,3 +236,14 @@ def _apply_upstream_import_fixes_for_tests() -> None:
 
 
 _apply_upstream_import_fixes_for_tests()
+
+
+@pytest.fixture(scope = "session")
+def _kernel_lock_dir(tmp_path_factory):
+    return str(tmp_path_factory.mktemp("kernel-locks"))
+
+
+@pytest.fixture(autouse = True)
+def _isolated_kernel_install_locks(monkeypatch, _kernel_lock_dir):
+    # Tests never take (or create) the environment's real kernel install locks.
+    monkeypatch.setenv("UNSLOTH_KERNEL_LOCK_DIR", _kernel_lock_dir)

@@ -264,9 +264,7 @@ def test_training_pin_still_falls_back_to_metadata_only_snapshots(tmp_path):
 
 
 def test_training_pin_skips_a_weights_only_snapshot_without_metadata(tmp_path):
-    # A newer weights-only fetch (interrupted download, or an allow_patterns pull that never took
-    # config.json) must not displace an older complete sibling: the start route rejects a snapshot
-    # with no loader metadata, so picking it 400s a run that used to work.
+    # A newer weights-only fetch must not displace an older complete sibling (start route 400s).
 
     from core.training.training import _resolve_model_snapshot
 
@@ -283,8 +281,7 @@ def test_training_pin_skips_a_weights_only_snapshot_without_metadata(tmp_path):
 
 
 def test_training_pin_ignores_weight_names_the_start_route_rejects(tmp_path):
-    # consolidated.safetensors has no transformers loader path and is not in _MODEL_WEIGHT_CANDIDATES,
-    # so treating it as "has weights" selects a snapshot the start route then rejects.
+    # consolidated.safetensors has no transformers loader, so it does not count as weights.
 
     from core.training.training import _resolve_model_snapshot
 

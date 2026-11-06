@@ -1,18 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""The "not supported yet" rewrite must not read the child's own output.
-
-A llama-server failure now carries a tail of the child's stdout. The route
-scans the whole error string for phrases like "does not support", so once that
-tail was attached, any llama.cpp line containing one of them rewrote the
-diagnosis to "This model is not supported yet. Try a different model." -- for a
-failure that had nothing to do with the checkpoint. llama.cpp really does print
-such lines, for instance when a Vulkan device lacks 16-bit storage, so this was
-reachable on Linux and Windows as much as on macOS.
-
-The evidence still reaches the user; it just no longer votes on the diagnosis.
-"""
+"""The unsupported-model hint must read only our diagnosis, not llama-server's stdout tail."""
 
 from __future__ import annotations
 

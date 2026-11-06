@@ -2,7 +2,7 @@
 
 Fine-tune and run LLMs on AMD GPUs with no setup. This image carries the full training stack built against ROCm: PyTorch with ROCm 7.2, Unsloth, unsloth-zoo, a bitsandbytes build with the ROCm 4-bit fix, triton-rocm, TRL, PEFT and diffusers.
 
-This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsloth/unsloth), which is CUDA-only. Source: [`docker/Dockerfile.rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.rocm). Guide: [docs.unsloth.ai](https://docs.unsloth.ai/get-started/install/docker).
+This is the AMD counterpart to [`unsloth/unsloth`](https://hub.docker.com/r/unsloth/unsloth), which is CUDA-only. Source: [`docker/Dockerfile.rocm`](https://github.com/unslothai/unsloth/blob/main/docker/Dockerfile.rocm). Guide: [unsloth.ai/docs](https://unsloth.ai/docs/get-started/install/docker).
 
 ## Quick start
 
@@ -130,7 +130,7 @@ docker run --rm $GPU_FLAGS --ipc=host -p 127.0.0.1:8000:8000 -p 127.0.0.1:8888:8
 | `UNSLOTH_SKIP_GPU_CHECK=1` | skip the startup diagnostics |
 | `HSA_OVERRIDE_GFX_VERSION` | present an unsupported card as a supported one. Ignored on images with native kernels for the card |
 | `HF_TOKEN` | forwarded for gated models |
-| `UNSLOTH_STUDIO_PASSWORD` | `studio` tag: the initial admin password, first boot only; ignored once one is stored. Unset, Studio generates one and names the file it wrote in the log |
+| `UNSLOTH_STUDIO_PASSWORD` | `studio` tag: the initial admin password, first boot only; ignored once one is stored. Unset, Unsloth Studio generates one and names the file it wrote in the log |
 
 Model downloads land in `/workspace/.cache/huggingface`, which is in the container's writable layer unless you mount it. Mount it to keep them, and to reuse what the host has already downloaded.
 
@@ -140,5 +140,5 @@ The build's own record is in the image: `cat /etc/unsloth-rocm-build` reports th
 
 - Source and issues: [github.com/unslothai/unsloth](https://github.com/unslothai/unsloth)
 - Docker files: [`docker/`](https://github.com/unslothai/unsloth/tree/main/docker)
-- Documentation: [docs.unsloth.ai](https://docs.unsloth.ai)
+- Documentation: [unsloth.ai/docs](https://unsloth.ai/docs)
 - Licences: the image is labelled `Apache-2.0 AND AGPL-3.0-only`. [Apache-2.0](https://github.com/unslothai/unsloth/blob/main/LICENSE) covers the repository and the training stack. The [AGPL-3.0](https://github.com/unslothai/unsloth/blob/main/studio/LICENSE.AGPL-3.0) half is there for the one AGPL file this image ships, `/workspace/smoke_test_rocm.py`, which carries an `AGPL-3.0-only` header; Unsloth Studio itself is only in the `studio` tag.

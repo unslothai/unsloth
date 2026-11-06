@@ -99,7 +99,7 @@ def test_sequence_lengths_exclude_padding_and_split_packing():
     assert mfu._sequence_lengths({"attention_mask": mask}, ()).tolist() == [3, 2]
     packed = torch.tensor([[0, 1, 2, 0, 1, 0, 1, 2, 3]])
     lengths = mfu._sequence_lengths({"input_ids": packed, "position_ids": packed}, ())
-    assert lengths.tolist() == [3, 2, 4]
+    assert [n for n in lengths.tolist() if n] == [3, 2, 4]
     ids = torch.zeros(2, 5, dtype = torch.long)
     assert mfu._sequence_lengths({"input_ids": ids}, ()).tolist() == [5, 5]
 
@@ -571,3 +571,140 @@ def test_diffusion_and_data_parallel_report_nothing():
     callback = mfu.UnslothMFUCallback(peak_tflops = 1)
     callback.on_train_begin(SimpleNamespace(n_gpu = 1), _State(), None, model = model)
     assert not callback._enabled and callback._handle is None
+
+
+def test_position_id_packing_counts_under_fullgraph_compile():
+    # Position-id-only padding free batches (TRL padding_free) must not add a data dependent
+    # branch to a model compiled with fullgraph = True.
+    from types import SimpleNamespace
+
+    class Tiny(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.proj = torch.nn.Linear(4, 4, bias = False)
+            self.config = SimpleNamespace(num_hidden_layers = 1, num_attention_heads = 1, hidden_size = 4)
+
+        def forward(
+            self,
+            input_ids,
+            position_ids = None,
+        ):
+            return self.proj(torch.nn.functional.one_hot(input_ids, 4).float())
+
+    torch._dynamo.reset()
+    model = Tiny().train()
+    callback = mfu.UnslothMFUCallback()
+    callback.on_train_begin(SimpleNamespace(n_gpu = 1), None, None, model = model)
+    try:
+        compiled = torch.compile(model, backend = "eager", fullgraph = True)
+        ids = torch.tensor([[0, 1, 2, 1, 2, 3, 0]])
+        positions = torch.tensor([[0, 1, 2, 0, 1, 0, 1]])
+        compiled(input_ids = ids, position_ids = positions).sum().backward()
+        assert int(callback._tokens) == 7
+        assert int(callback._pairs) == 6 + 3 + 3
+    finally:
+        callback.on_train_end(None, None, None)
+        torch._dynamo.reset()
+    # Leading tokens before the first restart are skipped; no restart counts the whole row.
+    lead = mfu._sequence_lengths({"position_ids": torch.tensor([[3, 4, 0, 1]])}, ())
+    assert [n for n in lead.tolist() if n] == [2]
+    none = mfu._sequence_lengths({"position_ids": torch.tensor([[1, 2, 3]])}, ())
+    assert [n for n in none.tolist() if n] == [3]
+
+
+def test_h200_nvl_uses_its_own_dense_peak(monkeypatch):
+    # NVIDIA H200 datasheet: NVL 1,671 TFLOPS BF16 with sparsity -> 835.5 dense; SXM 1,979 -> 989.
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name, peak in (("NVIDIA H200 NVL", 835.5), ("NVIDIA H200", 989.0)):
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name
+
+
+def test_checkpointing_splits_mfu_from_hfu(tmp_path, monkeypatch):
+    """train_mfu leaves out the forward that checkpointing recomputes; train_hfu charges it."""
+    from transformers import Trainer, TrainingArguments
+
+    monkeypatch.setenv("UNSLOTH_PEAK_TFLOPS", "1")
+    rows = [
+        {"input_ids": [1, 2, 3, 4], "attention_mask": [1, 1, 1, 0], "labels": [1, 2, 3, -100]},
+        {"input_ids": [5, 6, 7, 8], "attention_mask": [1, 1, 0, 0], "labels": [5, 6, -100, -100]},
+    ]
+    dataset = [{k: torch.tensor(v) for k, v in row.items()} for row in rows]
+
+    def run(checkpointing):
+        trainer = Trainer(
+            model = _model(),
+            args = TrainingArguments(
+                output_dir = str(tmp_path),
+                per_device_train_batch_size = 2,
+                max_steps = 1,
+                logging_steps = 1,
+                report_to = [],
+                use_cpu = True,
+                save_strategy = "no",
+                gradient_checkpointing = checkpointing,
+            ),
+            train_dataset = dataset,
+        )
+        mfu.add_mfu_callback(trainer)
+        trainer.train()
+        return [entry for entry in trainer.state.log_history if "loss" in entry][0]
+
+    entry = run(True)
+    # Per step: 5 tokens (lengths 3 and 2), 9 causal pairs, full head on every token.
+    pair = 2 * 2 * 4 * (4 + 4)
+    model_flops = 5 * 6 * LAYERS + 5 * 6 * HEAD + 9 * 3 * pair
+    hw_flops = 5 * 8 * LAYERS + 5 * 6 * HEAD + 9 * 4 * pair
+    assert entry["train_hfu"] / entry["train_mfu"] == pytest.approx(hw_flops / model_flops)
+    assert entry["train_mfu"] == pytest.approx(entry["train_tflops_per_gpu"])
+    assert entry["train_hfu"] == pytest.approx(entry["train_hw_tflops_per_gpu"])
+    plain = run(False)
+    assert plain["train_hfu"] == pytest.approx(plain["train_mfu"])
+
+
+def test_blackwell_dense_peaks(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for name, peak in (
+        ("NVIDIA B200", 2250.0),
+        ("NVIDIA B300 SXM6 AC", 2250.0),
+        ("NVIDIA GB200", 2500.0),
+        ("NVIDIA GB300", 2500.0),
+    ):
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        assert mfu.get_peak_tflops(dtype = torch.bfloat16) == peak, name
+
+
+def test_sm120_entries_and_name_order(monkeypatch):
+    # NVIDIA RTX PRO Blackwell whitepaper v1.1 Table 4, RTX PRO 6000 Blackwell Server Edition page,
+    # RTX Blackwell (GeForce) whitepaper v1.1 Table 3; dense 16 bit with FP32 accumulate.
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    cases = (
+        ("NVIDIA RTX PRO 6000 Blackwell Server Edition", 500.0),  # Colab G4 reports this name
+        ("NVIDIA RTX PRO 6000 Blackwell Workstation Edition", 503.8),
+        ("NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition", 438.9),
+        ("NVIDIA GeForce RTX 5090", 209.5),
+        ("NVIDIA GeForce RTX 5090 D", None),
+        ("NVIDIA GeForce RTX 5090 Laptop GPU", None),
+        # Neighbours that must not pick up an sm120 entry.
+        ("NVIDIA RTX 6000 Ada Generation", None),
+        ("Quadro RTX 6000", None),
+        ("NVIDIA RTX PRO 5000 Blackwell", None),
+        ("NVIDIA GeForce RTX 5080", None),
+    )
+    for name, peak in cases:
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = name: n)
+        for dtype in (torch.float16, torch.bfloat16):
+            assert mfu.get_peak_tflops(dtype = dtype) == peak, name
+
+
+def test_every_table_name_resolves_to_its_own_entry(monkeypatch):
+    # Substring order: a key listed later must never be shadowed by an earlier key that
+    # matches inside it (B200 inside GB200, H100 inside H100 NVL, L4 inside L40S ...).
+    monkeypatch.delenv("UNSLOTH_PEAK_TFLOPS", raising = False)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    for key, value in mfu._PEAK_TFLOPS_16BIT:
+        monkeypatch.setattr(torch.cuda, "get_device_name", lambda device = None, n = key: "NVIDIA " + n)
+        assert mfu.get_peak_tflops(dtype = torch.float16) == value, key

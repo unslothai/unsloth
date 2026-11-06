@@ -10,10 +10,7 @@ import sys
 
 
 def ensure_real_packages(*names: str) -> None:
-    """Drop sys.path entries where a bare `<name>/` dir (no __init__.py) shadows
-    the installed package as a namespace, import the real packages, restore
-    sys.path. No-op without a shadow. Pass dependency-first (e.g. "unsloth_zoo",
-    "unsloth"); imports run dependency-last."""
+    """Bare <name>/ dirs without __init__.py shadow packages as namespaces; pass dependency-first names."""
     import importlib
     import importlib.util
 

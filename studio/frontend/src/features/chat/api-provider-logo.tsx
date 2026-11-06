@@ -24,7 +24,6 @@ const DARK_INVERT_LOGOS = new Set(["openai", "openai_codex", "ollama", "liquid",
 // Pale brand marks get a hairline edge on light surfaces instead of inverting.
 const LIGHT_OUTLINE_LOGOS = new Set(["openrouter"]);
 
-/** Shared hub or connection logo; monochrome ones invert in dark mode. */
 export function ApiProviderLogo({ providerType, className, title }: ApiProviderLogoProps) {
   const src = apiProviderLogoSrc(providerType);
   if (!src && isCustomProviderType(providerType)) {
