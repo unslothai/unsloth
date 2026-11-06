@@ -1080,8 +1080,10 @@ def test_cosmos3_decodes_untiled_when_it_fits_even_at_speed_off(policy, speed):
     placed = policy != "sequential"
     for family in ("cosmos3-edge", "cosmos3-nano"):
         assert gate(family, policy, "cuda", speed) is placed
-        assert gate(family, policy, "cpu", speed) is False
-    assert gate("wan2.2-ti2v-5b", policy, "cuda", speed) is (placed and speed != "off")
+        assert gate(family, policy, "cpu", speed) is placed
+        assert gate(family, policy, "mps", speed) is False
+    for device in ("cuda", "cpu"):
+        assert gate("wan2.2-ti2v-5b", policy, device, speed) is (placed and speed != "off")
 
 
 def _diffusers_tiles(length, tile, stride):

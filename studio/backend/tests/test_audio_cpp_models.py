@@ -3239,3 +3239,59 @@ def test_seed_option_and_ignored_options(monkeypatch, keys, options, sent, ignor
     if "bogus" in options:
         assert body["options"] == {"speed": 1.5}
     assert b.last_generation_stats == {"seed": sent and int(sent), "ignored_options": ignored}
+
+
+def _sized_host(
+    monkeypatch,
+    device = "CUDA",
+    cpu_runtime = False,
+):
+    import utils.hardware as hardware
+    from core.inference import audio_cpp_server
+
+    monkeypatch.setattr(hardware, "get_device", lambda: hardware.DeviceType[device])
+    monkeypatch.setattr(audio_cpp_server, "runtime_runs_on_cpu", lambda: cpu_runtime)
+
+
+def test_every_umbrella_row_carries_the_load_checks_estimate(hub, monkeypatch):
+    from core.inference.audio_cpp_failures import estimate_resident_gb
+
+    _sized_host(monkeypatch)
+    names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-bf16.gguf"]
+    _online(monkeypatch, *names, size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    model = acm.resolve(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF", network = True)
+    assert model.family == "kokoro_tts" and len(model.variants) == 2
+    for variant in model.variants:
+        expected = estimate_resident_gb(variant.size_bytes, model.family)
+        assert rows[variant.key].estimated_resident_gb == expected
+        assert expected != estimate_resident_gb(variant.size_bytes)
+
+
+@pytest.mark.parametrize("cpu_runtime", [False, True])
+def test_a_load_that_runs_on_the_cpu_lists_no_gpu_estimate(hub, monkeypatch, cpu_runtime):
+    _sized_host(monkeypatch, cpu_runtime = cpu_runtime)
+    names = ["Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", "Kokoro-82M-GGUF/kokoro-82m-tq2_1.gguf"]
+    _online(monkeypatch, *names, size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    assert {quant: row.estimated_resident_gb is None for quant, row in rows.items()} == {
+        "Q8_0": cpu_runtime,
+        "TQ2_1": True,
+    }
+
+
+def test_a_dictation_model_lists_no_gpu_estimate(hub, monkeypatch):
+    _sized_host(monkeypatch)
+    _online(monkeypatch, "Moonshine-Streaming-GGUF/moonshine-streaming-tiny-q8_0.gguf")
+    row = f"{AUDIO_CPP_REPO}/Moonshine-Streaming-GGUF"
+    rows = _rows(row)
+    assert acm.resolve(row, network = True).task == "asr"
+    assert rows and all(listed.estimated_resident_gb is None for listed in rows.values())
+
+
+@pytest.mark.parametrize("device", ["MLX", "CPU"])
+def test_a_host_the_check_never_sizes_lists_no_gpu_estimate(hub, monkeypatch, device):
+    _sized_host(monkeypatch, device)
+    _online(monkeypatch, "Kokoro-82M-GGUF/kokoro-82m-q8_0.gguf", size = 189_000_000)
+    rows = _rows(f"{AUDIO_CPP_REPO}/Kokoro-82M-GGUF")
+    assert rows and all(listed.estimated_resident_gb is None for listed in rows.values())

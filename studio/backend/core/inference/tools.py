@@ -20048,9 +20048,9 @@ def _check_signal_escape_patterns(code: str):
     }
 
 
-def _check_code_safety(code: str) -> str | None:
+def _check_code_safety(code: str, *, host_approved: bool = False) -> str | None:
     """Validate code safety via static analysis. Returns an error message string if the code is
-    unsafe, or None if OK."""
+    unsafe, or None if OK. host_approved lets an approved call reach hosts off the allowlist."""
     safe, info = _check_signal_escape_patterns(code)
     if not safe:
         # Let SyntaxError through so the child reports a normal traceback.
@@ -20062,7 +20062,11 @@ def _check_code_safety(code: str) -> str | None:
         exception_reasons = [
             item.get("description", "") for item in info.get("exception_catching", [])
         ]
-        network_reasons = [item.get("description", "") for item in info.get("network_calls", [])]
+        network_reasons = [
+            item.get("description", "")
+            for item in info.get("network_calls", [])
+            if not (host_approved and item.get("type") == "untrusted_host_blocked")
+        ]
         file_reasons = [
             item.get("description", "") for item in info.get("sensitive_file_reads", [])
         ]
@@ -21976,7 +21980,10 @@ def _python_exec(
 
     # Validate imports and code safety (skipped when the sandbox is disabled)
     if not disable_sandbox:
-        error = _check_code_safety(code)
+        # The allowlist is advisory (the network is not confined), so a user's approval lifts it; API keys keep it.
+        error = _check_code_safety(
+            code, host_approved = host_access_approved and not _api_host_access_refused()
+        )
         if error:
             # Capped: repeated forbidden constructs can produce an oversized error.
             return _truncate(error)
