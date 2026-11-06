@@ -3093,6 +3093,59 @@ def _h3_dense_pin_plan(
     return None
 
 
+def _h3_dense_demote(
+    pipe: Any,
+    denoiser: Any,
+    *,
+    logger: Any = None,
+) -> bool:
+    """Hand a released denoiser pinned beside a streamed conditioner back to the CPU-offload rotation, for a request
+    whose VRAM floor only the rotation meets. True when it is in the rotation (now or already); False, with nothing
+    changed, when it cannot be (no rotation to join, or no host RAM for its copy)."""
+    try:
+        manager = getattr(pipe, "_components_manager", None)
+        hooks = list(getattr(manager, "model_hooks", None) or ())
+        if any(getattr(hook, "model", None) is denoiser for hook in hooks):
+            return True
+        device = getattr(manager, "_auto_offload_device", None)
+        name = next(
+            (k for k, v in (getattr(manager, "components", None) or {}).items() if v is denoiser),
+            None,
+        )
+        if denoiser is None or not hooks or device is None or name is None:
+            return False
+        from .diffusion_memory import _available_system_memory_mib
+        from .diffusion_prequant import tensor_payload_bytes
+
+        # The rotation keeps an anonymous host copy; the load's mmap view of it is gone.
+        need_mib = sum(tensor_payload_bytes(t) for t in denoiser.parameters()) >> 20
+        available_mib = _available_system_memory_mib()
+        if available_mib is None or available_mib < need_mib + max(4096, need_mib // 10):
+            return False
+        from diffusers.modular_pipelines.components_manager import custom_offload_with_hook
+
+        hook = custom_offload_with_hook(
+            name, denoiser, device, offload_strategy = getattr(manager, "_offload_strategy", None)
+        )
+        for other in hooks:
+            if other.hook.execution_device == hook.hook.execution_device:
+                hook.add_other_hook(other)
+                other.add_other_hook(hook)
+        manager.model_hooks = hooks + [hook]
+        hook.offload()
+        clear_gpu_cache()
+        if logger is not None:
+            logger.info(
+                "video.h3_denoiser_placement: this request needs the rotation's VRAM floor, so the bf16 denoiser "
+                "rejoins the CPU-offload rotation until the next load"
+            )
+        return True
+    except Exception as exc:  # noqa: BLE001 -- the request guard refuses as before
+        if logger is not None:
+            logger.warning("video.h3_denoiser_placement: could not rejoin the rotation: %s", exc)
+        return False
+
+
 def _h3_group_offload_available() -> bool:
     try:
         from diffusers.hooks import apply_group_offloading  # noqa: F401
@@ -12783,6 +12836,30 @@ class VideoBackend:
                                     ),
                                 )
                             )
+                        if (
+                            available_vram_gb + 0.25 < required_vram_gb
+                            and getattr(state, "denoiser_pinned", False)
+                            and getattr(state, "te_streamed", False)
+                            and state.transformer_quant is None
+                            and state.offload_policy != "none"
+                        ):
+                            # A released denoiser pinned beside the streamed conditioner was sized for the default
+                            # clip; a longer one the rotation fits must not be refused.
+                            rotation_gb = estimate_h3_diffusers_vram_gb(
+                                width,
+                                height,
+                                frames,
+                                text_encoder_gb = h3_te_resident_gb(
+                                    state.text_encoder_quant, bf16_gb = H3_TEXT_ENCODER_BF16_GB
+                                ),
+                                text_encoder_streamed = True,
+                            )
+                            if available_vram_gb + 0.25 >= rotation_gb and _h3_dense_demote(
+                                state.pipe,
+                                getattr(state.pipe, h3_denoiser_component(state.h3_task), None),
+                                logger = logger,
+                            ):
+                                required_vram_gb = rotation_gb
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "

@@ -157,3 +157,73 @@ def test_streamed_conditioner_tier_keeps_the_eager_tier_of_the_rotation_it_repla
     assert src.index("effective_speed = SPEED_EAGER", gate) < src.index(
         "snapshot_backend_flags()", gate
     )
+
+
+class _Hook:
+    def __init__(
+        self,
+        model,
+        device = "cuda:0",
+    ):
+        self.model = model
+        self.hook = type("H", (), {"execution_device": device})()
+        self.others = []
+        self.offloaded = False
+
+    def add_other_hook(self, other):
+        self.others.append(other)
+
+    def offload(self):
+        self.offloaded = True
+
+
+def _demote_fixture(monkeypatch, available_mib):
+    import torch
+    from diffusers.modular_pipelines import components_manager as cm
+
+    from core.inference import diffusion_memory
+    from core.inference import video as vid
+
+    denoiser = torch.nn.Linear(4, 4)
+    conditioner_vae = object()
+    manager = type("M", (), {})()
+    manager.components = {"transformer_1": denoiser, "vae_2": conditioner_vae}
+    manager.model_hooks = [_Hook(conditioner_vae)]
+    manager._auto_offload_device = "cuda:0"
+    manager._offload_strategy = None
+    pipe = type("P", (), {})()
+    pipe._components_manager = manager
+    monkeypatch.setattr(diffusion_memory, "_available_system_memory_mib", lambda: available_mib)
+    monkeypatch.setattr(
+        cm,
+        "custom_offload_with_hook",
+        lambda name, model, device, offload_strategy = None: _Hook(model, device),
+    )
+    monkeypatch.setattr(vid, "clear_gpu_cache", lambda: None)
+    return vid, pipe, manager, denoiser
+
+
+def test_a_request_past_the_pin_budget_returns_the_denoiser_to_the_rotation(monkeypatch):
+    vid, pipe, manager, denoiser = _demote_fixture(monkeypatch, 200_000)
+    assert vid._h3_dense_demote(pipe, denoiser)
+    added = manager.model_hooks[-1]
+    assert added.model is denoiser and added.offloaded
+    assert added in manager.model_hooks[0].others and manager.model_hooks[0] in added.others
+    # Idempotent: already in the rotation, nothing added.
+    assert vid._h3_dense_demote(pipe, denoiser) and len(manager.model_hooks) == 2
+
+
+def test_no_host_room_keeps_the_pin_and_the_refusal(monkeypatch):
+    vid, pipe, manager, denoiser = _demote_fixture(monkeypatch, 1)
+    assert not vid._h3_dense_demote(pipe, denoiser)
+    assert len(manager.model_hooks) == 1
+
+
+def test_request_guard_tries_the_rotation_before_refusing():
+    from core.inference import video as vid
+
+    src = inspect.getsource(vid.VideoBackend)
+    demote = src.index("_h3_dense_demote(\n")
+    refuse = src.index('f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "')
+    assert demote < refuse
+    assert "required_vram_gb = rotation_gb" in src[demote:refuse]
