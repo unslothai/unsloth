@@ -2097,6 +2097,12 @@ export const ko = {
           "머신에 맞춰 고르고, 여기서 Xet이 멈추거나 실패하면 HTTPS로 바꿉니다.",
         autoCurrently: "이 머신에서 Auto는 {transport}을 사용합니다.",
         xetMissing: "hf_xet이 설치되지 않아 Xet을 사용할 수 없습니다.",
+        speedLimit: "다운로드 속도 제한",
+        speedLimitDescription:
+          "값을 설정하지 않으면 제한이 없습니다. 제한된 다운로드는 HTTPS를 사용합니다.",
+        speedLimitNoLimit: "제한 없음",
+        speedLimitInvalid: "Mbit/s 단위의 숫자를 입력하거나 비워 두세요.",
+        speedLimitUsesHttps: "속도 제한이 설정되어 있는 동안 다운로드는 HTTPS를 사용합니다. 50GB를 넘는 파일은 여전히 Xet을 사용하며 제한이 적용되지 않습니다.",
       },
       uploads: {
         sectionTitle: "업로드",
@@ -2488,6 +2494,10 @@ export const ko = {
         },
         contrast: {
           label: "대비",
+        },
+        elementOutline: {
+          label: "요소 윤곽선",
+          description: "버튼, 입력란, 카드, 메뉴의 테두리 강도입니다.",
         },
         reduceMotion: {
           label: "동작 줄이기",

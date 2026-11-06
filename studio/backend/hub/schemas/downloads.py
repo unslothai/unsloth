@@ -143,6 +143,8 @@ class TransportCapabilities(BaseModel):
     auto_reason: Optional[str] = None
     # False when huggingface_hub refetches interrupted files from zero; no transport can byte-resume, so the UI must not label one.
     partials_resumable: bool = True
+    # A download speed limit puts every download that fits under the HTTPS ceiling on HTTP.
+    speed_limited: bool = False
 
 
 class TransportStatusResponse(BaseModel):

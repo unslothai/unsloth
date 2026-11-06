@@ -2175,6 +2175,12 @@ export const he = {
         autoHint: "בוחר לפי המחשב ועובר ל-HTTPS אם Xet נתקע או נכשל כאן.",
         autoCurrently: "מצב אוטומטי משתמש כעת ב-{transport} במחשב זה.",
         xetMissing: "Xet אינו זמין מכיוון ש-hf_xet אינו מותקן.",
+        speedLimit: "מגבלת מהירות הורדה",
+        speedLimitDescription:
+          "ללא מגבלה אלא אם הוגדר ערך. הורדה מוגבלת משתמשת ב-HTTPS.",
+        speedLimitNoLimit: "ללא מגבלה",
+        speedLimitInvalid: "הזינו מספר ב-Mbit/s או השאירו את השדה ריק.",
+        speedLimitUsesHttps: "כל עוד מוגדרת מגבלת מהירות, ההורדות משתמשות ב-HTTPS. קבצים מעל 50GB עדיין משתמשים ב-Xet, ללא המגבלה.",
       },
       uploads: {
         sectionTitle: "העלאות",
@@ -2549,6 +2555,10 @@ export const he = {
         },
         contrast: {
           label: "ניגודיות",
+        },
+        elementOutline: {
+          label: "מתאר רכיבים",
+          description: "עוצמת הגבול של כפתורים, שדות, כרטיסים ותפריטים.",
         },
         reduceMotion: {
           label: "הפחתת תנועה",

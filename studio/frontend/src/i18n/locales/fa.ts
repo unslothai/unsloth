@@ -2292,6 +2292,12 @@ export const fa = {
         autoCurrently:
           "حالت خودکار روی این دستگاه از {transport} استفاده می‌کند.",
         xetMissing: "Xet در دسترس نیست، زیرا hf_xet نصب نشده است.",
+        speedLimit: "محدودیت سرعت دانلود",
+        speedLimitDescription:
+          "بدون محدودیت مگر اینکه عددی تعیین شود. دانلود محدودشده از HTTPS استفاده می‌کند.",
+        speedLimitNoLimit: "بدون محدودیت",
+        speedLimitInvalid: "عددی بر حسب Mbit/s وارد کنید یا فیلد را خالی بگذارید.",
+        speedLimitUsesHttps: "تا زمانی که محدودیت سرعت تنظیم شده باشد، دانلودها از HTTPS استفاده می‌کنند. فایل‌های بزرگ‌تر از ۵۰ گیگابایت همچنان بدون محدودیت از Xet استفاده می‌کنند.",
       },
       uploads: {
         sectionTitle: "آپلودها",
@@ -2682,6 +2688,10 @@ export const fa = {
         },
         contrast: {
           label: "کنتراست",
+        },
+        elementOutline: {
+          label: "حاشیهٔ عناصر",
+          description: "شدت حاشیهٔ دکمه‌ها، فیلدها، کارت‌ها و منوها.",
         },
         reduceMotion: {
           label: "کاهش حرکت",

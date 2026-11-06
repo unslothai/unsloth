@@ -73,6 +73,11 @@ def set_state(transformer: Any, state: Optional[str]) -> None:
             module.__dict__[_ATTR] = state
 
 
+def _rocm() -> bool:
+    import torch
+    return is_rocm_torch(torch)
+
+
 @functools.lru_cache(maxsize = 1)
 def _kernel() -> Any:
     import triton
@@ -84,8 +89,21 @@ def _kernel() -> Any:
         from triton.language.extra.cuda import libdevice
 
     # Module globals, which the JIT resolves. *_rn: Triton would otherwise FMA-contract the products eager rounds.
+    # The HIP libdevice has no *_rn: plain ops there, launched with enable_fp_fusion=False (``_launch_options``).
     global _rsqrt, _mul, _add
-    _rsqrt, _mul, _add = libdevice.rsqrt, libdevice.mul_rn, libdevice.add_rn
+    if _rocm():
+
+        @triton.jit
+        def _mul_plain(a, b):
+            return a * b
+
+        @triton.jit
+        def _add_plain(a, b):
+            return a + b
+
+        _rsqrt, _mul, _add = libdevice.rsqrt, _mul_plain, _add_plain
+    else:
+        _rsqrt, _mul, _add = libdevice.rsqrt, libdevice.mul_rn, libdevice.add_rn
 
     # n_rows keeps its % 16 hint: runtime it was 2.5% slower at even token counts on A100.
     @triton.jit(do_not_specialize = ["n_seq"])
@@ -161,6 +179,10 @@ def _fusion(device: Any) -> Optional[tuple]:
         except Exception:  # noqa: BLE001 - unknown pairing: keep the stock RoPE
             _FUSION[index] = None
     return _FUSION[index]
+
+
+def _launch_options() -> dict:
+    return {"enable_fp_fusion": False} if _rocm() else {}
 
 
 def _eligible(x: Any, norm: Any, freqs: Any) -> bool:
@@ -246,6 +268,7 @@ def _norm_rope(x: Any, norm: Any, freqs: Any) -> Optional[Any]:
                 REAL_FMA_X = fusion[0] == "x",
                 IMAG_FMA_X = fusion[1] == "x",
                 num_warps = _WARPS,
+                **_launch_options(),
             )
     except Exception:  # noqa: BLE001 - a JIT / driver failure: the stock math for the rest of the process
         _FAILED[0] = True
@@ -310,7 +333,7 @@ def why_unsupported(mod: Any) -> Optional[str]:
 def install(logger: Any = None) -> bool:
     try:
         import torch
-        if is_rocm_torch(torch) or not torch.cuda.is_available():
+        if not torch.cuda.is_available():
             return False
         from diffusers.models.transformers import transformer_qwenimage21 as mod
     except Exception:  # noqa: BLE001 - no CUDA, or diffusers without Qwen-Image 2.1

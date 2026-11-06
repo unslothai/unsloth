@@ -2297,6 +2297,12 @@ export const tr = {
         autoCurrently:
           "Otomatik, bu makinede şu aktarımı kullanıyor: {transport}",
         xetMissing: "hf_xet yüklü olmadığı için Xet kullanılamıyor.",
+        speedLimit: "İndirme hızı sınırı",
+        speedLimitDescription:
+          "Bir değer girilmedikçe sınır yoktur. Sınırlı indirme HTTPS kullanır.",
+        speedLimitNoLimit: "Sınır yok",
+        speedLimitInvalid: "Mbit/s cinsinden bir sayı girin veya alanı boş bırakın.",
+        speedLimitUsesHttps: "Hız sınırı ayarlıyken indirmeler HTTPS kullanır. 50 GB'tan büyük dosyalar sınırsız olarak Xet kullanmaya devam eder.",
       },
       uploads: {
         sectionTitle: "Karşıya yüklemeler",
@@ -2686,6 +2692,10 @@ export const tr = {
         },
         contrast: {
           label: "Kontrast",
+        },
+        elementOutline: {
+          label: "Öğe çerçevesi",
+          description: "Düğme, alan, kart ve menü kenarlıklarının yoğunluğu.",
         },
         reduceMotion: {
           label: "Hareketi azalt",
