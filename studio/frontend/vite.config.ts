@@ -43,7 +43,10 @@ export default defineConfig({
     },
   },
   optimizeDeps: {
-    include: ["@dagrejs/dagre", "@dagrejs/graphlib"],
+    // react-remove-scroll/UI is only imported by the aliased stand-in (src/lib/remove-scroll.tsx),
+    // which the dev server's first scan does not see; found later, it forces a re-optimize and a
+    // full reload that native Safari does not recover from.
+    include: ["@dagrejs/dagre", "@dagrejs/graphlib", "react-remove-scroll/UI"],
   },
   server: {
     host: "0.0.0.0",
