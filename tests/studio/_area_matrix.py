@@ -940,11 +940,20 @@ class Page:
         events: list = []
         done: list = []
         cdp.on("Tracing.dataCollected", lambda d: events.extend(d["value"]))
-        cdp.on("Tracing.tracingComplete", lambda d: done.append(True))
+        cdp.on("Tracing.tracingComplete", lambda d: done.append(bool(d.get("dataLossOccurred"))))
         t_sweep = time.time()
         cdp.send(
             "Tracing.start",
-            {"traceConfig": {"includedCategories": TRACE_CATS}, "transferMode": "ReportEvents"},
+            {
+                "traceConfig": {
+                    "includedCategories": TRACE_CATS,
+                    # Room for a whole page (a 200-turn sweep is ~200k events); a full buffer drops
+                    # events and is reported as data loss, which voids the page (TraceDataLoss).
+                    "recordMode": "recordAsMuchAsPossible",
+                    "traceBufferSizeInKb": TRACE_BUFFER_KB,
+                },
+                "transferMode": "ReportEvents",
+            },
         )
         self._tracing = True
         status: dict[str, str] = {}
@@ -994,6 +1003,8 @@ class Page:
         while not done:
             page.wait_for_timeout(50)
         t_split = time.time()
+        if done[0]:
+            raise TraceDataLoss(f"Chromium reported trace data loss ({len(events):,} events kept)")
         counters = split_trace(events)
         self.timing = {
             "areas_s": round(t_end - t_sweep, 1),
@@ -1001,17 +1012,30 @@ class Page:
             "split_s": round(time.time() - t_split, 1),
             "events": len(events),
         }
-        return {
-            name: {
-                "status": status.get(name, "NOT_RUN"),
-                "wall_s": round(walls.get(name, 0.0), 2),
-                **counters.get(name, {}),
-            }
-            for name in areas
-        }
+        return finish_cells(areas, status, walls, counters)
 
 
 # --- trace -> per-area counters --------------------------------------------------------------------
+
+
+class TraceDataLoss(RuntimeError):
+    """The trace of a page is incomplete; its counters cannot be trusted."""
+
+
+TRACE_BUFFER_KB = int(os.environ.get("LONG_THREAD_AREAS_TRACE_BUFFER_KB", str(256 * 1024)))
+
+
+def finish_cells(areas: list[str], status: dict, walls: dict, counters: dict) -> dict[str, dict]:
+    """Per-area result. An area the page ran but whose trace window (both marks) is missing has no
+    counters to judge, so it is NOT_RUN, never an OK with zero cost."""
+    out = {}
+    for name in areas:
+        st = status.get(name, "NOT_RUN")
+        row = counters.get(name)
+        if st == "OK" and not row:
+            st = "NOT_RUN: its trace window is incomplete (a begin or end mark is missing)"
+        out[name] = {"status": st, "wall_s": round(walls.get(name, 0.0), 2), **(row or {})}
+    return out
 
 
 def area_status(spec: dict, opened: bool, closed: bool) -> str:
@@ -1162,7 +1186,20 @@ def _run_jobs(
         if page is None:
             continue
         try:
-            cells = page.sweep(page_areas)
+            try:
+                cells = page.sweep(page_areas)
+            except TraceDataLoss as exc:
+                # once more on a fresh page; a second loss is reported as this page's error
+                log(
+                    f"  areas: {turns} turns, {mode['name']}: {exc}; measuring the page again",
+                    flush = True,
+                )
+                try:
+                    page.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                page = page_factory(browser, base, turns, mode, [])
+                cells = page.sweep(page_areas)
             out[key] = {
                 "cells": cells,
                 "applied": page.applied,

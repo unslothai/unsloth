@@ -324,3 +324,84 @@ def test_area_status_needs_open_and_close():
     assert am.area_status(spec, True, True) == "OK"
     assert am.area_status(spec, False, True).startswith("NOT_RUN: never reached overlay")
     assert "overlay_gone after closing" in am.area_status(spec, True, False)
+
+
+def test_an_area_without_a_complete_trace_window_is_not_ok():
+    ev = [
+        {
+            "ph": "I",
+            "name": "TimeStamp",
+            "ts": 100,
+            "pid": 1,
+            "tid": 1,
+            "args": {"data": {"message": "gate:begin:a"}},
+        },
+        {
+            "ph": "I",
+            "name": "TimeStamp",
+            "ts": 900,
+            "pid": 1,
+            "tid": 1,
+            "args": {"data": {"message": "gate:end:a"}},
+        },
+        # b lost its end mark (a full trace buffer drops the tail)
+        {
+            "ph": "I",
+            "name": "TimeStamp",
+            "ts": 1000,
+            "pid": 1,
+            "tid": 1,
+            "args": {"data": {"message": "gate:begin:b"}},
+        },
+    ]
+    counters = am.split_trace(ev)
+    assert "a" in counters and "b" not in counters
+    cells = am.finish_cells(
+        ["a", "b", "c"], {"a": "OK", "b": "OK", "c": "NOT_RUN: control not found"}, {}, counters
+    )
+    assert cells["a"]["status"] == "OK"
+    assert cells["b"]["status"].startswith("NOT_RUN: its trace window is incomplete")
+    assert cells["c"]["status"] == "NOT_RUN: control not found"
+    # and the default page's incomplete area fails the gate instead of reading as zero cost
+    pages = {(am.SHORT, "default"): {"cells": cells}}
+    result = {
+        "pages": pages,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["a", "b", "c"],
+    }
+    assert {v["area"] for v in am.judge(result, known = "") if v["fail"]} == {"b", "c"}
+
+
+class _LosesData:
+    applied, errors, page = {}, [], None
+    losses = 0
+
+    def __init__(self, *args):
+        pass
+
+    def sweep(self, areas):
+        if _LosesData.losses > 0:
+            _LosesData.losses -= 1
+            raise am.TraceDataLoss("Chromium reported trace data loss")
+        return {a: {"status": "OK", "cpu_ms": 1.0} for a in areas}
+
+    def close(self):
+        pass
+
+
+def test_trace_data_loss_is_retried_once_then_fails():
+    modes = {m["name"]: m for m in am.app_modes()}
+    job = [(am.LONG, modes["frosted"], ["type"])]
+    _LosesData.losses = 1
+    out: dict = {}
+    am._run_jobs(None, job, "http://x", out, lambda *a, **k: None, 0.0, page_factory = _LosesData)
+    assert out[(am.LONG, "frosted")]["cells"]["type"]["status"] == "OK"
+    _LosesData.losses = 2
+    out = {}
+    am._run_jobs(None, job, "http://x", out, lambda *a, **k: None, 0.0, page_factory = _LosesData)
+    assert "TraceDataLoss" in out[(am.LONG, "frosted")]["error"]
+
+
+def test_trace_buffer_holds_a_long_page():
+    # a 200-turn sweep collects ~200k events (~60-100 MB); the buffer must be well above that
+    assert am.TRACE_BUFFER_KB >= 200 * 1024
