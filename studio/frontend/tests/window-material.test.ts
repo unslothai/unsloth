@@ -119,7 +119,7 @@ test("glass adds no outer shadows, only inset light", () => {
 	}
 });
 
-test("the Windows wallpaper frame recognizes Transparent glass separately from frosted glass", () => {
+test("the pinned Windows glass frame rounds the corner with either an image or a plain backdrop", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const titlebarRules = css.split("\n").filter((line) =>
 		line.startsWith("html[data-chat-wallpaper-ready]") && line.includes('[data-slot="window-titlebar'),
@@ -128,7 +128,7 @@ test("the Windows wallpaper frame recognizes Transparent glass separately from f
 	for (const selector of titlebarRules) {
 		assert.ok(selector.includes("[data-glass-clear]"), selector);
 	}
-	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]:not([data-glass-plain])';
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]';
 	assert.ok(css.includes(glassFrame + ' [data-slot="sidebar-container"][data-windows-glass-frame]::before'));
 	assert.ok(css.includes(glassFrame + ' [data-windows-glass-frame] > [data-slot="sidebar-inner"] {\n  position: relative;\n  z-index: 1;\n  background: transparent;'));
 });
