@@ -349,3 +349,23 @@ def test_sharegpt_bad_role_is_malformed_and_extra_fields_render():
     report = check_dataset(rows, _tokenizer(template), max_seq_length = 8)
     assert report["rows"] == 2
     assert report["over_max_seq_length"] == 1
+
+
+def test_plain_text_rows_with_images_are_not_measured():
+    rows = [
+        {"text": "hi hello", "images": ["a.png"]},
+        {"prompt": "hi", "completion": " hello", "image": "a.png"},
+        {"text": "hi hello"},
+    ]
+    report = check_dataset(rows, _tokenizer(), max_seq_length = 8)
+    assert report["media"] == 2
+    assert report["lengths"] == [2]
+
+
+def test_lengths_keep_row_order_across_batches():
+    rows = [{"text": " ".join(["hi"] * (i % 7 + 1))} for i in range(2500)]
+    rows[1500] = {"messages": _chat("hi", "hello")["messages"]}
+    tok = _tokenizer()
+    expected = [i % 7 + 1 for i in range(2500)]
+    expected[1500] = _lengths(rows[1500:1501], tok)[0]
+    assert check_dataset(rows, tok, max_seq_length = 8)["lengths"] == expected

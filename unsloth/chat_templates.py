@@ -117,7 +117,7 @@ def _render_dataset_row(row, tokenizer):
         prompt, completion = row["prompt"], row["completion"]
         if isinstance(prompt, str) and isinstance(completion, str):
             text = prompt + completion
-            return text, text.strip() == "", True, False
+            return text, text.strip() == "", True, _has_media(row, ())
         if not isinstance(prompt, list) or not isinstance(completion, list):
             raise _MalformedRow("prompt and completion are not both strings or both message lists")
         column, value = "prompt/completion", prompt + completion
@@ -136,7 +136,7 @@ def _render_dataset_row(row, tokenizer):
     if column == "text":
         if not isinstance(value, str):
             raise _MalformedRow("text is not a string")
-        return value, value.strip() == "", True, False
+        return value, value.strip() == "", True, _has_media(row, ())
     if not isinstance(value, list) or not value or not all(isinstance(m, dict) for m in value):
         raise _MalformedRow(f"{column} is not a list of role/content messages")
     sharegpt = all("from" in m and "value" in m for m in value)
@@ -181,6 +181,18 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
     rows = malformed = empty = found = media = 0
     problems = []
     pending = {True: [], False: []}
+    measured = []
+
+    # Tokenize in batches as we go: holding every rendered row would not fit a large corpus.
+    def flush(add_special_tokens):
+        items = pending[add_special_tokens]
+        if items:
+            ids = text_tokenizer(
+                [text for _, text in items], add_special_tokens = add_special_tokens
+            ).input_ids
+            measured.extend((order, len(x)) for (order, _), x in zip(items, ids))
+            items.clear()
+
     for i, row in enumerate(dataset):
         rows += 1
         try:
@@ -203,15 +215,10 @@ def check_dataset(dataset, tokenizer, max_seq_length, response_part = None):
             bos is not None and (bos_in_template or text.startswith(bos))
         )
         pending[add_special_tokens].append((i, text))
-
-    measured = []
-    for add_special_tokens, items in pending.items():
-        for start in range(0, len(items), 1024):
-            chunk = items[start : start + 1024]
-            ids = text_tokenizer(
-                [text for _, text in chunk], add_special_tokens = add_special_tokens
-            ).input_ids
-            measured += [(order, len(x)) for (order, _), x in zip(chunk, ids)]
+        if len(pending[add_special_tokens]) >= 1024:
+            flush(add_special_tokens)
+    flush(True)
+    flush(False)
     lengths = [length for _, length in sorted(measured)]
 
     over = sum(length > max_seq_length for length in lengths)
