@@ -1215,17 +1215,21 @@ function useFenceHighlightLimit(
     const capped = innerLineWindow(code.current, body);
     if (capped !== null && body !== null && lineWindowColoured(tokens, progress, capped)) {
       let frameId = 0;
-      const onScroll = (): void => {
+      // Resumes on a scroll to uncoloured lines, or once the body stops scrolling (Expand code lifts the cap).
+      const recheck = (): void => {
         if (frameId !== 0) return;
         frameId = requestAnimationFrame(() => {
           frameId = 0;
           const next = innerLineWindow(code.current, body);
-          if (next !== null && !lineWindowColoured(tokens, progress, next)) setScrolled((n) => n + 1);
+          if (next === null || !lineWindowColoured(tokens, progress, next)) setScrolled((n) => n + 1);
         });
       };
-      body.addEventListener("scroll", onScroll, { passive: true });
+      const resized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(recheck);
+      resized?.observe(body);
+      body.addEventListener("scroll", recheck, { passive: true });
       return () => {
-        body.removeEventListener("scroll", onScroll);
+        resized?.disconnect();
+        body.removeEventListener("scroll", recheck);
         cancelAnimationFrame(frameId);
       };
     }
@@ -1634,19 +1638,29 @@ const NO_WINDOW = { window: null, pins: null, measured: false } as const;
 const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } as const;
 
 const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
-type BodyScroll = { top: number; atBottom: boolean };
-// A finished stream swaps its body for a new one, which would start back at the first line; keyed by the
-// opening text, which a stream stops changing once it is past it.
+type BodyScroll = { top: number; atBottom: boolean; at: number };
+// A finished stream swaps its body for a new one, which would start back at the first line. Only a body
+// that streamed leaves its place, and only a finished body mounting right after takes it (once), so
+// blocks that merely open with the same text never share one. Keyed by the opening text, which a stream
+// stops changing once it is past it.
 const bodyScrolls = new Map<string, BodyScroll>();
-const BODY_SCROLLS_KEPT = 64;
+const BODY_SCROLLS_KEPT = 16;
 
 const rememberBodyScroll = (key: string, body: HTMLElement): void => {
+  if (body.scrollHeight <= body.clientHeight) return;
   bodyScrolls.delete(key);
   bodyScrolls.set(key, {
     top: body.scrollTop,
     atBottom: body.scrollHeight - body.scrollTop - body.clientHeight < 24,
+    at: performance.now(),
   });
   if (bodyScrolls.size > BODY_SCROLLS_KEPT) bodyScrolls.delete(bodyScrolls.keys().next().value as string);
+};
+
+const takeBodyScroll = (key: string): BodyScroll | undefined => {
+  const saved = bodyScrolls.get(key);
+  bodyScrolls.delete(key);
+  return saved !== undefined && performance.now() - saved.at < JUST_STREAMED_MS ? saved : undefined;
 };
 
 /** A streaming block follows its last line until the reader scrolls up, and a remounted one keeps its place. */
@@ -1662,10 +1676,13 @@ function usePinnedWhileStreaming(
   const key = `${language ?? ""}\n${source.slice(0, 200)}`;
   const keyRef = useRef(key);
   keyRef.current = key;
+  // Read once the body mounts: whether it is the finished swap, or a stream that hands its place on.
+  const streamedRef = useRef(isIncomplete === true);
+  if (isIncomplete) streamedRef.current = true;
   useLayoutEffect(() => {
     const body = surface.current;
     if (!(mounted && body)) return;
-    const saved = bodyScrolls.get(keyRef.current);
+    const saved = streamedRef.current ? undefined : takeBodyScroll(keyRef.current);
     if (saved) {
       following.current = saved.atBottom;
       body.scrollTop = saved.atBottom ? body.scrollHeight : saved.top;
@@ -1678,11 +1695,11 @@ function usePinnedWhileStreaming(
     const onScroll = (): void => {
       const atBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
       if (atBottom || performance.now() - readerAt < 250) following.current = atBottom;
-      if (body.scrollHeight > body.clientHeight) rememberBodyScroll(keyRef.current, body);
     };
     body.addEventListener("scroll", onScroll, { passive: true });
     for (const type of READER_SCROLL_EVENTS) body.addEventListener(type, onReader, { passive: true });
     return () => {
+      if (streamedRef.current) rememberBodyScroll(keyRef.current, body);
       body.removeEventListener("scroll", onScroll);
       for (const type of READER_SCROLL_EVENTS) body.removeEventListener(type, onReader);
     };
