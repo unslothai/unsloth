@@ -486,7 +486,9 @@ def test_capabilities_report_whether_the_build_takes_a_draft_cache_type(monkeypa
     client = _client()
 
     def caps(**kw):
-        monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls: kw))
+        monkeypatch.setattr(
+            LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls: kw)
+        )
         return client.get("/api/benchmarks/capabilities").json()["draft_cache_type"]
 
     flags = dict(spec_draft_cache_k_flag = "-ctkd", spec_draft_cache_v_flag = "-ctvd")
