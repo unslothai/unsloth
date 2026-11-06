@@ -414,6 +414,7 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "is_vision": model_info.get("is_vision", False),
         "is_lora": model_info.get("is_lora", False),
         "is_mlx": model_info.get("is_mlx", False),
+        "loaded_auto_map": model_info.get("loaded_auto_map"),
         "display_name": model_info.get("display_name", model_name),
         "is_audio": model_info.get("is_audio", False),
         "audio_type": model_info.get("audio_type"),
@@ -448,6 +449,15 @@ def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
         "audio_device_fallback": model_info.get("audio_device_fallback"),
         "audio_request_inputs": model_info.get("audio_request_inputs"),
         "max_image_side": model_info.get("max_image_side"),
+    }
+
+
+def _load_settings(sub_config: dict) -> dict:
+    """What decides the weights and runtime a worker holds; the rest changes with each request."""
+    return {
+        key: value
+        for key, value in sub_config.items()
+        if key not in ("max_seq_length", "gpu_selection", "disable_xet")
     }
 
 
@@ -2257,8 +2267,9 @@ class InferenceOrchestrator:
         engine_options = None,
         n_parallel: Optional[int] = None,
     ) -> bool:
-        """Load a model for inference. Always spawns a fresh subprocess per load for a clean
-        interpreter (no stale unsloth patches, torch.compile caches, or getsource failures)."""
+        """Load a model for inference. Spawns a fresh subprocess per load for a clean interpreter
+        (no stale unsloth patches, torch.compile caches, or getsource failures); only a smaller
+        context on the MLX load already held is applied in place."""
         if engine != "auto":
             return self._load_managed_engine(
                 engine,
@@ -2337,8 +2348,11 @@ class InferenceOrchestrator:
             if audio_cpp_model:
                 # The worker picks its backend from this: a Hub id alone does not say audio.cpp.
                 sub_config["audio_cpp"] = True
-                if audio_load_runs_on_cpu(getattr(config, "audio_type", None), audio_device):
-                    # A CPU-only runtime runs Auto on the CPU too: say so, so no card is chosen and the worker hides them.
+                if audio_load_runs_on_cpu(
+                    getattr(config, "audio_type", None), audio_device, config.audio_cpp
+                ):
+                    # A CPU-only runtime or package runs Auto on the CPU too: say so, so no card
+                    # is chosen and the worker hides them.
                     audio_device = "cpu"
                     sub_config["audio_device"] = audio_device
             if audio_device_forces_cpu(audio_device) and (
@@ -2375,7 +2389,15 @@ class InferenceOrchestrator:
                     "retry when it completes."
                 )
 
-            # Always spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
+            if self._narrow_context_in_place(
+                sub_config, model_name, parallel_slots, load_cancel_event
+            ):
+                self.loading_models.discard(model_name)
+                if on_prior_worker_released is not None:
+                    on_prior_worker_released()
+                return True
+
+            # Otherwise spawn fresh: unsloth patches torch internals, breaking getsource on reuse.
             had_worker_handle = self._proc is not None
             worker_shutdown_at = 0.0
             before_kill_free_mib = None
@@ -2414,7 +2436,10 @@ class InferenceOrchestrator:
                     required_gb = gpu_selection.get("required_gb")
                     if required_gb is not None:
                         expected_free_gb = {int(resolved_gpu_ids[0]): float(required_gb)}
-                settled = self._wait_for_worker_vram_settle(
+                # An MLX worker first reads memory seconds after its imports, past the old worker's reclaim.
+                settled = (
+                    expected_free_gb is None and sub_config["device_backend"] == "mlx"
+                ) or self._wait_for_worker_vram_settle(
                     worker_shutdown_at or time.monotonic(),
                     expected_free_gb = expected_free_gb,
                     before_kill_free_mib = before_kill_free_mib,
@@ -2550,6 +2575,7 @@ class InferenceOrchestrator:
                         self.models[self.active_model_name] = _mirrored_model_entry(
                             model_info, model_name
                         )
+                        self._worker_load_settings = (self._proc, _load_settings(sub_config))
                         self.models[self.active_model_name]["parallel_slots"] = parallel_slots
                         self.models[self.active_model_name]["can_batch"] = model_info.get(
                             "can_batch"
@@ -2562,6 +2588,9 @@ class InferenceOrchestrator:
                             _audio_type in NATIVE_AUDIO_TYPES
                             and audio_load_runs_on_cpu(_audio_type, audio_device)
                         ) or model_info.get("audio_cpp_backend") == "cpu"
+                        self.models[self.active_model_name]["audio_cpu_only"] = bool(
+                            getattr(getattr(config, "audio_cpp", None), "cpu_only", False)
+                        )
                         self.models[self.active_model_name].update(
                             _mlx_runtime_mirror_fields(model_info)
                         )
@@ -2612,6 +2641,77 @@ class InferenceOrchestrator:
             raise
         finally:
             self._release_load_downloads()
+
+    def _narrow_context_in_place(
+        self,
+        sub_config: dict,
+        model_name: str,
+        parallel_slots,
+        cancel_event = None,
+    ) -> bool:
+        """Whether the idle MLX worker holding this load took a smaller context in place."""
+        proc = self._proc
+        entry = self.models.get(model_name)
+        held = getattr(self, "_worker_load_settings", None)
+        if (
+            sub_config["device_backend"] != "mlx"
+            or sub_config["mlx_distributed"]
+            or entry is None
+            or self.active_model_name != model_name
+            or entry.get("parallel_slots") != parallel_slots
+            or not 0 < (sub_config["max_seq_length"] or 0) < (entry.get("context_length") or 0)
+            or held != (proc, _load_settings(sub_config))
+            or not proc.is_alive()
+            or self._replies_in_flight()
+        ):
+            return False
+        with self._dispatcher_lifecycle_lock:
+            if self._worker_reserved_for is not None:
+                return False
+            self._worker_reserved_for = "the context is being narrowed"
+        acquired = False
+        try:
+            # A running dispatcher would drop the reply.
+            if not self._wait_worker_idle():
+                return False
+            acquired = self._gen_lock.acquire(timeout = 5.0)
+            if not acquired or self._proc is not proc:
+                return False
+            with self._active_cancel_lock:
+                if self._active_cancel_events:
+                    return False
+            with self._send_order_lock:
+                self._send_cmd(
+                    {"type": "narrow_context", "max_seq_length": sub_config["max_seq_length"]}
+                )
+                fields = self._wait_response("context_narrowed", timeout = 60.0).get("fields")
+            if not fields:
+                return False
+            from utils.process_lifetime import is_process_shutting_down
+
+            with self._subprocess_shutdown_lock:
+                if (
+                    is_process_shutting_down()
+                    or self._proc is not proc
+                    or model_name not in self.loading_models
+                    or (cancel_event is not None and cancel_event.is_set())
+                ):
+                    return False
+                entry.update(fields)
+                self.load_generation += 1
+                self._loaded_by_user_action = False
+            logger.info(
+                "Model '%s' now serves a context of %s", model_name, fields["context_length"]
+            )
+            return True
+        except Exception as exc:
+            logger.warning("Could not narrow the context in place: %s", exc)
+            return False
+        finally:
+            if acquired:
+                self._gen_lock.release()
+            with self._dispatcher_lifecycle_lock:
+                self._worker_reserved_for = None
 
     def _claim_load_downloads(self, resp: dict) -> None:
         from hub.services.load_downloads import claim_load_downloads

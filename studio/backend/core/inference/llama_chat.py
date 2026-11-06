@@ -8,6 +8,7 @@ the llama-server process, its base URL, the loaded model's chat template and cap
 Helpers that only these requests use live here too.
 """
 
+import collections
 import functools
 import hashlib
 import json
@@ -25,6 +26,7 @@ from core.inference.chat_compaction import (
     _boundary_metadata,
     _can_reset_epoch,
     _compaction_fit_kwargs,
+    _compaction_reporter,
     _conversation_recall_reserve,
     _fit_with_instruction_pins,
     _keeps_compaction_boundary,
@@ -523,6 +525,13 @@ _MAX_IDENTICAL_TOOL_RESULTS = 3
 _UNSET = object()
 
 
+def _with_template_extras(reasoning_kw: Optional[dict], extras: Optional[dict]) -> Optional[dict]:
+    """The caller's other template tags (e.g. verification) under Studio's resolved reasoning keys."""
+    if not extras:
+        return reasoning_kw
+    return {**extras, **(reasoning_kw or {})}
+
+
 # A result with this tail is the window's answer, not the tool's.
 _WINDOW_NOTICE_MARKER = "chars for the model;"
 
@@ -818,6 +827,62 @@ class CountAborted(Exception):
 _COUNT_TIMEOUT_FLOOR_S = 10.0
 _COUNT_TIMEOUT_CHARS_PER_S = 100_000
 
+# Identical prompts recounted within a tool round; keyed per llama-server process.
+_COUNT_MEMO_INIT_LOCK = threading.Lock()
+_COUNT_MEMO_SIZE = 8
+
+
+def _count_memo_key(backend, *parts) -> Optional[bytes]:
+    """Digest of everything the server render sees, scoped to the running llama-server process."""
+    process = getattr(backend, "_process", None)
+    try:
+        payload = json.dumps(
+            [
+                getattr(backend, "base_url", None),
+                getattr(backend, "_model_identifier", None),
+                id(process),
+                getattr(process, "pid", None),
+                *parts,
+            ],
+            sort_keys = True,
+            ensure_ascii = False,
+        )
+    except Exception:  # unserialisable content: count it, never guess a key
+        return None
+    return hashlib.sha256(payload.encode("utf-8", "surrogatepass")).digest()
+
+
+def _count_memo(backend):
+    memo = vars(backend).get("_count_memo_state")
+    if memo is None:
+        with _COUNT_MEMO_INIT_LOCK:
+            memo = vars(backend).setdefault(
+                "_count_memo_state", (threading.Lock(), collections.OrderedDict())
+            )
+    return memo
+
+
+def _count_memo_get(backend, key) -> Optional[int]:
+    if key is None:
+        return None
+    lock, memo = _count_memo(backend)
+    with lock:
+        count = memo.get(key)
+        if count is not None:
+            memo.move_to_end(key)
+        return count
+
+
+def _count_memo_put(backend, key, count) -> None:
+    if key is None or type(count) is not int or count <= 0:
+        return
+    lock, memo = _count_memo(backend)
+    with lock:
+        memo[key] = count
+        memo.move_to_end(key)
+        while len(memo) > _COUNT_MEMO_SIZE:
+            memo.popitem(last = False)
+
 
 def _count_timeout(messages, system_text, tools) -> float:
     try:
@@ -868,6 +933,7 @@ class LlamaChatMixin:
         thinking_budget_tokens: Optional[int] = None,
         _allow_respawn_retry: bool = True,
         compact_context: bool = False,
+        chat_template_kwargs: Optional[dict] = None,
     ) -> Generator[Union[str, dict], None, None]:
         """Streams a chat completion via /v1/chat/completions (llama-server applies template and vision); yields cumulative text like InferenceBackend."""
         if not self.is_loaded:
@@ -916,9 +982,10 @@ class LlamaChatMixin:
             payload["timings_per_token"] = True
         if logit_bias:
             payload["logit_bias"] = logit_bias
-        # Per-request enable_thinking / reasoning_effort / preserve_thinking
-        _reasoning_kw = self._request_reasoning_kwargs(
-            enable_thinking, reasoning_effort, preserve_thinking
+        # Per-request enable_thinking / reasoning_effort / preserve_thinking, plus the caller's other tags
+        _reasoning_kw = _with_template_extras(
+            self._request_reasoning_kwargs(enable_thinking, reasoning_effort, preserve_thinking),
+            chat_template_kwargs,
         )
         if _reasoning_kw is not None:
             payload["chat_template_kwargs"] = _reasoning_kw
@@ -952,6 +1019,7 @@ class LlamaChatMixin:
                 )
                 openai_messages, truncation = _fit_with_instruction_pins(
                     openai_messages,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = payload["max_tokens"],
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -1091,6 +1159,7 @@ class LlamaChatMixin:
                 tools_withheld = tools_withheld,
                 thinking_budget_tokens = thinking_budget_tokens,
                 compact_context = compact_context,
+                chat_template_kwargs = chat_template_kwargs,
                 _allow_respawn_retry = False,
             )
 
@@ -1309,6 +1378,7 @@ class LlamaChatMixin:
         compact_context: bool = False,
         website_policy: Optional[dict] = None,
         live_permissions = None,
+        chat_template_kwargs: Optional[dict] = None,
     ) -> Generator[dict, None, None]:
         """
         Agentic loop: let the model call tools, execute them, and continue.
@@ -1333,8 +1403,11 @@ class LlamaChatMixin:
             search_images_kwargs,
             stream_tool_execution,
         )
+        from core.inference.studio_tool_loop import _WEB_FETCH_CONCURRENCY, _web_fetch_host
         from core.inference.tools import (
+            StartedUrlRead,
             build_rag_autoinject,
+            compaction_receipt_field,
             execute_tool,
             has_text_only_provisional_card,
             is_high_risk_tool_call,
@@ -1350,6 +1423,7 @@ class LlamaChatMixin:
             needs_tool_confirmation,
             normalize_sandbox_level,
             normalize_tool_permissions,
+            require_tool_access,
             requires_os_isolation,
             runs_without_os_sandbox,
             tool_call_may_prompt,
@@ -1879,8 +1953,11 @@ class LlamaChatMixin:
                 neutralize_control_markup_in_messages,
             )
 
-            _reasoning_kw = self._request_reasoning_kwargs(
-                _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+            _reasoning_kw = _with_template_extras(
+                self._request_reasoning_kwargs(
+                    _effective_enable_thinking, _effective_reasoning_effort, preserve_thinking
+                ),
+                chat_template_kwargs,
             )
             # On a continuation only the remainder of the caller's cap; read before the payload.
             _iteration_max_tokens = (
@@ -1912,6 +1989,7 @@ class LlamaChatMixin:
                     )
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
+                        on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -2037,12 +2115,25 @@ class LlamaChatMixin:
             if logit_bias:
                 payload["logit_bias"] = logit_bias
             # An empty list would still advertise tool use.
-            if safe_tools:
-                payload["tools"] = llama_grammar_tools(safe_tools)
-                payload["tool_choice"] = requested_choice
-                _last_sent_tools = safe_tools
             if _reasoning_kw is not None:
                 payload["chat_template_kwargs"] = _reasoning_kw
+            if safe_tools:
+                grammar_tools = safe_tools
+                if not forced_name and requested_choice != "none":
+                    grammar_tools = neutralize_tool_descriptions(
+                        tool_controller.active_tools(include_deferred = True),
+                        _markup_cache,
+                        self.markup_profile,
+                    )
+                payload["tools"] = llama_grammar_tools(grammar_tools)
+                payload["tool_choice"] = requested_choice
+                if grammar_tools != safe_tools:
+                    # The parser needs discovered names; the template keeps its cached declaration.
+                    payload["chat_template_kwargs"] = {
+                        **(_reasoning_kw or {}),
+                        "tools": llama_grammar_tools(safe_tools),
+                    }
+                _last_sent_tools = safe_tools
             if thinking_budget_tokens is not None:
                 payload["thinking_budget_tokens"] = thinking_budget_tokens
             # Re-checked per iteration: once a tool result is appended the partial is
@@ -2089,6 +2180,7 @@ class LlamaChatMixin:
                 try:
                     conversation, truncation = _fit_with_instruction_pins(
                         conversation,
+                        on_compacting = _compaction_reporter(perf_callback),
                         context_length = self._effective_context_length,
                         max_tokens = _iteration_max_tokens,
                         count_tokens = lambda fitted: self.count_chat_tokens(
@@ -3029,8 +3121,9 @@ class LlamaChatMixin:
                             )
                             _cap_left_l = _loop_budget_left(_spent_l)
                             # Recompute kwargs with thinking off so admission prices the real request.
-                            _off_kw_l = self._request_reasoning_kwargs(
-                                False, None, preserve_thinking
+                            _off_kw_l = _with_template_extras(
+                                self._request_reasoning_kwargs(False, None, preserve_thinking),
+                                chat_template_kwargs,
                             )
                             # Counted ONCE normally: eviction below runs only on a candidate already found too large.
                             _fits_l = _cap_left_l != 0 and _loop_continuation_fits(
@@ -3409,6 +3502,67 @@ class LlamaChatMixin:
                 # a Mistral-style call carries its own id and would open a duplicate. Reuse
                 # the card's id for the first matching call (same tool name) to reconcile.
                 _text_provisional_id = _text_args_id if not has_structured_tc else ""
+                _started_reads: dict = {}
+
+                def _start_following_reads(_call_index, _host, _key):
+                    # Network only: approvals, pricing, the fit and the record stay in call order.
+                    _hosts = {_host, *(_started[1] for _started in _started_reads.values())}
+                    _keys = {_key, *(_started[0].key for _started in _started_reads.values())}
+                    _next = max(_started_reads, default = _call_index) + 1
+                    while _next < len(tool_calls) and len(_hosts) < _WEB_FETCH_CONCURRENCY:
+                        _function = tool_calls[_next].get("function") or {}
+                        # By raw name first: preparing an MCP call can load tools.
+                        if str(_function.get("name") or "").strip() != "web_search":
+                            return
+                        _spec = tool_controller.prepare_call(tool_calls[_next])
+                        _next_host = _web_fetch_host(_spec.tool_name, _spec.arguments)
+                        if (
+                            not _spec.should_execute
+                            or _next_host is None
+                            or _next_host in _hosts
+                            or _spec.key in _keys
+                            or compaction_receipt_field(_spec.arguments) is not None
+                        ):
+                            return
+                        _mode, _bypass = live_permissions.apply(permission_mode, bypass_permissions)
+                        try:
+                            require_tool_access(disable_sandbox = _bypass)
+                        except Exception:
+                            return
+                        if needs_tool_confirmation(
+                            confirm_tool_calls = bool(confirm_tool_calls),
+                            bypass_permissions = _bypass,
+                            permission_mode = _mode,
+                            name = _spec.tool_name,
+                            arguments = _spec.arguments,
+                            is_high_risk = is_high_risk_tool_call,
+                            never_needs = never_needs_approval,
+                            sandbox_level = sandbox_level,
+                            session_id = session_id,
+                        ) or requires_os_isolation(
+                            confirm_tool_calls = bool(confirm_tool_calls),
+                            bypass_permissions = _bypass,
+                            permission_mode = _mode,
+                            name = _spec.tool_name,
+                            arguments = _spec.arguments,
+                            prompted = False,
+                            is_high_risk = is_high_risk_tool_call,
+                            sandbox_level = sandbox_level,
+                        ):
+                            return
+                        _started_reads[_next] = (
+                            _spec,
+                            _next_host,
+                            StartedUrlRead(
+                                _spec.arguments["url"].strip(),
+                                None if tool_call_timeout >= 9999 else tool_call_timeout,
+                                cancel_event,
+                                website_policy,
+                            ),
+                        )
+                        _hosts.add(_next_host)
+                        _keys.add(_spec.key)
+                        _next += 1
 
                 for _call_index, tc in enumerate(tool_calls or []):
                     func = tc.get("function", {})
@@ -3797,12 +3951,32 @@ class LlamaChatMixin:
 
                         # Only a call the user answered: the executor lets it reach the host paths it names.
                         _host_access_approved = _decision not in (None, "deny")
+                        _started_spec, _, _started_read = _started_reads.pop(
+                            _call_index, (None, None, None)
+                        )
+                        if (
+                            _started_spec is None
+                            or _started_spec.key != decision.key
+                            or needs_confirm
+                            or strict_isolation
+                        ):
+                            _started_read = None
+                        _read_host = _web_fetch_host(decision.tool_name, decision.arguments)
+                        if (
+                            _read_host is not None
+                            and not forced_name
+                            and mcp_image is None
+                            and not (cancel_event is not None and cancel_event.is_set())
+                            and accepts_kwarg(execute_tool, "started_read")
+                        ):
+                            _start_following_reads(_call_index, _read_host, decision.key)
 
                         def _invoke_tool(
                             _output_callback,
                             _decision = decision,
                             _approved = _host_access_approved,
                             _strict = strict_isolation,
+                            _read = _started_read,
                         ):
                             # Bound top_k to the room left: the result lands in the protected tool exchange, so an oversized top_k ends the turn in an unrecoverable context error.
                             kwargs = dict(
@@ -4042,6 +4216,8 @@ class LlamaChatMixin:
                             kwargs.update(search_images_kwargs(execute_tool, _decision.tool_name))
                             if image_share is not None:
                                 kwargs["mcp_image"] = image_share["image"]
+                            if _read is not None:
+                                kwargs["started_read"] = _read
                             return execute_tool(
                                 _decision.tool_name,
                                 _decision.arguments,
@@ -4403,8 +4579,9 @@ class LlamaChatMixin:
         _final_tools = _last_sent_tools
         from core.inference.chat_template_helpers import neutralize_control_markup_in_messages
 
-        _reasoning_kw = self._request_reasoning_kwargs(
-            enable_thinking, reasoning_effort, preserve_thinking
+        _reasoning_kw = _with_template_extras(
+            self._request_reasoning_kwargs(enable_thinking, reasoning_effort, preserve_thinking),
+            chat_template_kwargs,
         )
         _final_max_tokens = (
             max_tokens
@@ -4438,6 +4615,7 @@ class LlamaChatMixin:
                 )
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = _final_max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -4596,6 +4774,7 @@ class LlamaChatMixin:
             try:
                 conversation, truncation = _fit_with_instruction_pins(
                     conversation,
+                    on_compacting = _compaction_reporter(perf_callback),
                     context_length = self._effective_context_length,
                     max_tokens = max_tokens,
                     count_tokens = lambda fitted: self.count_chat_tokens(
@@ -5041,7 +5220,10 @@ class LlamaChatMixin:
                                 _candidate_r, None, self.markup_profile
                             )
                             # Admit with thinking-off kwargs, matching the request actually sent.
-                            _off_kw = self._request_reasoning_kwargs(False, None, preserve_thinking)
+                            _off_kw = _with_template_extras(
+                                self._request_reasoning_kwargs(False, None, preserve_thinking),
+                                chat_template_kwargs,
+                            )
                             _next_cap_r = _remaining_output_budget()
                             # Protect the current user turn and recovery tail.
                             _recovery_tail = _candidate_r[-2:]
@@ -5226,6 +5408,35 @@ class LlamaChatMixin:
         tools = neutralize_tool_descriptions(tools, None, _profile)
 
         try:
+            from core.inference.mcp_images import prepare_image_turn_boundaries
+
+            template_messages = prepare_image_turn_boundaries(
+                list(messages) if messages else [],
+                getattr(self, "_chat_template_override", None)
+                or getattr(self, "_chat_template", None),
+            )
+            if system_text:
+                template_messages = [{"role": "system", "content": system_text}] + template_messages
+            # Tool rounds recount the same prompt; admission (prefer_native) counts once and keeps its own failover.
+            memo_key = (
+                None
+                if prefer_native
+                else _count_memo_key(
+                    self,
+                    template_messages,
+                    tools,
+                    {
+                        key: template_options[key]
+                        for key in ("tool_choice", "parallel_tool_calls", "response_format")
+                        if template_options and key in template_options
+                    },
+                    chat_template_kwargs,
+                    continue_final_message,
+                )
+            )
+            cached = _count_memo_get(self, memo_key)
+            if cached is not None:
+                return cached
             with httpx.Client(
                 timeout = httpx.Timeout(
                     _COUNT_TIMEOUT_FLOOR_S, read = _count_timeout(messages, system_text, tools)
@@ -5252,18 +5463,6 @@ class LlamaChatMixin:
                     return len(tokens)
 
                 # 1. Try /apply-template to render the real chat prompt.
-                from core.inference.mcp_images import prepare_image_turn_boundaries
-
-                template_messages = prepare_image_turn_boundaries(
-                    list(messages) if messages else [],
-                    getattr(self, "_chat_template_override", None)
-                    or getattr(self, "_chat_template", None),
-                )
-                if system_text:
-                    template_messages = [
-                        {"role": "system", "content": system_text}
-                    ] + template_messages
-
                 def _render_count(render_messages) -> tuple[Optional[int], bool]:
                     """(count or None, refused). Only a 500 is a template refusal; 503 = loading or no slot."""
                     try:
@@ -5338,6 +5537,7 @@ class LlamaChatMixin:
                         if count is not None:
                             self._empty_chat_render_refused = True
                 if count is not None:
+                    _count_memo_put(self, memo_key, count)
                     return count
 
                 # The fallback drops role markers, special tokens and tool schemas (~30% of a

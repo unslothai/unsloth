@@ -376,7 +376,8 @@ export function installPageAgent(): PageAgent {
     };
     const flush = () => {
       const text = clean(buffer, 400);
-      if (text && bufferShown && text.length > 1) push(text);
+      // A lone symbol is an icon or a bullet; a lone digit or letter is a count or a grade.
+      if (text && bufferShown && (text.length > 1 || /[\p{L}\p{N}]/u.test(text))) push(text);
       buffer = "";
       bufferShown = false;
     };
@@ -821,7 +822,8 @@ export function installPageAgent(): PageAgent {
     const href = anchor?.href ?? "";
     if (!anchor || !/^https?:/i.test(href)) return null;
     const target = new URL(href);
-    const hashOnly = target.hash && target.href.split("#")[0] === pageUrl().href.split("#")[0];
+    // href="#" has an empty hash, yet stays on the page like any other fragment.
+    const hashOnly = href.includes("#") && target.href.split("#")[0] === pageUrl().href.split("#")[0];
     return !hashOnly && (directLinks || anchor.target === "_blank") ? href : null;
   };
 

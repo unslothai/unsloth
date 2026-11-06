@@ -81,6 +81,8 @@ AUDIO_TOKEN_MARKERS = (
 AUDIO_TOKENIZER_CONFIG_PATHS = (
     "tokenizer_config.json",
     "LLM/tokenizer_config.json",
+    # transformers 5 tokenizer_configs drop added_tokens_decoder (LFM3-Omni); the processor still names its audio_token.
+    "processor_config.json",
 )
 
 # A codebook tokenizer runs to a few MB, and the inventory scan reads one per repo.
@@ -90,15 +92,28 @@ _MAX_TOKENIZER_CONFIG_BYTES = 32 * 1024 * 1024
 def may_hold_audio_tokens(raw: str) -> bool:
     """Whether a tokenizer_config's raw text is worth parsing. A false True costs only
     the parse that would have happened anyway; a false False misclassifies."""
-    return any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
+    # '"audio_token"' too: a JSON-escaped placeholder hides the markers from this raw scan.
+    return '"audio_token"' in raw or any(marker in raw for marker in AUDIO_TOKEN_MARKERS)
+
+
+def declares_audio_token(tok_config: dict) -> bool:
+    """Whether a transformers 5 tokenizer_config names an audio placeholder in its top-level
+    audio_token (Gemma 4) instead of added_tokens_decoder."""
+    token = tok_config.get("audio_token")
+    return isinstance(token, str) and bool(token)
 
 
 def classify_audio_tokens(tok_config: dict) -> Optional[str]:
     """The audio_type a parsed tokenizer_config fingerprints, or None."""
-    added = tok_config.get("added_tokens_decoder", {})
-    if not added:
-        return None
+    added = tok_config.get("added_tokens_decoder") or {}
     token_contents = [value.get("content", "") for value in added.values()]
+    # Only beside a processor that takes input: LFM3-Omni's image processor, LFM3-Audio's feature extractor.
+    if isinstance(tok_config.get("audio_token"), str) and (
+        tok_config.get("image_processor") or tok_config.get("feature_extractor")
+    ):
+        token_contents.append(tok_config["audio_token"])
+    if not token_contents:
+        return None
     for audio_type, check_fn in AUDIO_TOKEN_PATTERNS.items():
         if check_fn(token_contents):
             return audio_type

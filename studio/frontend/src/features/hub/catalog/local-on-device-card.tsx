@@ -100,6 +100,7 @@ interface LocalOnDeviceCardProps {
 
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
   unsupportedReason?: string | null;
   onRun?: (selection: HubModelRunSelection) => void;
@@ -249,6 +250,7 @@ export function LocalOnDeviceCard({
 
   gpuGb,
   gpuCount,
+  audioCppCardGb,
   systemRamGb,
   unsupportedReason,
   onRun,
@@ -372,6 +374,7 @@ export function LocalOnDeviceCard({
             defaultVariant: currentVariantState.defaultVariant,
             gpuGb,
             gpuCount,
+            audioCppCardGb,
             systemRamGb,
             budgetFraction,
           })
@@ -381,6 +384,7 @@ export function LocalOnDeviceCard({
       currentVariantState.defaultVariant,
       gpuGb,
       gpuCount,
+      audioCppCardGb,
       systemRamGb,
       budgetFraction,
     ],

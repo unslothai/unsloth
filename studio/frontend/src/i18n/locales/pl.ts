@@ -206,12 +206,16 @@ export const pl = {
         history: "Odczyt historii przeglądania",
         move: "Przesuwanie myszy",
         drag: "Przeciąganie",
+        tabs: "Przeglądanie kart",
+        readFile: "Czytanie pliku",
+        editFile: "Edytowanie pliku",
       },
     },
     title: "Przeglądarka",
     tabs: "Karty przeglądarki",
     newTab: "Nowa karta",
     newTabFullView: "Nowa karta w pełnym widoku",
+    newTabFloating: "Nowa karta w pływającym oknie",
     closeTab: "Zamknij kartę",
     close: "Zamknij przeglądarkę",
     show: "Pokaż przeglądarkę",
@@ -361,6 +365,8 @@ export const pl = {
     askBeforeDownloadingSetting: "Pytaj przed pobraniem",
     askBeforeDownloadingSettingDescription:
       "Potwierdzaj pliki z witryn przed ich zapisaniem.",
+    askBeforeProgramDownloadsSetting: "Pytaj przed pobraniem programów",
+    askBeforeProgramDownloadsSettingDescription: "Potwierdzaj pliki, które mogą uruchamiać programy, takie jak .exe lub .dmg, nawet gdy inne pobrania nie pytają.",
     downloadSitesSetting: "Uprawnienia witryn do pobierania",
     downloadSitesSettingDescription:
       "Witryny, z których pobieranie jest zawsze dozwolone lub zawsze blokowane.",
@@ -369,6 +375,7 @@ export const pl = {
     downloadSitesFor: "Pobieranie z {host}",
     downloadSitesRemove: "Zapomnij {host}",
     downloadSiteAllow: "Zawsze zezwalaj",
+    downloadSiteAllowAll: "Zezwalaj też na programy",
     downloadSiteBlock: "Zawsze blokuj",
     downloadPrompt: {
       title: "Pobrać ten plik?",
@@ -377,6 +384,9 @@ export const pl = {
       dangerous:
         "Takie pliki mogą uruchamiać programy na Twoim komputerze. Pobierz go tylko wtedy, gdy ufasz witrynie {host}.",
       remember: "Zapamiętaj na przyszłość",
+      once: "Zapytaj następnym razem",
+      site: "Zawsze dla {host}",
+      all: "Zawsze pobieraj, z każdej witryny",
       cancel: "Anuluj",
       download: "Pobierz",
       blocked: "Zablokowano pobieranie z {host}.",
@@ -425,6 +435,12 @@ export const pl = {
       openChat: "Otwórz w pełnym widoku",
       moveLeft: "Przenieś do lewego panelu",
       moveRight: "Przenieś do prawego panelu",
+    },
+    floating: {
+      enter: "Pływające okno",
+      dock: "Przypnij z boku",
+      close: "Zamknij pływające okno",
+      handle: "Przesuń okno. Strzałki je przesuwają, Shift ze strzałkami zmienia jego rozmiar.",
     },
     annotate: {
       countOne: "1 adnotacja",
@@ -883,6 +899,9 @@ export const pl = {
     unifiedTightFit: "Ciasne dopasowanie",
     unifiedTightFitHint:
       "Może wczytać się z krótszym kontekstem lub działać wolniej na tym Macu.",
+    residentToRun: "do uruchomienia",
+    residentToRunHint:
+      "Pamięć GPU wymagana przez kontrolę ładowania podczas działania",
     onDevice: "Na urządzeniu",
     huggingFace: "Hugging Face",
     retry: "Ponów",
@@ -1173,6 +1192,7 @@ export const pl = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Przed dodaniem kolejnego konta ustaw hasło właściciela instalacji. Będziesz go używać do logowania, gdy ta instalacja będzie miała wiele kont.",
       signsInAs: "Logowanie jako {username}",
       signsInAsOwner: "Logowanie jako {alias} lub {username}",
       signInName: "Twoja nazwa logowania",
@@ -1204,6 +1224,9 @@ export const pl = {
         "Jeden model w wierszu, np. unsloth/Qwen3-4B-GGUF, lub unsloth/* dla całej organizacji. Pozostaw puste, aby zezwolić na każdy model.",
       modelAccessSave: "Zapisz",
       modelAccessLimited: "Ograniczony dostęp do modeli",
+      rename: "Zmień nazwę",
+      renameTitle: "Zmień nazwę {username}",
+      renameDescription: "Wybierz nazwę, której to konto używa do logowania. Czaty, pliki i klucze API pozostają na koncie. Użytkownik zostanie wylogowany i zaloguje się ponownie nową nazwą oraz obecnym hasłem.",
       empty: "Nie ma jeszcze innych kont",
       setupCode: "Kod konfiguracji",
       setupFor: "Kod konfiguracji dla: {username}",
@@ -2061,6 +2084,26 @@ export const pl = {
       autoTitleNewChats: "Automatyczne tytuły nowych czatów",
       autoTitleNewChatsDescription:
         "Generuj tytuł na podstawie pierwszej wiadomości.",
+      mlWarmup: {
+        sectionTitle: "Wydajność przy uruchamianiu",
+        description: "Przygotuj wybrane funkcje, aby przyspieszyć ich pierwsze użycie. Wszystkie opcje są domyślnie wyłączone. Mogą one wczytywać współdzielone zależności i zwiększać zużycie RAM w stanie bezczynności.",
+        restartRequired: "Zmiany zostaną zastosowane po ponownym uruchomieniu Unsloth.",
+        hardwareLabel: "Wykrywanie sprzętu",
+        hardwareDescription: "Wykryj GPU i przygotuj PyTorch.",
+        textLabel: "Modele tekstowe",
+        textDescription: "Przygotuj obsługę modeli tekstowych Transformers.",
+        datasetsLabel: "Przygotowanie zbiorów danych",
+        datasetsDescription: "Przygotuj Datasets i jego zależności do podglądu i przetwarzania.",
+        mediaLabel: "Modele obrazu i wideo",
+        mediaDescription: "Przygotuj Diffusers i współdzielone zależności modeli.",
+        advanced: "Zaawansowane",
+        quantizationLabel: "Wstępne kontrole kwantyzacji obrazów",
+        quantizationDescription: "Sprawdź obsługę przed pierwszym wczytaniem skwantyzowanego modelu obrazu. Może to na krótko zwiększyć zużycie RAM.",
+        requiredBySelections: "Wymagane przez wybrane opcje.",
+        disabledByEnv: "Wyłączone przez UNSLOTH_STUDIO_DISABLE_TORCH_WARM w środowisku backendu.",
+        loadError: "Nie udało się wczytać ustawień wstępnego przygotowania przy uruchamianiu.",
+        saveError: "Nie udało się zapisać ustawień wstępnego przygotowania przy uruchamianiu.",
+      },
       helperLlm: {
         sectionTitle: "Pomocniczy LLM",
         preloadOnStartup: "Wstępnie pobieraj pomocniczy LLM przy uruchamianiu",
@@ -2130,6 +2173,7 @@ export const pl = {
           "Nie udało się zapisać ustawień automatycznego przełączania modelu.",
         idleError:
           "Wpisz 0, aby utrzymać model wczytany, lub co najmniej 60 sekund.",
+        idleUnsaved: "Jeszcze nie zapisano.",
         keepKv: "Zachowuj kontekst czatu po zwolnieniu",
         keepKvDescription:
           "Zapisuj pamięć podręczną KV przed zwolnieniem z powodu bezczynności lub przed zajęciem GPU przez model obrazów lub wideo, aby wznowione czaty nie musiały ponownie wczytywać historii. Do 10 GB na dysku.",
@@ -3252,9 +3296,8 @@ export const pl = {
         "Pokazuj opcję Edytuj odpowiedź przy każdej odpowiedzi zamiast w menu Więcej.",
       turnNavigation: "Nawigacja po turach",
       turnNavigationDescription: "Pokazuje Twoje wiadomości jako pasek przy lewej krawędzi długich czatów. Najedź, aby zobaczyć podgląd tury, kliknij, aby do niej przejść, i dodaj zakładkę, aby łatwo ją znaleźć.",
-      composerAtBottom: "Pole wiadomości na dole",
-      composerAtBottomDescription:
-        "Rozpoczynaj nowe czaty z polem wiadomości na dole strony zamiast na środku.",
+      composerPosition: "Położenie pola wiadomości",
+      composerPositionDescription: "Gdzie znajduje się pole wiadomości po rozpoczęciu nowego czatu, od góry strony aż do dołu.",
       projectAttachments: "Udostępniaj pliki w całym projekcie",
       projectAttachmentsDescription:
         "Udostępniaj nowe załączniki czatu wszystkim czatom w projekcie.",
@@ -3777,6 +3820,9 @@ export const pl = {
         docsLabel: "Otwórz dokumentację Decision API",
         description:
           "Odpowiadaj na pytania tak/nie, wielokrotnego wyboru i punktowe dotyczące tekstu za pomocą modelu na tym komputerze lub modelu decyzyjnego z Połączeń. Działa z TypeSafe SDK.",
+        codeTitle: "Wywołaj z kodu",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Inni klienci MCP łączą się tutaj tym samym tokenem.",
         enable: "Obsługuj żądania",
         enableDescription:
           "Udostępnia /v1/systemone. Włączenie powoduje pobranie modelu.",
@@ -3940,7 +3986,7 @@ export const pl = {
         desktopAvailableDescription:
           "Zaktualizuj teraz, a aplikacja komputerowa uruchomi się ponownie po zakończeniu.",
         desktopExternalServer:
-          "Aplikacja połączyła się z już działającym serwerem Unsloth i nie może go zaktualizować. Zatrzymaj ten serwer, a następnie zamknij i ponownie otwórz aplikację komputerową, aby ją zaktualizować.",
+          "Połączono z serwerem Unsloth na porcie {port}, którego ta aplikacja nie uruchomiła, na przykład `unsloth studio` w terminalu. Zatrzymaj go tam, gdzie został uruchomiony, a następnie zamknij i ponownie otwórz aplikację, aby ją zaktualizować.",
         desktopManualInstall:
           "Otwórz stronę wydania, aby zainstalować najnowszy pakiet dla systemu Linux.",
         desktopCheckFailed: "Nie udało się sprawdzić aktualizacji",
@@ -4257,8 +4303,6 @@ export const pl = {
             "Ten zbiór danych wygląda na obrazy, których nie można strumieniować.",
           audioDataset:
             "Ten zbiór danych wygląda na audio, którego nie można strumieniować.",
-          appleSilicon:
-            "Strumieniowanie nie jest jeszcze obsługiwane na Apple Silicon (MLX).",
         },
         options: {
           trainOnCompletions: "tylko odpowiedzi asystenta",
@@ -5521,6 +5565,8 @@ export const pl = {
     removeLevel: "Usuń poziom {n}",
     addLevel: "Dodaj poziom",
     jsonHelp: "Treść żądania. Uruchomienie wysyła ją w niezmienionej postaci.",
+    copyBody: "Kopiuj treść",
+    copyCurl: "Kopiuj jako cURL",
     examples: "Przykłady",
     presetToolApproval: "Zatwierdzanie wywołań narzędzi agenta",
     presetPromptInjection: "Wykrywanie wstrzykiwania promptów",
@@ -5923,6 +5969,7 @@ export const pl = {
   generationStats: {
     working: "Przetwarzanie...",
     processingPrompt: "Przetwarzanie promptu {percent}%",
+    compactingContext: "Kompaktowanie kontekstu...",
     timeLeft: "zostało {eta}",
     tokensOne: "tokeny: {count}",
     tokens: "tokeny: {count}",

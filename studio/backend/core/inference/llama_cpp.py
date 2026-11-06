@@ -1457,6 +1457,17 @@ def _extract_reasoning_effort_levels(chat_template: str) -> list:
     ]
 
 
+# Only a validation guard: a plain membership branch can group levels or reject the ones it names.
+_REASONING_EFFORT_ALLOWLIST_RE = re.compile(
+    r"\{%-?\s*if\s+reasoning_effort\s+not\s+in\s+\[([^\]]*)\]\s*-?%\}\s*\{\{-?\s*raise_exception\("
+)
+
+
+def _reasoning_effort_allowlist(chat_template: str) -> list:
+    match = _REASONING_EFFORT_ALLOWLIST_RE.search(chat_template)
+    return _extract_reasoning_effort_levels(match.group(1)) if match else []
+
+
 # Log each substitution once per (levels, requested) pair.
 _REASONING_EFFORT_CLAMPS_LOGGED: set = set()
 
@@ -1475,6 +1486,27 @@ def _clamp_reasoning_effort_to_levels(effort: Optional[str], levels) -> Optional
     rank = _REASONING_EFFORT_SCALE.index(effort)
     below = [level for level in offered if _REASONING_EFFORT_SCALE.index(level) < rank]
     return below[-1] if below else offered[0]
+
+
+def _fit_reasoning_effort_to_template(
+    chat_template: Optional[str],
+    effort,
+    thinking_off: bool = False,
+):
+    """A level the template's raising allowlist rejects becomes one it accepts, so the render cannot fail."""
+    allowed = _reasoning_effort_allowlist(chat_template or "")
+    if not allowed or effort in allowed:
+        return effort
+    if thinking_off and "none" in allowed:
+        return "none"
+    return _clamp_reasoning_effort_to_levels(effort, allowed) or effort
+
+
+def _rendered_chat_template(backend) -> Optional[str]:
+    # getattr: test doubles skip __init__ and borrow backend methods unbound.
+    return getattr(backend, "_chat_template_override", None) or getattr(
+        backend, "_chat_template", None
+    )
 
 
 # Keyed on identity, not name, so a rebuilt GGUF at the same path is logged again.
@@ -1559,7 +1591,10 @@ def detect_reasoning_flags(
         flags["supports_reasoning"] = True
         flags["reasoning_style"] = "reasoning_effort"
         scanned = _extract_reasoning_effort_levels(tpl)
-        if "low" in scanned and "high" in scanned:
+        allowed = _reasoning_effort_allowlist(tpl)
+        if any(level != "none" for level in allowed):
+            flags["reasoning_effort_levels"] = allowed
+        elif "low" in scanned and "high" in scanned:
             flags["reasoning_effort_levels"] = scanned
         _log(
             f"{prefix}model supports reasoning "
@@ -6141,15 +6176,42 @@ def _load_probe_memo_scope():
     prev = (
         getattr(_LOAD_PROBE_STATE, "metal_transient", None),
         getattr(_LOAD_PROBE_STATE, "logged", None),
+        getattr(_LOAD_PROBE_STATE, "companion_listings", None),
     )
     _LOAD_PROBE_STATE.metal_transient = {}
     _LOAD_PROBE_STATE.logged = set()
+    _LOAD_PROBE_STATE.companion_listings = {}
     try:
         yield
     finally:
         _LOAD_PROBE_STATE.armed = False
         _LOAD_PROBE_STATE.rows = None
-        _LOAD_PROBE_STATE.metal_transient, _LOAD_PROBE_STATE.logged = prev
+        (
+            _LOAD_PROBE_STATE.metal_transient,
+            _LOAD_PROBE_STATE.logged,
+            _LOAD_PROBE_STATE.companion_listings,
+        ) = prev
+
+
+def _companion_repo_files(hf_repo: str, hf_token: Optional[str]) -> list[str]:
+    """One load's companion lookups share a listing until a download; failures are never kept."""
+    from huggingface_hub import list_repo_files
+
+    store = getattr(_LOAD_PROBE_STATE, "companion_listings", None)
+    key = (hf_repo, hf_token)
+    if store is not None and key in store:
+        return list(store[key])
+    files = list(call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo))
+    if store is not None:
+        store[key] = tuple(files)
+    return files
+
+
+def _forget_companion_listings() -> None:
+    """A download can take minutes, so later lookups list again."""
+    store = getattr(_LOAD_PROBE_STATE, "companion_listings", None)
+    if store:
+        store.clear()
 
 
 def _info_once_per_load(msg: str, *args) -> None:
@@ -7344,9 +7406,13 @@ class LlamaCppBackend(LlamaChatMixin):
             # GLM-5.2 style: enable_thinking is the on/off gate; when on, keep the template's default effort.
             return {"enable_thinking": enable_thinking}
         if self._reasoning_style == "reasoning_effort":
+            effort = _fit_reasoning_effort_to_template(
+                _rendered_chat_template(self),
+                effort or ("high" if enable_thinking else "low"),
+                thinking_off = not effort and not enable_thinking,
+            )
             return _coerce_reasoning_effort(
-                getattr(self, "_architecture", None),
-                {"reasoning_effort": effort or ("high" if enable_thinking else "low")},
+                getattr(self, "_architecture", None), {"reasoning_effort": effort}
             )
         return {"enable_thinking": enable_thinking}
 
@@ -7494,6 +7560,8 @@ class LlamaCppBackend(LlamaChatMixin):
                     kwargs["reasoning_effort"] = effort
             elif self._reasoning_style == "reasoning_effort":
                 _levels = getattr(self, "_reasoning_effort_levels", None) or ()
+                _template = _rendered_chat_template(self)
+                reasoning_effort = _fit_reasoning_effort_to_template(_template, reasoning_effort)
                 if reasoning_effort in ("none", "low", "medium", "high") or (
                     reasoning_effort in _levels
                 ):
@@ -7501,7 +7569,11 @@ class LlamaCppBackend(LlamaChatMixin):
                 elif reasoning_effort == "minimal":
                     kwargs["reasoning_effort"] = "low"
                 elif enable_thinking is not None:
-                    kwargs["reasoning_effort"] = "high" if enable_thinking else "low"
+                    kwargs["reasoning_effort"] = _fit_reasoning_effort_to_template(
+                        _template,
+                        "high" if enable_thinking else "low",
+                        thinking_off = not enable_thinking,
+                    )
             else:
                 if enable_thinking is not None:
                     kwargs["enable_thinking"] = enable_thinking
@@ -12723,6 +12795,10 @@ class LlamaCppBackend(LlamaChatMixin):
     def _get_gpu_memory_nvml() -> list[tuple[int, int, int]]:
         """Free/total per NVIDIA GPU via NVML in a child for hosts whose nvidia-smi is absent or hung; a row without memory voids the answer."""
         if sys.platform == "darwin" or os.environ.get("UNSLOTH_NVIDIA_LIBRARY_PROBE", "1") == "0":
+            return []
+        cvd = os.environ.get("CUDA_VISIBLE_DEVICES")
+        if cvd is not None and not cvd.strip():
+            # Hides every GPU: _nvml_rows_visible keeps no row, and other _NVML_ROWS readers need a non-blank mask.
             return []
         script = LlamaCppBackend._nvidia_probe_script()
         if script is None:
@@ -18038,16 +18114,12 @@ class LlamaCppBackend(LlamaChatMixin):
         listing_answered = False
         # Retryable failure; a permanent error also leaves the listing unanswered.
         listing_failed = False
-        from huggingface_hub import list_repo_files
-
         # Retry transient listing errors only; offline raises at once and falls through to cache.
         for attempt in range(3):
             if cancel_event.is_set():
                 return None
             try:
-                target = _pick_from(
-                    call_hub_with_anonymous_retry(list_repo_files, hf_token, hf_repo)
-                )
+                target = _pick_from(_companion_repo_files(hf_repo, hf_token))
                 listing_answered = True
                 listing_failed = False
                 break
@@ -18124,6 +18196,7 @@ class LlamaCppBackend(LlamaChatMixin):
                 outcome["listed"] = False
                 outcome["listed_live"] = False
             return None
+        _forget_companion_listings()
         try:
             logger.info(f"Downloading {label}: {hf_repo}/{target}")
             # Same policy; companions are best-effort (caller below swallows failures to None).
@@ -19452,6 +19525,32 @@ class LlamaCppBackend(LlamaChatMixin):
                 secrets,
             )
 
+        # Projectors, drafters and shards fail this way too: never name the main GGUF.
+        if "data is not within the file bounds" in lowered:
+            return LlamaCppBackend._with_startup_diagnostics(
+                "A model file appears incomplete or damaged. Check that the download finished.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        if "failed to open gguf file" in lowered:
+            return LlamaCppBackend._with_startup_diagnostics(
+                "Couldn't open a model file. Check it exists and Unsloth has permission to read it.",
+                output,
+                log_path,
+                secrets,
+            )
+
+        # GPU evidence on the allocation line itself: a host allocation failure keeps the fallback.
+        if LlamaCppBackend._is_gpu_memory_start_failure(scan_tail):
+            return LlamaCppBackend._with_startup_diagnostics(
+                "Couldn't allocate memory. Try lowering the context length or choosing a smaller model.",
+                output,
+                log_path,
+                secrets,
+            )
+
         # Detect Ollama first so the arch branch keeps the Ollama hint.
         gguf = gguf_path or ""
         is_ollama = (
@@ -19540,8 +19639,9 @@ class LlamaCppBackend(LlamaChatMixin):
             # Includes an arch the installed build predates.
             return (
                 f"The installed llama.cpp does not recognise this GGUF's model "
-                f"architecture ('{arch}'). The file is valid. If the model is newer "
-                "than this llama.cpp build, updating llama.cpp may add support for it."
+                f"architecture ('{arch}'). Check the model card for its required runtime. "
+                "If the model is newer than this llama.cpp build, updating llama.cpp may "
+                "add support; a model requiring a custom runtime may still be incompatible."
             )
 
         # Other Ollama compat failures, only when the output shows a GGUF compat issue.
@@ -19563,11 +19663,11 @@ class LlamaCppBackend(LlamaChatMixin):
         if missing_key:
             return LlamaCppBackend._with_startup_diagnostics(
                 f"This GGUF is missing the metadata key '{_short(missing_key.group(1))}', "
-                "which the installed llama.cpp requires to load it. The file was made "
-                "for a different llama.cpp version of this model's format, usually an "
-                "older or pre-release one; this is not a memory problem. Download an "
-                "updated GGUF of this model, or update llama.cpp if the file is newer "
-                "than this build.",
+                "which the installed llama.cpp requires to load it; this is not a memory problem. "
+                "This can happen with an incompatible conversion, incomplete metadata, or "
+                "an adapter selected as a full model. Check the model card for its required "
+                "runtime and whether it needs a base model. Use a compatible full or updated "
+                "GGUF, or update llama.cpp if the model requires a newer build.",
                 output,
                 log_path,
                 secrets,
@@ -25133,6 +25233,42 @@ class LlamaCppBackend(LlamaChatMixin):
                             )
                             if need_mib > budget_mib:
                                 _metal_alongside_shortfall = (need_mib, budget_mib)
+
+                    elif (
+                        not explicit_ctx
+                        and gpu_memory_mode != "manual"
+                        and effective_ctx > 0
+                        and (_arch_gate_forced_cpu or self._binary_ships_no_gpu_backend(binary))
+                        and not (_extra_args_device(extra_args, {"--rpc"}) or "").strip()
+                        and not str(os.environ.get("LLAMA_ARG_RPC", "")).strip()
+                    ):
+                        # -c is emitted, so --fit cannot shrink it to host RAM. An empty probe is not
+                        # CPU-only (SYCL is never probed), and --rpc places KV on remote devices.
+                        effective_ctx = min(
+                            effective_ctx,
+                            _APPLE_AUTO_CTX if self._can_estimate_kv() else _FIT_MIN_CTX,
+                        )
+                        _host_avail_mib = self._available_system_memory_mib()
+                        if _host_avail_mib is not None:
+                            effective_ctx = self._fit_context_to_vram(
+                                effective_ctx,
+                                _host_avail_mib - _HOST_RAM_HEADROOM_MIB,
+                                model_size_fit,
+                                cache_type_kv,
+                                min_ctx = _FIT_MIN_CTX,
+                                swa_full = swa_full,
+                                n_parallel = n_parallel,
+                                kv_unified = planned_kv_unified,
+                                n_ubatch = _effective_ubatch,
+                                flash_attn = planned_flash_attn,
+                                mtp_engaged = _mtp_reserves_gpu,
+                                mtp_overhead_fn = mtp_overhead_fn,
+                                compute_ctx_bytes_fn = _cc_bytes,
+                                budget_frac = 1.0,
+                                pooled = True,
+                                total_mib = None,
+                                ctx_checkpoints = _fit_ctx_checkpoints,
+                            )
 
                     # Prefer fewer serving slots on GPU over --fit on offload: when the extra
                     # --parallel slots push the footprint past the pin budget, llama-server

@@ -196,12 +196,16 @@ export const sv = {
         history: "Läser din webbhistorik",
         move: "Flyttar musen",
         drag: "Drar",
+        tabs: "Tittar på flikarna",
+        readFile: "Läser filen",
+        editFile: "Redigerar filen",
       },
     },
     title: "Webbläsare",
     tabs: "Webbläsarflikar",
     newTab: "Ny flik",
     newTabFullView: "Ny flik i helvy",
+    newTabFloating: "Ny flik i flytande fönster",
     closeTab: "Stäng flik",
     close: "Stäng webbläsaren",
     show: "Visa webbläsaren",
@@ -338,18 +342,24 @@ export const sv = {
     downloadLocationReset: "Återställ",
     askBeforeDownloadingSetting: "Fråga innan hämtning",
     askBeforeDownloadingSettingDescription: "Bekräfta filer från webbplatser innan de sparas.",
+    askBeforeProgramDownloadsSetting: "Fråga innan program hämtas",
+    askBeforeProgramDownloadsSettingDescription: "Bekräfta filer som kan köra program, till exempel .exe eller .dmg, även när andra hämtningar inte frågar.",
     downloadSitesSetting: "Behörigheter för hämtning per webbplats",
     downloadSitesSettingDescription: "Webbplatser du har valt att alltid tillåta eller blockera hämtningar från.",
     downloadSitesNone: "Markera Kom ihåg till nästa gång när du tillfrågas, så visas webbplatsen här.",
     downloadSitesFor: "Hämtningar från {host}",
     downloadSitesRemove: "Glöm {host}",
     downloadSiteAllow: "Tillåt alltid",
+    downloadSiteAllowAll: "Tillåt även program",
     downloadSiteBlock: "Blockera alltid",
     downloadPrompt: {
       title: "Hämta den här filen?",
       description: "{host} vill spara {name} på din dator.",
       dangerous: "Filer som den här kan köra program på din dator. Ladda bara ned den om du litar på {host}.",
       remember: "Kom ihåg till nästa gång",
+      once: "Fråga nästa gång",
+      site: "Alltid för {host}",
+      all: "Hämta alltid, från alla webbplatser",
       cancel: "Avbryt",
       download: "Hämta",
       blocked: "En hämtning från {host} blockerades.",
@@ -392,6 +402,12 @@ export const sv = {
       openChat: "Öppna i helvy",
       moveLeft: "Flytta till vänstra panelen",
       moveRight: "Flytta till högra panelen",
+    },
+    floating: {
+      enter: "Flytande fönster",
+      dock: "Docka vid sidan",
+      close: "Stäng flytande fönster",
+      handle: "Flytta fönstret. Piltangenterna flyttar det; Skift och piltangenterna ändrar storleken.",
     },
     annotate: {
       countOne: "1 anteckning",
@@ -830,6 +846,8 @@ export const sv = {
   picker: {
     unifiedTightFit: "Snäv passform",
     unifiedTightFitHint: "Kan laddas med kortare kontext eller köras långsammare på den här Macen.",
+    residentToRun: "för att köra",
+    residentToRunHint: "GPU-minne som laddningskontrollen kräver under körning",
     onDevice: "På enheten",
     huggingFace: "Hugging Face",
     retry: "Försök igen",
@@ -1116,6 +1134,7 @@ export const sv = {
   },
   settings: {
     accounts: {
+      ownerPasswordDescription: "Välj installationsägarens lösenord innan du lägger till ett konto till. Du använder det för att logga in när installationen har flera konton.",
       signsInAs: "Loggar in som {username}",
       signsInAsOwner: "Loggar in som {alias} eller {username}",
       signInName: "Ditt inloggningsnamn",
@@ -1144,6 +1163,9 @@ export const sv = {
       modelAccessHint: "En modell per rad, till exempel unsloth/Qwen3-4B-GGUF, eller unsloth/* för en hel organisation. Lämna tomt för att tillåta alla modeller.",
       modelAccessSave: "Spara",
       modelAccessLimited: "Begränsad modellåtkomst",
+      rename: "Byt namn",
+      renameTitle: "Byt namn på {username}",
+      renameDescription: "Välj namnet som det här kontot loggar in med. Chattar, filer och API-nycklar stannar kvar i kontot. Personen loggas ut och loggar in igen med det nya namnet och sitt nuvarande lösenord.",
       empty: "Inga andra konton ännu",
       setupCode: "Konfigurationskod",
       setupFor: "Konfigurationskod för {username}",
@@ -1978,6 +2000,26 @@ export const sv = {
       autoTitleNewChats: "Skapa automatiskt rubriker för nya chattar",
       autoTitleNewChatsDescription:
         "Generera en rubrik från det första meddelandet.",
+      mlWarmup: {
+        sectionTitle: "Prestanda vid start",
+        description: "Förbered valda funktioner för snabbare första användning. Alla är av som standard. Alternativen kan läsa in delade beroenden och använda mer RAM när appen är inaktiv.",
+        restartRequired: "Ändringarna tillämpas efter att Unsloth har startats om.",
+        hardwareLabel: "Identifiering av maskinvara",
+        hardwareDescription: "Identifiera GPU och förbered PyTorch.",
+        textLabel: "Textmodeller",
+        textDescription: "Förbered stödet för textmodeller i Transformers.",
+        datasetsLabel: "Förberedelse av dataset",
+        datasetsDescription: "Förbered Datasets och dess beroenden för förhandsvisningar och bearbetning.",
+        mediaLabel: "Bild- och videomodeller",
+        mediaDescription: "Förbered Diffusers och delade modellberoenden.",
+        advanced: "Avancerat",
+        quantizationLabel: "Förkontroller för bildkvantisering",
+        quantizationDescription: "Kontrollera stödet innan en kvantiserad bildmodell läses in för första gången. Kan tillfälligt öka RAM-användningen.",
+        requiredBySelections: "Krävs för dina val.",
+        disabledByEnv: "Inaktiverat av UNSLOTH_STUDIO_DISABLE_TORCH_WARM i backendens miljö.",
+        loadError: "Det gick inte att läsa in inställningarna för förberedelse vid start.",
+        saveError: "Det gick inte att spara inställningarna för förberedelse vid start.",
+      },
       helperLlm: {
         sectionTitle: "Hjälp-LLM",
         preloadOnStartup: "Förcacha hjälp-LLM vid start",
@@ -2037,6 +2079,7 @@ export const sv = {
           "Det gick inte att spara inställningarna för automatiskt modellbyte.",
         idleError:
           "Ange 0 för att behålla modellen inläst, eller minst 60 sekunder.",
+        idleUnsaved: "Inte sparat ännu.",
         keepKv: "Behåll chattkontext mellan avlastningar",
         keepKvDescription:
           "Spara KV-cachen före en avlastning efter inaktivitet, eller innan en bild- eller videomodell tar över GPU:n, så att återupptagna chattar slipper läsa historiken igen. Upp till 10 GB på disk.",
@@ -3130,8 +3173,8 @@ export const sv = {
         "Visa Redigera svar på varje svar i stället för i menyn Mer.",
       turnNavigation: "Turnavigering",
       turnNavigationDescription: "Visar dina meddelanden som en list vid vänsterkanten i långa chattar. Hovra för att förhandsgranska en tur, klicka för att hoppa dit och bokmärk turer för att hitta dem igen.",
-      composerAtBottom: "Inmatningsfält längst ned",
-      composerAtBottomDescription: "Starta nya chattar med inmatningsfältet längst ned på sidan i stället för i mitten.",
+      composerPosition: "Inmatningsfältets placering",
+      composerPositionDescription: "Var inmatningsfältet hamnar när en ny chatt startar, från sidans överkant ända ned till botten.",
       projectAttachments: "Dela filer i ett projekt",
       projectAttachmentsDescription:
         "Gör nya chattbilagor tillgängliga för alla chattar i projektet.",
@@ -3624,6 +3667,9 @@ export const sv = {
         docsLabel: "Öppna dokumentationen för Decision API",
         description:
           "Besvara ja/nej-frågor, flervalsfrågor och poängfrågor om text med en modell på denna dator eller en beslutsmodell från Anslutningar. Fungerar med TypeSafe SDK.",
+        codeTitle: "Anropa från kod",
+        mcpUrl: "MCP URL",
+        mcpUrlDescription: "Andra MCP-klienter ansluter hit med samma token.",
         enable: "Hantera begäranden",
         enableDescription:
           "Hanterar /v1/systemone. När du aktiverar det hämtas modellen.",
@@ -3780,7 +3826,7 @@ export const sv = {
         desktopAvailableDescription:
           "Uppdatera nu så startar skrivbordsappen om när den är klar.",
         desktopExternalServer:
-          "Appen anslöt till en Unsloth-server som redan körs och kan inte uppdatera den. Stoppa servern, avsluta sedan skrivbordsappen och öppna den igen för att uppdatera.",
+          "Ansluten till en Unsloth-server på port {port} som den här appen inte har startat, till exempel `unsloth studio` i en terminal. Stoppa den där den startades, avsluta sedan appen och öppna den igen för att uppdatera.",
         desktopManualInstall:
           "Öppna utgåvesidan för att installera det senaste Linux-paketet.",
         desktopCheckFailed: "Det gick inte att kontrollera uppdateringar",
@@ -4098,7 +4144,6 @@ export const sv = {
             "Den här datauppsättningen verkar innehålla bilder, som inte kan strömmas.",
           audioDataset:
             "Den här datauppsättningen verkar innehålla ljud, som inte kan strömmas.",
-          appleSilicon: "Strömning stöds inte på Apple Silicon (MLX) ännu.",
         },
         options: {
           trainOnCompletions: "endast assistentslutföranden",
@@ -5319,6 +5364,8 @@ export const sv = {
     removeLevel: "Ta bort nivå {n}",
     addLevel: "Lägg till nivå",
     jsonHelp: "Begärans body. Kör skickar den precis som den är.",
+    copyBody: "Kopiera brödtext",
+    copyCurl: "Kopiera som cURL",
     examples: "Exempel",
     presetToolApproval: "Godkänna agentens verktygsanrop",
     presetPromptInjection: "Upptäcka promptinjektion",
@@ -5704,6 +5751,7 @@ export const sv = {
   generationStats: {
     working: "Arbetar...",
     processingPrompt: "Bearbetar prompt {percent}%",
+    compactingContext: "Komprimerar kontext...",
     timeLeft: "{eta} kvar",
     tokensOne: "{count} token",
     tokens: "{count} token",

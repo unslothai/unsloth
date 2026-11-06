@@ -104,11 +104,8 @@ class PPConfig:
 
 class _StageOutput(BaseException):
     """Raised by the pass-through after a non-last stage's last layer: the stage output. A BaseException,
-    so no `except Exception` inside a model forward swallows it."""
-
-    def __init__(self, hidden):
-        super().__init__()
-        self.hidden = hidden
+    so no `except Exception` inside a model forward swallows it. The hidden states ride in `args`:
+    Dynamo cannot trace a custom exception `__init__` (a graph break, an error under fullgraph)."""
 
 
 def _unwrap(model):
@@ -638,6 +635,59 @@ def _moe_aux_plan(parts):
     return _MoEAux(inner, router_class, index, num_experts, routers)
 
 
+def _scaler_called_by(fn, depth = 1):
+    """`unsloth_ga_scale_aux_loss` if `fn`, a function it wraps, or (depth) a module-level *_forward it calls
+    (Unsloth Zoo's compiled `<Class>_forward`) calls it, else None."""
+    seen = 0
+    while fn is not None and seen < 8:
+        seen += 1
+        fn = getattr(fn, "__func__", fn)
+        code = getattr(fn, "__code__", None)
+        names = getattr(code, "co_names", ())
+        scope = getattr(fn, "__globals__", None) or {}
+        if "unsloth_ga_scale_aux_loss" in names:
+            scaler = scope.get("unsloth_ga_scale_aux_loss")
+            if callable(scaler):
+                return scaler
+        elif depth > 0:
+            for name in names:
+                if name.endswith("_forward") and callable(scope.get(name)):
+                    scaler = _scaler_called_by(scope[name], depth - 1)
+                    if scaler is not None:
+                        return scaler
+        fn = getattr(fn, "__wrapped__", None)
+    return None
+
+
+def _forward_aux_scaler(owner):
+    """The scaler the installed forward calls, or None; read from the forward, not a version check."""
+    scaler = _scaler_called_by(owner.__dict__.get("forward"))
+    return (
+        scaler if scaler is not None else _scaler_called_by(getattr(type(owner), "forward", None))
+    )
+
+
+def _forward_aux_weighting(owner, term, kwargs, num_items_in_batch):
+    """Weight `term` by this micro-batch's token share of the window, as the rewritten forward does on one GPU."""
+    scaler = _forward_aux_scaler(owner)
+    labels = kwargs.get("labels")
+    if scaler is None or labels is None:
+        return term
+    loss_kwargs = {
+        k: kwargs[k] for k in ("shift_labels", "packed_seq_lengths") if kwargs.get(k) is not None
+    }
+    if num_items_in_batch is not None:
+        loss_kwargs["num_items_in_batch"] = num_items_in_batch
+    return scaler(
+        term,
+        labels,
+        kwargs.get("attention_mask"),
+        loss_kwargs,
+        num_items_in_batch = num_items_in_batch,
+        model = owner,
+    )
+
+
 def _record_router(ctx, module, args, output):
     if ctx.router_logits is not None:  # inside this stage's forward (not a checkpoint recompute)
         index = ctx.moe.index
@@ -1119,7 +1169,7 @@ class _PPStageModule(nn.Module):
                 ctx.router_logits = []
             out = self.model(input_ids = input_ids, use_cache = False, **kwargs)
         except _StageOutput as stop:
-            hidden = stop.hidden
+            hidden = stop.args[0]
             if hidden.shape[-1] != self._pp_hidden or hidden.dim() != 3:
                 raise RuntimeError(
                     f"Unsloth: pipeline stage output has shape {tuple(hidden.shape)}, expected "
@@ -1170,7 +1220,10 @@ class _PPStageModule(nn.Module):
                 # transformers' CausalLM forward: loss += router_aux_loss_coef * load_balancing_loss.
                 aux = _load_balancing_from_statistics(stats, moe.num_experts)
                 ctx.aux_losses.append(aux.detach())
-                loss = loss + moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                term = moe.owner.router_aux_loss_coef * aux.to(loss.device)
+                loss = loss + _forward_aux_weighting(
+                    moe.owner, term, kwargs, ctx.num_items_in_batch
+                )
             elif carry:
                 # Auxiliary loss off: a zero term keeps the received carry in the graph (see the stage return).
                 loss = loss + 0 * carry[0].sum().to(loss.device)
@@ -1444,11 +1497,14 @@ class PipelineParallel:
         policy = MixedPrecisionPolicy(
             param_dtype = None,
             reduce_dtype = getattr(mp_policy, "reduce_dtype", None),
-            cast_forward_inputs = False,  # the received hidden states keep PPConfig.activation_dtype
+            cast_forward_inputs = False,
         )
         fully_shard(self.module, mesh = dp_mesh, mp_policy = policy, reshard_after_forward = False)
+        from .fsdp2_save import _install_replicated_grad_reset
+
+        _install_replicated_grad_reset(self.module)
         self.dp_mesh = dp_mesh
-        self._shapes.clear()  # stages built before hold the unwrapped module
+        self._shapes.clear()
 
     @property
     def is_first(self):
@@ -1774,7 +1830,11 @@ class PipelineParallel:
 
         state = self.model.__dict__.setdefault("_unsloth_replicated_grad_state", {"queued": False})
         _sync_replicated_grads(
-            params, dist, model_mesh(self.model) or self.dp_mesh, state.setdefault("buffers", {})
+            params,
+            dist,
+            model_mesh(self.model) or self.dp_mesh,
+            state.setdefault("buffers", {}),
+            state.pop("pending", None),
         )
 
     def _grad_copies(self, grad):
@@ -1841,12 +1901,10 @@ class PipelineParallel:
         return total.float()
 
     def unscale_(self, scaler, optimizer):
-        """scaler.unscale_(optimizer), then found_inf is the MAX over every stage, so all stages skip the
-        same steps (scaler.step / scaler.update after this)."""
+        """Unscale gradients and agree on overflow across stages before scaler.step / scaler.update."""
+        if scaler.is_enabled():
+            self._bind_scaler(scaler)
         scaler.unscale_(optimizer)
-        if not scaler.is_enabled():
-            return
-        self._agree_found_inf(scaler, optimizer)
 
     def _bind_scaler(self, scaler):
         """Make scaler.unscale_ / scaler.step agree found_inf over every stage, or one stage steps while another skips.

@@ -318,7 +318,7 @@ def test_the_capability_read_checks_a_tool_it_has_no_answer_for(host, linux, mon
     _capability_client(OWNER).get("/api/sandbox/capability")
     assert refreshed == []
     _capability_client(OWNER).get("/api/sandbox/capability", params = {"refresh": "1"})
-    assert refreshed == [("python", True), ("terminal", True)]
+    assert refreshed == [("python", True), ("terminal", False)]
     refreshed.clear()
     _capability_client(ALICE).get("/api/sandbox/capability", params = {"refresh": "1"})
     assert refreshed == []

@@ -11,6 +11,7 @@ const attributes = new Set<string>();
 const scope = globalThis as { window?: unknown; document?: unknown };
 scope.window = {
   location: { protocol: "https:" },
+  addEventListener: () => undefined,
   localStorage: {
     getItem: () => null,
     setItem: () => undefined,

@@ -265,7 +265,7 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   contrast: 50,
   composerOutline: null,
   pointerCursors: false,
-  reduceMotion: "system",
+  reduceMotion: "off",
   fontSmoothing: true,
   codeLineNumbers: false,
   codeWordWrap: false,
@@ -475,9 +475,9 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : null,
     pointerCursors: source.pointerCursors === true,
     reduceMotion:
-      source.reduceMotion === "on" || source.reduceMotion === "off"
+      source.reduceMotion === "on" || source.reduceMotion === "system"
         ? source.reduceMotion
-        : "system",
+        : "off",
     fontSmoothing: source.fontSmoothing !== false,
     codeLineNumbers: source.codeLineNumbers === true,
     codeWordWrap: source.codeWordWrap === true,
@@ -626,6 +626,17 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     },
   ),
 );
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (
+      event.key === useAppearanceCustomStore.persist.getOptions().name &&
+      event.newValue !== null
+    ) {
+      void useAppearanceCustomStore.persist.rehydrate();
+    }
+  });
+}
 
 /* ------------------------------ DOM applier ------------------------------ */
 // Platform default from index.css: Inter, or the system font on macOS.
