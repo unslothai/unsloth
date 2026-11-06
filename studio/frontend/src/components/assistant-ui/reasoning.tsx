@@ -580,12 +580,13 @@ function ReasoningTail({
       data-slot="reasoning-tail"
       data-capped={capped ? "" : undefined}
       className={cn(
-        // A mask paints only inside its box: bleed into the side padding so list markers survive. The
-        // stable gutter keeps the text width the same whether or not the scrollbar is showing.
-        capped &&
-          "hover-scrollbar -mx-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-h-[min(22rem,48vh)] overflow-x-hidden overflow-y-auto px-[calc(1.25rem*var(--ui-space-scale,1))] [scrollbar-gutter:stable]",
-        // Most of the text's top padding moves outside the scroller, so scrolled lines stop short of the header.
-        (capped || expanded) && "mt-2 [&>[data-slot=reasoning-text]]:pt-1",
+        // A mask paints only inside its box: bleed into the side padding so list markers survive. The stable
+        // gutter keeps the text width the same with or without a scrollbar, and expanded keeps the same box
+        // (only the height cap lifts), so expanding moves and rewraps nothing. Most of the text's top padding
+        // sits outside the scroller, so scrolled lines stop short of the header.
+        (capped || expanded) &&
+          "-mx-[calc(1.25rem*var(--ui-space-scale,1))] mt-2 min-w-0 overflow-x-hidden overflow-y-auto px-[calc(1.25rem*var(--ui-space-scale,1))] [scrollbar-gutter:stable] [&>[data-slot=reasoning-text]]:pt-1",
+        capped && "hover-scrollbar max-h-[min(22rem,48vh)]",
       )}
     >
       {children}

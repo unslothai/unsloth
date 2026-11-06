@@ -68,8 +68,10 @@ const tail = reasoning.slice(
 test("the box scrolls on its own with no border, its scrollbar showing only on hover", () => {
   assert.match(
     tail,
-    /capped &&\s*"hover-scrollbar -mx-\[[^\]]+\] min-w-0 max-h-\[min\(22rem,48vh\)\] overflow-x-hidden overflow-y-auto px-\[[^\]]+\] \[scrollbar-gutter:stable\]/,
+    /\(capped \|\| expanded\) &&\s*"-mx-\[[^\]]+\] mt-2 min-w-0 overflow-x-hidden overflow-y-auto px-\[[^\]]+\] \[scrollbar-gutter:stable\] \[&>\[data-slot=reasoning-text\]\]:pt-1"/,
   );
+  // Only the cap and the hover scrollbar drop on expand: the box keeps its gutter, so the width holds.
+  assert.match(tail, /capped && "hover-scrollbar max-h-\[min\(22rem,48vh\)\]"/);
   assert.doesNotMatch(tail, /\bborder\b|Expand thinking|overflow-y-clip/);
   assert.doesNotMatch(reasoning, /reasoning-show-full/);
   assert.match(reasoning, /const cappedNow = !foldLead && reasoningTailCapped\(\{ visibility \}\);/);
@@ -82,7 +84,6 @@ test("the header's expand button lifts the cap for the round and appears only wh
   assert.match(reasoning, /capped=\{capped && !tailExpanded\}/);
   // Expanding keeps the capped spacing, so the trace does not shift down when the cap lifts.
   assert.match(reasoning, /expanded=\{capped && tailExpanded\}/);
-  assert.match(tail, /\(capped \|\| expanded\) && "mt-2 \[&>\[data-slot=reasoning-text\]\]:pt-1"/);
   assert.match(reasoning, /bounded=\{capped && !tailExpanded\}/);
   assert.match(reasoning, /setOverride\(null\);\s*setTailExpanded\(false\);/);
   // The box reports overflow without re-rendering on every scroll: only a change calls back.
