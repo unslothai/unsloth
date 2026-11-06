@@ -192,10 +192,6 @@ export async function effectiveTransportMode(
   const capabilities = await getDownloadTransportCapabilities(
     preferred === TRANSPORT.AUTO ? { probe: true } : {},
   );
-  // The backend starts a limited download on HTTP whatever the preference; preflight must agree.
-  if (capabilities.speed_limited) {
-    return TRANSPORT.HTTP;
-  }
   if (preferred === TRANSPORT.AUTO) {
     // Use the backend's verdict: it must agree with the partial's `.transport` marker.
     return capabilities.auto_resolves_to === TRANSPORT.HTTP
