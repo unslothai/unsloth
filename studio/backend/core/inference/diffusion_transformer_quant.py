@@ -1411,9 +1411,11 @@ def _scheme_supported(
             if (scheme, card) not in _SMOKE_CACHE:
                 table = _persisted_probe_table(card)
                 # The load's early kick (start_probe_table_prewarm) already ran this child: same table, earlier.
+                # A None entry is that child ending with no table: probe in-process, as after a serial child.
+                early_ran = card in _PREWARMED_TABLES
                 prewarmed = _PREWARMED_TABLES.pop(card, None)
                 if table is None or scheme not in table:
-                    table = prewarmed if prewarmed is not None else _child_probe_table(card)
+                    table = prewarmed if early_ran else _child_probe_table(card)
                 if table is not None:
                     for name, child_verdict in table.items():
                         # None is the child's out-of-memory: not a verdict, so not cached.
@@ -1567,8 +1569,9 @@ def prewarm_probe_table(device: str = "cuda") -> bool:
 
 
 PROBE_OVERLAP_ENV = "UNSLOTH_DIFFUSION_PROBE_OVERLAP"
-# card -> the child table an early kick resolved; consumed by _scheme_supported, dropped by the kicking load's join.
-_PREWARMED_TABLES: dict[str, dict[str, Optional[bool]]] = {}
+# card -> the child table an early kick resolved (None: its child gave no table); consumed by _scheme_supported,
+# dropped by the kicking load's join.
+_PREWARMED_TABLES: dict[str, Optional[dict[str, Optional[bool]]]] = {}
 
 
 def start_probe_table_prewarm(device: str) -> Optional[tuple]:
@@ -1607,8 +1610,14 @@ def start_probe_table_prewarm(device: str) -> Optional[tuple]:
 
             started = time.monotonic()
             table = _child_probe_table(card)
+            # Kept when None too, so the load does not spawn a second child after a timed-out or failed one.
+            _PREWARMED_TABLES[card] = table
             if table is not None:
-                _PREWARMED_TABLES[card] = table
+                # Cached as the serial probe caches them: the boot warm, a load that never reaches the probe and the
+                # next load reuse these instead of spawning another child.
+                for name, verdict in table.items():
+                    if verdict is not None:
+                        _SMOKE_CACHE[(name, card)] = verdict
                 logging.getLogger(__name__).info(
                     "diffusion.transformer_quant: scheme probe ran beside the load (%.1f s, %s)",
                     time.monotonic() - started,
