@@ -43,9 +43,9 @@ def _release(tag: str, names: dict[str, str], **overrides) -> dict:
     return {"tag_name": tag, "assets": assets}
 
 
-def _hasher(url: str, glibc = None) -> tuple:
+def _hasher(url: str, needs = None) -> tuple:
     data = _blob(url.rsplit("/", 1)[1])
-    return hashlib.sha256(data).hexdigest(), len(data), glibc
+    return hashlib.sha256(data).hexdigest(), len(data), needs
 
 
 def _newer(version: str) -> str:
@@ -154,11 +154,10 @@ def _lemonade_only(*tags: str):
     return lambda repo: releases if repo == "lemonade-sdk/lemonade" else []
 
 
-def _glibc_by_version(floors: dict[str, tuple[int, int]]):
+def _needs_by_version(needs: dict[str, dict]):
     def hasher(url: str) -> tuple:
         name = url.rsplit("/", 1)[1]
-        glibc = next((g for v, g in floors.items() if f"-{v}-ubuntu" in name), None)
-        return _hasher(url, glibc)
+        return _hasher(url, next((n for v, n in needs.items() if f"-{v}-ubuntu" in name), None))
 
     return hasher
 
@@ -167,25 +166,27 @@ def test_a_release_needing_a_newer_glibc_falls_back_to_the_newest_that_runs(caps
     pins = lp.load_pins()
     major = up.version_key(pins["lemonade"]["version"])[0]
     broken, good, older = f"{major + 2}.0.1", f"{major + 1}.0.2", f"{major + 1}.0.1"
-    hasher = _glibc_by_version({broken: (2, 43), good: (2, 38), older: (2, 35)})
+    hasher = _needs_by_version(
+        {broken: {"GLIBC": (2, 43)}, good: {"GLIBC": (2, 38)}, older: {"GLIBC": (2, 35)}}
+    )
     releases = _lemonade_only(f"v{older}", f"v{broken}", f"v{good}")
     new, changes = up.update_pins(pins, releases, hasher, only = "lemonade")
     assert changes == [f"lemonade: {pins['lemonade']['version']} -> {good}"]
     assert new["lemonade"]["version"] == good
-    assert "needs glibc 2.43 > 2.39" in capsys.readouterr().err
+    assert "needs GLIBC 2.43 > 2.39." in capsys.readouterr().err
 
 
 def test_only_releases_needing_a_newer_glibc_change_nothing():
     pins = lp.load_pins()
     broken = _newer(pins["lemonade"]["version"])
-    hasher = _glibc_by_version({broken[1:]: (2, 40)})
+    hasher = _needs_by_version({broken[1:]: {"GLIBC": (2, 40)}})
     assert up.update_pins(pins, _lemonade_only(broken), hasher, only = "lemonade") == (pins, [])
 
 
-def test_the_glibc_limit_itself_is_accepted():
+def test_the_abi_limits_themselves_are_accepted():
     pins = lp.load_pins()
     tag = _newer(pins["lemonade"]["version"])
-    hasher = _glibc_by_version({tag[1:]: up.MAX_LINUX_GLIBC})
+    hasher = _needs_by_version({tag[1:]: dict(up.LINUX_ABI_LIMITS)})
     _, changes = up.update_pins(pins, _lemonade_only(tag), hasher, only = "lemonade")
     assert changes == [f"lemonade: {pins['lemonade']['version']} -> {tag[1:]}"]
 
@@ -236,13 +237,23 @@ def _tarball(files: dict[str, bytes]) -> io.BytesIO:
     return buffer
 
 
-def test_the_glibc_floor_reads_only_elf_files():
-    elf = b"\x7fELF" + b"\0" * 60 + b"GLIBC_2.2.5\0GLIBC_2.38\0GLIBC_2.34\0"
-    lib = b"\x7fELF" + b"\0" * 60 + b"GLIBC_2.43\0"
+def test_abi_needs_read_only_elf_files():
+    elf = b"\x7fELF" + b"\0" * 60 + b"GLIBC_2.2.5\0GLIBC_2.38\0GLIBCXX_3.4.32\0OPENSSL_3.0.0\0"
+    lib = b"\x7fELF" + b"\0" * 60 + b"GLIBC_2.43\0OPENSSL_3.2.0\0"
     script = b"#!/bin/sh\n# needs GLIBC_2.99\n"
-    assert up.tar_glibc_floor(_tarball({"x/lemond": elf, "x/flm": script})) == (2, 38)
-    assert up.tar_glibc_floor(_tarball({"x/lemond": elf, "x/lib/libfoo.so": lib})) == (2, 43)
-    assert up.tar_glibc_floor(_tarball({"x/README": b"GLIBC_2.50"})) is None
+    expected = {"GLIBC": (2, 38), "GLIBCXX": (3, 4, 32), "OPENSSL": (3, 0, 0)}
+    assert up.tar_abi_needs(_tarball({"x/lemond": elf, "x/flm": script})) == expected
+    both = up.tar_abi_needs(_tarball({"x/lemond": elf, "x/lib/libfoo.so": lib}))
+    assert both == {**expected, "GLIBC": (2, 43), "OPENSSL": (3, 2, 0)}
+    assert up.tar_abi_needs(_tarball({"x/README": b"GLIBC_2.50"})) == {}
+
+
+def test_a_newer_openssl_alone_is_skipped(capsys):
+    pins = lp.load_pins()
+    tag = _newer(pins["lemonade"]["version"])
+    hasher = _needs_by_version({tag[1:]: {"GLIBC": (2, 38), "OPENSSL": (3, 2, 0)}})
+    assert up.update_pins(pins, _lemonade_only(tag), hasher, only = "lemonade") == (pins, [])
+    assert "needs OPENSSL 3.2.0 > 3.0.9." in capsys.readouterr().err
 
 
 def test_a_digest_mismatch_is_refused_even_when_glibc_would_skip_it():
@@ -252,6 +263,6 @@ def test_a_digest_mismatch_is_refused_even_when_glibc_would_skip_it():
     release = _release(
         tag, up._lemonade_assets(tag[1:]), **{name: {"digest": "sha256:" + "0" * 64}}
     )
-    hasher = _glibc_by_version({tag[1:]: (2, 43)})
+    hasher = _needs_by_version({tag[1:]: {"GLIBC": (2, 43)}})
     with pytest.raises(RuntimeError, match = "GitHub publishes"):
         up.update_pins(pins, lambda repo: [release], hasher, only = "lemonade")

@@ -4,8 +4,8 @@
 
 """Move studio/lemonade_prebuilt_pins.json to the latest stable Lemonade and FastFlowLM releases.
 
-A release whose Linux build needs a newer glibc than MAX_LINUX_GLIBC is skipped for the newest one
-that does not, since a lemond that cannot start breaks the NPU for every Linux user on that distro.
+A release whose Linux build needs a system library newer than LINUX_ABI_LIMITS is skipped for the
+newest one that does not, since a lemond that cannot start breaks the NPU for every Linux user on that distro.
 
 Exit codes: 0 = current (or updated with --write); 1 = --check found a newer release; 2 = error.
 """
@@ -28,9 +28,15 @@ PINS_PATH = Path(__file__).resolve().parents[1] / "studio" / "lemonade_prebuilt_
 _API = "https://api.github.com"
 _TIMEOUT_S = 60
 _CHUNK = 1 << 20
-# Ubuntu 24.04. FastFlowLM's own Linux build already needs glibc 2.39.
-MAX_LINUX_GLIBC = (2, 39)
-_GLIBC_VERSION = re.compile(rb"GLIBC_2\.(\d+)")
+# Newest symbol versions Ubuntu 24.04 ships; FastFlowLM's own Linux build already needs glibc 2.39.
+LINUX_ABI_LIMITS = {
+    "GLIBC": (2, 39),
+    "GLIBCXX": (3, 4, 33),
+    "CXXABI": (1, 3, 15),
+    "OPENSSL": (3, 0, 9),
+}
+_SYMBOL_VERSION = re.compile(rb"(GLIBCXX|GLIBC|CXXABI|OPENSSL)_(\d+(?:\.\d+)+)")
+Needs = dict[str, tuple[int, ...]]
 _NEXT_PAGE = re.compile(r'<([^>]+)>;\s*rel="next"')
 
 
@@ -75,21 +81,23 @@ def fetch_stable_releases(repo: str) -> list[dict]:
     return [r for r in releases if not r.get("draft") and not r.get("prerelease")]
 
 
-def tar_glibc_floor(fileobj) -> Optional[tuple[int, int]]:
-    """The newest GLIBC_2.N symbol version any ELF file in a .tar.gz references."""
-    newest = None
+def tar_abi_needs(fileobj) -> Needs:
+    """Newest symbol version per LINUX_ABI_LIMITS library that any ELF file in a .tar.gz references."""
+    newest: Needs = {}
     with tarfile.open(fileobj = fileobj, mode = "r:gz") as archive:
         for member in archive:
             handle = archive.extractfile(member) if member.isfile() else None
             if handle is None or handle.read(4) != b"\x7fELF":
                 continue
-            for match in _GLIBC_VERSION.finditer(handle.read()):
-                newest = max(newest or (2, 0), (2, int(match.group(1))))
+            for match in _SYMBOL_VERSION.finditer(handle.read()):
+                lib = match.group(1).decode()
+                version = tuple(int(part) for part in match.group(2).split(b"."))
+                newest[lib] = max(newest.get(lib, ()), version)
     return newest
 
 
-def hash_asset(url: str) -> tuple[str, int, Optional[tuple[int, int]]]:
-    """sha256, size and, for a Linux tarball, the newest glibc its binaries need."""
+def hash_asset(url: str) -> tuple[str, int, Optional[Needs]]:
+    """sha256, size and, for a Linux tarball, the newest system library versions its binaries need."""
     digest = hashlib.sha256()
     size = 0
     with tempfile.TemporaryFile() as tmp:
@@ -99,12 +107,16 @@ def hash_asset(url: str) -> tuple[str, int, Optional[tuple[int, int]]]:
                 tmp.write(chunk)
                 size += len(chunk)
         tmp.seek(0)
-        glibc = tar_glibc_floor(tmp) if url.endswith(".tar.gz") else None
-    return digest.hexdigest(), size, glibc
+        needs = tar_abi_needs(tmp) if url.endswith(".tar.gz") else None
+    return digest.hexdigest(), size, needs
 
 
-class GlibcTooNew(RuntimeError):
-    """A release whose Linux build cannot start on MAX_LINUX_GLIBC."""
+class AbiTooNew(RuntimeError):
+    """A release whose Linux build cannot start within LINUX_ABI_LIMITS."""
+
+
+def _dotted(version: tuple[int, ...]) -> str:
+    return ".".join(map(str, version))
 
 
 def version_key(version: str) -> tuple[int, ...]:
@@ -119,7 +131,7 @@ def updated_section(
     name: str,
     section: dict,
     release: dict,
-    hasher: Callable[[str], tuple[str, int, Optional[tuple[int, int]]]],
+    hasher: Callable[[str], tuple[str, int, Optional[Needs]]],
 ) -> Optional[dict]:
     tag = str(release["tag_name"])
     bare = tag[1:] if tag.startswith("v") else tag
@@ -133,7 +145,7 @@ def updated_section(
         asset = published.get(asset_name)
         if asset is None:
             raise RuntimeError(f"{section['repo']} {tag} has no {asset_name}.")
-        sha256, size, glibc = hasher(asset["browser_download_url"])
+        sha256, size, needs = hasher(asset["browser_download_url"])
         github_digest = asset.get("digest")
         # Fail closed: without GitHub's digest the hash proves only what this runner downloaded.
         if not github_digest:
@@ -144,11 +156,13 @@ def updated_section(
             )
         if asset.get("size") is not None and asset["size"] != size:
             raise RuntimeError(f"{asset_name} is {size} bytes, but GitHub lists {asset['size']}.")
-        if glibc is not None and glibc > MAX_LINUX_GLIBC:
-            need, floor = ".".join(map(str, glibc)), ".".join(map(str, MAX_LINUX_GLIBC))
-            raise GlibcTooNew(
-                f"{section['repo']} {tag}: {asset_name} needs glibc {need} > {floor}."
-            )
+        too_new = [
+            f"{lib} {_dotted(version)} > {_dotted(LINUX_ABI_LIMITS[lib])}"
+            for lib, version in sorted((needs or {}).items())
+            if version > LINUX_ABI_LIMITS[lib]
+        ]
+        if too_new:
+            raise AbiTooNew(f"{section['repo']} {tag}: {asset_name} needs {', '.join(too_new)}.")
         assets[key] = {"name": asset_name, "sha256": sha256}
         if with_size:
             assets[key]["size"] = size
@@ -171,7 +185,7 @@ def newer_releases(releases: list[dict], pinned: str) -> list[dict]:
 def update_pins(
     pins: dict,
     releases: Optional[Callable[[str], list[dict]]] = None,
-    hasher: Optional[Callable[[str], tuple[str, int, Optional[tuple[int, int]]]]] = None,
+    hasher: Optional[Callable[[str], tuple[str, int, Optional[Needs]]]] = None,
     only: Optional[str] = None,
 ) -> tuple[dict, list[str]]:
     releases = releases or fetch_stable_releases
@@ -183,7 +197,7 @@ def update_pins(
         for release in newer_releases(releases(section["repo"]), section["version"]):
             try:
                 moved = updated_section(name, section, release, hasher)
-            except GlibcTooNew as exc:
+            except AbiTooNew as exc:
                 # stderr: the workflow builds the PR title from stdout.
                 print(f"skipped: {exc}", file = sys.stderr)
                 continue
