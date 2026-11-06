@@ -42,8 +42,6 @@ const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 // Raw-string key the chat header's mic picker wrote (chat-runtime-store), read
 // once by merge() below so an existing pin survives that picker's removal.
 const LEGACY_LOOP_MIC_KEY = "unsloth_chat_mic_device_id";
-// Set by the hydration merge when it read the old key; onRehydrateStorage then retires it.
-let legacyMicCarried = false;
 
 const HF_REPO_ID =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
@@ -431,7 +429,16 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           const legacyMic = localStorage.getItem(LEGACY_LOOP_MIC_KEY);
           if (legacyMic !== null) {
             if (micDeviceId === "default" && legacyMic) micDeviceId = legacyMic;
-            legacyMicCarried = true;
+            const carried = micDeviceId;
+            // After create() returns: save the carried pin here first, then drop the old key.
+            queueMicrotask(() => {
+              useVoiceSettingsStore.setState({ micDeviceId: carried });
+              try {
+                localStorage.removeItem(LEGACY_LOOP_MIC_KEY);
+              } catch {
+                // storage unavailable: nothing to drop
+              }
+            });
           }
         } catch {
           // storage unavailable: keep the default
@@ -479,20 +486,6 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
           voiceLogExportedAt:
             typeof saved?.voiceLogExportedAt === "number" ? saved.voiceLogExportedAt : null,
         };
-      },
-      onRehydrateStorage: () => (state) => {
-        if (!legacyMicCarried || !state) return;
-        legacyMicCarried = false;
-        const micDeviceId = state.micDeviceId;
-        // After create() returns: save the carried pin here first, then drop the old key.
-        queueMicrotask(() => {
-          useVoiceSettingsStore.setState({ micDeviceId });
-          try {
-            localStorage.removeItem(LEGACY_LOOP_MIC_KEY);
-          } catch {
-            // storage unavailable: nothing to drop
-          }
-        });
       },
     },
   ),

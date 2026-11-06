@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { PlayIcon, SquareIcon } from "lucide-react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { PlayIcon } from "lucide-react";
 import { useEffect, useRef, useState, type FC, type KeyboardEvent, type PointerEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,7 @@ import {
 } from "@/features/chat/voice/voice-loop-bridge";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { useT } from "@/i18n";
+import { StopIcon } from "@/lib/media-control-icons";
 import { cn } from "@/lib/utils";
 
 // The ring that fills while the button is held, drawn just inside the button's edge.
@@ -132,7 +134,7 @@ export const VoicePauseStopButton: FC = () => {
                 transitionDuration: `${holding ? HOLD_TO_STOP_MS : 150}ms`,
               }}
             >
-              <SquareIcon className="size-3 fill-current" />
+              <HugeiconsIcon icon={StopIcon} className="composer-glyph-snap size-3.5 fill-current" />
             </span>
           </span>
           {/* The button styles every svg to size-4; the ring has to cover the button. */}

@@ -26,11 +26,12 @@ import { describeToolCall } from "@/features/chat/voice/voice-loop-bridge";
 import { SPECTRUM_BANDS, readSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { useVoiceSettingsStore } from "@/features/settings";
 import { type TranslationKey, useT } from "@/i18n";
-import { EditResponseIcon, ReadAloudIcon } from "@/lib/action-bar-icons";
+import { ReadAloudIcon } from "@/lib/action-bar-icons";
 import { isTauri } from "@/lib/api-base";
 import { BulbIcon } from "@/lib/bulb-icon";
 import { MicIcon as DictateMicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { Edit03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AudioLinesIcon, AudioWaveformIcon, InfoIcon, Loader2Icon, MicOffIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
@@ -335,7 +336,7 @@ const OrbIcon: FC<{ icon: IconKind }> = ({ icon }) => {
     // Transcribing: the action bar's Edit pencil.
     return (
       <span style={{ color: HOLE, filter: DEBOSS, display: "grid" }}>
-        <HugeiconsIcon icon={EditResponseIcon} size={44} strokeWidth={2.2} />
+        <HugeiconsIcon icon={Edit03Icon} size={44} strokeWidth={2.2} />
       </span>
     );
   if (icon === "synth")
