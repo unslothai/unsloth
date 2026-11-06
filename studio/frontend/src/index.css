@@ -2122,6 +2122,21 @@ html[data-chat-font] .aui-root {
 		z-index: 49;
 		pointer-events: auto;
 	}
+	/* The side pane (browser, research) sets its own pointer-events: auto once shown, so it never
+	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
+	   The same cover over it blocks them as react-remove-scroll's document listeners did, without a
+	   listener per open (each add or remove restyles the whole page in WebKit). Both roots are
+	   position: relative; dialogs and menus portal to <body> at z-50, above the cover. Its own layer:
+	   Chromium's compositor otherwise hit-tests the composited scroller under a paintless cover and
+	   scrolls it. */
+	body[style*="pointer-events: none"] .chat-artifact-pop-surface[data-artifact-surface-visible="true"] > :is([data-slot="browser-panel"], aside)::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		z-index: 49;
+		pointer-events: auto;
+		will-change: transform;
+	}
 
 	/* Firefox makes scrollable containers focusable; :where keeps specificity at zero. */
 	:where(div, main, section, aside, ul, ol):focus-visible {

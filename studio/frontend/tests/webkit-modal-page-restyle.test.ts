@@ -102,3 +102,21 @@ test("a closing dialog gives up focus when its exit animation starts", () => {
   assert.equal(blurred, 2);
   assert.match(readSrc("main.tsx"), /watchClosingDialogFocus\(document\);/);
 });
+
+test("the side pane sits under the same modal cover as the thread", () => {
+  const css = readSrc("index.css");
+  const selector =
+    'body[style*="pointer-events: none"] .chat-artifact-pop-surface[data-artifact-surface-visible="true"] > :is([data-slot="browser-panel"], aside)::after';
+  const cover = rule(css, selector);
+  // will-change: its own layer, or Chromium's compositor scrolls the pane's scroller under it.
+  for (const declaration of ['content: "";', "position: absolute;", "inset: 0;", "pointer-events: auto;", "will-change: transform;"]) {
+    assert.ok(cover.includes(declaration), `side pane cover lost ${declaration}`);
+  }
+  const z = Number(/z-index: (\d+);/.exec(cover)?.[1]);
+  assert.ok(z > 0 && z < 50, `cover z-index ${z} must sit under the z-50 portaled layers`);
+  // The shown pane opts out of the body lock, which is why it needs the cover.
+  assert.match(rule(css, '.chat-artifact-pop-surface[data-artifact-surface-visible="true"]'), /pointer-events: auto;/);
+  // The cover is positioned by the pane roots themselves.
+  assert.match(readSrc("features/browser/browser-panel.tsx"), /data-slot="browser-panel"[\s\S]{0,600}"relative flex h-full min-h-0 flex-col overflow-hidden/);
+  assert.match(readSrc("features/chat/components/research-activity-panel.tsx"), /<aside[\s\S]{0,200}"relative flex min-h-0 flex-col/);
+});
