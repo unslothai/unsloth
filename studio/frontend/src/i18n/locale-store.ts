@@ -59,15 +59,32 @@ function isTraditionalChinese(lowerTag: string): boolean {
   return parts.includes("tw") || parts.includes("hk") || parts.includes("mo");
 }
 
+const LATIN_AMERICAN_REGIONS = new Set(
+  "419 mx ar co cl pe ve ec gt cu bo do hn py sv ni cr pr pa uy us".split(" "),
+);
+
+function regionalLocale(language: string, lowerTag: string): Locale | null {
+  if (language === "zh") {
+    return isTraditionalChinese(lowerTag) ? "zh-TW" : "zh-CN";
+  }
+  if (language === "es") {
+    const region = lowerTag
+      .split("-")
+      .slice(1)
+      .find((part) => /^([a-z]{2}|\d{3})$/.test(part));
+    return region && LATIN_AMERICAN_REGIONS.has(region) ? "es-419" : "es";
+  }
+  return null;
+}
+
 function matchLocale(tag: string): Locale | null {
   const locales = Object.keys(LOCALES) as Locale[];
   const lower = tag.toLowerCase();
   const exact = locales.find((locale) => locale.toLowerCase() === lower);
   if (exact) return exact;
   const language = lower.split("-")[0];
-  // Only Simplified Chinese ships; let Traditional Chinese users fall through.
-  if (language === "zh" && isTraditionalChinese(lower)) return null;
   return (
+    regionalLocale(language, lower) ??
     locales.find((locale) => locale.toLowerCase().split("-")[0] === language) ??
     null
   );
@@ -80,15 +97,7 @@ function detectLocale(): Locale {
     : navigatorRef?.language
       ? [navigatorRef.language]
       : [];
-  let sawTraditionalChinese = false;
   for (const tag of tags) {
-    const lower = tag.toLowerCase();
-    if (lower.split("-")[0] === "zh" && isTraditionalChinese(lower)) {
-      sawTraditionalChinese = true;
-    } else if (sawTraditionalChinese && lower === "zh") {
-      // Bare zh after a Traditional tag is the browser's base-subtag fallback; skip it.
-      continue;
-    }
     const match = matchLocale(tag);
     if (match) return match;
   }

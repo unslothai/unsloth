@@ -204,8 +204,9 @@ def environment_fingerprint() -> dict[str, Any]:
             fp["gpu_name"] = torch.cuda.get_device_name(index)
             cap = torch.cuda.get_device_capability(index)
             fp["gpu_capability"] = f"sm_{cap[0]}{cap[1]}"
-        # torch keys artifacts on this tag (set by diffusion_fp8_unit_scale); a bundle from another tag would load,
-        # miss, recompile and never be rewritten. Only a set tag joins the key, so untagged bundles stay valid.
+        from .diffusion_compile_config import apply
+
+        apply()
         tag = getattr(getattr(torch, "compiler", None), "config", None)
         tag = getattr(tag, "cache_key_tag", None)
         if isinstance(tag, str) and tag:
@@ -221,9 +222,15 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_DIFFUSION_INT8_GEMM": "auto",
     "UNSLOTH_DIFFUSION_INT8_GEMM_CONVROT": "on",
     "UNSLOTH_DIFFUSION_INT8_GEMM_STREAMED": "on",
+    "UNSLOTH_DIFFUSION_INT8_GEMM_UNLISTED": "auto",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT": "auto",
     "UNSLOTH_DIFFUSION_INT8_ROTQUANT_UNLISTED": "auto",
     "UNSLOTH_DIFFUSION_INT8_FUSED": "on",
+    "UNSLOTH_DIFFUSION_INT8_TEXT_STREAM": "on",
+    "UNSLOTH_DIFFUSION_INT8_MODULATION": "on",
+    # Keyed on the clamped count the reader uses (0 = none).
+    "UNSLOTH_DIFFUSION_INT8_MOD_OUTLIERS": "count:8",
+    "UNSLOTH_DIFFUSION_INT8_GEMV": "on",
     "UNSLOTH_DIFFUSION_ZIMAGE_FUSED": "on",
     "UNSLOTH_DIFFUSION_Q21_REAL_ROPE": "on",
     "UNSLOTH_DIFFUSION_QWEN_REAL_ROPE": "on",
@@ -236,6 +243,7 @@ _GRAPH_SWITCHES = {
     "UNSLOTH_TORCHAO_INDUCTOR_CONFIG": "off",
     "UNSLOTH_NVFP4_BACKEND": "raw:auto",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE": "auto",
+    "UNSLOTH_DIFFUSION_TF32": "on",
     "UNSLOTH_DIFFUSION_FP8_UNIT_SCALE_MIN_ROWS": "rows:256",
     # Unset is off; "auto" protects the head + last step, so "auto" is NOT the default here.
     "UNSLOTH_NVFP4_PROTECT_STEPS": "raw",
@@ -256,6 +264,12 @@ def _switch_value(name: str, default: str) -> Optional[str]:
         except ValueError:
             return None
         return None if rows == default.partition(":")[2] else rows
+    if default.startswith("count:"):
+        try:
+            count = str(max(0, min(16, int(raw))))
+        except ValueError:
+            return None
+        return None if count == default.partition(":")[2] else count
     if default.startswith("raw"):
         return None if raw in _OFF_WORDS or raw == default.partition(":")[2] else raw
     value = "off" if raw in _OFF_WORDS else "on" if raw in _ON_WORDS else None
@@ -449,14 +463,14 @@ def model_fingerprint(
         dynamic_text = None
     if dynamic_text:
         fp["dynamic_text"] = dynamic_text
-    # Inductor keys graphs on dynamic_scale_rblock: an old bundle would hit, miss every graph, and never be rewritten.
     from .diffusion_compile_config import reduction_blocks_pinned, reduction_config_filter_available
 
     if reduction_blocks_pinned():
         fp["inductor"] = {"dynamic_scale_rblock": False}
-        # Only for a family whose compile pins the reduction-config filter, so every other bundle keeps its key.
         if reduction_filter and reduction_config_filter_available():
             fp["inductor"]["force_filter_reduction_configs"] = True
+            if compile_kwargs.get("mode") in ("max-autotune", "max-autotune-no-cudagraphs"):
+                fp["inductor"]["coordinate_descent_tuning"] = False
     return fp
 
 

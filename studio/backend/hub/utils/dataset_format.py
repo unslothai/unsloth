@@ -7,7 +7,11 @@ import re
 from typing import Any, Optional
 
 from utils.datasets.cells import text_cell_check, unwrap_message_column
-from utils.datasets.format_detection import detect_dataset_format, has_message_prompt_completion
+from utils.datasets.format_detection import (
+    detect_dataset_format,
+    has_message_prompt_completion,
+    is_plain_text_dataset,
+)
 from utils.datasets.pretokenized import PRETOKENIZED_FORMAT, is_pretokenized_dataset
 
 
@@ -734,6 +738,23 @@ def check_dataset_format(dataset, is_vlm: bool = False) -> dict:
         "detected_speaker_column": multimodal_info.get("detected_speaker_column"),
     }
 
+    if is_plain_text_dataset(dataset):
+        # Before the VLM branch: text-only data trains as raw text on a vision model too.
+        # Media flags off: a name match (a "speech" column) would route an audio model to its audio path.
+        return {
+            "requires_manual_mapping": False,
+            "detected_format": "raw",
+            "columns": columns,
+            "suggested_mapping": None,
+            "detected_image_column": None,
+            "detected_text_column": None,
+            "is_image": False,
+            "multimodal_columns": None,
+            "is_audio": False,
+            "detected_audio_column": None,
+            "detected_speaker_column": None,
+        }
+
     if is_vlm:
         vlm_structure = detect_vlm_dataset_structure(dataset)
         requires_mapping = vlm_structure["format"] == "unknown"
@@ -863,15 +884,19 @@ def _standardize_sharegpt_row(row: dict[str, Any], chat_column: str) -> dict[str
         if not isinstance(message, dict):
             continue
         role = message.get("role") or message.get("from")
-        content = message.get("content") if "content" in message else message.get("value")
+        content = message.get("content")
+        if content is None:
+            content = message.get("value")
         normalized = _normalize_role_alias(role)
-        messages.append(
+        new_message = {key: value for key, value in message.items() if key not in ("from", "value")}
+        new_message.update(
             {
                 # Unknown alias shown as written; blank falls back to "user", as before.
                 "role": _ROLE_MAP.get(normalized, str(role)) if normalized else "user",
-                "content": "" if content is None else content,
+                "content": "" if content is None and not message.get("tool_calls") else content,
             }
         )
+        messages.append(new_message)
     return {chat_column: messages}
 
 

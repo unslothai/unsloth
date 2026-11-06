@@ -5,12 +5,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import importlib
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -293,6 +295,21 @@ def _latent_channels(config: dict) -> int:
     return 16
 
 
+@contextlib.contextmanager
+def _no_memory_reading():
+    """Probe the grid a decode takes with no free-memory reading: the smallest tiles, the same on every host.
+
+    Budgeted planners (video_ltx2_vae_tiles) widen tiles, or go untiled, when the reading says they fit; on a CPU
+    host that reading is host RAM, so an unpinned probe would see whatever the runner has free.
+    """
+    mod = _module("video_vae_untiled")
+    if mod is None or not hasattr(mod, "_free_bytes"):
+        yield
+        return
+    with mock.patch.object(mod, "_free_bytes", lambda device: None):
+        yield
+
+
 def probe_axis(vae, config: dict, length: int, other: int, video: bool) -> list[tuple[int, int]]:
     c = _latent_channels(config)
     for frames in (1, 2, 4, 8) if video else (None,):
@@ -300,7 +317,7 @@ def probe_axis(vae, config: dict, length: int, other: int, video: bool) -> list[
         rec = _TileRecorder(shape[-2:])
         _ACTIVE.append(rec)
         try:
-            with rec, torch.no_grad():
+            with rec, _no_memory_reading(), torch.no_grad():
                 vae.decode(torch.zeros(shape), return_dict = False)
             return sorted(rec.axes[0])
         except Exception as exc:  # noqa: BLE001 - a frame count the VAE's temporal chunking refuses
@@ -471,3 +488,19 @@ def test_probe_reads_the_stock_grid():
     assert applied == []
     tiles = probe_axis(vae, {"z_dim": 16}, 64, 8, True)
     assert tiles == [(0, 32), (24, 56), (48, 64)]
+
+
+def test_probe_ignores_free_host_memory(monkeypatch):
+    """A CPU host whose RAM fits the whole frame decodes LTX-2 untiled; the probe must still read the tiled grid."""
+    untiled = pytest.importorskip("core.inference.video_vae_untiled")
+    ltx = pytest.importorskip("core.inference.video_ltx2_vae_tiles")
+    monkeypatch.setattr(untiled, "_free_bytes", lambda device: 1 << 50)
+    kind, config = _family_configs()["ltx-2"]
+    vae, applied = build_vae(config, kind)
+    assert "video_ltx2_vae_tiles" in applied
+    length = max(_sides("ltx-2")) // _ratio(vae)
+    z = torch.zeros(1, _latent_channels(config), 1, length, length, device = "meta")
+    # The planner itself takes the reading: one tile covering the frame.
+    assert ltx.plan_tiles(vae, z) == (length, length)
+    tiles = probe_axis(vae, config, length, max(1, MIN_SIDE // _ratio(vae)), True)
+    assert len(tiles) >= 2, tiles

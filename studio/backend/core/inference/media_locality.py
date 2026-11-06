@@ -62,7 +62,8 @@ def detected_image_family(pick: MediaModelPick) -> Any:
 
 def normalized_pick(pick: MediaModelPick) -> MediaModelPick:
     """Pick as the load routes read it, so companions of a bare single-file directory are planned."""
-    from core.inference.diffusion import resolve_local_single_file, split_local_checkpoint_path
+    from core.inference.diffusion import split_local_checkpoint_path
+    from core.inference.diffusion_local_files import resolve_local_single_file
 
     if pick.model_kind or pick.gguf_filename:
         return pick

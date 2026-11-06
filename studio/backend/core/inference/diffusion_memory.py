@@ -24,7 +24,7 @@ import os
 import sys
 import threading
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 from .host_pinning import host_pinning_allowed
 from .rocm_bf16 import is_rocm_torch
 
@@ -1014,6 +1014,43 @@ def _wrap_cpu_offload_hook(
     setattr(hook, _KEEP_ATTR, True)
 
 
+def offload_host_copy(module: Any, name: str, tensor: Any) -> Any:
+    """The keep-cpu host tensor for ``name`` while ``tensor`` is on the device unchanged since its onload (``_init_hook``'s
+    re-point rule: same object, version and storage), else None."""
+    state = getattr(module, "__dict__", {}).get(_KEEP_ATTR)
+    if (
+        not isinstance(state, dict)
+        or getattr(getattr(tensor, "device", None), "type", "cpu") == "cpu"
+    ):
+        return None
+    try:
+        kept = (state.get("host") or {}).get(name)
+        if kept is not None:
+            seen = (state.get("version") or {}).get(name)
+            if (
+                (state.get("owner") or {}).get(name) is tensor
+                and seen is not None
+                and seen[0] is tensor
+                and seen[1] == tensor._version
+                and seen[2] == _tensor_ptr(tensor)
+            ):
+                return kept
+            return None
+        kept = (state.get("buffer_host") or {}).get(name)
+        seen = (state.get("buffer_version") or {}).get(name)
+        if (
+            kept is not None
+            and seen is not None
+            and seen[0] is tensor
+            and seen[1] == _buffer_version(tensor)
+            and seen[2] == tensor.data_ptr()
+        ):
+            return kept
+    except Exception:  # noqa: BLE001 - a state mid-update: the caller reads the device copy
+        return None
+    return None
+
+
 def reclaim_offload_host_memory(offload_policy: str, logger: Any = None) -> bool:
     """Return unused allocator pages after whole-model CPU offload, without touching live
     tensors, Python GC, or device caches. Unsupported allocators and failures are non-fatal."""
@@ -1202,9 +1239,6 @@ def _metal_working_set_mib() -> tuple[Optional[int], int]:
 
 
 def _graph_held_cache_bytes(device: Optional[int] = None) -> int:
-    """Bytes inside ``memory_reserved() - memory_allocated()`` that ordinary allocations cannot reuse: the CUDA graph
-    pools (per-block pools whole, the whole-step graphs' shared pool's unallocated part). ``device`` None counts every
-    block pool and reads the whole-step pool on the current card."""
     held = 0
     try:
         from .diffusion_block_graph import pool_bytes as _block_graph_pool_bytes
@@ -1303,6 +1337,8 @@ def settled_snapshot_device_memory(
     target: Any,
     attempts: int = 3,
     delay_s: float = 1.0,
+    *,
+    can_stop: Optional[Callable[[DeviceMemory], bool]] = None,
 ) -> DeviceMemory:
     """Max free over spaced reads (a transient only shrinks free); on mps, empty_cache first so freed pool is not budgeted as used memory."""
     device = getattr(target, "device", "cpu")
@@ -1327,11 +1363,13 @@ def settled_snapshot_device_memory(
         pass
     best = snapshot_device_memory(target)
     delay_s = _settle_delay(delay_s)
-    for _ in range(max(0, attempts - 1)):
+    for attempt in range(max(0, attempts - 1)):
         if best.free_mib is not None and best.total_mib is not None:
             # Free already within the reserve of total: nothing transient to wait out.
             if best.free_mib >= best.total_mib - max(2048, int(best.total_mib * 0.10)):
                 break
+        if attempt == 0 and can_stop is not None and can_stop(best):
+            break
         try:
             import time
             time.sleep(delay_s)
@@ -3307,20 +3345,29 @@ PARTIAL_RESIDENT_ENV = "UNSLOTH_DIFFUSION_PARTIAL_RESIDENT"
 # FLUX.1 / Z-Image: their worst phase is the untiled 16-channel VAE decode (_MEASURED_IMAGE_ACTIVATION_MIB).
 # MOSS-Image: 2905 MiB worst-phase peak fully streamed (B200 capped at 16 GiB).
 # Qwen-Image-Edit-2511: 6046 MiB whole render (1024^2, one 1024^2 source, 40 steps, true CFG 3), int8 DiT + encoder.
+# Qwen-Image-2512 t2i: 6032 MiB whole render (1024^2, 20 steps, true CFG 4), int8 DiT + encoder, recorded on sm_120.
 _MEASURED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-2.1": 1849,
     "flux.1": 2666,
     "z-image": 2666,
     "moss-image": 2976,
     "qwen-image-edit": 6046,
+    "qwen-image": 6032,
 }
 # "0": Qwen-Image-Edit places from its learned peak only.
 MEASURED_ACTIVATION_QWEN_EDIT_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_EDIT"
+# "0": Qwen-Image / Qwen-Image-2512 text-to-image places from its learned peak only.
+MEASURED_ACTIVATION_QWEN_IMAGE_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_QWEN_IMAGE"
 # Streamed tier: peak reserved above resident weights AND the prefetch window (the resident seed already pads it).
+# Qwen-Image t2i has its own figure: the borrowed Edit figure (3824) left 3.5 GiB unused at a 16 GiB budget.
 _MEASURED_STREAMED_IMAGE_PEAK_MIB: dict[str, int] = {
     "qwen-image-edit": 3824,
+    "qwen-image": 2560,
 }
 MEASURED_ACTIVATION_STREAMED_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_STREAMED"
+# "0": Qwen-Image t2i streams with the borrowed Edit figure again.
+QWEN_IMAGE_STREAMED_SEED_ENV = "UNSLOTH_DIFFUSION_QWEN_IMAGE_STREAMED_SEED"
+_QWEN_IMAGE_BORROWED_STREAMED_MIB = 3824
 _MEASURED_PEAK_SPEED_MODES = ("default", "max")
 _MEASURED_PEAK_MARGIN = 1.15
 _MEASURED_PEAK_ROUND_MIB = 256
@@ -3352,10 +3399,11 @@ _MEASURED_DENSE_BF16_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
 
 
 # Small-host int8 DiT, eager: (peak MiB above resident weights at 1024^2, largest int8 DiT MiB covered).
-# FLUX.2-klein-4B, Kaggle T4 fp16, 4 steps, sliced VAE. "0" = learned peak alone.
+# T4 fp16, 4 steps, sliced VAE: FLUX.2-klein-4B 2805 (Kaggle), 9B 2459 (Colab); the 4B's covers both.
+# "0" = learned peak alone.
 MEASURED_ACTIVATION_SMALL_HOST_ENV = "UNSLOTH_DIFFUSION_MEASURED_ACTIVATION_SMALL_HOST"
 _MEASURED_SMALL_HOST_INT8_EAGER_PEAK_MIB: dict[str, tuple[int, int]] = {
-    "flux.2-klein": (2805, 3800),
+    "flux.2-klein": (2805, 8700),
 }
 
 
@@ -3491,8 +3539,14 @@ def measured_image_runtime_mib(
         seed = _MEASURED_IMAGE_PEAK_MIB.get(str(family or "").lower())
         if streamed and phase is None and not _env_off(MEASURED_ACTIVATION_STREAMED_ENV):
             seed = _MEASURED_STREAMED_IMAGE_PEAK_MIB.get(str(family or "").lower(), seed)
+            if str(family or "").lower() == "qwen-image" and _env_off(QWEN_IMAGE_STREAMED_SEED_ENV):
+                seed = _QWEN_IMAGE_BORROWED_STREAMED_MIB
         if str(family or "").lower() == "qwen-image-edit" and _env_off(
             MEASURED_ACTIVATION_QWEN_EDIT_ENV
+        ):
+            seed = None
+        if str(family or "").lower() == "qwen-image" and _env_off(
+            MEASURED_ACTIVATION_QWEN_IMAGE_ENV
         ):
             seed = None
         if seed is None and phase_seeds:
@@ -5828,7 +5882,15 @@ def apply_memory_plan(
             tiling_engaged = _enable_vae_saver(pipe, "enable_vae_tiling", "enable_tiling", logger)
 
     policy = plan.offload_policy
-    if policy == OFFLOAD_MODEL:
+    if policy == OFFLOAD_MODEL and _stream_unet_instead_of_model_offload(pipe, placement, logger):
+        policy = OFFLOAD_GROUP
+        try:
+            pipe._unsloth_applied_plan = replace(
+                plan, offload_policy = OFFLOAD_GROUP, stream_text_encoders = True
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elif policy == OFFLOAD_MODEL:
         pipe.enable_model_cpu_offload(device = placement)
         keep_cpu_weights_on_offload(pipe, logger)
     elif policy == OFFLOAD_GROUP:
@@ -5937,6 +5999,154 @@ def apply_memory_plan(
         with fast_upload(modules, placement, logger = logger):
             pipe.to(placement)
     return policy, tiling_engaged
+
+
+UNET_STREAM_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM"
+# Measured SDXL 1024^2, 25 steps, diffusers 0.41, L4 bf16 / T4 fp16; MiB above weights.
+_MEASURED_UNET_OFFLOAD_DENOISE_MIB = 817
+# Streamed: worst phase is the VAE decode (L4 bf16).
+_MEASURED_UNET_STREAMED_PEAK_MIB = 2435
+# force_upcast fp16 VAE (T4) decodes in fp32.
+_MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB = 3228
+_UNET_STREAM_SLACK_MIB = 512
+# Streamed denoise: 333 MiB above the weights at 1024^2 (L4 bf16, CFG pair, incl. the ~168 MiB prefetch window), the
+# activations scaled linearly to 2048^2 so a larger canvas still fits beside the resident leaves: 168 + 4 x 165.
+_MEASURED_UNET_STREAMED_DENOISE_MIB = 828
+# =0: size the resident leaves from the decode peak for the whole render (no lending, the #16295 sizing).
+UNET_STREAM_LEND_ENV = "UNSLOTH_DIFFUSION_UNET_STREAM_LEND"
+
+
+def unet_stream_lends_decode() -> bool:
+    """Resident UNet leaves are sized from the denoise peak and lent to the VAE decode (release_for_decode streams the
+    shortfall again before the decode and re-pins it after), as ComfyUI unloads part of the UNet for its decode."""
+    return not _env_off(UNET_STREAM_LEND_ENV)
+
+
+def unet_decode_lend(fp32_decode: bool = False) -> tuple[int, int, int, bool]:
+    """The ``DECODE_LEND_ATTR`` tuple of a streamed UNet: the decode's measured peak above the weights at 1024^2,
+    scaled linearly with the canvas (a tiled decode grows slower: it releases more than it needs, never less)."""
+    peak = (
+        _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+        if fp32_decode
+        else _MEASURED_UNET_STREAMED_PEAK_MIB
+    )
+    return (peak, peak, DEFAULT_IMAGE_WIDTH * DEFAULT_IMAGE_HEIGHT, False)
+
+
+def _measured_reserve_mib(peak_mib: int) -> int:
+    step = _MEASURED_PEAK_ROUND_MIB
+    return int(-(-(peak_mib * _MEASURED_PEAK_MARGIN) // step) * step)
+
+
+def unet_stream_room_mib(
+    free_mib: int,
+    unet_mib: int,
+    vae_mib: int,
+    *,
+    fp32_decode: bool = False,
+    lend: Optional[bool] = None,
+) -> Optional[int]:
+    """None if whole-module offload fits; else MiB of UNet leaves to keep resident. ``lend`` (default: the kill switch
+    ``UNSLOTH_DIFFUSION_UNET_STREAM_LEND``): sized from the denoise peak, the decode borrows the shortfall through
+    release_for_decode; off: sized so the decode fits beside every resident leaf for the whole render."""
+    if unet_mib + _measured_reserve_mib(_MEASURED_UNET_OFFLOAD_DENOISE_MIB) <= free_mib:
+        return None
+    if lend is None:
+        lend = unet_stream_lends_decode()
+    if lend:
+        peak = _MEASURED_UNET_STREAMED_DENOISE_MIB
+    else:
+        peak = (
+            _MEASURED_UNET_STREAMED_FP32_DECODE_PEAK_MIB
+            if fp32_decode
+            else _MEASURED_UNET_STREAMED_PEAK_MIB
+        )
+    reserve = _measured_reserve_mib(peak) + _UNET_STREAM_SLACK_MIB
+    return max(0, int(free_mib) - int(vae_mib) - reserve)
+
+
+def _vae_decodes_in_fp32(vae: Any) -> bool:
+    try:
+        import torch
+        first = next(iter(vae.parameters()), None)
+        return (
+            first is not None
+            and first.dtype == torch.float16
+            and bool(getattr(getattr(vae, "config", None), "force_upcast", False))
+        )
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def _stream_unet_instead_of_model_offload(
+    pipe: Any,
+    placement: str,
+    logger: Any = None,
+) -> bool:
+    """Stream a UNet too large for whole-module offload (which OOMs on step one) leaf by leaf."""
+    if _env_off(UNET_STREAM_ENV):
+        return False
+    try:
+        import torch
+
+        unet = getattr(pipe, "unet", None)
+        if not isinstance(unet, torch.nn.Module) or getattr(pipe, "transformer", None) is not None:
+            return False
+        onload = torch.device(placement)
+        if onload.type != "cuda" or not torch.cuda.is_available():
+            return False
+        free, total = (int(x) for x in torch.cuda.mem_get_info(onload))
+        free_mib = max(0, free - user_budget_reserve_bytes(onload, total)) >> 20
+
+        def _mib(m: Any) -> int:
+            if not isinstance(m, torch.nn.Module):
+                return 0
+            ts = {id(t): t for t in list(m.parameters()) + list(m.buffers())}
+            return sum(t.numel() * t.element_size() for t in ts.values()) >> 20
+
+        unet_mib = _mib(unet)
+        vae = getattr(pipe, "vae", None)
+        fp32_decode = vae is not None and _vae_decodes_in_fp32(vae)
+        lend = unet_stream_lends_decode()
+        room = unet_stream_room_mib(
+            free_mib, unet_mib, _mib(vae), fp32_decode = fp32_decode, lend = lend
+        )
+        if room is None:
+            return False
+    except Exception:  # noqa: BLE001
+        return False
+    _set_group_offload_failure(pipe, None)
+    applied = _apply_group_offload(
+        pipe,
+        placement,
+        logger,
+        stream_text_encoders = True,
+        resident_transformer_mib = room or None,
+        denoiser = "unet",
+    )
+    if applied:
+        try:
+            # deferred speed profile would rebuild weights outside the leaf hooks; read by _engage_deferred_speed
+            pipe._unsloth_unet_streamed = True
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            # the leaves were sized from the denoise peak: the decode borrows its shortfall (release_for_decode)
+            setattr(
+                pipe, DECODE_LEND_ATTR, unet_decode_lend(fp32_decode) if lend and room else None
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: UNet (%d MiB) does not fit %d MiB free for whole-module offload; %s",
+            unet_mib,
+            free_mib,
+            f"streaming it leaf by leaf, {room} MiB kept resident"
+            if applied
+            else "streaming failed, whole-module offload",
+        )
+    return applied
 
 
 _GROUP_OFFLOAD_FAILURE_ATTR = "_unsloth_group_offload_failure"
@@ -6223,8 +6433,34 @@ def _pin_budget_mib() -> Optional[int]:
     available = _available_system_memory_mib()
     if total is None or available is None:
         return None
+    available = _pin_available_mib(int(available))
     reserve = max(_PIN_RESERVE_MIN_MIB, int(int(total) * _PIN_RESERVE_FRACTION))
-    return max(0, int(available) - reserve)
+    return max(0, available - reserve)
+
+
+# 0 restores the stricter cgroup reading that counts mapped file pages on the active list as used.
+PIN_CREDIT_MAPPED_ENV = "UNSLOTH_DIFFUSION_PIN_CREDIT_MAPPED"
+
+
+def _pin_available_mib(available_mib: int) -> int:
+    """Under a cgroup limit, the reading with clean mapped page cache credited (pins replace the checkpoint's mmap
+    views), taken whole rather than added to ``available_mib``: the lists move between two samples."""
+    if str(os.environ.get(PIN_CREDIT_MAPPED_ENV, "")).strip().lower() in (
+        "0",
+        "off",
+        "false",
+        "no",
+    ):
+        return available_mib
+    try:
+        from utils import host_memory
+
+        headroom = host_memory.credited_cgroup_headroom_mib()
+        if headroom is None:
+            return available_mib
+        return int(host_memory.usable_mib(host_memory.system_available_mib(), headroom))
+    except Exception:  # noqa: BLE001 - the uncredited reading still stands
+        return available_mib
 
 
 def _remove_group_offload_hooks(module: Any) -> None:
@@ -6461,6 +6697,55 @@ def _streamed_pin_leftover_mib(
 
 _DENOISER_NAMES = ("transformer", "transformer_2", "unconditional_transformer", "unet")
 
+DENOISER_RESIDENT = "resident"
+DENOISER_PARTIAL = "partial"
+DENOISER_STREAMED = "streamed"
+
+
+def denoiser_residency(pipe: Any) -> Optional[tuple[int, int]]:
+    """``(resident, total)`` offload groups across the denoisers, read off the live hooks: a denoiser another offload
+    hook moves counts as one streamed group, an unhooked one as one resident group, None when unreadable."""
+    resident = total = 0
+    try:
+        for name in _DENOISER_NAMES:
+            module = getattr(pipe, name, None)
+            if module is None:
+                continue
+            groups = _offload_groups(module)
+            if groups:
+                total += len(groups)
+                resident += sum(1 for g in groups if getattr(g, "_unsloth_resident", False))
+                continue
+            registry = getattr(module, "_diffusers_hook", None)
+            total += 1
+            if not (
+                any(getattr(sub, "_hf_hook", None) is not None for sub in module.modules())
+                or any("offload" in str(key) for key in (getattr(registry, "hooks", None) or {}))
+            ):
+                resident += 1
+    except Exception:  # noqa: BLE001 - a status read must never fail the load or the render
+        return None
+    return resident, total
+
+
+def denoiser_offload(pipe: Any, offload_policy: Any) -> Optional[str]:
+    """resident | partial | streamed for a group-offloaded pipeline; None for other policies or an unreadable one."""
+    if offload_policy != OFFLOAD_GROUP or pipe is None:
+        return None
+    counts = denoiser_residency(pipe)
+    if counts is None:
+        return None
+    resident, total = counts
+    if resident >= total:
+        return DENOISER_RESIDENT
+    return DENOISER_PARTIAL if resident else DENOISER_STREAMED
+
+
+def agreed_placement(placements: Iterable[Optional[str]]) -> Optional[str]:
+    """The placement every denoise of one image ran with; None when they differ."""
+    distinct = set(placements)
+    return distinct.pop() if len(distinct) == 1 else None
+
 
 def denoisers_pinned_resident(pipe: Any) -> bool:
     """Every denoiser unhooked or with all its offload groups pinned, at least one pinned. The hooks stay so an
@@ -6683,11 +6968,14 @@ class _GroupPinner:
         self.device = device
         self.logger = logger
         self.pinned = 0
+        self.copied = 0
         self.waited_s = 0.0
         self._done = {id(g): threading.Event() for g in groups}
         self._stop = threading.Event()
         self._lock = threading.Lock()
-        self._thread = threading.Thread(target = self._run, name = "unsloth-offload-pin", daemon = True)
+        self.after: list = []
+        self.late = False
+        self._thread = threading.Thread(target = self._entry, name = "unsloth-offload-pin", daemon = True)
         self._started = False
         for group in groups:
             setattr(group, _BG_PIN_ATTR, self)
@@ -6697,6 +6985,34 @@ class _GroupPinner:
             if not self._started:
                 self._started = True
                 self._thread.start()
+
+    def _entry(self) -> None:
+        import time
+
+        began = time.perf_counter()
+        for dep in self.after:
+            dep.start()
+        while self.after and not self._stop.is_set():
+            if all(dep.join(0) for dep in self.after):
+                break
+            elapsed = time.perf_counter() - began
+            # Fast (not disk-bound) pins: pinning beside the others wins; overlapping the render only moves the cost.
+            rate = sum(max(dep.copied, dep.pinned) for dep in self.after) / max(elapsed, 1e-3)
+            if elapsed >= _LATE_PIN_PROBE_S and rate >= _LATE_PIN_PARALLEL_BPS:
+                self.late = False
+                if self.logger is not None:
+                    self.logger.info(
+                        "diffusion.memory: host weights pin at %.1f GiB/s; %s pins beside the others",
+                        rate / 2**30,
+                        self.label,
+                    )
+                break
+            time.sleep(0.1)
+        if self._stop.is_set():
+            for event in self._done.values():
+                event.set()
+            return
+        self._run()
 
     def wait(self, group: Any) -> None:
         import threading
@@ -6740,6 +7056,15 @@ class _GroupPinner:
             and src.numel() > 0
             and not src.is_pinned()
         ]
+
+    def _submit(self, pool: Any, src: Any) -> Any:
+        future = pool.submit(_registered_pin, src, self.device)
+        future.add_done_callback(functools.partial(self._count_copy, int(src.nbytes)))
+        return future
+
+    def _count_copy(self, nbytes: int, future: Any) -> None:
+        if not future.cancelled():
+            self.copied += nbytes
 
     @staticmethod
     def _fast_result(future: Any, src: Any) -> Any:
@@ -6823,7 +7148,7 @@ class _GroupPinner:
                         (
                             tensor,
                             src,
-                            pool.submit(_registered_pin, src, self.device),
+                            self._submit(pool, src),
                         )
                         for tensor, src in self._unpinned(group)
                     ]
@@ -6914,18 +7239,64 @@ def start_background_pins(pipe: Any) -> int:
     return len(pinners)
 
 
-def finish_background_pins(pipe: Any, cancel: Any = None) -> float:
+def finish_background_pins(
+    pipe: Any,
+    cancel: Any = None,
+    include_late: bool = True,
+) -> float:
     """Blocks until deferred pinners finish, since a render overlapping one runs measurably slower."""
     import time
 
     start = time.perf_counter()
-    for pinner in list(getattr(pipe, _PENDING_PINS_ATTR, None) or ()):
+    pinners = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    for pinner in pinners:
         pinner.start()
+    # Late pinners last: one may still turn early until the pinners before it finish.
+    for pinner in sorted(pinners, key = lambda p: bool(getattr(p, "late", False))):
+        if not include_late and getattr(pinner, "late", False):
+            continue
         # Polled so a cancelled request leaves now; the pin itself keeps running for the next render.
         while not pinner.join(0.25):
             if cancel is not None and cancel.is_set():
                 return time.perf_counter() - start
     return time.perf_counter() - start
+
+
+# "0": a two-expert denoiser's second expert pins beside the other weights, before the first render.
+LATE_EXPERT_PIN_ENV = "UNSLOTH_VIDEO_LATE_EXPERT_PIN"
+_LATE_PIN_PROBE_S = 0.2
+_LATE_PIN_PARALLEL_BPS = 3 << 30
+
+
+def defer_late_expert_pins(
+    pipe: Any,
+    late_modules: Any,
+    logger: Any = None,
+) -> int:
+    """Pin ``late_modules`` after the other pinners when disk-bound, so the render waits only for those; a late
+    group's onload still waits for its own pin. Wan2.2-A14B (A100): both experts at once made the first render wait
+    47.8 s."""
+    if _env_off(LATE_EXPERT_PIN_ENV):
+        return 0
+    late_ids = {id(m) for m in late_modules or () if m is not None}
+    pending = list(getattr(pipe, _PENDING_PINS_ATTR, None) or ())
+    late = [p for p in pending if id(p.module) in late_ids]
+    early = [p for p in pending if id(p.module) not in late_ids]
+    if not late or not early:
+        return 0
+    for pinner in late:
+        pinner.after = list(early)
+        pinner.late = True
+    if logger is not None:
+        logger.info(
+            "diffusion.memory: %d late expert(s) (%.1f GiB) pin after the other %d pinner(s) (%.1f GiB); "
+            "the first render waits for those only",
+            len(late),
+            sum(p.outstanding_bytes() for p in late) / 2**30,
+            len(early),
+            sum(p.outstanding_bytes() for p in early) / 2**30,
+        )
+    return len(late)
 
 
 def stop_background_pins(pipe: Any, timeout: Optional[float] = 30.0) -> None:
@@ -7068,6 +7439,8 @@ def install_group_offload_buffer_restore() -> bool:
 
 
 PIN_TOP_GROUP_ENV = "UNSLOTH_DIFFUSION_PIN_TOP_GROUP"
+# read-only: diffusers leaves the top-level group's cpu_param_dict empty
+TOP_GROUP_HOST_ATTR = "_unsloth_top_host"
 
 
 def _pin_top_level_group(
@@ -7164,6 +7537,7 @@ def _pin_top_level_group(
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_pinned_top = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if pinned_mib is not None:
             pinned_mib[0] = already + need_mib
         if logger is not None:
@@ -7244,6 +7618,7 @@ def _skip_top_level_copy_back(module: Any, logger: Any = None) -> bool:
         group.onload_ = onload_
         group.offload_ = offload_
         group._unsloth_top_no_copy_back = True
+        setattr(group, TOP_GROUP_HOST_ATTR, host)
         if logger is not None:
             logger.info(
                 "diffusion.memory: %s top-level weights (%d MiB) not pinnable here; offload re-points to the host "
@@ -7270,9 +7645,11 @@ def _apply_group_offload(
     background_pin: Optional[bool] = None,
     resident_transformer_mib: Optional[int] = None,
     resident_text_encoder_mib: Optional[int] = None,
+    denoiser: str = "transformer",
 ) -> bool:
-    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back."""
-    transformer = getattr(pipe, "transformer", None)
+    """Streams transformer blocks in groups; encoders stay resident unless stream_text_encoders is set; returns False on any failure, caller falls back.
+    ``denoiser="unet"`` streams leaf by leaf (UNet blocks are too coarse for groups)."""
+    transformer = getattr(pipe, denoiser, None)
     if transformer is None:
         return False
     if not stream_transformer and not stream_text_encoders:
@@ -7303,7 +7680,9 @@ def _apply_group_offload(
 
         # Dual-DiT pipelines (Ideogram 4): second DiT is as large as the first, so stream all DiTs.
         streamed: dict[str, Any] = {}
-        if stream_transformer:
+        if stream_transformer and denoiser != "transformer":
+            streamed[denoiser] = transformer
+        elif stream_transformer:
             streamed["transformer"] = transformer
             for extra in ("transformer_2", "unconditional_transformer"):
                 module = getattr(pipe, extra, None)
@@ -7327,6 +7706,9 @@ def _apply_group_offload(
             "num_blocks_per_group": DEFAULT_GROUP_BLOCKS,
             "use_stream": use_stream,
         }
+        if denoiser != "transformer":
+            gkwargs["offload_type"] = "leaf_level"
+            gkwargs.pop("num_blocks_per_group")
         # Gated on the signature so older diffusers still works.
         _params = inspect.signature(apply_group_offloading).parameters
         if use_stream:

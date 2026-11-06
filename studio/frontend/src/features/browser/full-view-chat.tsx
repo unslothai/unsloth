@@ -14,9 +14,9 @@ import {
 } from "@/components/ui/tooltip";
 import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { ExpandArrowsIcon } from "@/lib/expand-icons";
 import { cn } from "@/lib/utils";
 import {
-  ArrowExpand01Icon,
   ArrowLeft02Icon,
   ArrowRight02Icon,
   BubbleChatIcon,
@@ -26,6 +26,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState } from "react";
+import { closeOrFloatBrowser } from "./close-browser";
 import { useBrowserStore } from "./store";
 
 const WASH =
@@ -34,7 +35,7 @@ const WASH =
 export function FullViewChatBar({ title }: { title: string | undefined }) {
   const t = useT();
   const dock = useBrowserStore((state) => state.chatDock);
-  const { setChatDock, closePanel, splitWithChatOn } =
+  const { setChatDock, splitWithChatOn } =
     useBrowserStore.getState();
   const [menuOpen, setMenuOpen] = useState(false);
   const barRef = useRef<HTMLDivElement | null>(null);
@@ -132,9 +133,9 @@ export function FullViewChatBar({ title }: { title: string | undefined }) {
               sideOffset={8}
               className="browser-menu min-w-60 rounded-lg p-1"
             >
-              <DropdownMenuItem onSelect={closePanel}>
+              <DropdownMenuItem onSelect={closeOrFloatBrowser}>
                 <HugeiconsIcon
-                  icon={ArrowExpand01Icon}
+                  icon={ExpandArrowsIcon}
                   strokeWidth={1.75}
                   className="size-4.5"
                 />

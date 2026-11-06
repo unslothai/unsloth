@@ -5,7 +5,6 @@
 
 import multiprocessing
 import os
-import socket
 import sys
 
 import pytest
@@ -16,9 +15,8 @@ GIB = 1 << 30
 
 
 def _free_port():
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+    from tests._rendezvous_port import free_port
+    return free_port()
 
 
 def _worker(rank, world, port, usable, queue):

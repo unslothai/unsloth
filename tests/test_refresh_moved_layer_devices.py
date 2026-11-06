@@ -78,7 +78,7 @@ def test_block_swap_and_other_device_types_are_left_alone():
 
 @pytest.mark.parametrize("path", DECODE_LOOPS)
 def test_every_decode_loop_refreshes_before_reading_layer_devices(path):
-    source = (REPOSITORY_ROOT / path).read_text()
+    source = (REPOSITORY_ROOT / path).read_text(encoding = "utf-8")
     refresh = source.find("refresh_moved_layer_devices(self.model.layers, block_swap)")
     read = source.find("per_layer_device(decoder_layer)")
     assert 0 <= refresh < read, path

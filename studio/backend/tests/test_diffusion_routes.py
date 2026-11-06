@@ -508,6 +508,46 @@ def test_generate_batch_size_persists_each_image(client):
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 3
 
 
+def test_gallery_records_generation_time_for_the_whole_batch(client, monkeypatch):
+    import time
+
+    backend = diffusion_module.get_diffusion_backend()
+    generate = backend.generate
+
+    def _slow_generate(**kwargs):
+        time.sleep(0.03)
+        return generate(**kwargs)
+
+    monkeypatch.setattr(backend, "generate", _slow_generate)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    response = _post_generate(client, prompt = "p", batch_size = 2, seed = 5)
+    assert response.status_code == 200
+    images = response.json()["images"]
+    assert len(images) == 2
+    assert images[0]["generation_seconds"] >= 0.03
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
+    listed = client.get("/api/inference/images/gallery").json()["images"]
+    assert all(image["generation_seconds"] == images[0]["generation_seconds"] for image in listed)
+
+
+def test_generate_batch_persists_through_one_save_many(client, monkeypatch):
+    batches = []
+    real = gallery_module.save_many
+
+    def _spy(items):
+        items = list(items)
+        batches.append([meta["batch_index"] for _, meta in items])
+        return real(items)
+
+    monkeypatch.setattr(gallery_module, "save_many", _spy)
+    _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
+    resp = _post_generate(client, prompt = "p", batch_size = 3, seed = 5)
+    assert resp.status_code == 200
+    assert batches == [[0, 1, 2]]
+    assert [i["batch_index"] for i in resp.json()["images"]] == [0, 1, 2]
+
+
 def test_generate_seed_list_records_replay_from_each_own_seed(client):
     # a seeds list gives each image its own seed, so restore must prefer batch_seed
     _post_load(client, model_path = "x/z-image", gguf_filename = "q.gguf")
@@ -2146,6 +2186,8 @@ def test_recipe_records_the_conditioned_workflow_settings(client, monkeypatch):
     assert gen.status_code == 200
     img = gen.json()["images"][0]
     assert img["workflow"] == "inpaint"
+    assert img["generation_seconds"] >= 0
+    assert img["generation_count"] == 1
     assert img["strength"] == 0.42
     plain = client.post("/api/inference/images/generate", json = {"prompt": "a sloth", "seed": 7})
     assert plain.status_code == 200
@@ -3043,6 +3085,9 @@ def test_external_connection_generates_without_a_local_model_and_saves_to_galler
     assert [(i["prompt"], i["model"], i["width"], i["height"]) for i in images] == [
         ("a sloth", "qwen-image", 512, 256)
     ] * 2
+    assert images[0]["generation_seconds"] >= 0
+    assert images[1]["generation_seconds"] == images[0]["generation_seconds"]
+    assert [image["generation_count"] for image in images] == [2, 2]
     assert len(client.get("/api/inference/images/gallery").json()["images"]) == 2
     assert sent == [
         (
@@ -3500,17 +3545,23 @@ def test_the_image_unload_answers_are_declared_in_the_schema(token_client):
     assert stale == {"unloaded": False, "outcome": "superseded"}
 
 
-def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it():
+def test_zero_weight_loras_neither_refuse_mlx_nor_route_away_from_it(monkeypatch):
     # Weight 0 disables an adapter and every loader drops it, so an all-zero list is no LoRA load.
     from fastapi import HTTPException
+    from core.inference import mlx_diffusion_routing as routing
+    from core.inference.diffusion_families import detect_family
     from models.inference import DiffusionLoadRequest, LoraSpec
 
+    z_image = detect_family("z-image")
     off = DiffusionLoadRequest(model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0)])
-    inference_routes._refuse_mlx_loras(off)
-    assert inference_routes._has_active_loras(off.loras) is False
     on = DiffusionLoadRequest(
         model_path = "x/y", loras = [LoraSpec(id = "a", weight = 0.0), LoraSpec(id = "b", weight = 0.5)]
     )
+    assert inference_routes._has_active_loras(off.loras) is False
     assert inference_routes._has_active_loras(on.loras) is True
+    inference_routes._refuse_mlx_loras(off, z_image)
+    inference_routes._refuse_mlx_loras(on, z_image)
+    monkeypatch.setitem(routing.MLX_CAPABILITIES, "z-image", routing.MlxCapabilities(loras = False))
+    inference_routes._refuse_mlx_loras(off, z_image)
     with pytest.raises(HTTPException):
-        inference_routes._refuse_mlx_loras(on)
+        inference_routes._refuse_mlx_loras(on, z_image)

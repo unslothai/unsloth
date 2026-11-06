@@ -66,9 +66,8 @@ import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { toast } from "@/lib/toast";
 import { cornerInsets, watchChatSettingsInset } from "@/lib/toast-offset";
 import { cn } from "@/lib/utils";
-import { Edit03Icon, PanelRightIcon, LinkSquare02Icon } from "@hugeicons/core-free-icons";
+import { BracesIcon, Edit03Icon, LinkSquare02Icon, PanelRightIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Braces } from "lucide-react";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 import { type CSSProperties, Fragment, type ReactNode } from "react";
 import {
@@ -955,15 +954,20 @@ export function ChatSettingsPanel({
       : trimmed;
     const next = customPresets.filter((p) => p.name !== saveName);
     const loadConfig = capturePresetLoadConfig();
+    // Live, as set() does: a number box this click blurred is not in this render's `params` yet.
+    const live = useChatRuntimeStore.getState().params;
+    const saved = seedDraft === null ? live : { ...live, seed: committedSeed };
     const merged = [
       ...next,
       {
         name: saveName,
-        params: toPresetParams(paramsWithCommittedSeed),
+        params: toPresetParams(saved),
         ...(loadConfig ? { loadConfig } : {}),
       },
     ];
     setCustomPresets(merged);
+    // As a pick does: drop the hand edits filed under the loaded model, or Default replays them.
+    setParams(saved, { fromPreset: true });
     setActivePreset(saveName);
     setActivePresetSource("custom");
     setPresetNameInput(saveName);
@@ -1346,7 +1350,7 @@ export function ChatSettingsPanel({
                 </InfoHint>
               </div>
               <Switch
-                className="panel-switch shrink-0"
+                className="shrink-0"
                 checked={promptCachingEnabled}
                 onCheckedChange={(checked) => {
                   onExternalProviderChange?.({
@@ -1413,7 +1417,7 @@ export function ChatSettingsPanel({
                   </InfoHint>
                 </div>
                 <Switch
-                  className="panel-switch shrink-0"
+                  className="shrink-0"
                   checked={Boolean(params.fastMode)}
                   onCheckedChange={set("fastMode")}
                   aria-label="Fast mode"
@@ -1728,7 +1732,7 @@ export function ChatSettingsPanel({
                   className="h-7 gap-1.5 rounded-full px-2.5 text-ui-11 text-muted-foreground"
                   aria-expanded={systemVariablesOpen}
                 >
-                  <Braces className="size-3.5" />
+                  <HugeiconsIcon icon={BracesIcon} className="size-3.5" />
                   Variables
                   <HugeiconsIcon
                     icon={ChevronDownStandardIcon}
@@ -1987,7 +1991,7 @@ function AutoHealToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={autoHealToolCalls}
         onCheckedChange={setAutoHealToolCalls}
       />
@@ -2011,7 +2015,7 @@ function NudgeToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={nudgeToolCalls}
         onCheckedChange={setNudgeToolCalls}
       />
@@ -2040,7 +2044,7 @@ function DeduplicateToolCallsToggle() {
         </InfoHint>
       </div>
       <Switch
-        className="panel-switch shrink-0"
+        className="shrink-0"
         checked={deduplicateToolCalls}
         onCheckedChange={setDeduplicateToolCalls}
       />
@@ -2083,7 +2087,7 @@ function ConfirmToolCallsToggle() {
       <Switch
         // Cap top of the 13px title at leading 1.25 (Inter: 0.26em).
         className={cn(
-          "panel-switch shrink-0",
+          "shrink-0",
           permissionMode === "full" && "mt-[calc(var(--text-ui-13)*0.26)]",
         )}
         checked={permissionMode === "ask"}

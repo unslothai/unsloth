@@ -486,6 +486,28 @@ def test_parse_gpu_layers_override(args, expected):
     assert parse_gpu_layers_override(args) == expected
 
 
+@pytest.mark.parametrize("flag", ["-ngl", "--gpu-layers", "--n-gpu-layers"])
+@pytest.mark.parametrize("value,expected", [("auto", -1), ("all", 2**31 - 1)])
+def test_gpu_layer_keywords_are_preserved_and_resolved(flag, value, expected):
+    args = [flag, value]
+    assert validate_extra_args(args) == args
+    assert parse_gpu_layers_override(args) == expected
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        (["-ngl", "all", "--gpu-layers", "auto"], -1),
+        (["-ngl", "auto", "--n-gpu-layers", "all"], 2**31 - 1),
+        (["-ngl", "all", "--gpu-layers", "0"], 0),
+        (["-ngl", "12", "--gpu-layers", "all"], 2**31 - 1),
+    ],
+)
+def test_gpu_layer_keywords_respect_last_override(args, expected):
+    assert validate_extra_args(args) == args
+    assert parse_gpu_layers_override(args) == expected
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -1533,3 +1555,16 @@ def test_owner_only_path_flags_names_each_file_option_once():
     assert _lsa.owner_only_path_flags(["--ctx-size", "4096", "-ngl", "99"]) == []
     assert _lsa.owner_only_path_flags(None) == []
     assert validate_extra_args(args) == args
+
+
+@pytest.mark.parametrize("chain_with_mtp", [False, True])
+def test_translate_ngram_mod_does_not_consume_a_following_flag(chain_with_mtp):
+    # Under MTP the swallowed pair is dropped, leaving the next flag's value as a bare positional.
+    from core.inference.llama_server_args import translate_ngram_mod_args, validate_extra_args
+
+    args = validate_extra_args(
+        ["--spec-type", "draft-mtp", "--spec-ngram-mod-n-min", "--top-k", "/restricted/model.gguf"]
+    )
+    out = translate_ngram_mod_args(args, "legacy", chain_with_mtp = chain_with_mtp)
+    assert out[-2:] == ["--top-k", "/restricted/model.gguf"]
+    validate_extra_args(out)

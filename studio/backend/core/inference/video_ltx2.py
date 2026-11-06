@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import os
 import threading
 from pathlib import Path
 from typing import Any, Iterator, Optional
@@ -249,19 +250,54 @@ def read_checkpoint_header(checkpoint_path: Path | str) -> dict[str, tuple[int, 
     return names_shapes
 
 
+# Keyed by file identity + stamps: an edited or replaced file is re-read; failures never kept.
+_LTX23_VERDICTS: dict[tuple, bool] = {}
+_LTX23_VERDICTS_LOCK = threading.Lock()
+_LTX23_VERDICTS_MAX = 256
+
+
+def _checkpoint_stamp(checkpoint_path: Path | str) -> Optional[tuple]:
+    try:
+        path = os.fspath(checkpoint_path)
+        st = os.stat(path)
+        return (
+            os.path.realpath(path),
+            st.st_dev,
+            st.st_ino,
+            st.st_size,
+            st.st_mtime_ns,
+            st.st_ctime_ns,
+        )
+    except (OSError, TypeError, ValueError):
+        return None
+
+
 def is_ltx23_checkpoint(checkpoint_path: Path | str) -> bool:
     """True when the checkpoint carries the 9-row LTX-2.3 modulation tables (2.0 has 6-row
     per-block scale/shift tables; 2.3 widens them to 9). An unreadable header returns False so the
     caller falls back to the stock 2.0 path."""
+    stamp = _checkpoint_stamp(checkpoint_path)
+    if stamp is not None:
+        with _LTX23_VERDICTS_LOCK:
+            verdict = _LTX23_VERDICTS.get(stamp)
+        if verdict is not None:
+            return verdict
     try:
         header = read_checkpoint_header(checkpoint_path)
     except Exception as exc:  # noqa: BLE001
         logger.warning("video.ltx2_header_probe_failed: %s", exc)
         return False
+    verdict = False
     for name, shape in header.items():
         if name.endswith("transformer_blocks.0.scale_shift_table"):
-            return 9 in shape
-    return False
+            verdict = 9 in shape
+            break
+    if stamp is not None:
+        with _LTX23_VERDICTS_LOCK:
+            if len(_LTX23_VERDICTS) >= _LTX23_VERDICTS_MAX:
+                _LTX23_VERDICTS.clear()
+            _LTX23_VERDICTS[stamp] = verdict
+    return verdict
 
 
 def assert_not_ltx25_checkpoint(checkpoint_path: Path | str) -> None:

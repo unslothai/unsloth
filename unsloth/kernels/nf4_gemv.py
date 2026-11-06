@@ -27,6 +27,8 @@ __all__ = [
 ]
 
 
+# M stays specialized: M == 1 folds the row split (unspecialized 0.5-0.9% slower on T4), and M == 1
+# vs 2..4 are separate call sites, so no extra variants.
 @triton.jit
 def _gemv_nf4_kernel(
     X,
@@ -39,16 +41,16 @@ def _gemv_nf4_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
-    EVEN_K: tl.constexpr,
-    LUT_MODE: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, from N
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
+    EVEN_K: tl.constexpr,  # K % BLOCK_K == 0, per weight
+    LUT_MODE: tl.constexpr,  # codebook lookup, from BLOCK_K
 ):
     # FSDP-QLoRA packs the 4bit weight into float storage; it is bytes either way.
     W = W.to(tl.pointer_type(tl.uint8))
@@ -108,14 +110,14 @@ def _gemv_nf4_words_kernel(
     OUT,
     N,
     K,
-    M,
+    M,  # specialized on == 1 (see above)
     OUT_STRIDE,
-    BLOCKSIZE: tl.constexpr,
-    BLOCKSIZE2: tl.constexpr,
-    NESTED: tl.constexpr,
-    USE_MUL_RN: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    BLOCKSIZE: tl.constexpr,  # nf4 absmax block, per weight
+    BLOCKSIZE2: tl.constexpr,  # nested absmax block, per weight
+    NESTED: tl.constexpr,  # double quantized state
+    USE_MUL_RN: tl.constexpr,  # libdevice mul_rn available (CUDA)
+    BLOCK_N: tl.constexpr,  # output rows per program, 1 here
+    BLOCK_K: tl.constexpr,  # K tile, from K and blocksize
 ):
     # _gemv_nf4_kernel reading int32 words of 8 nibbles; faster before Triton 3.7, slower on 3.7.
     W = W.to(tl.pointer_type(tl.int32))

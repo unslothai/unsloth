@@ -8,7 +8,7 @@ import { Progress } from "@/components/ui/progress";
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { FIND_PORTAL_ATTRIBUTE } from "@/features/find-in-page/lib/find-attributes";
 
-import { useMonitorOverlayStore } from "@/features/settings";
+import { useMonitorOverlayStore } from "@/features/settings/stores/monitor-overlay-store";
 import { useCornerCardFrameStore } from "@/features/settings/stores/monitor-frame-store";
 import { gpuMemoryDisplay } from "@/hooks/gpu-memory-display";
 import { gpuMemoryTotalsGb, resolveGpuVramUsedGb } from "@/hooks/gpu-vram";
@@ -24,7 +24,6 @@ import {
 } from "@/lib/floating-panel-order";
 import { cn } from "@/lib/utils";
 import { useRouterState } from "@tanstack/react-router";
-import { CpuIcon, GripVerticalIcon } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
@@ -41,8 +40,9 @@ import {
   getFloatingMonitorLayout,
 } from "./floating-monitor-layout";
 import { useUiSpaceScale } from "@/hooks/use-ui-space-scale";
-import { Cancel01Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, DragDropVerticalIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { ChipIcon } from "@/lib/hugeicons-derived";
 
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, value));
@@ -264,7 +264,9 @@ function FloatingMonitorPanel({
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className={cn(
-          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
+          // transition-none: reduce motion's 0.01ms duration otherwise turns the drop's transform to
+          // left/top handoff into a transition, and the compositor paints a frame at the start spot.
+          "settings-surface bg-background pointer-events-auto absolute flex max-h-full w-64 transition-none max-w-full cursor-default select-none flex-col overflow-hidden rounded-2xl border border-border/70 p-3 shadow-border ring-0",
           layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
@@ -293,7 +295,7 @@ function FloatingMonitorPanel({
       >
         <div className="mb-2 flex items-center justify-between gap-2 border-b border-border/60 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-xs font-semibold text-foreground">
-            <CpuIcon className="size-3.5 shrink-0 text-primary" />
+            <HugeiconsIcon icon={ChipIcon} strokeWidth={2} className="size-3.5 shrink-0 text-primary" />
             <span className="truncate">
               {t("settings.resources.liveMonitor.title")}
             </span>
@@ -324,7 +326,7 @@ function FloatingMonitorPanel({
               onKeyDown={(event) => void nudge(event)}
               className="touch-none cursor-grab rounded-full px-1 text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing"
             >
-              <GripVerticalIcon className="size-3.5" />
+              <HugeiconsIcon icon={DragDropVerticalIcon} strokeWidth={1.75} className="size-3.5" />
             </div>
 
             <Button

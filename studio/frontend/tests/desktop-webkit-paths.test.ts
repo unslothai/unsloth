@@ -46,12 +46,12 @@ test("the Windows thread gutter follows the native thin bar, which neither brows
   assert.equal(readSrc("features/settings/lib/interface-scale-runtime.ts").includes("--studio-interface-zoom"), false);
 });
 
-test("below 1.5x device scale the Windows thread scrolls on the compositor and keeps LCD text", () => {
+test("below 1.5x device scale the Windows thread scrolls on the compositor and keeps LCD text unless a chat background shows through it", () => {
   const css = readSrc("index.css");
   assert.match(
     css,
-    /@media screen and \(forced-colors: none\) \{\s*:root\.client-windows\[data-low-device-scale\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*scrollbar-gutter: auto;\s*overflow-y: scroll;\s*border-inline-start: var\(--thread-scrollbar-gutter\) solid transparent;\s*background-color: var\(--background\);\s*\}\s*\}/,
-    "Chromium composites a scroller below 1.5x only when its scrolling background is opaque, which it paints that way only with an auto gutter; the always-on bar and the start border keep the stable both-edges geometry. A contrast theme paints that transparent border in its text colour, so forced colours keep the stable gutter",
+    /@media screen and \(forced-colors: none\) \{\s*:root\.client-windows\[data-low-device-scale\] \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*scrollbar-gutter: auto;\s*overflow-y: scroll;\s*border-inline-start: var\(--thread-scrollbar-gutter\) solid transparent;\s*\}\s*\/\*[^*]*\*\/\s*:root\.client-windows\[data-low-device-scale\]:not\(\[data-chat-wallpaper-ready\]\) \.aui-thread-viewport:not\(\.chat-full-view-dock \*\) \{\s*background-color: var\(--background\);\s*\}\s*\}/,
+    "Chromium composites a scroller below 1.5x only when its scrolling background is opaque, which it paints that way only with an auto gutter; the always-on bar and the start border keep the stable both-edges geometry. A contrast theme paints that transparent border in its text colour, so forced colours keep the stable gutter. A chat background or glass backdrop needs a see-through thread, so it drops the fill",
   );
   const supports = css.lastIndexOf("@supports selector(::-webkit-scrollbar)", css.indexOf("[data-low-device-scale]"));
   assert.ok(supports > css.indexOf(".aui-thread-viewport {\n\t/* Reserve scrollbar space"), "the Chromium-only scrollbar block holds it, so Firefox keeps its own scrolling");

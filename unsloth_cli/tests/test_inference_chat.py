@@ -636,8 +636,12 @@ def test_you_prompt_matches_readline_backend(monkeypatch):
 
 def test_chat_registered_on_app():
     from unsloth_cli import app
-    names = {(cmd.name or cmd.callback.__name__) for cmd in app.registered_commands}
-    assert "chat" in names
+    from unsloth_cli.commands.chat import chat
+
+    # Registered lazily on the click group, not in app.registered_commands.
+    command = typer.main.get_command(app).commands["chat"]
+    assert command.name == "chat"
+    assert command.callback.__wrapped__ is chat
 
 
 def test_chat_exits_cleanly_on_slash_exit(monkeypatch):

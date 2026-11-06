@@ -6,6 +6,7 @@
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import { SparklesIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { MediaHeaderActions } from "@/components/media-header-actions";
 import { LibraryPageLink } from "@/components/media-page-link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -122,6 +123,7 @@ import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeFooter, TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import type { SendTarget } from "./components/stem-mixer-types";
 import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
+import { AUDIO_DEVICE_KEY } from "./audio-workspace-constants";
 import { selectionExpired } from "./audio-run-request";
 import type { AudioSourceInputHandle } from "./components/audio-source-input";
 import type { AudioSourceStatus } from "./hooks/audio-source-state";
@@ -329,7 +331,7 @@ export function AudioPage({
   );
   // Read at load time; the handler below ejects so a change takes effect.
   const [audioDevice, setAudioDeviceState] = usePersistedChoice(
-    "unsloth_audio_device",
+    AUDIO_DEVICE_KEY,
     "auto",
   );
 
@@ -1936,12 +1938,12 @@ export function AudioPage({
                   : undefined
               }
               variant="ghost"
-              className="!h-[calc(34px*var(--ui-space-scale,1))] max-w-full gap-1 overflow-hidden pl-3 pr-1 @[68rem]:gap-2 @[68rem]:pl-4 @[68rem]:pr-2"
-              triggerLabelClassName="text-ui-14 @[68rem]:text-ui-16"
+              className="ml-1.5 max-w-full overflow-hidden !pl-2.5 !pr-1.5 !h-[var(--studio-chat-control-height,34px)]"
               task={HUB_TASKS_BY_MODE[mode]}
               // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
               hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
               catalog={AUDIO_CATALOG}
+              cpuLoad={audioDevice === "cpu"}
               // TTS/ASR use the checkpoint's own tokenizer, so any publisher's audio repo loads.
               communityModelPolicy="search-only"
               hubCapability="audio"
@@ -1951,8 +1953,8 @@ export function AudioPage({
             />
           </div>
         </div>
-        <div className="grid h-full min-w-0 grid-cols-[1fr_auto_auto] gap-2 @[50rem]:grid-cols-[1fr_auto_1fr] @[50rem]:gap-0">
-          <div className="pointer-events-auto col-start-2 justify-self-end pt-[var(--studio-chat-header-padding-top,11px)] @[50rem]:justify-self-center">
+        <div className="grid h-full min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(max-content,1fr)]">
+          <div data-media-header-centre className="pointer-events-auto col-start-2 justify-self-center pt-[var(--studio-chat-header-padding-top,11px)]">
             {workflowTab.createTrain ? (
               <PillTabs
                 ariaLabel="Page mode"
@@ -1967,7 +1969,7 @@ export function AudioPage({
                   void navigateSelf({ to: "/studio" });
                 }}
                 fit={true}
-                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
+                className="h-[calc(34px*var(--ui-space-scale,1))] [&>button]:h-[calc(34px*var(--ui-space-scale,1))] [&>button]:px-3 @[68rem]:[&>button]:px-11 [[data-media-header-tight]_&]:[&>button]:px-3 @max-[30rem]:[&>button]:px-2.5 @max-[30rem]:[&>button>[data-pill-tab-label]]:sr-only"
                 tabs={[
                   {
                     value: "create",
@@ -1990,21 +1992,19 @@ export function AudioPage({
               />
             ) : null}
           </div>
-          <div className="pointer-events-none col-start-3 flex min-w-0 items-start justify-end pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-            <div className="pointer-events-auto flex min-w-0 items-center gap-2">
-              {connection || (mode === "transcribe" && transcribeConnection) ? null : (
-                <UseViaApiButton
-                  workflow={pageWorkflow}
-                  model={selectorValue ?? null}
-                />
-              )}
-              <LibraryPageLink
-                tab="audio"
-                labelClassName="hidden @[50rem]:inline"
-                arrowClassName="hidden @[50rem]:block"
+          <MediaHeaderActions className="pr-2" groupClassName="gap-2">
+            {connection || (mode === "transcribe" && transcribeConnection) ? null : (
+              <UseViaApiButton
+                workflow={pageWorkflow}
+                model={selectorValue ?? null}
               />
-            </div>
-          </div>
+            )}
+            <LibraryPageLink
+              tab="audio"
+              labelClassName="hidden @[50rem]:inline [[data-media-header-tight]_&]:hidden"
+              arrowClassName="hidden @[50rem]:block [[data-media-header-tight]_&]:hidden"
+            />
+          </MediaHeaderActions>
         </div>
       </div>
       {/* Below 50rem the panes stack and the page scrolls as one column, as on Images and Video. */}
@@ -2350,7 +2350,7 @@ export function AudioPage({
                   announcement,
                 };
                 return ttsWorkflow === "music" ? (
-                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} />
+                  <MusicOutput {...outputProps} modelReady={pageModelLoaded} loading={busy === "loading"} onChooseModel={openSelector} />
                 ) : ttsWorkflow === "edit" ? (
                   <EditOutput
                     {...outputProps}

@@ -160,6 +160,14 @@ let downloadTransportCapabilitiesCache: {
 } | null = null;
 let downloadTransportCapabilitiesInFlight: Promise<DownloadTransportCapabilities> | null =
   null;
+let downloadTransportCapabilitiesGeneration = 0;
+
+/** Xet availability depends on the model source (ModelScope has none), so a source switch drops the verdict. */
+export function clearDownloadTransportCapabilitiesCache(): void {
+  downloadTransportCapabilitiesGeneration += 1;
+  downloadTransportCapabilitiesCache = null;
+  downloadTransportCapabilitiesInFlight = null;
+}
 
 export async function getDownloadTransportCapabilities(options: {
   force?: boolean;
@@ -177,12 +185,16 @@ export async function getDownloadTransportCapabilities(options: {
   if (!options.force && !options.probe && downloadTransportCapabilitiesInFlight) {
     return downloadTransportCapabilitiesInFlight;
   }
+  const generation = downloadTransportCapabilitiesGeneration;
   const request = authFetch(
     `/api/studio/download-transport-capabilities${options.probe ? "?probe=1" : ""}`,
   )
     .then(parseJsonOrThrow<unknown>)
     .then(normalizeDownloadTransportCapabilities)
     .then((capabilities) => {
+      if (generation !== downloadTransportCapabilitiesGeneration) {
+        return capabilities;
+      }
       downloadTransportCapabilitiesCache = {
         expiresAt: Date.now() + DOWNLOAD_TRANSPORT_CAPABILITIES_TTL_MS,
         capabilities,

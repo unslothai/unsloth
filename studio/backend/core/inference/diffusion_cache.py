@@ -31,7 +31,6 @@ AUTO_STEP_CACHE_TIER = "max"
 _REDUCTION_FILTER_OPTION = "test_configs.force_filter_reduction_configs"
 
 
-_TIER_DEFAULT = "default"
 _TIER_MAX = "max"
 
 

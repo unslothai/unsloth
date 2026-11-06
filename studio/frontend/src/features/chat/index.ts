@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-export { ChatPage, validateChatSearch, type ChatSearch } from "./chat-page";
+export { validateChatSearch, type ChatSearch } from "./chat-search";
+export {
+  loadChatPage,
+  loadedChatPage,
+  prefetchChatPage,
+} from "./load-chat-page";
 export { isRenderableRenderHtmlToolPart } from "./artifacts/html-fences";
 export {
   browseFolders,
@@ -66,11 +71,6 @@ export { requestReplyFinishedPermission } from "./utils/reply-finished-notificat
 export { forgetAgentsMd } from "./utils/agents-md";
 export { refreshContextUsage } from "./utils/refresh-context-usage";
 export {
-  hydrateModelDisclaimerPreference,
-  refreshModelDisclaimerPreference,
-  saveModelDisclaimerPreference,
-} from "./sync-model-disclaimer-preference";
-export {
   ChatComposerFocusableContext,
   pythonToolRunsInStudio,
   useChatActive,
@@ -91,7 +91,9 @@ export {
 } from "./stores/chat-runtime-store";
 export { resolveStagedDiffusionClassification } from "./lib/gpu-placement";
 export { describePlacement, offloadCountsFrom, offloadWarning } from "./lib/partial-offload";
+export type { PlacementPool } from "./lib/partial-offload";
 export {
+  betweenToolRounds,
   formatLiveDecode,
   formatPrefillDetails,
   formatPrefillTimeLeft,
@@ -424,6 +426,7 @@ export { showForkCreatedToast, showForkFailedToast } from "./utils/fork-toast";
 export { clearAllChats, countAllChats } from "./utils/clear-all-chats";
 export { stopRecoveredRun } from "./utils/chat-generation-recovery";
 export { readIncompleteInfo } from "./utils/continuation";
+export { priorPassTiming } from "./utils/continued-timing";
 export { offerToDeleteKeptSandboxes } from "./utils/offer-kept-sandbox-files";
 export { pasteClipboardFiles } from "./utils/clipboard-files";
 export {
@@ -458,6 +461,8 @@ export {
   pastedTextPreview,
   shouldAttachPastedText,
 } from "./utils/pasted-text";
+export { insertAtCaret, richPasteMarkdown } from "./utils/rich-paste";
+export { useBookmarkedTurnsStore } from "./stores/bookmarked-turns-store";
 export {
   type DocumentAnnotation,
   type DocumentAnnotations,
@@ -485,7 +490,10 @@ export {
   onChatThreadsDeleted,
   removeChatThreadTombstones,
 } from "./utils/chat-thread-tombstones";
-export { emitChatAttachmentDeleted } from "./utils/chat-attachment-events";
+export {
+  emitChatAttachmentDeleted,
+  prepareChatAttachmentDeletion,
+} from "./utils/chat-attachment-events";
 export { forkCountFor, subscribeForkCounts } from "./utils/fork-count-store";
 export { resolveReasoningGroupDuration } from "./utils/reasoning-duration";
 export {
@@ -522,6 +530,7 @@ export {
 export {
   adoptLegacyDraft,
   latestDraft,
+  latestPasteDraft,
   publishDraft,
   subscribeDraft,
   composerDraftKey,

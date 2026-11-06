@@ -16,7 +16,7 @@ from typing import Any, Optional
 COND_BLOCKS_ENV = "UNSLOTH_DIFFUSION_COND_BLOCKS"
 COND_KWARG = "unsloth_cond"
 
-# sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (diffusers 0.41.0.dev0).
+# sha256[:16] of inspect.getsource(Flux3Transformer2DModel.forward) the replacement mirrors (d42ebf9c and 0.42.1).
 _FLUX3_FORWARD_SHA = frozenset({"f2f7c836416cfd58"})
 
 _PATCHED: dict[type, Any] = {}

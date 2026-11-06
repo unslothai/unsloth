@@ -213,6 +213,7 @@ def test_recall_degrades_to_lexical_when_dense_retrieval_raises(monkeypatch, con
         model_name = None,
         mode = "hybrid",
         lexical_query = None,
+        **_legs,
     ):
         if mode != "lexical":
             raise RuntimeError("no embedding backend available")

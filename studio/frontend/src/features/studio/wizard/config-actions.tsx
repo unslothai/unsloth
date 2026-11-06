@@ -7,11 +7,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { useTrainingConfigStore } from "@/features/training";
+// eslint-disable-next-line no-restricted-imports -- through the barrel, js-yaml would load at startup.
 import {
   parseYamlConfig,
   serializeConfigToYaml,
-  useTrainingConfigStore,
-} from "@/features/training";
+} from "@/features/training/lib/yaml-config";
 import { useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import {

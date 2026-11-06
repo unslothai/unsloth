@@ -36,8 +36,8 @@ import {
   LayersLogoIcon,
   LibrariesIcon,
   LicenseIcon,
-  PackageIcon,
   LinkSquare02Icon,
+  PackageIcon,
 } from "@hugeicons/core-free-icons";
 import { Copy01Icon } from "@/lib/copy-icon";
 import { TextToSpeechIcon } from "@/lib/hugeicons-derived";
@@ -423,7 +423,9 @@ export type ModelInspectorRuntime = {
   } | null;
   gpuGb?: number;
   gpuCount?: number;
+  audioCppCardGb?: number;
   systemRamGb?: number;
+  unifiedLoadBudgetGb?: number | null;
 };
 
 export type ModelInspectorActions = {
@@ -463,7 +465,9 @@ export const ModelInspector = memo(function ModelInspector({
     vramInfo,
     gpuGb,
     gpuCount,
+    audioCppCardGb,
     systemRamGb,
+    unifiedLoadBudgetGb,
   } = runtime;
   const {
     onInventoryChange,
@@ -739,6 +743,7 @@ export const ModelInspector = memo(function ModelInspector({
               isLoading={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
               preferredFile={preferredGgufFile}
               preferredFileIntent={preferredGgufFileIntent}
@@ -769,7 +774,11 @@ export const ModelInspector = memo(function ModelInspector({
               isLoadingThisModel={isLoadingThisModel}
               gpuGb={gpuGb}
               gpuCount={gpuCount}
+              audioCppCardGb={audioCppCardGb}
               systemRamGb={systemRamGb}
+              unifiedLoadBudgetGb={
+                runsOnMediaRuntime ? null : unifiedLoadBudgetGb
+              }
               cachePath={model.path}
               knownBytes={model.cachedBytes}
               onRun={runAction}

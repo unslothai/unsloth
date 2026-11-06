@@ -416,13 +416,22 @@ def resolve_release_asset(
 
 
 def cudart_asset_for(asset_names: Sequence[str], bundle: str) -> Optional[str]:
-    """The separate Windows CUDA runtime archive matching a CUDA bundle's line."""
-    match = _CUDA_LINE.search(bundle)
-    if not match or "-windows-" not in bundle:
+    """The Windows CUDA runtime matching the bundle's architecture and CUDA line."""
+    host = re.search(r"-bin-(?:windows|win)-([^-]+)-", bundle, re.IGNORECASE)
+    arch = _ARCH_TOKENS.get(host.group(1).lower()) if host else None
+    if host is None or arch is None:
+        return None
+    match = _CUDA_LINE.match("-" + bundle[host.end() :])
+    if not match:
         return None
     line = match.group(0)[1:]
     for name in asset_names:
-        if "-cudart-windows-" in name and name.endswith(f"-{line}.zip"):
+        runtime = re.search(r"-cudart-(?:windows|win)-([^-]+)-", name, re.IGNORECASE)
+        if (
+            runtime is not None
+            and _ARCH_TOKENS.get(runtime.group(1).lower()) == arch
+            and name.endswith(f"-{line}.zip")
+        ):
             return name
     return None
 
