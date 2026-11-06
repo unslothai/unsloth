@@ -18,6 +18,7 @@ import {
   micSendsAudioToModel,
 } from "../src/features/chat/utils/mic-target.ts";
 import * as sttModelCatalog from "../src/features/settings/stores/stt-model-catalog.ts";
+import * as voiceOrbOverlayPrefs from "../src/features/settings/stores/voice-orb-overlay-prefs.ts";
 import { installLocalStorageFake, readSrc } from "./helpers/kit.ts";
 import { loadWithStubs } from "./helpers/module-stubs.ts";
 
@@ -35,6 +36,7 @@ const { useVoiceSettingsStore } = loadWithStubs<
     "zustand/middleware": zustandMiddleware,
     "./stt-model-catalog": sttModelCatalog,
     "../api/stt-device": { syncSttDevicePreference: () => undefined },
+    "./voice-orb-overlay-prefs": voiceOrbOverlayPrefs,
   },
 );
 

@@ -6,7 +6,8 @@ import { hasChatFullAccess, withChatFullAccess } from "../utils/chat-full-access
 import { attachedMediaUnavailableReason } from "../lib/attached-media-gate";
 import { readGenerationProgress } from "../lib/generation-progress";
 import { joinWavBase64 } from "../utils/wav-chunks";
-import { publishVoiceSpokenAudio } from "../voice/voice-loop-bridge";
+import { getVoiceMode, publishVoiceSpokenAudio } from "../voice/voice-loop-bridge";
+import { wantsSpokenReply } from "../voice/voice-models";
 import {
   consumePendingFiller,
   consumePendingReplace,
@@ -6881,7 +6882,13 @@ export function createOpenAIStreamAdapter(
             // Turn-scoped: a stale screenshot here made the backend refuse every later text turn's durable run.
             image_base64: findLatestUserImageBase64(currentTurnMessages),
             audio_base64: turnAudioBase64,
-            ...(activeModel?.speaks && turnAudioBase64
+            ...(wantsSpokenReply({
+              speaks: Boolean(activeModel?.speaks),
+              turnHasAudio: Boolean(turnAudioBase64),
+              voiceModeOn: getVoiceMode() !== "off",
+              selectedVoiceModelId:
+                useChatRuntimeStore.getState().selectedVoiceModelId,
+            })
               ? { modalities: ["text", "audio"] }
               : {}),
             extra_audio_base64:

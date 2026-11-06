@@ -100,8 +100,9 @@ import {
   interjectAction,
   reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
-import { chatModelSpeaks, isChatModelVoice } from "@/features/chat/voice/voice-models";
+import { chatModelSpeaks, isChatModelVoice, voiceHearsAudio } from "@/features/chat/voice/voice-models";
 import { voiceServing } from "@/features/chat/voice/voice-slot";
+import { useVoiceSettingsStore } from "@/features/settings/stores/voice-settings-store";
 import { pauseOutputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { useT } from "@/i18n";
@@ -506,7 +507,13 @@ export const VoiceEngine: FC = () => {
     if (held.length) voiceTrace("engine.foldHeld", { held, text });
     // Drained on every send, so speech kept while the model could not answer in it never rides along later.
     const taken = takeVoiceTurnAudio();
-    const turnAudio = speaksWithChatModel() ? taken : null;
+    // Any audio-input model hears the turn; who speaks the reply is decided at run start.
+    const turnAudio = voiceHearsAudio(
+      useChatRuntimeStore.getState(),
+      useVoiceSettingsStore.getState().micTarget,
+    )
+      ? taken
+      : null;
     // Barge-in: the instant the user speaks, cut the audio and the in-flight run.
     // This utterance supersedes whatever the model was saying. Cover the tail
     // clip (isPlaying) too, not just an active streaming session (isSpeaking).

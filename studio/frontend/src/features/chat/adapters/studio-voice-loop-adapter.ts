@@ -48,7 +48,7 @@ import {
   reportLayaOutcome,
 } from "@/features/chat/voice/voice-models-client";
 import { createTurnAudio } from "@/features/chat/voice/turn-audio";
-import { chatModelSpeaks, isChatModelVoice } from "@/features/chat/voice/voice-models";
+import { voiceHearsAudio } from "@/features/chat/voice/voice-models";
 import { attachInputSpectrum, detachInputSpectrum } from "@/features/chat/voice/voice-spectrum";
 import { voiceTrace } from "@/features/chat/voice/voice-trace";
 import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
@@ -288,7 +288,7 @@ export function getHeldTurnText(): string {
   return heldTurn?.text ?? "";
 }
 
-// The recorded speech of the turn, kept only while voice mode speaks with the chat model.
+// The recorded speech of the turn, kept only while the chat model hears audio (voiceHearsAudio).
 const turnAudio = createTurnAudio();
 
 /** The turn's speech as one WAV (base64), emptied; null when none was kept. */
@@ -741,7 +741,7 @@ export class StudioVoiceLoopAdapter implements DictationAdapter {
         }
         settleFinished(Boolean(transcript));
         const rt = useChatRuntimeStore.getState();
-        if (transcript && isChatModelVoice(rt.selectedVoiceModelId) && chatModelSpeaks(rt)) {
+        if (transcript && voiceHearsAudio(rt, useVoiceSettingsStore.getState().micTarget)) {
           turnAudio.add(merged, sampleRate);
         }
         // Clicked into: what was said joins the box and waits for the user's send.

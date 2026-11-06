@@ -11,6 +11,8 @@ import {
   audioCppWorkflowsFor,
   isAudioCppFolderId,
 } from "../../audio/audio-cpp-catalog.ts";
+import type { MicTarget } from "../../settings/stores/voice-settings-store.ts";
+import { micSendsAudioToModel } from "../utils/mic-target.ts";
 
 /** Kokoro: 82M, built-in voices, fast enough on a CPU to keep up sentence by sentence. */
 export const VOICE_DEFAULT_TTS_MODEL = `${AUDIO_CPP_REPO}/Kokoro-82M-GGUF`;
@@ -29,8 +31,8 @@ export const VOICE_TTS_MODELS: readonly string[] = [
 ];
 
 /**
- * Opt-in pick for a chat model that speaks (LFM3-Audio / LFM3-Omni): it hears each turn and
- * answers in its own voice, so no audio.cpp voice loads. Never picked for the user.
+ * Opt-in pick for a chat model that reports `speaks`: it hears each turn and answers in its
+ * own voice, so no audio.cpp voice loads. Never picked for the user.
  */
 export const VOICE_CHAT_MODEL_VOICE = "chat-model-voice";
 /** The chat model's TTS mode speakers (audio_options.voice on /audio/generate). */
@@ -51,6 +53,42 @@ export function chatModelSpeaks(state: {
   params: { checkpoint: string };
 }): boolean {
   return Boolean(state.models.find((m) => m.id === state.params.checkpoint)?.speaks);
+}
+
+/**
+ * Whether voice mode sends each turn's speech to the chat model as audio. Any model with audio
+ * input hears it once the mic is set to send audio (the same setting as the composer mic), or
+ * the chat model's own voice is picked; otherwise only the transcript goes.
+ */
+export function voiceHearsAudio(
+  state: {
+    models: readonly { id: string; hasAudioInput?: boolean }[];
+    params: { checkpoint: string };
+    selectedVoiceModelId: string;
+    modelLoading?: boolean;
+  },
+  micTarget: MicTarget,
+): boolean {
+  const model = state.modelLoading
+    ? undefined
+    : state.models.find((m) => m.id === state.params.checkpoint);
+  const target = isChatModelVoice(state.selectedVoiceModelId) ? "model" : micTarget;
+  return micSendsAudioToModel(target, model?.hasAudioInput === true);
+}
+
+/**
+ * Whether a turn asks the chat model to answer in speech. Outside voice mode a speaking model
+ * answers an audio turn aloud, as before; in voice mode only when its own voice is the pick,
+ * since an audio.cpp voice reads the text and the model's speech would go unheard.
+ */
+export function wantsSpokenReply(input: {
+  speaks: boolean;
+  turnHasAudio: boolean;
+  voiceModeOn: boolean;
+  selectedVoiceModelId: string;
+}): boolean {
+  if (!input.speaks || !input.turnHasAudio) return false;
+  return !input.voiceModeOn || isChatModelVoice(input.selectedVoiceModelId);
 }
 
 /** Whether the voice can speak in a saved Audio voice (the request turns into a clone). */
