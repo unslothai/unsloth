@@ -781,7 +781,10 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
                 "type": "response.output_item.done",
                 "item": {
                     "type": "reasoning",
-                    "summary": [{"type": "summary_text", "text": "plan"}],
+                    "summary": [
+                        {"type": "summary_text", "text": "plan"},
+                        {"type": "summary_text", "text": "act"},
+                    ],
                 },
             },
             {"type": "response.output_text.delta", "delta": "answer"},
@@ -807,10 +810,11 @@ def test_responses_reasoning_summary_wrapped_in_think_tags(monkeypatch):
         for payload in payloads
         if payload["choices"][0]["delta"]
     )
-    assert "<think>plan</think>answer" in combined
+    assert "<think>plan\n\nact</think>answer" in combined
 
 
-def test_responses_streamed_reasoning_summary_shown_once(monkeypatch):
+@pytest.mark.parametrize("with_deltas", (True, False))
+def test_responses_streamed_reasoning_summary_shown_once(monkeypatch, with_deltas):
     def summary_part(index: int, deltas: list[str]) -> list[dict]:
         base = {"item_id": "rs_1", "output_index": 0, "summary_index": index}
         return [
@@ -821,7 +825,7 @@ def test_responses_streamed_reasoning_summary_shown_once(monkeypatch):
             },
             *(
                 {"type": "response.reasoning_summary_text.delta", **base, "delta": d}
-                for d in deltas
+                for d in (deltas if with_deltas else ())
             ),
             {
                 "type": "response.reasoning_summary_text.done",
@@ -878,7 +882,7 @@ def test_responses_streamed_reasoning_summary_shown_once(monkeypatch):
         for payload in payloads
         if payload["choices"][0]["delta"]
     )
-    assert combined == "<think>Thinking about it.Then answering.</think>Hello"
+    assert combined == "<think>Thinking about it.\n\nThen answering.</think>Hello"
 
 
 @pytest.mark.parametrize(
