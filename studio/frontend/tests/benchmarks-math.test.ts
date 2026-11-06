@@ -349,6 +349,23 @@ test("unknown-shape expert rows that collapse onto another placement are skipped
   assert.ok(known.every((r) => servedMismatch(r, { n_moe_layers: 40, n_cpu_moe: r.load.n_cpu_moe ?? 0 }) === null));
 });
 
+test("draft-cache rows are skipped on a build that drops the draft KV dtype", () => {
+  const q4: Variant = {
+    label: "DSpark · draft KV q4_0",
+    load: { speculative_type: "dspark", spec_draft_cache_type: "q4_0" },
+  };
+  const plain: Variant = { label: "DSpark · 3", load: { speculative_type: "dspark", spec_draft_n_max: 3 } };
+  const served = { speculative_type: "dspark" };
+  assert.equal(
+    servedMismatch(q4, { ...served, draft_cache_type: false }),
+    "this llama.cpp build has no draft KV cache flags, so the drafter kept its default cache",
+  );
+  assert.equal(servedMismatch(q4, { ...served, draft_cache_type: true }), null);
+  // Unknown: no skip on a guess.
+  assert.equal(servedMismatch(q4, { ...served, draft_cache_type: null }), null);
+  assert.equal(servedMismatch(plain, { ...served, draft_cache_type: false }), null);
+});
+
 test("a value every row shares prints as pinned, not varied", () => {
   const line = baseLine(
     [

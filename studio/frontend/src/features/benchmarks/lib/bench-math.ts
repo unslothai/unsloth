@@ -487,6 +487,8 @@ export interface ServedStatus {
   n_cpu_moe?: number | null;
   /** The loaded model's MoE layer count, the ceiling llama.cpp clamps n_cpu_moe to. */
   n_moe_layers?: number | null;
+  /** Whether llama-server takes a draft KV dtype; without the flags the backend drops it. */
+  draft_cache_type?: boolean | null;
 }
 
 const NGRAM_FLAGS = [
@@ -625,6 +627,8 @@ export function servedMismatch(
   ) {
     return `The server ran KV ${st.cache_type_kv} instead of ${variant.load.cache_type_kv}`;
   }
+  if (variant.load.spec_draft_cache_type && st.draft_cache_type === false)
+    return "this llama.cpp build has no draft KV cache flags, so the drafter kept its default cache";
   // A build without --kv-unified clamps multi-slot loads back to one, so a 2- or 4-slot row
   // would measure the same one-slot server; skip it instead of charting it as its own config.
   const wantSlots = variant.load.n_parallel;

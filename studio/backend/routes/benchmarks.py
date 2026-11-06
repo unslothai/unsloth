@@ -179,6 +179,25 @@ def release_lease(
             _lease = None
 
 
+@router.get("/capabilities")
+def capabilities(current_subject: str = Depends(get_current_subject)):
+    """What the installed llama-server takes that a load's status can't show. The draft KV dtype
+    is dropped silently on builds without its flags, so a draft-cache row would chart the default."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    try:
+        caps = LlamaCppBackend.probe_server_capabilities() or {}
+    except Exception:
+        caps = {}
+    # Unknown (no binary, probe failed) stays None so the runner doesn't skip rows on a guess.
+    draft_cache = (
+        bool(caps.get("spec_draft_cache_k_flag") and caps.get("spec_draft_cache_v_flag"))
+        if caps.get("found")
+        else None
+    )
+    return {"draft_cache_type": draft_cache}
+
+
 LEASE_HEADER = b"x-unsloth-bench-lease"
 # Compared without a trailing slash. main.py mounts the inference router under /v1 too, and
 # /models/* are the llama-server-compatible root routes.

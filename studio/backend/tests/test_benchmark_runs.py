@@ -478,3 +478,19 @@ def test_a_model_swap_outside_the_load_routes_is_fenced_like_a_load(monkeypatch)
     )
     assert src.count("_begin_swap_admission(fastapi_request)\n") == 3
     assert src.count("_end_swap_admission()\n") == src.count("_auto_switch_process_lock.release()")
+
+
+def test_capabilities_report_whether_the_build_takes_a_draft_cache_type(monkeypatch):
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    client = _client()
+
+    def caps(**kw):
+        monkeypatch.setattr(LlamaCppBackend, "probe_server_capabilities", classmethod(lambda cls: kw))
+        return client.get("/api/benchmarks/capabilities").json()["draft_cache_type"]
+
+    flags = dict(spec_draft_cache_k_flag = "-ctkd", spec_draft_cache_v_flag = "-ctvd")
+    assert caps(found = True, **flags) is True
+    assert caps(found = True, spec_draft_cache_k_flag = "-ctkd", spec_draft_cache_v_flag = None) is False
+    # No binary to ask: unknown, not a reason to skip rows.
+    assert caps(found = False) is None
