@@ -350,6 +350,9 @@ async def _fail_on_callback_error(flow: OAuthFlow, query: dict[str, list[str]]) 
         flow.consumed = True
         flow.status = "error"
         flow.message = "ChatGPT authorization was denied or failed. Start a new connection."
+        if flow.server:
+            flow.server.close()
+            flow.server = None
         await _persist_terminal_flow(flow)
         raise CodexAuthError(flow.message)
 

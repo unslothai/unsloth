@@ -453,10 +453,11 @@ def test_denied_browser_callback_fails_the_flow(monkeypatch):
         server = await asyncio.start_server(
             lambda r, w: codex_auth._loopback_handler(flow, r, w), "127.0.0.1", 0
         )
+        flow.server = server
         port = server.sockets[0].getsockname()[1]
         try:
             async with httpx.AsyncClient(trust_env = False) as client:
-                return await client.get(
+                response = await client.get(
                     f"http://127.0.0.1:{port}/auth/callback",
                     params = {
                         "state": "expected-state",
@@ -464,11 +465,17 @@ def test_denied_browser_callback_fails_the_flow(monkeypatch):
                         "error_description": "The user denied the request",
                     },
                 )
+            rebound = await asyncio.start_server(lambda r, w: None, "127.0.0.1", port)
+            rebound.close()
+            await rebound.wait_closed()
+            return response
         finally:
             server.close()
             await server.wait_closed()
 
     response = asyncio.run(deny())
+
+    assert flow.server is None
 
     assert "Authorization failed" in response.text
     assert flow.status == "error"
