@@ -119,6 +119,20 @@ test("glass adds no outer shadows, only inset light", () => {
 	}
 });
 
+test("the Windows wallpaper frame recognizes Transparent glass separately from frosted glass", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const titlebarRules = css.split("\n").filter((line) =>
+		line.startsWith("html[data-chat-wallpaper-ready]") && line.includes('[data-slot="window-titlebar'),
+	);
+	assert.ok(titlebarRules.length > 0);
+	for (const selector of titlebarRules) {
+		assert.ok(selector.includes("[data-glass-clear]"), selector);
+	}
+	const glassFrame = 'html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]:not([data-glass-plain])';
+	assert.ok(css.includes(glassFrame + ' [data-slot="sidebar-container"][data-windows-glass-frame]::before'));
+	assert.ok(css.includes(glassFrame + ' [data-windows-glass-frame] > [data-slot="sidebar-inner"] {\n  position: relative;\n  z-index: 1;\n  background: transparent;'));
+});
+
 test("other pages under glass read over one tinted pane with the sidebar's floor", () => {
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	assert.match(css, /html\[data-glass\]\[data-chat-wallpaper-workspace-ready\] \[data-wallpaper-workspace\]\[data-wallpaper-route="page"\][^{]*> \[data-slot="sidebar-inset"\] \{\n  --glass-page-wash: color-mix\(in srgb, var\(--glass-page-bg\) min\(96%, calc\(\(max\(var\(--glass-tint\), var\(--glass-pane-floor\)\) \+ 6%\)/);

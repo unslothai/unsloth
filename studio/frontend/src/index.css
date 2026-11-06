@@ -6152,7 +6152,13 @@ html:not([data-chat-welcome]) :is([data-wallpaper-workspace], [data-chat-content
 html[data-chat-compare] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]):not([data-wallpaper-route="page"]) > .chat-wallpaper,
 .wallpaper-preview[data-wallpaper-conversation] > .chat-wallpaper { opacity: calc(.4 + .6 * var(--wallpaper-conversation, 0)); }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.aui-thread-viewport, [data-wallpaper-reading-surface]) {
-  background: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
+  --wallpaper-reading-fill: color-mix(in srgb, var(--background) calc((1 - var(--wallpaper-safe, 0)) * (1 - .65 * var(--wallpaper-conversation, 0)) * 100%), transparent);
+  background: var(--wallpaper-reading-fill);
+}
+/* The Windows scroller starts immediately below the caption. Begin its reading
+   tint below the model controls so both rows share the same wallpaper. */
+:where(html:not([data-glass], [data-glass-clear])) [data-windows-wallpaper-chat]:has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:where(:not(.chat-full-view-dock *)) {
+  background: linear-gradient(to bottom, transparent var(--thread-header-offset, 0px), var(--wallpaper-reading-fill) calc(1.5 * var(--thread-header-offset, 0px)));
 }
 /* No second wash on the welcome view: it crushes mid-tones into a dark horizon. */
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .aui-thread-viewport:has(> .aui-thread-welcome-root > .aui-thread-welcome-center) {
@@ -6198,35 +6204,35 @@ html[data-composer-outline="off"] .wallpaper-preview-composer {
   background: linear-gradient(color-mix(in srgb, var(--background) 48%, transparent), transparent);
 }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-side-panel-inset]:not(.chat-header-fade),
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] {
   background: transparent;
   backdrop-filter: none;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) .chat-header-fade,
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar-decoration"] {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar-decoration"] {
   visibility: hidden;
 }
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) [data-wallpaper-chrome-controls],
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] [data-wallpaper-chrome-controls] {
   background: transparent;
   backdrop-filter: none;
   text-shadow: 0 1px 8px var(--background);
 }
 /* The sidebar and any viewport backdrop already paint beneath this transparent bar;
    repeating either here doubles the tint, so a modal dims only the navigation glyphs. */
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"]::after {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"]::after {
   background: transparent;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"] > [data-wallpaper-chrome-controls]:first-child {
   transition: opacity 100ms;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-backdrop-open] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"][data-viewport-backdrop-open] > [data-wallpaper-chrome-controls]:first-child {
   opacity: .7;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-backdrop-tone="strong"] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"][data-viewport-backdrop-tone="strong"] > [data-wallpaper-chrome-controls]:first-child {
   opacity: .6;
 }
-html[data-chat-wallpaper-ready] [data-slot="window-titlebar"][data-viewport-backdrop-tone="dense"] > [data-wallpaper-chrome-controls]:first-child {
+html[data-chat-wallpaper-ready]:where(:not(.client-windows), [data-glass], [data-glass-clear]) [data-slot="window-titlebar"][data-viewport-backdrop-tone="dense"] > [data-wallpaper-chrome-controls]:first-child {
   opacity: .3;
 }
 /* One viewport-sized crop, so opening the sidebar does not reframe the image. */
@@ -6469,8 +6475,12 @@ html[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="side
 html.dark[data-glass^="liquid"][data-chat-wallpaper-workspace-ready] [data-slot="sidebar-inner"] {
   box-shadow: inset -1px 0 0 rgb(255 255 255 / .08);
 }
+/* The shared frame paints the already-translucent sidebar color in Transparent glass. */
+html[data-glass-clear][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-windows-glass-frame]::before {
+  background-color: var(--sidebar);
+}
 /* The sidebar and caption share a single glass surface with a gently rounded inside corner. */
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-slot="sidebar-container"][data-windows-glass-frame]::before {
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-slot="sidebar-container"][data-windows-glass-frame]::before {
   content: "";
   position: absolute;
   /* Keep the corner above the scrolled conversation canvas. */
@@ -6484,7 +6494,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [d
     linear-gradient(black 0 0) left top / 100% var(--studio-custom-titlebar-height) no-repeat,
     radial-gradient(circle at right bottom, transparent 3.5px, black 4px) var(--sidebar-width) var(--studio-custom-titlebar-height) / 4px 4px no-repeat;
 }
-html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
+html:is([data-glass], [data-glass-clear])[data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [data-windows-glass-frame] > [data-slot="sidebar-inner"] {
   position: relative;
   z-index: 1;
   background: transparent;
