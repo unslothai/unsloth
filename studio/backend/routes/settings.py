@@ -5966,6 +5966,69 @@ async def start_sandbox_setup(
     return _sandbox_setup_response(job)
 
 
+class LearnedMemoryPatch(BaseModel):
+    model_config = ConfigDict(extra = "forbid")
+    enabled: Optional[StrictBool] = None
+    thread_enabled: Optional[StrictBool] = None
+    key: Optional[str] = None
+    value: Optional[str] = None
+    revision: Optional[StrictInt] = None
+    clear: StrictBool = False
+
+
+@_account_settings_router.get("/learned-memory")
+def get_learned_memory(
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+):
+    from core import chat_memory
+    from storage import studio_db
+    return {
+        **chat_memory.read(project_id),
+        "enabled": chat_memory.enabled(),
+        "thread_enabled": not studio_db.get_app_setting("memory_disabled:" + thread_id, False)
+        if thread_id
+        else True,
+    }
+
+
+@_account_settings_router.put("/learned-memory")
+def put_learned_memory(
+    payload: LearnedMemoryPatch,
+    project_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
+    _ui_session: None = Depends(_require_ui_session),
+):
+    from core import chat_memory
+    from storage import studio_db
+
+    try:
+        if payload.key is not None or payload.clear:
+            if payload.revision is None:
+                raise ValueError("Read memory before editing it.")
+            if payload.clear:
+                chat_memory.clear(project_id, payload.revision)
+            else:
+                if "value" not in payload.model_fields_set:
+                    raise ValueError("Provide a fact, or null to forget it.")
+                chat_memory.update(project_id, payload.key, payload.value, payload.revision)
+        if payload.enabled is not None:
+            studio_db.upsert_app_settings(
+                {"learned_memory_enabled": payload.enabled}, read_back = False
+            )
+        if payload.thread_enabled is not None:
+            if not thread_id or not studio_db.get_chat_thread(thread_id):
+                raise ValueError("A saved chat is required.")
+            studio_db.upsert_app_settings(
+                {"memory_disabled:" + thread_id: not payload.thread_enabled}, read_back = False
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code = 409, detail = str(exc))
+    return get_learned_memory(project_id, thread_id, current_subject)
+
+
 router.include_router(_account_settings_router)
 router.include_router(_shared_settings_router)
 router.include_router(_owner_settings_router)
