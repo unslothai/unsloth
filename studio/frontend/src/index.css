@@ -6494,7 +6494,7 @@ html[data-glass][data-chat-wallpaper-workspace-ready]:not([data-glass-plain]) [d
 html[data-glass^="liquid"] :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready]) :is(.unsloth-composer-surface, .unsloth-files-panel),
 html[data-glass^="liquid"] .wallpaper-preview-composer {
   position: relative;
-  background-image: var(--glass-sheen);
+  background-image: var(--glass-glow, none), var(--glass-sheen);
   --composer-shadow: var(--glass-rim);
 }
 /* The bevel: a gradient ring, since a gradient border-box layer would show through the clear fill. */
@@ -6814,7 +6814,7 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
   backdrop-filter: blur(max(var(--glass-blur), 18px)) saturate(var(--glass-saturate));
 }
 html[data-glass^="liquid"][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"], [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"], .menu-soft-surface, .menu-soft-surface-up, .dropdown-surface) {
-  background-image: var(--glass-sheen);
+  background-image: var(--glass-glow, none), var(--glass-sheen);
 }
 /* Its fill is pinned (layered !important) to a surface resolved on <html>. */
 html[data-glass][data-glass-menus] .browser-menu[data-slot] {
@@ -6884,7 +6884,7 @@ html[data-glass][data-glass-menus] :is([data-slot$="menu-content"], [data-slot$=
   --color-panel-input-surface-hover: var(--glass-hover);
 }
 html[data-glass^="liquid"][data-glass-menus] [data-slot="dialog-content"] {
-  background-image: var(--glass-sheen);
+  background-image: var(--glass-glow, none), var(--glass-sheen);
   box-shadow: var(--glass-rim);
 }
 /* These panes clear the surface token, so ink drawn in the page colour (dark buttons' labels) takes the opaque one back. */
@@ -7236,4 +7236,57 @@ html[data-glass-clear] #root [data-slot="sidebar-inner"] :is(.bg-sidebar, .sideb
   html[data-glass-clear] #root .unsloth-composer-surface {
     background-color: color-mix(in srgb, var(--glass-page-card) var(--glass-fill-alpha, 50%), transparent) !important;
   }
+}
+
+/* WebKitGTK only (data-glass-cpu, set by WindowMaterialMount): it runs every backdrop-filter again on
+   each composite, on the CPU, so a caret blink, a scrolled line or a menu frame re-blurred every glass
+   surface on screen and glass typing, scrolling and menus cost far more than solid. There only the
+   sidebar keeps its live blur (one static surface over the wallpaper costs little); the rest carry a
+   denser fill, and dialogs and menus an opaque one, so nothing behind them ghosts through. */
+html[data-glass][data-glass-cpu] *:not([data-slot="sidebar-inner"]),
+html[data-glass][data-glass-cpu] *:not([data-windows-glass-frame])::before,
+html[data-glass][data-glass-cpu] *::after {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+html[data-glass][data-glass-cpu] {
+  --glass-composer-floor: 110%;
+  --glass-menu-floor: 110%;
+  --glass-opacity-set: var(--glass-opacity, 1);
+}
+/* A low strength would otherwise read as clear plastic with no blur behind it; above the floor the slider still works. */
+html[data-glass][data-glass-cpu] body {
+  --glass-opacity: max(.9, var(--glass-opacity-set));
+  --glass-menu-fill: var(--popover);
+}
+html[data-glass][data-glass-menus][data-glass-cpu] [data-slot="dialog-content"] {
+  background-color: var(--glass-page-bg);
+}
+/* Sonner's rule above sets its blur !important at a higher specificity than the universal one. */
+html[data-glass][data-glass-menus][data-glass-cpu] [data-sonner-toast][data-styled="true"] {
+  background-color: var(--popover) !important;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+/* Liquid 3D's wide inner glows and lifts are blurred box-shadows, which WebKitGTK re-rasterises on the
+   CPU whenever the surface repaints; there the glows are drawn as gradients and the lifts get a smaller blur. */
+html[data-glass="liquid-3d"][data-glass-cpu] {
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .347);
+  --glass-glow: linear-gradient(rgb(255 255 255 / .2), rgb(255 255 255 / .05) 12px, transparent 26px), linear-gradient(to top, rgb(255 255 255 / .12), transparent 24px);
+  --glass-lift: 0 6px 14px -8px rgb(0 0 0 / .19), 0 2px 6px -4px rgb(0 0 0 / .075);
+  --popup-shadow: 0 6px 14px -8px rgb(0 0 0 / .12), 0 2px 6px -2px rgb(0 0 0 / .045);
+}
+html.dark[data-glass="liquid-3d"][data-glass-cpu] {
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .109);
+  --glass-glow: linear-gradient(rgb(255 255 255 / .055), rgb(255 255 255 / .014) 12px, transparent 26px), linear-gradient(to top, rgb(255 255 255 / .028), transparent 24px);
+  --glass-lift: 0 0 8px 0 color-mix(in srgb, var(--background) 75%, transparent);
+  --popup-shadow: 0 8px 18px -8px rgb(0 0 0 / .52);
+}
+html[data-glass="liquid-3d"][data-glass-cpu] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .385), inset 0 0 0 1px color-mix(in srgb, var(--foreground) 9%, transparent);
+  --glass-glow: linear-gradient(rgb(255 255 255 / .22), rgb(255 255 255 / .06) 12px, transparent 26px), linear-gradient(to top, rgb(255 255 255 / .14), transparent 24px);
+}
+html.dark[data-glass="liquid-3d"][data-glass-cpu] :is(.unsloth-composer-surface, .unsloth-files-panel, .wallpaper-preview-composer) {
+  --glass-rim: inset 0 1px 1px rgb(255 255 255 / .121);
+  --glass-glow: linear-gradient(rgb(255 255 255 / .06), rgb(255 255 255 / .016) 12px, transparent 26px), linear-gradient(to top, rgb(255 255 255 / .032), transparent 24px);
 }
