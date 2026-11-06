@@ -140,3 +140,20 @@ def test_free_vram_is_read_only_after_the_child_exits(probe_env):
     ev["plan"]()
     assert ev["snapshot"] == [True], "snapshot_device_memory ran while the probe child was alive"
     assert ev["tq"]._PREWARMED_TABLES == {}
+
+
+def test_a_held_probe_lock_skips_the_early_child_and_join_returns(probe_env):
+    # Another card's probe holds the lock: the early thread must not queue behind it (its join would then outlast
+    # one child's deadline), so it gives up at once and the join does not wait on the lock holder.
+    tq = probe_env["tq"]
+    assert tq._CHILD_PROBE_LOCK.acquire(timeout = 1.0)
+    try:
+        started = time.monotonic()
+        handle = tq.start_probe_table_prewarm("cuda")
+        assert handle is not None
+        tq.join_probe_table_prewarm(handle)
+        assert time.monotonic() - started < 5.0
+        assert not handle[0].is_alive()
+    finally:
+        tq._CHILD_PROBE_LOCK.release()
+    assert probe_env["child"] == []

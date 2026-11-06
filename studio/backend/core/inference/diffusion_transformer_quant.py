@@ -1593,26 +1593,31 @@ def start_probe_table_prewarm(device: str) -> Optional[tuple]:
         return None
 
     def _run() -> None:
+        # Never queue behind another probe: the join must bound this thread by one child's own deadline, so a held
+        # lock means the load's serial probe runs instead.
+        if not _CHILD_PROBE_LOCK.acquire(blocking = False):
+            return
         try:
-            with _CHILD_PROBE_LOCK:
-                if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
-                    return
-                if _persisted_probe_table(card) is not None:
-                    return
-                import logging
-                import time
+            if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+                return
+            if _persisted_probe_table(card) is not None:
+                return
+            import logging
+            import time
 
-                started = time.monotonic()
-                table = _child_probe_table(card)
-                if table is not None:
-                    _PREWARMED_TABLES[card] = table
-                    logging.getLogger(__name__).info(
-                        "diffusion.transformer_quant: scheme probe ran beside the load (%.1f s, %s)",
-                        time.monotonic() - started,
-                        card,
-                    )
+            started = time.monotonic()
+            table = _child_probe_table(card)
+            if table is not None:
+                _PREWARMED_TABLES[card] = table
+                logging.getLogger(__name__).info(
+                    "diffusion.transformer_quant: scheme probe ran beside the load (%.1f s, %s)",
+                    time.monotonic() - started,
+                    card,
+                )
         except Exception:  # noqa: BLE001 - the load's own probe runs instead
             pass
+        finally:
+            _CHILD_PROBE_LOCK.release()
 
     thread = _threading.Thread(target = _run, name = "quant-probe-overlap", daemon = True)
     thread.start()
@@ -1621,12 +1626,13 @@ def start_probe_table_prewarm(device: str) -> Optional[tuple]:
 
 def join_probe_table_prewarm(handle: Optional[tuple], *, discard: bool = False) -> None:
     """Wait for an early probe (its child, and so its CUDA context, is gone after this); ``discard`` drops a table
-    the load never consumed so it cannot outlive the load that started it."""
+    the load never consumed so it cannot outlive the load that started it. Untimed: the thread never waits on the
+    probe lock and ``_child_probe_table`` closes its child at ``_CHILD_PROBE_TIMEOUT``, so it always ends."""
     if not handle:
         return
     thread, card = handle
-    thread.join(_CHILD_PROBE_TIMEOUT + 30.0)
-    if discard and not thread.is_alive():
+    thread.join()
+    if discard:
         with _CHILD_PROBE_LOCK:
             _PREWARMED_TABLES.pop(card, None)
 
