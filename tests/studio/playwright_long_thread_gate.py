@@ -141,7 +141,7 @@ def main_stylesheet(dist: Path) -> tuple[str, str] | None:
     """(URL path, text) of the built stylesheet that carries the :has() rules."""
     best = None
     for css in (dist / "assets").glob("*.css"):
-        text = css.read_text(errors = "replace")
+        text = css.read_text(encoding = "utf-8", errors = "replace")
         if ":has(" in text and (best is None or len(text) > len(best[1])):
             best = (f"/assets/{css.name}", text)
     return best

@@ -73,7 +73,7 @@ def norm(selector: str) -> str:
 def css_rules() -> tuple:
     rules = []
     for path in sorted(SRC.rglob("*.css")):
-        text = _strip_comments(path.read_text(errors = "replace"))
+        text = _strip_comments(path.read_text(encoding = "utf-8", errors = "replace"))
         start = 0
         for i, ch in enumerate(text):
             if ch in "{};":
@@ -194,7 +194,9 @@ def anchor_sites(anchor: str, limit: int = 3) -> list[tuple[str, int, str]]:
     for name in names:
         pat = re.compile(re.escape(name) + r"(?![\w-])")
         for path in sorted(SRC.rglob("*.tsx")):
-            for i, line in enumerate(path.read_text(errors = "replace").splitlines(), 1):
+            for i, line in enumerate(
+                path.read_text(encoding = "utf-8", errors = "replace").splitlines(), 1
+            ):
                 if pat.search(line) and not line.lstrip().startswith(("//", "*", "/*")):
                     if "querySelector" in line or "closest(" in line:
                         continue
@@ -214,7 +216,9 @@ def utility_uses(selector: str, limit: int = 3) -> list[tuple[str, int, str]]:
     for cls in classes:
         pat = re.compile(r"(?<![\w:-])" + re.escape(cls) + r"(?![\w-])")
         for path in sorted(SRC.rglob("*.tsx")):
-            for i, line in enumerate(path.read_text(errors = "replace").splitlines(), 1):
+            for i, line in enumerate(
+                path.read_text(encoding = "utf-8", errors = "replace").splitlines(), 1
+            ):
                 if pat.search(line):
                     out.append((str(path.relative_to(REPO)), i, line.strip()[:140]))
                     if len(out) >= limit:
