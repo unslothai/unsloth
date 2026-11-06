@@ -109,6 +109,25 @@ test("destinations decode character references and keep their own link", () => {
   ]);
 });
 
+test("prose fallback keeps its links", () => {
+  const [intro, links] = linkedText(
+    "Muse Glimmer is out.\n\n[Run Muse Glimmer](https://unsloth.ai/docs/run)\n[Fine-tune it](https://unsloth.ai/docs/train)",
+  );
+  assert.deepEqual(intro?.links, []);
+  assert.deepEqual(links?.links, [
+    {
+      part: "lead",
+      text: "Run Muse Glimmer",
+      href: "https://unsloth.ai/docs/run",
+    },
+    {
+      part: "lead",
+      text: "Fine-tune it",
+      href: "https://unsloth.ai/docs/train",
+    },
+  ]);
+});
+
 test("only plain http and https links become clickable", () => {
   const items = linkedText(
     [

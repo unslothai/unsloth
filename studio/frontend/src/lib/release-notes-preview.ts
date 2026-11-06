@@ -776,28 +776,46 @@ function previewItem({ text, links }: Bullet): ReleaseNotesPreviewItem {
 
 interface Collector {
   bullets: Bullet[];
-  prose: string[];
+  prose: Bullet[];
   current: Bullet | null;
-  paragraph: string;
+  paragraph: Bullet;
   // A quote owns its paragraph: a marker outside the quote opens a list rather than continuing it.
   quotedParagraph: boolean;
 }
 
+const EMPTY: Bullet = { text: "", indent: 0, links: [] };
+
+/** Truncates, dropping links the cut reaches. */
+function clip({ text, indent, links }: Bullet): Bullet {
+  const shown = truncate(text);
+  const kept = shown === text ? shown.length : shown.length - "...".length;
+  return { text: shown, indent, links: links.filter((l) => l.end <= kept) };
+}
+
+function append(block: Bullet, text: string, links: Span[]): Bullet {
+  const offset = block.text.length + 1;
+  return {
+    text: `${block.text} ${text}`,
+    indent: block.indent,
+    links: [
+      ...block.links,
+      ...links.map((l) => ({
+        ...l,
+        start: l.start + offset,
+        end: l.end + offset,
+      })),
+    ],
+  };
+}
+
 function flush(collector: Collector): void {
   if (collector.current?.text) {
-    const { text, links } = collector.current;
-    const shown = truncate(text);
-    const kept = shown === text ? shown.length : shown.length - "...".length;
-    collector.bullets.push({
-      text: shown,
-      indent: collector.current.indent,
-      links: links.filter((link) => link.end <= kept),
-    });
+    collector.bullets.push(clip(collector.current));
   }
   collector.current = null;
-  if (collector.paragraph) {
-    collector.prose.push(truncate(collector.paragraph));
-    collector.paragraph = "";
+  if (collector.paragraph.text) {
+    collector.prose.push(clip(collector.paragraph));
+    collector.paragraph = EMPTY;
   }
   collector.quotedParagraph = false;
 }
@@ -814,7 +832,7 @@ function takeBullet(
   if (!line.quoted) {
     collector.current = { text: item, indent: line.indent, links };
   } else if (item) {
-    collector.prose.push(truncate(item));
+    collector.prose.push(clip({ text: item, indent: 0, links }));
   }
 }
 
@@ -829,36 +847,24 @@ function takeText(
     return;
   }
   if (collector.current === null) {
-    collector.paragraph = collector.paragraph
-      ? `${collector.paragraph} ${plain}`
-      : plain;
+    collector.paragraph = collector.paragraph.text
+      ? append(collector.paragraph, plain, links)
+      : { text: plain, indent: 0, links };
     collector.quotedParagraph = quoted;
     return;
   }
-  const offset = collector.current.text.length + 1;
-  collector.current = {
-    text: `${collector.current.text} ${plain}`,
-    indent: collector.current.indent,
-    links: [
-      ...collector.current.links,
-      ...links.map((link) => ({
-        ...link,
-        start: link.start + offset,
-        end: link.end + offset,
-      })),
-    ],
-  };
+  collector.current = append(collector.current, plain, links);
 }
 
 function collectBullets(markdown: string): {
   bullets: Bullet[];
-  prose: string[];
+  prose: Bullet[];
 } {
   const collector: Collector = {
     bullets: [],
     prose: [],
     current: null,
-    paragraph: "",
+    paragraph: EMPTY,
     quotedParagraph: false,
   };
 
@@ -928,7 +934,7 @@ function collectBullets(markdown: string): {
       continue;
     }
     const insideBlock =
-      collector.current !== null || collector.paragraph !== "";
+      collector.current !== null || collector.paragraph.text !== "";
     if (!insideBlock && line.indent - line.column >= INDENTED_CODE_INDENT) {
       continue;
     }
@@ -936,7 +942,7 @@ function collectBullets(markdown: string): {
     // Only an ordered list starting at 1 may interrupt a paragraph.
     const interrupts =
       collector.current === null &&
-      collector.paragraph !== "" &&
+      collector.paragraph.text !== "" &&
       !collector.quotedParagraph;
     if (
       bullet &&
@@ -972,10 +978,7 @@ export function releaseNotesPreview(
     (bullet) => bullet.indent <= baseIndent + NESTED_INDENT_TOLERANCE,
   );
 
-  const source: Bullet[] =
-    topLevel.length > 0
-      ? topLevel
-      : prose.map((text) => ({ text, indent: 0, links: [] }));
+  const source = topLevel.length > 0 ? topLevel : prose;
   return {
     items: source.slice(0, limit).map(previewItem),
     remaining: Math.max(source.length - limit, 0),
