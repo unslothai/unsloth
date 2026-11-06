@@ -167,6 +167,7 @@ def _provider_response(row: dict, *, hide_headers: bool = False) -> ProviderResp
         base_url = row["base_url"],
         api_type = row.get("api_type", "chat_completions"),
         reasoning_config = row.get("reasoning_config"),
+        diffusion_streaming = bool(row.get("diffusion_streaming")),
         # Header values can carry credentials; other accounts and API keys never read them.
         extra_headers = (
             {}
@@ -394,6 +395,7 @@ async def create_provider_config(
             reasoning_config = payload.reasoning_config,
             extra_headers = payload.extra_headers,
             shared = payload.shared,
+            diffusion_streaming = payload.diffusion_streaming,
         )
         try:
             if api_key:
@@ -499,6 +501,7 @@ async def update_provider_config(
         "reasoning_config",
         "extra_headers",
         "shared",
+        "diffusion_streaming",
     }
     metadata_requested = bool(payload.model_fields_set & metadata_fields)
 
@@ -539,6 +542,8 @@ async def update_provider_config(
                 if payload.reasoning_config is not None
                 else None
             )
+        if "diffusion_streaming" in payload.model_fields_set:
+            metadata_updates["diffusion_streaming"] = payload.diffusion_streaming
         if "extra_headers" in payload.model_fields_set:
             metadata_updates["extra_headers"] = payload.extra_headers or {}
 
@@ -554,6 +559,7 @@ async def update_provider_config(
         reasoning_config = existing.get("reasoning_config"),
         extra_headers = existing.get("extra_headers") or {},
         shared = bool(existing.get("shared")),
+        diffusion_streaming = bool(existing.get("diffusion_streaming")),
     )
 
     def _current_matches(current: dict, field: str, written) -> bool:

@@ -1244,6 +1244,21 @@ function findCommitBoundary(
 
 // Retains blocks safely behind a rollback window and hands Streamdown only the active tail;
 // retained blocks are put back in the block list, so output and React keys stay identical.
+// Streamdown memoises strong, headings, list items and code by source position alone, so an in-place
+// rewrite (diffusion streaming) that keeps a node's span leaves it stale; a new generation remounts.
+export class TextRewriteCounter {
+  private text = "";
+  generation = 0;
+
+  update(text: string): number {
+    if (!hasPrefix(text, this.text)) {
+      this.generation += 1;
+    }
+    this.text = text;
+    return this.generation;
+  }
+}
+
 export class IncrementalMarkdownCache {
   private source = "";
   private tail = "";

@@ -5633,4 +5633,8 @@ export const es = {
       inRam: "{amount} en RAM",
     },
   },
+  providerSettings: {
+    diffusionStreamingLabel: "Streaming de difusión",
+    diffusionStreamingDescription: "Muestra la respuesta en vivo en un lienzo mientras se elimina el ruido durante la transmisión. Solo para endpoints de difusión de Inception Mercury, que devuelven el texto completo en cada paso; con cualquier otro endpoint solo se conserva el último fragmento de la respuesta. El mensaje guardado es la respuesta final.",
+  },
 } satisfies DeepPartialMessageTree<typeof en>;

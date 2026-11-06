@@ -1275,7 +1275,7 @@ test("a provider-hosted tool event does not end the provider turn", () => {
   const js = ts.transpileModule(`${guarded}\n}`, {
     compilerOptions: { target: ts.ScriptTarget.ES2022 },
   }).outputText;
-  const applyGuard = new Function("chunk", "endProviderTurn", js);
+  const applyGuard = new Function("chunk", "endProviderTurn", "diffusion", js);
   for (const [chunk, expectedEnds] of [
     [{ _toolEvent: { tool_name: "web_search" } }, 1],
     [{ choices: [{}], _toolEvent: { tool_name: "web_search" } }, 0],
@@ -1284,8 +1284,11 @@ test("a provider-hosted tool event does not end the provider turn", () => {
     [{ choices: [{}] }, 0],
   ] as const) {
     let ends = 0;
-    applyGuard(chunk, () => { ends += 1; });
+    let diffusionEnds = 0;
+    applyGuard(chunk, () => { ends += 1; }, { endTurn: () => { diffusionEnds += 1; } });
     assert.equal(ends, expectedEnds, JSON.stringify(chunk));
+    // A diffusion turn ends with the provider turn, so the next turn's snapshots append.
+    assert.equal(diffusionEnds, expectedEnds, JSON.stringify(chunk));
   }
 });
 

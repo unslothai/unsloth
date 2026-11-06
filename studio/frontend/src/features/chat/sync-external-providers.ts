@@ -42,6 +42,7 @@ import {
   supportsProviderPromptCaching,
   supportsProviderPromptCacheTtl,
   supportsProviderReasoningToggle,
+  supportsDiffusionStreaming,
 } from "./external-providers";
 
 const OPENAI_DEPRECATED_MODELS = new Set(["gpt-5.3"]);
@@ -303,6 +304,9 @@ export async function syncExternalProvidersFromBackend(
         models: resolvedModels,
         availableModels: resolvedAvailableModels,
         maxOutputTokens: config.max_output_tokens ?? undefined,
+        diffusionStreaming: supportsDiffusionStreaming(uiProviderType)
+          ? config.diffusion_streaming === true
+          : undefined,
         extraHeaders: extraHeadersFromSaved(config.extra_headers),
         reasoningConfig:
           config.provider_type === "custom" &&
