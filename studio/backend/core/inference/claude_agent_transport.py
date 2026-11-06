@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""A ToolLoopTransport holding one live Claude Code session for the whole loop. Studio's tools are an
-in-process MCP server whose handlers wait until the loop has run each call and sent its result back."""
+"""One live Claude Code session per tool loop; Studio's tools are an in-process MCP server whose handlers wait for the loop's result."""
 
 from __future__ import annotations
 

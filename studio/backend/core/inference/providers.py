@@ -131,7 +131,6 @@ PROVIDER_REGISTRY: dict[str, dict[str, Any]] = {
         "supports_streaming": True,
         "supports_vision": True,
         "supports_tool_calling": True,
-        # Studio's tools reach Claude as an in-process MCP server, see claude_agent_transport.py.
         "studio_tools": True,
         "base_url_editable": False,
         "model_list_mode": "curated",

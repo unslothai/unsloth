@@ -1,9 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Claude Agent inside Studio: the Developer mode toggle, the SDK installer, owner-only access,
-hidden connections while off, ignored routing fields, media pickers and scheduled tasks."""
-
 import asyncio
 import subprocess
 import sys
@@ -126,7 +123,6 @@ def _create(client, **extra):
     )
 
 
-# -- 1. Developer mode toggle -----------------------------------------------------------------
 
 
 def test_the_saved_setting_turns_claude_agent_on(store):
@@ -175,7 +171,6 @@ def test_the_off_message_points_at_the_toggle():
     assert "Developer mode" in CLAUDE_AGENT_OFF and ENV in CLAUDE_AGENT_OFF
 
 
-# -- 2. SDK installer ---------------------------------------------------------------------------
 
 
 def test_the_installer_targets_studio_python_with_constraints(monkeypatch, tmp_path):
@@ -323,7 +318,6 @@ def test_the_install_route_is_owner_only(monkeypatch, isolated):
         assert client.post("/providers/claude-agent/install-sdk").status_code == 403
 
 
-# -- 3. managed accounts --------------------------------------------------------------------------
 
 
 def test_a_managed_account_never_sees_or_creates_claude_agent(isolated):
@@ -366,7 +360,6 @@ def test_a_managed_account_never_sees_it_even_while_off(monkeypatch, isolated):
     assert "claude_agent" not in {row["provider_type"] for row in registry}
 
 
-# -- 4. hidden while off ----------------------------------------------------------------------------
 
 
 def test_the_owner_is_offered_it_while_off_but_cannot_use_it(monkeypatch, isolated):
@@ -406,7 +399,6 @@ def test_saved_connections_hide_while_off_and_come_back(monkeypatch, isolated):
     assert [row["id"] for row in shown] == [created.json()["id"]]
 
 
-# -- 5. unused routing fields ------------------------------------------------------------------------
 
 
 def test_create_and_update_drop_endpoint_key_and_headers(isolated):
@@ -449,7 +441,6 @@ def test_models_route_lists_claude_agent_models_with_display_names(monkeypatch, 
     assert listed.json()[0]["context_length"] == 1_000_000
 
 
-# -- 6. voice and image pickers -------------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -495,7 +486,6 @@ def test_transcription_refuses_a_claude_agent_connection(claude_agent_row):
     assert "chat only" in refused.value.detail
 
 
-# -- 11. scheduled tasks -------------------------------------------------------------------------------
 
 
 def test_a_scheduled_run_with_claude_agent_off_fails_with_the_reason(monkeypatch):
