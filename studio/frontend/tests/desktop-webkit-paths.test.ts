@@ -10,7 +10,7 @@ test("a fence body becomes skippable only once it carries its measured height", 
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
   assert.match(
     defer,
-    /data-unsloth-fence-windowed=\{lineWindow === null \|\| !measured \? undefined : "true"\}/,
+    /data-unsloth-fence-windowed=\{offscreenPlain \|\| lineWindow === null \|\| !measured \? undefined : "true"\}/,
     "a fence that upgrades off screen is first laid out as its plain lines; skipped before its height is written, it collapses, and WebKit, with no scroll anchoring, clamps a following reader's scrollTop and detaches them",
   );
   assert.match(defer, /const NO_WINDOW = \{ window: null, pins: null, measured: false \} as const;\s*const EMPTY_WINDOW = \{ window: EMPTY_LINE_WINDOW, pins: null, measured: false \} as const;/);

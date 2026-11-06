@@ -1057,7 +1057,7 @@ const watchHighlighting = (): void => {
   });
   highlightFindObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: [FIND_BAR_FLAG, "data-code-wrap", "data-code-line-numbers"],
+    attributeFilter: [FIND_BAR_FLAG],
   });
 };
 
