@@ -219,12 +219,6 @@ export function AppearanceTab() {
         <SettingsRow label={t("settings.appearance.custom.contrast.label")}>
           <ContrastSliderRow />
         </SettingsRow>
-        <SettingsRow
-          label={t("settings.appearance.custom.elementOutline.label")}
-          description={t("settings.appearance.custom.elementOutline.description")}
-        >
-          <ElementOutlineSliderRow />
-        </SettingsRow>
       </SettingsSection>
 
       <GlassControls />
@@ -253,6 +247,12 @@ export function AppearanceTab() {
           )}
         >
           <InterfaceScaleRow />
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.appearance.custom.elementOutline.label")}
+          description={t("settings.appearance.custom.elementOutline.description")}
+        >
+          <ElementOutlineSliderRow />
         </SettingsRow>
         <GreetingSettingsRows />
         <SettingsRow

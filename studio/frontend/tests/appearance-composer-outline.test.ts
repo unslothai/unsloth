@@ -73,7 +73,8 @@ test("light glass outlines its controls by default", () => {
   assert.doesNotMatch(css, /box-shadow: var\(--glass-light-inner\);/);
   assert.doesNotMatch(css, /:where\(\[class~="border"\]\[class\*="rounded"\]\)[^{]*\{\s*border-color: transparent;/);
   const tab = readSrc("features/settings/tabs/appearance-tab.tsx");
-  assert.ok(tab.indexOf("<ElementOutlineSliderRow />") > tab.indexOf("<ContrastSliderRow />"));
+  const preferences = tab.slice(tab.indexOf("preferencesTitle"), tab.indexOf('t("settings.appearance.composer.title")'));
+  assert.ok(preferences.indexOf("<ElementOutlineSliderRow />") > preferences.indexOf("<InterfaceScaleRow />"));
 });
 
 test("the composer rows have their own Composer section", () => {
