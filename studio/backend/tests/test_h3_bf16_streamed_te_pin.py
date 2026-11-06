@@ -104,18 +104,46 @@ def test_unreadable_or_unsized_keeps_the_rotation():
     assert vid._h3_dense_pin_plan((60 * 10**9, 60 * 10**9), None, 100 * 10**9) is None
 
 
-def test_load_streams_the_conditioner_before_pinning_and_falls_back_when_refused():
+def test_load_moves_the_denoiser_before_pinning_the_conditioner_and_falls_back_when_refused():
     from core.inference import video as vid
 
     src = inspect.getsource(vid.VideoBackend)
-    start = src.index("pin_plan = _h3_dense_pin_plan(")
-    end = src.index("video.h3_denoiser_placement: %.1f GB free is under", start)
+    start = src.index('if pin_plan == "pin_stream_te":')
+    end = src.index('elif pin_plan == "pin":', start)
     block = src[start:end]
-    stream_at = block.index("stream_h3_text_encoder(")
     pin_at = block.index("pin_prequantized_module(")
-    assert stream_at < pin_at
-    assert "pin_plan = None" in block[stream_at:pin_at]
-    assert "h3_te_stream_enabled()" in src[src.rindex("streamed_sizes = (", 0, start) : start]
+    stream_at = block.index("stream_h3_text_encoder(\n")
+    assert pin_at < stream_at
+    refused = block[stream_at:]
+    assert "_h3_dense_unpin(manager, denoiser, device, logger = logger)" in refused
+    assert "pin_plan = None" in refused and "denoiser_pinned = False" in refused
+    assert (
+        "_h3_group_offload_available()" in src[src.rindex("streamed_sizes = (", 0, start) : start]
+    )
+
+
+def test_unpin_returns_the_denoiser_to_the_rotation():
+    from core.inference import video as vid
+
+    calls = []
+
+    class _Module:
+        def to(self, device):
+            calls.append(("to", device))
+
+    class _Manager:
+        def disable_auto_cpu_offload(self):
+            calls.append(("disable",))
+
+        def enable_auto_cpu_offload(
+            self,
+            device = None,
+            memory_reserve_margin = None,
+        ):
+            calls.append(("enable", device, memory_reserve_margin))
+
+    vid._h3_dense_unpin(_Manager(), _Module(), "cuda")
+    assert calls == [("to", "cpu"), ("disable",), ("enable", "cuda", "40GB")]
 
 
 def test_streamed_conditioner_tier_keeps_the_eager_tier_of_the_rotation_it_replaces():
@@ -129,15 +157,3 @@ def test_streamed_conditioner_tier_keeps_the_eager_tier_of_the_rotation_it_repla
     assert src.index("effective_speed = SPEED_EAGER", gate) < src.index(
         "snapshot_backend_flags()", gate
     )
-
-
-def test_streamed_conditioner_tier_uploads_the_denoiser_on_the_threaded_ring():
-    from core.inference import video as vid
-
-    src = inspect.getsource(vid.VideoBackend)
-    start = src.index("pin_plan = _h3_dense_pin_plan(")
-    end = src.index("video.h3_denoiser_placement: %.1f GB free is under", start)
-    block = src[start:end]
-    upload = block.index("fast_upload([denoiser], device, logger = logger)")
-    assert "if te_streamed" in block[upload : upload + 200]
-    assert upload < block.index("pin_prequantized_module(\n", upload)

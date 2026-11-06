@@ -3093,6 +3093,32 @@ def _h3_dense_pin_plan(
     return None
 
 
+def _h3_group_offload_available() -> bool:
+    try:
+        from diffusers.hooks import apply_group_offloading  # noqa: F401
+    except Exception:  # noqa: BLE001 -- no group offloading: the conditioner cannot stream
+        return False
+    return True
+
+
+def _h3_dense_unpin(
+    manager: Any,
+    denoiser: Any,
+    device: Any,
+    *,
+    logger: Any = None,
+) -> None:
+    """Return a pinned released denoiser to the CPU-offload rotation (re-hooks every component)."""
+    try:
+        denoiser.to("cpu")
+        manager.disable_auto_cpu_offload()
+        manager.enable_auto_cpu_offload(device = device, memory_reserve_margin = "40GB")
+    except Exception as exc:  # noqa: BLE001 -- the load continues with what placement it has
+        logger.warning(
+            "video.h3_denoiser_placement: could not return the denoiser to the rotation: %s", exc
+        )
+
+
 def _h3_residency_budget_bytes(
     residency: Any,
     device: str,
@@ -11576,13 +11602,24 @@ class VideoBackend:
                                 rotating = True,
                                 te_streamed = True,
                             )
-                            if h3_te_stream_enabled()
+                            if h3_te_stream_enabled() and _h3_group_offload_available()
                             else None
                         )
                         pin_plan = _h3_dense_pin_plan(sizes, streamed_sizes, free_bytes)
+                        from .diffusion_prequant import pin_prequantized_module
+
                         if pin_plan == "pin_stream_te":
-                            # Stream first: a pin beside a rotating conditioner OOMs at the encode.
                             from .video_minimax_h3_te import stream_h3_text_encoder
+
+                            # Denoiser first: pinning the conditioner's 67 GB host copy first evicts the denoiser's
+                            # cached pages, so its move would re-read 66 GB from disk.
+                            denoiser_pinned = pin_prequantized_module(
+                                manager,
+                                denoiser,
+                                device,
+                                logger = logger,
+                                label = "released bfloat16 denoiser",
+                            )
                             te_streamed = stream_h3_text_encoder(
                                 manager,
                                 getattr(pipe, "text_encoder", None),
@@ -11592,29 +11629,21 @@ class VideoBackend:
                             if te_streamed:
                                 sizes = streamed_sizes
                             else:
+                                # The sizing assumed the stream: a resident denoiser beside a rotating
+                                # conditioner OOMs at the encode, so it goes back into the rotation.
+                                _h3_dense_unpin(manager, denoiser, device, logger = logger)
+                                denoiser_pinned = False
                                 pin_plan = None
+                        elif pin_plan == "pin":
+                            denoiser_pinned = pin_prequantized_module(
+                                manager,
+                                denoiser,
+                                device,
+                                logger = logger,
+                                label = "released bfloat16 denoiser",
+                            )
                         denoiser_bytes, others_bytes = sizes
                         if pin_plan is not None:
-                            import contextlib
-
-                            from .diffusion_fast_load import fast_upload
-                            from .diffusion_prequant import pin_prequantized_module
-
-                            # Main reads this 66 GB lazily in its first clip; a one-thread .to() here would
-                            # read it at ~1/2 the disk rate, so the load ends up slower than main's first clip.
-                            upload = (
-                                fast_upload([denoiser], device, logger = logger)
-                                if te_streamed
-                                else contextlib.nullcontext()
-                            )
-                            with upload:
-                                denoiser_pinned = pin_prequantized_module(
-                                    manager,
-                                    denoiser,
-                                    device,
-                                    logger = logger,
-                                    label = "released bfloat16 denoiser",
-                                )
                             if te_streamed:
                                 # Compile is not bit-identical here (G4: LPIPS 0.115 over 20 steps): stay eager.
                                 dense_compile_held = bool(denoiser_pinned)
