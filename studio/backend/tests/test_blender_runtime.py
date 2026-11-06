@@ -3,8 +3,11 @@
 
 import hashlib
 import io
+import subprocess
+import sys
 import tarfile
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -57,3 +60,25 @@ def test_verified_archive_still_rejects_traversal(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match = "Unsafe"):
         runtime._extract(data, tmp_path / "runtime")
     assert not (tmp_path / "escape.py").exists()
+
+
+def test_launcher_runs_v1_fastmcp_runtime_on_installed_mcp(tmp_path):
+    package = tmp_path / "blmcp"
+    package.mkdir()
+    (tmp_path / ".ready").write_text("x")
+    (package / "__init__.py").write_text(
+        "from mcp.server.fastmcp import FastMCP, Image\n"
+        "def main():\n"
+        "    server = FastMCP('blender-mcp', instructions='x')\n"
+        "    @server.tool()\n"
+        "    def ping() -> int:\n"
+        "        return 1\n"
+        "    print(type(server).__name__, Image(data=b'x', format='png').data)\n"
+        "    return 0\n"
+    )
+    launcher = Path(runtime.__file__).with_name("launcher.py")
+    result = subprocess.run(
+        [sys.executable, str(launcher), str(tmp_path)], capture_output = True, text = True
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split()[1] == "b'x'"
