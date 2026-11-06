@@ -3330,9 +3330,6 @@ def test_a_folder_of_small_files_embeds_across_documents(rag_home, stub_embeddin
     for i in range(12):
         (source / f"note-{i:02d}.md").write_text(f"note {i} searchable words", encoding = "utf-8")
     monkeypatch.setattr(folder_sync.config, "FOLDER_INGEST_WORKERS", 2)
-    # The stub embedder returns instantly; wait for the files still being parsed, as a real
-    # embedder's own duration would.
-    monkeypatch.setattr(ingestion, "_EMBED_LINGER_SECONDS", 30.0)
     batches = []
     real_encode = embeddings.encode
     lock = threading.Lock()
@@ -3340,6 +3337,8 @@ def test_a_folder_of_small_files_embeds_across_documents(rag_home, stub_embeddin
     def recording(texts, **kwargs):
         with lock:
             batches.append(len(texts))
+        # An instant stub finishes each file before the coordinator snapshots the next one.
+        time.sleep(0.5)
         return real_encode(texts, **kwargs)
 
     monkeypatch.setattr(embeddings, "encode", recording)
