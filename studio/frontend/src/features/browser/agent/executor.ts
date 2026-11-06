@@ -499,7 +499,7 @@ async function pageCall(tab: BrowserTab, request: Record<string, unknown>, signa
           callNative<{ installed: boolean; result: unknown }>("browser_view_agent", {
             tabId: tab.id,
             command: {
-              op: { ...op, virtualInput: !nativeViewShown(tab.id) },
+              op: { ...op, virtualInput: !useBrowserStore.getState().open || useBrowserStore.getState().activeTabId !== tab.id || useBrowserStore.getState().chat !== tab.chat || !nativeViewShown(tab.id) },
               ...(code ? { code } : {}),
             },
           }).catch(() => null);
@@ -1609,7 +1609,7 @@ async function screenshot(tab: BrowserTab, context: Run): Promise<Result> {
   if (entry.kind === "file" && !chatOnScreen(context)) return { ok: false, error: OFF_SCREEN };
   if (!isTauri) return { ok: false, error: "screenshots of the browser panel need the desktop app; use browser_snapshot." };
   // A page at work off screen is captured on its own; one on screen as the panel shows it.
-  const hidden = !chatOnScreen(context);
+  const hidden = !chatOnScreen(context) || (hasNativeView(tab.id) && !nativeViewShown(tab.id));
   if (hidden && !hasNativeView(tab.id)) return { ok: false, error: "this chat's browser panel is not on screen; use browser_snapshot." };
   const pages = document.querySelectorAll<HTMLElement>("[data-browser-page]");
   const element = pages[pages.length - 1];

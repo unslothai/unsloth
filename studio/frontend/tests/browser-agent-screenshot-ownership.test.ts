@@ -55,10 +55,16 @@ test("background screenshots without a native page cannot capture the foreground
   assert.equal((captures[0][0] as { id: string }).id, tabId);
   assert.equal(captures[0].length, 1);
 
-  globals.__native = false;
   store.showChat(a);
   foreground.chat = a;
+  globals.__shownNative = null;
   await screenshot();
   assert.equal(captures.length, 2);
-  assert.equal(captures[1][1], foreground);
+  assert.equal((captures[1][0] as { id: string }).id, tabId);
+  assert.equal(captures[1].length, 1);
+
+  globals.__native = false;
+  await screenshot();
+  assert.equal(captures.length, 3);
+  assert.equal(captures[2][1], foreground);
 });
