@@ -131,11 +131,20 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
   assert.match(readSrc("features/chat/components/chat-skills-dialog.tsx"), /className="pointer-events-auto absolute inset-0/);
   // No page-wide rule: dialogs portaled into the page (Recipe Studio) host live comboboxes there.
   assert.doesNotMatch(css, /\[data-slot="sidebar-inset"\] \.pointer-events-auto/);
-  // The page hits of the runtime audit and review (sticky toolbars over the page scroller), handled on their own.
-  assert.match(
-    rule(css, 'body[style*="pointer-events: none"] .api-monitor-toolbar,\n\tbody[style*="pointer-events: none"] .library-toolbar'),
-    /pointer-events: none !important;/,
-  );
-  assert.match(readSrc("features/api-monitor/api-monitor-page.tsx"), /data-tour="api-toolbar" className="pointer-events-auto [^"]*\bapi-monitor-toolbar\b/);
-  assert.match(readSrc("features/library/components/library-header.tsx"), /className=\{cn\("pointer-events-auto library-toolbar"/);
+  // Page restorations (toolbars, the Downloads card) go inert under the body lock, with one rule.
+  const page =
+    'body[style*="pointer-events: none"] .pointer-events-auto:not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *)';
+  assert.match(rule(css, page), /pointer-events: none !important;/);
+  assert.match(readSrc("features/hub/download-manager/download-manager-panel.tsx"), /"hub-download-panel pointer-events-auto /);
+  // What is meant to work over a modal stays live.
+  const live: Array<[string, RegExp]> = [
+    ["components/tauri/window-titlebar.tsx", /"modal-pe-live pointer-events-none absolute inset-x-0 top-0 z-\[70\]/],
+    ["components/tauri/startup-screen.tsx", /"pointer-events-auto modal-pe-live fixed inset-0 z-\[9999\]"/],
+    ["components/ui/sonner.tsx", /toast: "cn-toast modal-pe-live pointer-events-auto"/],
+    ["components/ui/combobox.tsx", /"isolate z-\[120\] modal-pe-live pointer-events-auto"/],
+    ["features/interface-zoom/components/interface-zoom.tsx", /"modal-pe-live interface-zoom-position pointer-events-auto/],
+    ["app/provider.tsx", /data-tauri-drag-region=\{true\}[\s\S]{0,80}"pointer-events-auto modal-pe-live /],
+  ];
+  for (const [file, re] of live) assert.match(readSrc(file), re, file);
+  assert.equal(readSrc("components/tauri/window-titlebar.tsx").match(/"pointer-events-auto fixed /g), null);
 });

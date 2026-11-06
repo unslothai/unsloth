@@ -1509,7 +1509,7 @@ export function ApiMonitorPage(): ReactElement {
                 : "pl-[calc(0.5rem*var(--ui-space-scale,1)+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
         )}
       >
-        <div data-tour="api-toolbar" className="pointer-events-auto flex min-w-0 max-w-full api-monitor-toolbar">
+        <div data-tour="api-toolbar" className="pointer-events-auto flex min-w-0 max-w-full">
           <ApiModelLoadControls
             runtime={runtime}
             activeModel={data?.active_model}

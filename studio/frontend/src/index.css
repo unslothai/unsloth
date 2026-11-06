@@ -2146,9 +2146,12 @@ html[data-chat-font] .aui-root {
 	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
 		pointer-events: none !important;
 	}
-	/* The API monitor and Library sticky toolbars restore pointer-events over the scrolling page. */
-	body[style*="pointer-events: none"] .api-monitor-toolbar,
-	body[style*="pointer-events: none"] .library-toolbar {
+	/* The same for pointer-events-auto restorations in the page itself (toolbars, the Downloads card,
+	   floating monitors): with the body lock on, wheel over one scrolled what sits behind the modal.
+	   Left live: the top dialog (contained or portaled), every popper popup, the thread (its cover
+	   blocks it, and its many restorations would restyle on each toggle) and window chrome, toasts and
+	   overlays that are meant to work over a modal (.modal-pe-live). Class-keyed like the rule above. */
+	body[style*="pointer-events: none"] .pointer-events-auto:not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *) {
 		pointer-events: none !important;
 	}
 
