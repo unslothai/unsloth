@@ -338,6 +338,47 @@ def test_missing_resource_listing_refuses_a_subfolder_swapped_after_queueing(
     assert "private-filename" not in str(error.value)
 
 
+@pytest.mark.skipif(not skills._SCANDIR_FD, reason = "descriptor scans only")
+def test_missing_resource_listing_types_entries_while_the_folder_is_open(
+    isolated_skills, monkeypatch
+):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "lazy")
+    (root / "scripts").mkdir()
+    (root / "scripts" / "lint.py").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+
+    class LazyEntry:
+        # DT_UNKNOWN: the type comes from an fstatat on the scanned descriptor.
+        def __init__(self, entry, descriptor):
+            self._entry, self._descriptor, self.name = entry, descriptor, entry.name
+
+        def _typed(self, method, *args, **kwargs):
+            os.fstat(self._descriptor)
+            return getattr(self._entry, method)(*args, **kwargs)
+
+        def is_symlink(self):
+            return self._typed("is_symlink")
+
+        def is_dir(self, **kwargs):
+            return self._typed("is_dir", **kwargs)
+
+        def is_file(self, **kwargs):
+            return self._typed("is_file", **kwargs)
+
+    def lazy_scandir(target):
+        if not isinstance(target, int):
+            return real_scandir(target)
+        with real_scandir(target) as scan:
+            return contextlib.nullcontext([LazyEntry(entry, target) for entry in scan])
+
+    monkeypatch.setattr(skills.os, "scandir", lazy_scandir)
+    with pytest.raises(skills.SkillError) as error:
+        skills.read_skill_resource("lazy", "missing.txt", home = home)
+
+    assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
+
+
 def test_missing_resource_listing_survives_deep_empty_trees(isolated_skills):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "deep")

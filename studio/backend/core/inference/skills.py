@@ -1174,13 +1174,26 @@ def _list_skill_files(
             or os.path.samestat(os.stat(skill_dir, follow_symlinks = False), identity)
         )
 
-    def entries(parts: tuple[str, ...]) -> list:
+    def classify(scan, parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
+        # Types are read while the scan is open: DT_UNKNOWN entries stat through its descriptor.
+        return sorted(
+            (
+                entry.name,
+                entry.is_symlink()
+                or (not _SCANDIR_FD and _is_linked_path(skill_dir.joinpath(*parts, entry.name))),
+                entry.is_dir(follow_symlinks = False),
+                entry.is_file(follow_symlinks = False),
+            )
+            for entry in scan
+        )
+
+    def entries(parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
         # Same pinning as resource reads: no-follow descriptors, else per-component link checks.
         if _SCANDIR_FD:
             descriptor = _open_within(skill_dir, identity, parts)
             try:
                 with os.scandir(descriptor) as scan:
-                    return sorted(scan, key = lambda entry: entry.name)
+                    return classify(scan, parts)
             finally:
                 os.close(descriptor)
         chain = [skill_dir.joinpath(*parts[: index + 1]) for index in range(len(parts))]
@@ -1191,7 +1204,7 @@ def _list_skill_files(
         if not unlinked():
             raise SkillError("Skill folder changed while it was listed.")
         with os.scandir(skill_dir.joinpath(*parts)) as scan:
-            listed = sorted(scan, key = lambda entry: entry.name)
+            listed = classify(scan, parts)
         if not unlinked():
             raise SkillError("Skill folder changed while it was listed.")
         return listed
@@ -1204,22 +1217,19 @@ def _list_skill_files(
         while pending and max_dirs > 0:
             max_dirs -= 1
             parts = pending.pop(0)
-            for entry in entries(parts):
-                linked = entry.is_symlink() or (
-                    not _SCANDIR_FD and _is_linked_path(skill_dir.joinpath(*parts, entry.name))
-                )
-                if entry.name.startswith(".") or linked:
+            for name, linked, is_dir, is_file in entries(parts):
+                if name.startswith(".") or linked:
                     continue
-                relative = "/".join((*parts, entry.name))
+                relative = "/".join((*parts, name))
                 try:
                     size = len(relative.encode("utf-8"))
                 except UnicodeEncodeError:
                     continue
-                if entry.is_dir(follow_symlinks = False):
+                if is_dir:
                     if size < MAX_SKILL_RESOURCE_PATH_BYTES:
-                        pending.append((*parts, entry.name))
+                        pending.append((*parts, name))
                     continue
-                if not entry.is_file(follow_symlinks = False):
+                if not is_file:
                     continue
                 if len(found) == limit or sum(map(len, found)) + len(relative) > max_chars:
                     return found + ["..."] if pinned() else []
