@@ -88,15 +88,24 @@ else:
 
 # TRL trains on "messages" when present, else on "text"; "conversations" is only read without "text".
 _DATASET_CHECK_COLUMNS = ("messages", "text", "conversations")
-_MEDIA_TYPES = ("image", "video", "audio")
+_MEDIA_TYPES = ("image", "image_url", "video", "audio", "input_audio")
 
 
 class _MalformedRow(Exception):
     pass
 
 
+def _is_present(value):
+    if value is None:
+        return False
+    try:
+        return len(value) > 0  # never bool(): numpy / torch payloads raise on truth tests
+    except TypeError:
+        return True
+
+
 def _has_media(row, messages):
-    if any(row.get(k) for k in ("images", "image", "videos", "video", "audios", "audio")):
+    if any(_is_present(row.get(k)) for k in ("images", "image", "videos", "video", "audios", "audio")):
         return True
     contents = (m.get("content", m.get("value")) for m in messages)
     return any(

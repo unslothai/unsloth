@@ -394,3 +394,17 @@ def test_structured_blank_content_is_empty_and_sharegpt_media_is_flagged():
     tok.chat_template = tok.chat_template.replace("message['content']", "''")
     row = {"conversations": [{"from": "human", "value": [{"type": "image"}]}]}
     assert check_dataset([row], tok, max_seq_length = 8)["media"] == 1
+
+
+def test_array_media_fields_and_openai_media_parts():
+    np = pytest.importorskip("numpy")
+    template = "{% for m in messages %}{{ m['role'] }} {% endfor %}"
+    rows = [
+        {"text": "hi", "image": np.zeros((2, 2))},
+        {"text": "hi", "image": np.zeros((0,))},
+        {"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": "a"}]}]},
+        {"messages": [{"role": "user", "content": [{"type": "input_audio"}]}]},
+    ]
+    report = check_dataset(rows, _tokenizer(template), max_seq_length = 8)
+    assert report["rows"] == 4
+    assert report["media"] == 3
