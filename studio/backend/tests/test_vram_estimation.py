@@ -6,10 +6,13 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from utils.hardware.vram_estimation import (
+from unsloth_estimation import (
     ModelArchConfig,
     TrainingVramConfig,
     extract_arch_config,
+    estimate_training_vram,
+)
+from unsloth_estimation.vram import (
     compute_model_weights_bytes,
     compute_total_params,
     compute_lora_params,
@@ -17,7 +20,6 @@ from utils.hardware.vram_estimation import (
     compute_optimizer_bytes,
     compute_gradient_bytes,
     compute_activation_bytes,
-    estimate_training_vram,
     DEFAULT_TARGET_MODULES,
 )
 
@@ -572,7 +574,7 @@ class TestQuantizationSkips(unittest.TestCase):
         )
 
     def test_mla_skip_module_uses_authoritative_attn_total(self):
-        from utils.hardware.vram_estimation import (
+        from unsloth_estimation.vram import (
             _build_text_module_elements,
             _compute_attn_elements,
         )
@@ -782,7 +784,7 @@ class TestEstimateTrainingVram(unittest.TestCase):
         )
         expected_floor = int(compute_model_weights_bytes(LLAMA_8B, "full", False) * 0.15)
         with patch(
-            "utils.hardware.vram_estimation.compute_gradient_bytes",
+            "unsloth_estimation.vram.compute_gradient_bytes",
             return_value = 1,
         ):
             breakdown = estimate_training_vram(LLAMA_8B, config)
@@ -1008,7 +1010,7 @@ class TestParallelDenseMoE(unittest.TestCase):
         )
 
     def test_layer_aggregates_split_dense_mlp_from_experts(self):
-        from utils.hardware.vram_estimation import _build_text_module_elements
+        from unsloth_estimation.vram import _build_text_module_elements
 
         with_parallel = self._arch(moe_has_dense_mlp = True)
         elements, _ = _build_text_module_elements(with_parallel)
@@ -1065,7 +1067,7 @@ class TestDenseLayerIndices(unittest.TestCase):
 
 class TestKvSharedLayer(unittest.TestCase):
     def test_fully_shared_kv_returns_false_matching_upstream(self):
-        from utils.hardware.vram_estimation import _is_kv_shared_layer
+        from unsloth_estimation.vram import _is_kv_shared_layer
         arch = ModelArchConfig(
             hidden_size = 512,
             num_hidden_layers = 4,
@@ -1079,7 +1081,7 @@ class TestKvSharedLayer(unittest.TestCase):
             self.assertFalse(_is_kv_shared_layer(arch, i))
 
     def test_partial_share_returns_true_for_tail_layers(self):
-        from utils.hardware.vram_estimation import _is_kv_shared_layer
+        from unsloth_estimation.vram import _is_kv_shared_layer
 
         arch = ModelArchConfig(
             hidden_size = 512,
@@ -1128,7 +1130,7 @@ class TestNonStructuredParallelDense(unittest.TestCase):
         return replace(base, **overrides)
 
     def test_skip_module_uses_intermediate_size_for_parallel_dense(self):
-        from utils.hardware.vram_estimation import _build_text_module_elements
+        from unsloth_estimation.vram import _build_text_module_elements
 
         arch = self._arch()
         elements, _ = _build_text_module_elements(arch)
@@ -1193,7 +1195,7 @@ class TestPerLayerInputAccounting(unittest.TestCase):
 
 class TestDenseMlpLayerFallback(unittest.TestCase):
     def test_falls_back_to_count_when_indices_empty(self):
-        from utils.hardware.vram_estimation import _is_dense_mlp_layer
+        from unsloth_estimation.vram import _is_dense_mlp_layer
 
         arch = ModelArchConfig(
             hidden_size = 512,
@@ -1291,7 +1293,7 @@ class TestSharedExperts(unittest.TestCase):
 
 class TestMLA(unittest.TestCase):
     def test_mla_different_from_standard(self):
-        from utils.hardware.vram_estimation import _compute_attn_elements
+        from unsloth_estimation.vram import _compute_attn_elements
 
         mla_arch = DEEPSEEK_V3
         std_arch = ModelArchConfig(
@@ -1311,7 +1313,7 @@ class TestMLA(unittest.TestCase):
         self.assertGreater(lora_p, 0)
 
     def test_mla_with_head_dim_does_not_route_through_structured(self):
-        from utils.hardware.vram_estimation import _uses_structured_layer_shapes
+        from unsloth_estimation.vram import _uses_structured_layer_shapes
 
         mla_with_head_dim = replace(DEEPSEEK_V3, head_dim = 128)
         self.assertFalse(_uses_structured_layer_shapes(mla_with_head_dim))
@@ -1467,14 +1469,14 @@ class TestPerLayerInputSkipAlias(unittest.TestCase):
         )
 
     def test_per_layer_input_gate_skip_pulls_nonzero_delta(self):
-        from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
+        from unsloth_estimation.vram import _compute_skipped_quantizable_elements
 
         arch = extract_arch_config(self._hf(["model.layers.0.per_layer_input_gate"]))
         delta = _compute_skipped_quantizable_elements(arch)
         self.assertEqual(delta, arch.hidden_size * arch.hidden_size_per_layer_input)
 
     def test_per_layer_model_projection_skip_pulls_global_delta(self):
-        from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
+        from unsloth_estimation.vram import _compute_skipped_quantizable_elements
 
         arch = extract_arch_config(self._hf(["model.per_layer_model_projection"]))
         delta = _compute_skipped_quantizable_elements(arch)
@@ -1484,7 +1486,7 @@ class TestPerLayerInputSkipAlias(unittest.TestCase):
         )
 
     def test_layer_aggregate_skip_includes_per_layer_input_modules(self):
-        from utils.hardware.vram_estimation import (
+        from unsloth_estimation.vram import (
             _compute_skipped_quantizable_elements,
         )
 
@@ -1555,7 +1557,7 @@ class TestSharedExpertVariants(unittest.TestCase):
         self.assertEqual(arch.n_shared_experts, 3)
 
     def test_shared_expert_size_separate_from_routed_changes_weight_count(self):
-        from utils.hardware.vram_estimation import _compute_moe_mlp_elements
+        from unsloth_estimation.vram import _compute_moe_mlp_elements
 
         arch_separate = extract_arch_config(self._hf(shared_expert_intermediate_size = 64))
         arch_implicit = extract_arch_config(self._hf(n_shared_experts = 1))
@@ -1565,7 +1567,7 @@ class TestSharedExpertVariants(unittest.TestCase):
         )
 
     def test_shared_expert_gate_counted_only_for_qwen_style(self):
-        from utils.hardware.vram_estimation import _compute_moe_mlp_elements
+        from unsloth_estimation.vram import _compute_moe_mlp_elements
 
         qwen_arch = extract_arch_config(self._hf(shared_expert_intermediate_size = 64))
         hd = qwen_arch.hidden_size
@@ -1622,7 +1624,7 @@ class TestSharedExpertActivation(unittest.TestCase):
         )
 
     def test_shared_expert_plus_dense_block_compose(self):
-        from utils.hardware.vram_estimation import _layer_qkv_mlp_sizes
+        from unsloth_estimation.vram import _layer_qkv_mlp_sizes
 
         arch = self._make(
             enable_moe_block = True,
@@ -1756,12 +1758,12 @@ class TestSparseMoeSkipAliases(unittest.TestCase):
         )
 
     def test_gemma4_layers_experts_alias_pulls_routed(self):
-        from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
+        from unsloth_estimation.vram import _compute_skipped_quantizable_elements
         arch = extract_arch_config(self._hf(["model.layers.0.experts"], enable_moe_block = True))
         self.assertGreater(_compute_skipped_quantizable_elements(arch), 0)
 
     def test_qwen_shared_expert_skip_pulls_only_shared(self):
-        from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
+        from unsloth_estimation.vram import _compute_skipped_quantizable_elements
 
         arch = extract_arch_config(
             self._hf(
@@ -1783,7 +1785,7 @@ class TestSparseMoeSkipAliases(unittest.TestCase):
         )
 
     def test_exaone_shared_experts_plural_alias(self):
-        from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
+        from unsloth_estimation.vram import _compute_skipped_quantizable_elements
         arch = extract_arch_config(
             self._hf(
                 ["model.layers.0.mlp.shared_experts"],
@@ -1988,21 +1990,21 @@ class TestSuffixSkipModuleMatch(unittest.TestCase):
         )
 
     def test_q_proj_suffix_skip_matches_all_layers(self):
-        from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
+        from unsloth_estimation.vram import _compute_skipped_quantizable_elements
 
         arch = extract_arch_config(self._hf(["q_proj"]))
         delta = _compute_skipped_quantizable_elements(arch)
         self.assertEqual(delta, 2 * arch.hidden_size * arch.hidden_size)
 
     def test_self_attn_aggregate_skip_matches_aggregate(self):
-        from utils.hardware.vram_estimation import _compute_skipped_quantizable_elements
+        from unsloth_estimation.vram import _compute_skipped_quantizable_elements
 
         arch = extract_arch_config(self._hf(["self_attn"]))
         delta = _compute_skipped_quantizable_elements(arch)
         self.assertGreater(delta, 0)
 
     def test_vision_prefix_skip_does_not_match_text_alias(self):
-        from utils.hardware.vram_estimation import _module_path_matches
+        from unsloth_estimation.vram import _module_path_matches
         self.assertFalse(
             _module_path_matches(
                 "vision_tower.model.layers.0.self_attn.q_proj",
@@ -2116,12 +2118,12 @@ class TestLlama4ArchExtraction(unittest.TestCase):
         return SimpleNamespace(**base)
 
     def test_llama4_moe_layers_dispatch_uses_explicit_indices(self):
-        from utils.hardware.vram_estimation import _compute_dense_layer_indices
+        from unsloth_estimation.vram import _compute_dense_layer_indices
         cfg = SimpleNamespace(num_hidden_layers = 4, moe_layers = [1, 3])
         self.assertEqual(_compute_dense_layer_indices(cfg, 4), (0, 2))
 
     def test_llama4_moe_layers_takes_priority_over_first_k_dense_replace(self):
-        from utils.hardware.vram_estimation import _compute_dense_layer_indices
+        from unsloth_estimation.vram import _compute_dense_layer_indices
         cfg = SimpleNamespace(
             num_hidden_layers = 6,
             moe_layers = [2, 4],
@@ -2130,7 +2132,7 @@ class TestLlama4ArchExtraction(unittest.TestCase):
         self.assertEqual(_compute_dense_layer_indices(cfg, 6), (0, 1, 3, 5))
 
     def test_dense_intermediate_size_picks_up_intermediate_size_mlp(self):
-        from utils.hardware.vram_estimation import _dense_mlp_size
+        from unsloth_estimation.vram import _dense_mlp_size
 
         arch = extract_arch_config(self._llama4_text_config(moe_layers = [1, 3]))
         self.assertIsNotNone(arch)
@@ -2139,7 +2141,7 @@ class TestLlama4ArchExtraction(unittest.TestCase):
         self.assertEqual(_dense_mlp_size(arch), 16384)
 
     def test_auto_attaches_one_shared_expert_at_routed_width(self):
-        from utils.hardware.vram_estimation import _shared_expert_size
+        from unsloth_estimation.vram import _shared_expert_size
 
         arch = extract_arch_config(self._llama4_text_config(moe_layers = [1, 3]))
         self.assertIsNotNone(arch)
@@ -2148,7 +2150,7 @@ class TestLlama4ArchExtraction(unittest.TestCase):
         self.assertEqual(_shared_expert_size(arch), arch.intermediate_size)
 
     def test_non_llama4_config_leaves_dense_intermediate_size_none(self):
-        from utils.hardware.vram_estimation import _dense_mlp_size
+        from unsloth_estimation.vram import _dense_mlp_size
 
         cfg = SimpleNamespace(
             hidden_size = 1024,
@@ -2222,7 +2224,7 @@ class TestDbrxFfnConfigExtraction(unittest.TestCase):
 
 class TestErniePhaseModuloDispatch(unittest.TestCase):
     def test_phase_modulo_with_interval_two_matches_decoder(self):
-        from utils.hardware.vram_estimation import _compute_dense_layer_indices
+        from unsloth_estimation.vram import _compute_dense_layer_indices
         cfg = SimpleNamespace(
             num_hidden_layers = 10,
             moe_layer_start_index = 2,
@@ -2233,7 +2235,7 @@ class TestErniePhaseModuloDispatch(unittest.TestCase):
         self.assertEqual(_compute_dense_layer_indices(cfg, 10), (0, 1, 2, 4, 6, 8, 9))
 
     def test_phase_modulo_with_interval_three(self):
-        from utils.hardware.vram_estimation import _compute_dense_layer_indices
+        from unsloth_estimation.vram import _compute_dense_layer_indices
         cfg = SimpleNamespace(
             num_hidden_layers = 9,
             moe_layer_start_index = 0,
@@ -2245,7 +2247,7 @@ class TestErniePhaseModuloDispatch(unittest.TestCase):
 
 class TestErnieVlSharedExpertWidth(unittest.TestCase):
     def test_shared_expert_width_uses_text_routed_not_vision(self):
-        from utils.hardware.vram_estimation import (
+        from unsloth_estimation.vram import (
             _compute_shared_moe_elements,
             _shared_expert_size,
         )
@@ -2274,7 +2276,7 @@ class TestErnieVlSharedExpertWidth(unittest.TestCase):
         self.assertEqual(_compute_shared_moe_elements(arch), 1024 * 1536 * 3 * 2)
 
     def test_qwen_style_explicit_shared_expert_size_still_adds_gate(self):
-        from utils.hardware.vram_estimation import _compute_shared_moe_elements
+        from unsloth_estimation.vram import _compute_shared_moe_elements
 
         cfg = SimpleNamespace(
             hidden_size = 1024,
@@ -2304,7 +2306,7 @@ if __name__ == "__main__":
 
 def test_embedding_targets_cost_full_matrices_not_lora_pairs():
     """embed_tokens/lm_head are redirected to modules_to_save, so they cost vocab*hidden."""
-    from utils.hardware.vram_estimation import _full_weight_embedding_elements
+    from unsloth_estimation.vram import _full_weight_embedding_elements
 
     untied = replace(LLAMA_8B, tie_word_embeddings = False)
     one = untied.vocab_size * untied.hidden_size
