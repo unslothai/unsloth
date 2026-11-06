@@ -196,6 +196,15 @@ def _unregister_cp_sharding_rules() -> None:
     unregister_cp_sharding_rules(clear_the_cache = False)
 
 
+# A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
+_ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
+
+
+# Before the imports below: on the CPU route they bind this from the partially initialised module.
+def get_cp_manager() -> Optional["ContextParallelManager"]:
+    return _ACTIVE_MANAGER
+
+
 from .device_type import DEVICE_TYPE_TORCH
 from .utils.ulysses import _document_positions, ulysses_head_plan
 from .utils.ulysses_hybrid import (
@@ -206,9 +215,6 @@ from .utils.ulysses_hybrid import (
     is_ulysses_gated_delta,
     wrap_gated_delta_forward,
 )
-
-# A module global, not a ContextVar: CUDA runs backward (and checkpoint recompute) on another thread.
-_ACTIVE_MANAGER: Optional["ContextParallelManager"] = None
 
 # shift_labels is built before sharding so each shard's last token keeps its next-token target.
 _BUFFER_NAMES = ("input_ids", "attention_mask", "labels", "position_ids", "shift_labels")
@@ -233,10 +239,6 @@ def _multimodal_inputs(inputs: dict) -> list:
 
 _INSTALLED_MESH = []
 _INSTALLED_PARALLELISM_CONFIG = []
-
-
-def get_cp_manager() -> Optional["ContextParallelManager"]:
-    return _ACTIVE_MANAGER
 
 
 def _stateful_mixers(model) -> list:
@@ -519,6 +521,13 @@ class ContextParallelManager:
         # Some decoders (transformers 5.3 / 5.5) do not forward packed_seq_lengths to linear_attn.
         self.packed_seq_lengths = inputs.get("packed_seq_lengths")
         try:
+            if isinstance(self.packed_seq_lengths, torch.Tensor):
+                # Build the cached packed entry outside compile: dynamo does not guard its identity check
+                # (stale documents). Inside the try, so a raise here still restores the manager.
+                from .utils.packing import get_packed_info_from_kwargs
+                get_packed_info_from_kwargs(
+                    {"packed_seq_lengths": self.packed_seq_lengths}, inputs["input_ids"].device
+                )
             yield
         finally:
             _ACTIVE_MANAGER = previous
