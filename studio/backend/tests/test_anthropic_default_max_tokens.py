@@ -92,6 +92,12 @@ def test_server_error_on_lookup_is_retried_next_time(monkeypatch):
     assert len(lookups) == 2
 
 
+def test_rate_limited_lookup_is_retried_next_time(monkeypatch):
+    sent, lookups = _sent_max_tokens(monkeypatch, httpx.Response(429))
+    assert sent == [1024, 1024]
+    assert len(lookups) == 2
+
+
 def test_model_id_is_url_encoded_in_the_lookup(monkeypatch):
     _, lookups = _sent_max_tokens(
         monkeypatch,

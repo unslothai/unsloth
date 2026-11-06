@@ -2570,7 +2570,7 @@ class ExternalProviderClient:
                     headers = self._auth_headers(),
                     timeout = 10,
                 )
-                if response.status_code >= 500:
+                if response.status_code == 429 or response.status_code >= 500:
                     return None
                 cap = response.json().get("max_tokens") if response.is_success else None
             except httpx.HTTPError:
