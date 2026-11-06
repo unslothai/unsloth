@@ -5057,10 +5057,16 @@ def _connect(
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
         # Studio's own ids can carry a tag (ollama/qwen3:8b), so a loaded model of that exact id wins over the split.
-        if unsplit and server is None and any(
-            entry.get("loaded") is not False
-            and _model_id_matches(entry.get("id"), requested, allow_casefold = is_loopback_url(base))
-            for entry in _loaded_models(base, key)
+        if (
+            unsplit
+            and server is None
+            and any(
+                entry.get("loaded") is not False
+                and _model_id_matches(
+                    entry.get("id"), requested, allow_casefold = is_loopback_url(base)
+                )
+                for entry in _loaded_models(base, key)
+            )
         ):
             model, load = unsplit
         connection = None if server is not None else _connection_entry(base, key, requested)
