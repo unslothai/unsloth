@@ -527,8 +527,10 @@ from .diffusion_transformer_quant import (
     NATIVE_QUANT_SCHEMES,
     normalize_transformer_quant,
     int8_text_stream_scope,
+    join_probe_table_prewarm,
     quantize_transformer,
     select_transformer_quant_scheme,
+    start_probe_table_prewarm,
     stored_denoiser_precision,
     transformer_is_quantised,
 )
@@ -6273,51 +6275,60 @@ class DiffusionBackend:
                     is not None
                 ):
                     return None
-                if auto and _auto_keeps_bf16_reason(fam, base = base or repo_id) is not None:
-                    bf16_memory = snapshot_device_memory(target)
-                    bf16_plan = self._bf16_table_plan(
-                        target,
-                        fam,
-                        base or repo_id or "",
-                        memory_mode,
-                        cpu_offload,
-                        kind = kind,
-                        repo_id = repo_id,
-                        fetch_base = fetch_base,
-                        text_encoder_quant = None if local_files_only else text_encoder_quant,
-                        device_memory_override = replace(bf16_memory, free_mib = bf16_memory.total_mib),
-                    )
-                    # Offline without the released shards, bf16 cannot assemble: a cached seed is the only way.
-                    if (
-                        bf16_plan is not None
-                        and _auto_quant_eager_reason(
-                            fam, bf16_plan, transformer_prequant_path, base = base or repo_id
+                # The scheme probe in _planned_quant_scheme waits ~4-5 s on a child (cold card): start that child now so it
+                # overlaps the diffusers import _auto_keeps_bf16_reason pays, and join it before free VRAM is read.
+                probe = start_probe_table_prewarm(str(getattr(target, "device", "cuda")))
+                try:
+                    if auto and _auto_keeps_bf16_reason(fam, base = base or repo_id) is not None:
+                        join_probe_table_prewarm(probe)
+                        bf16_memory = snapshot_device_memory(target)
+                        bf16_plan = self._bf16_table_plan(
+                            target,
+                            fam,
+                            base or repo_id or "",
+                            memory_mode,
+                            cpu_offload,
+                            kind = kind,
+                            repo_id = repo_id,
+                            fetch_base = fetch_base,
+                            text_encoder_quant = None if local_files_only else text_encoder_quant,
+                            device_memory_override = replace(
+                                bf16_memory, free_mib = bf16_memory.total_mib
+                            ),
                         )
-                        is not None
-                        and not (
-                            local_files_only
-                            and not any(
-                                self._released_transformer_cached(candidate)
-                                for candidate in dict.fromkeys(
-                                    (
-                                        fetch_base,
-                                        base,
-                                        repo_id,
-                                        prefer_ungated_mirror(base or repo_id or ""),
-                                    )
-                                )
-                                if candidate
+                        # Offline without the released shards, bf16 cannot assemble: a cached seed is the only way.
+                        if (
+                            bf16_plan is not None
+                            and _auto_quant_eager_reason(
+                                fam, bf16_plan, transformer_prequant_path, base = base or repo_id
                             )
-                        )
-                    ):
-                        return None
-                scheme = _planned_quant_scheme(
-                    fam,
-                    target,
-                    mode,
-                    base_repo = base,
-                    prequant_path = transformer_prequant_path,
-                )
+                            is not None
+                            and not (
+                                local_files_only
+                                and not any(
+                                    self._released_transformer_cached(candidate)
+                                    for candidate in dict.fromkeys(
+                                        (
+                                            fetch_base,
+                                            base,
+                                            repo_id,
+                                            prefer_ungated_mirror(base or repo_id or ""),
+                                        )
+                                    )
+                                    if candidate
+                                )
+                            )
+                        ):
+                            return None
+                    scheme = _planned_quant_scheme(
+                        fam,
+                        target,
+                        mode,
+                        base_repo = base,
+                        prequant_path = transformer_prequant_path,
+                    )
+                finally:
+                    join_probe_table_prewarm(probe, discard = True)
                 if scheme is None or scheme == TQ_AUTO:
                     return None
                 # Under auto, a rung whose plan still offloads yields to the next resident rung; an explicit scheme is never swapped, only honored or refused.

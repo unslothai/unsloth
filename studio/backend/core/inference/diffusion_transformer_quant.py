@@ -1410,8 +1410,10 @@ def _scheme_supported(
             # Re-checked under the lock: concurrent plans must not each spawn a child.
             if (scheme, card) not in _SMOKE_CACHE:
                 table = _persisted_probe_table(card)
+                # The load's early kick (start_probe_table_prewarm) already ran this child: same table, earlier.
+                prewarmed = _PREWARMED_TABLES.pop(card, None)
                 if table is None or scheme not in table:
-                    table = _child_probe_table(card)
+                    table = prewarmed if prewarmed is not None else _child_probe_table(card)
                 if table is not None:
                     for name, child_verdict in table.items():
                         # None is the child's out-of-memory: not a verdict, so not cached.
@@ -1562,6 +1564,77 @@ def prewarm_probe_table(device: str = "cuda") -> bool:
             if verdict is not None:
                 _SMOKE_CACHE[(name, card)] = verdict
     return True
+
+
+PROBE_OVERLAP_ENV = "UNSLOTH_DIFFUSION_PROBE_OVERLAP"
+# card -> the child table an early kick resolved; consumed by _scheme_supported, dropped by the kicking load's join.
+_PREWARMED_TABLES: dict[str, dict[str, Optional[bool]]] = {}
+
+
+def start_probe_table_prewarm(device: str) -> Optional[tuple]:
+    """Start the scheme probe's child on a daemon thread so it overlaps the load's imports (~4-5 s cold), only when
+    ``_scheme_supported`` would spawn it anyway (no cached or persisted verdict). Returns a handle for
+    ``join_probe_table_prewarm``, or None. ``UNSLOTH_DIFFUSION_PROBE_OVERLAP=0`` keeps the serial probe."""
+    if (_os.environ.get(PROBE_OVERLAP_ENV) or "").strip().lower() in ("0", "false", "no", "off"):
+        return None
+    try:
+        if not str(device).startswith("cuda"):
+            return None
+        import torch
+
+        if not torch.cuda.is_available():
+            return None
+        # Keyed in the caller's thread, under its device scope, exactly as _scheme_supported keys it.
+        card = _smoke_cache_device_key(str(device))
+    except Exception:  # noqa: BLE001 - no early probe; the load probes as before
+        return None
+    schemes = without_nvfp4(TQ_SCHEMES)
+    if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+        return None
+
+    def _run() -> None:
+        # Never queue behind another probe: the join must bound this thread by one child's own deadline, so a held
+        # lock means the load's serial probe runs instead.
+        if not _CHILD_PROBE_LOCK.acquire(blocking = False):
+            return
+        try:
+            if any((scheme, card) in _SMOKE_CACHE for scheme in schemes):
+                return
+            if _persisted_probe_table(card) is not None:
+                return
+            import logging
+            import time
+
+            started = time.monotonic()
+            table = _child_probe_table(card)
+            if table is not None:
+                _PREWARMED_TABLES[card] = table
+                logging.getLogger(__name__).info(
+                    "diffusion.transformer_quant: scheme probe ran beside the load (%.1f s, %s)",
+                    time.monotonic() - started,
+                    card,
+                )
+        except Exception:  # noqa: BLE001 - the load's own probe runs instead
+            pass
+        finally:
+            _CHILD_PROBE_LOCK.release()
+
+    thread = _threading.Thread(target = _run, name = "quant-probe-overlap", daemon = True)
+    thread.start()
+    return (thread, card)
+
+
+def join_probe_table_prewarm(handle: Optional[tuple], *, discard: bool = False) -> None:
+    """Wait for an early probe (its child, and so its CUDA context, is gone after this); ``discard`` drops a table
+    the load never consumed so it cannot outlive the load that started it. Untimed: the thread never waits on the
+    probe lock and ``_child_probe_table`` closes its child at ``_CHILD_PROBE_TIMEOUT``, so it always ends."""
+    if not handle:
+        return
+    thread, card = handle
+    thread.join()
+    if discard:
+        with _CHILD_PROBE_LOCK:
+            _PREWARMED_TABLES.pop(card, None)
 
 
 def _persisted_probe_table(card: str) -> Optional[dict[str, bool]]:
