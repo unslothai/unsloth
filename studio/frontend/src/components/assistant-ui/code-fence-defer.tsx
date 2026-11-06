@@ -1642,12 +1642,15 @@ export const FenceBody = memo(function FenceBody({
   windowing: boolean;
 }) {
   const codeWrap = useCodeWrap();
-  windowing ||= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap;
+  const tokens = result?.tokens ?? null;
+  // Only fences over the cap get a line window; below it the batched highlight path stays on,
+  // so a dense line (minified JSON) still renders in quiet-work batches.
+  windowing ||= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap
+    && (tokens?.length ?? 0) > WINDOW_CAP_LINES;
   const code = useRef<HTMLElement | null>(null);
   const surface = useRef<HTMLDivElement | null>(null);
   const wrapper = useRef<HTMLDivElement | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
-  const tokens = result?.tokens ?? null;
   const highlight = useFenceHighlightLimit(tokens, isIncomplete, windowing, language, source, code, frame);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,

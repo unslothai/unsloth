@@ -90,7 +90,10 @@ class MessageWindowController {
     // over the next messages; release restores the original overflow with the height.
     if (freeze) {
       const style = row.root.style;
-      row.frozen = [...row.saved, ["overflow", style.getPropertyValue("overflow"), style.getPropertyPriority("overflow")]];
+      // A row parked again mid drag carries its first frozen snapshot, original overflow included.
+      row.frozen = row.saved.some(([name]) => name === "overflow")
+        ? row.saved
+        : [...row.saved, ["overflow", style.getPropertyValue("overflow"), style.getPropertyPriority("overflow")]];
       style.setProperty("overflow", "hidden");
       style.setProperty("overflow", "clip");
     } else this.restoreHeight(row, row.saved);

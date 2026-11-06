@@ -104,8 +104,9 @@ test("settled WebKitGTK fences only line-window themselves while code wrapping i
   const defer = readSrc("components/assistant-ui/code-fence-defer.tsx");
   assert.match(
     defer,
-    /windowing \|\|= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap;/,
-    "line windows map offsets with one unwrapped row per source line; wrapped lines would highlight a window ahead of the reader",
+    /windowing \|\|= WINDOW_SETTLED_FENCES && !isIncomplete && !codeWrap\s*&& \(tokens\?\.length \?\? 0\) > WINDOW_CAP_LINES;/,
+    "line windows map offsets with one unwrapped row per source line; wrapped lines would highlight a window ahead of the reader, "
+      + "and a fence under the cap has no line window, so forcing windowing there would only drop the batched highlight path",
   );
   assert.match(defer, /const useCodeWrap = \(\): boolean => useSyncExternalStore\(subscribeCodeWrap, codeWrapOn, \(\) => false\);/);
   assert.match(defer, /attributeFilter: \["data-code-wrap"\]/);

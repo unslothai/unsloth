@@ -315,3 +315,20 @@ test("a body restored during a thumb drag is clipped until release, then keeps i
   assert.equal(row.root.style.getPropertyPriority("height"), "important", "and the original height");
   row.cleanup();
 });
+
+test("a body parked and restored again in one thumb drag still releases its own overflow", () => {
+  const w = world(), row = w.add();
+  row.root.style.setProperty("overflow", "visible");
+  w.near(row.root, false);
+  w.viewport.fire("pointerdown", { target: w.viewport, pointerType: "mouse", button: 0 });
+  for (const top of [100, 4000, 100]) {
+    row.root.top = top;
+    w.viewport.fire("scroll");
+  }
+  assert.equal(row.parked(), false);
+  assert.equal(row.root.style.getPropertyValue("overflow"), "clip");
+  w.win.fire("pointerup");
+  assert.equal(row.root.style.getPropertyValue("overflow"), "visible", "the temporary clip is never saved as the original");
+  row.cleanup();
+  assert.equal(row.root.style.getPropertyValue("overflow"), "visible");
+});
