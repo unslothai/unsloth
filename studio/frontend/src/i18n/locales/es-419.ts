@@ -216,6 +216,7 @@ export const es419 = {
     tabs: "Pestañas del navegador",
     newTab: "Nueva pestaña",
     newTabFullView: "Nueva pestaña en vista completa",
+    newTabFloating: "Nueva pestaña en ventana flotante",
     closeTab: "Cerrar pestaña",
     close: "Cerrar navegador",
     show: "Mostrar navegador",
@@ -435,6 +436,12 @@ export const es419 = {
       openChat: "Abrir en vista completa",
       moveLeft: "Mover al panel izquierdo",
       moveRight: "Mover al panel derecho",
+    },
+    floating: {
+      enter: "Ventana flotante",
+      dock: "Acoplar al costado",
+      close: "Cerrar ventana flotante",
+      handle: "Mover la ventana. Las flechas la mueven; Mayús y las flechas cambian su tamaño.",
     },
     annotate: {
       countOne: "1 anotación",
@@ -891,6 +898,9 @@ export const es419 = {
     unifiedTightFit: "Ajuste justo",
     unifiedTightFitHint:
       "Puede cargarse con un contexto más corto o funcionar más lento en esta Mac.",
+    residentToRun: "para ejecutar",
+    residentToRunHint:
+      "Memoria de GPU que la comprobación de carga requiere durante la ejecución",
     onDevice: "En el dispositivo",
     huggingFace: "Hugging Face",
     retry: "Reintentar",
@@ -5969,8 +5979,7 @@ export const es419 = {
     skippedVersion: "{component} {version} omitido por ahora",
     skippedUpdate: "Actualización de {component} omitida por ahora",
     skippedUpdates: "Actualizaciones de {components} omitidas por ahora",
-    vulkanFaster:
-      "Vulkan es más de un 10 % más rápido que ROCM. No hace falta reiniciar",
+    vulkanFaster: "Más de un 10 % más rápido",
     noRestart: "No hace falta reiniciar",
     downloadSize: "Descarga de {size}",
     backendChange: "Backend {change}",
@@ -5979,8 +5988,8 @@ export const es419 = {
     installingPhase: "Instalando {component} ({current} de {total})...",
     installingCount: "Instalando {count} actualizaciones...",
     bundleTitle: "{count} actualizaciones del runtime",
-    newBackend: "Nuevo backend de {component}",
-    newUpdate: "Nueva actualización de {component}",
+    newBackend: "Nuevo backend del runtime",
+    newUpdate: "Nueva actualización del runtime",
     hideUpdate:
       "Ocultar la actualización de {component} hasta que se vuelva a abrir Unsloth",
     hideUpdates:

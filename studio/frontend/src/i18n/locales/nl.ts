@@ -215,6 +215,7 @@ export const nl = {
     tabs: "Browsertabbladen",
     newTab: "Nieuw tabblad",
     newTabFullView: "Nieuw tabblad in volledige weergave",
+    newTabFloating: "Nieuw tabblad in zwevend venster",
     closeTab: "Tabblad sluiten",
     close: "Browser sluiten",
     show: "Browser weergeven",
@@ -434,6 +435,12 @@ export const nl = {
       openChat: "Openen in volledige weergave",
       moveLeft: "Naar linkerpaneel verplaatsen",
       moveRight: "Naar rechterpaneel verplaatsen",
+    },
+    floating: {
+      enter: "Zwevend venster",
+      dock: "Aan de zijkant vastzetten",
+      close: "Zwevend venster sluiten",
+      handle: "Venster verplaatsen. Pijltoetsen verplaatsen het; Shift en pijltoetsen wijzigen de grootte.",
     },
     annotate: {
       countOne: "1 annotatie",
@@ -895,6 +902,9 @@ export const nl = {
     unifiedTightFit: "Krap",
     unifiedTightFitHint:
       "Wordt op deze Mac mogelijk geladen met een kortere context of werkt langzamer.",
+    residentToRun: "om te draaien",
+    residentToRunHint:
+      "GPU-geheugen dat de laadcontrole tijdens het draaien vereist",
     onDevice: "Op apparaat",
     huggingFace: "Hugging Face",
     retry: "Opnieuw proberen",
@@ -5940,7 +5950,7 @@ export const nl = {
     skippedVersion: "{component} {version} voorlopig overgeslagen",
     skippedUpdate: "De update van {component} voorlopig overgeslagen",
     skippedUpdates: "De updates van {components} voorlopig overgeslagen",
-    vulkanFaster: "Vulkan is >10% sneller dan ROCM. Opnieuw starten niet nodig",
+    vulkanFaster: "Meer dan 10% sneller",
     noRestart: "Opnieuw starten niet nodig",
     downloadSize: "{size} downloaden",
     backendChange: "Backend {change}",
@@ -5949,8 +5959,8 @@ export const nl = {
     installingPhase: "{component} installeren ({current} van {total})...",
     installingCount: "{count} updates installeren...",
     bundleTitle: "{count} runtime-updates",
-    newBackend: "Nieuwe backend voor {component}",
-    newUpdate: "Nieuwe update voor {component}",
+    newBackend: "Nieuwe runtime-backend",
+    newUpdate: "Nieuwe runtime-update",
     hideUpdate:
       "De update van {component} verbergen totdat Unsloth opnieuw wordt geopend",
     hideUpdates:
