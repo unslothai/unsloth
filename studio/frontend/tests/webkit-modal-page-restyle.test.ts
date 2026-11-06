@@ -133,7 +133,7 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
   assert.doesNotMatch(css, /\[data-slot="sidebar-inset"\] \.pointer-events-auto/);
   // Page restorations (toolbars, the Downloads card) go inert under the body lock, with one rule.
   const page =
-    'body[style*="pointer-events: none"] .pointer-events-auto:not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *)';
+    'body[style*="pointer-events: none"] :is(.pointer-events-auto, .sidebar-row-action):not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *)';
   assert.match(rule(css, page), /pointer-events: none !important;/);
   assert.match(readSrc("features/hub/download-manager/download-manager-panel.tsx"), /"hub-download-panel pointer-events-auto /);
   // What is meant to work over a modal stays live.

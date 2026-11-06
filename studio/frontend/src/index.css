@@ -2150,8 +2150,9 @@ html[data-chat-font] .aui-root {
 	   floating monitors): with the body lock on, wheel over one scrolled what sits behind the modal.
 	   Left live: the top dialog (contained or portaled), every popper popup, the thread (its cover
 	   blocks it, and its many restorations would restyle on each toggle) and window chrome, toasts and
-	   overlays that are meant to work over a modal (.modal-pe-live). Class-keyed like the rule above. */
-	body[style*="pointer-events: none"] .pointer-events-auto:not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *) {
+	   overlays that are meant to work over a modal (.modal-pe-live). Sidebar row actions restore it in
+	   CSS (an open disclosure arrow) rather than with the class. Class-keyed like the rule above. */
+	body[style*="pointer-events: none"] :is(.pointer-events-auto, .sidebar-row-action):not(.aui-thread-root *):not([role="dialog"] *):not([role="alertdialog"] *):not([data-radix-popper-content-wrapper] *):not(.modal-pe-live):not(.modal-pe-live *) {
 		pointer-events: none !important;
 	}
 
