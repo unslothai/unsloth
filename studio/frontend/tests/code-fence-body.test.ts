@@ -401,10 +401,13 @@ test("chat code blocks cap their height and scroll inside, except on paper", () 
 });
 
 test("a capped block colours only what is in view and a streaming one follows its last line", () => {
-  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("function usePinnedWhileStreaming("));
+  const hook = DEFER.slice(DEFER.indexOf("function useFenceHighlightLimit("), DEFER.indexOf("const READER_SCROLL_EVENTS"));
   assert.match(hook, /const capped = innerLineWindow\(code\.current, body\);/);
   assert.match(hook, /lineWindowColoured\(tokens, progress, capped\)/);
   const pin = DEFER.slice(DEFER.indexOf("function usePinnedWhileStreaming("), DEFER.indexOf("export const FenceBody = memo("));
-  assert.match(pin, /following\.current = body\.scrollHeight - body\.scrollTop - body\.clientHeight < 24;/);
+  assert.match(pin, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
   assert.match(pin, /body\.scrollTop = body\.scrollHeight;/);
+  // A finished stream remounts the body; it comes back where the reader left it.
+  assert.match(pin, /body\.scrollTop = saved\.atBottom \? body\.scrollHeight : saved\.top;/);
+  assert.match(DEFER, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown", "pointerdown"\] as const;/);
 });
