@@ -798,6 +798,8 @@ export const en = {
   picker: {
     unifiedTightFit: "Tight fit",
     unifiedTightFitHint: "May load with a shorter context or run slower on this Mac.",
+    residentToRun: "to run",
+    residentToRunHint: "GPU memory the load check needs while running",
     onDevice: "On Device",
     huggingFace: "Hugging Face",
     retry: "Retry",
@@ -5525,7 +5527,7 @@ export const en = {
     skippedVersion: "Skipped {component} {version} for now",
     skippedUpdate: "Skipped the {component} update for now",
     skippedUpdates: "Skipped the {components} updates for now",
-    vulkanFaster: "Vulkan is >10% faster than ROCM. No restart needed",
+    vulkanFaster: "Over 10% faster",
     noRestart: "No restart needed",
     downloadSize: "{size} download",
     // {change}: "<from backend> → <to backend>".
@@ -5535,8 +5537,8 @@ export const en = {
     installingPhase: "Installing {component} ({current} of {total})...",
     installingCount: "Installing {count} updates...",
     bundleTitle: "{count} runtime updates",
-    newBackend: "New {component} backend",
-    newUpdate: "New {component} update",
+    newBackend: "New runtime backend",
+    newUpdate: "New runtime update",
     hideUpdate: "Hide the {component} update until Unsloth is reopened",
     hideUpdates: "Hide the {components} updates until Unsloth is reopened",
     whatsNew: "What's new",

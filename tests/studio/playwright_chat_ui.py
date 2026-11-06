@@ -949,10 +949,22 @@ def exercise_floating_monitor_geometry(page):
     wait_for_box("viewport restore", lambda box: is_inside(box, viewport))
 
     resize_start = drag_monitor_to(0, 0)
-    _, resized_box = resize_monitor_to(
-        resize_start["x"] + resize_start["width"] - 8 + 40,
-        resize_start["y"] + resize_start["height"] - 8 + 30,
-    )
+    want = (resize_start["width"] + 40, resize_start["height"] + 30)
+    # On a loaded runner the native grip sometimes follows only the first pointer step (296 wanted,
+    # 256 or 260 seen). The target is absolute, so dragging the grip there again is idempotent.
+    for attempt in range(3):
+        _, resized_box = resize_monitor_to(
+            resize_start["x"] + resize_start["width"] - 8 + 40,
+            resize_start["y"] + resize_start["height"] - 8 + 30,
+        )
+        if (
+            abs(resized_box["width"] - want[0]) <= tolerance
+            and abs(resized_box["height"] - want[1]) <= tolerance
+        ) or attempt == 2:
+            break
+        info(
+            f"resize stopped at {resized_box['width']}x{resized_box['height']}, dragging the grip again"
+        )
     expect_close(resized_box["width"], resize_start["width"] + 40, "resize width")
     expect_close(resized_box["height"], resize_start["height"] + 30, "resize height")
     expect_close(resized_box["x"], resize_start["x"], "resize left edge")

@@ -889,6 +889,8 @@ export const fa = {
     unifiedTightFit: "جای تنگ",
     unifiedTightFitHint:
       "ممکن است با زمینهٔ کوتاه‌تر بارگذاری شود یا روی این Mac کندتر اجرا شود.",
+    residentToRun: "برای اجرا",
+    residentToRunHint: "حافظه GPU که بررسی بارگذاری هنگام اجرا لازم دارد",
     onDevice: "روی دستگاه",
     huggingFace: "Hugging Face",
     retry: "تلاش دوباره",
@@ -5858,8 +5860,7 @@ export const fa = {
     skippedVersion: "{component} {version} فعلاً رد شد",
     skippedUpdate: "به‌روزرسانی {component} فعلاً رد شد",
     skippedUpdates: "به‌روزرسانی‌های {components} فعلاً رد شدند",
-    vulkanFaster:
-      "Vulkan بیش از 10% سریع‌تر از ROCM است. نیازی به راه‌اندازی دوباره نیست",
+    vulkanFaster: "بیش از ۱۰٪ سریع‌تر",
     noRestart: "نیازی به راه‌اندازی دوباره نیست",
     downloadSize: "دانلود {size}",
     backendChange: "بک‌اند {change}",
@@ -5868,8 +5869,8 @@ export const fa = {
     installingPhase: "در حال نصب {component} ({current} از {total})...",
     installingCount: "در حال نصب {count} به‌روزرسانی...",
     bundleTitle: "{count} به‌روزرسانی محیط اجرا",
-    newBackend: "بک‌اند جدید {component}",
-    newUpdate: "به‌روزرسانی جدید {component}",
+    newBackend: "بک‌اند جدید محیط اجرا",
+    newUpdate: "به‌روزرسانی جدید محیط اجرا",
     hideUpdate: "پنهان کردن به‌روزرسانی {component} تا باز شدن دوبارهٔ Unsloth",
     hideUpdates:
       "پنهان کردن به‌روزرسانی‌های {components} تا باز شدن دوبارهٔ Unsloth",
