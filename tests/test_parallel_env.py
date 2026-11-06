@@ -1315,8 +1315,10 @@ def test_pp_env_router_aux_split_is_refused_before_the_trainer_init():
         refuse(T, args(1, eval_strategy = "steps", eval_bs = 4), layout(), model)
     with pytest.raises(NotImplementedError, match = "load-balancing loss per micro-batch"):
         refuse(SFT, args(2, coef = None), layout(), model)  # TRL takes the architecture's coefficient
-    if not pp_env._gpipe_needs_stage_count():  # torch 2.10 GPipe pads one micro-batch up to pp
-        refuse(T, args(4), layout(mb = 1), model)
+    refuse(T, args(4), layout(mb = 1), model)
+    # UNSLOTH_PP_MICROBATCHES the schedule cannot run: the split refuses it with the schedule's own reason.
+    refuse(T, args(4), layout(mb = 1, schedule = "1f1b"), model)
+    if not pp_env._gpipe_needs_stage_count():
         refuse(T, args(1), layout(), model)
     refuse(SFT, args(4, coef = 0.0), layout(), model)
     refuse(T, args(4), layout(mb = 3), model)  # the step raises its own error

@@ -737,11 +737,13 @@ def _refuse_split_router_aux_at_init(
         if not batch_size:
             continue
         try:
-            m, _ = _plan_microbatches(
+            m, pad = _plan_microbatches(
                 want, layout.microbatches, layout.pp, schedule, batch_size, train
             )
         except ValueError:
             continue  # the step raises its own error
+        if pad and layout.microbatches:
+            continue  # this schedule cannot run the UNSLOTH_PP_MICROBATCHES asked for; the split says so
         if m > 1:
             raise NotImplementedError(_split_router_aux_message(layout.env_vars, m))
 

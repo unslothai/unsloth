@@ -608,8 +608,14 @@ _ONE_MICROBATCH_REFUSED = "pipeline schedule cannot run 1 micro-batches over 2 s
 
 
 def _skip_if_one_microbatch_refused(results):
+    from unsloth.models import pp_env
+
     errors = [res.get("error") or "" for res in results]
-    if errors and all(_ONE_MICROBATCH_REFUSED in e for e in errors):
+    # Where GPipe pads a single micro-batch up to the stage count, a batch of one splits too and is refused.
+    padded = pp_env._gpipe_needs_stage_count() and all(
+        "splits each Trainer batch into 2" in e for e in errors
+    )
+    if errors and (padded or all(_ONE_MICROBATCH_REFUSED in e for e in errors)):
         import torch as _torch
         pytest.skip(
             f"torch {_torch.__version__}'s GPipe schedule refuses 1 micro-batch over 2 stages (torch < 2.13), and "
