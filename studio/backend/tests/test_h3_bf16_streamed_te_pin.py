@@ -126,3 +126,18 @@ def test_load_streams_the_conditioner_before_pinning_and_falls_back_when_refused
     assert stream_at < pin_at
     assert "pin_plan = None" in block[stream_at:pin_at]
     assert "h3_te_stream_enabled()" in src[src.rindex("streamed_sizes = (", 0, start) : start]
+
+
+def test_streamed_conditioner_tier_keeps_the_eager_tier_of_the_rotation_it_replaces():
+    """Placement alone is bit-identical to the rotation; the regional compile is not. The new tier holds the compile
+    off, through the same downgrade the rotation takes, so a load's output does not change."""
+    from core.inference import video as vid
+
+    src = inspect.getsource(vid.VideoBackend)
+    start = src.index("pin_plan = _h3_dense_pin_plan(")
+    held = src.index("dense_compile_held = bool(denoiser_pinned)", start)
+    assert held < src.index("video.h3_denoiser_placement: %.1f GB free is under", start)
+    gate = src.index("if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and dense_compile_held:")
+    assert src.index("effective_speed = SPEED_EAGER", gate) < src.index(
+        "snapshot_backend_flags()", gate
+    )

@@ -11328,6 +11328,8 @@ class VideoBackend:
                 )
         offload_policy = "none"
         denoiser_pinned = False
+        # The bf16 denoiser pinned beside a streamed conditioner: eager, as in the rotation it replaces.
+        dense_compile_held = False
         denoiser_streamed: Optional[str] = None
         denoiser_single_host_copy = False
         te_streamed: Optional[str] = None
@@ -11606,6 +11608,9 @@ class VideoBackend:
                                 label = "released bfloat16 denoiser",
                             )
                             if te_streamed:
+                                # Placement alone is bit-identical to the rotation; the regional compile is not
+                                # (G4: LPIPS 0.115 over 20 steps), so this tier keeps the rotation's eager tier.
+                                dense_compile_held = bool(denoiser_pinned)
                                 logger.info(
                                     "video.h3_denoiser_placement: %.1f GB free holds the denoiser beside the "
                                     "streamed conditioner (%.1f GB), not beside a rotating one, so it stays "
@@ -11623,7 +11628,14 @@ class VideoBackend:
                             )
 
         # Speed layer applied here after offload (compile needs denoiser_pinned); not in load_pipeline.
-        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (
+        if effective_speed in (SPEED_DEFAULT, SPEED_MAX) and dense_compile_held:
+            logger.info(
+                "video.speed_mode: the released bf16 denoiser is resident beside the streamed "
+                "conditioner; the regional compile is held off so the output matches the rotation "
+                "it replaces; keeping the lossless optimisations"
+            )
+            effective_speed = SPEED_EAGER
+        elif effective_speed in (SPEED_DEFAULT, SPEED_MAX) and not (
             denoiser_pinned or denoiser_streamed
         ):
             # Compile only a resident or streamed denoiser; in the rotation the graph fights the onload hooks.
@@ -11922,7 +11934,12 @@ class VideoBackend:
                         else "regional compile over the resident pre-quantized denoiser"
                     )
                     if "compiled" in speed_optims
-                    else "lossless optimisations only; the denoiser is in the CPU-offload rotation",
+                    else (
+                        "lossless optimisations only; the bf16 denoiser is resident beside the "
+                        "streamed conditioner (compile held off: output unchanged)"
+                        if dense_compile_held
+                        else "lossless optimisations only; the denoiser is in the CPU-offload rotation"
+                    ),
                 ),
                 "attention_backend": (
                     attention_backend,
