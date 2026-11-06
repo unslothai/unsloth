@@ -5684,7 +5684,8 @@ html[data-find-bar-open] [data-sonner-toaster][data-y-position="top"] {
 
 /* Placed by floating-preview.ts. No transition: a drag's transform must drop without easing back. */
 .chat-artifact-pop-surface.chat-browser-floating {
-	z-index: 35;
+	/* In front of everything in the chat, its header (z-40) included. */
+	z-index: 45;
 	opacity: 1;
 	pointer-events: auto;
 	will-change: auto;

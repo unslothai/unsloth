@@ -44,7 +44,9 @@ export function BrowserToggleButton({
   floatable?: boolean;
 }) {
   const t = useT();
-  const open = useBrowserStore((state) => state.open);
+  const panelOpen = useBrowserStore((state) => state.open);
+  // The floating window leaves the header free, so the button stays there.
+  const open = useBrowserStore((state) => state.open && !state.floating);
   const newTabShortcut = useShortcutLabel("newBrowserTab");
   const fullViewShortcut = useShortcutLabel("toggleBrowserFullView");
   const [menuOpen, setMenuOpen] = useState(false);
@@ -72,7 +74,8 @@ export function BrowserToggleButton({
       event.preventDefault();
       openTab("fullView");
     },
-    { enabled: active && !(hideWhenOpen && open) },
+    // The floating window's own bar takes this shortcut while it is up.
+    { enabled: active && !(hideWhenOpen && panelOpen) },
   );
   const clearTimer = () => {
     if (timer.current !== null) window.clearTimeout(timer.current);
