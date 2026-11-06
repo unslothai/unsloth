@@ -750,6 +750,7 @@ def load_chat_backend(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
     model_config = None,
     fresh_backend: bool = False,
 ):
@@ -798,7 +799,7 @@ def load_chat_backend(
             from core.inference import get_inference_backend
             backend = get_inference_backend()
         try:
-            loaded = backend.load_model(
+            load_kwargs = dict(
                 config = model_config,
                 max_seq_length = max_seq_length,
                 load_in_4bit = load_in_4bit,
@@ -806,6 +807,11 @@ def load_chat_backend(
                 tensor_parallel = tensor_parallel,
                 mlx_distributed = is_mlx_distributed,
             )
+            # Only when asked: the default call stays identical for every other load, and the
+            # value stays the caller's so no code path switches remote execution on by itself.
+            if trust_remote_code:
+                load_kwargs["trust_remote_code"] = trust_remote_code
+            loaded = backend.load_model(**load_kwargs)
         except Exception as exc:
             if not is_mlx_distributed:
                 raise
@@ -1066,6 +1072,7 @@ class HttpChatBackend:
         speculative_type: Optional[SpeculativeType] = None,
         spec_draft_n_max: Optional[int] = None,
         llama_extra_args: Optional[List[str]] = None,
+        trust_remote_code: bool = False,
     ) -> None:
         typer.echo(f"Loading {model} on the Unsloth server", err = True)
         payload = {
@@ -1082,6 +1089,9 @@ class HttpChatBackend:
             payload["speculative_type"] = speculative_type
         if spec_draft_n_max is not None:
             payload["spec_draft_n_max"] = spec_draft_n_max
+        # Only when asked, so an existing payload stays byte-identical for everyone else.
+        if trust_remote_code:
+            payload["trust_remote_code"] = trust_remote_code
         resident_variant = self._resident_gguf_variant(model)
         if resident_variant:
             payload["gguf_variant"] = resident_variant
@@ -1237,6 +1247,7 @@ def connect_studio_server(
     speculative_type: Optional[SpeculativeType] = None,
     spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
+    trust_remote_code: bool = False,
 ):
     """Backend on a running Unsloth server, or None (caller loads locally)."""
     base_url = find_studio_server()
@@ -1298,5 +1309,6 @@ def connect_studio_server(
         speculative_type = speculative_type,
         spec_draft_n_max = spec_draft_n_max,
         llama_extra_args = llama_extra_args,
+        trust_remote_code = trust_remote_code,
     )
     return backend
