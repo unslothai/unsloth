@@ -683,6 +683,7 @@ _PACKED_ULYSSES = (
     "tests/test_cp_ulysses_generic_gloo.py::test_generic_ulysses_matches_one_process"
     "[gemma3-eager-True|qwen3-sdpa-True]"
 )
+_PACKED_COMPILED = _GLOO + "test_block_compile_packed_rows_under_cp_match_one_process"
 CELLS = (
     Cell(
         "cp x native FSDP2 (dp_shard x cp), eager",
@@ -745,13 +746,40 @@ CELLS = (
     ),
     Cell(
         "packed rows x cp Ulysses (DDP), Unsloth block compile",
-        {**_PACKED_CP, "compile": ("block",)},
+        {
+            **_PACKED_CP,
+            "family": ("qwen3", "llama"),
+            "windowed": (False,),
+            "mode": ("lora",),
+            "attention": ("sdpa",),
+            "compile": ("block",),
+        },
+        parity = _PACKED_COMPILED
+        + " (packing and padding-free rows, ga 1 and 2: the same numbers as one process)",
+        engagement = _PACKED_COMPILED
+        + " (compiled classes, seq / cp tokens, every micro-batch's document lengths at the shard, the compiled "
+        "layers issue the all-to-alls)",
+        compile = _PACKED_COMPILED
+        + " (graph breaks incl. data-dependent ones / recompiles / graphs <= one process)",
+        note = "per-document compiled attention also: "
+        "tests/test_cp_ulysses_generic_gloo.py::test_compiled_layers_follow_each_packed_row",
+        min_torch = BLOCK_COMPILE_TORCH,
+    ),
+    # First match wins: the rest of the packed compiled rows, and the measured one on older torch.
+    Cell(
+        "packed rows x cp Ulysses (DDP), Unsloth block compile, unmeasured",
+        {
+            **_PACKED_CP,
+            "family": _PACKED_CP["family"] + ("llama",),
+            "compile": ("block",),
+        },
         parity = "tests/test_cp_ulysses_generic_gloo.py::test_compiled_layers_follow_each_packed_row",
         engagement = None,
         compile = None,
-        note = "compiled layers now rebuild each packed row's metadata, but the data-dependent cu_seqlens tail "
-        "check in utils/ulysses_hybrid.py still breaks the graph on every packed attention call, so there is no "
-        "compile evidence (graph breaks / graphs not above one process) yet; eager is proven",
+        note = "compile evidence ("
+        + _PACKED_COMPILED
+        + ") covers Qwen3 / Llama, LoRA, SDPA, no window, on "
+        "torch >= 2.13 only; eager is proven",
     ),
 )
 

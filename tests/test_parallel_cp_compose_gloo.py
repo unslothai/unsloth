@@ -1026,6 +1026,13 @@ def test_block_compile_packed_rows_under_cp_match_one_process(arch, packed, ga):
             "ulysses",
             arch,
         ), (what, query)
+        # The run as configured reaches the registry's packed compiled cell, whose evidence is this test.
+        from unsloth import parallel_capabilities as caps
+
+        status, cell = caps.cell_status(caps.Query(**query))
+        assert (
+            status == "supported" and "test_block_compile_packed_rows_under_cp" in cell.compile
+        ), (what, cell)
         assert res["cp_backend"] == "ulysses" and res["seen_lengths"] == [SEQ // 2], (
             what,
             res["seen_lengths"],
