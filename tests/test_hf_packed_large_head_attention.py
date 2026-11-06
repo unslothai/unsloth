@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Packed HD512 routing and metadata on CPU; real Triton forward/backward on CUDA."""
+"""CPU tests mock kernel eligibility; CUDA tests compare outputs and gradients."""
 
 import importlib.util
 from pathlib import Path
@@ -15,7 +15,7 @@ from real_accelerator import has_real_cuda
 
 @pytest.fixture
 def hpa(monkeypatch):
-    # Load the attention utilities without Unsloth's model-loading / accelerator imports.
+    # Avoid Unsloth's model-loading and accelerator imports.
     root = Path(__file__).resolve().parents[1] / "unsloth"
     name = "_packed_hd512_test"
     for suffix, path in (("", root), (".utils", root / "utils"), (".kernels", root / "kernels")):
@@ -27,7 +27,7 @@ def hpa(monkeypatch):
     ad.FLASH_VARLEN, ad.XFORMERS = "flash", "xformers"
     ad._varlen_backward_overflows_int32 = lambda *args: False
     ad.select_attention_backend = lambda **kwargs: None
-    # The tests select the efficient route explicitly, without model-backend discovery.
+    # Force efficient dispatch without model-backend discovery.
     ad._sdpa_backend_state = lambda *args: (
         True,
         int(torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION),
@@ -41,7 +41,7 @@ def hpa(monkeypatch):
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
     yield module
-    # Relative imports made by the utility must not outlive this test package.
+    # Remove relative imports created outside monkeypatch.
     for key in list(sys.modules):
         if key.startswith(name + ".") and key not in (module_name, ad.__name__):
             sys.modules.pop(key, None)
@@ -204,7 +204,7 @@ def test_kernel_failures_preserve_cuda_errors(hpa, lh, monkeypatch, failure):
     "case", ["triton", "declined", "cross_document", "policy", "output_attentions", "disabled"]
 )
 def test_packed_dispatch_keeps_gqa_and_fallback_order(hpa, lh, monkeypatch, case):
-    # CPU dispatch test: eligibility is mocked, while exact mask validation and metadata are real.
+    # Mock kernel eligibility but exercise mask validation and metadata.
     monkeypatch.setattr(hpa, "_static_window", lambda *args: None)
     monkeypatch.setattr(hpa, "_efficient_varlen_takes", lambda *args: case != "policy")
     monkeypatch.setattr(hpa, "_ORIG_SDPA", [lambda *args, **kwargs: ("original", None)])

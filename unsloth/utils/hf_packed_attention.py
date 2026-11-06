@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
-"""Packed rows use varlen flash; wide heads use SDPA mem-efficient or opt-in HD512 Triton.
+"""Packed rows use varlen flash; wide heads use SDPA memory-efficient attention.
 
-UNSLOTH_HF_PACKED_HD512=1 tries the existing Triton kernel on validated packed HD512 rows,
-keeping grouped K/V heads. Off by default pending comparison against efficient varlen.
-Unsloth compiled blocks run this attention call eagerly; user fullgraph compilation keeps SDPA.
-Anything else goes to the wrapped sdpa.
+UNSLOTH_HF_PACKED_HD512=1 enables Triton for validated packed HD512 rows with grouped
+K/V heads. It is off by default pending benchmarks against efficient varlen.
+This attention call runs eagerly inside Unsloth compiled blocks. User fullgraph
+compilation and unsupported calls keep the wrapped SDPA path.
 """
 
 import contextlib
@@ -319,7 +319,7 @@ def _packed_hd512_enabled():
 
 
 def _packed_key_intervals(cu_seqlens, total, window):
-    """Build per-token bounds after _mask_is_block_causal validated these exact boundaries."""
+    """Requires boundaries validated by _mask_is_block_causal."""
     cacheable = not (torch.is_inference(cu_seqlens) or torch.is_inference_mode_enabled())
     version = cu_seqlens._version if cacheable else None
     cache = getattr(cu_seqlens, "_unsloth_large_head_intervals", {}) if cacheable else {}
@@ -339,10 +339,9 @@ def _packed_key_intervals(cu_seqlens, total, window):
 
 
 def _packed_large_head(query, key, value, cu_seqlens, scale, window):
-    """Try the existing HD512 kernel on a validated packed call; None keeps efficient varlen.
+    """Return None to keep efficient varlen if the HD512 kernel declines.
 
-    Experimental until measured against efficient varlen, rather than dense masked SDPA.
-    The caller keeps all efficient-varlen policy / shape checks and the exact mask check.
+    The caller must validate efficient-varlen eligibility and the exact packed mask.
     """
     if (
         query.shape[-1] != 512
@@ -929,9 +928,8 @@ def block_varlen_kwargs(layer, hidden_states, kwargs):
         and _packed_hd512_enabled()
         and getattr(attention, "head_dim", None) == 512
     ):
-        # The experimental route validates masks and prepares intervals eagerly. Keep the rest
-        # of the decoder compiled; a user's fullgraph compile still keeps the original SDPA.
-        # Before the window cache: another layer sharing this window may use smaller heads.
+        # Validate masks and build intervals eagerly while keeping the decoder compiled.
+        # Check before the window cache: layers with smaller heads can share this window.
         return _LEAVE_BLOCK
     # Layers of one forward (and its checkpoint recompute) share the lengths and their window's mask.
     window = _sliding_window(attention, kwargs) if attention is not None else None

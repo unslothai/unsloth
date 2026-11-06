@@ -4,8 +4,8 @@
 
 Run in a CUDA Unsloth environment with this checkout installed:
     python scripts/bench_packed_hd512.py --lengths 1024 2048 512 4096 --heads 32 --kv-heads 4
-Reports warm forward + backward device time and incremental peak allocated memory.
-This measures one attention call, not an optimizer update. No speedup is assumed.
+Reports warm forward/backward device time and incremental peak allocated memory
+for one attention call.
 """
 
 import argparse
@@ -50,7 +50,7 @@ def main():
     v = torch.randn_like(k).requires_grad_()
     grad = torch.randn(1, T, args.heads, 512, device = "cuda", dtype = q.dtype)
     doc = torch.repeat_interleave(torch.arange(len(args.lengths)), lengths.long()).cuda()
-    # One real Transformers-style block-causal mask, shared by both routes and every timed call.
+    # Reuse the same block-causal mask across routes and iterations.
     mask = ((doc[:, None] == doc[None, :]).tril())[None, None]
     module = types.SimpleNamespace(is_causal = True, training = True)
 
@@ -68,7 +68,7 @@ def main():
         out.backward(grad)
 
     results = {}
-    # Alternate routes to reduce order bias; each arm verifies that its requested kernel engaged.
+    # Alternate routes to reduce order bias.
     for arm in ("efficient", "large_head", "large_head", "efficient"):
         os.environ["UNSLOTH_HF_PACKED_HD512"] = "1" if arm == "large_head" else "0"
         before = hpa.HF_PACKED_ATTENTION_STATS[arm]
