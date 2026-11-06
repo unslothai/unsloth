@@ -395,6 +395,7 @@ test("transparent glass keeps each surface's colour at the strength's opacity, w
 	}
 	// Sonner renders inside #root (no portal), so toasts re-resolve the tokens at full opacity.
 	assert.match(block, /html\[data-glass-clear\] #root \[data-sonner-toaster\] \{\n  --clear-alpha: 100%;\n\}/);
+	assert.match(block, /html\[data-glass-clear\] #root \[class\*="text-background"\] \{\n  --background: var\(--glass-page-bg\);\n  --color-background: var\(--glass-page-bg\);\n\}/);
 	assert.match(css, /--glass-page-sidebar: var\(--sidebar\);/);
 	assert.match(block, /html\[data-glass-clear\] #root :is\(\.library-header-row\.sticky:not\(\[data-stuck\]\), \[data-page-model-header\]\) \{\n\s*background-color: transparent;/);
 	assert.match(block, /@layer base \{\n\s*html\[data-glass-clear\] body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
