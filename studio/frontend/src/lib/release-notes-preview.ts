@@ -756,19 +756,22 @@ function splitLeadSentence(text: string): {
   return { lead: text, rest: "", restStart: text.length };
 }
 
+/** A link the lead split cuts through becomes one anchor on each side. */
 function previewItem({ text, links }: Bullet): ReleaseNotesPreviewItem {
   const { lead, rest, restStart } = splitLeadSentence(text);
   const parts: ReleaseNotesLink[] = [];
   for (const { start, end, href } of links) {
-    if (end <= lead.length) {
-      parts.push({ part: "lead", start, end, href });
-    } else if (start >= restStart) {
+    if (start < lead.length) {
       parts.push({
-        part: "rest",
-        start: start - restStart,
-        end: end - restStart,
+        part: "lead",
+        start,
+        end: Math.min(end, lead.length),
         href,
       });
+    }
+    if (end > restStart) {
+      const from = Math.max(start, restStart) - restStart;
+      parts.push({ part: "rest", start: from, end: end - restStart, href });
     }
   }
   return { lead, rest, links: parts };

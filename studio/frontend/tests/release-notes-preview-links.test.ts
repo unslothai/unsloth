@@ -109,6 +109,21 @@ test("destinations decode character references and keep their own link", () => {
   ]);
 });
 
+test("a link the lead split cuts through stays clickable on both sides", () => {
+  const [item] = linkedText(
+    "- [Faster inference. Read the guide](https://example.com/guide) today",
+  );
+  assert.equal(item?.lead, "Faster inference.");
+  assert.deepEqual(item?.links, [
+    {
+      part: "lead",
+      text: "Faster inference.",
+      href: "https://example.com/guide",
+    },
+    { part: "rest", text: "Read the guide", href: "https://example.com/guide" },
+  ]);
+});
+
 test("prose fallback keeps its links", () => {
   const [intro, links] = linkedText(
     "Muse Glimmer is out.\n\n[Run Muse Glimmer](https://unsloth.ai/docs/run)\n[Fine-tune it](https://unsloth.ai/docs/train)",
