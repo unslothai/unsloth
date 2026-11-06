@@ -380,3 +380,19 @@ test("focused glass surfaces on pages show their Tailwind focus ring over the gl
 	const cards = readFileSync(new URL("../src/features/library/components/library-cards.tsx", import.meta.url), "utf8");
 	assert.match(cards, /focus-visible:ring-2/);
 });
+
+test("transparent glass clears every fill and shadow but keeps overlays, state and colour", () => {
+	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
+	const block = css.slice(css.indexOf("/* Transparent glass: no fill and no shadow"));
+	// In base: its !important must beat layered `bg-...!` utilities as well as unlayered glass rules.
+	assert.match(block, /^\/\*[^]*?\*\/\n@layer base \{/);
+	assert.match(block, /html\[data-glass="transparent"\] body :not\([^{]*\) \{\n\s*background-color: transparent !important;/);
+	const kept = /html\[data-glass="transparent"\] body :not\(([^{]*)\) \{/.exec(block)?.[1] ?? "";
+	for (const keep of ['[data-slot="dialog-content"]', '[data-slot$="menu-content"]', '[role="switch"]', '[aria-selected="true"]', '[class*="bg-primary"]', ".chat-wallpaper *", '[style*="background"]']) {
+		assert.ok(kept.includes(keep), keep);
+	}
+	// Hover only on controls: a hovered page container must not get its fill back.
+	assert.match(kept, /:is\(button, a, \[role="button"\], \[role="menuitem"\], \[role="option"\], \[role="tab"\]\):is\(:hover, :focus-visible\)/);
+	assert.match(block, /body :not\(:focus-visible\),[^{]*\{\n\s*box-shadow: none !important;\n\s*text-shadow: none !important;/);
+	assert.match(block, /outline: 1px solid var\(--transparent-edge\) !important;\n\s*outline-offset: -1px !important;/);
+});

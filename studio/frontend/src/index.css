@@ -7112,3 +7112,56 @@ html[data-glass] :is([data-wallpaper-workspace], [data-chat-content-root]):has(>
 :is([data-wallpaper-workspace], [data-chat-content-root]):has(> .chat-wallpaper[data-ready][data-outline="false"]) .glass-lens::after {
   display: none;
 }
+
+/* Transparent glass: no fill and no shadow on anything; outlines carry the shapes. Overlays, colour
+   and live state (hover, open, selected, checked) keep their fills so menus stay readable and state
+   stays visible. In base so this !important outranks layered utilities and unlayered rules alike. */
+@layer base {
+  html[data-glass="transparent"] {
+    --transparent-edge: color-mix(in srgb, var(--foreground) var(--element-outline, 12%), transparent);
+  }
+  html.dark[data-glass="transparent"] {
+    --transparent-edge: color-mix(in srgb, var(--foreground) var(--element-outline, 14%), transparent);
+  }
+  html[data-glass="transparent"] body :not(
+    .chat-wallpaper, .chat-wallpaper *, img, video, canvas, svg, svg *, mark, [style*="background"],
+    [data-slot$="menu-content"], [data-slot$="menu-sub-content"], [data-slot="select-content"],
+    [data-slot="combobox-content"], [data-slot="popover-content"], [data-slot="hover-card-content"],
+    [data-slot="dialog-content"], [data-slot="alert-dialog-content"], [data-slot="sheet-content"],
+    [data-slot="tooltip-content"], [data-slot$="-overlay"], [data-sonner-toast],
+    [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [role="tooltip"],
+    [role="switch"], [role="switch"] *, [role="checkbox"], [role="checkbox"] *, [role="radio"], [role="radio"] *,
+    [role="slider"], [data-slot^="slider-"], [role="progressbar"], [role="progressbar"] *,
+    [data-slot="progress-indicator"], [data-slot="scroll-area-thumb"],
+    :is(button, a, [role="button"], [role="menuitem"], [role="option"], [role="tab"]):is(:hover, :focus-visible),
+    :is(button, a, [role="button"], [role="combobox"])[data-state="open"], [aria-expanded="true"],
+    [role="tab"][data-state="active"], [data-state="on"], [data-state="checked"], [aria-selected="true"],
+    [aria-current="page"], [aria-current="true"], [aria-pressed="true"], [aria-checked="true"],
+    [data-active="true"], [data-selected="true"], [class~="bg-accent"], .hub-tab-toggle-pill,
+    [class*="bg-primary"], [class*="bg-destructive"], [class*="bg-foreground"], [class*="bg-red-"],
+    [class*="bg-orange-"], [class*="bg-amber-"], [class*="bg-yellow-"], [class*="bg-lime-"],
+    [class*="bg-green-"], [class*="bg-emerald-"], [class*="bg-teal-"], [class*="bg-cyan-"],
+    [class*="bg-sky-"], [class*="bg-blue-"], [class*="bg-indigo-"], [class*="bg-violet-"],
+    [class*="bg-purple-"], [class*="bg-fuchsia-"], [class*="bg-pink-"], [class*="bg-rose-"]
+  ) {
+    background-color: transparent !important;
+  }
+  html[data-glass="transparent"] body :not(:focus-visible),
+  html[data-glass="transparent"] body ::before,
+  html[data-glass="transparent"] body ::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+  /* The fill was these controls' only edge; outline-offset -1px lands on a border where there is one. */
+  html[data-glass="transparent"] body :is(.btn-fill, .hub-tab-toggle, .panel-field, .panel-select-trigger,
+    .field-soft, [data-slot="input"], [data-slot="select-trigger"], [data-slot="button"]:is([data-variant="outline"], [data-variant="secondary"]),
+    .hub-stat-pill, .hub-tag-soft, .hub-tag-meta, .hub-download-card, .elevated-card, .library-card,
+    .unsloth-model-selector-trigger, [data-chat-model-notice], textarea):not(:focus-visible) {
+    outline: 1px solid var(--transparent-edge) !important;
+    outline-offset: -1px !important;
+  }
+  html[data-glass="transparent"] body .unsloth-composer-surface:not(:focus-visible) {
+    outline: 1px solid color-mix(in srgb, var(--foreground) var(--composer-outline, var(--element-outline, 14%)), transparent) !important;
+    outline-offset: -1px !important;
+  }
+}
