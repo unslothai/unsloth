@@ -248,7 +248,11 @@ test("a cancel during the saved-mic request skips the default-mic fallback", asy
 });
 
 function fakeCheckpointStore(checkpoint: string) {
-  let state = { params: { checkpoint } };
+  let state: {
+    params: { checkpoint: string };
+    modelLoading?: boolean;
+    loadingModelPick?: unknown;
+  } = { params: { checkpoint } };
   const listeners = new Set<(s: typeof state) => void>();
   return {
     getState: () => state,
@@ -256,8 +260,8 @@ function fakeCheckpointStore(checkpoint: string) {
       listeners.add(listener);
       return () => listeners.delete(listener);
     },
-    set(next: string) {
-      state = { params: { checkpoint: next } };
+    set(next: string, extra: { modelLoading?: boolean; loadingModelPick?: unknown } = {}) {
+      state = { params: { checkpoint: next }, ...extra };
       for (const listener of [...listeners]) listener(state);
     },
     listeners,
@@ -292,4 +296,21 @@ test("a finished recording stops watching the chat model", async () => {
   assert.equal(store.listeners.size, 0);
   store.set("qwen3-text-only");
   assert.deepEqual(toasts, []);
+});
+
+test("a model load starting mid-recording discards the clip before checkpoint moves", async () => {
+  for (const extra of [
+    { modelLoading: true },
+    { loadingModelPick: { id: "qwen3-text-only" } },
+  ]) {
+    toasts.length = 0;
+    const store = fakeCheckpointStore("gemma-4-e2b");
+    const session = listenForAudioClip(() => {});
+    discardClipWhenModelChanges(session, store);
+    await flush();
+    store.set("gemma-4-e2b", extra);
+    await flush();
+    assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
+    assert.deepEqual(toasts, ["Recording discarded because the chat model changed."]);
+  }
 });

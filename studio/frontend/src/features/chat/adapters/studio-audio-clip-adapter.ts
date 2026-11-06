@@ -184,21 +184,29 @@ export function listenForAudioClip(
   return session;
 }
 
+type ModelState = {
+  params: { checkpoint: string | null | undefined };
+  modelLoading?: boolean;
+  loadingModelPick?: unknown;
+};
 type CheckpointStore = {
-  getState: () => { params: { checkpoint: string | null | undefined } };
-  subscribe: (
-    listener: (state: { params: { checkpoint: string | null | undefined } }) => void,
-  ) => () => void;
+  getState: () => ModelState;
+  subscribe: (listener: (state: ModelState) => void) => () => void;
 };
 
-/** The clip was sized and gated for the model it started on; the attachment adapter checks the one active at Stop. */
+/** The clip was sized and gated for the model it started on; the attachment adapter checks the one active at Stop.
+ *  A local load only moves `checkpoint` once it succeeds, so a load starting counts as a change too. */
 export function discardClipWhenModelChanges(
   session: StudioDictationSession,
   store: CheckpointStore,
 ): void {
   const startedOn = store.getState().params.checkpoint;
   const unsubscribe = store.subscribe((state) => {
-    if (state.params.checkpoint === startedOn) return;
+    const switching =
+      state.params.checkpoint !== startedOn ||
+      state.modelLoading === true ||
+      state.loadingModelPick != null;
+    if (!switching) return;
     unsubscribe();
     if (session.status.type === "ended") return;
     toast.info("Recording discarded because the chat model changed.");
