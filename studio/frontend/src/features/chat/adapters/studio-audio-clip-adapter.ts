@@ -149,6 +149,8 @@ export function listenForAudioClip(
         if (micDeviceId === "default" || !isMissingDeviceError(error)) {
           throw error;
         }
+        // Cancelled while the saved device was asked for: open no second mic.
+        if (ended) return;
         stream = await navigator.mediaDevices.getUserMedia({ audio });
       }
       if (ended) {

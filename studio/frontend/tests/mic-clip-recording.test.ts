@@ -47,6 +47,7 @@ class FakeRecorder {
 
 const stream = { getTracks: () => [{ stop() {} }] };
 let micOpens = 0;
+let micDeviceId = "default";
 Object.defineProperty(globalThis, "navigator", {
   value: {
     mediaDevices: {
@@ -65,7 +66,7 @@ const { listenForAudioClip } = loadWithStubs<
   new URL("../src/features/chat/adapters/studio-audio-clip-adapter.ts", import.meta.url),
   {
     "@/features/settings/stores/voice-settings-store": {
-      useVoiceSettingsStore: { getState: () => ({ micDeviceId: "default" }) },
+      useVoiceSettingsStore: { getState: () => ({ micDeviceId }) },
     },
     "@/lib/audio-utils": { MAX_AUDIO_SIZE: MAX, MAX_AUDIO_SIZE_LABEL: "25MB" },
     sonner: {
@@ -79,7 +80,10 @@ const { listenForAudioClip } = loadWithStubs<
     "./dictation-outcome": dictationOutcome,
     "./mic-clip-state": micClipState,
     "./pcm-recorder": { PcmRecorder: FakeRecorder },
-    "./studio-web-speech-dictation-adapter": { isMissingDeviceError: () => false },
+    "./studio-web-speech-dictation-adapter": {
+      isMissingDeviceError: (error: unknown) =>
+        (error as Error)?.name === "NotFoundError",
+    },
   },
 );
 
@@ -210,4 +214,35 @@ test("a stale session's late cleanup keeps a newer recording's hold", async () =
   assert.equal(micClipState.micClipRecording(), true);
   second.cancel();
   assert.equal(micClipState.micClipRecording(), false);
+});
+
+test("a cancel during the saved-mic request skips the default-mic fallback", async () => {
+  const nav = globalThis.navigator as unknown as {
+    mediaDevices: { getUserMedia: () => Promise<unknown> };
+  };
+  const original = nav.mediaDevices.getUserMedia;
+  let rejectSaved: (error: Error) => void = () => {};
+  let requests = 0;
+  nav.mediaDevices.getUserMedia = () => {
+    requests += 1;
+    return requests === 1
+      ? new Promise((_resolve, reject) => {
+          rejectSaved = reject;
+        })
+      : Promise.resolve(stream);
+  };
+  micDeviceId = "unplugged-usb-mic";
+  toasts.length = 0;
+  try {
+    const session = listenForAudioClip(() => {});
+    session.cancel();
+    rejectSaved(Object.assign(new Error("gone"), { name: "NotFoundError" }));
+    await flush();
+    assert.equal(requests, 1);
+    assert.deepEqual(toasts, []);
+    assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
+  } finally {
+    nav.mediaDevices.getUserMedia = original;
+    micDeviceId = "default";
+  }
 });
