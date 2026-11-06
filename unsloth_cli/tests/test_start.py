@@ -5147,8 +5147,8 @@ def test_start_studio_server_builds_command_and_waits(monkeypatch, capsys):
         ),
     )
     cmd = captured["command"]
-    # Windows launches through this interpreter (`python -X utf8 ...`), so "run" follows a longer head.
-    assert cmd[1 if os.name != "nt" else cmd.index("run")] == "run"
+    assert cmd[0] == sys.executable
+    assert cmd[cmd.index("-c") + 2] == "run"
     assert "--disable-tools" in cmd and "--no-cloudflare" in cmd
     assert "--reasoning" not in cmd
     assert captured["kwargs"]["env"]["LLAMA_ARG_REASONING"] == "auto"
