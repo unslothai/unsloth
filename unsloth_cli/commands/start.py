@@ -1474,6 +1474,7 @@ def _start_studio_server(
     # This interpreter, not the `unsloth` on PATH: that can be missing, another install, or on Windows the denied unsloth.exe (#8490).
     # Local import: unsloth_cli.commands.studio imports at package init after this module, so a top-level import would be circular.
     from unsloth_cli.commands.studio import _managed_cli_argv
+
     launch_head = _managed_cli_argv(Path(sys.executable))
     parsed = urlparse(base)
     # Tools default off means passthrough mode (relay the agent's own tools); --no-cloudflare means loopback only, no tunnel. Mirrors .github/scripts/serve-unsloth-run.sh. Healing/nudging travel via the child env below (version-agnostic) rather than new run flags that an older re-exec'd run could mistake for llama-server args.
