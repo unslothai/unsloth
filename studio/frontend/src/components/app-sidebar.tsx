@@ -565,11 +565,13 @@ const CONTEXT_ROW_MENU: RowMenuParts = {
 };
 
 // The kebab shows itself while its menu is open; the quick-action beside it was hover-only, so
-// it slid in over the title. The row reserves room for both, so reveal both.
+// it slid in over the title. The row reserves room for both, so reveal both. Row parts look at
+// the actions after them (`:has(~ ...)`), not the row at its descendants: a group-has-* puts the
+// style after the :has(), which WebKit re-checks across the whole document on every keystroke.
 const REVEAL_WITH_OPEN_MENU_PROJECT_CHAT =
-  "group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pointer-events-auto";
+  "[&:has(~.sidebar-row-action[data-state=open])]:opacity-100 [&:has(~.sidebar-row-action[data-state=open])]:pointer-events-auto";
 const REVEAL_WITH_OPEN_MENU_RECENT =
-  "group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-100 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pointer-events-auto";
+  "[&:has(~.sidebar-row-action[data-state=open])]:opacity-100 [&:has(~.sidebar-row-action[data-state=open])]:pointer-events-auto";
 
 const CHAT_SORT_OPTIONS: Array<{
   value: SidebarChatSort;
@@ -5435,15 +5437,15 @@ export function AppSidebar() {
           ? undefined
           : // Room for the pin quick-action plus the kebab, and the same room with the menu open:
             // a narrower gutter there let the title run under them.
-            "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-14 [@media(pointer:coarse)]:pr-14"
+            "group-hover/project-chat-item:pr-14 [&:has(~.sidebar-row-action[data-state=open])]:pr-14 [@media(pointer:coarse)]:pr-14"
         : showWorkSpinner
           ? undefined
           : // A chat row carries a pin and a kebab, so reserve the room for both on hover and
             // while the menu is open.
-            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16",
+            "group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16",
       variant === "project"
-        ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
-        : "group-has-[.sidebar-row-action:focus-visible]/recent-item:pr-16",
+        ? "[&:has(~.sidebar-row-action:focus-visible)]:pr-14"
+        : "[&:has(~.sidebar-row-action:focus-visible)]:pr-16",
     );
 
     return (
@@ -5520,8 +5522,8 @@ export function AppSidebar() {
                   // behind: sit left of them instead, where this used to be.
                   "[@media(pointer:coarse)]:right-16",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
               >
                 {awaitingApproval ? (
@@ -5546,8 +5548,8 @@ export function AppSidebar() {
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 flex size-3.5 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
                 aria-hidden
               >
@@ -5562,8 +5564,8 @@ export function AppSidebar() {
                 className={cn(
                   "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
               >
                 <HugeiconsIcon icon={Clock01Icon} strokeWidth={1.75} className="size-3.5" />
@@ -5577,8 +5579,8 @@ export function AppSidebar() {
                 className={cn(
                   "pointer-events-none absolute right-4 top-1/2 z-10 flex -translate-y-1/2 text-muted-foreground transition-opacity [@media(pointer:coarse)]:hidden",
                   variant === "project"
-                    ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/project-chat-item:opacity-0"
-                    : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0 group-has-[.sidebar-row-action:focus-visible]/recent-item:opacity-0",
+                    ? "group-hover/project-chat-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0"
+                    : "group-hover/recent-item:opacity-0 [&:has(~.sidebar-row-action[data-state=open])]:opacity-0 [&:has(~.sidebar-row-action:focus-visible)]:opacity-0",
                 )}
               >
                 <GitBranchIcon aria-hidden={true} strokeWidth={1.75} className="size-3.5" />
@@ -5791,7 +5793,7 @@ export function AppSidebar() {
             if (listsChats) toggleProjectCollapsed(project.id);
             else openProject(project.id);
           }}
-            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-16 [@media(pointer:coarse)]:pr-16"
+            className="sidebar-nav-btn h-[calc(33px*var(--ui-space-scale,1))] rounded-full gap-[calc(8.5px*var(--ui-space-scale,1))] pl-3 pr-2.5 font-medium group-hover/recent-item:pr-16 [&:has(~.sidebar-row-action[data-state=open])]:pr-16 [@media(pointer:coarse)]:pr-16"
           >
             <HugeiconsIcon
               icon={expanded ? Folder02Icon : ProjectIcon}
