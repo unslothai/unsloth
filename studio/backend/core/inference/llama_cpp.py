@@ -4126,10 +4126,17 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # llama-server's own --fit-target default ("target margin per device for --fit,
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
-# Extra --fit-target an oversized load paged on an iGPU keeps free: the GPU share and the pages read
-# from disk come out of one memory. On a 127 GiB Strix Halo (Windows, Vulkan) a 147 GiB GGUF aborted
-# at warm-up with llama.cpp's 1 GiB margin and with 8 GiB, and ran with 16 GiB.
+# Extra --fit-target an oversized load paged on a Windows iGPU keeps free: the GPU share and the pages
+# read from disk come out of one memory. On a 127 GiB Strix Halo (Windows, Vulkan) a 147 GiB GGUF
+# aborted at warm-up with llama.cpp's 1 GiB margin and with 8 GiB, and ran with 16 GiB. On Linux the
+# same load ran with 1 GiB, and 16 GiB cut generation from 22.4 to 13.4 tok/s, so it stays Windows only.
 _IGPU_PAGED_FIT_HEADROOM_MIB = 15360
+
+
+def _paged_load_needs_fit_headroom() -> bool:
+    """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``; see there."""
+    return sys.platform == "win32"
+
 
 # Windows + NVIDIA since driver 536.40: WDDM spills VRAM overflow to host RAM instead of failing, so the reserve matches llama.cpp fit margin.
 _WINDOWS_SYSMEM_FALLBACK_RESERVE_MIB = _LLAMA_FIT_TARGET_DEFAULT_MIB
@@ -15757,10 +15764,12 @@ class LlamaCppBackend:
         argv: Iterable[str], env: Optional[Mapping[str, str]], user_args: Optional[Iterable[str]]
     ) -> list[str]:
         """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the margin the launch
-        already keeps, for a load paged on an iGPU: without it llama.cpp's fitter fills the shared
-        memory with the GPU share and leaves nothing for the mapped pages. Empty when the fitter is
-        off, the user set a margin, or the margin is a per-device list."""
+        already keeps, for a load paged on a Windows iGPU: without it llama.cpp's fitter fills the
+        shared memory with the GPU share and leaves nothing for the mapped pages. Empty off Windows,
+        when the fitter is off, the user set a margin, or the margin is a per-device list."""
         args = [str(a) for a in argv or ()]
+        if not _paged_load_needs_fit_headroom():
+            return []
         if not fit_is_effectively_on(args, env) or _fit_target_values(user_args or (), env):
             return []
         raw = _last_flag_value(args, {"-fitt", "--fit-target"})

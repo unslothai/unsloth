@@ -2746,9 +2746,15 @@ def _modes(cmd, flag):
     return [cmd[i + 1] for i, tok in enumerate(cmd) if tok == flag and i + 1 < len(cmd)]
 
 
-def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(tmp_path, monkeypatch):
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(
+    tmp_path, monkeypatch, platform
+):
     """DC-060: on an iGPU llama.cpp's auto is none, so a 217 GB model nobody pinned to a mode read
     its whole 103 GiB Engram table into one host buffer. The override must apply to auto there."""
+    monkeypatch.setattr(
+        llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: platform == "win32"
+    )
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
 
     cmd = _launch(backend, gguf)["cmd"]
@@ -2756,12 +2762,14 @@ def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(tmp
     assert _modes(cmd, "--load-mode") == ["mmap"], cmd
     assert _modes(cmd, "--lazy-mode") == ["on"], cmd
     assert resolve_effective_load_state(cmd, {}, auto_unmapped = True)[1] is False
-    # The fitter keeps shared memory free for the mapped pages, or it fills it with the GPU share.
-    assert _modes(cmd, "--fit-target")[-1:] == ["16384"], cmd
+    # Windows: the fitter keeps shared memory free for the mapped pages, or it fills it with the GPU
+    # share. Linux pages fine without it, and the margin costs speed there.
+    windows = platform == "win32"
+    assert _modes(cmd, "--fit-target")[-1:] == (["16384"] if windows else []), cmd
     warning = backend.last_load_warning or ""
     assert "On this integrated GPU llama.cpp loads without memory mapping by default" in warning
     assert "lookup tables are read from disk as needed" in warning
-    assert "leaving shared memory free for the weights read from disk" in warning
+    assert ("leaving shared memory free for the weights read from disk" in warning) is windows
     assert "was set to load without memory mapping" not in warning
     assert backend._memory_state == (False, False)
 
@@ -2808,6 +2816,7 @@ def test_a_user_lazy_mode_survives_the_igpu_override(tmp_path, monkeypatch):
 
 
 def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
 
     cmd = _launch(backend, gguf, extra_args = ["--fit-target", "4096"])["cmd"]
@@ -2837,8 +2846,11 @@ def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
         "user-env",
     ],
 )
-def test_the_igpu_fit_headroom(argv, env, user, expected):
+def test_the_igpu_fit_headroom(monkeypatch, argv, env, user, expected):
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: True)
     assert LlamaCppBackend._paged_fit_headroom_flags(argv, env, user) == expected
+    monkeypatch.setattr(llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: False)
+    assert LlamaCppBackend._paged_fit_headroom_flags(argv, env, user) == []
 
 
 def test_an_igpu_model_without_a_table_is_only_mapped(tmp_path, monkeypatch):
