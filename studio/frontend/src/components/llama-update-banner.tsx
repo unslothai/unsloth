@@ -404,8 +404,7 @@ export function LlamaUpdateBanner({
       ? rows.reduce((total, row) => total + (row.sizeBytes ?? 0), 0)
       : null,
   );
-  // The title names no runtime, so the summary does. Bundles leave versions and the
-  // restart note to What's new so the line fits; `b12128-mix-2f23ac9` shows as `b12128`.
+  // Bundles leave versions and the restart note to What's new so the line fits.
   const releaseOf = (row: UpdateRow) =>
     !bundled && row.versionChanged && row.latestTag
       ? `${row.component} ${row.latestTag.replace(/^(b\d+)-.+$/, "$1")}`

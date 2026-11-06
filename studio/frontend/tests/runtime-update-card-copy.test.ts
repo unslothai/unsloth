@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The runtime update card's title names no runtime, so its summary must.
 // Read from source: the node suite has no DOM.
 
 import assert from "node:assert/strict";
@@ -28,7 +27,6 @@ test("the summary leads with the runtime and its short release tag", () => {
   assert.equal("b12128-mix-2f23ac9".replace(/^(b\d+)-.+$/, "$1"), "b12128");
   assert.equal("v0.4.0".replace(/^(b\d+)-.+$/, "$1"), "v0.4.0");
   assert.match(summary, /^\s*releases,$/m);
-  // Bundles drop versions and the restart note so the line fits.
   assert.match(summary, /!bundled && row\.versionChanged/);
   assert.match(summary, /bundled \? null : restartNote/);
 });
