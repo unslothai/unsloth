@@ -170,6 +170,14 @@ export function useGlassStrength(): number {
 
 let nativeApplied = false;
 
+// WebKit repaints a glass surface's blurred shadows and backdrop whenever anything inside it
+// changes, and on CPU painting that dominates scrolling and typing. Its children get their own
+// layers there (index.css, data-glass-layers); Chromium composites these already.
+const WEBKIT_LAYERS =
+  typeof navigator !== "undefined" &&
+  /AppleWebKit/.test(navigator.userAgent) &&
+  !/Chrom|Edg|Android/i.test(navigator.userAgent);
+
 export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
   const material = useMaterialStore((s) => s.material);
   const menus = useMaterialStore((s) => s.menus);
@@ -217,6 +225,13 @@ export function WindowMaterialMount({ route }: { route?: BackgroundRoute }) {
     );
   }, [menus, material, here]);
   useEffect(() => {
+    document.documentElement.toggleAttribute(
+      "data-glass-layers",
+      WEBKIT_LAYERS && material !== "solid" && material !== "transparent" && here,
+    );
+  }, [material, here]);
+  useEffect(() => {
+    const root = document.documentElement;
     const wantsNative = material === "macos" && nativeMaterialAvailable();
     let cancelled = false;
     if (!wantsNative) {

@@ -173,6 +173,7 @@ from .diffusion_memory import (
 from .diffusion_torchao_patches import install_torchao_int_mm_patch
 from .media_decode_phase import decode_phase as _decode_phase
 from .media_decode_phase import denoise_phase as _denoise_phase
+from . import diffusion_bg_compile
 from . import diffusion_render_thread as render_thread
 from .diffusion_fp16_guard import fp16_promotes_to_fp32
 from .diffusion_speed import (
@@ -1260,38 +1261,9 @@ def _settle_bg_compile(bg: Any, *, i2v: bool) -> None:
         bg.abandon("an image-to-video render records no compile sample")
 
 
-def _float_seed_dits(pipe: Any) -> list:
-    """DiTs compiled with ``dynamic=True`` (SymFloat restarts); static and torchao compiles never restart."""
-    try:
-        from .diffusion_speed import _guarded_dits
-
-        dits = []
-        for dit in _guarded_dits(pipe):
-            kwargs = getattr(dit, "_unsloth_regional_compile_kwargs", None)
-            if isinstance(kwargs, dict) and kwargs.get("dynamic") is True:
-                dits.append(dit)
-        return dits
-    except Exception:  # noqa: BLE001 - no seeds, main's compile
-        return []
-
-
-@contextlib.contextmanager
-def _seed_before_first_forward(float_seeds: Any):
-    """Also seed at the first DiT forward: H3 modular's progress bar is its loop wrapper's, not the pipe's."""
-    handles = []
-
-    def _pre(*_args: Any) -> None:
-        float_seeds.seed()
-
-    try:
-        for module in list(getattr(float_seeds, "modules", None) or ()):
-            with contextlib.suppress(Exception):
-                handles.append(module.register_forward_pre_hook(_pre))
-        yield
-    finally:
-        for handle in handles:
-            with contextlib.suppress(Exception):
-                handle.remove()
+# Shared with the image backend's first compiled render.
+_float_seed_dits = diffusion_bg_compile.float_seed_dits
+_seed_before_first_forward = diffusion_bg_compile.seed_before_first_forward
 
 
 def _video_float_seed_dir(
