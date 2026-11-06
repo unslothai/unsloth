@@ -119,7 +119,25 @@ test("the search index reads messages a few threads per request", async () => {
     title: `Chat ${i}`,
     createdAt: 45 - i,
   }));
-  configureChatSearchHistoryStub({ threads });
+  // Per-thread reads fail, so a batch result that is dropped leaves the build incomplete.
+  configureChatSearchHistoryStub({
+    threads,
+    messagesByThread: new Map(
+      threads.map((t) => [
+        t.id,
+        [
+          {
+            id: `${t.id}m`,
+            threadId: t.id,
+            role: "user",
+            content: [{ type: "text", text: `note ${t.id}` }],
+            createdAt: 1,
+          },
+        ],
+      ]),
+    ),
+    messageReadsFail: true,
+  });
   const build = await buildChatSearchIndex();
   const requests = chatSearchBatchRequests();
   assert.deepEqual(
@@ -131,6 +149,24 @@ test("the search index reads messages a few threads per request", async () => {
     threads.map((t) => t.id),
   );
   assert.ok(requests.every((r) => (r.options as { view?: string }).view === "search"));
+  assert.equal(build.complete, true);
+  assert.equal(build.items.length, 45);
+  assert.ok(build.items.every((i) => i.searchText.endsWith(`note ${i.id}`)));
+});
+
+test("a failed chunk falls back without dropping the others", async () => {
+  const threads = Array.from({ length: 45 }, (_, i) => ({
+    id: `t${i}`,
+    title: `Chat ${i}`,
+    createdAt: 45 - i,
+  }));
+  configureChatSearchHistoryStub({
+    threads,
+    batchFailures: new Set(["t0"]),
+    // Only the failed chunk may fall back to per-thread reads.
+    messageReadFailures: new Set(threads.slice(20).map((t) => t.id)),
+  });
+  const build = await buildChatSearchIndex();
   assert.equal(build.complete, true);
 });
 
