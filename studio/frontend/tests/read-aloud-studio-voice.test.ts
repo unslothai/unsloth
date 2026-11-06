@@ -34,9 +34,10 @@ const MAX_TOKENS = 1234;
 function load(
   voiceId: string,
   reply: Reply = { status: 200, body: { audio: { data: "UklGRg==" } } },
-  // GET /v1/models: the listing, or an Error for a failed request.
+  // GET /api/inference/loaded-models: the listing, or an Error for a failed request.
   models: unknown = { data: [] },
 ) {
+  const listed: string[] = [];
   const posted: Record<string, unknown>[] = [];
   const setVoiceIds: string[] = [];
   const warnings: string[] = [];
@@ -48,7 +49,11 @@ function load(
     {
       "@/features/auth": {
         authFetch: async (input: string, init?: { body?: string }) => {
-          if (input === "/v1/models") {
+          if (!init?.body) {
+            listed.push(input);
+            if (input !== "/api/inference/loaded-models") {
+              throw new Error(`unexpected listing ${input}`);
+            }
             if (models instanceof Error) throw models;
             return { ok: true, status: 200, json: async () => models };
           }
@@ -92,7 +97,7 @@ function load(
       },
     },
   );
-  return { adapter, posted, setVoiceIds, warnings };
+  return { adapter, listed, posted, setVoiceIds, warnings };
 }
 
 test("read aloud keeps its clip out of history and speaks in the model's voice by default", async () => {
@@ -211,6 +216,22 @@ test("read aloud names the loaded speech model, so one beside the chat model ans
     ],
   });
   await adapter.generateStudioTtsAudio("hello");
+  assert.equal(posted[0].model, KOKORO);
+});
+
+test("read aloud lists only loaded models, never the full catalog", async () => {
+  const { adapter, listed, posted } = load("", undefined, {
+    data: [
+      {
+        id: KOKORO,
+        loaded: true,
+        task: "text-to-speech",
+        audio_workflows: ["speak"],
+      },
+    ],
+  });
+  await adapter.generateStudioTtsAudio("hello");
+  assert.deepEqual(listed, ["/api/inference/loaded-models"]);
   assert.equal(posted[0].model, KOKORO);
 });
 

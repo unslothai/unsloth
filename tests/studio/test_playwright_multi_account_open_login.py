@@ -7,17 +7,37 @@ the retry a stalled /login load needs, and a redirect that already loaded /login
 from __future__ import annotations
 
 import importlib.util
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
-sync_api = pytest.importorskip("playwright.sync_api")
+
+class _Error(Exception):
+    pass
+
+
+class _TimeoutError(_Error):
+    pass
+
+
+# The driver only needs Playwright's error types here. Real Playwright is absent from the CPU jobs, and
+# other tests there leave a stub that answers every name with a function, so supply both types directly.
+sync_api = types.SimpleNamespace(Error = _Error, TimeoutError = _TimeoutError)
 
 DRIVER_PATH = Path(__file__).resolve().parent / "playwright_multi_account.py"
 ABORTED = "Page.goto: net::ERR_ABORTED at http://127.0.0.1:8000/login"
 
 
-def _driver():
+def _driver(monkeypatch):
+    fake = types.ModuleType("playwright.sync_api")
+    fake.Error, fake.TimeoutError = _Error, _TimeoutError
+    fake.Page, fake.expect, fake.sync_playwright = object, None, None
+    package = types.ModuleType("playwright")
+    package.sync_api = fake
+    monkeypatch.setitem(sys.modules, "playwright", package)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", fake)
     spec = importlib.util.spec_from_file_location(
         "playwright_multi_account_under_test", DRIVER_PATH
     )
@@ -63,7 +83,7 @@ class ScriptedPage:
 @pytest.fixture
 def driver(monkeypatch):
     monkeypatch.delenv("PW_ART_DIR", raising = False)
-    return _driver()
+    return _driver(monkeypatch)
 
 
 def test_a_redirect_that_already_loaded_login_is_used(driver):

@@ -95,7 +95,9 @@ class DiffusionFamily:
     # True for families needing MULTIPLE denoisers no single file carries (Ideogram 4), so only a full pipeline load
     # is valid.
     pipeline_only: bool = False
-    # Transformer-only files (GGUF) load only via sd.cpp; diffusers has no single-file loader (MOSS-Image).
+    # False: no GGUF loader on either engine (Anima).
+    gguf_loadable: bool = True
+    # Transformer-only GGUFs load only via sd.cpp (MOSS-Image); its .safetensors single files load on diffusers.
     native_transformer_files_only: bool = False
     # Optional diffusers pipeline classes for image-conditioned workflows, built via ``Pipeline.from_pipe`` (no
     # reload). None = unsupported.
@@ -137,6 +139,8 @@ class DiffusionFamily:
     comfy_flow_shift_variants: tuple[tuple[str, Optional[float]], ...] = field(
         default_factory = tuple
     )
+    # Scheduler config set after the static shift (Chroma's beta schedule).
+    scheduler_overrides: tuple[tuple[str, Any], ...] = field(default_factory = tuple)
     # ComfyUI shift node (diffusion_flow_shift SHIFT_NODE_*); None = no Shift control. ``_variants``: (id substring, node), first match wins.
     comfy_shift_node: Optional[str] = None
     comfy_shift_node_variants: tuple[tuple[str, Optional[str]], ...] = field(default_factory = tuple)
@@ -385,6 +389,7 @@ _KREA2_SD_CPP_ARCH_MARKER = "Krea2"
 # Keyed by architecture, not per variant: the base repo is read from the HF base_model tag at load time, so one entry
 # covers Turbo/full, schnell/dev.
 MOSS_IMAGE_FAMILY_NAME = "moss-image"
+ANIMA_FAMILY_NAME = "anima"
 # MOSS-Image keep-list: text_embedder, timestep MLP, AdaLN stay bf16 (LPIPS 0.058 vs 0.077 generic).
 _MOSS_IMAGE_QUANT_KEEP: tuple[str, ...] = ("text_embedder", "time_embedding", "modulation")
 _MOSS_IMAGE_CONVROT_SUFFIXES = (
@@ -1193,6 +1198,31 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # bit-identical): int8 ConvRot LPIPS-alex mean 0.015, SSIM 0.986, layerwise fp8 0.177; both stay one explicit
         # pick away (resident 4.87 -> 2.99 GiB, download 10.46 GB fp32 -> 3.21 GB).
         aliases = ("lumina-image-2.0", "lumina-image-2", "lumina2"),
+        fp16_incompatible = True,
+    ),
+    # Chroma: shift 1 on the beta schedule; linear spacing (shift 1 or the shipped 3) letterboxes some prompts.
+    DiffusionFamily(
+        name = "chroma",
+        comfy_shift_node = "sd3",
+        label = "Chroma",
+        # Quantized activations drift Chroma (fp8 letterboxes some seeds): fp8 and GGUF weights widen to bf16.
+        profile = FamilyProfile(scheme_deny = frozenset({"fp8", "int8", "nvfp4", "mxfp8"})),
+        pipeline_class = "ChromaPipeline",
+        transformer_class = "ChromaTransformer2DModel",
+        base_repo = "lodestones/Chroma1-HD",
+        comfy_flow_shift = 1.0,
+        scheduler_overrides = (("use_beta_sigmas", True),),
+        aliases = ("chroma1", "chroma1-hd", "chroma-hd"),
+        fp16_incompatible = True,
+    ),
+    DiffusionFamily(
+        name = ANIMA_FAMILY_NAME,
+        label = "Anima",
+        pipeline_class = "AnimaModularPipeline",
+        transformer_class = "CosmosTransformer3DModel",
+        base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
+        aliases = ("anima-base", "anima-2.9b"),
+        gguf_loadable = False,
         fp16_incompatible = True,
     ),
     # HunyuanImage 2.1: a 17B dual-stream DiT with a Qwen2.5-VL encoder, a ByT5 glyph encoder and the 32x HunyuanImage
@@ -2135,6 +2165,9 @@ _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("sdxl-turbo", 1, 0.0),
     ("stable-diffusion-xl", 25, 7.0),
     ("sdxl", 25, 7.0),
+    # Keyed by base repo: a bare "anima" would match Animagine XL (SDXL) files first.
+    ("circlestone-labs/anima", 30, 4.0),
+    ("chroma", 26, 3.5),
 )
 # Unrecognised model: distilled few-step / no-CFG shape, matching the UI fallback.
 _GENERATION_DEFAULT_FALLBACK = (9, 0.0)
@@ -2355,6 +2388,7 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "Flux3ModularPipeline": "0.42.0",
     "Flux3DistilledModularPipeline": "0.42.0",
     "Krea2Pipeline": "0.39.0",
+    "AnimaModularPipeline": "0.39.0",
     # Older than the 0.35 baseline, but listed anyway: the packaging leaves an UNCONSTRAINED diffusers installable
     # below 3.10, so an already-present ancient one satisfies the pin, and quoting the 0.39 floor at a family that has
     # existed since 0.30 is the same wrong remedy.
@@ -2363,6 +2397,7 @@ _PIPELINE_MIN_DIFFUSERS: dict[str, str] = {
     "QwenImageInpaintPipeline": "0.35.0",
     "FluxKontextPipeline": "0.35.0",
     "HiDreamImagePipeline": "0.34.0",
+    "ChromaPipeline": "0.34.0",
     # WanPipeline arrived with Wan2.1 in 0.33.0. The shipped Wan2.2 family wants weights only 0.35 carries, but this
     # table answers class presence, like the attribute probe before it.
     "WanPipeline": "0.33.0",
@@ -2647,6 +2682,7 @@ _DIFFUSERS_MAIN_MIN_PYTHON = (3, 11)
 _PIPELINE_PROBE_FILES: dict[str, str] = {
     "Flux3ModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
     "Flux3DistilledModularPipeline": "modular_pipelines/flux3/modular_pipeline.py",
+    "AnimaModularPipeline": "modular_pipelines/anima/modular_pipeline.py",
 }
 
 
@@ -2994,7 +3030,7 @@ def pipeline_available_family_names() -> tuple[str, ...]:
 
 def family_gguf_loadable(fam: DiffusionFamily) -> bool:
     """A single-file-pipeline family or a multi-denoiser family has no transformer-only GGUF to load."""
-    return not fam.single_file_is_pipeline and not fam.pipeline_only
+    return not fam.single_file_is_pipeline and not fam.pipeline_only and fam.gguf_loadable
 
 
 def family_mlx_supported(fam: Optional[DiffusionFamily]) -> bool:

@@ -632,9 +632,9 @@ def apply_speed_optims(
         except Exception:  # noqa: BLE001
             pass
 
+    if mode in (SPEED_DEFAULT, SPEED_MAX) and on_cuda and tf32_enabled():
+        applied["tf32"] = _enable_tf32(logger)
     if mode == SPEED_MAX:
-        if on_cuda:
-            applied["tf32"] = _enable_tf32(logger)
         applied["fused_qkv"] = _fuse_qkv(pipe, logger)
 
     # Deliberately NOT gated on applied["compiled"]: a launch-bound step survives the compile.
@@ -1984,6 +1984,14 @@ def _enable_miopen_immediate(logger: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 - keep torch's Find path
         _warn(logger, "miopen immediate", exc)
         return False
+
+
+TF32_ENV = "UNSLOTH_DIFFUSION_TF32"
+
+
+def tf32_enabled() -> bool:
+    import os
+    return (os.environ.get(TF32_ENV) or "").strip().lower() not in ("0", "off", "false", "no")
 
 
 def _enable_tf32(logger: Any) -> bool:
