@@ -9,6 +9,7 @@ import { startChatBackgroundSync } from "@/features/chat-background/sync";
 import { useChatPreferencesStore } from "@/features/chat/stores/chat-preferences-store";
 // eslint-disable-next-line no-restricted-imports
 import { usePlusMenuPrefsStore } from "@/features/chat/stores/plus-menu-prefs-store";
+import { accountTransitionPending, browserAccountKey } from "@/lib/account-transition";
 import { getSpellCheck, setSpellCheck, subscribeSpellCheck } from "@/lib/spellcheck";
 import {
   getTimeFormat,
@@ -169,12 +170,15 @@ export function startClientPreferencesSync(): () => void {
     }, PUSH_DEBOUNCE_MS);
   };
 
+  const account = browserAccountKey();
   const last = {} as Record<keyof Pending, unknown>;
   const stops = PENDING_SECTIONS.map((section) => {
     last[section] = all[section].read();
     return all[section].subscribe(() => {
       const next = all[section].read();
       if (applying || same(next, last[section])) return;
+      // Another tab's account switch clears these keys; that is not an edit.
+      if (accountTransitionPending() || browserAccountKey() !== account) return;
       last[section] = next;
       touch(section);
       if (loaded) pushAll();

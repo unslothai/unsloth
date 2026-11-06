@@ -9,7 +9,7 @@ import { installLocalStorageFake } from "./helpers/kit.ts";
 
 register("./helpers/tauri-webview-resolver.mjs", import.meta.url);
 register("./helpers/settings-api-resolver.mjs", import.meta.url);
-const { store } = installLocalStorageFake();
+const { store, fireWindowEvent } = installLocalStorageFake();
 const attrs = new Map<string, string>();
 Object.assign(globalThis.document, {
   documentElement: {
@@ -49,8 +49,11 @@ const { useChatPreferencesStore } = await import(
 const { PLUS_MENU_ORDER, usePlusMenuPrefsStore } = await import(
   "../src/features/chat/stores/plus-menu-prefs-store.ts"
 );
-const { getTimeFormat, setTimeFormat } = await import("../src/lib/time-format.ts");
-const { getSpellCheck } = await import("../src/lib/spellcheck.ts");
+const { getTimeFormat, setTimeFormat, TIME_FORMAT_STORAGE_KEY, watchTimeFormat } =
+  await import("../src/lib/time-format.ts");
+const { getSpellCheck, setSpellCheck, SPELLCHECK_STORAGE_KEY, watchSpellCheck } =
+  await import("../src/lib/spellcheck.ts");
+const { BROWSER_ACCOUNT_KEY } = await import("../src/lib/account-transition.ts");
 const { markPending, readPending } = await import(
   "../src/features/settings/lib/client-prefs-pending.ts"
 );
@@ -139,4 +142,25 @@ test("an edit not yet sent wins over the account's copy and is sent after load",
   assert.deepEqual(Object.keys(puts[0]), ["chat"]);
   assert.equal((puts[0].chat as Record<string, unknown>).showReplyTimes, true);
   assert.equal(readPending().chat, false);
+});
+
+test("another tab switching accounts does not mark its cleanup as edits", async () => {
+  freshBrowser();
+  setTimeFormat("24h");
+  setSpellCheck(false);
+  account = { ...empty, saved: true, timeFormat: "24h", spellcheck: false };
+  watchTimeFormat(window);
+  watchSpellCheck(window);
+  const stop = startClientPreferencesSync();
+  await settle();
+  store.delete(TIME_FORMAT_STORAGE_KEY);
+  store.delete(SPELLCHECK_STORAGE_KEY);
+  store.set(BROWSER_ACCOUNT_KEY, "account:u2:alice");
+  fireWindowEvent("storage", { key: TIME_FORMAT_STORAGE_KEY, newValue: null });
+  fireWindowEvent("storage", { key: SPELLCHECK_STORAGE_KEY, newValue: null });
+  await settle();
+  stop();
+  assert.equal(readPending().timeFormat, false);
+  assert.equal(readPending().spellcheck, false);
+  assert.deepEqual(puts, []);
 });
