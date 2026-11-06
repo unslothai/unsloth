@@ -1410,8 +1410,7 @@ def _scheme_supported(
             # Re-checked under the lock: concurrent plans must not each spawn a child.
             if (scheme, card) not in _SMOKE_CACHE:
                 table = _persisted_probe_table(card)
-                # The load's early kick (start_probe_table_prewarm) already ran this child: same table, earlier.
-                # A None entry is that child ending with no table: probe in-process, as after a serial child.
+                # The load's early kick already ran this child (None: it gave no table, so probe in-process).
                 early_ran = card in _PREWARMED_TABLES
                 prewarmed = _PREWARMED_TABLES.pop(card, None)
                 if table is None or scheme not in table:
@@ -1569,8 +1568,7 @@ def prewarm_probe_table(device: str = "cuda") -> bool:
 
 
 PROBE_OVERLAP_ENV = "UNSLOTH_DIFFUSION_PROBE_OVERLAP"
-# card -> the child table an early kick resolved (None: its child gave no table); consumed by _scheme_supported,
-# dropped by the kicking load's join.
+# card -> the early kick's child table (None: no table); consumed by _scheme_supported, dropped by the load's join.
 _PREWARMED_TABLES: dict[str, Optional[dict[str, Optional[bool]]]] = {}
 
 
@@ -1610,11 +1608,10 @@ def start_probe_table_prewarm(device: str) -> Optional[tuple]:
 
             started = time.monotonic()
             table = _child_probe_table(card)
-            # Kept when None too, so the load does not spawn a second child after a timed-out or failed one.
+            # Kept when None too: the load must not spawn a second child after a failed one.
             _PREWARMED_TABLES[card] = table
             if table is not None:
-                # Cached as the serial probe caches them: the boot warm, a load that never reaches the probe and the
-                # next load reuse these instead of spawning another child.
+                # Cached as the serial probe would, so the boot warm and later plans spawn no second child.
                 for name, verdict in table.items():
                     if verdict is not None:
                         _SMOKE_CACHE[(name, card)] = verdict

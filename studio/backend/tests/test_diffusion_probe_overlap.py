@@ -64,7 +64,6 @@ def probe_env(monkeypatch):
     monkeypatch.setattr(tq, "_smoke_cache_device_key", lambda device, ordinal = None: "cuda:0")
     monkeypatch.setattr(tq, "_persisted_probe_table", lambda card: ev["persisted"])
     monkeypatch.setattr(tq, "_child_probe_table", child)
-    # The in-process probe body; _smoke_probe itself answers a cached verdict without running it.
     monkeypatch.setattr(
         tq, "_run_smoke_probe", lambda *a, **k: pytest.fail("in-process probe reached")
     )
@@ -163,8 +162,7 @@ def test_a_held_probe_lock_skips_the_early_child_and_join_returns(probe_env):
 
 
 def test_an_early_child_with_no_table_is_not_spawned_twice(probe_env, monkeypatch):
-    # A timed-out or failed child gives no table: like the serial probe, the load then probes in-process once,
-    # instead of waiting on a second child (up to another _CHILD_PROBE_TIMEOUT).
+    # A child with no table (timeout / failure): probe in-process once, never a second child.
     ev = probe_env
     tq = ev["tq"]
 
@@ -185,7 +183,6 @@ def test_an_early_child_with_no_table_is_not_spawned_twice(probe_env, monkeypatc
 
 
 def test_the_boot_warm_reuses_the_early_table(probe_env, monkeypatch):
-    # The startup warm blocked on the lock while the load's early child ran: it must not run a second child.
     from core.inference import diffusion_probe_cache
 
     ev, tq = probe_env, probe_env["tq"]
@@ -202,8 +199,7 @@ def test_the_boot_warm_reuses_the_early_table(probe_env, monkeypatch):
 
 
 def test_a_load_that_never_reaches_the_probe_keeps_the_verdicts(probe_env, monkeypatch):
-    # The bf16 seed path returns before _planned_quant_scheme: the early table is still cached, so the next
-    # plan spawns no child even where the verdicts cannot be persisted.
+    # The bf16 seed path never reaches the probe; its early verdicts must still be cached (persistence may be off).
     from core.inference import diffusion as D
 
     ev = probe_env
