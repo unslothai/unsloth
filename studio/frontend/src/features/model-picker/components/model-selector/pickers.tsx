@@ -251,6 +251,7 @@ import {
   curatedBudgetText,
   estimateQuantBytes,
   formatFilterValues,
+  hasMlxCardTag,
   hfModelFitsDevice,
   isMlxId,
   isCapableCheckpointQuant,
@@ -1831,7 +1832,7 @@ const DownloadedModelDeviceRow = memo(function DownloadedModelDeviceRow({
         <ModelRow
           label={c.repo_id}
           hubUrl={hubRepoUrl(c.repo_id)}
-          meta={`${isMlxId(c.repo_id) ? "MLX" : "Safetensors"} · ${formatBytes(
+          meta={`${isMlxId(c.repo_id, cachedRepoHasMlxTag(c)) ? "MLX" : "Safetensors"} · ${formatBytes(
             c.size_bytes,
           )}`}
           selected={isSelected}
@@ -3772,6 +3773,10 @@ function hubRepoUrl(id: string | null | undefined): string | undefined {
     : undefined;
 }
 
+function cachedRepoHasMlxTag(c: CachedModelRepo): boolean {
+  return hasMlxCardTag({ tags: c.tags, libraryName: c.library_name });
+}
+
 /** MLX runs on Mac only, so callers gate visibility on the host. */
 function localModelIsMlx(m: LocalModelInfo): boolean {
   return isMlxId(m.id) || isMlxId(m.display_name) || isMlxId(m.model_id ?? "");
@@ -4075,7 +4080,7 @@ export function HubModelPicker({
     [modelGgufIds, resultGgufIds],
   );
 
-  const resultMlxIds = useMemo(() => {
+  const taggedMlxIds = useMemo(() => {
     const ids = new Set<string>();
     for (const result of [
       ...results,
@@ -4083,12 +4088,7 @@ export function HubModelPicker({
       ...communityQuerySearch.results,
       ...communityBrowse.results,
     ]) {
-      if (
-        result.libraryName?.toLowerCase() === "mlx" ||
-        result.tags?.some((tag) => tag.toLowerCase() === "mlx")
-      ) {
-        ids.add(result.id.toLowerCase());
-      }
+      if (hasMlxCardTag(result)) ids.add(result.id.toLowerCase());
     }
     return ids;
   }, [
@@ -4745,7 +4745,12 @@ export function HubModelPicker({
           isCatalogSeed,
           isHidden: isHiddenModelId(r.id),
           format: formatFilter,
-          matchesFormat: matchesFormatFilter(r.id, r.isGguf, formatFilter),
+          matchesFormat: matchesFormatFilter(
+            r.id,
+            r.isGguf,
+            formatFilter,
+            hasMlxCardTag(r),
+          ),
           matchesTask: chatSupportedCheckpointQuant(r),
           isRecommendable:
             isRecommendableFormat(r.id, r.isGguf, isMac) ||
@@ -4982,7 +4987,7 @@ export function HubModelPicker({
             r.totalParams
               ? formatCompact(r.totalParams)
               : extractParamLabel(r.id),
-            isMlxId(r.id) ? "MLX" : "Safetensors",
+            isMlxId(r.id, hasMlxCardTag(r)) ? "MLX" : "Safetensors",
             r.estimatedSizeBytes ? formatBytes(r.estimatedSizeBytes) : null,
           ]
             .filter(Boolean)
@@ -5621,14 +5626,18 @@ export function HubModelPicker({
     );
   }, [sortedCachedGguf, showHfSection, debouncedQuery, formatFilter]);
   const visibleCachedModels = useMemo(() => {
-    if (!showHfSection)
-      return sortedCachedModels.filter((c) =>
-        matchesFormatFilter(c.repo_id, false, formatFilter),
+    const matches = (c: CachedModelRepo) =>
+      matchesFormatFilter(
+        c.repo_id,
+        false,
+        formatFilter,
+        cachedRepoHasMlxTag(c),
       );
+    if (!showHfSection) return sortedCachedModels.filter(matches);
     const q = normalizeForSearch(debouncedQuery.trim());
     return sortedCachedModels.filter(
       (c) =>
-        matchesFormatFilter(c.repo_id, false, formatFilter) &&
+        matches(c) &&
         normalizeForSearch(c.repo_id).includes(q),
     );
   }, [sortedCachedModels, showHfSection, debouncedQuery, formatFilter]);
@@ -6146,7 +6155,12 @@ export function HubModelPicker({
           ),
         )
         .filter((id) =>
-          matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+          matchesFormatFilter(
+            id,
+            isKnownGgufRepo(id),
+            formatFilter,
+            taggedMlxIds.has(id.toLowerCase()),
+          ),
         )
         // Curated defaults obey the fit toggle too.
         .filter(
@@ -6174,6 +6188,7 @@ export function HubModelPicker({
     curatedRow,
     formatFilter,
     isKnownGgufRepo,
+    taggedMlxIds,
     fitOnDeviceOnly,
     cachedIdFor,
     searchRowFits,
@@ -6219,7 +6234,12 @@ export function HubModelPicker({
             runsCheckpointQuant({ id }) || !/-FP8[-.]|FP8-Dynamic/i.test(id),
         )
         .filter((id) =>
-          matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
+          matchesFormatFilter(
+            id,
+            isKnownGgufRepo(id),
+            formatFilter,
+            taggedMlxIds.has(id.toLowerCase()),
+          ),
         ),
     [
       recommendedSet,
@@ -6228,6 +6248,7 @@ export function HubModelPicker({
       chatSupportedCheckpointQuant,
       isTaskRuntimeSupported,
       formatFilter,
+      taggedMlxIds,
       fitOnDeviceOnly,
       cachedIdFor,
       searchRowFits,
@@ -6765,7 +6786,7 @@ export function HubModelPicker({
           pipelineTag: pipelineTagById.get(id) ?? null,
         });
       };
-      if (!resultMlxIds.has(key) || isHuggingFaceOffline()) {
+      if (!isMlxId(id, taggedMlxIds.has(key)) || isHuggingFaceOffline()) {
         select();
         return;
       }
@@ -6784,7 +6805,7 @@ export function HubModelPicker({
       onSelect,
       isKnownGgufRepo,
       mlxVariantRepoIds,
-      resultMlxIds,
+      taggedMlxIds,
       hfToken,
       cachedIdFor,
       pipelineTagById,
@@ -8892,7 +8913,12 @@ export function HubModelPicker({
                                     : [
                                         metricsById.get(id) ??
                                           extractParamLabel(id),
-                                        isMlxId(id) ? "MLX" : "Safetensors",
+                                        isMlxId(
+                                          id,
+                                          taggedMlxIds.has(id.toLowerCase()),
+                                        )
+                                          ? "MLX"
+                                          : "Safetensors",
                                       ]
                                         .filter(Boolean)
                                         .join(" · ")
