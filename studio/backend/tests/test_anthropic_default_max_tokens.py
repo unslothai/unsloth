@@ -12,7 +12,12 @@ from core.inference.external_provider import ExternalProviderClient
 _STOP = b'event: message_stop\ndata: {"type": "message_stop"}\n\n'
 
 
-def _sent_max_tokens(monkeypatch, models_response, max_tokens = None, model = "claude-haiku-4-5"):
+def _sent_max_tokens(
+    monkeypatch,
+    models_response,
+    max_tokens = None,
+    model = "claude-haiku-4-5",
+):
     sent: list = []
     model_lookups: list = []
 
