@@ -10,6 +10,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 _BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
@@ -556,3 +558,30 @@ def test_the_retry_names_sequential_rather_than_omitting_the_device_map(monkeypa
     assert len(_RefusesAnyPlan.calls) == 2
     assert _RefusesAnyPlan.calls[0]["device_map"] == "unsloth_balanced"
     assert _RefusesAnyPlan.calls[1]["device_map"] == "sequential"
+
+
+@pytest.mark.parametrize("audio_type", [None, "audio_vlm"])
+def test_an_audio_input_vision_model_exports_through_the_vision_load(
+    monkeypatch, tmp_path, audio_type
+):
+    mod = _export_mod(monkeypatch)
+    _RecordingLoader.calls = []
+    monkeypatch.setattr(mod, "FastVisionModel", _RecordingLoader)
+    monkeypatch.setattr(
+        mod, "FastLanguageModel", lambda *a, **k: pytest.fail("loaded as a text model")
+    )
+    monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: audio_type)
+    monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: True)
+    monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
+    monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
+    monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {})
+    checkpoint = tmp_path / "checkpoint-100"
+    checkpoint.mkdir()
+    backend = mod.ExportBackend.__new__(mod.ExportBackend)
+    backend.cleanup_memory = lambda: None
+
+    ok, message = backend.load_checkpoint(str(checkpoint))
+
+    assert ok, message
+    assert backend.is_vision is True
+    assert len(_RecordingLoader.calls) == 1

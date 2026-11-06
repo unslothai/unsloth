@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Rows from GET /api/inference/audio/catalog; relative imports only, so node --test loads it.
+// Rows from GET /api/inference/audio/catalog. Relative imports only, so node --test and the
+// catalog check load it directly.
 
 import type { ModelOption } from "../model-picker/components/model-selector/types.ts";
 import {
@@ -32,6 +33,8 @@ export interface AudioCatalogRow {
   languages: readonly string[] | null;
   status: AudioCatalogStatus | null;
   size_bytes: number | null;
+  estimated_resident_gb?: number | null;
+  smallest_estimated_resident_gb?: number | null;
   downloaded: boolean;
   unsupported_reason: string | null;
 }
@@ -64,7 +67,8 @@ export function catalogById(
   return map;
 }
 
-/** A More row has no Hub pipeline tag, so an ASR pick names its own; else it loads as speech. */
+/** A More row has no Hub pipeline tag, so a catalog ASR pick names its own: the page then loads
+ *  it as speech-to-text instead of speech. */
 export function withCatalogPipelineTag<
   M extends { pipelineTag?: string | null },
 >(byId: ReadonlyMap<string, { task?: string | null }>, id: string, meta: M): M {
@@ -117,10 +121,13 @@ export function catalogMoreRows(
 }
 
 /** A "More models" row; the picker reads `sizeBytes` for its size column. */
-export function catalogModelOption(
-  row: AudioCatalogRow,
-): ModelOption & { sizeBytes: number | null } {
-  // Named by folder like seed rows; Community repos use their full id to stay unique.
+export function catalogModelOption(row: AudioCatalogRow): ModelOption & {
+  sizeBytes: number | null;
+  estimatedResidentGb: number | null;
+  smallestResidentGb: number | null;
+} {
+  // Named by folder like the seed rows, and a Community repo by its full id: two repos can
+  // share one spec display name, or one repo name.
   const name = row.folder || row.id;
   const about = audioRowDescription(row);
   return {
@@ -132,6 +139,8 @@ export function catalogModelOption(
         ? [row.display_name, about].filter(Boolean).join(" · ")
         : about,
     sizeBytes: row.size_bytes,
+    estimatedResidentGb: row.estimated_resident_gb ?? null,
+    smallestResidentGb: row.smallest_estimated_resident_gb ?? null,
   };
 }
 

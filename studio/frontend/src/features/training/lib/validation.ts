@@ -14,7 +14,6 @@ import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
 import {
   isTrainingLoraVariantSupportedOnDevice,
-  isTrainingMethodSupportedOnDevice,
   isTrainingModelTypeSupportedOnDevice,
 } from "./training-methods";
 
@@ -26,9 +25,6 @@ function isTrainingConfigSupportedOnDevice(
   config: TrainingConfigState,
   deviceType?: string,
 ): boolean {
-  if (!isTrainingMethodSupportedOnDevice(config.trainingMethod, deviceType)) {
-    return false;
-  }
   if (!isTrainingModelTypeSupportedOnDevice(config.modelType, deviceType)) {
     return false;
   }
@@ -44,7 +40,12 @@ function isTrainingConfigSupportedOnDevice(
   if (deviceType !== "mac") {
     return true;
   }
-  return !(config.isEmbeddingModel || hasChatAudioRows(config, deviceType));
+  // MLX trains audio only as input to an audio-capable vision-language model (Gemma 3n/4).
+  const audioVlm = config.isVisionModel && config.isAudioModel;
+  return !(
+    config.isEmbeddingModel ||
+    (hasChatAudioRows(config, deviceType) && !audioVlm)
+  );
 }
 
 /** A Mac Clef (or Clef-head LLM) trainer reads its own audio rows; elsewhere, and for Laya, they train as text. */
@@ -195,7 +196,7 @@ export function validateTrainingConfig(
       return { ok: false, errorKey: "studio.modelPicker.reasonGguf" };
     }
     // Adapter format is valid when continuing LoRA / CPT from a saved adapter (#13140).
-    // Decision, embedding and Apple Silicon runs build a fresh adapter, so they need a base.
+    // Decision and embedding runs build a fresh adapter, so they need a base.
     // Only a saved local adapter folder is continued; a Hub adapter repo is not yet.
     if (
       !isAdapterMethod(config.trainingMethod) ||
@@ -205,8 +206,7 @@ export function validateTrainingConfig(
         localPath: config.modelLocalPath,
       }) ||
       config.modelType === "decision" ||
-      config.isEmbeddingModel ||
-      deviceType === "mac"
+      config.isEmbeddingModel
     ) {
       return { ok: false, errorKey: "studio.modelPicker.reasonAdapter" };
     }

@@ -34,7 +34,6 @@ import {
   turnOpenerIdAt,
 } from "@/components/assistant-ui/thread-turns";
 import { THREAD_GUTTER_SHIFT_PROPERTY } from "@/components/assistant-ui/thread-gutter";
-import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import {
   useBookmarkedTurnsStore,
@@ -89,48 +88,26 @@ function useTurnBookmark(
   return { bookmarked, toggle: () => toggleBookmarkedTurn(threadId, openerId) };
 }
 
+type BookmarkTurnMenuItemProps = { className?: string; ownTurn?: boolean };
+
 // gated so a disabled rail mounts no thread subscriptions per message
-export const BookmarkTurnButton: FC = () => {
+export const BookmarkTurnMenuItem: FC<BookmarkTurnMenuItemProps> = (props) => {
   const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
-  return enabled ? <BookmarkTurnButtonInner /> : null;
+  return enabled ? <BookmarkTurnMenuItemInner {...props} /> : null;
 };
 
-const BookmarkTurnButtonInner: FC = () => {
+const BookmarkTurnMenuItemInner: FC<BookmarkTurnMenuItemProps> = ({
+  className,
+  ownTurn = false,
+}) => {
   const t = useT();
-  const turnBookmark = useTurnBookmark(true);
-  if (!turnBookmark) {
-    return null;
-  }
-  return (
-    <TooltipIconButton
-      tooltip={t(
-        turnBookmark.bookmarked ? "turns.removeBookmark" : "turns.bookmark",
-      )}
-      aria-pressed={turnBookmark.bookmarked}
-      onClick={turnBookmark.toggle}
-    >
-      <HugeiconsIcon
-        icon={BookmarkIcon}
-        strokeWidth={1.75}
-        className={cn("size-icon", turnBookmark.bookmarked && "fill-current")}
-      />
-    </TooltipIconButton>
+  // Without the rail a bookmark has nowhere to show.
+  const railShown = useAuiState(
+    ({ thread }) =>
+      threadTurns(thread.messages).openerIds.length >= MIN_NAVIGATOR_TURNS,
   );
-};
-
-export const BookmarkTurnMenuItem: FC<{ className?: string }> = ({
-  className,
-}) => {
-  const enabled = useChatPreferencesStore((state) => state.showTurnNavigation);
-  return enabled ? <BookmarkTurnMenuItemInner className={className} /> : null;
-};
-
-const BookmarkTurnMenuItemInner: FC<{ className?: string }> = ({
-  className,
-}) => {
-  const t = useT();
-  const turnBookmark = useTurnBookmark(false);
-  if (!turnBookmark) {
+  const turnBookmark = useTurnBookmark(ownTurn);
+  if (!railShown || !turnBookmark) {
     return null;
   }
   return (

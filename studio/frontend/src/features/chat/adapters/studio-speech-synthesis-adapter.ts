@@ -210,13 +210,14 @@ export function createConfiguredUtterance(
   return utterance;
 }
 
-/** Named because an unnamed request reaches the active (chat) model; null leaves it unnamed. */
+/** Named because an unnamed request reaches the active (chat) model; null leaves it unnamed.
+ *  Lists loaded models only: /v1/models rescans every downloaded model once its cache expires. */
 async function resolveReadAloudModel(
   wantsClone: boolean,
   signal?: AbortSignal,
 ): Promise<string | null> {
   try {
-    const res = await authFetch("/v1/models", { signal });
+    const res = await authFetch("/api/inference/loaded-models", { signal });
     if (!res.ok) return null;
     return loadedSpeechModelId(
       audioModelsFromCatalog(await res.json()),

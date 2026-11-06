@@ -1425,6 +1425,22 @@ def _has_cache(args, kwargs):
     return any(isinstance(arg, Cache) for arg in args)
 
 
+def _shared_kv_scratch(layer, kwargs):
+    """KV-storing layers get an empty `shared_kv_states` (copied back): dynamo guards on it being empty and a recompute sees it filled."""
+    shared = kwargs.get("shared_kv_states")
+    if shared is None or not hasattr(shared, "update"):
+        return kwargs, None
+    attn = getattr(layer, "self_attn", None)
+    # Readers keep the real dict.
+    if attn is None or getattr(attn, "is_kv_shared_layer", False):
+        return kwargs, None
+    try:
+        scratch = type(shared)()
+    except Exception:
+        return kwargs, None
+    return {**kwargs, "shared_kv_states": scratch}, (shared, scratch)
+
+
 def _layer_kind(layer):
     attn = (
         getattr(layer, "self_attn", None)
@@ -1476,6 +1492,10 @@ def _wrap(
         from unsloth_zoo.temporary_patches.misc import output_capture_scratch as capture_scratch
     except Exception:
         capture_scratch = contextlib.nullcontext
+    try:
+        scratch_takes_owner = "owner" in inspect.signature(capture_scratch).parameters
+    except (TypeError, ValueError):
+        scratch_takes_owner = False
     # First call per grad mode compiles with errors raised: on failure retry with flex outside,
     # then the stock forward. The mode is per layer (a checkpoint recompute must not switch graph);
     # a failure is also the starting mode for later layers of the same kind.
@@ -1514,6 +1534,13 @@ def _wrap(
     graph_shapes = set()
 
     def run(self, hidden_states, args, kwargs, mode):
+        kwargs, shared = _shared_kv_scratch(self, kwargs)
+        out = _run(self, hidden_states, args, kwargs, mode)
+        if shared is not None:
+            shared[0].update(shared[1])
+        return out
+
+    def _run(self, hidden_states, args, kwargs, mode):
         previous = inline_flag[0]
         inline_flag[0] = True
         _IN_BLOCK[0] = mode
@@ -1532,7 +1559,8 @@ def _wrap(
                 if varlen is not None:
                     kwargs = {**kwargs, packed_module.BLOCK_VARLEN_KWARG: varlen}
             # Capture hooks (router_logits) append to empty scratch lists: no guard on the layer index.
-            with capture_scratch(), _no_ddp_graph_split():
+            scratch = capture_scratch(owner = self) if scratch_takes_owner else capture_scratch()
+            with scratch, _no_ddp_graph_split():
                 use_graphs = graphs
                 if auto and _CUDAGRAPH_STATE["auto"]["phase"] != "off":
                     verdict = _auto_observe(self, hidden_states, args, kwargs)
