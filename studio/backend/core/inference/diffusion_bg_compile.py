@@ -698,60 +698,31 @@ _LAYER_COUNT_KEYS = frozenset({"num_layers", "num_single_layers", "n_layers", "n
 # ``_default_float_seed_key``, so any other torch minor, diffusers version, config, block code or block layout (LoRA,
 # int8 swaps) matches nothing. Dynamo numbers a SymFloat from its source name (``ShapeEnv._generate_unique_id``), so the
 # names do not depend on sizes; test_diffusion_float_seed_defaults relearns the FLUX.2 list on a tiny model.
-_FLUX2_SEEDS = (
-    "zf0",
-    "zf10",
-    "zf12",
-    "zf21",
-    "zf40",
-    "zf70",
-    "zf71",
-    "zf88",
-    "zf89",
-    "zf90",
-    "zf91",
-)
-_FLUX1_SEEDS = (
-    "zf9",
-    "zf10",
-    "zf12",
-    "zf21",
-    "zf22",
-    "zf40",
-    "zf65",
-    "zf70",
-    "zf71",
-    "zf79",
-    "zf88",
-    "zf90",
-    "zf92",
-)
-_WAN_SEEDS = ("zf12", "zf13", "zf14", "zf30", "zf34", "zf50", "zf54", "zf63", "zf75")
-_FLOAT_SEED_DEFAULTS: dict[str, tuple[str, ...]] = {
-    # torch 2.13, diffusers 0.42.1
-    "26fc8c5debb82d2d3cccaf8080c552dcd1768ab2edfa09edb051936a47e10f89": _FLUX2_SEEDS,  # FLUX.2-klein(-base)-4B
-    "d60d0d16e1911fb62378ceef4dbdf46e7f0e01f0c7e56ef1d1513ac60808851d": _FLUX2_SEEDS,  # FLUX.2-klein(-base)-9B
-    "941e4f61e20f630d6b5d0f7e2f1b7adce9d411807160b58a070a9a723a8a1771": _FLUX2_SEEDS,  # FLUX.2-dev
-    "9362235d3d2df5cebcb391ac3605ff93c07b53993427634762e04ba5e583a46a": _FLUX1_SEEDS,  # FLUX.1-dev/Krea/Kontext
-    "0e47148427f8335dee84b1ef5af22d756d9ce505d66b700aa60f50a04ec98955": _FLUX1_SEEDS,  # FLUX.1-schnell
-    "8ec06d9215a37602a413451c36a4d31281afe313a12def5ba61e4e3c52a0f786": (
-        "zf14",
-        "zf17",
-        "zf28",
-        "zf35",
-        "zf51",
-        "zf63",
-        "zf72",
-    ),  # Qwen-Image, Qwen-Image-2512
-    "da246ba89e5597df8ecf6154bb4194315cdd58875a844ff1ef60a67d1ddd85c2": (
-        "zf61",
-    ),  # Z-Image(-Turbo)
-    "3666d0b8efb92def7c29fd28ee3cb8aa4ca7e58ec87010d1b64bc706ba17771e": _WAN_SEEDS
-    + ("zf88",),  # Wan2.1-T2V-1.3B
-    "79b8de8a4e3986ac0039f7b89c973f1dcbb8fc0d848ae5e280a4f242a268d580": _WAN_SEEDS
-    + ("zf88",),  # Wan2.2-T2V-A14B
-    # Wan2.2-TI2V-5B runs with per-token timesteps (expand_timesteps), which renames one float.
-    "cfdb6158424e55521fdf5131a00c1a7d69c5427cabd3e0b0a87f1e6ad73eaea8": _WAN_SEEDS + ("zf87",),
+_FLUX2 = "zf0 zf10 zf12 zf21 zf40 zf70 zf71 zf88 zf89 zf90 zf91"
+_FLUX1 = "zf9 zf10 zf12 zf21 zf22 zf40 zf65 zf70 zf71 zf79 zf88 zf90 zf92"
+_WAN = "zf12 zf13 zf14 zf30 zf34 zf50 zf54 zf63 zf75"
+# Recorded on torch 2.13 + diffusers 0.42.1; space-separated names per key.
+_FLOAT_SEED_DEFAULTS: dict[str, str] = {
+    # FLUX.2-klein-4B, FLUX.2-klein-base-4B
+    "26fc8c5debb82d2d3cccaf8080c552dcd1768ab2edfa09edb051936a47e10f89": _FLUX2,
+    # FLUX.2-klein-9B, FLUX.2-klein-base-9B
+    "d60d0d16e1911fb62378ceef4dbdf46e7f0e01f0c7e56ef1d1513ac60808851d": _FLUX2,
+    # FLUX.2-dev
+    "941e4f61e20f630d6b5d0f7e2f1b7adce9d411807160b58a070a9a723a8a1771": _FLUX2,
+    # FLUX.1-dev, FLUX.1-Krea-dev, FLUX.1-Kontext-dev
+    "9362235d3d2df5cebcb391ac3605ff93c07b53993427634762e04ba5e583a46a": _FLUX1,
+    # FLUX.1-schnell
+    "0e47148427f8335dee84b1ef5af22d756d9ce505d66b700aa60f50a04ec98955": _FLUX1,
+    # Qwen-Image, Qwen-Image-2512
+    "8ec06d9215a37602a413451c36a4d31281afe313a12def5ba61e4e3c52a0f786": "zf14 zf17 zf28 zf35 zf51 zf63 zf72",
+    # Z-Image, Z-Image-Turbo
+    "da246ba89e5597df8ecf6154bb4194315cdd58875a844ff1ef60a67d1ddd85c2": "zf61",
+    # Wan2.1-T2V-1.3B
+    "3666d0b8efb92def7c29fd28ee3cb8aa4ca7e58ec87010d1b64bc706ba17771e": _WAN + " zf88",
+    # Wan2.2-T2V-A14B (both experts)
+    "79b8de8a4e3986ac0039f7b89c973f1dcbb8fc0d848ae5e280a4f242a268d580": _WAN + " zf88",
+    # Wan2.2-TI2V-5B: its per-token timesteps (expand_timesteps) rename one float
+    "cfdb6158424e55521fdf5131a00c1a7d69c5427cabd3e0b0a87f1e6ad73eaea8": _WAN + " zf87",
 }
 
 
@@ -824,7 +795,7 @@ def _default_float_seeds(modules: Any) -> set:
         return set()
     names: set = set()
     for module in list(modules) if isinstance(modules, (list, tuple)) else [modules]:
-        names.update(_FLOAT_SEED_DEFAULTS.get(_default_float_seed_key(module) or "", ()))
+        names.update(_FLOAT_SEED_DEFAULTS.get(_default_float_seed_key(module) or "", "").split())
     return {n for n in names if _SYMFLOAT_NAME.match(n)}
 
 

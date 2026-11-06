@@ -106,7 +106,7 @@ def test_builtin_names_trace_a_fresh_compile_once(tmp_path, restarts, monkeypatc
     assert names and restarts["n"] >= 1
     key = bg._default_float_seed_key(_net())
     assert key is not None
-    monkeypatch.setattr(bg, "_FLOAT_SEED_DEFAULTS", {key: names})
+    monkeypatch.setattr(bg, "_FLOAT_SEED_DEFAULTS", {key: " ".join(names)})
     restarts["n"] = 0
     seeds, out = _render(_net(), tmp_path / "fresh", x)
     assert restarts["n"] == 0
@@ -121,9 +121,7 @@ def test_saved_names_win_over_builtin(tmp_path, monkeypatch):
     x = torch.randn(2, 5, 16)
     names, _ = _learned_names(tmp_path, x)
     net = _net()
-    monkeypatch.setattr(
-        bg, "_FLOAT_SEED_DEFAULTS", {bg._default_float_seed_key(net): ("zf98", "zf99")}
-    )
+    monkeypatch.setattr(bg, "_FLOAT_SEED_DEFAULTS", {bg._default_float_seed_key(net): "zf98 zf99"})
     seed_dir = tmp_path / "home"
     seed_dir.mkdir()
     sig = bg._modules_signature([net])
@@ -141,7 +139,9 @@ def test_saved_names_win_over_builtin(tmp_path, monkeypatch):
 def test_kill_switches_keep_the_restart(tmp_path, restarts, monkeypatch, env):
     x = torch.randn(2, 5, 16)
     names, _ = _learned_names(tmp_path, x)
-    monkeypatch.setattr(bg, "_FLOAT_SEED_DEFAULTS", {bg._default_float_seed_key(_net()): names})
+    monkeypatch.setattr(
+        bg, "_FLOAT_SEED_DEFAULTS", {bg._default_float_seed_key(_net()): " ".join(names)}
+    )
     monkeypatch.setenv(env, "0")
     restarts["n"] = 0
     seeds, _ = _render(_net(), tmp_path / "off", x)
@@ -152,7 +152,7 @@ def test_unknown_and_stale_names_are_harmless(tmp_path, restarts, monkeypatch):
     """A name no float carries is never consulted; a missing one is learned by the restart, as on main."""
     x = torch.randn(2, 5, 16)
     names, out_main = _learned_names(tmp_path, x)
-    monkeypatch.setattr(bg, "_FLOAT_SEED_DEFAULTS", {bg._default_float_seed_key(_net()): ("zf97",)})
+    monkeypatch.setattr(bg, "_FLOAT_SEED_DEFAULTS", {bg._default_float_seed_key(_net()): "zf97"})
     restarts["n"] = 0
     seeds, out = _render(_net(), tmp_path / "stale", x)
     assert seeds.float_seeds == 1
@@ -187,7 +187,8 @@ def test_unknown_denoiser_gets_no_builtin_names():
 
 def test_table_is_well_formed():
     assert bg._FLOAT_SEED_DEFAULTS
-    for key, names in bg._FLOAT_SEED_DEFAULTS.items():
+    for key, value in bg._FLOAT_SEED_DEFAULTS.items():
+        names = value.split()
         assert len(key) == 64 and int(key, 16) >= 0
         assert names and all(bg._SYMFLOAT_NAME.match(n) for n in names)
         assert len(set(names)) == len(names)
@@ -234,4 +235,4 @@ def test_flux2_names_match_a_fresh_compile(restarts):
             txt_ids = torch.zeros(1, 8, 4, dtype = torch.long),
         )
     assert restarts["n"] >= 1
-    assert sorted(bg._tensorify_state().force_specializations) == sorted(bg._FLUX2_SEEDS)
+    assert sorted(bg._tensorify_state().force_specializations) == sorted(bg._FLUX2.split())
