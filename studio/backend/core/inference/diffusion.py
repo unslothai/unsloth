@@ -10773,6 +10773,9 @@ class DiffusionBackend:
                             logger = logger,
                             reduction_filter = family_filters_reductions(fam),
                         )
+                        if compile_ctx is not None and getattr(target, "device", None) == "cuda":
+                            # The first render compiles inline: warm the workers and keys while the load finishes.
+                            bg_compile.start_deferred_prewarm(logger)
 
                     self._raise_if_load_cancelled(_load_token)
                     # A shipped grid was tuned on the shipped scheduler: no ComfyUI shift.
