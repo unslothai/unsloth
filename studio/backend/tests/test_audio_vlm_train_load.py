@@ -85,8 +85,15 @@ def load(monkeypatch):
 
     monkeypatch.setattr(cache_cleanup, "clear_unsloth_compiled_cache", noop)
 
-    def run(vision, returns = None):
+    def run(
+        vision,
+        returns = None,
+        vision_known = True,
+    ):
         monkeypatch.setattr(trainer_mod, "is_vision_model", lambda *a, **k: vision)
+        monkeypatch.setattr(
+            trainer_mod, "is_vision_model_checked", lambda *a, **k: (vision, vision_known)
+        )
         if returns is not None:
             calls["returns"] = returns
         trainer = trainer_mod.UnslothTrainer()
@@ -118,4 +125,10 @@ def test_audio_without_vision_loads_the_multimodal_class(load):
 
 def test_audio_with_vision_keeps_the_default_load(load):
     _, kwargs = load(vision = True)  # Gemma 3n / Gemma 4
+    assert "auto_model" not in kwargs
+
+
+def test_an_inconclusive_vision_probe_keeps_the_default_load(load):
+    # A transient probe failure reads as no vision; Gemma 3n / 4 must not lose their default load to it.
+    _, kwargs = load(vision = False, vision_known = False)
     assert "auto_model" not in kwargs

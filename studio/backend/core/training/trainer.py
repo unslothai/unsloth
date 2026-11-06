@@ -73,7 +73,7 @@ from utils.third_party_source import (
     import_sparktts_module,
 )
 
-from utils.models import is_vision_model, detect_audio_type_checked
+from utils.models import is_vision_model, is_vision_model_checked, detect_audio_type_checked
 from utils.models.diffusion_lm import (
     diffusion_lm_profile_for_model,
     loaded_diffusion_profile,
@@ -1273,6 +1273,16 @@ class UnslothTrainer:
                 else False
             )
             self.is_vlm = not self.is_audio_vlm and vision and is_dataset_image
+            # A transient probe failure reads as no vision; only a definitive no takes the multimodal class.
+            audio_vlm_has_vision = vision
+            if self.is_audio_vlm and not vision:
+                vision_now, vision_known = is_vision_model_checked(
+                    metadata_name,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
+                audio_vlm_has_vision = vision_now or not vision_known
             self._detect_diffusion_lm(metadata_name, hf_token, local_files_only, model_revision)
             self.model_name = model_name
             self.max_seq_length = max_seq_length
@@ -1477,7 +1487,7 @@ class UnslothTrainer:
             elif self.is_audio_vlm:
                 from unsloth import FastModel
 
-                audio_vlm_kwargs = _audio_vlm_auto_model_kwargs(vision)
+                audio_vlm_kwargs = _audio_vlm_auto_model_kwargs(audio_vlm_has_vision)
                 self.model, self.tokenizer = FastModel.from_pretrained(
                     **audio_vlm_kwargs,
                     model_name = lookup_name,

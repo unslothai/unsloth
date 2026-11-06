@@ -33,7 +33,13 @@ class _Loader:
         return types.SimpleNamespace(), types.SimpleNamespace(feature_extractor = object())
 
 
-def _load(monkeypatch, tmp_path, audio_type, is_vision):
+def _load(
+    monkeypatch,
+    tmp_path,
+    audio_type,
+    is_vision,
+    vision_known = True,
+):
     _install_export_backend_stubs(monkeypatch)
     mod = _load_module("test_core_export_audio_vlm_vision", "core/export/export.py", monkeypatch)
     text, vision, fast = _Loader(), _Loader(), _Loader()
@@ -45,6 +51,7 @@ def _load(monkeypatch, tmp_path, audio_type, is_vision):
         monkeypatch.setattr(mod, name, type(name, (), {}), raising = False)
     monkeypatch.setattr(mod, "detect_audio_type", lambda *a, **k: audio_type)
     monkeypatch.setattr(mod, "is_vision_model", lambda *a, **k: is_vision)
+    monkeypatch.setattr(mod, "is_vision_model_checked", lambda *a, **k: (is_vision, vision_known))
     monkeypatch.setattr(mod, "_hf_offline", lambda *a, **k: False)
     monkeypatch.setattr(mod, "_offline_window_if", lambda flag: contextlib.nullcontext())
     monkeypatch.setattr(mod, "_multi_gpu_device_map_kwargs", lambda: {})
@@ -83,3 +90,11 @@ def test_audio_vlm_without_vision_takes_the_multimodal_load(monkeypatch, tmp_pat
     assert (len(vision.calls), len(text.calls), len(fast.calls)) == (0, 0, 1)
     assert fast.calls[0]["auto_model"] is transformers.AutoModelForMultimodalLM
     assert hasattr(backend.current_tokenizer, "feature_extractor")
+
+
+def test_an_inconclusive_vision_probe_keeps_the_text_load(monkeypatch, tmp_path):
+    # A transient probe failure reads as no vision; it must not send Gemma 3n / 4 to the multimodal class.
+    backend, text, vision, fast = _load(
+        monkeypatch, tmp_path, "audio_vlm", False, vision_known = False
+    )
+    assert (len(vision.calls), len(text.calls), len(fast.calls)) == (0, 1, 0)
