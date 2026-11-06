@@ -27,6 +27,7 @@ class MessageWindowController {
   private settling = false;
 
   private viewport: HTMLElement;
+  private adjust: ((deltaPx: number) => void) | null = null;
 
   constructor(viewport: HTMLElement) {
     this.viewport = viewport;
@@ -50,7 +51,8 @@ class MessageWindowController {
     this.media.addEventListener("change", this.printChanged);
   }
 
-  add(root: HTMLElement, holder: HTMLElement, content: HTMLElement): () => void {
+  add(root: HTMLElement, holder: HTMLElement, content: HTMLElement, adjust?: (deltaPx: number) => void): () => void {
+    if (adjust) this.adjust = adjust;
     const text = document.createElement("span");
     text.className = "sr-only";
     const row: Row = { root, holder, content, text, saved: null, frozen: null };
@@ -109,7 +111,11 @@ class MessageWindowController {
     if (!change() || anchor === null || !anchor.isConnected) return;
     // Zero when the engine anchored natively, so this never corrects twice.
     const delta = anchor.getBoundingClientRect().top - before;
-    if (Math.abs(delta) >= 0.5) this.viewport.scrollTop += delta;
+    if (Math.abs(delta) < 0.5) return;
+    // The autoscroll owner applies it instantly and resyncs its follow intent; a direct write would
+    // animate under scroll-smooth and read as a downward reader scroll.
+    if (this.adjust) this.adjust(delta);
+    else this.viewport.scrollTo({ top: this.viewport.scrollTop + delta, behavior: "instant" });
   }
 
   private restoreAll = () => {
@@ -264,7 +270,12 @@ class MessageWindowController {
   }
 }
 
-export function observeMessageWindow(root: HTMLElement, holder: HTMLElement, content: HTMLElement): (() => void) | undefined {
+export function observeMessageWindow(
+  root: HTMLElement,
+  holder: HTMLElement,
+  content: HTMLElement,
+  adjust?: (deltaPx: number) => void,
+): (() => void) | undefined {
   const viewport = root.closest<HTMLElement>(".aui-thread-viewport");
   if (!viewport || typeof IntersectionObserver === "undefined") return;
   let controller = controllers.get(viewport);
@@ -272,5 +283,5 @@ export function observeMessageWindow(root: HTMLElement, holder: HTMLElement, con
     controller = new MessageWindowController(viewport);
     controllers.set(viewport, controller);
   }
-  return controller.add(root, holder, content);
+  return controller.add(root, holder, content, adjust);
 }

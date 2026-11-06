@@ -69,7 +69,7 @@ function world() {
   let mutation: () => void = () => {};
   let observers = 0, disconnected = 0, frameId = 0;
   const frames = new Map<number, () => void>();
-  const exports: { observeMessageWindow?: (root: ElementFake, holder: ElementFake, content: ElementFake) => () => void } = {};
+  const exports: { observeMessageWindow?: (root: ElementFake, holder: ElementFake, content: ElementFake, adjust?: (deltaPx: number) => void) => () => void } = {};
   vm.runInNewContext(outputText, {
     exports, window: win, document: doc,
     requestAnimationFrame: (callback: () => void) => { frames.set(++frameId, callback); return frameId; },
@@ -84,11 +84,11 @@ function world() {
     },
   });
   const flush = () => { while (frames.size) { const pending = [...frames.values()]; frames.clear(); pending.forEach((callback) => callback()); } };
-  const add = () => {
+  const add = (adjust?: (deltaPx: number) => void) => {
     const root = new ElementFake(), holder = new ElementFake(), content = new ElementFake(), child = new ElementFake();
     root.viewport = viewport; viewport.append(root); root.append(holder); holder.append(content); content.append(child);
     root.style.setProperty("height", "200px", "important");
-    const cleanup = exports.observeMessageWindow!(root, holder, content);
+    const cleanup = exports.observeMessageWindow!(root, holder, content, adjust);
     return { root, holder, content, child, cleanup, parked: () => root.hasAttribute("data-message-parked") };
   };
   return {
@@ -254,7 +254,11 @@ test("small thumb reversals retain already restored overscan content", () => {
 
 test("restoring a reflowed body above the reader keeps the first visible row in place", () => {
   const w = world(), above = w.add(), visible = w.add();
-  Object.assign(w.viewport, { scrollTop: 1000 });
+  const scrolls: Array<{ top: number; behavior: string }> = [];
+  Object.assign(w.viewport, {
+    scrollTop: 1000,
+    scrollTo(options: { top: number; behavior: string }) { scrolls.push(options); (this as unknown as { scrollTop: number }).scrollTop = options.top; },
+  });
   w.near(above.root, false);
   assert.equal(above.parked(), true);
   // The chat narrowed while `above` was parked: reconnected, its body is 60px taller than the
@@ -271,6 +275,26 @@ test("restoring a reflowed body above the reader keeps the first visible row in 
   w.viewport.fire("scroll");
   assert.equal(above.parked(), false);
   assert.equal((w.viewport as unknown as { scrollTop: number }).scrollTop, 1060, "the reflow above the reader is scrolled away");
+  assert.equal(JSON.stringify(scrolls), JSON.stringify([{ top: 1060, behavior: "instant" }]), "instant despite the viewport's scroll-smooth class");
+  above.cleanup();
+  visible.cleanup();
+});
+
+test("with an autoscroll owner the correction goes through it instead of writing scrollTop", () => {
+  const w = world(), deltas: number[] = [];
+  const above = w.add((delta) => deltas.push(delta)), visible = w.add();
+  Object.assign(w.viewport, { scrollTop: 1000, scrollTo() { throw new Error("must not write scrollTop directly"); } });
+  w.near(above.root, false);
+  visible.root.top = 50;
+  Object.defineProperty(visible.root, "isConnected", { value: true });
+  visible.root.getBoundingClientRect = () => {
+    const top = visible.root.top + (above.content.parent ? 60 : 0);
+    return { top, bottom: top + visible.root.height, height: visible.root.height };
+  };
+  w.viewport.fire("scroll");
+  above.root.top = -1500;
+  w.viewport.fire("scroll");
+  assert.equal(JSON.stringify(deltas), "[60]", "the owner resyncs its follow intent and scrolls instantly");
   above.cleanup();
   visible.cleanup();
 });

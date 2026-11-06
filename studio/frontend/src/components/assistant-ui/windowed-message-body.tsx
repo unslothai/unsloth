@@ -6,6 +6,7 @@ import { type ReactNode, useCallback, useLayoutEffect, useRef, useState } from "
 import { createPortal } from "react-dom";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 import { observeMessageWindow } from "./message-window-controller";
+import { useAdjustForContentInsertedAbove } from "./use-intent-aware-autoscroll";
 
 const ENABLED = typeof navigator !== "undefined"
   && isWebKitGTK(navigator.platform, navigator.userAgent);
@@ -21,6 +22,13 @@ function MessageBody({ children, enabled }: { children: ReactNode; enabled: bool
   const messageId = useAuiState(({ message }) => message.id);
   const longThread = useAuiState(({ thread }) => thread.messages.length >= 100);
   const holder = useRef<HTMLDivElement>(null);
+  // Restoration corrections go through the autoscroll owner, which keeps its intent in sync.
+  const adjustAbove = useAdjustForContentInsertedAbove();
+  const adjustRef = useRef(adjustAbove);
+  adjustRef.current = adjustAbove;
+  const [adjust] = useState(() => (deltaPx: number) => {
+    adjustRef.current(deltaPx);
+  });
   const [content] = useState(() => {
     const element = document.createElement("div");
     element.style.display = "contents";
@@ -43,9 +51,9 @@ function MessageBody({ children, enabled }: { children: ReactNode; enabled: bool
     const shell = holder.current;
     const root = shell?.closest<HTMLElement>("[data-role][data-message-id]");
     if (!root || !shell) return;
-    const stop = enabled && longThread ? observeMessageWindow(root, shell, content) : undefined;
+    const stop = enabled && longThread ? observeMessageWindow(root, shell, content, adjust) : undefined;
     return stop;
-  }, [content, enabled, longThread, messageId]);
+  }, [adjust, content, enabled, longThread, messageId]);
   return (
     <>
       <div ref={attach} style={{ display: "contents" }} />
