@@ -363,8 +363,6 @@ test("light glass draws no grey outlines outside the composer", () => {
 });
 
 test("glass decoration has no blurred inset shadows or radial sheens", () => {
-	// WebKit's CPU painter re-blurs an inset shadow over the whole surface on every repaint, at any
-	// blur radius, and redraws radial gradients slowly: Liquid Glass 3D scrolled Settings at 6 fps.
 	const css = readFileSync(new URL("../src/index.css", import.meta.url), "utf8");
 	const glass = css.slice(css.indexOf('html[data-glass="frosted"]'), css.indexOf(".glass-lens {"));
 	assert.ok(glass.length > 10000);

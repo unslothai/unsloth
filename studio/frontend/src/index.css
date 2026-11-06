@@ -6413,8 +6413,7 @@ html[data-glass="frosted"] :is([data-wallpaper-workspace], [data-chat-content-ro
 html[data-glass="frosted"] .wallpaper-preview-composer {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
-/* Rims are unblurred and sheens linear: WebKit's CPU painter re-blurs an inset shadow over the whole
-   surface on every repaint, at any radius, and redraws radial gradients slowly. */
+/* Unblurred rims and linear sheens: WebKit's CPU painter re-blurs inset shadows over the whole surface on every repaint, and paints radial gradients slowly. */
 html[data-glass^="liquid"] {
   --glass-sheen: linear-gradient(170deg, rgb(255 255 255 / .047), transparent 55%);
   --glass-rim: inset 0 1px 0 rgb(255 255 255 / .432);
