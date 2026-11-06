@@ -2581,6 +2581,23 @@ def test_an_encoder_too_big_to_onload_whole_streams_before_it_falls_back_to_the_
     assert worker._encode_plan(offloaded, _FakeEncoderModel()) == ("cpu", None)
 
 
+def test_the_worker_reports_its_streamed_need_only_when_it_can_stream(monkeypatch):
+    from core.inference import video_ltx25_te_worker as worker
+
+    model = _stack_model(width = 512)
+    monkeypatch.delenv(worker.STREAM_ENCODE_ENV, raising = False)
+    offloaded = {"device": "cuda:0", "resident": False}
+    need = worker._stream_need_mib(worker._stream_parts(model))
+    assert worker._stream_need_mib_or_none(offloaded, model) == need
+    assert worker._stream_need_mib_or_none({"device": "xpu:0", "resident": False}, model) == need
+    assert worker._stream_need_mib_or_none({"device": "cuda:0", "resident": True}, model) is None
+    assert worker._stream_need_mib_or_none({"device": "cpu", "resident": False}, model) is None
+    assert worker._stream_need_mib_or_none({"device": "mps", "resident": False}, model) is None
+    assert worker._stream_need_mib_or_none(offloaded, _FakeEncoderModel()) is None
+    monkeypatch.setenv(worker.STREAM_ENCODE_ENV, "0")
+    assert worker._stream_need_mib_or_none(offloaded, model) is None
+
+
 def test_a_streamed_encode_never_moves_the_whole_encoder(monkeypatch):
     import torch
 
@@ -2668,12 +2685,13 @@ class _LendClient(_FakeClient):
         *,
         resident = False,
         weights_mib = 22811,
+        stream_need_mib = 6900,
         budget_mib = None,
         hit = False,
     ):
         super().__init__()
         self.config = {"device": "cuda:0", "resident": resident, "budget_mib": budget_mib}
-        self.info = {"weights_mib": weights_mib}
+        self.info = {"weights_mib": weights_mib, "stream_need_mib": stream_need_mib}
         self.hit = hit
         self.events = []
 
@@ -2746,13 +2764,17 @@ def test_lend_streams_resident_blocks_only_when_the_encoder_then_fits_or_room_is
     # the whole encoder fits already: nothing lent
     released = _lend_env(monkeypatch, free_mib = whole + 1, held_mib = 20000)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
-    # cannot fit whole even with every resident block, but room clears the streamed-encode floor: nothing lent
-    released = _lend_env(monkeypatch, free_mib = 9000, held_mib = 4000)
+    # cannot fit whole even with every resident block, but room clears the worker's streamed need: nothing lent
+    released = _lend_env(monkeypatch, free_mib = 6900, held_mib = 4000)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is None and released == []
-    # below the streamed-encode floor: lend up to the floor
+    # below the worker's streamed need: lend up to it
     released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
     assert v25.lend_resident_dit_for_encode(pipe, _LendClient()) is not None
-    assert released == [v25.LEND_STREAM_FLOOR_MIB - 5000]
+    assert released == [6900 - 5000]
+    # an encoder that never streams (kill switch, layout): lending can only help a whole fit
+    released = _lend_env(monkeypatch, free_mib = 5000, held_mib = 4000)
+    assert v25.lend_resident_dit_for_encode(pipe, _LendClient(stream_need_mib = None)) is None
+    assert released == []
     # the load budget minus what this process reserves caps the room, as in the worker
     released = _lend_env(monkeypatch, free_mib = whole + 5000, held_mib = 20000, reserved_mib = 10000)
     client = _LendClient(budget_mib = whole + 10000)

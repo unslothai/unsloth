@@ -803,40 +803,25 @@ def _server_reserved_mib(device: Optional[str]) -> Optional[int]:
         return None
 
 
-# A per-module streamed Gemma 4 encode needs at most about this much free (two of its largest module plus a margin).
-LEND_STREAM_FLOOR_MIB = 6144
-
-
 def _encode_room_mib(client: Any) -> Optional[int]:
-    """The room the worker's ``_encode_device`` would see now (free card memory minus the user reserve, capped by the
-    load budget minus what this process holds); None when unreadable."""
-    device = str(client.config.get("device") or "")
-    if not device.startswith("cuda"):
-        return None
-    try:
-        import torch
+    """The room the worker's encode plan sees now (``video_ltx25_te_worker._encode_room_mib``); None when unreadable."""
+    from .video_ltx25_te_worker import _encode_room_mib as worker_room
 
-        from .video_ltx25_te_worker import WORKER_CONTEXT_MIB
-
-        dev = torch.device(device)
-        free, total = torch.cuda.mem_get_info(dev)
-        share = float(client.config.get("vram_reserve_share") or 0.0)
-        room = (int(free) - int(int(total) * share)) >> 20
-        budget = client.config.get("budget_mib")
-        if budget is not None:
-            reserved = int(torch.cuda.memory_reserved(dev)) >> 20
-            room = min(room, int(budget) - reserved - WORKER_CONTEXT_MIB)
-        return room
-    except Exception:  # noqa: BLE001 -- unreadable: lend nothing
-        return None
+    device = client.config.get("device")
+    return worker_room(client.config, _server_reserved_mib(device))
 
 
 def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..., None]]:
     """Stream enough resident denoiser blocks again (``video_stream_residency``) for a non-resident encoder to encode on
-    the card: the whole encoder when lending makes it fit, else the streamed-encode floor. Returns the restore that
-    pins them back after the encode, or None when nothing was lent. Placement only: the same weights run either way."""
+        the card: the whole encoder when lending makes it fit, else the worker's layer-streamed need (``stream_need_mib``
+    from its ready message). Returns the restore that
+        pins them back after the encode, or None when nothing was lent. Placement only: the same weights run either way."""
     config = getattr(client, "config", None) or {}
-    if not config or config.get("resident"):
+    if (
+        not config
+        or config.get("resident")
+        or not str(config.get("device") or "").startswith("cuda")
+    ):
         return None
     try:
         import torch
@@ -852,12 +837,14 @@ def lend_resident_dit_for_encode(pipe: Any, client: Any) -> Optional[Callable[..
         room = _encode_room_mib(client)
         if room is None:
             return None
-        weights = int((getattr(client, "info", None) or {}).get("weights_mib") or 0)
+        info = getattr(client, "info", None) or {}
+        weights = int(info.get("weights_mib") or 0)
         whole = weights + ENCODE_MARGIN_MIB if weights > 0 else None
+        streamed = info.get("stream_need_mib")
         if whole is not None and room < whole <= room + held:
             target = whole
-        elif room < LEND_STREAM_FLOOR_MIB:
-            target = LEND_STREAM_FLOOR_MIB
+        elif streamed is not None and room < int(streamed):
+            target = int(streamed)
         else:
             return None
         restore = release_resident_groups(
