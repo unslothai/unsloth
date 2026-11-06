@@ -51,7 +51,7 @@ function load() {
     {
       "@/features/auth": {
         authFetch: async (input: string, init?: { body?: string }) => {
-          if (input === "/v1/models") return { ok: true, status: 200, json: async () => ({ data: [] }) };
+          if (input === "/api/inference/loaded-models" || input === "/v1/models") return { ok: true, status: 200, json: async () => ({ data: [] }) };
           spoken.push(JSON.parse(init?.body ?? "{}").messages[0].content);
           await new Promise((resolve) => answers.push(resolve));
           return { ok: true, status: 200, json: async () => ({ audio: { data: String(spoken.length) } }) };
