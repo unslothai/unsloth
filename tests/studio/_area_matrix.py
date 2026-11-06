@@ -660,12 +660,27 @@ SCROLL = """async ([where, frames, step]) => {
   return true;
 }"""
 # Every tab the Settings dialog renders, in order, then back to the first: a new tab is measured
-# without a list to update.
-TABS = """async () => {
-  const dlg = document.querySelector('[role="dialog"]'); if (!dlg) return 0;
-  const tabs = [...dlg.querySelectorAll('button[data-testid^="settings-tab"]')];
-  for (const tab of tabs.concat(tabs.slice(0, 1))) { tab.click(); await window.__gateFrames(2); }
-  return tabs.length;
+# without a list to update. Panels are lazy and behind useDeferredValue + Suspense, so after each
+# click this waits until the dialog's pane says that panel committed (data-settings-panel, set
+# by settings-dialog.tsx) and did not fail; a panel that never gets there is reported.
+TABS = """async (timeoutMs) => {
+  const dlg = document.querySelector('[role="dialog"]'); if (!dlg) return {count: 0, missing: [], failed: []};
+  const tabs = [...dlg.querySelectorAll('button[data-testid^="settings-tab-"]')];
+  const missing = [], failed = [];
+  for (const tab of tabs.concat(tabs.slice(0, 1))) {
+    const id = tab.getAttribute('data-testid').slice('settings-tab-'.length);
+    tab.click();
+    const deadline = performance.now() + timeoutMs;
+    let ready = false;
+    while (performance.now() < deadline) {
+      await window.__gateFrames(1);
+      if (dlg.querySelector('[data-settings-panel-failed]')) { failed.push(id); break; }
+      if (dlg.querySelector(`[data-settings-panel="${id}"]`)) { ready = true; break; }
+    }
+    if (!ready && !failed.includes(id)) missing.push(id);
+    await window.__gateFrames(2);
+  }
+  return {count: tabs.length, missing, failed};
 }"""
 FIND = """(spec) => {
   document.querySelectorAll('[data-gate-target]').forEach((e) => e.removeAttribute('data-gate-target'));
@@ -710,6 +725,25 @@ HINTS = {
 TRACE_CATS = ["toplevel", "devtools.timeline", "__metadata"]
 
 
+# A Settings panel that has not committed this long after its tab was clicked fails the area.
+TAB_READY_MS = int(os.environ.get("LONG_THREAD_AREAS_TAB_READY_MS", "8000"))
+
+
+def settings_tabs() -> list[str]:
+    """Every Settings tab the app defines; the owner session the gate uses sees all of them."""
+    return parse_registry(SETTINGS_STORE_TS.read_text(encoding = "utf-8"), "SETTINGS_TABS")
+
+
+def auth_token(claims: dict | None = None) -> str:
+    """An unsigned token the app reads as the installation owner (account-session.ts sessionAccount):
+    a string `sub` and role owner, so owner-only Settings tabs render. The stub API never checks it."""
+    import base64
+
+    body = {"exp": 9_999_999_999, "sub": "unsloth", "role": "owner", **(claims or {})}
+    payload = base64.urlsafe_b64encode(json.dumps(body).encode()).decode().rstrip("=")
+    return f"gate.{payload}.gate"
+
+
 def material_storage(mode: dict) -> str:
     state = {
         "material": mode["material"],
@@ -732,7 +766,7 @@ class Page:
         self.ctx = browser.new_context(viewport = {"width": 1440, "height": 900})
         self.ctx.grant_permissions(["clipboard-read", "clipboard-write"], origin = base)
         init = {
-            "unsloth_auth_token": "x.eyJleHAiOjk5OTk5OTk5OTl9.y",
+            "unsloth_auth_token": auth_token(),
             "unsloth_auth_refresh_token": "r",
             "unsloth_window_material": material_storage(mode["set"]),
             "theme": mode["set"]["theme"],
@@ -747,6 +781,7 @@ class Page:
         )
         self.page = page = self.ctx.new_page()
         self.errors: list[str] = []
+        self.last_error = ""
         page.on("pageerror", lambda e: self.errors.append(str(e)[:200]))
         page.goto(f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000)
         page.wait_for_function(
@@ -788,7 +823,23 @@ class Page:
         if kind == "scroll":
             return bool(page.evaluate(SCROLL, [arg, 20, 60 if arg == "thread" else 40]))
         if kind == "tabs":
-            return page.evaluate(TABS) > 0
+            got = page.evaluate(TABS, TAB_READY_MS)
+            expected = len(settings_tabs())
+            problems = []
+            if got["count"] < expected:
+                problems.append(
+                    f"only {got['count']} of {expected} Settings tabs rendered (owner session lost?)"
+                )
+            if got["missing"]:
+                problems.append(
+                    f"panel(s) never committed within {TAB_READY_MS} ms: {', '.join(got['missing'])}"
+                )
+            if got["failed"]:
+                problems.append(
+                    f"panel(s) rendered their error boundary: {', '.join(got['failed'])}"
+                )
+            self.last_error = "; ".join(problems)
+            return not problems
         if not page.evaluate(FIND, arg):
             return False
         if kind == "hover":
@@ -839,6 +890,20 @@ class Page:
             self.hovered = False
 
     def sweep(self, areas: list[str]) -> dict[str, dict]:
+        """Run the areas inside one trace; a failure part way still ends the browser-wide trace, so
+        the next page can start its own."""
+        try:
+            return self._sweep(areas)
+        except BaseException:
+            if getattr(self, "_tracing", False):
+                try:
+                    self.cdp.send("Tracing.end")
+                except Exception:  # noqa: BLE001 - the original error is the one to report
+                    pass
+                self._tracing = False
+            raise
+
+    def _sweep(self, areas: list[str]) -> dict[str, dict]:
         """Run the areas inside one trace; returns per-area status and counters."""
         page, cdp = self.page, self.cdp
         events: list = []
@@ -850,6 +915,7 @@ class Page:
             "Tracing.start",
             {"traceConfig": {"includedCategories": TRACE_CATS}, "transferMode": "ReportEvents"},
         )
+        self._tracing = True
         status: dict[str, str] = {}
         walls: dict[str, float] = {}
         for name in areas:
@@ -865,8 +931,9 @@ class Page:
                     self.wait(("settle",), 0)
                 base = page.evaluate("() => window.__gateOverlays()")
                 page.evaluate("(n) => console.timeStamp('gate:begin:' + n)", name)
+                self.last_error = ""
                 if not self.act(spec["open"]):
-                    status[name] = "NOT_RUN: control not found"
+                    status[name] = f"NOT_RUN: {self.last_error or 'control not found'}"
                     page.evaluate("(n) => console.timeStamp('gate:end:' + n)", name)
                     continue
                 opened = self.wait(spec["ready"], base)
@@ -884,6 +951,7 @@ class Page:
                 page.evaluate("(n) => console.timeStamp('gate:end:' + n)", name)
         t_end = time.time()
         cdp.send("Tracing.end")
+        self._tracing = False
         while not done:
             page.wait_for_timeout(50)
         t_split = time.time()
@@ -1022,44 +1090,78 @@ def plan(
     return [(LONG, m, areas_for(m)) for m in longs] + [(SHORT, m, areas_for(m)) for m in all_modes]
 
 
-def _worker(
-    jobs: list[tuple[int, dict]], base: str, launch_args, areas: list[str], out: dict, log, started
+def _run_jobs(
+    browser,
+    jobs,
+    base: str,
+    out: dict,
+    log,
+    started,
+    page_factory = None,
 ) -> None:
-    from playwright.sync_api import sync_playwright
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(args = launch_args)
+    """Measure each job's page into `out`; any failure is recorded as that page's error, never dropped."""
+    page_factory = page_factory or Page
+    for turns, mode, page_areas in jobs:
+        key = (turns, mode["name"])
+        page = None
+        for attempt in range(2):
+            try:
+                page = page_factory(browser, base, turns, mode, [])
+                break
+            except Exception as exc:  # noqa: BLE001 - one retry, then the page is reported
+                if attempt:
+                    out[key] = {"error": f"page did not load: {type(exc).__name__}: {exc}"[:300]}
+        if page is None:
+            continue
         try:
-            for turns, mode, page_areas in jobs:
-                for attempt in range(2):
-                    try:
-                        page = Page(browser, base, turns, mode, [])
-                        break
-                    except Exception as exc:  # noqa: BLE001 - one retry, then the page is reported
-                        if attempt:
-                            out[(turns, mode["name"])] = {
-                                "error": f"page did not load: {exc}"[:300]
-                            }
-                            page = None
-                if page is None:
-                    continue
-                try:
-                    cells = page.sweep(page_areas)
-                    out[(turns, mode["name"])] = {
-                        "cells": cells,
-                        "applied": page.applied,
-                        "errors": page.errors[:3],
-                        "triggers": page.page.evaluate(TRIGGERS)
-                        if mode["name"] == "default" and turns == SHORT
-                        else None,
-                    }
-                finally:
-                    page.close()
-                log(
-                    f"  areas: {turns} turns, {mode['name']} ({time.time() - started:.0f} s)",
-                    flush = True,
-                )
+            cells = page.sweep(page_areas)
+            out[key] = {
+                "cells": cells,
+                "applied": page.applied,
+                "errors": page.errors[:3],
+                "triggers": page.page.evaluate(TRIGGERS) if key == (SHORT, "default") else None,
+            }
+        except Exception as exc:  # noqa: BLE001 - a broken page is a finding, not a silent gap
+            out[key] = {"error": f"measuring the page failed: {type(exc).__name__}: {exc}"[:300]}
         finally:
-            browser.close()
+            try:
+                page.close()
+            except Exception:  # noqa: BLE001 - the error above is the one to report
+                pass
+        log(f"  areas: {turns} turns, {mode['name']} ({time.time() - started:.0f} s)", flush = True)
+
+
+def _worker(
+    jobs: list[tuple[int, dict, list[str]]],
+    base: str,
+    launch_args,
+    areas: list[str],
+    out: dict,
+    log,
+    started,
+) -> None:
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(args = launch_args)
+            try:
+                _run_jobs(browser, jobs, base, out, log, started)
+            finally:
+                browser.close()
+    except Exception as exc:  # noqa: BLE001 - the browser itself failed: every page it owed is reported
+        for turns, mode, _ in jobs:
+            out.setdefault(
+                (turns, mode["name"]),
+                {"error": f"worker failed: {type(exc).__name__}: {exc}"[:300]},
+            )
+
+
+def fill_missing(out: dict, jobs) -> None:
+    """Every planned page must have a result; one that has none is an error, so the gate cannot pass."""
+    for turns, mode, _ in jobs:
+        out.setdefault(
+            (turns, mode["name"]), {"error": "no result: the worker measuring it stopped"}
+        )
 
 
 def measure(
@@ -1094,7 +1196,9 @@ def measure(
             t.start()
         for t in threads:
             t.join()
+        fill_missing(out, jobs)
         return {
+            "planned": [(t, m["name"]) for t, m, _ in jobs],
             "pages": out,
             "modes": {m["name"]: m for m in all_modes},
             "areas": areas,
@@ -1429,8 +1533,12 @@ def run(
         _in_thread(remeasure, result, again, log)
         verdicts = judge(result)
     failures, details = [], []
-    trig = (result["pages"].get((SHORT, "default")) or {}).get("triggers") or {}
-    missing = uncovered(trig)
+    trig = (result["pages"].get((SHORT, "default")) or {}).get("triggers")
+    if trig is None:
+        failures.append(
+            f"no popup-trigger list: the default page at {SHORT} turns was not measured, so coverage could not be checked"
+        )
+    missing = uncovered(trig or {})
     if missing:
         failures.append(
             f"{len(missing)} popup trigger(s) on the chat page belong to no measured area: {', '.join(missing[:8])}. "

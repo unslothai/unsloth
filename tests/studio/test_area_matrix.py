@@ -195,3 +195,101 @@ def test_trace_windows_split_by_marks():
     ]
     row = am.split_trace(ev)["a"]
     assert row["elements"] == 7 and row["cpu_ms"] == 4.0 and row["longest_task_ms"] == 5.0
+
+
+def test_owner_token_shows_every_settings_tab():
+    import base64
+    import json
+
+    # Same decode as sessionAccount() in features/auth/account-session.ts.
+    payload = am.auth_token().split(".")[1]
+    claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    assert (
+        isinstance(claims["sub"], str)
+        and claims["role"] == "owner"
+        and claims["exp"] > 4_000_000_000
+    )
+    assert len(am.settings_tabs()) == 18
+
+
+class _FakePage:
+    def __init__(self, result):
+        self.result = result
+
+    def evaluate(
+        self,
+        script,
+        arg = None,
+    ):
+        return self.result
+
+
+@pytest.mark.parametrize(
+    "got, ok, words",
+    [
+        ({"count": 18, "missing": [], "failed": []}, True, ""),
+        ({"count": 13, "missing": [], "failed": []}, False, "only 13 of 18"),
+        ({"count": 18, "missing": ["agents"], "failed": []}, False, "never committed"),
+        ({"count": 18, "missing": [], "failed": ["data"]}, False, "error boundary"),
+    ],
+)
+def test_settings_tabs_area_fails_when_a_panel_is_not_measured(got, ok, words):
+    page = object.__new__(am.Page)
+    page.page, page.last_error = _FakePage(got), ""
+    assert page.act(("tabs", None)) is ok
+    assert words in page.last_error
+
+
+class _Closed(Exception):
+    pass
+
+
+class _SweepFails:
+    applied, errors = {}, []
+
+    def __init__(self, *args):
+        pass
+
+    def sweep(self, areas):
+        raise _Closed("Target page, context or browser has been closed")
+
+    def close(self):
+        raise _Closed("already closed")
+
+
+def _jobs():
+    modes = {m["name"]: m for m in am.app_modes()}
+    return [
+        (am.SHORT, modes["default"], ["type"]),
+        (am.SHORT, modes["frosted"], ["type"]),
+        (am.LONG, modes["default"], ["type"]),
+    ]
+
+
+def test_a_page_that_breaks_mid_sweep_fails_the_gate():
+    out: dict = {}
+    am._run_jobs(
+        None, _jobs()[:2], "http://x", out, lambda *a, **k: None, 0.0, page_factory = _SweepFails
+    )
+    assert set(out) == {(am.SHORT, "default"), (am.SHORT, "frosted")}
+    assert all("error" in v and "_Closed" in v["error"] for v in out.values())
+    # a page no worker reported is an error too
+    am.fill_missing(out, _jobs())
+    assert "no result" in out[(am.LONG, "default")]["error"]
+    result = {"pages": out, "modes": {m["name"]: m for m in am.app_modes()}, "areas": ["type"]}
+    broken = [v for v in am.judge(result, known = "") if v["fail"]]
+    assert {(v["turns"], v["mode"]) for v in broken} == set(out)
+
+
+def test_missing_default_page_fails_coverage(monkeypatch):
+    out = {(t, m["name"]): {"error": "measuring the page failed: _Closed"} for t, m, _ in _jobs()}
+    fake = {
+        "pages": out,
+        "modes": {m["name"]: m for m in am.app_modes()},
+        "areas": ["type"],
+        "seconds": 0.0,
+    }
+    monkeypatch.setattr(am, "measure", lambda *a, **k: fake)
+    lines, failures, details, _ = am.run(Path("unused"), [])
+    assert any("no popup-trigger list" in f for f in failures)
+    assert sum("measuring the page failed" in f for f in failures) == len(out)

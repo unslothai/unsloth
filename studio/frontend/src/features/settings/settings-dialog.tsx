@@ -162,7 +162,10 @@ class SettingsPanelBoundary extends Component<
       return this.props.children;
     }
     return (
-      <div className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center">
+      <div
+        data-settings-panel-failed=""
+        className="flex min-h-40 flex-1 flex-col items-center justify-center gap-3 text-center"
+      >
         <p className="text-muted-foreground text-sm">{this.props.message}</p>
         <Button
           variant="outline"
@@ -700,6 +703,9 @@ export function SettingsDialog() {
                 </button>
                 <div
                   ref={mainScrollRef}
+                  // The panel this pane has committed (it lags the nav while a lazy panel loads); the
+                  // long-chat gate waits on it before measuring the next tab.
+                  data-settings-panel={panelTab}
                   className="hover-scrollbar flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-7 py-6 [scrollbar-gutter:stable]"
                 >
                   {/* Only a panel's first view waits, so the fallback is delayed and a
