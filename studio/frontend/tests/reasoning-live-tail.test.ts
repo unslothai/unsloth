@@ -94,8 +94,19 @@ test("the header's expand button lifts the cap for the round and appears only wh
 test("a streaming box follows its newest line until the reader scrolls up", () => {
   assert.match(tail, /if \(streaming\) following\.current = true;/);
   assert.match(tail, /if \(streaming && following\.current\) box\.scrollTop = box\.scrollHeight;/);
-  assert.match(tail, /if \(atBottom \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
-  assert.match(reasoning, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown", "pointerdown"\] as const;/);
+  assert.match(tail, /if \(atBottom \|\| pressedHere \|\| performance\.now\(\) - readerAt < 250\) following\.current = atBottom;/);
+  assert.match(reasoning, /const READER_SCROLL_EVENTS = \["wheel", "touchmove", "keydown"\] as const;/);
+});
+
+test("a scrollbar drag stops the follow for as long as the press that started in the box is held", () => {
+  assert.match(tail, /box\.addEventListener\("pointerdown", onPress, \{ passive: true \}\);/);
+  assert.match(tail, /pressedHere &&= inputPointerHeld\(\);/);
+});
+
+test("scrolling inside the capped box mounts the passages it reaches", () => {
+  assert.match(transcript, /const tail = element\.closest<HTMLElement>\('\[data-slot="reasoning-tail"\]'\);/);
+  assert.match(transcript, /tail\?\.addEventListener\("scroll", onTailScroll, \{ passive: true \}\);/);
+  assert.match(transcript, /tailFrame = 0;\s*demandNow\.current\(\);/);
 });
 
 test("each edge fades only while more is past it, set without a re-render", () => {

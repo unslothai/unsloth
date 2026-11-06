@@ -56,6 +56,7 @@ import { toolRunIsExempt } from "@/components/assistant-ui/tool-fold-exemptions"
 import { useDetachThreadFromBottom } from "@/components/assistant-ui/use-intent-aware-autoscroll";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
 import { formatWorkedFor } from "@/lib/format-worked-for";
+import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { cn } from "@/lib/utils";
 import {
   type ReasoningGroupComponent,
@@ -504,7 +505,7 @@ function ReasoningBody({
   );
 }
 
-const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown", "pointerdown"] as const;
+const READER_SCROLL_EVENTS = ["wheel", "touchmove", "keydown"] as const;
 
 // A fixed box (#11703) that scrolls on its own: it follows the newest lines while streaming until the
 // reader scrolls up, and fades an edge only while more is past it. Not clipped behind an Expand button.
@@ -557,9 +558,16 @@ function ReasoningTail({
     const onReader = () => {
       readerAt = performance.now();
     };
+    // A scrollbar drag counts for as long as the press that started in the box is held.
+    let pressedHere = false;
+    const onPress = () => {
+      pressedHere = true;
+      onReader();
+    };
     const onScroll = () => {
       const atBottom = below() < 24;
-      if (atBottom || performance.now() - readerAt < 250) following.current = atBottom;
+      pressedHere &&= inputPointerHeld();
+      if (atBottom || pressedHere || performance.now() - readerAt < 250) following.current = atBottom;
       markEdges();
     };
     const observer = new ResizeObserver(onResize);
@@ -567,11 +575,13 @@ function ReasoningTail({
     observer.observe(box);
     box.addEventListener("scroll", onScroll, { passive: true });
     for (const type of READER_SCROLL_EVENTS) box.addEventListener(type, onReader, { passive: true });
+    box.addEventListener("pointerdown", onPress, { passive: true });
     onResize();
     return () => {
       observer.disconnect();
       box.removeEventListener("scroll", onScroll);
       for (const type of READER_SCROLL_EVENTS) box.removeEventListener(type, onReader);
+      box.removeEventListener("pointerdown", onPress);
     };
   }, [capped, streaming]);
   return (
