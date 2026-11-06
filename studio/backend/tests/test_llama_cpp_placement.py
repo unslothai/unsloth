@@ -2694,8 +2694,7 @@ def _igpu_backend(
     igpu = True,
     load_mode_auto = True,
 ):
-    """An integrated CUDA SoC (RTX Spark N1X, DGX Spark): llama.cpp resolves both auto modes off,
-    and the APU preflight prices the pool against system RAM."""
+    """An integrated CUDA SoC (RTX Spark N1X, DGX Spark): both auto modes resolve off."""
     backend, gguf = _apu_backend(
         tmp_path, gguf_gb = gguf_gb, avail_mib = avail_mib, monkeypatch = monkeypatch
     )
@@ -2750,8 +2749,7 @@ def _modes(cmd, flag):
 def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(
     tmp_path, monkeypatch, platform
 ):
-    """DC-060: on an iGPU llama.cpp's auto is none, so a 217 GB model nobody pinned to a mode read
-    its whole 103 GiB Engram table into one host buffer. The override must apply to auto there."""
+    """On an iGPU auto is none, so a 217 GB model on auto read its 103 GiB table into one buffer."""
     monkeypatch.setattr(
         llama_cpp_module, "_paged_load_needs_fit_headroom", lambda: platform == "win32"
     )
@@ -2763,8 +2761,6 @@ def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(
     assert _modes(cmd, "--load-mode") == ["mmap"], cmd
     assert _modes(cmd, "--lazy-mode") == ["on"], cmd
     assert resolve_effective_load_state(cmd, {}, auto_unmapped = True)[1] is False
-    # Windows: the fitter keeps shared memory free for the mapped pages, or it fills it with the GPU
-    # share. Linux pages fine without it, and the margin costs speed there.
     windows = platform == "win32"
     assert _modes(cmd, "--fit-target")[-1:] == (["16384"] if windows else []), cmd
     warning = backend.last_load_warning or ""
@@ -2773,7 +2769,6 @@ def test_an_oversized_igpu_load_left_on_auto_is_mapped_and_streams_its_table(
         "integrated GPU."
     ), warning
     assert "was set to load without memory mapping" not in warning
-    # The lazy table and the headroom go to the log, not to the user's notice.
     override = [line for line in logged if "Overriding the unmapped load mode" in line]
     assert override and "Lookup tables: --lazy-mode on." in override[0], logged
     assert ("GPU headroom: --fit-target 16384." in override[0]) is windows, override
@@ -2797,8 +2792,7 @@ def test_an_igpu_load_that_fits_keeps_llama_cpps_default(tmp_path, monkeypatch):
     ids = ["discrete-gpu-auto-is-mmap", "build-without-auto"],
 )
 def test_auto_is_left_alone_where_it_already_maps(tmp_path, monkeypatch, igpu, load_mode_auto):
-    """A device with mmap support, or a build whose default is mmap everywhere: auto already
-    pages, so the oversized load launches as before."""
+    """A device with mmap support, or a build whose default is mmap everywhere, already pages."""
     backend, gguf = _igpu_backend(
         tmp_path, monkeypatch, avail_mib = 17 * 1024, igpu = igpu, load_mode_auto = load_mode_auto
     )
@@ -2834,7 +2828,6 @@ def test_a_user_fit_target_survives_the_igpu_override(tmp_path, monkeypatch):
     "argv, env, user, expected",
     [
         (["--fit", "on"], {}, [], ["--fit-target", "16384"]),
-        # Studio's own margin (a drafter's reserve) is kept, and the headroom goes on top.
         (["--fit", "on", "--fit-target", "3072"], {}, [], ["--fit-target", "18432"]),
         (["--fit", "off"], {}, [], []),
         (["--fit", "on", "--fit-target", "1024,2048"], {}, [], []),
@@ -2867,15 +2860,13 @@ def test_an_igpu_model_without_a_table_is_only_mapped(tmp_path, monkeypatch):
 
 
 def test_an_explicit_none_on_an_igpu_also_streams_the_table(tmp_path, monkeypatch):
-    """The existing rewrite of a user's none keeps its wording; on an iGPU it gains the lazy read,
-    or mmap prefetch would still read the whole table."""
+    """The rewrite of a user's none keeps its wording and gains the lazy read on an iGPU."""
     backend, gguf = _igpu_backend(tmp_path, monkeypatch, avail_mib = 17 * 1024)
 
     launched = _launch(backend, gguf, extra_args = ["--load-mode", "none"])
     cmd = launched["cmd"]
 
     assert not _unmapped_tokens(cmd), cmd
-    # Dropping none alone hands the mode back to auto, which is none again on this device.
     assert _modes(cmd, "--load-mode")[-1:] == ["mmap"], cmd
     assert resolve_effective_load_state(cmd, launched["env"], auto_unmapped = True)[1] is False
     assert _modes(cmd, "--lazy-mode") == ["on"], cmd
@@ -7295,8 +7286,7 @@ def test_the_checkpoint_discount_removes_only_the_checkpoints():
     ids = ["igpu-auto", "user-none"],
 )
 def test_the_text_only_notice_keeps_who_chose_the_unmapped_mode(note, expected):
-    """Dropping the pinned projector leaves only the override's note; the iGPU one must not claim
-    the user asked for an unmapped load."""
+    """The iGPU note must not claim the user asked for an unmapped load."""
     backend = LlamaCppBackend()
     apu_msg = "This model needs about 70 GB but only about 60 GB of memory is available."
     backend._last_load_warning = apu_msg + note

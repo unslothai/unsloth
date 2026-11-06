@@ -4126,15 +4126,13 @@ _VRAM_FLOOR_RESERVE_MIB = 512.0
 # llama-server's own --fit-target default ("target margin per device for --fit,
 # ... default: 1024"): what the fallback fitter leaves when we pass nothing.
 _LLAMA_FIT_TARGET_DEFAULT_MIB = 1024.0
-# Extra --fit-target an oversized load paged on a Windows iGPU keeps free: the GPU share and the pages
-# read from disk come out of one memory. On a 127 GiB Strix Halo (Windows, Vulkan) a 147 GiB GGUF
-# aborted at warm-up with llama.cpp's 1 GiB margin and with 8 GiB, and ran with 16 GiB. On Linux the
-# same load ran with 1 GiB, and 16 GiB cut generation from 22.4 to 13.4 tok/s, so it stays Windows only.
+# Extra --fit-target for a load paged on a Windows iGPU, whose GPU share and mapped pages share one
+# memory: on a Strix Halo 8 GiB still aborted at warm-up, 16 GiB ran. Linux runs slower with it.
 _IGPU_PAGED_FIT_HEADROOM_MIB = 15360
 
 
 def _paged_load_needs_fit_headroom() -> bool:
-    """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``; see there."""
+    """Whether a load paged on an iGPU needs ``_IGPU_PAGED_FIT_HEADROOM_MIB``."""
     return sys.platform == "win32"
 
 
@@ -7791,8 +7789,7 @@ _PAGEABLE_OVERRIDE_NOTE = (
     "RAM up front and cannot complete at this size, so Unsloth loaded it with memory "
     "mapping instead."
 )
-# The same override where nobody chose the mode: llama.cpp's auto is none on an iGPU. The lazy
-# table and the fit headroom it may add are logged, not shown: the advisory already says it pages.
+# The override where nobody chose the mode (auto is none on an iGPU); lazy and fit flags are logged.
 _PAGEABLE_AUTO_OVERRIDE_NOTE = (
     " Unsloth turned on memory mapping, which llama.cpp leaves off by default on this "
     "integrated GPU."
@@ -15714,10 +15711,9 @@ class LlamaCppBackend:
         child_has_no_gpu: bool = False,
         **devices,
     ) -> bool:
-        """Whether llama.cpp resolves ``--load-mode auto`` to ``none`` for this child: the build
-        has ``auto`` and a model device lacks ggml's ``mmap_support``. The same capability turns
-        ``--lazy-mode auto`` off (src/llama-model.cpp, ``load_tensors``), so
-        ``_lazy_auto_resolves_off`` answers both; ``devices`` are its keyword arguments."""
+        """Whether llama.cpp resolves ``--load-mode auto`` to ``none`` here: a device lacking
+        ``mmap_support`` turns both auto modes off (``load_tensors``); ``devices`` go to
+        ``_lazy_auto_resolves_off``."""
         if child_has_no_gpu or not (server_caps or {}).get("supports_load_mode_auto"):
             return False
         try:
@@ -15733,10 +15729,8 @@ class LlamaCppBackend:
         argv: Iterable[str],
         env: Optional[Mapping[str, str]] = None,
     ) -> list[str]:
-        """``[<lazy flag>, "on"]`` when an oversized load is paged on a device where llama.cpp
-        turns ``--lazy-mode auto`` off, so the tables auto streams on other devices are read from
-        disk again (mmap prefetch skips lazy ranges, llama-mmap.cpp). Empty when env or argv
-        chose a lazy mode, or nothing would stream."""
+        """``[<lazy flag>, "on"]`` to stream the tables auto streams elsewhere: mmap prefetch skips
+        only lazy ranges (llama-mmap.cpp). Empty when a lazy mode is set or nothing would stream."""
         caps = caps or {}
         if not model_path or not caps.get("supports_lazy_mode"):
             return []
@@ -15756,10 +15750,8 @@ class LlamaCppBackend:
     def _paged_fit_headroom_flags(
         argv: Iterable[str], env: Optional[Mapping[str, str]], user_args: Optional[Iterable[str]]
     ) -> list[str]:
-        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the margin the launch
-        already keeps, for a load paged on a Windows iGPU: without it llama.cpp's fitter fills the
-        shared memory with the GPU share and leaves nothing for the mapped pages. Empty off Windows,
-        when the fitter is off, the user set a margin, or the margin is a per-device list."""
+        """``--fit-target`` raised by ``_IGPU_PAGED_FIT_HEADROOM_MIB`` over the launch's margin.
+        Empty off Windows, with the fitter off, a user margin, or a per-device list."""
         args = [str(a) for a in argv or ()]
         if not _paged_load_needs_fit_headroom():
             return []
@@ -15787,10 +15779,8 @@ class LlamaCppBackend:
     ) -> tuple[list, Optional[str]]:
         """Returns (cmd, note); rewrites an oversized non-pageable load to mmap so it finishes; judges effective env state, not argv; never blocks.
 
-        ``auto_unmapped`` (``_auto_load_mode_unmapped``): llama.cpp loads this child unmapped by
-        default, so a mode nothing selected is rewritten too, ``lazy_table_flags(argv)``
-        restores the lookup-table streaming that device turned off, and
-        ``fit_headroom_flags(argv)`` keeps shared memory free for the mapped pages."""
+        ``auto_unmapped``: auto is none for this child, so an unset mode is rewritten too, and
+        ``lazy_table_flags(argv)`` / ``fit_headroom_flags(argv)`` are appended."""
         original = cmd if isinstance(cmd, list) else list(cmd or ())
         _mlock_now, _reserves_ram_now = resolve_effective_memory_state(
             original, env, auto_unmapped = auto_unmapped
@@ -30694,8 +30684,7 @@ class LlamaCppBackend:
                         )
                     )
 
-                # On an iGPU llama.cpp's auto is none, so an oversized load nobody pinned to a
-                # mode would still read every byte into memory; same devices as the guard above.
+                # On an iGPU auto is none; same devices as the guard above.
                 _launch_auto_unmapped = self._auto_load_mode_unmapped(
                     server_caps,
                     child_has_no_gpu = _child_has_no_gpu,

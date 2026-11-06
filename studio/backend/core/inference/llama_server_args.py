@@ -1723,8 +1723,7 @@ def force_pageable_load(
 ) -> tuple[list[str], list[str]]:
     """Rewrites none/mlock to pageable: effective locks become mmap+mlock, shadowed locks stay dropped; decided by pre-rewrite state, not tokens.
 
-    ``auto_unmapped``: the child's devices make llama.cpp resolve ``auto`` to ``none``, so a mode
-    nothing selected is rewritten too, by appending ``--load-mode mmap`` (last wins over env)."""
+    ``auto_unmapped``: auto is none on this child, so an unset mode gets ``--load-mode mmap``."""
     tokens = [str(a) for a in (argv or [])]
     if auto_unmapped and load_mode_left_auto(tokens, env):
         return [*tokens, "--load-mode", "mmap"], ["auto, which is none on this GPU"]
@@ -1780,7 +1779,7 @@ def force_pageable_load(
             else:
                 env[name] = new_value
             overridden.append(name)
-    # Dropping none/--no-mmap hands the mode back to auto, which is none again on these devices.
+    # Dropping none/--no-mmap leaves auto, which is none again here.
     if overridden and auto_unmapped and load_mode_left_auto(out, env):
         out.extend(["--load-mode", "mmap"])
     return out, overridden
@@ -1832,9 +1831,8 @@ def resolve_effective_load_state(
     """``(mlock, reserves_ram, direct_io)``. Every branch that resolves the mode
     assigns all three, so the DirectIO bit cannot fall out of step with the pair.
 
-    ``auto_unmapped``: a device of this child lacks ggml's ``mmap_support`` (a CUDA, HIP or
-    Vulkan iGPU), where llama.cpp resolves ``--load-mode auto`` to ``none``
-    (src/llama-model.cpp, ``load_tensors``). Without it ``auto`` reads as mmap."""
+    ``auto_unmapped``: a device lacks ``mmap_support`` (an iGPU), so ``auto`` is ``none``
+    (``load_tensors``), not mmap."""
     mlock, reserves_ram, direct_io, auto = _resolve_load_state(argv, env)
     if auto and auto_unmapped:
         return False, True, False
@@ -1844,9 +1842,8 @@ def resolve_effective_load_state(
 def load_mode_left_auto(
     argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> bool:
-    """Whether nothing in env or argv selects a load mode other than ``auto``, so llama.cpp
-    picks one per device. Any legacy flag counts as a choice: only builds without ``auto``
-    accept them."""
+    """Whether nothing selects a mode other than ``auto``. Legacy flags count: only builds
+    without ``auto`` accept them."""
     return _resolve_load_state(argv, env)[3]
 
 

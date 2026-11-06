@@ -1570,9 +1570,6 @@ def test_translate_ngram_mod_does_not_consume_a_following_flag(chain_with_mtp):
     validate_extra_args(out)
 
 
-# On an iGPU llama.cpp resolves --load-mode auto to none (ggml mmap_support is false there).
-
-
 @pytest.mark.parametrize(
     "argv, env, auto",
     [
@@ -1604,7 +1601,6 @@ def test_auto_reserves_ram_only_where_llama_cpp_resolves_it_to_none():
         False,
         True,
     )
-    # A chosen mode is what it says, whatever the device.
     assert _lsa.resolve_effective_load_state(["--load-mode", "mmap"], {}, auto_unmapped = True) == (
         False,
         False,
@@ -1625,7 +1621,6 @@ def test_the_pageable_rewrite_maps_an_unselected_mode_on_an_igpu():
     env = {"LLAMA_ARG_LOAD_MODE": "auto"}
     out, _ = _lsa.force_pageable_load([], env, auto_unmapped = True)
     assert _lsa.resolve_effective_memory_state(out, env, auto_unmapped = True) == (False, False)
-    # A removed none or --no-mmap leaves auto behind, which is none again on an iGPU.
     for argv, env in (
         (["--load-mode", "none"], {}),
         (["--no-mmap"], {}),
@@ -1634,12 +1629,10 @@ def test_the_pageable_rewrite_maps_an_unselected_mode_on_an_igpu():
         out, overridden = _lsa.force_pageable_load(argv, env, auto_unmapped = True)
         assert overridden and out[-2:] == ["--load-mode", "mmap"], (argv, env, out)
         assert _lsa.resolve_effective_memory_state(out, env, auto_unmapped = True) == (False, False)
-    # A lock keeps its own pageable spelling.
     assert _lsa.force_pageable_load(["--load-mode", "mlock"], {}, auto_unmapped = True)[0] == [
         "--load-mode",
         "mmap+mlock",
     ]
-    # Off an iGPU auto already maps; a chosen mmap needs nothing either way.
     assert _lsa.force_pageable_load([], {}) == ([], [])
     assert _lsa.force_pageable_load(["--load-mode", "mmap"], {}, auto_unmapped = True) == (
         ["--load-mode", "mmap"],
