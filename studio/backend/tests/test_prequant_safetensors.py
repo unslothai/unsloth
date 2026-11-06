@@ -637,16 +637,18 @@ def test_plain_encoder_needs_no_torchao(plain_checkpoint):
 
 
 def _mapped(path):
+    """Whether this process still maps ``path`` (Linux only; None elsewhere)."""
+    if not sys.platform.startswith("linux"):
+        return None
     real = os.path.realpath(path)
     with open("/proc/self/maps", encoding = "utf-8") as fh:
         return any(line.rstrip().endswith(real) for line in fh)
 
 
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason = "reads /proc/self/maps")
 def test_a_buffer_repointed_at_its_pinned_copy_releases_the_file_mapping(plain_checkpoint):
     """Streaming re-points each host weight at its pinned copy with ``.data =``. A view keeps its base through that,
-    so a buffer loaded straight from the file kept the whole safetensors mapping resident for the model's life
-    (8.7 GiB for Qwen-Image-2.1's int8 encoder)."""
+    so a buffer loaded straight from the file kept the whole safetensors mapping alive for the model's life (8.7 GiB
+    for Qwen-Image-2.1's int8 encoder; on Windows the open mapping also blocks deleting the file)."""
     import gc
 
     import torch
@@ -659,12 +661,12 @@ def test_a_buffer_repointed_at_its_pinned_copy_releases_the_file_mapping(plain_c
         "weight", ps.load_plain_prequant_safetensors(path)["state_dict"]["encoder.weight"]
     )
     expected = module.weight.clone()
-    assert _mapped(path)
-    module.weight.data = (
-        module.weight.clone()
-    )  # the pinned copy, as _GroupPinner / the pin arena re-point it
+    assert _mapped(path) in (True, None)
+    # the pinned copy, as _GroupPinner / the pin arena re-point it
+    module.weight.data = module.weight.clone()
     gc.collect()
-    assert not _mapped(path)
+    assert _mapped(path) in (False, None)
+    os.remove(path)
     assert torch.equal(module.weight, expected)
 
 
