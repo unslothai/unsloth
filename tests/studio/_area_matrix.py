@@ -299,9 +299,10 @@ AREAS: dict[str, dict] = {
     },
     "sidebar_toggle": {
         "open": ("key", "Mod+KeyB"),
-        "ready": ("settle",),
+        # the sidebar's own state flips, then flips back
+        "ready": ("changed", ".sidebar-peer[data-state]", "data-state"),
         "close": ("key", "Mod+KeyB"),
-        "gone": ("settle",),
+        "gone": ("restored", ".sidebar-peer[data-state]", "data-state"),
         "covers": [],
     },
     "run_settings": {
@@ -313,16 +314,16 @@ AREAS: dict[str, dict] = {
     },
     "api_monitor": {
         "open": ("key", {"mac": "Control+Shift+KeyU", "other": "Control+Alt+Shift+KeyM"}),
-        "ready": ("settle",),
+        "ready": ("sel", '[data-testid="api-monitor-panel"]'),
         "close": ("key", {"mac": "Control+Shift+KeyU", "other": "Control+Alt+Shift+KeyM"}),
-        "gone": ("settle",),
+        "gone": ("gone", '[data-testid="api-monitor-panel"]'),
         "covers": [],
     },
     "rename_chat": {
         "open": ("key", "Mod+Alt+KeyR"),
-        "ready": ("settle",),
+        "ready": ("overlay",),
         "close": ("key", "Escape"),
-        "gone": ("settle",),
+        "gone": ("overlay_gone",),
         "covers": [],
     },
     "shortcuts_dialog": {
@@ -346,10 +347,12 @@ AREAS: dict[str, dict] = {
         "gone": ("settle",),
         "covers": [],
     },
+    # A real (Playwright) click: native focus moves into the message, so the action bar's focus reveal
+    # runs inside the window; the area fails if no focusin reached the message.
     "message_click": {
-        "open": ("click", f"{LAST}p"),
-        "ready": ("settle",),
-        "close": ("click", ".aui-composer-input"),
+        "open": ("pclick", f"{LAST}p"),
+        "ready": ("focusin", '[data-role="assistant"]'),
+        "close": ("pclick", ".aui-composer-input"),
         "gone": ("settle",),
         "covers": [],
     },
@@ -622,6 +625,9 @@ PROBE = (
   window.__gateOverlays = () => [...document.querySelectorAll(OVER)].filter(vis).length;
   window.__gateVisible = (sel) => [...document.querySelectorAll(sel)].some(vis);
   window.__gateFrames = (n) => new Promise((r) => { let k = 0; const f = () => (++k >= n ? r() : requestAnimationFrame(f)); requestAnimationFrame(f); });
+  window.__gateFocusins = [];
+  document.addEventListener('focusin', (e) => window.__gateFocusins.push(e.target), true);
+  window.__gateAttr = (sel, attr) => { const e = document.querySelector(sel); return e ? e.getAttribute(attr) : null; };
 }"""
     % OVER
 )
@@ -782,6 +788,8 @@ class Page:
         self.page = page = self.ctx.new_page()
         self.errors: list[str] = []
         self.last_error = ""
+        self.attr_before = None
+        self.focusins_before = 0
         page.on("pageerror", lambda e: self.errors.append(str(e)[:200]))
         page.goto(f"{base}/chat?thread={self.api.rec['id']}", wait_until = "load", timeout = 120_000)
         page.wait_for_function(
@@ -846,6 +854,11 @@ class Page:
             page.locator("[data-gate-target]").first.hover(timeout = 3_000, force = True)
             self.hovered = True
             return True
+        if kind == "pclick":
+            # A trusted click (mouse move, press, native focus), for areas whose cost is the focus change.
+            page.locator("[data-gate-target]").first.click(timeout = 3_000, force = True)
+            self.hovered = True
+            return True
         # Clicks are dispatched in the page: the pointer stays parked, so no tooltip or :hover state
         # lands in a window by chance and the counts stay deterministic.
         page.evaluate(CLICK, kind == "rclick")
@@ -868,6 +881,24 @@ class Page:
             elif kind == "gone":
                 self.page.wait_for_function(
                     "(s) => !window.__gateVisible(s)", arg = pred[1], timeout = 3_000
+                )
+            elif kind == "changed":
+                self.page.wait_for_function(
+                    "([s, a, v]) => window.__gateAttr(s, a) !== null && window.__gateAttr(s, a) !== v",
+                    arg = [pred[1], pred[2], self.attr_before],
+                    timeout = 3_000,
+                )
+            elif kind == "restored":
+                self.page.wait_for_function(
+                    "([s, a, v]) => window.__gateAttr(s, a) === v",
+                    arg = [pred[1], pred[2], self.attr_before],
+                    timeout = 3_000,
+                )
+            elif kind == "focusin":
+                self.page.wait_for_function(
+                    "([s, n]) => window.__gateFocusins.slice(n).some((t) => t instanceof Element && t.closest(s))",
+                    arg = [pred[1], self.focusins_before],
+                    timeout = 3_000,
                 )
             ok = True
         except Exception:  # noqa: BLE001 - reported as a NOT_RUN area
@@ -930,6 +961,13 @@ class Page:
                 if spec.get("setup"):
                     self.wait(("settle",), 0)
                 base = page.evaluate("() => window.__gateOverlays()")
+                ready = spec["ready"]
+                self.attr_before = (
+                    page.evaluate("([s, a]) => window.__gateAttr(s, a)", [ready[1], ready[2]])
+                    if ready[0] == "changed"
+                    else None
+                )
+                self.focusins_before = page.evaluate("() => window.__gateFocusins.length")
                 page.evaluate("(n) => console.timeStamp('gate:begin:' + n)", name)
                 self.last_error = ""
                 if not self.act(spec["open"]):
@@ -937,11 +975,12 @@ class Page:
                     page.evaluate("(n) => console.timeStamp('gate:end:' + n)", name)
                     continue
                 opened = self.wait(spec["ready"], base)
+                closed = True
                 if spec.get("close"):
                     self.act(spec["close"])
-                    self.wait(spec["gone"], base + 1)
+                    closed = self.wait(spec["gone"], base + 1)
                 page.evaluate("(n) => console.timeStamp('gate:end:' + n)", name)
-                status[name] = "OK" if opened else "NOT_RUN: never appeared"
+                status[name] = area_status(spec, opened, closed)
                 if spec.get("teardown"):
                     self.act(spec["teardown"])
                     self.wait(("settle",), 0)
@@ -973,6 +1012,15 @@ class Page:
 
 
 # --- trace -> per-area counters --------------------------------------------------------------------
+
+
+def area_status(spec: dict, opened: bool, closed: bool) -> str:
+    """OK only when the area visibly opened and, if it closes, visibly closed again."""
+    if not opened:
+        return f"NOT_RUN: never reached {spec['ready'][0]}"
+    if not closed:
+        return f"NOT_RUN: opened but never reached {spec['gone'][0]} after closing"
+    return "OK"
 
 
 def split_trace(events: list) -> dict[str, dict]:

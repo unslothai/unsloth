@@ -35,6 +35,16 @@ import _has_lint as lint  # noqa: E402
         ),
         (".hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img) img", True),
         (".hub-readme-prose :is(p, div):has(> a:nth-of-type(2) > img)", False),
+        # arithmetic and attribute values are not combinators
+        (".a:has(.b):nth-child(2n+1)", False),
+        (".a:has(.b):nth-of-type(3n + 2)", False),
+        (".a:has(.b):nth-last-child(-n+3)", False),
+        (".a:has(.b) :nth-child(2n+1)", True),
+        ('[data-x="a>b"]:has(.c)', False),
+        ('[data-x="a ~ b"]:has(.c)', False),
+        ('.a:has(.b)[data-x="1+2"]', False),
+        ('.a:has([data-x="p > q"]) > .c', True),
+        (".a:has(.b):is(:nth-child(2n+1), .c)", False),
     ],
 )
 def test_non_subject_has(selector, bad):

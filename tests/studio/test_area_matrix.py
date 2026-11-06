@@ -293,3 +293,34 @@ def test_missing_default_page_fails_coverage(monkeypatch):
     lines, failures, details, _ = am.run(Path("unused"), [])
     assert any("no popup-trigger list" in f for f in failures)
     assert sum("measuring the page failed" in f for f in failures) == len(out)
+
+
+def test_every_area_opened_by_a_shortcut_or_toggle_proves_it_happened():
+    # A key press always "succeeds"; only a visible change shows the app acted on it.
+    for name, spec in am.AREAS.items():
+        if spec["open"][0] == "key":
+            assert (
+                spec["ready"][0] != "settle"
+            ), f"{name}: shortcut area must wait for what it opens"
+            if spec.get("close"):
+                assert (
+                    spec["gone"][0] != "settle"
+                ), f"{name}: shortcut area must wait for what it closes"
+    assert (
+        am.AREAS["sidebar_toggle"]["ready"][0] == "changed"
+        and am.AREAS["sidebar_toggle"]["gone"][0] == "restored"
+    )
+    assert am.AREAS["api_monitor"]["ready"] == ("sel", '[data-testid="api-monitor-panel"]')
+    assert am.AREAS["rename_chat"]["ready"] == ("overlay",)
+
+
+def test_message_click_is_a_trusted_click_that_must_move_focus():
+    spec = am.AREAS["message_click"]
+    assert spec["open"][0] == "pclick" and spec["ready"][0] == "focusin"
+
+
+def test_area_status_needs_open_and_close():
+    spec = {"ready": ("overlay",), "gone": ("overlay_gone",)}
+    assert am.area_status(spec, True, True) == "OK"
+    assert am.area_status(spec, False, True).startswith("NOT_RUN: never reached overlay")
+    assert "overlay_gone after closing" in am.area_status(spec, True, False)

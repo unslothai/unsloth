@@ -125,6 +125,11 @@ def _scan(selector: str) -> tuple[bool, bool]:
                 any_has = any_has or inner_has
             i = close + 1
             continue
+        elif bracket == 0 and c == "(":
+            # any other functional pseudo-class (:nth-child(2n+1), :lang(), :dir()): its argument is
+            # not a selector at this level, so nothing inside it is a combinator
+            i = _matching(s, i + 1) + 1
+            continue
         elif bracket == 0 and (c in ">+~" or c.isspace()):
             # a combinator: the compound before it ends here
             j = i
