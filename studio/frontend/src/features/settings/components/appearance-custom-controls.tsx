@@ -69,6 +69,10 @@ import {
   useTheme,
 } from "../stores/theme-store";
 import { COLOR_THEMES } from "../lib/color-themes";
+import {
+  GLASS_ELEMENT_OUTLINE,
+  useThemeElementOutline,
+} from "../lib/element-outline-default";
 import { ColorPickerSwatch } from "./color-picker";
 import { normalizeSizeInputDraft } from "./size-input-value";
 
@@ -987,18 +991,14 @@ export function ContrastSliderRow() {
   );
 }
 
-// Unset shows the glass ring strength (index.css --element-outline fallbacks).
-const ELEMENT_OUTLINE_DEFAULT: Record<ResolvedTheme, number> = {
-  light: 12,
-  dark: 14,
-};
-
 export function ElementOutlineSliderRow() {
   const t = useT();
   const { resolved } = useTheme();
   const outline = useAppearanceCustomStore((s) => s.customization.elementOutline);
   const patch = useAppearanceCustomStore((s) => s.patch);
-  const value = outline ?? ELEMENT_OUTLINE_DEFAULT[resolved];
+  // Unset starts at the theme's own strength, so the first drag does not jump.
+  const themeOutline = useThemeElementOutline(outline === null);
+  const value = outline ?? themeOutline ?? GLASS_ELEMENT_OUTLINE[resolved];
   const set = (next: number) => patch({ elementOutline: next });
   const label = t("settings.appearance.custom.elementOutline.label");
   return (
