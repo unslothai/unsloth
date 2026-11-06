@@ -462,12 +462,45 @@ def _download(
     *,
     timeout: float = 300.0,
 ) -> None:
-    """Stream ``url`` to ``dest`` with an explicit timeout: ``urlretrieve`` takes no timeout and can hang forever on a stalled socket. A User-Agent is set because the GitHub asset CDN can reject header-less requests; the API fetch carries any token."""
-    import shutil
+    """Stream ``url`` to ``dest`` with an explicit timeout: ``urlretrieve`` takes no timeout and can hang forever on a stalled socket. A User-Agent is set because the GitHub asset CDN can reject header-less requests; the API fetch carries any token.
 
-    req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
-    with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
-        shutil.copyfileobj(resp, f)
+    A transient failure (HTTP 5xx / 429, a reset or timed-out socket) is retried with backoff before it is raised: one
+    gateway 504 from the asset CDN otherwise fails the GPU bundle and the caller steps down the accelerator ladder, so
+    a CUDA host ends up rendering on the CPU build. A 4xx other than 429 is permanent and raised at once. Once the
+    attempts so far have used ``timeout`` in all (a stalled route), the failure is raised without another attempt, so a
+    dead route fails in about the time it did before the retries."""
+    import shutil
+    import time
+
+    last: Optional[BaseException] = None
+    start = time.monotonic()
+    for attempt in range(_DOWNLOAD_ATTEMPTS):
+        if attempt:
+            if time.monotonic() - start >= timeout:
+                break
+            time.sleep(_DOWNLOAD_BACKOFF_S * (2 ** (attempt - 1)))
+        req = urllib.request.Request(url, headers = {"User-Agent": "unsloth-sd-cpp-installer"})
+        try:
+            with urllib.request.urlopen(req, timeout = timeout) as resp, open(dest, "wb") as f:  # noqa: S310
+                shutil.copyfileobj(resp, f)
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 and exc.code < 500:
+                raise
+            last = exc
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            last = exc
+        print(
+            f"download of {url} failed ({last}); attempt {attempt + 1} of {_DOWNLOAD_ATTEMPTS}",
+            flush = True,
+        )
+    assert last is not None
+    raise last
+
+
+# Transient download failures (5xx / 429 / socket) retried this many times in all, backoff 2, 4, 8 s.
+_DOWNLOAD_ATTEMPTS = 4
+_DOWNLOAD_BACKOFF_S = 2.0
 
 
 # PATH_MAX: a larger link payload is a decompression bomb.

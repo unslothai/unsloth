@@ -5945,8 +5945,7 @@ export const pl = {
     skippedVersion: "Na razie pominięto {component} {version}",
     skippedUpdate: "Na razie pominięto aktualizację: {component}",
     skippedUpdates: "Na razie pominięto aktualizacje: {components}",
-    vulkanFaster:
-      "Vulkan jest o ponad 10% szybszy niż ROCM. Nie trzeba uruchamiać ponownie",
+    vulkanFaster: "Ponad 10% szybciej",
     noRestart: "Nie trzeba uruchamiać ponownie",
     downloadSize: "Do pobrania: {size}",
     backendChange: "Backend: {change}",
@@ -5955,8 +5954,8 @@ export const pl = {
     installingPhase: "Instalowanie: {component} ({current} z {total})...",
     installingCount: "Instalowanie aktualizacji ({count})...",
     bundleTitle: "Aktualizacje środowiska uruchomieniowego: {count}",
-    newBackend: "Nowy backend: {component}",
-    newUpdate: "Nowa aktualizacja: {component}",
+    newBackend: "Nowy backend środowiska uruchomieniowego",
+    newUpdate: "Nowa aktualizacja środowiska uruchomieniowego",
     hideUpdate: "Ukryj aktualizację {component} do ponownego otwarcia Unsloth",
     hideUpdates:
       "Ukryj aktualizacje {components} do ponownego otwarcia Unsloth",

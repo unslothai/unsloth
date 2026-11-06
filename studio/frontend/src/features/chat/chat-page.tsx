@@ -84,6 +84,7 @@ import {
   useNativeModelDrop,
   useNativePathLeasesSupported,
 } from "@/features/native-intents";
+import { useMarkChatCompare } from "@/features/chat-background";
 import { isNpuModelId } from "@/features/npu";
 import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { isTauri } from "@/lib/api-base";
@@ -627,7 +628,14 @@ const IMMEDIATE_CONTEXT_PANEL =
   isWebKitGTK(navigator.platform, navigator.userAgent);
 
 const ARTIFACT_PANEL_DEFAULT_SIZE = "38%";
-const BROWSER_PANEL_DEFAULT_SIZE = "50%";
+// t3code's default docked width, never more than half the chat or under the panel's 30% minimum.
+const BROWSER_PANEL_DEFAULT_PX = 540;
+
+function browserPanelDefaultSize(split: HTMLElement | null | undefined): string {
+  const width = split?.getBoundingClientRect().width ?? 0;
+  if (width <= 0) return "50%";
+  return `${Math.min(50, Math.max(30, (BROWSER_PANEL_DEFAULT_PX / width) * 100))}%`;
+}
 const ARTIFACT_PANEL_TRANSITION_MS = 260;
 const ARTIFACT_SURFACE_POP_DELAY_MS = 150;
 
@@ -710,7 +718,7 @@ const SingleContent = memo(function SingleContent({
   const defaultPanelSizeRef = useRef(ARTIFACT_PANEL_DEFAULT_SIZE);
   useEffect(() => {
     defaultPanelSizeRef.current = showBrowserPanel
-      ? BROWSER_PANEL_DEFAULT_SIZE
+      ? browserPanelDefaultSize(contextSurfaceRef.current?.closest<HTMLElement>(".chat-artifact-split"))
       : ARTIFACT_PANEL_DEFAULT_SIZE;
   });
   const showContextPanel = showResearchPanel || browserDocked;
@@ -929,15 +937,19 @@ const SingleContent = memo(function SingleContent({
         <ResizablePanel
           id="chat-thread"
           defaultSize="100%"
-          // Keep closed/open constraints stable on WebKitGTK. The zero-width,
-          // collapsed sibling already lets the chat fill the group when closed.
+          // Distinct per layout: re-registering re-sorts panels so resizing follows the chat.
+          // The browser can take most of the row (it opens small); research keeps the chat wider.
+          // On WebKitGTK the open constraints stay registered while closed: the zero-width,
+          // collapsed sibling already lets the chat fill the group.
           minSize={
             browserFullView
               ? "0%"
               : chatOnRight
-                ? "34%"
-                : (IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive)
-                  ? "42%"
+                ? "28%"
+                : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
+                  ? showResearchPanel
+                    ? "42%"
+                    : "30%"
                   : "100%"
           }
           className="h-full min-h-0 min-w-0 overflow-hidden"
@@ -1010,11 +1022,11 @@ const SingleContent = memo(function SingleContent({
           }
           maxSize={
             chatOnRight
-              ? "66%"
+              ? "72%"
               : showResearchPanel
               ? "58%"
-              : (IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive)
-                ? "58%"
+              : IMMEDIATE_CONTEXT_PANEL || artifactLayoutActive
+                ? "70%"
                 : "0%"
           }
           collapsible={IMMEDIATE_CONTEXT_PANEL ? !showResearchPanel : showBrowserPanel}
@@ -1330,6 +1342,7 @@ function CompareShell({
   children: ReactElement;
   composer: ReactElement;
 }): ReactElement {
+  useMarkChatCompare();
   return (
     <CompareHandlesProvider handlesRef={handlesRef}>
       <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col">
