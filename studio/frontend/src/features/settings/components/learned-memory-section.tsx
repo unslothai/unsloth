@@ -1,6 +1,15 @@
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 // SPDX-License-Identifier: AGPL-3.0-only
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -26,6 +35,16 @@ type Memory = {
   max_bytes: number;
   entries: Record<string, { value: string }>;
 };
+
+type MemoryDraft = { kind: "new" | "edit"; key: string; value: string };
+
+function newMemoryDraft(): MemoryDraft {
+  return {
+    kind: "new",
+    key: `note_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
+    value: "",
+  };
+}
 function parseMemory(body: unknown): Memory {
   if (
     typeof body !== "object" ||
@@ -118,7 +137,7 @@ export function LearnedMemorySection() {
     <div ref={ref}>
       <SettingsSection
         title="Memory"
-        description="Let the model remember durable preferences and project facts using a tool during chat. Saved facts survive chat deletion; deleting a project removes its memory."
+        description="Remember your preferences and project details across chats."
       >
         <MemoryEditor
           key={`${projectId}:${threadId}:${incognito}`}
@@ -131,7 +150,7 @@ export function LearnedMemorySection() {
                 setProjectId(value === "personal" ? "" : value)
               }
             >
-              <SelectTrigger aria-label="Memory scope" className="w-48">
+              <SelectTrigger aria-label="Memories for" className="w-48">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent align="end">
@@ -155,11 +174,10 @@ function MemoryEditor({
   threadId,
   scopeControl,
 }: { projectId: string; threadId?: string; scopeControl: ReactNode }) {
-  const keyId = useId();
   const factId = useId();
   const [memory, setMemory] = useState<Memory | null>(null);
-  const [key, setKey] = useState("");
-  const [value, setValue] = useState("");
+  const [draft, setDraft] = useState(newMemoryDraft);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [omitted, setOmitted] = useState(0);
@@ -216,7 +234,7 @@ function MemoryEditor({
     memory?.revision,
   ]);
   async function save(patch: object) {
-    if (!memory) return;
+    if (!memory || busy) return false;
     setBusy(true);
     setError("");
     try {
@@ -224,6 +242,7 @@ function MemoryEditor({
         await requestMemory(query, { revision: memory.revision, ...patch }),
       );
       void refreshContextUsage({ invalidate: true });
+      return true;
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
       try {
@@ -231,15 +250,27 @@ function MemoryEditor({
       } catch {
         /* Keep the last readable state. */
       }
+      return false;
     } finally {
       setBusy(false);
     }
   }
+  async function saveDraft() {
+    if (await save({ key: draft.key, value: draft.value })) {
+      setDraft(newMemoryDraft());
+    }
+  }
+  async function deleteMemory(key: string) {
+    if ((await save({ key, value: null })) && key === draft.key) {
+      setDraft(newMemoryDraft());
+    }
+  }
+  const count = Object.keys(memory?.entries ?? {}).length;
   return (
     <div className="flex flex-col">
       <SettingsRow
         label="Use memory"
-        description="Adds saved facts and the memory tool to chats. Turning this off keeps your saved facts."
+        description="Use saved memories and remember useful details as you chat. Turning this off keeps your saved memories."
       >
         <Switch
           aria-label="Use memory"
@@ -263,10 +294,11 @@ function MemoryEditor({
           />
         </SettingsRow>
       )}
-      <SettingsRow label="Memory scope">{scopeControl}</SettingsRow>
+      <SettingsRow label="Memories for">{scopeControl}</SettingsRow>
       {omitted > 0 && (
         <p aria-live="polite" className="text-xs">
-          {omitted} saved facts do not fit in the current chat memory allowance.
+          {omitted} older memories won't be included in this chat because its
+          context is small.
         </p>
       )}
       {memory &&
@@ -276,7 +308,6 @@ function MemoryEditor({
             className="flex flex-wrap items-start gap-2 border-b border-border/60 py-3"
           >
             <div className="min-w-0 flex-1 basis-48">
-              <p className="text-xs font-medium">{entryKey}</p>
               <p className="whitespace-pre-wrap break-words text-sm">
                 {entry.value}
               </p>
@@ -286,8 +317,8 @@ function MemoryEditor({
               size="sm"
               disabled={busy}
               onClick={() => {
-                setKey(entryKey);
-                setValue(entry.value);
+                setDraft({ kind: "edit", key: entryKey, value: entry.value });
+                document.getElementById(factId)?.focus();
               }}
             >
               Edit
@@ -296,73 +327,119 @@ function MemoryEditor({
               variant="ghost"
               size="sm"
               disabled={busy}
-              onClick={() => void save({ key: entryKey, value: null })}
+              onClick={() => void deleteMemory(entryKey)}
             >
               Delete
             </Button>
           </div>
         ))}
-      <SettingsRow label="Memory key">
-        <label htmlFor={keyId} className="sr-only">
-          Memory key
-        </label>
-        <Input
-          id={keyId}
-          className="w-64"
-          placeholder="e.g. response_style"
-          value={key}
-          disabled={!memory || busy}
-          onChange={(event) => setKey(event.target.value)}
-          maxLength={64}
-        />
-      </SettingsRow>
-      <div className="flex flex-col gap-2 pb-3">
+      {memory && count === 0 && (
+        <p className="py-3 text-xs text-muted-foreground">
+          No saved memories yet. Add one below, or ask the model to remember
+          something when memory is on.
+        </p>
+      )}
+      <div className="flex flex-col gap-2 py-3">
         <label htmlFor={factId} className="text-sm font-medium">
-          What to remember
+          {draft.kind === "edit"
+            ? "Edit memory"
+            : "What would you like remembered?"}
         </label>
         <Textarea
           id={factId}
-          aria-label="Memory fact"
           fieldSizing="fixed"
           rows={3}
           className="max-h-[calc(240px*var(--ui-space-scale,1))] resize-y text-sm md:text-sm"
-          placeholder="A short, durable fact"
-          value={value}
+          placeholder="e.g. I prefer concise answers with code examples."
+          value={draft.value}
           disabled={!memory || busy}
-          onChange={(event) => setValue(event.target.value)}
+          onChange={(event) =>
+            setDraft({ ...draft, value: event.target.value })
+          }
         />
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <span className="text-xs tabular-nums text-muted-foreground">
-            {memory?.used_bytes ?? 0} / {memory?.max_bytes ?? 2048} bytes
+            {count} {count === 1 ? "memory" : "memories"}
+            {memory && count > 0
+              ? ` · ${Math.round((memory.used_bytes / memory.max_bytes) * 100)}% full`
+              : ""}
           </span>
           <div className="ml-auto flex items-center gap-2">
-            <Button
-              variant="ghost"
-              disabled={
-                !memory || busy || Object.keys(memory.entries).length === 0
-              }
-              onClick={() => void save({ clear: true })}
-            >
-              Clear this scope
-            </Button>
+            {(draft.kind === "edit" || draft.value) && (
+              <Button
+                variant="ghost"
+                disabled={busy}
+                onClick={() => setDraft(newMemoryDraft())}
+              >
+                Cancel
+              </Button>
+            )}
             <Button
               variant="outline"
-              disabled={!memory || busy || !key || !value.trim()}
-              onClick={() => void save({ key, value })}
+              disabled={!memory || busy || !draft.value.trim()}
+              onClick={() => void saveDraft()}
             >
-              Save fact
+              {busy
+                ? "Saving…"
+                : draft.kind === "edit"
+                  ? "Save changes"
+                  : "Add memory"}
             </Button>
           </div>
         </div>
         <p className="text-xs text-muted-foreground">
-          Small contexts may omit older facts. Incognito chats never use memory.
+          {memory && !memory.enabled
+            ? "Memory is off. Turn it on to use these in your chats. "
+            : ""}
+          Deleting a chat doesn't delete its saved memories. Temporary chats
+          never use memory.
         </p>
+        {count > 0 && (
+          <div className="flex justify-end">
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onClick={() => setConfirmClear(true)}
+            >
+              Delete all memories
+            </Button>
+          </div>
+        )}
       </div>
       {error && (
         <p role="alert" className="text-sm text-destructive">
           {error}
         </p>
       )}
+      <AlertDialog open={confirmClear} onOpenChange={setConfirmClear}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete all {projectId ? "project" : "personal"} memories?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This removes all saved memories{" "}
+              {projectId ? "for this project" : "from your personal memory"}.
+              Your chats and custom instructions will stay. This can't be
+              undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                void save({ clear: true }).then((saved) => {
+                  if (saved) setDraft(newMemoryDraft());
+                });
+              }}
+            >
+              Delete memories
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
