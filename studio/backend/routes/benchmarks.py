@@ -272,16 +272,18 @@ def _busy_detail() -> str:
 
 
 def refuse_if_sweep_holds(request) -> None:
-    """409 a model swap that bypasses LOAD_PATHS (auto-switch, preview) while a sweep holds the server."""
+    """409 a model swap that bypasses LOAD_PATHS (auto-switch, preview) under another holder's
+    lease, of any kind: like a /load, it would reload the server mid-sweep or take the GPU back
+    from llama-bench."""
     if _lease is None:
         return
     headers = getattr(request, "headers", None)
     holder = headers.get(LEASE_HEADER.decode()) if headers is not None else None
     with _lease_lock:
-        busy = _sweep_holds_against(holder)
+        busy = _lease_holds_against(holder)
     if busy:
         from fastapi import HTTPException
-        raise HTTPException(status_code = 409, detail = SWEEP_BUSY_DETAIL)
+        raise HTTPException(status_code = 409, detail = _busy_detail())
 
 
 def note_inference_request(holder: Optional[str]) -> None:

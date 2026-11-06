@@ -463,6 +463,12 @@ def test_a_model_swap_outside_the_load_routes_is_refused_mid_sweep(monkeypatch):
         benchmarks_routes.refuse_if_sweep_holds(_Req())
     assert refused.value.status_code == 409
     benchmarks_routes.refuse_if_sweep_holds(_Req("tab-aaaaaaaa"))
+    # llama-bench unloaded the model for its run; an auto-switch would take the GPU back.
+    monkeypatch.setattr(benchmarks_routes, "_lease", {**lease, "kind": "llama-bench"})
+    with pytest.raises(HTTPException) as refused:
+        benchmarks_routes.refuse_if_sweep_holds(_Req())
+    assert refused.value.detail == benchmarks_routes.GPU_BUSY_DETAIL
+    benchmarks_routes.refuse_if_sweep_holds(_Req("tab-aaaaaaaa"))
     monkeypatch.setattr(benchmarks_routes, "_lease", None)
     benchmarks_routes.refuse_if_sweep_holds(_Req())
 
