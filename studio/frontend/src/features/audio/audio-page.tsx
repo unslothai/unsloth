@@ -123,6 +123,7 @@ import { type GenerateBlocker, TtsFooter } from "./pages/tts-workspace";
 import { TranscribeFooter, TranscribeOutput, TranscribeRail } from "./pages/transcribe-page";
 import type { SendTarget } from "./components/stem-mixer-types";
 import { AUDIO_CPP_REPO, audioCppModelFor } from "./audio-cpp-catalog";
+import { AUDIO_DEVICE_KEY } from "./audio-workspace-constants";
 import { selectionExpired } from "./audio-run-request";
 import type { AudioSourceInputHandle } from "./components/audio-source-input";
 import type { AudioSourceStatus } from "./hooks/audio-source-state";
@@ -330,7 +331,7 @@ export function AudioPage({
   );
   // Read at load time; the handler below ejects so a change takes effect.
   const [audioDevice, setAudioDeviceState] = usePersistedChoice(
-    "unsloth_audio_device",
+    AUDIO_DEVICE_KEY,
     "auto",
   );
 
@@ -1942,6 +1943,7 @@ export function AudioPage({
               // Separate runs audio-to-audio models, which the speak picker's tasks leave out.
               hubTask={pageWorkflow === "separate" ? "audio-to-audio" : undefined}
               catalog={AUDIO_CATALOG}
+              cpuLoad={audioDevice === "cpu"}
               // TTS/ASR use the checkpoint's own tokenizer, so any publisher's audio repo loads.
               communityModelPolicy="search-only"
               hubCapability="audio"

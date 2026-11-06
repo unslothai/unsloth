@@ -179,6 +179,9 @@ def _fast_llama_for_training():
         set_module_gradient_checkpointing = lambda module, flag: None,
         _tensor_parallel_for_training = lambda model: None,  # tp_replica.py: no tp model here
         enable_fp8_lora = lambda model: [],
+        _decode_graphs = types.SimpleNamespace(
+            release_for_training = lambda model: None
+        ),  # no graphs held here
     )
     module = ast.fix_missing_locations(ast.Module(body = [fn], type_ignores = []))
     exec(compile(module, str(MODELS / "llama.py"), "exec"), namespace)
