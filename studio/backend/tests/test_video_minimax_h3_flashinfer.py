@@ -386,3 +386,44 @@ def test_a_selected_attention_backend_the_block_cannot_reproduce_keeps_stock(
     else:
         assert out["blocks"] == 0 and repr(backend) in out["reason"]
         assert [b.forward for b in t.transformer_blocks] == before and events == []
+
+
+_NINJA_NO_NVCC = (
+    "Ninja build failed. Ninja output:\n"
+    "ninja: Entering directory `/root/.cache/flashinfer/0.7.3/120a/cached_ops/minimax_h3_sm120_quant_out_proj'\n"
+    "[1/2]  /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile " + "-I/x " * 200 + "\n"
+    "FAILED: [code=127] /root/.cache/flashinfer/0.7.3/120a/cached_ops/out_proj.cuda.o\n"
+    " /usr/local/cuda/bin/nvcc --generate-dependencies-with-compile " + "-I/x " * 200 + "\n"
+    "/bin/sh: 1: /usr/local/cuda/bin/nvcc: not found\n"
+    "ninja: build stopped: subcommand failed.\n"
+)
+
+
+@pytest.mark.parametrize(
+    "exc,expect",
+    [
+        (RuntimeError(_NINJA_NO_NVCC), "nvcc: not found"),
+        (FileNotFoundError(2, "No such file or directory", "ninja"), "ninja"),
+        (
+            RuntimeError(
+                "Could not find nvcc and default cuda_home='/usr/local/cuda' doesn't exist"
+            ),
+            "Could not find nvcc",
+        ),
+    ],
+)
+def test_a_missing_jit_toolchain_keeps_stock_with_a_one_line_reason(monkeypatch, exc, expect):
+    events = []
+    t = _stub_install(monkeypatch, events)
+
+    def self_check(blk):
+        raise exc
+
+    monkeypatch.setattr(fi, "_self_check", self_check)
+    before = [b.forward for b in t.transformer_blocks]
+    out = fi.install_h3_flashinfer(t)
+    assert out["blocks"] == 0 and [b.forward for b in t.transformer_blocks] == before
+    reason = out["reason"]
+    assert expect in reason and "\n" not in reason and len(reason) <= 400
+    assert "nvcc >= 12.8" in reason and "--generate-dependencies" not in reason
+    assert not any(e[0] == "release" for e in events)

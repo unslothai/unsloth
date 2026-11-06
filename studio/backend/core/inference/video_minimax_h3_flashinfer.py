@@ -700,6 +700,32 @@ def torch_equal(a: Any, b: Any) -> bool:
     return bool(torch.equal(a.float().reshape(-1), b.float().reshape(-1)))
 
 
+_TOOLCHAIN_HINT = (
+    "first use JIT-compiles these kernels: needs nvcc >= 12.8 (PATH or CUDA_HOME) and ninja"
+)
+
+
+def _failure_reason(exc: BaseException, limit: int = 400) -> str:
+    """One log line for an install failure. A failed JIT build's message starts with ninja echoing whole nvcc command
+    lines; keep its diagnosis (e.g. "nvcc: not found", the compiler error) and name the toolchain it needs."""
+    text = str(exc)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    toolchain = "Ninja build failed" in text or "nvcc" in text or "ninja" in text
+    if "Ninja build failed" in text:
+        lines = [
+            ln
+            for ln in lines
+            if len(ln) <= 300 and not ln.startswith(("[", "ninja: Entering", "Ninja build failed"))
+        ] or lines[:1]
+        lines = ["JIT build failed"] + lines
+    msg = f"{type(exc).__name__}: " + " | ".join(lines)
+    if toolchain:
+        msg += f" ({_TOOLCHAIN_HINT})"
+    if len(msg) > limit:
+        msg = msg[: limit // 4] + " ... " + msg[-(limit - limit // 4 - 5) :]
+    return msg
+
+
 def install_h3_flashinfer(
     transformer: Any,
     *,
@@ -801,7 +827,7 @@ def install_h3_flashinfer(
     except Exception as exc:  # noqa: BLE001 -- the stock forward stays
         _unpack(first)
         _CFG["levers"] = ()
-        result["reason"] = f"{type(exc).__name__}: {exc}"[:400]
+        result["reason"] = _failure_reason(exc)
         if logger is not None:
             logger.warning("video.h3_flashinfer: kept the stock blocks: %s", result["reason"])
         return result
