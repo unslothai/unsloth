@@ -1080,7 +1080,9 @@ def _archive_turns(
     if dense_failed and not (cancel_check is not None and cancel_check()):
         # Without any copy there is no archive, so search_conversation is never offered (#16706).
         # degraded() stays set: dense recall is still down.
-        written += _archive_turns_lexically(thread_id, scope, groups, positions)
+        written += _archive_turns_lexically(
+            thread_id, scope, groups, positions, live_positions, cancel_check
+        )
 
     # Re-check after commit: a concurrent delete sweep could strand deleted content. Delete drops rows first, sweeps archives last, so either order converges.
     if written and not can_archive(thread_id):
@@ -1100,24 +1102,32 @@ def _rough_token_count(text: str) -> int:
 
 @_writes
 def _archive_turns_lexically(
-    thread_id: str, scope: str, groups: list, positions: Optional[list[list[str]]]
+    thread_id: str,
+    scope: str,
+    groups: list,
+    positions: Optional[list[list[str]]],
+    live_positions: Optional[list[list[str]]],
+    cancel_check: Optional[Callable[[], bool]],
 ) -> int:
-    """Keyword-only copies of evicted turns that have no copy yet; returns how many were written."""
+    """Keyword-only copies of evicted turns, one per evicted occurrence (``_write_budget``); returns how many were written."""
     written = 0
     conn = None
     try:
         conn = rag_db.get_connection()
         for group, span in groups:
+            if cancel_check is not None and cancel_check():
+                break
             text = render_turn(group)
             if not text:
                 continue
             digest = hashlib.sha256(text.encode("utf-8", "ignore")).hexdigest()
-            if store.documents_by_hash(conn, scope, digest):
+            seats = _occurrences(positions, group)
+            budget = _write_budget(positions, seats, live_positions, group)
+            if len(store.documents_by_hash(conn, scope, digest)) >= budget:
                 continue
             chunks = _turn_chunks(text, max(1, int(config.CHUNK_TOKENS)), _rough_token_count)
             if not chunks:
                 continue
-            seats = _occurrences(positions, group)
             roles = " + ".join(
                 dict.fromkeys(str(message.get("role") or "message") for message in group)
             )
@@ -1127,30 +1137,34 @@ def _archive_turns_lexically(
                 _write_lock = True
             except Exception:
                 logger.debug("conversation_archive.no_write_lock", exc_info = True)
-            if store.documents_by_hash(conn, scope, digest):
-                # A concurrent compaction got there first.
+            # Re-counted under the lock: a concurrent compaction may have written some.
+            have = len(store.documents_by_hash(conn, scope, digest))
+            if have >= budget:
                 if _write_lock:
                     conn.rollback()
                 continue
-            document_id = store.create_document(
-                conn,
-                scope = scope,
-                thread_id = thread_id,
-                filename = f"earlier turn ({roles})",
-                sha256 = digest,
-                status = "completed",
-                embedding_model = LEXICAL_ONLY_IDENTITY,
-                archive_messages = span,
-                archive_ordinal = seats[0] if seats else _fallback_ordinal(conn, scope, positions),
-                commit = False,
-            )
             try:
-                store.add_lexical_chunks(conn, scope, document_id, chunks)
+                for n in range(have, budget):
+                    document_id = store.create_document(
+                        conn,
+                        scope = scope,
+                        thread_id = thread_id,
+                        filename = f"earlier turn ({roles})",
+                        sha256 = digest,
+                        status = "completed",
+                        embedding_model = LEXICAL_ONLY_IDENTITY,
+                        archive_messages = span,
+                        archive_ordinal = seats[n]
+                        if n < len(seats)
+                        else _fallback_ordinal(conn, scope, positions),
+                        commit = False,
+                    )
+                    store.add_lexical_chunks(conn, scope, document_id, chunks)
             except Exception:
                 conn.rollback()
                 raise
             conn.commit()
-            written += 1
+            written += budget - have
         if written:
             logger.info(
                 "conversation_archive.archived_without_vectors thread_id=%s turns=%s",

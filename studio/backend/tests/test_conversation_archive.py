@@ -1226,8 +1226,10 @@ def test_an_embedder_download_still_pending_is_logged_once_without_a_traceback(
     caplog.set_level(logging.INFO, logger = conversation_archive.logger.name)
 
     # The first fit keeps a keyword copy of the evicted turn; later fits find it there and add none.
+    # Saved once: each saved occurrence gets its own copy.
+    _save_thread(THREAD, turn, append = True)
     for expected in (1, 0, 0):
-        assert _archive([dict(m) for m in turn]) == expected
+        assert conversation_archive.archive_turns(THREAD, [dict(m) for m in turn]) == expected
         assert conversation_archive.degraded() is True
         found = conversation_archive.recall(THREAD, "sourdough")
         assert found is not None and "sourdough" in found[0]
@@ -1323,6 +1325,57 @@ def test_turns_evicted_while_the_embedder_fails_stay_searchable(conn, monkeypatc
     ]
     assert vectors > 0
     assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns]) == 0
+
+
+def test_keyword_copies_keep_every_evicted_occurrence_of_a_repeated_turn(conn, monkeypatch):
+    """A turn said twice keeps both seats, or recall shows the value it replaced as the latest."""
+    from core.rag import embeddings
+
+    thread_id = "repeat-no-embedder"
+    turns = _turn("set X to 1", "ok") + _turn("set X to 2", "ok") + _turn("set X to 1", "ok")
+    live = [{"role": "user", "content": "what is X now?"}]
+    _save_thread(thread_id, turns + live)
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns], live = live) == 3
+    ordinals = [
+        row[0]
+        for row in conn.execute(
+            "SELECT archive_ordinal FROM documents WHERE scope = ? ORDER BY archive_ordinal",
+            (store.conversation_archive_scope(thread_id),),
+        )
+    ]
+    assert ordinals == [0, 1, 2]
+    assert conversation_archive.archive_turns(thread_id, [dict(m) for m in turns], live = live) == 0
+
+
+def test_chat_stop_interrupts_the_keyword_fallback(conn, monkeypatch):
+    from core.rag import embeddings
+
+    thread_id = "stop-no-embedder"
+    turns = [m for i in range(5) for m in _turn(f"question {i}", f"answer {i}")]
+    _save_thread(thread_id, turns + [{"role": "user", "content": "next"}])
+
+    def no_embedder(*_args, **_kwargs):
+        raise RuntimeError("unknown model architecture")
+
+    monkeypatch.setattr(embeddings, "encode_with_identity", no_embedder)
+    monkeypatch.setattr(embeddings, "token_counter", no_embedder)
+    polls = []
+
+    def stop_after_one_write():
+        polls.append(1)
+        # Polled once before the dense pass, once before the fallback, then once per turn.
+        return len(polls) > 3
+
+    written = conversation_archive.archive_turns(
+        thread_id, [dict(m) for m in turns], cancel_check = stop_after_one_write
+    )
+    assert written == 1
 
 
 def test_a_failing_store_does_not_fall_back_to_keyword_copies(conn, monkeypatch):
