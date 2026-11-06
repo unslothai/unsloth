@@ -131,7 +131,11 @@ test("pointer-events-auto restorations go inert in a lower modal layer, not in t
   assert.match(readSrc("features/chat/components/chat-skills-dialog.tsx"), /className="pointer-events-auto absolute inset-0/);
   // No page-wide rule: dialogs portaled into the page (Recipe Studio) host live comboboxes there.
   assert.doesNotMatch(css, /\[data-slot="sidebar-inset"\] \.pointer-events-auto/);
-  // The one page hit of the runtime audit, handled on its own.
-  assert.match(rule(css, 'body[style*="pointer-events: none"] .api-monitor-toolbar'), /pointer-events: none !important;/);
+  // The page hits of the runtime audit and review (sticky toolbars over the page scroller), handled on their own.
+  assert.match(
+    rule(css, 'body[style*="pointer-events: none"] .api-monitor-toolbar,\n\tbody[style*="pointer-events: none"] .library-toolbar'),
+    /pointer-events: none !important;/,
+  );
   assert.match(readSrc("features/api-monitor/api-monitor-page.tsx"), /data-tour="api-toolbar" className="pointer-events-auto [^"]*\bapi-monitor-toolbar\b/);
+  assert.match(readSrc("features/library/components/library-header.tsx"), /className=\{cn\("pointer-events-auto library-toolbar"/);
 });

@@ -2146,8 +2146,9 @@ html[data-chat-font] .aui-root {
 	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
 		pointer-events: none !important;
 	}
-	/* The API monitor's sticky toolbar restores pointer-events over the scrolling page. */
-	body[style*="pointer-events: none"] .api-monitor-toolbar {
+	/* The API monitor and Library sticky toolbars restore pointer-events over the scrolling page. */
+	body[style*="pointer-events: none"] .api-monitor-toolbar,
+	body[style*="pointer-events: none"] .library-toolbar {
 		pointer-events: none !important;
 	}
 
