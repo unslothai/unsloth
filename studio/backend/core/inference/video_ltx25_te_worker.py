@@ -582,6 +582,7 @@ def _current_rss_bytes() -> Optional[int]:
             ["ps", "-o", "rss=", "-p", str(os.getpid())],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
             timeout = 5,
             check = False,
         )
