@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import errno
 import io
+import itertools
 import json
 import logging
 import os
@@ -1164,7 +1165,7 @@ def _list_skill_files(
     identity,
     limit: int = 20,
     max_chars: int = 1000,
-    max_dirs: int = 200,
+    max_entries: int = 1000,
 ) -> list[str]:
     """Best-effort names for a not-found hint; never reads content or follows links."""
 
@@ -1176,6 +1177,9 @@ def _list_skill_files(
 
     def classify(scan, parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
         # Types are read while the scan is open: DT_UNKNOWN entries stat through its descriptor.
+        nonlocal max_entries
+        taken = list(itertools.islice(scan, max_entries))
+        max_entries -= len(taken)
         return sorted(
             (
                 entry.name,
@@ -1184,7 +1188,7 @@ def _list_skill_files(
                 entry.is_dir(follow_symlinks = False),
                 entry.is_file(follow_symlinks = False),
             )
-            for entry in scan
+            for entry in taken
         )
 
     def entries(parts: tuple[str, ...]) -> list[tuple[str, bool, bool, bool]]:
@@ -1214,8 +1218,7 @@ def _list_skill_files(
     try:
         if not pinned():
             return []
-        while pending and max_dirs > 0:
-            max_dirs -= 1
+        while pending and max_entries > 0:
             parts = pending.pop(0)
             for name, linked, is_dir, is_file in entries(parts):
                 if name.startswith(".") or linked:

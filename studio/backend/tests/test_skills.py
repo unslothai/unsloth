@@ -379,6 +379,35 @@ def test_missing_resource_listing_types_entries_while_the_folder_is_open(
     assert str(error.value).endswith("Files in this skill: SKILL.md, scripts/lint.py.")
 
 
+def test_missing_resource_listing_stops_reading_a_large_folder(isolated_skills, monkeypatch):
+    home, _ = isolated_skills
+    root = _write_skill(home, "agents", "flat")
+    for index in range(300):
+        (root / f"{index:03d}.txt").write_text("", encoding = "utf-8")
+    real_scandir = os.scandir
+    read = []
+
+    class Counted:
+        def __init__(self, scan):
+            self._scan = scan
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._scan.close()
+
+        def __iter__(self):
+            for entry in self._scan:
+                read.append(entry.name)
+                yield entry
+
+    monkeypatch.setattr(skills.os, "scandir", lambda target: Counted(real_scandir(target)))
+    listed = skills._list_skill_files(root, os.stat(root, follow_symlinks = False), max_entries = 50)
+
+    assert len(read) == 50 and len(listed) == 21 and listed[-1] == "..."
+
+
 def test_missing_resource_listing_survives_deep_empty_trees(isolated_skills):
     home, _ = isolated_skills
     root = _write_skill(home, "agents", "deep")
@@ -1006,6 +1035,10 @@ def test_read_skill_not_found_hint_fits_the_priced_room(isolated_skills, monkeyp
     assert "Files in this skill: " in unpriced and len(unpriced) < 1400
     assert priced == unpriced.split(" Files in this skill: ", 1)[0]
     assert priced.endswith("Chat attachments are not skill resources.")
+    exhausted = tools_module.execute_tool(
+        "read_skill", {"name": "wide", "resource": "x.py"}, result_budget_tokens = 0
+    )
+    assert exhausted == priced
 
 
 def test_read_resource_rejects_ancestor_swapped_after_selection(isolated_skills, monkeypatch):

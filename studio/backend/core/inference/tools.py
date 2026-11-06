@@ -13366,10 +13366,8 @@ def execute_tool(
         except SkillError as exc:
             error = f"Error: {exc}"
             fitted = _fit_result_to_room(error, name)
-            if fitted == error:
-                return error
-            # The file listing is optional; the not-found reason is what the model needs.
-            return _fit_result_to_room(error.split(SKILL_FILES_HINT, 1)[0], name)
+            # Only the optional listing is cut: the controller needs the whole `Error:` reply.
+            return error if fitted == error else error.split(SKILL_FILES_HINT, 1)[0]
 
     if name == "search_knowledge_base":
         return _fit_result_to_room(
