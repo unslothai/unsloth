@@ -3303,7 +3303,7 @@ const Composer: FC<{
     (height: number, meta: { rowHeight: number }) => {
       setEditorHeight(height);
       const el = inputRef.current;
-      // A draft set without typing (restore, clear on send) changes the height, not the input.
+      // Drafts set without typing change only the height.
       if (el) {
         markComposerScrollable(el);
         markComposerScrollEdges(el);
@@ -8676,7 +8676,7 @@ const DeleteMessageButton: FC = () => {
   );
 };
 
-// The pencil is one thin diagonal, so it reads small; drawn 11.8px tall, closer to Copy and Delete.
+// A thin diagonal reads small at the shared size.
 const EDIT_GLYPH = "size-[calc(var(--icon-size)*1.049)]";
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(8px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
@@ -9143,7 +9143,7 @@ const UserMoreMenu: FC = () => {
   const collisionPadding = useWindowChromeCollisionPadding(undefined);
   const { forkMessage, forkDisabled } = useForkMessageAction();
   return (
-    // Non-modal for the same reason as the reply's More menu.
+    // Non-modal: see AssistantActionBar.
     <ActionBarMorePrimitive.Root modal={false}>
       <ActionBarMorePrimitive.Trigger asChild={true}>
         <TooltipIconButton

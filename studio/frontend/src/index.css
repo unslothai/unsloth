@@ -3214,7 +3214,7 @@ html[data-chat-font] .aui-root {
 		padding-right: calc(2.625rem * var(--ui-space-scale, 1));
 	}
 
-	/* data-scrollable: markComposerScrollEdges. The frame easing to a new height is not a reason to scroll. */
+	/* Not while the frame eases to a new height (markComposerScrollEdges). */
 	.unsloth-composer-editor .unsloth-composer-input:not([data-scrollable]) {
 		overflow-y: hidden;
 	}

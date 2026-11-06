@@ -101,7 +101,7 @@ const BookmarkTurnMenuItemInner: FC<BookmarkTurnMenuItemProps> = ({
   ownTurn = false,
 }) => {
   const t = useT();
-  // Only once the rail shows: a bookmark with nowhere to appear reads as broken.
+  // Without the rail a bookmark has nowhere to show.
   const railShown = useAuiState(
     ({ thread }) =>
       threadTurns(thread.messages).openerIds.length >= MIN_NAVIGATOR_TURNS,
