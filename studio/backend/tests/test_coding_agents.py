@@ -124,6 +124,36 @@ def test_identifies_an_npm_dsh_launcher_without_executing_it(tmp_path):
         assert is_deepseek_harness_executable(str(launcher), allow_execution = False)
 
 
+def test_identifies_a_windows_npm_dsh_cmd_shim_without_executing_it(tmp_path):
+    launcher = tmp_path / "dsh.cmd"
+    launcher.write_text(
+        "@ECHO off\r\n"
+        "GOTO start\r\n"
+        ":find_dp0\r\n"
+        "SET dp0=%~dp0\r\n"
+        "EXIT /b\r\n"
+        ":start\r\n"
+        "SETLOCAL\r\n"
+        "CALL :find_dp0\r\n"
+        "\r\n"
+        'IF EXIST "%dp0%\\node.exe" (\r\n'
+        '  SET "_prog=%dp0%\\node.exe"\r\n'
+        ") ELSE (\r\n"
+        '  SET "_prog=node"\r\n'
+        "  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n"
+        ")\r\n"
+        "\r\n"
+        "endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "
+        '"%_prog%"  "%dp0%\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js" %*\r\n',
+        newline = "",
+    )
+    with patch(
+        "utils.coding_agents.subprocess.run",
+        side_effect = AssertionError("advisory detection must not execute the launcher"),
+    ):
+        assert is_deepseek_harness_executable(str(launcher), allow_execution = False)
+
+
 def test_explicit_launch_can_probe_a_custom_dsh_wrapper(tmp_path):
     launcher = tmp_path / "dsh"
     launcher.write_text("#!/bin/sh\n")
