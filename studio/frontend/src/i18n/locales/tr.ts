@@ -3083,7 +3083,7 @@ export const tr = {
       configurationDocs: "belgelere",
       configurationFlagsSuffix: "göz atın.",
       modelNote:
-        "Codex, llama-server tarafından sunulan bir GGUF modeli gerektirir. Diğer ajanlar transformer tabanlı modelleri de kullanabilir; Unsloth'ta zaten yüklü olan modeli kullanmak için --model seçeneğini kaldırın.",
+        "Codex ve Claude Code, llama-server tarafından sunulan bir GGUF modeli gerektirir. Diğer ajanlar transformer tabanlı modelleri de kullanabilir; Unsloth'ta zaten yüklü olan modeli kullanmak için --model seçeneğini kaldırın.",
       subagent: {
         title: "Yerel bir modeli alt ajan olarak kullanın",
         description:
