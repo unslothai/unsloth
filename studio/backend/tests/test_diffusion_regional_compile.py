@@ -273,3 +273,14 @@ def test_studio_compile_path_engages_on_lumina(monkeypatch):
         m for m in pipe.transformer.modules() if type(m).__name__ == "Lumina2TransformerBlock"
     ]
     assert blocks and all(getattr(m, "_compiled_call_impl", None) is not None for m in blocks)
+
+
+def test_anima_keeps_its_bf16_auto_default_once_it_compiles():
+    """Declaring the blocks lifted the "cannot be regionally compiled" bf16 reason; the small-DiT rule takes its place,
+    so a resident Anima load stays bf16 in auto as before."""
+    from core.inference.diffusion import _auto_keeps_bf16_reason
+    from core.inference.diffusion_families import SMALL_DIT_BF16_WHEN_RESIDENT, detect_family
+
+    anima = detect_family("", override = "anima")
+    reason = _auto_keeps_bf16_reason(anima, "pipeline", anima.base_repo)
+    assert reason and SMALL_DIT_BF16_WHEN_RESIDENT in reason

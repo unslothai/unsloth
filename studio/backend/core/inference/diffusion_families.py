@@ -1222,6 +1222,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         transformer_class = "CosmosTransformer3DModel",
         base_repo = "circlestone-labs/Anima-Base-v1.0-Diffusers",
         aliases = ("anima-base", "anima-2.9b"),
+        # A 2B / 2.9B DiT: compiled, it keeps the small-DiT bf16 default it had while it could not compile.
+        profile = FamilyProfile(auto_bf16_when_resident = SMALL_DIT_BF16_WHEN_RESIDENT),
         gguf_loadable = False,
         fp16_incompatible = True,
     ),
