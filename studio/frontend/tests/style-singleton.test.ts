@@ -27,7 +27,6 @@ test("the scroll-lock sheet stays in <head> after the last lock ends", async () 
   sheet.add("body[data-scroll-locked] { overflow: hidden; }");
   sheet.remove();
   sheet.remove();
-  // Removing a non-empty <style> makes WebKit restyle and relayout the whole page on every close.
   assert.equal(head.children.length, 1);
   const tag = head.children[0];
   sheet.add("body[data-scroll-locked] { overflow: hidden; }");
@@ -44,7 +43,6 @@ test("every bundle resolves react-style-singleton to the keeping singleton", () 
   for (const name of ["vite.long-thread.config.ts", "vite.reasoning.config.ts"]) {
     assert.match(readFileSync(new URL(`../${name}`, import.meta.url), "utf8"), /mergeConfig\(base,/, name);
   }
-  // react-remove-scroll and react-remove-scroll-bar only import styleSingleton.
   const shim = readFileSync(new URL("../src/lib/style-singleton.ts", import.meta.url), "utf8");
   for (const name of ["styleSingleton", "styleHookSingleton", "stylesheetSingleton"]) {
     assert.match(shim, new RegExp(`export const ${name} =`));

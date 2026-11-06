@@ -87,7 +87,6 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
-      // Keeps the scroll-lock <style> after a dialog closes (see src/lib/style-singleton.ts).
       "react-style-singleton": path.resolve(__dirname, "./src/lib/style-singleton.ts"),
       "@dagrejs/dagre": path.resolve(
         __dirname,

@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Stands in for react-style-singleton (vite.config.ts aliases it), which react-remove-scroll uses to
-// lock scrolling under dialogs and modal menus. The original removes its <style> when the last lock
-// ends; WebKit then restyles and relays out the whole page, 5 s per close in a 1M-token chat on
-// WebKitGTK. Its rules only apply under body[data-scroll-locked], so the tag stays.
+// react-style-singleton (aliased in vite.config.ts) minus removal: removing react-remove-scroll's
+// <style> makes WebKit restyle the whole page. Its rules only match body[data-scroll-locked].
 import { useEffect } from "react";
 
 export const stylesheetSingleton = () => {
@@ -28,7 +26,7 @@ export const stylesheetSingleton = () => {
 export const styleHookSingleton = () => {
   const sheet = stylesheetSingleton();
   return (styles: string, isDynamic?: boolean) => {
-    // Same dependency as the original: re-adds only when a dynamic sheet changes.
+    // The original's deps: re-adds only when a dynamic sheet changes.
     useEffect(() => {
       sheet.add(styles);
       return () => sheet.remove();
