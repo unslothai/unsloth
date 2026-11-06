@@ -136,28 +136,37 @@ export function splitIntoSentences(text: string): string[] {
   for (const chunk of raw) {
     const start = norm.indexOf(chunk, at);
     at = start + chunk.length;
-    const part = chunk.trim();
+    let part = chunk.trim();
     // Whether a space or newline came before it: "2.5" has none, "in 2020. 30 people" has one.
     const spaced = /^\s/.test(chunk) || (start > 0 && /\s/.test(norm[start - 1] ?? ""));
     if (!part) continue;
     const prev = out[out.length - 1];
     if (prev !== undefined) {
-      // Quotes and brackets only CLOSE when whitespace or the end follows one.
-      // Followed by a letter it opens a quotation, which is a real boundary.
-      const closer = /^["')\]]+(\s|$)/.test(part);
+      // Quotes and brackets only CLOSE when whitespace or the end follows one; the closer
+      // joins the sentence before it and the text after it is a new sentence.
+      const closer = /^(["')\]]+)(?:\s|$)/.exec(part);
+      if (closer) {
+        out[out.length - 1] = prev + closer[1];
+        part = part.slice(closer[1].length).trim();
+        if (!part) continue;
+        out.push(part);
+        continue;
+      }
       const tail = prev.replace(/["')\]]+$/, "");
       const lastWord = /([A-Za-z]+)\.$/.exec(tail)?.[1];
       const decimal = /\d\.$/.test(tail) && !spaced && /^\d/.test(part);
       const initial = /(^|\s)[A-Za-z]\.$/.test(tail) && /^[A-Za-z]\./.test(part);
+      // "llama.cpp", "config.json": a dot with a letter right after it is part of a name.
+      const dotted = /[A-Za-z\d]\.$/.test(tail) && !spaced && /^[A-Za-z]/.test(part);
       const abbrev =
         lastWord !== undefined && SPEECH_ABBREVIATIONS.has(lastWord.toLowerCase());
       // "The U.S. is large", "e.g. the docs": a lowercase word after an initialism continues it.
       const initialism = /(?:^|\s)(?:[A-Za-z]\.){2,}$/.test(tail) && /^[a-z]/.test(part);
       // ", the docs" after "e.g." can't start a sentence.
       const continues = /^[,;:]/.test(part);
-      if (decimal || initial || abbrev || closer || initialism || continues) {
+      if (decimal || initial || dotted || abbrev || initialism || continues) {
         // "3.50" and "D.C." close up; "Dr. Smith" keeps the space it was written with.
-        out[out.length - 1] = prev + (decimal || initial || closer || continues ? "" : " ") + part;
+        out[out.length - 1] = prev + (decimal || initial || dotted || continues ? "" : " ") + part;
         continue;
       }
     }

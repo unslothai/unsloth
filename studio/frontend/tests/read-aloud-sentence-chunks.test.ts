@@ -164,3 +164,25 @@ test("an initialism before a lowercase word stays in its sentence", () => {
     "He moved later.",
   ]);
 });
+
+test("a closing quote ends its sentence without swallowing the next one", () => {
+  assert.deepEqual(speechText.splitIntoSentences('The sign read "Stop." Then we left.'), [
+    'The sign read "Stop."',
+    "Then we left.",
+  ]);
+  assert.deepEqual(speechText.splitIntoSentences("It ended (finally.) Good."), [
+    "It ended (finally.)",
+    "Good.",
+  ]);
+});
+
+test("a dot inside a name like llama.cpp or config.json is not a boundary", () => {
+  assert.deepEqual(speechText.splitIntoSentences("It runs in llama.cpp, Ollama and vLLM. Then go."), [
+    "It runs in llama.cpp, Ollama and vLLM.",
+    "Then go.",
+  ]);
+  assert.deepEqual(speechText.splitIntoSentences("Open config.json now. Visit unsloth.ai today."), [
+    "Open config.json now.",
+    "Visit unsloth.ai today.",
+  ]);
+});
