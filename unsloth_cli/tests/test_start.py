@@ -254,6 +254,20 @@ def test_install_command_uses_resolved_npm_cmd_on_windows(monkeypatch):
     assert env is not None
 
 
+def test_install_command_keeps_an_apostrophe_in_a_windows_prefix(monkeypatch):
+    _simulate_windows(monkeypatch)
+    monkeypatch.setattr(start, "_npm_executable", lambda: r"C:\Managed Node\npm.cmd")
+    prefix = r"C:\Users\O'Brien\AppData\Roaming\npm"
+    hint = start._npm_install_hint("@openai/codex@latest", prefix = prefix)
+
+    command, _ = start._install_command(hint)
+
+    assert command[-1] == (
+        "& 'C:\\Managed Node\\npm.cmd' install -g --prefix "
+        "'C:\\Users\\O''Brien\\AppData\\Roaming\\npm' '@openai/codex@latest'"
+    )
+
+
 def test_install_agent_posix_failure_omits_execution_policy_hint(monkeypatch, capsys):
     monkeypatch.setattr(start.os, "name", "posix")
     monkeypatch.setattr(start.sys, "stdin", SimpleNamespace(isatty = lambda: True))

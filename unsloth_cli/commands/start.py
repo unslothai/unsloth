@@ -4629,7 +4629,6 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
             "Unsloth-managed Node installation was found. Install Node.js with npm, "
             "then re-run."
         )
-    args = shlex.split(install_hint)
     env = dict(os.environ)
     # dirname, not Path().parent: Path picks its flavour from os.name, which the tests override. Empty means npm is a bare name; prepending "" would put the cwd on PATH.
     npm_dir = os.path.dirname(npm)
@@ -4637,7 +4636,8 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
     if npm_dir:
         env["PATH"] = os.pathsep.join([npm_dir, current_path]) if current_path else npm_dir
     if os.name == "nt":
-        command = "& " + " ".join(_powershell_quote(arg) for arg in [npm, *args[1:]])
+        # The hint is already PowerShell-quoted; shlex would drop the doubled ' of a path like O'Brien.
+        command = "& " + _powershell_quote(npm) + install_hint.lstrip()[len("npm") :]
         return (
             [
                 "powershell",
@@ -4649,7 +4649,7 @@ def _install_command(install_hint: str) -> tuple[list[str], Optional[dict]]:
             ],
             env,
         )
-    return [npm, *args[1:]], env
+    return [npm, *shlex.split(install_hint)[1:]], env
 
 
 def _install_agent(
