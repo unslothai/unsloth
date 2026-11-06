@@ -1727,6 +1727,26 @@ html[data-code-wrap]:not([data-code-line-numbers]) :is(.aui-thread-root, [data-c
 	padding-inline-start: 0;
 	text-indent: 0;
 }
+/* A block's own word wrap button (CodeBlockActions) overrides the setting above either way. */
+[data-wrap="on"] [data-streamdown="code-block"] :is(pre, code) {
+	white-space: pre-wrap !important;
+	overflow-wrap: anywhere;
+}
+html[data-code-line-numbers] [data-wrap="on"] [data-streamdown="code-block"] code > span {
+	padding-inline-start: 2.5rem;
+	text-indent: -2.5rem;
+}
+html[data-code-line-numbers] [data-wrap="on"] [data-streamdown="code-block"] code > span::before {
+	text-indent: 0;
+}
+html[data-code-wrap] [data-wrap="off"] [data-streamdown="code-block"] :is(pre, code) {
+	white-space: pre !important;
+	overflow-wrap: normal;
+}
+html[data-code-wrap] [data-wrap="off"] [data-streamdown="code-block"] code > span {
+	padding-inline-start: 0;
+	text-indent: 0;
+}
 html[data-code-no-ligatures] :is(pre, code, kbd, samp),
 html[data-code-no-ligatures] .aui-reasoning-code-lines {
 	font-variant-ligatures: none;
@@ -4066,7 +4086,39 @@ html[data-chat-font] .aui-root {
 
 	.aui-thread-root [data-streamdown="code-block-body"] {
 		/* Keep overlay scrollbars below one-line code. */
-		padding-bottom: calc(0.625rem * var(--ui-space-scale, 1)) !important;
+		padding-bottom: calc(0.75rem * var(--ui-space-scale, 1)) !important;
+		/* Long code scrolls inside its block; code-fence-defer.tsx colours only the lines in view. */
+		max-height: var(--unsloth-code-block-max-height, min(30rem, 55vh));
+		overflow-y: auto;
+		/* Lines up with the language label's ml-1. */
+		padding-left: var(--spacing) !important;
+		/* Runs into the block's side padding so the scrollbar hugs the block's edge; the text keeps its width. */
+		margin-inline-end: calc(-0.75rem * var(--ui-space-scale, 1));
+		padding-inline-end: calc(0.75rem * var(--ui-space-scale, 1)) !important;
+	}
+
+	/* Code scrolled under the header fades out instead of being cut mid-line (code-fence-defer.tsx sets the flag). */
+	.aui-thread-root [data-streamdown="code-block-body"][data-scrolled] {
+		mask-image: linear-gradient(to bottom, transparent, #000 calc(1.25rem * var(--ui-space-scale, 1)));
+	}
+
+	/* No padding below: long code runs to the bottom edge and the body's own bottom padding spaces short code. */
+	.aui-thread-root [data-streamdown="code-block"] {
+		padding-top: calc(0.25rem * var(--ui-space-scale, 1));
+		padding-bottom: 0;
+	}
+
+	/* Follows the header up by the 0.5rem the padding above lost; the half pixel centres the icons on the label. */
+	.aui-thread-root [data-code-block-actions] {
+		top: calc(0.25rem * var(--ui-space-scale, 1) + 0.5px);
+	}
+
+	@media print {
+		.aui-thread-root [data-streamdown="code-block-body"] {
+			max-height: none;
+			overflow-y: visible;
+			mask-image: none;
+		}
 	}
 
 	[data-streamdown="code-block"] {
@@ -4395,8 +4447,13 @@ html[data-chat-font] .aui-root {
 		width: max-content;
 	}
 
-	html[data-code-wrap] .aui-thread-root [data-unsloth-fence-paint] pre {
+	html[data-code-wrap] .aui-thread-root [data-unsloth-fence-paint] pre,
+	.aui-thread-root [data-wrap="on"] [data-unsloth-fence-paint] pre {
 		width: auto;
+	}
+
+	html[data-code-wrap] .aui-thread-root [data-wrap="off"] [data-unsloth-fence-paint] pre {
+		width: max-content;
 	}
 
 	html[data-code-block-containment="on"] .aui-thread-root [data-streamdown="code-block"]:not([data-incomplete]) > [data-unsloth-fence-windowed] {

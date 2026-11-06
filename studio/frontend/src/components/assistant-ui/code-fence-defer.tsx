@@ -41,6 +41,7 @@ import {
   advanceHighlightProgress,
   EMPTY_HIGHLIGHT_PROGRESS,
   EMPTY_HIGHLIGHT_COUNTS,
+  highlightLineCount,
   HIGHLIGHT_BATCH_TOKENS,
   type HighlightProgress,
   needsHighlightBatches,
@@ -393,6 +394,18 @@ const fenceSpeculator = createFenceSpeculator<FenceGate>({
   budgetFences: MAX_FENCES / 2,
   maxInFlight: SPECULATION_IN_FLIGHT,
 });
+
+// One capturing listener flags a code body scrolled off its first line, for the fade under its header.
+const flagScrolledBody = (event: Event): void => {
+  const target = event.target;
+  if (!(target instanceof HTMLElement) || target.dataset.streamdown !== "code-block-body") return;
+  const scrolled = target.scrollTop > 0;
+  if (scrolled !== target.hasAttribute("data-scrolled")) target.toggleAttribute("data-scrolled", scrolled);
+};
+
+if (typeof document !== "undefined" && typeof document.addEventListener === "function") {
+  document.addEventListener("scroll", flagScrolledBody, { capture: true, passive: true });
+}
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener("beforeprint", () => {
@@ -1108,6 +1121,43 @@ const visibleHighlightLine = (code: HTMLElement | null, frame: HTMLElement | nul
   return Math.max(0, Math.floor((top - line.top) / line.height));
 };
 
+/** Lines in and one view either side of a block that scrolls on its own, or null when it does not. */
+const innerLineWindow = (
+  code: HTMLElement | null,
+  body: HTMLElement | null,
+): { first: number; last: number } | null => {
+  if (!code || !body || body.scrollHeight <= body.clientHeight + 1) return null;
+  const lines = code.children;
+  if (lines.length === 0) return null;
+  const view = body.getBoundingClientRect();
+  const top = view.top + body.clientTop;
+  const lineAt = (y: number): number => {
+    let low = 0;
+    let high = lines.length - 1;
+    while (low < high) {
+      const middle = (low + high) >> 1;
+      if (lines[middle].getBoundingClientRect().bottom <= y) low = middle + 1;
+      else high = middle;
+    }
+    return low;
+  };
+  return {
+    first: lineAt(top - body.clientHeight),
+    last: lineAt(top + 2 * body.clientHeight),
+  };
+};
+
+const lineWindowColoured = (
+  tokens: FenceTokens["tokens"],
+  progress: HighlightProgress,
+  range: { first: number; last: number },
+): boolean => {
+  for (let line = range.first; line <= range.last && line < tokens.length; line += 1) {
+    if (highlightLineCount(progress, line) < tokens[line].length) return false;
+  }
+  return true;
+};
+
 function useFenceHighlightLimit(
   tokens: FenceTokens["tokens"] | null,
   isIncomplete: boolean | undefined,
@@ -1116,6 +1166,7 @@ function useFenceHighlightLimit(
   source: string,
   code: RefObject<HTMLElement | null>,
   frame: RefObject<HTMLElement | null>,
+  surface: RefObject<HTMLElement | null>,
 ): { progress: HighlightProgress | null; staged: boolean } {
   const eligible = !(typeof window === "undefined" || windowing || isIncomplete
     || fenceMode() !== "defer"
@@ -1142,19 +1193,46 @@ function useFenceHighlightLimit(
   }
   if (current !== previous) setPrevious(current);
   const progress = immediate ? null : current.progress;
+  const [scrolled, setScrolled] = useState(0);
   useLayoutEffect(() => {
     if (progress === null || tokens === null) return;
+    const body = surface.current;
+    // A capped block colours what is in view and stops; scrolling inside it asks for the rest.
+    const capped = innerLineWindow(code.current, body);
+    if (capped !== null && body !== null && lineWindowColoured(tokens, progress, capped)) {
+      let frameId = 0;
+      const onScroll = (): void => {
+        if (frameId !== 0) return;
+        frameId = requestAnimationFrame(() => {
+          frameId = 0;
+          const next = innerLineWindow(code.current, body);
+          if (next !== null && !lineWindowColoured(tokens, progress, next)) setScrolled((n) => n + 1);
+        });
+      };
+      body.addEventListener("scroll", onScroll, { passive: true });
+      return () => {
+        body.removeEventListener("scroll", onScroll);
+        cancelAnimationFrame(frameId);
+      };
+    }
     watchHighlighting();
     const cancel = highlightQueue.add(() => {
-      const visible = progress.located ? 0 : visibleHighlightLine(code.current, frame.current);
-      setPrevious({ tokens, progress: advanceHighlightProgress(tokens, progress, visible) });
+      const inView = innerLineWindow(code.current, surface.current);
+      const next = inView !== null
+        ? advanceHighlightProgress(tokens, { ...progress, located: false }, inView.first)
+        : advanceHighlightProgress(
+          tokens,
+          progress,
+          progress.located ? 0 : visibleHighlightLine(code.current, frame.current),
+        );
+      setPrevious({ tokens, progress: next });
       return true;
     }, () => setPrevious({ tokens, progress: null }));
     return () => {
       cancel();
       unwatchHighlighting();
     };
-  }, [tokens, progress, code, frame]);
+  }, [tokens, progress, code, frame, surface, scrolled]);
   return { progress, staged };
 }
 
@@ -1541,6 +1619,30 @@ function useLineWindow(
 const NO_WINDOW = { window: null, pins: null, measured: false } as const;
 const EMPTY_WINDOW = { window: EMPTY_LINE_WINDOW, pins: null, measured: false } as const;
 
+/** A streaming block that was showing its last line keeps following it, until the reader scrolls up. */
+function usePinnedWhileStreaming(
+  surface: RefObject<HTMLElement | null>,
+  isIncomplete: boolean | undefined,
+  tokens: FenceTokens["tokens"] | null,
+): void {
+  const following = useRef(true);
+  const mounted = tokens !== null && tokens.length > 0;
+  useEffect(() => {
+    const body = surface.current;
+    if (!(isIncomplete && mounted && body)) return;
+    const onScroll = (): void => {
+      following.current = body.scrollHeight - body.scrollTop - body.clientHeight < 24;
+    };
+    body.addEventListener("scroll", onScroll, { passive: true });
+    return () => body.removeEventListener("scroll", onScroll);
+  }, [surface, isIncomplete, mounted]);
+  useLayoutEffect(() => {
+    const body = surface.current;
+    if (!(isIncomplete && following.current && body)) return;
+    if (body.scrollHeight > body.clientHeight) body.scrollTop = body.scrollHeight;
+  }, [surface, isIncomplete, tokens]);
+}
+
 /**
  * A fence's body, highlighted, with the spans bounded to what is on screen.
  *
@@ -1567,7 +1669,10 @@ export const FenceBody = memo(function FenceBody({
   const wrapper = useRef<HTMLDivElement | null>(null);
   const frame = useRef<HTMLDivElement | null>(null);
   const tokens = result?.tokens ?? null;
-  const highlight = useFenceHighlightLimit(tokens, isIncomplete, windowing, language, source, code, frame);
+  const highlight = useFenceHighlightLimit(
+    tokens, isIncomplete, windowing, language, source, code, frame, surface,
+  );
+  usePinnedWhileStreaming(surface, isIncomplete, tokens);
   const { window: lineWindow, pins, measured } = useLineWindow(
     code,
     surface,

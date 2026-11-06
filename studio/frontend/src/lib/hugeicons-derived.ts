@@ -122,3 +122,24 @@ export {
   SheetIcon,
   TrashIcon,
 } from "@hugeicons/core-free-icons";
+
+const wrapStroke = {
+  stroke: "currentColor",
+  strokeLinecap: "round",
+  strokeLinejoin: "round",
+  strokeWidth: "1.5",
+} as const;
+
+// Hugeicons line-wrap and line-wrap-disable (stroke rounded, MIT), traced from hugeicons.com until
+// @hugeicons/core-free-icons ships them (not in 4.4.0). Off: |-> ; on: <-| hooking back.
+export const LineWrapIcon: IconSvgElement = [
+  ["path", { d: "M5 3V21", ...wrapStroke, key: "0" }],
+  ["path", { d: "M9 12H20", ...wrapStroke, key: "1" }],
+  ["path", { d: "M15 7.5C15 7.5 20 10.81 20 12C20 13.19 15 16.5 15 16.5", ...wrapStroke, key: "2" }],
+];
+
+export const LineWrapDisableIcon: IconSvgElement = [
+  ["path", { d: "M20 3V21", ...wrapStroke, key: "0" }],
+  ["path", { d: "M9.5 8H13.5C15.433 8 17 9.567 17 11.5C17 13.433 15.433 15 13.5 15H4", ...wrapStroke, key: "1" }],
+  ["path", { d: "M7.5 11.5C7.5 11.5 4 14.08 4 15C4 15.92 7.5 18.5 7.5 18.5", ...wrapStroke, key: "2" }],
+];
