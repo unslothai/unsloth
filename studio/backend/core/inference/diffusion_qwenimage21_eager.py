@@ -182,7 +182,6 @@ def _fusion(device: Any) -> Optional[tuple]:
 
 
 def _launch_options() -> dict:
-    # ROCm: the plain multiplies and adds above must not be contracted into fma (CUDA uses the *_rn intrinsics).
     return {"enable_fp_fusion": False} if _rocm() else {}
 
 

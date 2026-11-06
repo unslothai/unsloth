@@ -138,7 +138,6 @@ def test_rocm_torch_takes_the_eager_step(monkeypatch):
     assert e.install_for_pipe(types.SimpleNamespace(transformer = m))
     assert getattr(qmod._qwenimage21_prepare_qkv, "__unsloth_q21_eager__", False)
     assert m.__dict__[e._ATTR] == e.EAGER
-    # the modulation broadcast is bit-identical on any backend
     inp = _valid(_inputs())
     e.uninstall()
     ref = _render(_model(), inp)
