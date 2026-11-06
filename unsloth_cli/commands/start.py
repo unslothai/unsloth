@@ -5927,27 +5927,46 @@ def _hermes_mcp_manifest(home: Path) -> tuple:
     return (origin if isinstance(origin, str) else None), servers
 
 
-def _with_user_hermes_mcp_servers(config: dict, home: Path) -> None:
+def _hermes_mcp_servers(home: Path) -> Optional[dict]:
     import yaml
 
+    try:
+        config = yaml.safe_load((home / "config.yaml").read_text(encoding = "utf-8"))
+    except OSError:
+        return {}
+    except (yaml.YAMLError, ValueError):
+        return None
+    servers = config.get("mcp_servers") if isinstance(config, dict) else None
+    return servers if isinstance(servers, dict) else {}
+
+
+def _with_user_hermes_mcp_servers(config: dict, home: Path) -> None:
+    home_key = home.resolve(strict = False)
     configured = os.environ.get("HERMES_HOME", "").strip()
+    built = None
     if configured:
-        # A home Unsloth built (the recipe exports HERMES_HOME=home) points back at its origin.
-        configured = _hermes_mcp_manifest(Path(configured).expanduser())[0] or configured
+        configured = str(Path(configured).expanduser().resolve(strict = False))
+        origin = _hermes_mcp_manifest(Path(configured))[0]
+        if origin is not None:
+            # A home Unsloth built (the recipe exports HERMES_HOME=home) points back at its origin.
+            built, configured = Path(configured), origin
     source = _hermes_user_home(configured)
-    if source.resolve(strict = False) == home.resolve(strict = False):
+    if source.resolve(strict = False) == home_key:
         configured = ""
         source = _hermes_user_home()
-        if source.resolve(strict = False) == home.resolve(strict = False):
+        if source.resolve(strict = False) == home_key:
             return
-    try:
-        user = yaml.safe_load((source / "config.yaml").read_text(encoding = "utf-8"))
-    except OSError:
-        user = None
-    except (yaml.YAMLError, ValueError):
+    servers = _hermes_mcp_servers(source)
+    if servers is None:
         return
-    servers = user.get("mcp_servers") if isinstance(user, dict) else None
-    servers = servers if isinstance(servers, dict) else {}
+    if built is not None and built.resolve(strict = False) != home_key:
+        # Servers added in that saved home (hermes mcp add in the recipe shell); the origin wins a clash.
+        inherited = _hermes_mcp_manifest(built)[1]
+        local = _hermes_mcp_servers(built) or {}
+        servers = {
+            **{n: v for n, v in local.items() if n not in inherited and n not in servers},
+            **servers,
+        }
     carried = _hermes_mcp_manifest(home)[1]
     current = config.get("mcp_servers")
     # Only replace what came from the user's config; servers added in this home stay.

@@ -7493,6 +7493,48 @@ def test_hermes_mcp_servers_follow_the_origin_from_a_recipe_shell(
     assert config["mcp_servers"] == {"github": {"command": "g"}}
 
 
+def test_hermes_fresh_session_from_a_recipe_shell_keeps_saved_home_servers(
+    fake_studio, tmp_path, monkeypatch
+):
+    yaml = pytest.importorskip("yaml")
+    source_home = tmp_path / "user-hermes"
+    source_home.mkdir()
+    (source_home / "config.yaml").write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.setenv("HERMES_HOME", str(source_home))
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    config["mcp_servers"]["local"] = {"command": "l"}
+    (home / "config.yaml").write_text(yaml.safe_dump(config))
+
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    fresh = tmp_path / "session" / "config.yaml"
+    fresh.parent.mkdir()
+    start.write_hermes_config(BASE, MODEL, fresh, keep_mcp_servers = True)
+    assert yaml.safe_load(fresh.read_text())["mcp_servers"] == {
+        "local": {"command": "l"},
+        "docs": {"command": "d"},
+    }
+
+
+def test_hermes_relative_origin_survives_a_directory_change(fake_studio, tmp_path, monkeypatch):
+    yaml = pytest.importorskip("yaml")
+    (tmp_path / "user-hermes").mkdir()
+    (tmp_path / "user-hermes" / "config.yaml").write_text("mcp_servers:\n  docs:\n    command: d\n")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HERMES_HOME", "user-hermes")
+    home = tmp_path / "agents" / "hermes"
+    assert CliRunner().invoke(start.start_app, ["hermes", "--no-launch"]).exit_code == 0
+
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    result = CliRunner().invoke(start.start_app, ["hermes", "--no-launch"])
+    assert result.exit_code == 0, result.output
+    config = yaml.safe_load((home / "config.yaml").read_text())
+    assert config["mcp_servers"] == {"docs": {"command": "d"}}
+
+
 def test_hermes_mcp_servers_follow_the_active_profile(fake_studio, tmp_path, monkeypatch):
     yaml = pytest.importorskip("yaml")
     root = tmp_path / "user-hermes"
