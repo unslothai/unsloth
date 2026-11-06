@@ -31,7 +31,9 @@ class _FakeUnsloth:
 
 
 def _gguf_row(monkeypatch, llama):
-    monkeypatch.setattr(models_route, "peek_inference_backend", lambda: _FakeUnsloth())
+    # main reads the backend through peek_inference_backend, older trees get_inference_backend.
+    for name in ("peek_inference_backend", "get_inference_backend"):
+        monkeypatch.setattr(models_route, name, lambda: _FakeUnsloth(), raising = False)
     monkeypatch.setattr(inf, "get_llama_cpp_backend", lambda: llama)
     (row,) = asyncio.run(models_route.list_models(current_subject = "unsloth")).models
     return row
