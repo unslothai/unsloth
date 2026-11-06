@@ -89,7 +89,7 @@ test("Compare and the adapter route only through the gate", () => {
   );
   assert.match(
     source,
-    /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{[\s\S]*?listenForAudioClip\(clipTarget\.add, room\)/,
+    /if \(clipTarget && micRecordsForModel\(this\.chatId\)\) \{[\s\S]*?listenForAudioClip\(clipTarget\.add, room\);\s*discardClipWhenModelChanges\(session, useChatRuntimeStore\)/,
   );
 });
 

@@ -60,7 +60,7 @@ Object.defineProperty(globalThis, "navigator", {
   configurable: true,
 });
 
-const { listenForAudioClip } = loadWithStubs<
+const { discardClipWhenModelChanges, listenForAudioClip } = loadWithStubs<
   typeof import("../src/features/chat/adapters/studio-audio-clip-adapter.ts")
 >(
   new URL("../src/features/chat/adapters/studio-audio-clip-adapter.ts", import.meta.url),
@@ -245,4 +245,51 @@ test("a cancel during the saved-mic request skips the default-mic fallback", asy
     nav.mediaDevices.getUserMedia = original;
     micDeviceId = "default";
   }
+});
+
+function fakeCheckpointStore(checkpoint: string) {
+  let state = { params: { checkpoint } };
+  const listeners = new Set<(s: typeof state) => void>();
+  return {
+    getState: () => state,
+    subscribe: (listener: (s: typeof state) => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    set(next: string) {
+      state = { params: { checkpoint: next } };
+      for (const listener of [...listeners]) listener(state);
+    },
+    listeners,
+  };
+}
+
+test("switching the chat model mid-recording discards the clip with a toast", async () => {
+  toasts.length = 0;
+  const clips: File[] = [];
+  const store = fakeCheckpointStore("gemma-4-e2b");
+  const session = listenForAudioClip((file) => clips.push(file));
+  discardClipWhenModelChanges(session, store);
+  await flush();
+  store.set("gemma-4-e2b");
+  assert.equal(session.status.type, "running");
+  store.set("qwen3-text-only");
+  await flush();
+  assert.deepEqual(session.status, { type: "ended", reason: "cancelled" });
+  assert.equal(lastRecorder?.discarded, true);
+  assert.equal(clips.length, 0);
+  assert.deepEqual(toasts, ["Recording discarded because the chat model changed."]);
+  assert.equal(store.listeners.size, 0);
+});
+
+test("a finished recording stops watching the chat model", async () => {
+  toasts.length = 0;
+  const store = fakeCheckpointStore("gemma-4-e2b");
+  const session = listenForAudioClip(() => {});
+  discardClipWhenModelChanges(session, store);
+  await flush();
+  await session.stop();
+  assert.equal(store.listeners.size, 0);
+  store.set("qwen3-text-only");
+  assert.deepEqual(toasts, []);
 });

@@ -24,7 +24,10 @@ import {
   sttQuantDownloaded,
 } from "./studio-model-dictation-adapter";
 import { PcmRecorder } from "./pcm-recorder";
-import { listenForAudioClip } from "./studio-audio-clip-adapter";
+import {
+  discardClipWhenModelChanges,
+  listenForAudioClip,
+} from "./studio-audio-clip-adapter";
 import {
   type StudioDictationSession,
   StudioWebSpeechDictationAdapter,
@@ -136,7 +139,9 @@ export class StudioDictationAdapter implements DictationAdapter {
         maxAudioFilesFor(activeModel),
         !!pendingAudioBase64,
       );
-      return listenForAudioClip(clipTarget.add, room);
+      const session = listenForAudioClip(clipTarget.add, room);
+      discardClipWhenModelChanges(session, useChatRuntimeStore);
+      return session;
     }
     const { dictationEngine } = useVoiceSettingsStore.getState();
     if (usesRecordedAudio(dictationEngine)) {

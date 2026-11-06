@@ -183,3 +183,26 @@ export function listenForAudioClip(
 
   return session;
 }
+
+type CheckpointStore = {
+  getState: () => { params: { checkpoint: string | null | undefined } };
+  subscribe: (
+    listener: (state: { params: { checkpoint: string | null | undefined } }) => void,
+  ) => () => void;
+};
+
+/** The clip was sized and gated for the model it started on; the attachment adapter checks the one active at Stop. */
+export function discardClipWhenModelChanges(
+  session: StudioDictationSession,
+  store: CheckpointStore,
+): void {
+  const startedOn = store.getState().params.checkpoint;
+  const unsubscribe = store.subscribe((state) => {
+    if (state.params.checkpoint === startedOn) return;
+    unsubscribe();
+    if (session.status.type === "ended") return;
+    toast.info("Recording discarded because the chat model changed.");
+    session.cancel();
+  });
+  session.onEnd?.(unsubscribe);
+}
