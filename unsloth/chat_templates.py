@@ -2692,13 +2692,14 @@ def get_chat_template(
             for key in ("role", "content", "user", "assistant")
         )
         chat_template = \
-            "{%- if 'role' not in messages[0] -%}" + \
+            "{%- if " + role + " in messages[0] -%}" + \
             "{%- set sharegpt = namespace(messages = []) -%}" + \
             "{%- for message in messages -%}" + \
             "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
             ".get(message[" + role + "], message[" + role + "]) -%}" + \
             "{%- set sharegpt.messages = sharegpt.messages + " + \
-            "[dict(message, role = role, content = message[" + content + "])] -%}" + \
+            "[dict(message, role = role, content = message[" + content + "]) if " + content + " in message " + \
+            "else dict(message, role = role)] -%}" + \
             "{%- endfor -%}" + \
             "{%- set messages = sharegpt.messages -%}" + \
             "{%- endif %}" + \

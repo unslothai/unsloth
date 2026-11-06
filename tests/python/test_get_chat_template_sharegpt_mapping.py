@@ -100,3 +100,59 @@ def test_custom_template_reading_sharegpt_keys_keeps_working():
     mapped = get_chat_template(_tokenizer(), (template, "eos_token"), mapping = SHAREGPT)
 
     assert _render(mapped, sharegpt, False) == "<s>User: Hi\nBot: Hello!</s>\nUser: Bye\n"
+
+
+@pytest.mark.parametrize("name", ["llama-3.1", "chatml"])
+def test_mapping_that_keeps_the_role_key_still_renames_role_values(name):
+    mapping = {"role": "role", "content": "content", "user": "human", "assistant": "gpt"}
+    renamed = [{"role": SHAREGPT_ROLES[role], "content": text} for role, text in CONVERSATION]
+    role_content = [{"role": role, "content": text} for role, text in CONVERSATION]
+
+    expected = _render(get_chat_template(_tokenizer(), name), role_content, True)
+    mapped = get_chat_template(_tokenizer(), name, mapping = mapping)
+
+    assert _render(mapped, renamed, True) == expected
+    assert _render(mapped, role_content, True) == expected
+
+
+@pytest.mark.parametrize("name", ["llama-3.1", "chatml"])
+def test_mapping_that_only_renames_the_content_key(name):
+    mapping = {"role": "role", "content": "text", "user": "user", "assistant": "assistant"}
+    renamed = [{"role": role, "text": text} for role, text in CONVERSATION]
+    role_content = [{"role": role, "content": text} for role, text in CONVERSATION]
+
+    expected = _render(get_chat_template(_tokenizer(), name), role_content, True)
+    mapped = get_chat_template(_tokenizer(), name, mapping = mapping)
+
+    assert _render(mapped, renamed, True) == expected
+    assert _render(mapped, role_content, True) == expected
+
+
+@pytest.mark.parametrize("name", ["gpt-oss", "qwen3-instruct"])
+def test_sharegpt_mapping_with_content_less_tool_call_first(name):
+    call = [{"type": "function", "function": {"name": "f", "arguments": {}}}]
+    sharegpt = [{"from": "gpt", "tool_calls": call}, {"from": "human", "value": "ok"}]
+    role_content = [{"role": "assistant", "tool_calls": call}, {"role": "user", "content": "ok"}]
+
+    expected = _render(get_chat_template(_tokenizer(), name), role_content, False)
+    mapped = get_chat_template(_tokenizer(), name, mapping = SHAREGPT)
+
+    assert "ok" in expected
+    assert _render(mapped, sharegpt, False) == expected
+
+
+@pytest.mark.parametrize("name", ["llama-3.1", "qwen3-instruct"])
+def test_content_only_mapping_keeps_canonical_tool_call_first_history(name):
+    call = [{"type": "function", "function": {"name": "f", "arguments": {}}}]
+    canonical = [
+        {"role": "assistant", "tool_calls": call},
+        {"role": "tool", "content": "42"},
+        {"role": "user", "content": "ok"},
+    ]
+    mapping = {"role": "role", "content": "text", "user": "user", "assistant": "assistant"}
+
+    expected = _render(get_chat_template(_tokenizer(), name), canonical, False)
+    mapped = get_chat_template(_tokenizer(), name, mapping = mapping)
+
+    assert "42" in expected and "ok" in expected
+    assert _render(mapped, canonical, False) == expected
