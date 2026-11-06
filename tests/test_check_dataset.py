@@ -316,3 +316,36 @@ def test_media_rows_are_counted_but_not_measured(capsys):
     assert report["media"] == 1
     assert report["lengths"] == _lengths([_chat("hi", "hello")], tok)
     assert "Not measured: 1 rows with images, video or audio" in capsys.readouterr().out
+
+
+def test_text_column_wins_over_conversations():
+    rows = [{"conversations": _chat("hi", "hello")["messages"], "text": LONG}]
+    assert _lengths(rows, _tokenizer()) == _lengths([{"text": LONG}], _tokenizer())
+
+
+def test_assistant_tool_call_turn_without_content():
+    template = (
+        "{% for m in messages %}{{ m['role'] }} "
+        "{% if m.get('tool_calls') %}{{ m['tool_calls'][0]['name'] }}{% else %}{{ m['content'] }}{% endif %}"
+        " {% endfor %}"
+    )
+    row = {
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "tool_calls": [{"name": "w1"}]},
+        ]
+    }
+    report = check_dataset([row], _tokenizer(template), max_seq_length = 8)
+    assert report["malformed"] == 0
+    assert report["empty"] == 0
+
+
+def test_sharegpt_bad_role_is_malformed_and_extra_fields_render():
+    template = "{% for m in messages %}{{ m['content'] }} {{ m.get('thinking', '') }} {% endfor %}"
+    rows = [
+        {"conversations": [{"from": ["human"], "value": "hi"}]},
+        {"conversations": [{"from": "gpt", "value": "hi", "thinking": LONG}]},
+    ]
+    report = check_dataset(rows, _tokenizer(template), max_seq_length = 8)
+    assert report["rows"] == 2
+    assert report["over_max_seq_length"] == 1

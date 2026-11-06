@@ -86,7 +86,8 @@ else:
         trainer = arguments.pop("trainer", None)
         return _zoo_train_on_responses_only(trainer, **arguments)
 
-_DATASET_CHECK_COLUMNS = ("messages", "conversations", "text")
+# TRL trains on "messages" when present, else on "text"; "conversations" is only read without "text".
+_DATASET_CHECK_COLUMNS = ("messages", "text", "conversations")
 _MEDIA_TYPES = ("image", "video", "audio")
 
 
@@ -138,22 +139,24 @@ def _render_dataset_row(row, tokenizer):
         return value, value.strip() == "", True, False
     if not isinstance(value, list) or not value or not all(isinstance(m, dict) for m in value):
         raise _MalformedRow(f"{column} is not a list of role/content messages")
-    if all("from" in m and "value" in m for m in value):
-        # get_chat_template(mapping = ...) templates read ShareGPT keys themselves.
-        if "'role' not in messages[0]" not in (getattr(tokenizer, "chat_template", None) or ""):
-            roles = {"human": "user", "gpt": "assistant"}
-            value = [{"role": roles.get(m["from"], m["from"]), "content": m["value"]} for m in value]
-    elif not all("role" in m and "content" in m for m in value):
+    sharegpt = all("from" in m and "value" in m for m in value)
+    if not sharegpt and not all("role" in m and ("content" in m or "tool_calls" in m) for m in value):
         raise _MalformedRow(f"{column} is not a list of role/content messages")
     tools = row.get("tools")
     try:
+        # get_chat_template(mapping = ...) templates read ShareGPT keys themselves.
+        if sharegpt and "'role' not in messages[0]" not in (tokenizer.chat_template or ""):
+            roles = {"human": "user", "gpt": "assistant"}
+            value = [
+                dict(m, role = roles.get(m["from"], m["from"]), content = m["value"]) for m in value
+            ]
         tools = json.loads(tools) if isinstance(tools, str) else tools
         text = tokenizer.apply_chat_template(
             value, tools = tools or None, tokenize = False, add_generation_prompt = False
         )
     except Exception as e:
         raise _MalformedRow(f"chat template failed: {e}") from e
-    contents = (m["content"] if "content" in m else m["value"] for m in value)
+    contents = (m["value"] if sharegpt else m.get("content") for m in value)
     empty = all(isinstance(c, str) and c.strip() == "" for c in contents)
     return text, empty, False, _has_media(row, value)
 
