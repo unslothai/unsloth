@@ -74,3 +74,37 @@ def test_explicit_max_tokens_is_sent_unchanged(monkeypatch):
 def test_unknown_output_limit_keeps_the_old_default(monkeypatch):
     sent, _ = _sent_max_tokens(monkeypatch, httpx.Response(404, json = {"type": "error"}))
     assert sent == [1024, 1024]
+
+
+def test_output_limit_cache_is_scoped_to_credentials(monkeypatch):
+    caps = {"sk-a": 64000, "sk-b": 8192}
+    sent: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.headers["x-api-key"]
+        if request.url.path.startswith("/v1/models/"):
+            return httpx.Response(200, json = {"max_tokens": caps[key]})
+        sent.append((key, json.loads(request.content)["max_tokens"]))
+        return httpx.Response(200, content = _STOP, headers = {"content-type": "text/event-stream"})
+
+    monkeypatch.setattr(ep_mod, "_anthropic_output_caps", {}, raising = False)
+    monkeypatch.setattr(
+        ep_mod, "_http_client", httpx.AsyncClient(transport = httpx.MockTransport(handler))
+    )
+
+    async def run():
+        for key in ("sk-a", "sk-b"):
+            client = ExternalProviderClient(
+                provider_type = "anthropic",
+                base_url = "https://gateway.example/v1",
+                api_key = key,
+            )
+            async for _ in client.stream_chat_completion(
+                messages = [{"role": "user", "content": "hi"}],
+                model = "claude-haiku-4-5",
+            ):
+                pass
+            await client.close()
+
+    asyncio.new_event_loop().run_until_complete(run())
+    assert sent == [("sk-a", 64000), ("sk-b", 8192)]

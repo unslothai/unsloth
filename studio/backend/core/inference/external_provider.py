@@ -1156,7 +1156,7 @@ _OPENROUTER_CATALOG_RETRY_S = 60.0
 # cache key -> (expires_at, models)
 _openrouter_catalog: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _openrouter_catalog_locks: dict[str, asyncio.Lock] = {}
-_anthropic_output_caps: dict[tuple[str, str], Optional[int]] = {}
+_anthropic_output_caps: dict[tuple[str, str, str], Optional[int]] = {}
 _OPENROUTER_MODEL_KEYS = (
     "id",
     "context_length",
@@ -2561,7 +2561,7 @@ class ExternalProviderClient:
             )
 
     async def _anthropic_output_cap(self, model: str) -> Optional[int]:
-        key = (self.base_url, model)
+        key = (self.base_url, self._credential_digest(), model)
         if key not in _anthropic_output_caps:
             try:
                 response = await _client().get(
