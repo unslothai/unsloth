@@ -85,6 +85,39 @@ function useReplySpeaker() {
   return null;
 }
 
+/** Who wrote a message: picture on the left, then name and time, then the message. Replies and the user's own messages share it. */
+function SpeakerFrame({
+  className,
+  portrait,
+  name,
+  speakerId,
+  children,
+}: {
+  className: string;
+  portrait: ReactNode;
+  name: ReactNode;
+  speakerId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "relative min-h-[calc(4rem*var(--ui-space-scale,1))] pl-[calc(3.75rem*var(--ui-space-scale,1))] max-sm:pl-[calc(3.25rem*var(--ui-space-scale,1))]",
+        "[&_.aui-assistant-message-content_em]:text-[color-mix(in_oklab,currentColor_62%,transparent)] [&_.aui-user-message-content_em]:text-[color-mix(in_oklab,currentColor_62%,transparent)]",
+        className,
+      )}
+      data-speaker={speakerId}
+    >
+      {portrait}
+      <div className="mb-1 flex h-[calc(1.25rem*var(--ui-space-scale,1))] items-center gap-2">{name}</div>
+      {children}
+    </div>
+  );
+}
+
+const FRAME_PORTRAIT =
+  "absolute left-0 top-0 aspect-[3/4] w-[calc(3rem*var(--ui-space-scale,1))] rounded-[12px] text-[1.05rem] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:w-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[10px]";
+
 /** Wraps a reply in a character chat: portrait and name above the text, prefix stripping below. */
 export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   const t = useT();
@@ -95,72 +128,86 @@ export function RoleplayReplyFrame({ children }: { children: ReactNode }) {
   const character = speaker.character;
   return (
     <RoleplaySpeakerNameContext.Provider value={speaker.name}>
-      <div className="roleplay-reply relative min-h-[calc(4rem*var(--ui-space-scale,1))] pl-[calc(3.75rem*var(--ui-space-scale,1))] max-sm:pl-[calc(3.25rem*var(--ui-space-scale,1))] [&_.aui-assistant-message-content_em]:text-[color-mix(in_oklab,currentColor_62%,transparent)]" data-speaker={speaker.id}>
-        <Portrait
-          id={character?.id ?? speaker.id}
-          name={speaker.name}
-          hasImage={Boolean(character?.hasAvatar)}
-          rev={character?.avatarRev ?? 0}
-          label={speaker.name}
-          className="absolute left-0 top-0 aspect-[3/4] w-[calc(3rem*var(--ui-space-scale,1))] rounded-[12px] text-[1.05rem] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:w-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[10px]"
-          onClick={
-            character && threadId
-              ? () =>
-                  toggleOnStage(
-                    threadId,
-                    character.id,
-                    aui.thread().getState().messages,
-                    castIdsOf(threadId),
-                  )
-              : undefined
-          }
-        />
-        <div className="mb-1 flex h-[calc(1.25rem*var(--ui-space-scale,1))] items-center gap-2">
-          <span
-            className={cn(
-              "truncate text-ui-14 font-semibold text-foreground",
-              !character && "text-muted-foreground",
-            )}
-          >
-            {character ? speaker.name : `${speaker.name} · ${t("characters.chat.deleted")}`}
-          </span>
-          <MessageTime />
-          {/* With "Response model" on, the model shows after the time; the floating badge would sit on the name. */}
-          <MessageResponseModelBadge className="roleplay-model-badge min-w-0" />
-        </div>
+      <SpeakerFrame
+        className="roleplay-reply"
+        speakerId={speaker.id}
+        portrait={
+          <Portrait
+            id={character?.id ?? speaker.id}
+            name={speaker.name}
+            hasImage={Boolean(character?.hasAvatar)}
+            rev={character?.avatarRev ?? 0}
+            label={speaker.name}
+            className={FRAME_PORTRAIT}
+            onClick={
+              character && threadId
+                ? () =>
+                    toggleOnStage(
+                      threadId,
+                      character.id,
+                      aui.thread().getState().messages,
+                      castIdsOf(threadId),
+                    )
+                : undefined
+            }
+          />
+        }
+        name={
+          <>
+            <span
+              className={cn(
+                "truncate text-ui-14 font-semibold text-foreground",
+                !character && "text-muted-foreground",
+              )}
+            >
+              {character ? speaker.name : `${speaker.name} · ${t("characters.chat.deleted")}`}
+            </span>
+            <MessageTime />
+            {/* With "Response model" on, the model shows after the time; the floating badge would sit on the name. */}
+            <MessageResponseModelBadge className="roleplay-model-badge min-w-0" />
+          </>
+        }
+      >
         {children}
-      </div>
+      </SpeakerFrame>
     </RoleplaySpeakerNameContext.Provider>
   );
 }
 
-/** The persona's picture, name and time over the user's own messages, mirroring a reply's frame. */
-export function RoleplayPersonaTag() {
+/** Wraps the user's own message in a character chat the same way: the persona's picture, name and time. */
+export function RoleplayUserFrame({ children }: { children: ReactNode }) {
   const threadId = useChatRuntimeStore((s) => s.activeThreadId);
   const thread = useThreadScene(threadId);
   // Speaking as the account itself shows the account's own picture.
   const profileAvatar = useUserProfileStore((s) => s.avatarDataUrl);
-  if (!thread) return null;
+  if (!thread) return <>{children}</>;
   const { persona } = thread;
   return (
-    <>
-      <Portrait
-        kind="persona"
-        id={persona.id}
-        name={persona.name}
-        hasImage={persona.hasAvatar}
-        rev={persona.avatarRev}
-        imageUrl={persona.id ? undefined : profileAvatar}
-        label={persona.name}
-        className="absolute right-0 top-6 aspect-[3/4] w-[calc(3rem*var(--ui-space-scale,1))] rounded-[12px] text-[1.05rem] shadow-[0_1px_3px_rgb(0_0_0/0.14)] max-sm:w-[calc(2.5rem*var(--ui-space-scale,1))] max-sm:rounded-[10px]"
-      />
-      <span className="-mb-1 flex h-[calc(1.25rem*var(--ui-space-scale,1))] min-w-0 max-w-full items-center gap-2 text-ui-14 font-semibold text-foreground">
-        <MessageTime />
-        <span className="truncate" data-testid="persona-tag">
-          {persona.name}
-        </span>
-      </span>
-    </>
+    <SpeakerFrame
+      className="roleplay-user"
+      portrait={
+        <Portrait
+          kind="persona"
+          id={persona.id}
+          name={persona.name}
+          hasImage={persona.hasAvatar}
+          rev={persona.avatarRev}
+          imageUrl={persona.id ? undefined : profileAvatar}
+          label={persona.name}
+          className={FRAME_PORTRAIT}
+        />
+      }
+      name={
+        <>
+          <span className="truncate text-ui-14 font-semibold text-foreground" data-testid="persona-tag">
+            {persona.name}
+          </span>
+          <MessageTime />
+        </>
+      }
+    >
+      {children}
+    </SpeakerFrame>
   );
 }
 

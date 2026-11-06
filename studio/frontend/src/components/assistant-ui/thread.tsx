@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  RoleplayPersonaTag,
+  RoleplayUserFrame,
   RoleplayReplyFrame,
   useHiddenRoleplayTurn,
   useIsRoleplayThread,
@@ -69,7 +69,7 @@ import { ProgressiveMessages } from "@/components/assistant-ui/progressive-messa
 import { MessageMenuTime } from "@/components/assistant-ui/message-menu-time";
 import { AssistantMessageTime } from "@/components/assistant-ui/assistant-message-time";
 import { LiveGenerationLine } from "@/components/assistant-ui/live-generation-line";
-import { UserMessageActionBar, UserMessageFooter } from "@/components/assistant-ui/user-message-actions";
+import { UserMessageActionBar, UserMessageFooter, UserMessageTimeShownContext } from "@/components/assistant-ui/user-message-actions";
 import { useActionBarFocusReveal } from "@/components/assistant-ui/use-action-bar-focus-reveal";
 import {
   composerColumnInset,
@@ -9019,7 +9019,7 @@ const AssistantActionBar: FC = () => {
   );
 };
 
-const UserMessageAudio: FC = () => {
+const UserMessageAudio: FC<{ align?: "start" | "end" }> = ({ align = "end" }) => {
   const audioName = useAuiState(({ message }) =>
     sentAudioNames.get(message.id),
   );
@@ -9027,7 +9027,7 @@ const UserMessageAudio: FC = () => {
     return null;
   }
   return (
-    <div className="col-start-2 flex justify-end">
+    <div className={cn("col-start-2 flex", align === "end" ? "justify-end" : "justify-start")}>
       <div className="flex items-center gap-2 rounded-full border border-[color-mix(in_oklab,var(--foreground)_calc(20%*var(--contrast-edge-gain,1)),transparent)] bg-muted px-3 py-1.5 text-xs">
         <HugeiconsIcon icon={AiSpeechIcon} className="size-3.5 text-muted-foreground" />
         <span className="max-w-48 truncate">{audioName}</span>
@@ -9087,32 +9087,57 @@ const UserMessage: FC = () => {
     <MessagePrimitive.Root
       className={cn(
         "aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-content-max-width) animate-in flex-col items-end gap-y-2 pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em] duration-150",
-        // A character chat sets the persona's picture beside the message, as a reply sets the character's.
-        roleplayParts &&
-          "roleplay-user relative min-h-[calc(2.5rem+4rem*var(--ui-space-scale,1))] shrink-0 pr-[calc(3.75rem*var(--ui-space-scale,1))] max-sm:pr-[calc(3.25rem*var(--ui-space-scale,1))]",
+        // A character chat lays the user's message out like a reply: no bubble, on the left, under the persona.
+        roleplayParts && "relative block min-w-0 pt-0.5",
       )}
       data-role="user"
       tabIndex={0}
       {...focusReveal}
     >
-      <RoleplayPersonaTag />
-      <ScheduledTaskSource />
-      <UserMessageAttachments />
-      <UserMessageAudio />
-
-      <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
-        {hasContent ? (
-          <div
-            dir="auto"
-            className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
-            <MessagePrimitive.Parts components={roleplayParts} />
+      {roleplayParts ? (
+        <RoleplayUserFrame>
+          <div className="mb-2 flex flex-col items-start gap-2 empty:hidden">
+            <ScheduledTaskSource />
+            <UserMessageAttachments align="start" />
+            <UserMessageAudio align="start" />
           </div>
-        ) : null}
-        <UserMessageFooter>
-          <UserActionBar />
-          <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
-        </UserMessageFooter>
-      </div>
+          {hasContent ? (
+            <div
+              dir="auto"
+              className="aui-user-message-content wrap-break-word min-w-0 leading-relaxed text-[#0f1114] dark:text-foreground"
+            >
+              <MessagePrimitive.Parts components={roleplayParts} />
+            </div>
+          ) : null}
+          <div className="aui-user-message-footer mt-1.5 -ml-[var(--icon-btn-inset)] flex min-h-8 min-w-0 flex-wrap items-center gap-y-1">
+            <BranchPicker className="mr-0.5 h-8" />
+            {/* The time is already in the name line. */}
+            <UserMessageTimeShownContext.Provider value={false}>
+              <UserActionBar />
+            </UserMessageTimeShownContext.Provider>
+          </div>
+        </RoleplayUserFrame>
+      ) : (
+        <>
+          <ScheduledTaskSource />
+          <UserMessageAttachments />
+          <UserMessageAudio />
+
+          <div className="aui-user-message-content-wrapper flex w-full min-w-0 flex-col items-end">
+            {hasContent ? (
+              <div
+                dir="auto"
+                className="aui-user-message-content wrap-break-word [&_p]:whitespace-pre-wrap! w-fit max-w-[80%] rounded-xl bg-[#f5f5f5] px-4 py-2.5 text-[#0f1114] dark:text-foreground dark:bg-card">
+                <MessagePrimitive.Parts />
+              </div>
+            ) : null}
+            <UserMessageFooter>
+              <UserActionBar />
+              <BranchPicker className="aui-user-branch-picker ml-[calc(6px*var(--ui-space-scale,1))] shrink-0" />
+            </UserMessageFooter>
+          </div>
+        </>
+      )}
       <MessagePrimitive.If last={true}>
         <ForkChatShortcut />
       </MessagePrimitive.If>
@@ -9163,6 +9188,7 @@ const EditComposer: FC = () => {
   const researchActive = useThreadResearchActive();
   // send() drops an empty composer, e.g. a paste-only message whose chip was removed.
   const editEmpty = useAuiState(({ composer }) => composer.isEmpty);
+  const roleplay = useRoleplayUserParts() !== undefined;
 
   useAuiEvent("thread.runEnd", () => {
     if (!resendAfterCancelRef.current) {
@@ -9184,8 +9210,15 @@ const EditComposer: FC = () => {
   }, [aui, isComposingRef]);
 
   return (
-    // Top gap and type match UserMessage, so the text stays near the prompt's line.
-    <MessagePrimitive.Root className="aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]">
+    // Top gap and type match UserMessage, so the text stays near the prompt's line. A character chat
+    // keeps the persona's picture and name beside the box, as it does for an edited reply.
+    <MessagePrimitive.Root
+      className={cn(
+        "aui-edit-composer-wrapper mx-auto flex w-full max-w-(--thread-content-max-width) flex-col pt-6 pb-4 text-ui-15p5 [font-weight:410] tracking-[0.01em] dark:tracking-[0.02em]",
+        roleplay && "pt-0.5",
+      )}
+    >
+      <RoleplayUserFrame>
       <ComposerPrimitive.Root
         className="aui-edit-composer-root flex w-full flex-col rounded-xl bg-muted"
         onSubmit={(event) => {
@@ -9221,6 +9254,7 @@ const EditComposer: FC = () => {
           </Button>
         </div>
       </ComposerPrimitive.Root>
+      </RoleplayUserFrame>
     </MessagePrimitive.Root>
   );
 };
