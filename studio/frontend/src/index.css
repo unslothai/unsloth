@@ -2086,7 +2086,18 @@ html[data-chat-font] .aui-root {
 		overflow: hidden;
 	}
 
+	/* The modal scroll lock (src/lib/remove-scroll.tsx). Static, not the <style> react-remove-scroll-bar
+	   injected per lock: removing that sheet on close rebuilt every style in WebKit (about 2.7 s at 100
+	   turns). Same declarations, with the 0px gap the page always measured (it never scrolls). */
 	body[data-scroll-locked] {
+		overflow: hidden !important;
+		overscroll-behavior: contain;
+		position: relative !important;
+		padding-left: 0;
+		padding-top: 0;
+		padding-right: 0;
+		margin-left: 0;
+		margin-top: 0;
 		margin-right: 0 !important;
 	}
 	/* The 0px react-remove-scroll sets on modal open. Preset so the lock

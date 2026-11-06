@@ -85,13 +85,22 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "./src"),
-      "@dagrejs/dagre": path.resolve(
-        __dirname,
-        "./node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
-      ),
-    },
+    alias: [
+      { find: "@", replacement: path.resolve(__dirname, "./src") },
+      {
+        find: "@dagrejs/dagre",
+        replacement: path.resolve(
+          __dirname,
+          "./node_modules/@dagrejs/dagre/dist/dagre.cjs.js",
+        ),
+      },
+      // Radix's scroll lock without its document wheel / touch listeners, which restyle the
+      // whole page in WebKit on every modal open and close (src/lib/remove-scroll.tsx).
+      {
+        find: /^react-remove-scroll$/,
+        replacement: path.resolve(__dirname, "./src/lib/remove-scroll.tsx"),
+      },
+    ],
   },
   build: {
     commonjsOptions: {
