@@ -55,12 +55,16 @@ function ThemeChip({
   );
 }
 
+// Frost over its own colours: a clear chip vanished on a plain menu whenever glass was off.
 function GlassChip() {
   return (
     <span
       aria-hidden="true"
-      className="size-6 shrink-0 rounded-full border border-black/10 bg-[linear-gradient(135deg,rgb(255_255_255_/_0.85),rgb(255_255_255_/_0.2)_55%,rgb(255_255_255_/_0.55))] shadow-[inset_0_1px_0_rgb(255_255_255_/_0.9)] dark:border-white/20 dark:bg-[linear-gradient(135deg,rgb(255_255_255_/_0.35),rgb(255_255_255_/_0.05)_55%,rgb(255_255_255_/_0.18))]"
-    />
+      className="relative flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-full border border-black/10 bg-[linear-gradient(135deg,#5b9dff,#f39ac8_50%,#5fd4a4)] text-ui-11 font-semibold leading-none text-[#0f1114]/75 dark:border-white/20 dark:text-white/90"
+    >
+      <span className="absolute inset-0 bg-[linear-gradient(160deg,rgb(255_255_255_/_0.6),rgb(255_255_255_/_0.18)_55%,rgb(255_255_255_/_0.4))] shadow-[inset_0_1px_0_rgb(255_255_255_/_0.9)] dark:bg-[linear-gradient(160deg,rgb(255_255_255_/_0.3),rgb(0_0_0_/_0.25)_55%,rgb(255_255_255_/_0.12))] dark:shadow-[inset_0_1px_0_rgb(255_255_255_/_0.35)]" />
+      <span className="relative">Aa</span>
+    </span>
   );
 }
 
