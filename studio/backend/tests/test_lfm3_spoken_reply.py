@@ -53,7 +53,7 @@ for _name in reversed(_STUBBED):
     sys.modules.pop(_name, None)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from test_audio_chat_load import _config, backend  # noqa: E402, F401 - fixture
+from test_audio_chat_load import _config, backend, multimodal_auto_class  # noqa: E402, F401 - fixtures
 
 
 class _Codec(torch.nn.Module):
