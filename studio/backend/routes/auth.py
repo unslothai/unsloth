@@ -430,7 +430,6 @@ async def allowed_model_references(
         ]
         return [row["id"] for row in filter_model_rows(rows)]
 
-    # Echo only caller-provided references, using the same visibility policy as model loads.
     return {"allowed": await run_in_threadpool(visible_models)}
 
 

@@ -5021,7 +5021,6 @@ def _ask_for_local_model(
     base: Optional[str] = None,
     key: Optional[str] = None,
 ) -> tuple[str, LoadOptions]:
-    """Numbered pick of a model on this device, for a launch that named none and has none loaded."""
     from rich.console import Console
 
     # No cache seeding: its pins would reach the agent and an auto-started server as if user-set, and the catalog resolves the cache without them.
