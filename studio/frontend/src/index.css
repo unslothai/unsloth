@@ -2125,11 +2125,12 @@ html[data-chat-font] .aui-root {
 	/* The side pane (browser, research) sets its own pointer-events: auto once shown, so it never
 	   inherited the lock and its scrollers (file view, page) took wheel and touch under a modal menu.
 	   The same cover over it blocks them as react-remove-scroll's document listeners did, without a
-	   listener per open (each add or remove restyles the whole page in WebKit). Both roots are
-	   position: relative; dialogs and menus portal to <body> at z-50, above the cover. Its own layer:
-	   Chromium's compositor otherwise hit-tests the composited scroller under a paintless cover and
-	   scrolls it. */
-	body[style*="pointer-events: none"] .chat-artifact-pop-surface[data-artifact-surface-visible="true"] > :is([data-slot="browser-panel"], aside)::after {
+	   listener per open (each add or remove restyles the whole page in WebKit). The pane roots carry a
+	   static class, so the lock toggle only looks at them (an attribute or :is() subject here made
+	   every toggle restyle the thread: 120 ms at 200 turns). Both roots are position: relative;
+	   dialogs and menus portal to <body> at z-50, above the cover. Its own layer: Chromium's
+	   compositor otherwise hit-tests the composited scroller under a paintless cover and scrolls it. */
+	body[style*="pointer-events: none"] .chat-artifact-pop-surface .side-pane-lock-cover::after {
 		content: "";
 		position: absolute;
 		inset: 0;
@@ -2137,16 +2138,16 @@ html[data-chat-font] .aui-root {
 		pointer-events: auto;
 		will-change: transform;
 	}
-	/* The same for the explicit pointer-events-auto restorations (rows, toolbars, overlay buttons inside
-	   a pointer-events-none wrapper). Under a modal layer they stayed hit-testable, so wheel over one
-	   scrolled the list or page around it. Two places they can sit:
-	   - a dialog or menu that a nested modal menu has turned into a lower layer (Radix writes
-	     pointer-events: none on it; e.g. the Skills rows under Skill actions);
-	   - the page under the lock (modal layers portal to <body>, outside the sidebar inset).
-	   Class-keyed; the thread's own (about 100 at 100 turns) are left to its cover, so the lock toggle
-	   restyles only the few elsewhere. */
-	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto,
-	body[style*="pointer-events: none"] [data-slot="sidebar-inset"] .pointer-events-auto:not(.aui-thread-root *) {
+	/* pointer-events-auto restorations (rows, toolbars) inside a dialog or menu that a nested modal
+	   menu has made a lower layer (Radix writes pointer-events: none on it) stayed hit-testable, so
+	   wheel over one scrolled the list behind the menu (Skills rows under Skill actions). Popper
+	   content portaled into that dialog (a modal popover, a select) is the top layer, so it is left
+	   alone. Class-keyed: a lock toggle only looks at these elements. */
+	:is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto:not([data-radix-popper-content-wrapper] *) {
+		pointer-events: none !important;
+	}
+	/* The API monitor's sticky toolbar restores pointer-events over the scrolling page. */
+	body[style*="pointer-events: none"] .api-monitor-toolbar {
 		pointer-events: none !important;
 	}
 

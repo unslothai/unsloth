@@ -106,7 +106,7 @@ test("a closing dialog gives up focus when its exit animation starts", () => {
 test("the side pane sits under the same modal cover as the thread", () => {
   const css = readSrc("index.css");
   const selector =
-    'body[style*="pointer-events: none"] .chat-artifact-pop-surface[data-artifact-surface-visible="true"] > :is([data-slot="browser-panel"], aside)::after';
+    'body[style*="pointer-events: none"] .chat-artifact-pop-surface .side-pane-lock-cover::after';
   const cover = rule(css, selector);
   // will-change: its own layer, or Chromium's compositor scrolls the pane's scroller under it.
   for (const declaration of ['content: "";', "position: absolute;", "inset: 0;", "pointer-events: auto;", "will-change: transform;"]) {
@@ -116,21 +116,22 @@ test("the side pane sits under the same modal cover as the thread", () => {
   assert.ok(z > 0 && z < 50, `cover z-index ${z} must sit under the z-50 portaled layers`);
   // The shown pane opts out of the body lock, which is why it needs the cover.
   assert.match(rule(css, '.chat-artifact-pop-surface[data-artifact-surface-visible="true"]'), /pointer-events: auto;/);
-  // The cover is positioned by the pane roots themselves.
-  assert.match(readSrc("features/browser/browser-panel.tsx"), /data-slot="browser-panel"[\s\S]{0,600}"relative flex h-full min-h-0 flex-col overflow-hidden/);
-  assert.match(readSrc("features/chat/components/research-activity-panel.tsx"), /<aside[\s\S]{0,200}"relative flex min-h-0 flex-col/);
+  // Keyed on a static class on the pane roots, which also position the cover: an attribute or :is()
+  // subject here made every lock toggle restyle the thread (gate: 120 ms at 200 turns).
+  assert.match(readSrc("features/browser/browser-panel.tsx"), /"side-pane-lock-cover relative flex h-full min-h-0 flex-col overflow-hidden/);
+  assert.match(readSrc("features/chat/components/research-activity-panel.tsx"), /"relative flex min-h-0 flex-col[\s\S]{0,120}variant === "panel" && "side-pane-lock-cover"/);
 });
 
-test("pointer-events-auto restorations go inert outside the top modal layer", () => {
+test("pointer-events-auto restorations go inert in a lower modal layer, not in the page", () => {
   const css = readSrc("index.css");
-  const selector =
-    ':is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto,\n\tbody[style*="pointer-events: none"] [data-slot="sidebar-inset"] .pointer-events-auto:not(.aui-thread-root *)';
-  const at = css.indexOf(`${selector} {`);
-  assert.ok(at >= 0, "missing the lower-layer / page restoration rule");
-  const body = css.slice(at, css.indexOf("}", at));
-  assert.match(body, /pointer-events: none !important;/);
+  const lower =
+    ':is([role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"])[style*="pointer-events: none"] .pointer-events-auto:not([data-radix-popper-content-wrapper] *)';
+  assert.match(rule(css, lower), /pointer-events: none !important;/);
   // The Skills rows (the confirmed case) restore pointer-events with exactly this class.
   assert.match(readSrc("features/chat/components/chat-skills-dialog.tsx"), /className="pointer-events-auto absolute inset-0/);
-  // The page rule needs the inset's slot, which SidebarInset renders.
-  assert.match(readSrc("components/ui/sidebar.tsx"), /data-slot="sidebar-inset"/);
+  // No page-wide rule: dialogs portaled into the page (Recipe Studio) host live comboboxes there.
+  assert.doesNotMatch(css, /\[data-slot="sidebar-inset"\] \.pointer-events-auto/);
+  // The one page hit of the runtime audit, handled on its own.
+  assert.match(rule(css, 'body[style*="pointer-events: none"] .api-monitor-toolbar'), /pointer-events: none !important;/);
+  assert.match(readSrc("features/api-monitor/api-monitor-page.tsx"), /data-tour="api-toolbar" className="pointer-events-auto [^"]*\bapi-monitor-toolbar\b/);
 });
