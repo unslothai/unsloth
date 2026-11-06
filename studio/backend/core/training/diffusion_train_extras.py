@@ -17,10 +17,13 @@ from typing import Any, Iterable, Optional
 
 def accumulate_loss(acc: Any, loss: Any, accumulation_steps: int) -> Any:
     """``acc + float(loss) / accumulation_steps`` without a per-micro-step host sync: an fp64 device sum is the same
-    IEEE arithmetic as the Python float one. MPS has no fp64, so it keeps the Python float. Read with loss_value."""
+    IEEE arithmetic as the Python float one. Devices without fp64 (MPS, Arc / integrated XPUs) keep the Python float.
+    Read with loss_value."""
     detached = loss.detach()
-    if detached.device.type == "mps":
-        return (acc if acc is not None else 0.0) + float(detached) / accumulation_steps
+    if detached.device.type not in ("cpu", "cuda"):
+        from core.inference.video_minimax_h3_pdd import device_has_fp64
+        if not device_has_fp64(detached.device):
+            return (acc if acc is not None else 0.0) + float(detached) / accumulation_steps
     term = detached.double() / accumulation_steps
     return term if acc is None else acc.add_(term)
 

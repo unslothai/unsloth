@@ -63,6 +63,31 @@ def test_loss_accumulation_keeps_the_differentiable_loss_untouched():
     assert torch.equal(w.grad, torch.full((3,), 2.0))
 
 
+def test_loss_accumulation_keeps_the_python_float_on_a_device_without_fp64(monkeypatch):
+    from core.inference import video_minimax_h3_pdd as pdd
+
+    class _ArcLoss:
+        device = torch.device("xpu")
+
+        def __init__(self, value):
+            self.value = value
+
+        def detach(self):
+            return self
+
+        def __float__(self):
+            return self.value
+
+        def double(self):
+            raise AssertionError("Required aspect fp64 is not supported on the device")
+
+    monkeypatch.setitem(pdd._FP64_BY_DEVICE, ("xpu", None), False)
+    acc = None
+    for v in (0.25, 1.5, 3.0):
+        acc = extras.accumulate_loss(acc, _ArcLoss(v), 4)
+    assert isinstance(acc, float) and extras.loss_value(acc) == 0.25 / 4 + 1.5 / 4 + 3.0 / 4
+
+
 def _ema_reference(shadows, params, decay):
     for s, p in zip(shadows, params):
         s.mul_(decay).add_(p, alpha = 1.0 - decay)
