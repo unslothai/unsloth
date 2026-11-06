@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
+import re
 import time
 from functools import lru_cache
 from typing import Any, Callable, Optional
@@ -304,8 +305,24 @@ def _w8a8_rows_into(
 _FUSED_STATE: dict = {"fn": None, "failed": None}
 
 
+# ROCm archs where the compiled W8A8 linear was measured: RDNA3 / RDNA3.5 / RDNA4 (gfx11xx / gfx12xx). On gfx1151 it
+# matches eager exactly and beats bf16 (1.03-1.36x per linear at 4096 rows), where the eager int8 path is 0.93x bf16.
+_ROCM_FUSED_W8A8_ARCH = re.compile(r"^gfx1[12][0-9a-f]{2}$")
+
+
+def _rocm_fused_w8a8_refusal(torch: Any) -> Optional[str]:
+    """None when the compiled linear may run on this ROCm device, else why not (other ROCm archs: unmeasured)."""
+    from .rocm_bf16 import _device_gfx_arch
+
+    arch = _device_gfx_arch(torch, None)
+    if _ROCM_FUSED_W8A8_ARCH.match(arch):
+        return None
+    return f"ROCm {arch or 'unknown arch'}"
+
+
 def _fused_w8a8() -> Optional[Callable[..., Any]]:
-    """Compiled ``_w8a8_rows``, or None if disabled, no inductor runtime, ROCm, or already failed."""
+    """Compiled ``_w8a8_rows``, or None if disabled, no inductor runtime, a ROCm arch other than RDNA3 / RDNA4, or
+    already failed."""
     if _FUSED_STATE["failed"] is not None or int8_fused_disabled():
         return None
     fn = _FUSED_STATE["fn"]
@@ -320,9 +337,22 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
         runtime = torch_compile_runtime_available()
     except Exception:  # noqa: BLE001 - unknown runtime: stay eager
         runtime = False
-    if not runtime or is_rocm_torch(torch):
-        _FUSED_STATE["failed"] = "no inductor runtime" if not runtime else "ROCm"
+    try:  # Studio's structured logger (the line lands in the server log), plain logging outside Studio
+        from loggers import get_logger
+        log = get_logger(__name__)
+    except Exception:  # noqa: BLE001
+        import logging
+        log = logging.getLogger(__name__)
+    if not runtime:
+        _FUSED_STATE["failed"] = "no inductor runtime"
+        log.info("diffusion.native_quant: int8 W8A8 linear stays eager (no inductor runtime)")
         return None
+    if is_rocm_torch(torch):
+        refusal = _rocm_fused_w8a8_refusal(torch)
+        if refusal is not None:
+            _FUSED_STATE["failed"] = refusal
+            log.info("diffusion.native_quant: int8 W8A8 linear stays eager (%s)", refusal)
+            return None
     # Registered in eager, before any trace reads the handle.
     _FUSED_STATE["row_major"] = _row_major_op()
     # Every key exists before the first trace: older dynamo guards on len(_FUSED_STATE), so adding
@@ -332,6 +362,7 @@ def _fused_w8a8() -> Optional[Callable[..., Any]]:
     # One graph for every slice offset and chunk height (dynamic storage offset), written in place by inductor.
     _FUSED_STATE["into"] = torch.compile(_w8a8_rows_into, dynamic = True, fullgraph = True)
     _FUSED_STATE["fn"] = fn
+    log.info("diffusion.native_quant: int8 W8A8 linear runs as one compiled function")
     return fn
 
 
