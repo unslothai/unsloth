@@ -2691,17 +2691,22 @@ def get_chat_template(
             "'" + _escape_jinja_literal(mapping[key]) + "'"
             for key in ("role", "content", "user", "assistant")
         )
+        # Map each turn by the keys it actually has. Deciding from messages[0] alone skipped mappings
+        # that keep the role key, and turns shaped differently from the first one.
         chat_template = \
-            "{%- if 'role' not in messages[0] -%}" + \
             "{%- set sharegpt = namespace(messages = []) -%}" + \
             "{%- for message in messages -%}" + \
-            "{%- set role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
-            ".get(message[" + role + "], message[" + role + "]) -%}" + \
-            "{%- set sharegpt.messages = sharegpt.messages + " + \
-            "[dict(message, role = role, content = message[" + content + "])] -%}" + \
+            "{%- set turn = message -%}" + \
+            "{%- if message.get(" + role + ") is not none -%}" + \
+            "{%- set turn = dict(turn, role = {" + user + " : 'user', " + assistant + " : 'assistant'}" + \
+            ".get(message[" + role + "], message[" + role + "])) -%}" + \
+            "{%- endif -%}" + \
+            "{%- if message.get(" + content + ") is not none -%}" + \
+            "{%- set turn = dict(turn, content = message[" + content + "]) -%}" + \
+            "{%- endif -%}" + \
+            "{%- set sharegpt.messages = sharegpt.messages + [turn] -%}" + \
             "{%- endfor -%}" + \
-            "{%- set messages = sharegpt.messages -%}" + \
-            "{%- endif %}" + \
+            "{%- set messages = sharegpt.messages %}" + \
             chat_template
 
     chat_template, system_message = _change_system_message(chat_template, type_chat_template, system_message)
