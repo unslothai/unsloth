@@ -51,6 +51,7 @@ def test_invalid_api_type_is_rejected(schema):
         ("custom", "responses", "responses", ""),
         ("custom", "responses", "responses", "?api-version=2025-04-01-preview"),
         ("custom", "chat_completions", "chat/completions", ""),
+        ("custom", "chat_completions", "chat/completions", "?api-version=2025-04-01-preview"),
         ("openai", "chat_completions", "responses", ""),
     ],
 )
@@ -112,6 +113,41 @@ def test_selected_endpoint_and_payload(monkeypatch, provider_type, api_type, end
         assert "messages" not in body
     else:
         assert body["messages"][0]["content"] == "Be brief"
+
+
+def test_base_url_query_survives_model_list_and_non_stream_calls(monkeypatch):
+    sent = []
+
+    def handle(request):
+        sent.append(request)
+        if request.url.path == "/v1/models":
+            return httpx.Response(200, json = {"data": [{"id": "gateway-model"}]})
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, json = {"choices": [{"message": {"content": "pong"}}]})
+        if request.url.path == "/v1/audio/transcriptions":
+            return httpx.Response(200, json = {"text": "hi"})
+        return httpx.Response(404)
+
+    async def run():
+        async with httpx.AsyncClient(transport = httpx.MockTransport(handle)) as transport:
+            monkeypatch.setattr(ep, "_http_client", transport)
+            client = ExternalProviderClient(
+                "custom", "https://gateway.example/v1?api-version=preview", "test-key"
+            )
+            assert [m["id"] for m in await client.list_models()] == ["gateway-model"]
+            await client.verify_models_endpoint_lightweight()
+            await client.chat_completion(
+                messages = [{"role": "user", "content": "ping"}], model = "gateway-model"
+            )
+            await client.create_transcription(b"RIFF", "a.wav", "audio/wav", "whisper-1")
+
+    asyncio.run(run())
+    assert [(r.url.path, r.url.query.decode()) for r in sent] == [
+        ("/v1/models", "api-version=preview"),
+        ("/v1/models", "api-version=preview"),
+        ("/v1/chat/completions", "api-version=preview"),
+        ("/v1/audio/transcriptions", "api-version=preview"),
+    ]
 
 
 @pytest.mark.parametrize(

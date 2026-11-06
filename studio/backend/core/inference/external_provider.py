@@ -1982,7 +1982,7 @@ class ExternalProviderClient:
         if response_format is not None:
             body["response_format"] = response_format
 
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         logger.info(
             "Proxying chat completion to %s (provider=%s, model=%s)",
             url,
@@ -7222,7 +7222,7 @@ class ExternalProviderClient:
             else:
                 body["max_tokens"] = max_tokens
 
-        url = f"{self.base_url}/chat/completions"
+        url = _append_provider_path(self.base_url, "/chat/completions")
         headers = self._chat_headers(None)
         response = await _client().post(
             url,
@@ -7352,7 +7352,7 @@ class ExternalProviderClient:
         headers = self._auth_headers()
         headers.pop("Content-Type", None)
         response = await _client().post(
-            f"{self.base_url}/audio/transcriptions",
+            _append_provider_path(self.base_url, "/audio/transcriptions"),
             headers = headers,
             files = {"file": (filename, audio, content_type)},
             data = data,
@@ -7469,7 +7469,7 @@ class ExternalProviderClient:
 
     async def _models_payload(self, timeout: Any) -> tuple[Any, list[dict[str, Any]]]:
         response = await _client().get(
-            f"{self.base_url}/models",
+            _append_provider_path(self.base_url, "/models"),
             # Anthropic pages 20 models and native Gemini 50 by default; both cap a page at 1000. A Gemini
             # connection through a proxy gets no native parameter it may reject.
             params = (
@@ -7506,7 +7506,7 @@ class ExternalProviderClient:
                 break
             seen.add(token)
             response = await _client().get(
-                f"{self.base_url}/models",
+                _append_provider_path(self.base_url, "/models"),
                 params = params.set("pageToken", token),
                 headers = self._auth_headers(),
                 timeout = timeout,
@@ -7739,7 +7739,7 @@ class ExternalProviderClient:
         """Confirm GET /models returns 200 without buffering the full response body. Used for
         providers with enormous catalogs (e.g. OpenRouter, Hugging Face router) where downloading
         the full JSON would be prohibitive."""
-        url = f"{self.base_url}/models"
+        url = _append_provider_path(self.base_url, "/models")
         try:
             async with _client().stream(
                 "GET",
