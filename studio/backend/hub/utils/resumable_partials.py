@@ -364,6 +364,13 @@ def _open_stable_partial(path: Path) -> Optional[Any]:
                     return None
             else:
                 objection = _objection_to(descriptor)
+                # Without O_NOFOLLOW a link swapped in after the lstat above is followed; the name must still be the opened file.
+                if (
+                    objection is None
+                    and not nofollow
+                    and not _still_the_written_file(path, os.fstat(descriptor))
+                ):
+                    objection = "a symlink"
                 if objection is None:
                     return os.fdopen(descriptor, "ab")
                 os.close(descriptor)

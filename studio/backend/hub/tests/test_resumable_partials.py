@@ -406,6 +406,30 @@ def test_a_planted_symlink_is_not_appended_to(monkeypatch, tmp_path):
     assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
 
 
+def test_a_link_swapped_in_after_the_lstat_is_not_appended_to(monkeypatch, tmp_path):
+    """Without O_NOFOLLOW (Windows) the open follows a link planted between the lstat and the open."""
+    calls, module, partial, victim = _shared_setup_3(monkeypatch, tmp_path)
+    partial.write_bytes(b"y" * 40)
+    monkeypatch.delattr(rp.os, "O_NOFOLLOW", raising = False)
+    real_open, swapped = os.open, []
+
+    def swap_then_open(path, *args, **kwargs):
+        if Path(path) == partial and not swapped:
+            swapped.append(1)
+            partial.unlink()
+            partial.symlink_to(victim)
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(rp.os, "open", swap_then_open)
+
+    _shared_setup_1(module, partial, tmp_path)
+
+    assert (
+        victim.read_bytes() == b"keep me"
+    ), "the download was appended to the swapped-in link target"
+    assert calls["http_get"] == [{"resume_size": 0, "mode": "ab"}]
+
+
 def test_a_partial_left_by_another_user_is_not_built_on(monkeypatch, tmp_path):
     """Never append to a partial another account wrote; upstream checks size, never the hash."""
     calls, module, partial = _shared_setup_2(monkeypatch, tmp_path)
