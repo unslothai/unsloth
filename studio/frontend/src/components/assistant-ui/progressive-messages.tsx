@@ -29,6 +29,7 @@ import {
   anchorCorrection,
   alignAnchorCorrection,
   initialWindow,
+  nextMountChunk,
   watchProgressiveScroll,
   widen,
 } from "@/components/assistant-ui/progressive-mount-controller";
@@ -37,6 +38,7 @@ import {
   rendersAsRow,
 } from "@/components/assistant-ui/thread-message-slot";
 import { useAdjustForContentInsertedAbove } from "@/components/assistant-ui/use-intent-aware-autoscroll";
+import { REACH as WINDOW_REACH } from "@/components/assistant-ui/message-window-controller";
 import { inputPointerHeld } from "@/lib/input-pointer-state";
 import { isWebKitGTK } from "@/components/ui/theme-view-transition";
 
@@ -180,6 +182,13 @@ type HeldAnchor = {
   rowSample: AnchorSample | null;
 };
 
+/** Px from the viewport top up to the first mounted row's top; prepends land above it. */
+function frontierAbove(viewport: HTMLElement | null): number | null {
+  const first = viewport?.querySelector("[data-role][data-message-id]");
+  if (!viewport || !first) return null;
+  return viewport.getBoundingClientRect().top - first.getBoundingClientRect().top;
+}
+
 function isAnchorVisible(viewport: HTMLElement, element: Element): boolean {
   const box = element.getBoundingClientRect();
   const fold = viewport.getBoundingClientRect().top;
@@ -269,6 +278,7 @@ function useProgressiveMountWindow(
     | null
   >(null);
   const idleRef = useRef<HeldAnchor | null>(null);
+  const chunkRef = useRef(0);
   const scrollActivity = useRef<ReturnType<typeof watchProgressiveScroll> | null>(null);
 
   useEffect(() => {
@@ -327,8 +337,13 @@ function useProgressiveMountWindow(
         return;
       }
       captureAnchor();
+      // Read after the capture's layout reads, so this forces no extra layout.
+      const chunk = WEBKIT_GTK
+        ? (chunkRef.current = nextMountChunk(
+            chunkRef.current, frontierAbove(viewportRef.current), MOUNT_CHUNK, WINDOW_REACH))
+        : MOUNT_CHUNK;
       const commit = () => {
-        setMountWindow((current) => widen(current, count, MOUNT_CHUNK));
+        setMountWindow((current) => widen(current, count, chunk));
       };
       // Keep the prepend and its scroll correction inside the same WebKit rendering frame.
       if (WEBKIT_GTK) flushSync(commit);
@@ -336,7 +351,7 @@ function useProgressiveMountWindow(
     };
     frame = requestAnimationFrame(advance);
     return () => cancelAnimationFrame(frame);
-  }, [mountWindow, count, captureAnchor, isRunningNow]);
+  }, [mountWindow, count, captureAnchor, isRunningNow, viewportRef]);
 
   // mountWindow is a trigger: this must run in the commit that widened the window, before paint.
   // biome-ignore lint/correctness/useExhaustiveDependencies: mountWindow is a trigger, see above
@@ -368,6 +383,8 @@ function useProgressiveMountWindow(
   useEffect(() => {
     if (mountWindow == null) {
       idleRef.current = null;
+      // The next thread's first steps start small again.
+      chunkRef.current = 0;
       return;
     }
     let frame = 0;
