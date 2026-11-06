@@ -4352,7 +4352,10 @@ def test_codex_too_old_offers_the_update_with_the_managed_npm(
     monkeypatch.setattr(start, "_launch", lambda *args, **kwargs: launched.append(args))
     result = CliRunner().invoke(start.start_app, ["codex"])
     assert prompts == [f"Update `codex` now with `{hint}`?"]
-    assert ran[0][0] == ["/studio/node/bin/npm", *shlex.split(hint)[1:]]
+    if os.name == "nt":
+        assert ran[0][0][-1] == "& " + start._powershell_quote("/studio/node/bin/npm") + hint[3:]
+    else:
+        assert ran[0][0] == ["/studio/node/bin/npm", *shlex.split(hint)[1:]]
     assert ran[0][1]["PATH"].startswith(os.path.dirname("/studio/node/bin/npm"))
     assert bool(launched) is launches
     if not launches:
