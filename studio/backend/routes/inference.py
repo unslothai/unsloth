@@ -15718,6 +15718,25 @@ class _NativeAudioAvailability(NamedTuple):
         return self.credited_owner or self.owner_snapshot[0]
 
 
+def _visible_gpu_memory_gb() -> dict[int, tuple[float, float]]:
+    """(free, total) GiB per visible GPU, read fresh, keyed as GPU selection keys them."""
+    import utils.hardware as hardware
+    from utils.hardware import gpu_query
+
+    with gpu_query.fresh_reads():
+        utilization = hardware.get_visible_gpu_utilization()
+    live: dict[int, tuple[float, float]] = {}
+    for device in utilization.get("devices", []):
+        try:
+            index = int(device["index"])
+            total = float(device["vram_total_gb"])
+            used = float(device["vram_used_gb"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        live[index] = (max(total - used, 0.0), total)
+    return live
+
+
 def _native_audio_post_handoff_free_gb(
     outgoing: Optional[str] = None,
 ) -> Optional[_NativeAudioAvailability]:
@@ -15746,19 +15765,8 @@ def _native_audio_post_handoff_free_gb(
     reclaimable: dict[int, float] = {}
 
     def _read_live() -> bool:
-        from utils.hardware import gpu_query
-
-        with gpu_query.fresh_reads():
-            utilization = hardware.get_visible_gpu_utilization()
         live.clear()
-        for device in utilization.get("devices", []):
-            try:
-                index = int(device["index"])
-                total = float(device["vram_total_gb"])
-                used = float(device["vram_used_gb"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            live[index] = (max(total - used, 0.0), total)
+        live.update(_visible_gpu_memory_gb())
         return bool(live)
 
     def _merge_report(reported) -> bool:
@@ -16319,7 +16327,11 @@ async def _preflight_native_audio_placement(
                         classify_audio_cpp_failure,
                     )
 
-                    free_by_gpu = availability.effective_free_gb if availability is not None else {}
+                    # With nothing to unload, the cards' free memory as it is now.
+                    if availability is not None:
+                        free_by_gpu = availability.effective_free_gb
+                    else:
+                        free_by_gpu = {i: free for i, (free, _) in _visible_gpu_memory_gb().items()}
                     free = [gb for index, gb in free_by_gpu.items() if index in candidates]
                     failure = classify_audio_cpp_failure(
                         str(refusal),
@@ -25488,6 +25500,8 @@ async def stt_status(
     audiocpp_downloaded = await asyncio.to_thread(stt_audiocpp_sidecar.downloaded_model_ids)
     # Choosing the launch backend can run the binary's --version.
     audio_cpp_runtime = await asyncio.to_thread(_audio_cpp_runtime_status)
+    # The first probe imports torch, Transformers and PyAV (seconds); keep it off the event loop.
+    transformers_available = await asyncio.to_thread(is_available)
     transformers_downloaded = [
         model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
     ]
@@ -25495,7 +25509,7 @@ async def stt_status(
         transformers_downloaded.append(model)
     response = JSONResponse(
         content = {
-            "available": is_available(),
+            "available": transformers_available,
             "loaded_model": sidecar.loaded_model,
             "loading": sidecar.is_loading(),
             "device": sidecar.device,
@@ -25504,7 +25518,7 @@ async def stt_status(
             "models": list(STT_MODELS.keys()),
             # Transformers block mirrors the gguf shape so clients read either generically; top-level fields above are kept for old clients.
             "transformers": {
-                "available": is_available(),
+                "available": transformers_available,
                 "loaded_model": sidecar.loaded_model,
                 "loading": sidecar.is_loading(),
                 "device": sidecar.device,
@@ -39206,6 +39220,13 @@ def _normalise_responses_input(payload: ResponsesRequest) -> list[ChatMessage]:
             continue
 
         if isinstance(item, ResponsesUnknownInputItem):
+            if item.type == "item_reference":
+                _raise_unsupported_openai_parameter(
+                    "input",
+                    "Responses input items of type 'item_reference' are not supported. Send "
+                    "the full conversation history in 'input', for example with 'store' set "
+                    "to false.",
+                )
             if item.type == "reasoning":
                 replayed = _coerce_responses_reasoning_text(
                     getattr(item, "content", None)
@@ -50229,6 +50250,27 @@ async def audio_catalog(current_subject: str = Depends(get_current_subject)):
             status_code = 503,
             detail = "Unsloth Studio could not list audio models right now.",
         ) from None
+
+    def _estimate_rows() -> None:
+        from core.inference.audio_cpp_failures import gpu_estimate_applies
+        from core.inference.audio_cpp_models import audio_type_for_task
+
+        # Off the event loop: YuE2's estimate reads the cards through nvidia-smi.
+        applies = {
+            task: gpu_estimate_applies(audio_type_for_task(task))
+            for task in {row.get("task") for row in rows}
+        }
+        for row in rows:
+            if not applies[row.get("task")]:
+                continue
+            for size_key, estimate_key in (
+                ("size_bytes", "estimated_resident_gb"),
+                ("smallest_size_bytes", "smallest_estimated_resident_gb"),
+            ):
+                if row.get(size_key):
+                    row[estimate_key] = audio_cpp_resident_gb(row[size_key], row.get("family"))
+
+    await asyncio.to_thread(_estimate_rows)
     return payload.model_copy(update = {"models": [AudioCatalogModel(**r) for r in rows]})
 
 

@@ -82,7 +82,7 @@ _HERMES_MIN_CONTEXT = 65536
 _DSH_PROVIDER = "unsloth"
 _DSH_ENV_KEY = "UNSLOTH_API_KEY"
 _DSH_PATCH_FILE = "unsloth.patch.yml"
-_DSH_PACKAGE = "@deepseek-ai/dsh"
+_DSH_PACKAGE = "@deepseek-ai/dsh@latest"
 # dsh picks its sandbox+approval preset from DSH_PERMISSION_MODE via ??, so omitting it would inherit a danger-full-access exported in the parent shell, and "" is not unset to ??. Pin the mode in both directions instead of only setting it for --yolo.
 _DSH_SAFE_PERMISSION_MODE = "workspace-write"
 _DSH_YOLO_PERMISSION_MODE = "danger-full-access"

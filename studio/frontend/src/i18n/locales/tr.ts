@@ -215,6 +215,7 @@ export const tr = {
     tabs: "Tarayıcı sekmeleri",
     newTab: "Yeni sekme",
     newTabFullView: "Tam görünümde yeni sekme",
+    newTabFloating: "Kayan pencerede yeni sekme",
     closeTab: "Sekmeyi kapat",
     close: "Tarayıcıyı kapat",
     show: "Tarayıcıyı göster",
@@ -433,6 +434,12 @@ export const tr = {
       openChat: "Tam görünümde aç",
       moveLeft: "Sol bölmeye taşı",
       moveRight: "Sağ bölmeye taşı",
+    },
+    floating: {
+      enter: "Kayan pencere",
+      dock: "Yana sabitle",
+      close: "Kayan pencereyi kapat",
+      handle: "Pencereyi taşı. Ok tuşları taşır; Shift ve ok tuşları boyutunu değiştirir.",
     },
     annotate: {
       countOne: "1 ek açıklama",
@@ -880,6 +887,9 @@ export const tr = {
     unifiedTightFit: "Sınırda",
     unifiedTightFitHint:
       "Bu Mac'te daha kısa bir bağlamla yüklenebilir veya daha yavaş çalışabilir.",
+    residentToRun: "çalıştırmak için",
+    residentToRunHint:
+      "Yükleme denetiminin çalışırken gerektirdiği GPU belleği",
     onDevice: "Cihazda",
     huggingFace: "Hugging Face",
     retry: "Yeniden dene",
@@ -1202,6 +1212,9 @@ export const tr = {
         "Her satıra bir model; örneğin unsloth/Qwen3-4B-GGUF veya bir kuruluşun tamamı için unsloth/*. Tüm modellere izin vermek için boş bırakın.",
       modelAccessSave: "Kaydet",
       modelAccessLimited: "Sınırlı model erişimi",
+      rename: "Yeniden adlandır",
+      renameTitle: "{username} hesabını yeniden adlandır",
+      renameDescription: "Bu hesabın oturum açarken kullandığı adı seçin. Sohbetler, dosyalar ve API anahtarları hesapta kalır. Kullanıcının oturumu kapatılır ve yeni ad ile mevcut parolasıyla yeniden oturum açar.",
       empty: "Henüz başka hesap yok",
       setupCode: "Kurulum kodu",
       setupFor: "Kurulum kodu: {username}",
@@ -5875,8 +5888,7 @@ export const tr = {
     skippedVersion: "{component} {version} şimdilik atlandı",
     skippedUpdate: "{component} güncellemesi şimdilik atlandı",
     skippedUpdates: "{components} güncellemeleri şimdilik atlandı",
-    vulkanFaster:
-      "Vulkan, ROCM ile karşılaştırıldığında >%10 daha hızlı. Yeniden başlatma gerekmez",
+    vulkanFaster: "%10'dan fazla daha hızlı",
     noRestart: "Yeniden başlatma gerekmez",
     downloadSize: "{size} indirme",
     backendChange: "Arka uç: {change}",
@@ -5885,8 +5897,8 @@ export const tr = {
     installingPhase: "{component} kuruluyor ({current} / {total})...",
     installingCount: "{count} güncelleme kuruluyor...",
     bundleTitle: "{count} çalışma zamanı güncellemesi",
-    newBackend: "Yeni {component} arka ucu",
-    newUpdate: "Yeni {component} güncellemesi",
+    newBackend: "Yeni çalışma zamanı arka ucu",
+    newUpdate: "Yeni çalışma zamanı güncellemesi",
     hideUpdate:
       "Unsloth yeniden açılana kadar {component} güncellemesini gizle",
     hideUpdates:

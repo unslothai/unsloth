@@ -133,13 +133,67 @@ def _scan_file(path: Path) -> tuple[bool, Optional[int]]:
     return result
 
 
+def _elf_needed(path: Path) -> Optional[list[str]]:
+    """DT_NEEDED names of a 64-bit little-endian ELF (None if not one, or unreadable). Never raises."""
+    import struct
+    try:
+        with path.open("rb") as fh:
+            ident = fh.read(64)
+            if len(ident) < 64 or ident[:4] != b"\x7fELF" or ident[4] != 2 or ident[5] != 1:
+                return None
+            shoff = struct.unpack_from("<Q", ident, 0x28)[0]
+            shentsize, shnum = struct.unpack_from("<HH", ident, 0x3A)
+            if not shoff or shentsize < 64 or not shnum:
+                return None
+            fh.seek(shoff)
+            table = fh.read(shentsize * shnum)
+            sections = [
+                struct.unpack_from("<IIQQQQIIQQ", table, i * shentsize) for i in range(shnum)
+            ]
+            names: list[str] = []
+            for _name, sh_type, _fl, _addr, off, size, link, _info, _al, entsize in sections:
+                if sh_type != 6 or link >= shnum:  # SHT_DYNAMIC; sh_link is its string table
+                    continue
+                _n, _t, _f, _a, str_off, str_size, *_rest = sections[link]
+                fh.seek(str_off)
+                strtab = fh.read(str_size)
+                fh.seek(off)
+                dyn = fh.read(size)
+                step = entsize or 16
+                for j in range(0, len(dyn) - 15, step):
+                    tag, val = struct.unpack_from("<qQ", dyn, j)
+                    if tag == 0:
+                        break
+                    if tag == 1 and val < len(strtab):  # DT_NEEDED
+                        names.append(
+                            strtab[val : strtab.index(b"\x00", val)].decode("utf-8", "replace")
+                        )
+            return names
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def _linked_cudart_major(path: Path) -> Optional[int]:
+    """The CUDA major ``path`` actually links (its DT_NEEDED libcudart), not one a fallback string merely names."""
+    needed = _elf_needed(path) or []
+    for major, marker in _CUDART_MARKERS.items():
+        if marker.rstrip(b"\x00").decode() in needed:
+            return major
+    return None
+
+
 def binary_cudnn_build(binary: Optional[str]) -> tuple[bool, Optional[int]]:
-    """(built with cuDNN attention, linked CUDA major); ggml may be static or a ``libggml*.so`` beside the binary."""
+    """(built with cuDNN attention, linked CUDA major); ggml may be static or a ``libggml*.so`` beside the binary.
+
+    The major comes from DT_NEEDED first: a CUDA 13 ``libggml-cuda`` also carries "libcudart.so.12" in a dlopen
+    fallback list, and the string scan alone read it as a CUDA 12 build (then paired it with the cu12 cuDNN)."""
     if not binary:
         return False, None
     path = Path(binary)
     carries, major = _scan_file(path)
-    if carries and major is not None:
+    linked = _linked_cudart_major(path)
+    major = linked if linked is not None else major
+    if carries and linked is not None:
         return carries, major
     try:
         siblings = sorted(path.resolve().parent.glob("libggml*.so*"))
@@ -147,7 +201,10 @@ def binary_cudnn_build(binary: Optional[str]) -> tuple[bool, Optional[int]]:
         siblings = []
     for lib in siblings:
         lib_carries, lib_major = _scan_file(lib)
+        lib_linked = _linked_cudart_major(lib)
         carries = carries or lib_carries
+        if lib_linked is not None and linked is None:
+            linked = major = lib_linked
         major = major or lib_major
     if major is None:
         for m in _CUDART_MARKERS:

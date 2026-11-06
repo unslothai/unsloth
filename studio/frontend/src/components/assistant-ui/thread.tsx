@@ -150,7 +150,6 @@ import {
 } from "@/features/chat";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import {
-  BookmarkTurnButton,
   BookmarkTurnMenuItem,
   TurnNavigator,
 } from "@/components/assistant-ui/turn-navigation";
@@ -196,6 +195,7 @@ import {
   type PromptListEntry,
 } from "@/features/chat/api/prompts-api";
 import { PromptCountBadge } from "@/features/chat/prompt-storage/prompt-count-badge";
+import { insertSavedPrompt } from "@/features/chat/prompt-storage/insert-prompt";
 import {
   COMPOSER_POSITION_BOTTOM,
   COMPOSER_POSITION_MIDDLE,
@@ -428,7 +428,7 @@ import {
   ReadAloudIcon,
 } from "@/lib/action-bar-icons";
 import { ForkIcon } from "@/lib/fork-icon";
-import { markComposerScrollEdges } from "@/lib/composer-scroll-fade";
+import { markComposerScrollable, markComposerScrollEdges } from "@/lib/composer-scroll-fade";
 import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
@@ -3302,8 +3302,13 @@ const Composer: FC<{
   const handleEditorHeightChange = useCallback(
     (height: number, meta: { rowHeight: number }) => {
       setEditorHeight(height);
-      if (meta.rowHeight <= 0) return;
       const el = inputRef.current;
+      // Drafts set without typing change only the height.
+      if (el) {
+        markComposerScrollable(el);
+        markComposerScrollEdges(el);
+      }
+      if (meta.rowHeight <= 0) return;
       if (el && !lineMetricsRef.current) {
         const cs = getComputedStyle(el);
         const lineHeight = Number.parseFloat(cs.lineHeight) || 24;
@@ -5762,6 +5767,7 @@ const Composer: FC<{
           data-pill-compact={pillCompact}
         >
           <ComposerToolsMenu
+            inputRef={inputRef}
             side={effectiveMenuSide}
             researchAvailable={!researchUsed}
             audioUploadBusy={audioUpload.busy}
@@ -5825,6 +5831,9 @@ const Composer: FC<{
                   markComposerScrollEdges(event.currentTarget)
                 }
                 onInputCapture={(event) =>
+                  markComposerScrollEdges(event.currentTarget)
+                }
+                onFocusCapture={(event) =>
                   markComposerScrollEdges(event.currentTarget)
                 }
                 // Capture, so inputProps keeps the handlers it already owns.
@@ -6817,10 +6826,11 @@ const LazyLibraryAttachmentPicker = lazy(() =>
 );
 
 const ComposerToolsMenu: FC<{
+  inputRef: RefObject<HTMLTextAreaElement | null>;
   side?: "top" | "bottom";
   researchAvailable: boolean;
   audioUploadBusy: boolean;
-}> = ({ side = "bottom", researchAvailable, audioUploadBusy }) => {
+}> = ({ inputRef, side = "bottom", researchAvailable, audioUploadBusy }) => {
   const t = useT();
   const navigate = useNavigate();
   const toolsEnabled = useChatRuntimeStore((s) => s.toolsEnabled);
@@ -7111,7 +7121,7 @@ const ComposerToolsMenu: FC<{
           {recentPrompts.map((p) => (
             <DropdownMenuItem
               key={`prompt:${p.id}`}
-              onSelect={() => aui.composer().setText(p.text)}
+              onSelect={() => insertSavedPrompt(inputRef.current, p.text, (next) => aui.composer().setText(next))}
             >
               <span className="truncate">{p.name}</span>
             </DropdownMenuItem>
@@ -7245,9 +7255,7 @@ const ComposerToolsMenu: FC<{
     <PromptStorageDialog
       open={promptStorageOpen}
       onOpenChange={setPromptStorageOpen}
-      onUse={(text) => {
-        aui.composer().setText(text);
-      }}
+      onUse={(text) => insertSavedPrompt(inputRef.current, text, (next) => aui.composer().setText(next))}
       onRunList={(items) => runPromptList(items, true)}
     />
     <DropdownMenu open={plusOpen} onOpenChange={setPlusMenuOpen}>
@@ -8668,8 +8676,12 @@ const DeleteMessageButton: FC = () => {
   );
 };
 
+// A thin diagonal reads small at the shared size.
+const EDIT_GLYPH = "size-[calc(var(--icon-size)*1.049)]";
 const MORE_MENU_CONTENT_CLASS =
   "aui-action-bar-more-content dropdown-surface z-50 min-w-32 max-h-(--radix-dropdown-menu-content-available-height) flex flex-col overflow-hidden rounded-xl bg-popover px-[calc(8px*var(--ui-space-scale,1))] py-2 text-popover-foreground shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)]";
+const MORE_MENU_ITEM_CLASS =
+  "aui-action-bar-more-item flex cursor-pointer select-none items-center gap-2 rounded-md px-3 py-2 text-sm outline-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50";
 
 // Loaded on first use: the dialog is not part of the first screen.
 const LazyRewindDialog = lazy(() =>
@@ -8766,7 +8778,7 @@ const EditAssistantMessageButton: FC = () => {
       <HugeiconsIcon
         icon={Edit03Icon}
         strokeWidth={1.75}
-        className="size-icon"
+        className={EDIT_GLYPH}
       />
     </TooltipIconButton>
   );
@@ -9113,17 +9125,56 @@ const UserActionBar: FC = () => {
             <HugeiconsIcon
               icon={Edit03Icon}
               strokeWidth={1.75}
-              className="size-icon"
+              className={EDIT_GLYPH}
             />
           </TooltipIconButton>
         </ActionBarPrimitive.Edit>
       )}
-      <BookmarkTurnButton />
       <RewindMessageButton />
       <ForkCountBadge />
-      <ForkMessageButton />
       <DeleteMessageButton />
+      <UserMoreMenu />
     </UserMessageActionBar>
+  );
+};
+
+const UserMoreMenu: FC = () => {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const collisionPadding = useWindowChromeCollisionPadding(undefined);
+  const { forkMessage, forkDisabled } = useForkMessageAction();
+  return (
+    // Non-modal: see AssistantActionBar.
+    <ActionBarMorePrimitive.Root modal={false}>
+      <ActionBarMorePrimitive.Trigger asChild={true}>
+        <TooltipIconButton
+          ref={triggerRef}
+          tooltip="More"
+          className="data-[state=open]:bg-accent"
+        >
+          <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={1.75} className="size-icon" />
+        </TooltipIconButton>
+      </ActionBarMorePrimitive.Trigger>
+      <ActionBarMorePrimitive.Content
+        side="bottom"
+        align="end"
+        collisionPadding={collisionPadding}
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        className={MORE_MENU_CONTENT_CLASS}
+      >
+        <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
+          <MenuDismissGuard triggerRef={triggerRef} />
+          <ActionBarMorePrimitive.Item
+            disabled={forkDisabled}
+            onSelect={() => void forkMessage()}
+            className={MORE_MENU_ITEM_CLASS}
+          >
+            <HugeiconsIcon icon={ForkIcon} strokeWidth={1.75} className="size-[calc(var(--icon-size)*0.97)]" />
+            Fork from here
+          </ActionBarMorePrimitive.Item>
+          <BookmarkTurnMenuItem ownTurn={true} className={MORE_MENU_ITEM_CLASS} />
+        </div>
+      </ActionBarMorePrimitive.Content>
+    </ActionBarMorePrimitive.Root>
   );
 };
 

@@ -300,6 +300,10 @@ export class StudioWebSpeechDictationAdapter implements DictationAdapter {
     recognition.addEventListener("result", (event) => {
       if (ended) return;
       const speechEvent = event as SpeechRecognitionEvent;
+      // Chrome can merge split interim results into one, shrinking the list.
+      for (const index of interimParts.keys()) {
+        if (index >= speechEvent.results.length) interimParts.delete(index);
+      }
       for (
         let i = speechEvent.resultIndex;
         i < speechEvent.results.length;

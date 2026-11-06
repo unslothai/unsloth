@@ -6,14 +6,17 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import importlib.util
 import json
 import os
 import re
 import secrets
 import weakref
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Optional
 
@@ -1111,19 +1114,70 @@ def _paged(rows: list[dict[str, Any]], after: Optional[str], limit: int) -> dict
     return {"object": "list", "data": rows[:limit], "has_more": len(rows) > limit}
 
 
-def _runs_after(after: Optional[str], count: int) -> list[dict[str, Any]]:
-    runs: list[dict[str, Any]] = []
-    found, offset = after is None, 0
-    while len(runs) < count:
+def _iter_runs() -> Iterator[dict[str, Any]]:
+    offset = 0
+    while True:
         batch = list_runs(200, offset)["runs"]
         if not batch:
-            break
-        for run in batch:
-            if found:
-                runs.append(run)
-            found = found or run["id"] == after
+            return
+        yield from batch
         offset += len(batch)
-    return runs[:count]
+
+
+def _run_created(run: dict[str, Any]) -> int:
+    return _ALIAS_CREATED.get(_RUN_ALIAS.get(run["id"])) or _unix(run.get("started_at")) or 0
+
+
+def _ordered_jobs(
+    pending: list[dict[str, Any]], live: dict[str, dict[str, Any]]
+) -> Iterator[tuple[dict[str, Any], bool]]:
+    # Newest created first, same-second ties by public id: a job keeps its place from queue to
+    # history and across restarts. History is newest start first and no job starts before it is
+    # created, so a buffered row created after the current row's start is final.
+    def item(created_at: int, public_id: str, seq: int, row: dict[str, Any], is_run: bool):
+        return (-created_at, public_id, seq), row, is_run
+
+    heap = [
+        item(job["created_at"] or 0, job["id"], seq, job, False)
+        for seq, job in enumerate(chain(pending, live.values()))
+    ]
+    heapq.heapify(heap)
+    for seq, run in enumerate(_iter_runs(), len(heap)):
+        # A live run can acquire its history row between the status and history reads.
+        if run["id"] in live:
+            continue
+        started = _unix(run.get("started_at")) or 0
+        while heap and -heap[0][0][0] > started:
+            yield heapq.heappop(heap)[1:]
+        public_id = _RUN_ALIAS.get(run["id"]) or _job_id(run["id"])
+        heapq.heappush(heap, item(min(_run_created(run), started), public_id, seq, run, True))
+    while heap:
+        yield heapq.heappop(heap)[1:]
+
+
+def _list_job_page(
+    pending: list[dict[str, Any]],
+    live: dict[str, dict[str, Any]],
+    after: Optional[str],
+    after_run: Optional[str],
+    limit: int,
+    via_api_key: bool,
+) -> dict[str, Any]:
+    jobs, seen = [], set()
+    for row, is_run in _ordered_jobs(pending, live):
+        # A job that starts mid-request: listed once, its queue id still matches the cursor.
+        public_id = (_RUN_ALIAS.get(row["id"]) or _job_id(row["id"])) if is_run else row["id"]
+        if public_id in seen:
+            continue
+        seen.add(public_id)
+        if after:
+            if public_id == after or (is_run and row["id"] == after_run):
+                after = None
+            continue
+        if len(jobs) == limit:
+            return {"object": "list", "data": jobs, "has_more": True}
+        jobs.append(_for_caller(_job_from_run(row), via_api_key) if is_run else row)
+    return {"object": "list", "data": jobs, "has_more": False}
 
 
 @router.get("/fine_tuning/jobs")
@@ -1134,41 +1188,27 @@ async def list_fine_tuning_jobs(
     via_api_key: bool = Depends(authenticated_via_api_key),
 ):
     await asyncio.to_thread(_load_aliases)
-    own = [e for e in _ALIASES.values() if _own_alias(e.alias)]
-    # Newest first, as the history lists runs; insertion order breaks same-second ties.
-    pending = [(e, _for_caller(_queued_job(e), via_api_key)) for e in reversed(own)]
-    pending_ids = [job["id"] for _, job in pending]
-    if after in pending_ids:
-        pending, after = pending[pending_ids.index(after) + 1 :], None
-    elif after:
-        pending = []
     after_run = await _resolve(after) if after else None
-    runs = await asyncio.to_thread(_runs_after, after_run, limit + 1)
     status = await _current_status(current_subject, via_api_key)
     live_id = _status_field(status, "job_id") if status is not None else None
-
-    live = []
+    live = {}
     if live_id and _status_field(status, "phase") != "idle":
-        live = [
-            r
-            for r in reversed(_BATCHES.get(live_id, [live_id]))
-            if await asyncio.to_thread(get_run, r) is None
-        ]
-    if after_run in live:
-        live = live[live.index(after_run) + 1 :]
-        runs = await asyncio.to_thread(_runs_after, None, limit + 1)
-    elif after_run:
-        live = []
-    jobs = [_for_caller(await asyncio.to_thread(_job_from_run, run), via_api_key) for run in runs]
-    jobs = [await _job(r, current_subject, via_api_key) for r in live] + jobs
+        for run_id in reversed(_BATCHES.get(live_id, [live_id])):
+            if await asyncio.to_thread(get_run, run_id) is None:
+                job = await _job(run_id, current_subject, via_api_key)
+                live[run_id] = job
+                if run_id == after_run:
+                    after = job["id"]
 
-    newest = max((job["created_at"] for job in jobs), default = 0)
-    jobs = [
-        job
-        for e, job in pending
-        if e.status in ("queued", "starting") or job["created_at"] > newest
-    ] + jobs
-    return {"object": "list", "data": jobs[:limit], "has_more": len(jobs) > limit}
+    # After the awaits, so a job that started meanwhile is listed as its run.
+    pending = [
+        _for_caller(_queued_job(entry), via_api_key)
+        for entry in reversed(_ALIASES.values())
+        if _own_alias(entry.alias) is not None
+    ]
+    return await asyncio.to_thread(
+        _list_job_page, pending, live, after, after_run, limit, via_api_key
+    )
 
 
 @router.get("/fine_tuning/jobs/{job_id}")
