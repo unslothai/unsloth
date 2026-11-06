@@ -229,6 +229,7 @@ test("the checklist shows the official install command for the backend's OS", ()
   assert.equal(claudeAgent.claudeAgentInstallCommand(undefined), claudeAgent.claudeAgentInstallCommand("unix"));
   assert.equal(
     claudeAgent.claudeAgentInstallCommand("windows"),
+    // lint-allow: AV005 asserts the displayed install command
     "irm https://claude.ai/install.ps1 | iex",
   );
   assert.equal(claudeAgent.CLAUDE_CODE_NPM_INSTALL, "npm install -g @anthropic-ai/claude-code");

@@ -6,6 +6,7 @@ import type { ClaudeAgentStatus } from "./api/providers-api";
 import { CLAUDE_AGENT_PROVIDER_TYPE } from "./external-providers";
 export const CLAUDE_CODE_INSTALL_COMMANDS = {
   unix: "curl -fsSL https://claude.ai/install.sh | bash",
+  // lint-allow: AV005 shown to the user to copy, never executed
   windows: "irm https://claude.ai/install.ps1 | iex",
 } as const;
 export const CLAUDE_CODE_NPM_INSTALL =
